@@ -1,5 +1,6 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
+  Fragment,
   lazy,
   Suspense,
   type JSX,
@@ -13,9 +14,11 @@ import { createPortal } from 'react-dom';
 import { deriveSidebarNavRegions } from '@canopy/desktop-shared/lib/sidebar-nav-layout';
 import { WORKSPACE_LABEL_PLURAL } from '@canopy/protocol/ui-labels';
 import {
+  ChevronDownIcon,
   ChevronDownMediumIcon,
   EditBigIcon,
   ExperimentIcon,
+  PlusMediumIcon,
   SearchIcon,
   SettingsIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -63,6 +66,13 @@ import {
 import { CustomizeSidebarModal } from './CustomizeSidebarModal';
 import type { NavigationPage } from '@/stores/navigationStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
+import { ORCHESTRATOR_PAGE_EXPERIMENT_ID } from '@/lib/orchestratorPageExperiment';
+import {
+  AppAdvisorSidebarEntries,
+  useAppAdvisorActiveEntryId,
+  useAppAdvisorSidebarEntries,
+} from '@/components/app-advisor/AppAdvisorSidebarEntries';
 import {
   useLabsExperimentEnabled,
   useLabsHiddenSidebarKeys,
@@ -71,6 +81,8 @@ import {
 import { useSidebarStore } from '@/stores/sidebarStore';
 import {
   Badge,
+  RailIconButton,
+  RunningGlyph,
   ThinkingSpinner,
   TitlebarIconButton,
   useOverlayEscape,
@@ -2695,12 +2707,28 @@ export function AppSidebar({
     setMoreOpen(false);
   };
 
+  const appAdvisorDocked = useAppAdvisorStore(
+    (s) => s.open && s.layout === 'docked',
+  );
+  // The Orchestrator page experiment: the row then opens the Orchestrator as
+  // a page here and lists its chats under it; off, the row is unchanged.
+  const orchestratorPageEnabled = useLabsExperimentEnabled(
+    ORCHESTRATOR_PAGE_EXPERIMENT_ID,
+  );
+  // The Orchestrator's chats list under its row like a project's; with
+  // chats, its row collapses and expands them, as a project row does.
+  const appAdvisorEntries = useAppAdvisorSidebarEntries(
+    orchestratorPageEnabled,
+    appAdvisorDocked,
+  );
+  const appAdvisorActiveEntryId = useAppAdvisorActiveEntryId();
+  const appAdvisorCollapsed = useSidebarStore((s) => s.orchestratorCollapsed);
   // Thinking outranks unread outranks open, in both regions.
   const appAdvisorStatus: DropdownMenuItemStatus | undefined =
     appAdvisorThinking ? 'active' : appAdvisorUnread ? 'unread' : undefined;
 
-  // App Advisor keeps its bespoke thinking/unread/open treatment and the
-  // shared thinking spinner in either region; only padding, testid, onboarding
+  // App Advisor keeps its bespoke thinking/unread/open treatment in either
+  // region, its orbit turning while it works; only padding, testid, onboarding
   // anchor, and the click wrapper differ between main nav and the More menu.
   const renderAppAdvisorButton = (
     def: SidebarNavItemDef,
@@ -2718,59 +2746,129 @@ export function AppSidebar({
           status={appAdvisorStatus}
           selected={appAdvisorStatus === undefined && appAdvisorOpen}
         >
-          <DropdownMenuItemIcon className="relative">
-            {def.icon}
-            {appAdvisorThinking && (
-              <span
-                data-testid="sidebar-app-advisor-thinking"
-                aria-hidden="true"
-                className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
-              >
-                <ThinkingSpinner />
-              </span>
-            )}
+          <DropdownMenuItemIcon>
+            <RunningGlyph running={appAdvisorThinking}>{def.icon}</RunningGlyph>
           </DropdownMenuItemIcon>
           {def.label}
         </DropdownMenuItem>
       );
     }
+    const rowIcon = (
+      <RunningGlyph running={appAdvisorThinking}>{def.icon}</RunningGlyph>
+    );
+    if (!orchestratorPageEnabled) {
+      return (
+        <SidebarNavRow
+          key={def.key}
+          onClick={onAppAdvisorClick}
+          data-testid="sidebar-nav-app-advisor"
+          data-onboarding-anchor="sidebar-app-advisor"
+          aria-label={appAdvisorButtonLabel}
+          aria-pressed={appAdvisorOpen}
+          // The row background means "selected" across the sidebar, so a
+          // status inks the leading glyph instead of tinting the row.
+          selected={appAdvisorOpen}
+          status={appAdvisorStatus}
+          iconClassName="relative"
+          icon={rowIcon}
+        >
+          {def.label}
+        </SidebarNavRow>
+      );
+    }
+    // On its page (docked in this window) the selected chat under the row
+    // carries the selection, as a project's selected chat does; an empty new
+    // chat (not listed yet) or a folded list leaves the row itself selected.
+    const hasChats = appAdvisorEntries.length > 0;
+    const rowSelected = appAdvisorDocked
+      ? !appAdvisorEntries.some(
+          (entry) => entry.id === appAdvisorActiveEntryId,
+        ) || appAdvisorCollapsed
+      : appAdvisorOpen;
+    const toggleCollapsed = (): void => {
+      useSidebarStore.getState().setOrchestratorCollapsed(!appAdvisorCollapsed);
+    };
+    const row = (
+      <div key={def.key} className="group/sidebar-item relative">
+        <SidebarNavRow
+          // With chats the row folds them, like a project row; without, it
+          // opens the Orchestrator page on its new-chat state.
+          onClick={(event): void => {
+            // A pointer click leaves no focus behind, so the row's hover
+            // actions hide again once the pointer leaves.
+            if (event.detail > 0) event.currentTarget.blur();
+            if (hasChats) toggleCollapsed();
+            else onAppAdvisorClick();
+          }}
+          data-testid="sidebar-nav-app-advisor"
+          data-onboarding-anchor="sidebar-app-advisor"
+          aria-label={appAdvisorButtonLabel}
+          {...(hasChats
+            ? { 'aria-expanded': !appAdvisorCollapsed }
+            : { 'aria-pressed': appAdvisorOpen })}
+          // The row background means "selected" across the sidebar, so a
+          // status inks the leading glyph instead of tinting the row.
+          selected={rowSelected}
+          status={appAdvisorStatus}
+          iconClassName="relative"
+          icon={rowIcon}
+        >
+          {def.label}
+        </SidebarNavRow>
+        {/* New chat and, with chats, the fold chevron: revealed on hover
+            like a project row's actions. */}
+        <span className="absolute inset-y-0 right-0 flex items-center gap-0.5">
+          <RailIconButton
+            icon={PlusMediumIcon}
+            onClick={(event): void => {
+              // A pointer click leaves no focus behind, so the + hides
+              // again with the hover, as a project row's add action does.
+              if (event.detail > 0) event.currentTarget.blur();
+              useAppAdvisorStore.getState().openDocked({ newWorkEntry: true });
+            }}
+            data-testid="sidebar-app-advisor-new-chat"
+            hoverSurface
+            revealOnItemHover
+            coarsePointerTarget
+            aria-label={`New ${ORCHESTRATOR_LABEL} chat`}
+            tooltipLabel="New chat"
+          />
+          {hasChats && (
+            <RailIconButton
+              icon={ChevronDownIcon}
+              iconClassName={appAdvisorCollapsed ? '-rotate-90' : 'rotate-0'}
+              onClick={(event): void => {
+                if (event.detail > 0) event.currentTarget.blur();
+                toggleCollapsed();
+              }}
+              data-testid="sidebar-app-advisor-collapse"
+              hoverSurface
+              revealOnItemHover
+              coarsePointerTarget
+              aria-expanded={!appAdvisorCollapsed}
+              aria-label={`${appAdvisorCollapsed ? 'Expand' : 'Collapse'} ${ORCHESTRATOR_LABEL} chats`}
+              tooltipLabel={appAdvisorCollapsed ? 'Expand' : 'Collapse'}
+            />
+          )}
+        </span>
+      </div>
+    );
+    if (!hasChats || appAdvisorCollapsed) return row;
     return (
-      <SidebarNavRow
-        key={def.key}
-        onClick={onAppAdvisorClick}
-        data-testid="sidebar-nav-app-advisor"
-        data-onboarding-anchor="sidebar-app-advisor"
-        aria-label={appAdvisorButtonLabel}
-        aria-pressed={appAdvisorOpen}
-        // The row background means "selected" across the sidebar, so a
-        // status inks the leading glyph instead of tinting the row.
-        selected={appAdvisorOpen}
-        status={appAdvisorStatus}
-        iconClassName="relative"
-        icon={
-          <>
-            {def.icon}
-            {appAdvisorThinking && (
-              <span
-                data-testid="sidebar-app-advisor-thinking"
-                aria-hidden="true"
-                className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
-              >
-                <ThinkingSpinner />
-              </span>
-            )}
-          </>
-        }
-      >
-        {def.label}
-      </SidebarNavRow>
+      <Fragment key={def.key}>
+        {row}
+        <AppAdvisorSidebarEntries
+          entries={appAdvisorEntries}
+          docked={appAdvisorDocked}
+        />
+      </Fragment>
     );
   };
 
   // Claude Workers keeps the bespoke "active" affordance it had in the account
   // menu before moving into the sidebar nav: a sky-tinted tone, an
-  // `aria-label` announcing the active state, and the shared thinking spinner while
-  // a worker is queued/starting/running. Only padding, testid, onboarding
+  // `aria-label` announcing the active state, and the shared thinking spinner in
+  // place of its logo while a worker is queued/starting/running. Only padding, testid, onboarding
   // anchor, and the click wrapper differ between the main nav and the More menu.
   // The shared row rule: a row enters its page, and the current row returns
   // its section to the root (the Workflows row is current on all its tabs).
@@ -2780,6 +2878,21 @@ export function AppSidebar({
       onSelect: () => onNavigate(page),
       onReturnToRoot: () => onReturnToSectionRoot(page),
     });
+
+  // While a worker runs, the shared spinner takes the Claude logo's place in
+  // the slot (a turning logo would read oddly), as compact worktree rows do.
+  const workersIcon = (def: SidebarNavItemDef): JSX.Element =>
+    workersActive ? (
+      <span
+        data-testid="sidebar-workers-active"
+        aria-hidden="true"
+        className="inline-flex"
+      >
+        <ThinkingSpinner sizePx={12} />
+      </span>
+    ) : (
+      def.icon
+    );
 
   const renderWorkersButton = (
     def: SidebarNavItemDef,
@@ -2806,18 +2919,7 @@ export function AppSidebar({
           status={workersActive ? 'active' : undefined}
           selected={!workersActive && isCurrentPage}
         >
-          <DropdownMenuItemIcon className="relative">
-            {def.icon}
-            {workersActive && (
-              <span
-                data-testid="sidebar-workers-active"
-                aria-hidden="true"
-                className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
-              >
-                <ThinkingSpinner />
-              </span>
-            )}
-          </DropdownMenuItemIcon>
+          <DropdownMenuItemIcon>{workersIcon(def)}</DropdownMenuItemIcon>
           {def.label}
         </DropdownMenuItem>
       );
@@ -2831,21 +2933,7 @@ export function AppSidebar({
         aria-label={workersButtonLabel}
         selected={isCurrentPage}
         status={workersActive ? 'active' : undefined}
-        iconClassName="relative"
-        icon={
-          <>
-            {def.icon}
-            {workersActive && (
-              <span
-                data-testid="sidebar-workers-active"
-                aria-hidden="true"
-                className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
-              >
-                <ThinkingSpinner />
-              </span>
-            )}
-          </>
-        }
+        icon={workersIcon(def)}
       >
         {def.label}
       </SidebarNavRow>

@@ -75,3 +75,10 @@ export async function backfillMemoryScopeBeforeRead(
     );
   }
 }
+
+/**
+ * Raised by a caller's precondition, checked under the scope's write lock
+ * before a rebuild or restore changes anything: the caller's view of the
+ * scope no longer holds, so nothing is changed.
+ */
+export class LocalMemoryPreconditionError extends Error {}

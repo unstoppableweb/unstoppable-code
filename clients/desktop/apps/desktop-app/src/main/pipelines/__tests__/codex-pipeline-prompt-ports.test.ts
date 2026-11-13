@@ -1,7 +1,7 @@
 // CAN-5095: the Codex workflow step runner moved to desktop-shared and runs
 // over ports; Electron main's ports keep the mockCalls it made before, in order.
-import type { CodexPromptRunnerRequest } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import { runCodexPipelinePromptWith } from '@canopy/desktop-shared/node/pipelines/codex-pipeline-prompt';
+import type { CodexPromptRunnerRequest } from '@canopy/execution-engine/node/pipelines/executor/types';
+import { runCodexPipelinePromptWith } from '@canopy/execution-engine/node/pipelines/codex-pipeline-prompt';
 import { desktopCodexPipelinePromptPorts } from '../codex-pipeline-prompt-ports';
 
 interface StartThreadRequest {

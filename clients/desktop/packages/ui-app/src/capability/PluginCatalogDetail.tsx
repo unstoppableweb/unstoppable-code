@@ -11,6 +11,7 @@ import {
   DetailEntityType,
   ExecutionActionButton,
   Heading,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { PluginAlternatives } from './PluginAlternatives';
 import { Divider } from '@canopy/ui-shared/components';
@@ -119,14 +120,11 @@ export function PluginCatalogDetail({
         </div>
       )}
       {entry.homepage && (
-        <a
-          href={entry.homepage}
-          target="_blank"
-          rel="noreferrer"
-          className="focus-ring w-fit rounded text-xs font-medium fg-accent hover:underline"
-        >
-          Website
-        </a>
+        <p className="text-xs">
+          <TextLink href={entry.homepage} target="_blank" rel="noreferrer">
+            Website
+          </TextLink>
+        </p>
       )}
       {entry.categories.length > 0 && (
         <div className="flex flex-wrap gap-1.5">

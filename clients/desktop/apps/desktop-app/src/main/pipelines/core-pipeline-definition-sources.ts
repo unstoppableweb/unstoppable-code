@@ -79,7 +79,7 @@ import {
   validatePipelineOwnerTargetsOnSave,
 } from './pipeline-owner-policy';
 import * as localPipelines from './pipeline-service';
-import { deletePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+import { deletePipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import { discoverProjectPipelines } from './project-pipeline-discovery';
 import { recordPipelineEnabled } from './pipeline-enablement-commit';
 import {

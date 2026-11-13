@@ -4,10 +4,13 @@ import {
   type InstalledItemStatusController,
   type InstalledItemStatusSource,
 } from '@canopy/ui-shared';
+import { SKILLS_CHANGED_EVENT } from '@/lib/skillsChanged';
 
 /**
  * Desktop transport for installed-item status (CAN-4255): the preload
- * `installedItems` bridge, refetched on its change event. Absent in renderer
+ * `installedItems` bridge, refetched on its change event and on the renderer
+ * skills-changed event, which a renderer-initiated install (a shared skill,
+ * CAN-5309) fires without `installed-items:changed`. Absent in renderer
  * contexts without the bridge, where status renders read-only.
  */
 function desktopInstalledItemSource(): InstalledItemStatusSource | null {
@@ -26,7 +29,10 @@ function desktopInstalledItemSource(): InstalledItemStatusSource | null {
       const unsubscribeSynced = window.api?.onPreferencesSynced?.(() =>
         onChange(),
       );
+      const onSkillsChanged = (): void => onChange();
+      window.addEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged);
       return () => {
+        window.removeEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged);
         unsubscribe();
         unsubscribePreferences?.();
         unsubscribeSynced?.();

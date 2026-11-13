@@ -15,7 +15,7 @@ const copiedTimers = new WeakMap<
 >();
 
 function setCopied(button: HTMLButtonElement, copied: boolean): void {
-  const label = copied ? 'Copied' : 'Copy code to clipboard';
+  const label = copied ? 'Copied' : 'Copy';
   // Accessible name only: hover help comes from the rich Tooltip wrapper, so
   // no native `title` is written here either.
   button.setAttribute('aria-label', label);
@@ -64,11 +64,11 @@ export function MarkdownCodeBlock({
           a direct child), so the rich tooltip wrapper inside it can stay
           `relative` and the button keeps its geometry. */}
       <span className="markdown-code-copy-control pointer-events-none absolute -right-2 -top-2 z-30 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100">
-        <Tooltip label="Copy code to clipboard">
+        <Tooltip label="Copy">
           <button
             type="button"
             onClick={handleCopy}
-            aria-label="Copy code to clipboard"
+            aria-label="Copy"
             className="markdown-code-copy-button focus-ring rounded-md bg-popover/80 p-1.5 fg-secondary transition-colors hover:bg-popover hover:fg-primary"
           />
         </Tooltip>

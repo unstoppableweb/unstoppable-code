@@ -184,13 +184,15 @@ async function loadPipelineUsageReasons(
       (reason.kind === 'provider_usage_limit' ||
         reason.kind === 'provider_authentication_required' ||
         reason.kind === 'provider_sign_in' ||
-        reason.kind === 'app_shutdown') &&
+        reason.kind === 'app_shutdown' ||
+        reason.kind === 'core_lost') &&
       // The listing authorizes its own records. Newly discovered native
       // interruptions may expand the target, but another account must not.
       (session.statusReasonIds.includes(reason.id) ||
         reason.account_scope === 'native' ||
         reason.kind === 'provider_sign_in' ||
-        reason.kind === 'app_shutdown'),
+        reason.kind === 'app_shutdown' ||
+        reason.kind === 'core_lost'),
   );
   const checkpoint = result.data.shutdown_checkpoint;
   const statusReasonIds = Array.from(

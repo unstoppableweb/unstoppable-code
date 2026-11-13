@@ -129,7 +129,7 @@ function AgentInspector({
         agent.prompt !== agent.activity &&
         agent.prompt !== agent.title ? (
           <p
-            className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words text-xs fg-secondary`}
+            className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words text-s fg-secondary`}
           >
             {agent.prompt}
           </p>

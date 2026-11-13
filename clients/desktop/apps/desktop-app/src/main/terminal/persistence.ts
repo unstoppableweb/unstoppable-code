@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,

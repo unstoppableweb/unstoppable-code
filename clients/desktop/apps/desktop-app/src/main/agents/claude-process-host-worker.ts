@@ -1,3 +1,4 @@
+import { workingDirectoryLaunchError } from '@canopy/desktop-shared/node/lib/working-directory';
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
   connectExecutionHostChannel,
@@ -226,11 +227,14 @@ export function startClaudeProcessHost(
           return;
         }
         active.delete(request.requestId);
-        post({
-          type: 'error',
-          requestId: request.requestId,
-          message: error.message,
-        });
+        void workingDirectoryLaunchError(error, request.cwd).then((failure) =>
+          post({
+            type: 'error',
+            requestId: request.requestId,
+            message:
+              failure instanceof Error ? failure.message : String(failure),
+          }),
+        );
       });
       child.once('exit', (code, signal) => {
         if (active.get(request.requestId) !== state) return;

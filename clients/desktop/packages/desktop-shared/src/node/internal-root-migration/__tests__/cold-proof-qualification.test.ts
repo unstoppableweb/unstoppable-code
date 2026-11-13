@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -783,13 +784,20 @@ int main(int argc, char **argv) {
               throw new Error('Expected unprivileged deleted-map refusal');
             } catch (error) {
               if (!(error instanceof LinuxColdInspectionError)) throw error;
+              // The child's bind mount is absent from the observer's mount table.
+              expect(await readFile(`/proc/${pid}/mountinfo`, 'utf8')).not.toBe(
+                await readFile('/proc/self/mountinfo', 'utf8'),
+              );
               expect(error.refusals).toHaveLength(1);
               const [refusal] = error.refusals;
               expect(refusal?.pid).toBe(pid);
               expect(refusal?.comm).toBe('fixture');
+              expect(refusal?.reason).toContain(
+                `path=${JSON.stringify(join(await realpath(alias), 'database'))} device=`,
+              );
               expect(refusal?.reason).toMatch(
                 new RegExp(
-                  `^(?:EACCES|EPERM): .*'/proc/${pid}/map_files/[0-9a-f]+-[0-9a-f]+'$`,
+                  `^Deleted mapping cannot be ruled out: path=".*" device=\\d+:\\d+ inode=\\d+; process and observer mount tables differ; map_files pin denied \\((?:EACCES|EPERM): .*'/proc/${pid}/map_files/[0-9a-f]+-[0-9a-f]+'\\)$`,
                 ),
               );
               process.stdout.write(

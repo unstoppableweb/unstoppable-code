@@ -87,6 +87,10 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Time left before the request times out, or null for no deadline. */
+  remainingMs: number | null;
+  /** When the running timer started; its time is spent from here. */
+  startedAt: number;
 }
 
 const KEEPALIVE_EVENT = 'rpc.keepalive';
@@ -124,9 +128,25 @@ export class RpcPeer {
     // Runs at once for a session that is already closed.
     session.onClose((reason) => this.handleClosed(reason));
     if (this.closed) return;
+    // A suspended session waits for its resume deadline, not the idle
+    // timeout; idle time counts again from when it is active.
+    session.onStateChange((state) => {
+      if (state === 'active') {
+        this.lastInboundAt = Date.now();
+        for (const [id, pending] of Array.from(this.pending))
+          this.startDeadline(id, pending);
+      } else {
+        // A request held for the resume must not time out here and still
+        // run there: its deadline waits too.
+        for (const pending of Array.from(this.pending.values()))
+          this.pauseDeadline(pending);
+      }
+    });
     const interval = options.keepaliveIntervalMs ?? DEFAULT_KEEPALIVE_MS;
     const idleTimeout = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.keepalive = setInterval(() => {
+      // Paused while suspended or resuming; pending requests stay pending.
+      if (this.session.state !== 'active') return;
       const lastActivity = Math.max(
         this.lastInboundAt,
         this.session.lastReceivedAt,
@@ -167,21 +187,17 @@ export class RpcPeer {
         options.timeoutMs === undefined
           ? (this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
           : options.timeoutMs;
-      const timer =
-        timeoutMs === null
-          ? null
-          : setTimeout(() => {
-              this.pending.delete(id);
-              reject(
-                new RpcRemoteError(
-                  'The other computer took too long to answer.',
-                  'timeout',
-                ),
-              );
-            }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      const pending: PendingRequest = {
+        resolve,
+        reject,
+        timer: null,
+        remainingMs: timeoutMs,
+        startedAt: Date.now(),
+      };
+      this.pending.set(id, pending);
+      this.startDeadline(id, pending);
       const fail = (error: Error): void => {
-        if (timer) clearTimeout(timer);
+        if (pending.timer) clearTimeout(pending.timer);
         this.pending.delete(id);
         reject(error);
       };
@@ -200,6 +216,38 @@ export class RpcPeer {
       }
       if (!sent) fail(new RpcClosedError('transport_error'));
     });
+  }
+
+  /** Runs a request's deadline, unless its session is not active. */
+  private startDeadline(id: number, pending: PendingRequest): void {
+    if (
+      pending.timer !== null ||
+      pending.remainingMs === null ||
+      this.session.state !== 'active'
+    ) {
+      return;
+    }
+    pending.startedAt = Date.now();
+    pending.timer = setTimeout(
+      () => {
+        if (this.pending.get(id) !== pending) return;
+        this.pending.delete(id);
+        pending.reject(
+          new RpcRemoteError(
+            'The other computer took too long to answer.',
+            'timeout',
+          ),
+        );
+      },
+      Math.max(0, pending.remainingMs),
+    );
+  }
+
+  private pauseDeadline(pending: PendingRequest): void {
+    if (pending.timer === null || pending.remainingMs === null) return;
+    clearTimeout(pending.timer);
+    pending.timer = null;
+    pending.remainingMs -= Date.now() - pending.startedAt;
   }
 
   /**
@@ -229,7 +277,8 @@ export class RpcPeer {
     } catch {
       // Closing proceeds regardless.
     }
-    this.session.close(reason);
+    // A suspended host session holds the close for the controller's resume.
+    this.session.closeAfterDelivery(reason);
   }
 
   private handleMessage(value: unknown): void {

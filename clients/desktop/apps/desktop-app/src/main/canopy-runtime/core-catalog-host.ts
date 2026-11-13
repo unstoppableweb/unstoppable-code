@@ -24,6 +24,8 @@ import {
   skillEntryId,
   type CanopyCallerDescriptor,
   type CatalogEntry,
+  type CatalogPluginHarness,
+  type CatalogPluginHarnesses,
   type CatalogSelectionRefs,
   type CoreWorkspacePluginsUpdateParams,
   type CoreWorkspacePluginsUpdateResult,
@@ -53,6 +55,7 @@ import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type {
   MarketplaceInfo,
   MarketplaceProviderStatus,
+  PluginInfo,
   PluginsCache,
 } from '@canopy/execution-engine/types/plugins';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -68,6 +71,10 @@ export interface DesktopCatalogHostDeps {
     mcpServers?: { serverId: string; configId: string }[];
   } | null>;
   loadMarketplacesCacheOnly(): Promise<IPCResult<PluginsCache>>;
+  readPluginHarnessFacts(
+    marketplace: MarketplaceInfo,
+    plugin: PluginInfo,
+  ): Promise<CatalogPluginHarnesses>;
   readInstalledItemPolicy(): Promise<{
     isDisabled(ref: InstalledItemRef): boolean;
   }>;
@@ -113,6 +120,11 @@ const defaultDeps: Omit<
     )?.collection ?? null,
   loadMarketplacesCacheOnly: async () =>
     (await import('../plugins/plugin-service')).loadMarketplacesCacheOnly(),
+  readPluginHarnessFacts: async (marketplace, plugin) =>
+    (await import('../plugins/plugin-harness-facts')).pluginHarnessFacts(
+      marketplace,
+      plugin,
+    ),
   readInstalledItemPolicy: async () =>
     (
       await import('../installed-items/installed-item-policy')
@@ -180,6 +192,96 @@ const labels = (
 });
 
 const DISPLAY_NAME_MAX = 256;
+
+const sourceLabel = (label: string): Pick<CatalogEntry, 'sourceLabel'> => ({
+  sourceLabel: clip(label, CatalogEntrySchema.shape.name.maxLength),
+});
+
+/** The entry's selection ref, when every part fits the schema. */
+function selectionRef<T extends Record<string, string>>(
+  ref: T,
+): { selectionRef: T } | Record<string, never> {
+  return Object.values(ref).every(
+    (part) => part.length >= 1 && part.length <= 512,
+  )
+    ? { selectionRef: ref }
+    : {};
+}
+
+const MEMBERS_MAX = 1024;
+const MEMBER_NAME_MAX = 512;
+const MEMBER_DESCRIPTION_MAX = 4096;
+
+/** Harness facts within the schema's bounds. */
+function boundedHarnesses(
+  harnesses: CatalogPluginHarnesses,
+): CatalogPluginHarnesses {
+  const bound = (harness: CatalogPluginHarness): CatalogPluginHarness => ({
+    ...harness,
+    members: harness.members.slice(0, MEMBERS_MAX).map((member) => ({
+      kind: member.kind,
+      name: clip(member.name, MEMBER_NAME_MAX),
+      description: clip(member.description, MEMBER_DESCRIPTION_MAX),
+    })),
+  });
+  return {
+    claude: bound(harnesses.claude),
+    codex: bound(harnesses.codex),
+    ollama: bound(harnesses.ollama),
+    copilot: bound(harnesses.copilot),
+    opencode: bound(harnesses.opencode),
+  };
+}
+
+interface PluginFacts {
+  /** The plugin's description, else its marketplace's. */
+  description: string;
+  harnesses: CatalogPluginHarnesses;
+}
+
+/**
+ * The facts the cached marketplace plugin behind each catalog plugin row
+ * adds. A cache that can't be read leaves them out.
+ */
+async function readPluginFacts(
+  deps: Pick<
+    DesktopCatalogHostDeps,
+    'loadMarketplacesCacheOnly' | 'readPluginHarnessFacts'
+  >,
+): Promise<Map<string, PluginFacts>> {
+  const facts = new Map<string, PluginFacts>();
+  const cache = await deps.loadMarketplacesCacheOnly();
+  if (!cache.success || !cache.data) return facts;
+  await Promise.all(
+    cache.data.marketplaces.flatMap((marketplace) =>
+      marketplace.plugins.map(async (plugin) => {
+        let harnesses: CatalogPluginHarnesses;
+        try {
+          harnesses = await deps.readPluginHarnessFacts(marketplace, plugin);
+        } catch (error) {
+          // One unreadable plugin root must not fail every snapshot read.
+          logMainProcessWarn('Catalog snapshot: plugin facts unreadable', {
+            marketplaceId: marketplace.id,
+            pluginName: plugin.name,
+            reason: error instanceof Error ? error.name : typeof error,
+          });
+          return;
+        }
+        facts.set(
+          pluginEntryId({
+            marketplaceId: marketplace.id,
+            pluginName: plugin.name,
+          }),
+          {
+            description: plugin.description ?? marketplace.description ?? '',
+            harnesses: boundedHarnesses(harnesses),
+          },
+        );
+      }),
+    ),
+  );
+  return facts;
+}
 
 function mcpAvailability(
   server: PortalPluginCatalogMcpServer,
@@ -459,6 +561,7 @@ export function createDesktopCatalogHost(
 
   const snapshot = async (): Promise<CatalogSnapshotRead> => {
     const catalog = await deps.buildCachedPluginCatalog();
+    const pluginFacts = await readPluginFacts(deps);
     const policy = await deps.readInstalledItemPolicy();
     const at = new Date().toISOString();
     const stamp = { revision: 0, createdAt: at, updatedAt: at };
@@ -474,8 +577,16 @@ export function createDesktopCatalogHost(
           entryId: skillEntryId(skill),
           kind: 'skill',
           ...labels(skill.name, skill.description),
+          ...sourceLabel(skill.source),
           source: skill.builtIn === true ? 'bundled' : 'user',
-          content: { kind: 'skill', entrypoint: null },
+          content: {
+            kind: 'skill',
+            entrypoint: null,
+            ...selectionRef({
+              sourceId: skill.sourceId,
+              skillName: skill.skillName,
+            }),
+          },
           availability: policy.isDisabled({
             kind: 'skill',
             sourceId: skill.sourceId,
@@ -486,11 +597,13 @@ export function createDesktopCatalogHost(
           ...stamp,
         }),
       ),
-      ...catalog.plugins.map(
-        (plugin): CatalogEntry => ({
+      ...catalog.plugins.map((plugin): CatalogEntry => {
+        const facts = pluginFacts.get(pluginEntryId(plugin));
+        return {
           entryId: pluginEntryId(plugin),
           kind: 'plugin',
-          ...labels(plugin.name, plugin.description),
+          ...labels(plugin.name, facts?.description ?? plugin.description),
+          ...sourceLabel(plugin.marketplaceName),
           source: 'plugin',
           content: {
             kind: 'plugin',
@@ -504,6 +617,11 @@ export function createDesktopCatalogHost(
                 codex: plugin.codexSupported,
               },
             },
+            ...(facts ? { harnesses: facts.harnesses } : {}),
+            ...selectionRef({
+              marketplaceId: plugin.marketplaceId,
+              pluginName: plugin.pluginName,
+            }),
           },
           availability: policy.isDisabled({
             kind: 'plugin',
@@ -515,13 +633,14 @@ export function createDesktopCatalogHost(
               ? 'incompatible'
               : 'available',
           ...stamp,
-        }),
-      ),
+        };
+      }),
       ...catalog.mcpServers.map(
         (server): CatalogEntry => ({
           entryId: mcpServerEntryId(server),
           kind: 'mcp_server',
           ...labels(server.serverName, server.description),
+          ...sourceLabel(server.serverName),
           source: 'user',
           content: {
             kind: 'mcp_server',
@@ -535,6 +654,13 @@ export function createDesktopCatalogHost(
             ...(server.enabledTools === undefined
               ? {}
               : { enabledTools: server.enabledTools }),
+            ...(server.configName
+              ? { configName: clip(server.configName, MEMBER_NAME_MAX) }
+              : {}),
+            ...selectionRef({
+              serverId: server.serverId,
+              configId: server.configId,
+            }),
           },
           availability: mcpAvailability(
             server,

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { hasHostAbsolutePath } from '../workspace/host-paths';
+import { CoreCloudRecordSchema } from '../workspace/reads';
 import { CanopyWorkspaceScopeSchema } from '../../common';
 import {
   CanopyErrorPayloadSchema,
@@ -9,6 +10,49 @@ import {
 
 const id = z.string().min(1).max(512);
 const timestamp = z.iso.datetime({ offset: true });
+const count = z.number().int().nonnegative();
+
+/**
+ * The cloud sidebar's worktree fields (CAN-6111), as `GET
+ * /api/cloud/workspaces` sends them; the nested records are its own,
+ * unchanged. They and the label are exempt from the host path refusal: a
+ * path in them is the cloud sandbox's (a setup command, its log, an error),
+ * which the REST listing already shows the same caller, never one of the
+ * serving host's.
+ */
+const CLOUD_WORKTREE_FIELDS = {
+  label: z.string().nullable().optional(),
+  hidden: z.boolean().optional(),
+  /** The cloud's own state (`CREATING` … `ARCHIVED`) beside `state`. */
+  cloudState: z.string().min(1).optional(),
+  stateError: CoreCloudRecordSchema.nullable().optional(),
+  lifecycle: z.string().min(1).optional(),
+  lifecycleRevision: count.optional(),
+  lastActivityAt: timestamp.nullable().optional(),
+  archivedAt: timestamp.nullable().optional(),
+  expiresAt: timestamp.nullable().optional(),
+  coreSandboxId: id.nullable().optional(),
+  sandboxRevision: count.optional(),
+  repositories: z.array(CoreCloudRecordSchema).optional(),
+  archive: CoreCloudRecordSchema.nullable().optional(),
+  recovery: CoreCloudRecordSchema.nullable().optional(),
+  setup: CoreCloudRecordSchema.nullable().optional(),
+  firstMessage: CoreCloudRecordSchema.nullable().optional(),
+  activeCombine: CoreCloudRecordSchema.nullable().optional(),
+};
+const HOST_PATH_EXEMPT: ReadonlySet<string> = new Set([
+  'name',
+  'label',
+  'stateError',
+  'repositories',
+  'archive',
+  'recovery',
+  'setup',
+  'firstMessage',
+  'activeCombine',
+  // The web core's get only: its chat summary's title is free text.
+  'creation',
+]);
 
 export const CoreWorktreeSchema = z
   .object({
@@ -22,12 +66,14 @@ export const CoreWorktreeSchema = z
     targetId: z.string().nullable().optional(),
     createdAt: z.string(),
     updatedAt: timestamp.optional(),
+    ...CLOUD_WORKTREE_FIELDS,
   })
   .catchall(CanopyJsonValueSchema)
   .refine(
     (value) =>
       !Object.entries(value).some(
-        ([key, field]) => key !== 'name' && hasHostAbsolutePath(field),
+        ([key, field]) =>
+          !HOST_PATH_EXEMPT.has(key) && hasHostAbsolutePath(field),
       ),
     'Canonical results cannot contain host paths',
   );
@@ -52,7 +98,22 @@ export const CoreWorktreeListResultSchema = z
     collectionRevision: z.number().int().nonnegative().optional(),
   })
   .catchall(CanopyJsonValueSchema);
-export const CoreWorktreeGetResultSchema = CoreWorktreeSchema;
+export const CoreWorktreeGetResultSchema = CoreWorktreeSchema.safeExtend({
+  /**
+   * The web core's cloud worktree only (CAN-6110), as `GET
+   * /api/cloud/worktrees/[id]` answers it: whether its first chat is still
+   * being made, and that chat's summary, unchanged, once it is ready.
+   */
+  creation: z
+    .strictObject({
+      pending: z.boolean(),
+      chat: CoreCloudRecordSchema.nullable(),
+    })
+    .optional(),
+});
+export type CoreWorktreeGetResult = z.output<
+  typeof CoreWorktreeGetResultSchema
+>;
 export const CoreWorktreeErrorSchema = CanopyErrorPayloadSchema.extend({
   code: z
     .enum([

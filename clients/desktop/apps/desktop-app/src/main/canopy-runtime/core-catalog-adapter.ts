@@ -65,6 +65,8 @@ export function createCoreCatalogAdapter(options: {
         handlers.instructions['core.catalog.source.refresh'](params, context),
       'core.catalog.plugin.install': (params, context) =>
         handlers.instructions['core.catalog.plugin.install'](params, context),
+      'core.catalog.entry.publish': (params, context) =>
+        handlers.instructions['core.catalog.entry.publish'](params, context),
       'core.catalog.skill.install': (params, context) =>
         skillHandlers.instructions['core.catalog.skill.install'](
           params,

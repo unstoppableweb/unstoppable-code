@@ -12,6 +12,8 @@ import type {
   WorkerScriptExecuteResult,
   WorkerScriptExecutionCancelParams,
   WorkerScriptExecutionCancelResult,
+  WorkerScriptExecutionClearParams,
+  WorkerScriptExecutionClearResult,
   WorkerScriptExecutionGetParams,
   WorkerScriptExecutionGetResult,
   WorkerScriptExecutionListParams,
@@ -53,6 +55,9 @@ import {
   type ScriptRunLogRef,
   type ScriptRunWriterFence,
 } from './script-run-log';
+
+/** When a run's process is identified again, after its shell may have exec'd its command (CAN-6482). */
+const SCRIPT_CHILD_REFRESH_MS = 2_000;
 
 /** Where a run executes and the environment it gets, on this worker. */
 export interface ScriptExecutionPlace {
@@ -507,6 +512,20 @@ export class ScriptExecutionWorker {
       this.unstarted.delete(executionId);
       this.notify(executionId, (observer) => observer.onProcessStarted?.());
     };
+    // A restart can then prove the process is this run's before a reap
+    // (CAN-6482). The record is refreshed once the shell has had time to
+    // exec a lone command, which changes the executable the OS reports.
+    const onProcessPid = (pid: number): void => {
+      const logRef = ref;
+      if (logRef === null) return;
+      const record = (refresh: boolean): void => {
+        void this.logs
+          .recordChild({ ref: logRef, pid, refresh })
+          .catch(() => undefined);
+      };
+      record(false);
+      setTimeout(() => record(true), SCRIPT_CHILD_REFRESH_MS).unref();
+    };
     const tracking = logged
       ? {
           projectId,
@@ -557,6 +576,7 @@ export class ScriptExecutionWorker {
               );
             },
             onProcessStarted,
+            onProcessPid,
             ...(tracking ? { tracking } : {}),
           });
     } catch (error) {
@@ -668,6 +688,26 @@ export class ScriptExecutionWorker {
     };
   }
 
+  async clear(
+    params: WorkerScriptExecutionClearParams,
+  ): Promise<WorkerScriptExecutionClearResult> {
+    this.assertServed(params.scope);
+    const outcome = await this.logs.clear({
+      projectId: params.scope.workspaceId,
+      worktreeId: params.scope.worktreeId,
+      scriptKey: params.scriptKey,
+      runId: params.executionId,
+    });
+    if (outcome === 'active')
+      throw new CanopyOperationError({
+        kind: 'conflict',
+        code: 'worker.script.executionInProgress',
+        message: 'This run is still running, so it cannot be cleared.',
+        retry: { kind: 'never' },
+      });
+    return { cleared: outcome === 'cleared' };
+  }
+
   async get(
     params: WorkerScriptExecutionGetParams,
   ): Promise<WorkerScriptExecutionGetResult> {
@@ -721,6 +761,10 @@ export interface WorkerScriptHandlers {
       'worker.script.execution.cancel',
       CanopyHandlerContext
     >;
+    'worker.script.execution.clear': CanopyInstructionHandler<
+      'worker.script.execution.clear',
+      CanopyHandlerContext
+    >;
   };
 }
 
@@ -733,6 +777,9 @@ export function createWorkerScriptHandlers(
     reusedError: idempotencyKeyReusedError,
   });
   const cancellations = new KeyedOutcomes<WorkerScriptExecutionCancelResult>({
+    reusedError: idempotencyKeyReusedError,
+  });
+  const clears = new KeyedOutcomes<WorkerScriptExecutionClearResult>({
     reusedError: idempotencyKeyReusedError,
   });
   return {
@@ -757,6 +804,8 @@ export function createWorkerScriptHandlers(
         ),
       'worker.script.execution.cancel': (params, context) =>
         cancellations.run(context, params, () => worker.cancel(params)),
+      'worker.script.execution.clear': (params, context) =>
+        clears.run(context, params, () => worker.clear(params)),
     },
   };
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import {
   useSuggestionCornerOffer,
   type SuggestionCornerModel,
@@ -85,7 +86,10 @@ export function SkillShareNudgeBanner({
   const data = useChatShareData(pending !== null, pending?.id);
 
   // Read the chat's pending target, and re-read whenever main says it moved.
+  // Nudges are for skills the local runtime made.
+  const { localExecution } = useScopeCapabilities({ projectId });
   useEffect(() => {
+    if (localExecution !== true) return undefined;
     let cancelled = false;
     let sequence = 0;
     const origin = { projectId, worktreeId, chatId };
@@ -121,7 +125,7 @@ export function SkillShareNudgeBanner({
       cancelled = true;
       unsubscribe();
     };
-  }, [chatId, originKey, projectId, worktreeId]);
+  }, [chatId, localExecution, originKey, projectId, worktreeId]);
 
   const evaluation = useMemo((): Evaluation | null => {
     if (!pending) return null;

@@ -10,6 +10,7 @@ import {
   SpinnerStyleProvider,
   StatusGlyph,
   type DagJobMeta,
+  joinDetails,
 } from '@canopy/ui-shared/components';
 import {
   formatElapsed,
@@ -151,6 +152,20 @@ export function pipelineTrayRunStatus(
     default:
       return 'running';
   }
+}
+
+/**
+ * A run's name, or its kind while the receipt has none (a run can arrive
+ * before its pipeline's name), so a row never starts with a blank.
+ */
+export function runDisplayName(run: BackgroundTrayRun): string {
+  const name = run.name.trim();
+  if (name !== '') return name;
+  return run.kind === 'pipeline'
+    ? 'Pipeline run'
+    : run.kind === 'github'
+      ? 'GitHub run'
+      : 'Pull request';
 }
 
 /** A pipeline run's drawer row, from its receipt and live state. */
@@ -477,9 +492,7 @@ export function RunJobRows({
                     name
                   )}
                   {time !== null && (
-                    <span className="shrink-0 text-xs tabular-nums">
-                      {time}
-                    </span>
+                    <span className="shrink-0 text-s tabular-nums">{time}</span>
                   )}
                 </li>
               );
@@ -553,7 +566,7 @@ function LegacyRunRow({
   const actionRunName = (
     <span className="sr-only">
       {' '}
-      <span className={REPLAY_MASK_CLASS}>{run.name}</span>
+      <span className={REPLAY_MASK_CLASS}>{runDisplayName(run)}</span>
     </span>
   );
   // A paused run's way in sits beside Resume rather than under its jobs.
@@ -626,7 +639,7 @@ function LegacyRunRow({
         )
       }
       running={run.kind !== 'github-pr' && run.status === 'running'}
-      name={<span className={REPLAY_MASK_CLASS}>{run.name}</span>}
+      name={<span className={REPLAY_MASK_CLASS}>{runDisplayName(run)}</span>}
       headerAccessory={
         redesigned &&
         (run.kind === 'pipeline' || linkRow) &&
@@ -859,25 +872,34 @@ function DrawerRunRow({
   const Glyph = prAppearance.Icon;
   const elapsed = runElapsedLabel(run, now);
   const label = run.statusLabel ?? RUN_STATUS_LABELS[run.status];
-  const status = elapsed === label ? label : `${label} · ${elapsed}`;
+  // Tabular digits keep the ticking time from shifting, wherever the status
+  // shows (beside the name, or as the detail before the job dots).
+  const status =
+    elapsed === label
+      ? label
+      : joinDetails([label, <span className="tabular-nums">{elapsed}</span>]);
   const actionRunName = (
     <span className="sr-only">
       {' '}
-      <span className={REPLAY_MASK_CLASS}>{run.name}</span>
+      <span className={REPLAY_MASK_CLASS}>{runDisplayName(run)}</span>
     </span>
   );
   const action =
     needsInput && onRespond ? (
-      <Button
-        variant="primary"
-        size="compact"
-        data-testid={`background-tray-run-${run.id}-respond`}
-        onClick={() => onRespond(run.id)}
-      >
-        Answer{actionRunName}
-      </Button>
+      // Ghost buttons beside it sit flush; a filled button keeps 4px from
+      // them.
+      <span className="flex pl-1">
+        <Button
+          variant="primary"
+          size="compact"
+          data-testid={`background-tray-run-${run.id}-respond`}
+          onClick={() => onRespond(run.id)}
+        >
+          Answer{actionRunName}
+        </Button>
+      </span>
     ) : paused ? (
-      <span className="flex items-center gap-1">
+      <span className="flex items-center">
         {onOpen && (
           <Button
             variant="ghost-overlay"
@@ -934,6 +956,14 @@ function DrawerRunRow({
         </span>
       </Tooltip>
     ) : undefined;
+  const jobDots =
+    run.dag && hasJobs ? (
+      // A flex box, not a line of text, so the strip centres on the row
+      // instead of sitting on the text's baseline.
+      <span className={`${REPLAY_BLOCK_CLASS} flex`}>
+        <DagProgressDots tiers={run.dag.tiers} jobs={run.dag.jobs} />
+      </span>
+    ) : undefined;
   return (
     <DrawerRow
       rowKey={`run:${run.id}`}
@@ -951,7 +981,7 @@ function DrawerRunRow({
           <PipelineIcon size="sm" />
         )
       }
-      name={<span className={REPLAY_MASK_CLASS}>{run.name}</span>}
+      name={<span className={REPLAY_MASK_CLASS}>{runDisplayName(run)}</span>}
       detail={
         isPr ? undefined : needsInput ? (
           <span
@@ -962,21 +992,26 @@ function DrawerRunRow({
           </span>
         ) : paused ? (
           'Paused'
-        ) : run.dag && hasJobs ? (
-          <span className={REPLAY_BLOCK_CLASS}>
-            <DagProgressDots tiers={run.dag.tiers} jobs={run.dag.jobs} />
-          </span>
+        ) : jobDots ? (
+          // Where it stands reads first, beside the name; the job dots
+          // follow it.
+          status
         ) : undefined
       }
-      status={isPr || paused || needsInput ? undefined : status}
+      status={isPr || paused || needsInput || jobDots ? undefined : status}
+      // After the text with a plain gap, no dot: separators join text items
+      // only, and the job dots are not text.
       trailing={
         isPr && run.diffStats ? (
           <GroupedDiffStats
             insertions={run.diffStats.insertions}
             deletions={run.diffStats.deletions}
           />
+        ) : !isPr && !paused && !needsInput ? (
+          jobDots
         ) : undefined
       }
+      trailingOverflow={isPr ? 'keep' : 'clip'}
       headerAccessory={renderWatcher?.(run)}
       running={run.kind !== 'github-pr' && run.status === 'running'}
       attention={needsInput}
@@ -986,6 +1021,7 @@ function DrawerRunRow({
           ? {
               label: run.kind === 'pipeline' ? 'Open run' : 'Open on GitHub',
               onClick: () => onOpen(run.id),
+              external: run.kind !== 'pipeline',
             }
           : undefined
       }
@@ -997,12 +1033,12 @@ function DrawerRunRow({
               render: () => (
                 <>
                   {run.repository && (
-                    <p className={`${REPLAY_BLOCK_CLASS} text-xs fg-tertiary`}>
+                    <p className={`${REPLAY_BLOCK_CLASS} text-s fg-tertiary`}>
                       {run.repository}
                     </p>
                   )}
                   {run.note && (
-                    <p className={`${REPLAY_BLOCK_CLASS} text-xs fg-secondary`}>
+                    <p className={`${REPLAY_BLOCK_CLASS} text-s fg-secondary`}>
                       {run.note}
                     </p>
                   )}

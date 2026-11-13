@@ -1,4 +1,5 @@
 import type { AiGatewayConnectionResult } from '@canopy/protocol/model-gateway/discovery';
+import type { AiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
 import type { KnownSettingsError } from '../errors';
 import { ORGANIZATION_LAPSED_ERROR } from '../organization/organization-known-errors';
 
@@ -16,15 +17,23 @@ export const AI_GATEWAY_KNOWN_ERRORS: readonly KnownSettingsError[] = [
   ORGANIZATION_LAPSED_ERROR,
 ];
 
-/** Copy for a Connect that reached the server but didn't connect. */
+/**
+ * Copy for a Connect that reached the server but didn't connect. A hosted
+ * preset names its provider (`OpenRouter didn't accept that API key.`).
+ */
 export function connectionFailureCopy(
   status: Exclude<AiGatewayConnectionResult['status'], 'connected'>,
   keepsKeys: boolean,
+  providerName?: string,
 ): string {
   switch (status) {
     case 'unauthorized':
-      return "Your gateway didn't accept that API key.";
+      return providerName
+        ? `${providerName} didn't accept that API key.`
+        : "Your gateway didn't accept that API key.";
     case 'unreachable':
+      if (providerName)
+        return `Couldn't reach ${providerName}. Check your connection.`;
       return keepsKeys
         ? "Couldn't reach your gateway. Check the URL and your connection."
         : "Couldn't reach your gateway. It needs a public HTTPS URL.";
@@ -33,6 +42,15 @@ export function connectionFailureCopy(
     case 'key_required':
       return 'Enter your API key.';
   }
+}
+
+/** The name a hosted preset goes by in links and failure copy. */
+export function presetShortName(
+  preset: AiGatewayPreset | null,
+): string | undefined {
+  return preset && preset.baseUrl !== null
+    ? (preset.shortName ?? preset.name)
+    : undefined;
 }
 
 /** `sk-…abcd`: enough of a key to recognize it, never the whole key. */

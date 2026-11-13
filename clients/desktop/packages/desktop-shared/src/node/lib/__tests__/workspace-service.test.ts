@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { registerW5Host } from '../../w5-host-cohort';
+import { registerW5Host } from '@canopy/execution-engine/node/w5-host-cohort';
 import {
   createAndPersistNewMultiRepoWorkspace,
   createNewSingleRepoWorkspace,
@@ -97,7 +97,10 @@ describe('desktop-shared node project service', () => {
           path.resolve(__dirname, '../workspace-service.ts'),
           `https://github.com/cursor/plugins/${suffix}`,
           destination,
-          path.resolve(__dirname, '../../w5-host-cohort/index.ts'),
+          path.resolve(
+            __dirname,
+            '../../../../../execution-engine/src/node/w5-host-cohort/index.ts',
+          ),
         ],
         {
           encoding: 'utf8',

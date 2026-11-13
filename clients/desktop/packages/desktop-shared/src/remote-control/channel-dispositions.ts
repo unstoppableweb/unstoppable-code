@@ -110,12 +110,15 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     referencePreviewGitHubOrigin: 'tunnel',
     referencePreviewGitHub: 'tunnel',
     // The App Advisor window that shows another computer has no floating
-    // panel.
+    // panel and no docked page.
     appAdvisorWindowSetFloatingSize: 'blocked',
+    appAdvisorWindowSetDock: 'blocked',
     // reloads the physical window
     appWindowReload: 'local',
     // relaunches this machine's app
     appWindowRestart: 'local',
+    // the dictionary for a selection in this machine's window
+    appWindowLookUpSelection: 'local',
     // unsaved-edit report for this machine's main window
     appWindowSetUnsavedChanges: 'local',
     // asks this machine's main window before close or quit
@@ -211,6 +214,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     trackedPlansSaveComments: 'tunnel',
     trackedPlansGenerateDiagrams: 'tunnel',
     trackedPlansShare: 'tunnel',
+    // CAN-5904: stopping sharing is not tunneled yet, so the remote-control
+    // contract and its protocol version are unchanged.
+    trackedPlansUnshare: 'blocked',
     trackedPlansImport: 'tunnel',
     detectedPlansScan: 'tunnel',
     detectedPlansList: 'tunnel',
@@ -257,6 +263,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     sharedContainersReadForkProvenance: 'tunnel',
     sharedContainersDismiss: 'tunnel',
     sharedContainersListDismissed: 'tunnel',
+    sharedContainersListOwnerDepartures: 'tunnel',
+    sharedContainersDismissOwnerDeparture: 'tunnel',
     sharedContainersRestore: 'tunnel',
     sharedContainersRetry: 'tunnel',
     sharedContainersClose: 'tunnel',
@@ -309,6 +317,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // entities Portal's worktree snapshot carries (CAN-5985).
     worktreeActivityEntities: 'tunnel',
     worktreeCheckRemovalAdmission: 'tunnel',
+    // CAN-6476: local diagnosis contract; paired UI wiring follows in CAN-6479.
+    worktreeRecoveryList: 'blocked',
     worktreeDiscardDescribe: 'tunnel',
     worktreeDiscard: 'tunnel',
     workspaceDeleteDiscardDescribe: 'tunnel',
@@ -656,6 +666,15 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     settingsValidateLinearToken: 'tunnel',
     // returns raw secret/API key to caller
     modelGatewayLoadCredential: 'blocked',
+    // The device AI gateway's config belongs to this computer: a controller
+    // never reads or edits it. Key save and validate below tunnel as for any
+    // gateway the host routes, so a paired controller can set the key for the
+    // host's active Personal gateway, device or account, but never read it.
+    localModelGatewayRead: 'blocked',
+    localModelGatewayUpdate: 'blocked',
+    localModelGatewayConnect: 'blocked',
+    localModelGatewayChanged: 'blocked',
+    localModelGatewayMigrationConflict: 'blocked',
     modelGatewaySaveCredential: 'tunnel',
     modelGatewayValidateCredential: 'tunnel',
     modelGatewayCredentialChanged: 'tunnel',
@@ -1231,6 +1250,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     repoRulesScan: 'blocked',
     repoRulesApply: 'blocked',
     repoRulesStatus: 'blocked',
+    repoRulesCheck: 'blocked',
     repoRulesPreview: 'blocked',
     editorSetupPresence: 'blocked',
     // Read-only menus and the picker catalog Portal's executor serves; the
@@ -1265,6 +1285,20 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     localMemoryRebuild: 'tunnel',
     localMemoryListSnapshots: 'tunnel',
     localMemoryRestoreSnapshot: 'tunnel',
+    // Memory sync is the account's consent and a computer's own cloud
+    // binding: it is turned on, merged and deleted on that computer, not
+    // from another one controlling it (CAN-5188).
+    memorySyncGetState: 'blocked',
+    memorySyncChanged: 'blocked',
+    memorySyncUpdateSettings: 'blocked',
+    memorySyncPreviewMerge: 'blocked',
+    memorySyncApplyMerge: 'blocked',
+    memorySyncReadConflict: 'blocked',
+    memorySyncResolveConflict: 'blocked',
+    memorySyncListHistory: 'blocked',
+    memorySyncRestore: 'blocked',
+    memorySyncDeleteFromCloud: 'blocked',
+    memorySyncSetProjectMemory: 'blocked',
     workspaceCheckAddFromFolder: 'tunnel',
     chatSetStateScopes: 'tunnel',
     // A remote window's interest reaches the host that publishes to it.
@@ -1288,6 +1322,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     remoteControlStateChanged: 'local',
     remoteControlOpenMachine: 'local',
     remoteControlSetAllowIncoming: 'local',
+    remoteControlSetAllowRemoteUpdates: 'local',
     remoteControlStartPairing: 'local',
     remoteControlCancelPairing: 'local',
     remoteControlRespondToPairing: 'local',
@@ -1324,6 +1359,8 @@ export const PIPELINE_REMOTE_DISPOSITIONS: RemoteDispositions<
   RESOLVE_ACTION: 'tunnel',
   LIST_ACTIONS: 'tunnel',
   EXECUTE: 'tunnel',
+  // The controlled computer starts a cloud run, so its web core decides.
+  CLOUD_RUNS_AVAILABILITY: 'tunnel',
   RESUME: 'tunnel',
   RESUME_AUTOMATION: 'tunnel',
   RETRY_EXECUTION: 'tunnel',

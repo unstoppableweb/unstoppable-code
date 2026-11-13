@@ -1,4 +1,5 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { BrandLogo } from '@/components/BrandLogo';
 import { WorkflowIcon } from '@/components/activity/WorkflowIcon';
 import { ShareSessionControl } from '@/components/shared/ShareSessionControl';
@@ -818,6 +819,9 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const selectedWorktreeWorktreeId = useChatStore(
     (s) => targetOverride?.worktreeId ?? s.selectedWorktree?.worktreeId,
   );
+  const { chatTabFork } = useScopeCapabilities({
+    projectId: selectedWorktreeProjectId ?? '',
+  });
   // This turn's chat. Its selectors run only when this chat's tab changes,
   // never for another chat's commit.
   const chatTarget = useMemo(
@@ -1728,6 +1732,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     !group.isComplete && (isActiveTimer || continuationActive);
   const showForkAction =
     !readOnly &&
+    chatTabFork === true &&
     Boolean(chatId) &&
     (forksActiveTurn
       ? promptHead &&

@@ -1,13 +1,15 @@
 import type { JSX } from 'react';
 import { Button } from '@canopy/ui-shared/components';
 import { CloseIcon } from '@canopy/ui-shared/icons';
-import { Surface } from '@canopy/ui-shared/components';
+import { StatusLabel, Surface } from '@canopy/ui-shared/components';
 
 export interface PendingAttachmentChip {
   localId: string;
   filename: string;
   state: 'staged' | 'uploading' | 'ready' | 'error';
   error?: string;
+  /** `false` when retrying can't fix the error, so the chip offers no Try again. */
+  retryable?: boolean;
 }
 
 export function PendingAttachmentRow({
@@ -40,10 +42,19 @@ export function PendingAttachmentRow({
                 aria-label="Uploading"
               />
             ) : null}
-            <span className="truncate">{attachment.filename}</span>
-            {attachment.state === 'error' ? (
+            <span className="flex min-w-0 flex-col text-pretty">
+              <span className="truncate">{attachment.filename}</span>
+              {/* A transient failure keeps its reason in the tooltip; a refusal says why. */}
+              {attachment.state === 'error' &&
+              attachment.retryable === false &&
+              attachment.error ? (
+                <StatusLabel>{attachment.error}</StatusLabel>
+              ) : null}
+            </span>
+            {attachment.state === 'error' && attachment.retryable !== false ? (
               <Button
                 variant="link"
+                className="shrink-0"
                 onClick={(): void => onRetry(attachment.localId)}
                 aria-label={`Try again for ${attachment.filename}`}
               >

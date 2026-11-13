@@ -3,14 +3,19 @@ import type {
   WorkerPipelineExecution,
   WorkerPipelineExecutionEventsItem,
 } from '@canopy/protocol/canopy-core';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import type { BrowserWindow } from 'electron';
+import {
+  DaemonCommitHookFollower,
+  type DaemonCommitHookScope,
+} from './daemon-pipeline-commit-hooks';
 import type {
   ExecutionHandle,
   ExecutionLifecycleHooks,
   ExecutionOptions,
   PipelineHostActions,
   PipelineStepNotification,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import type { PortableHostRunContext } from '@canopy/desktop-shared/node/pipelines/host-request-apply';
 import type {
   ExecutionEvent,
@@ -62,6 +67,14 @@ interface DaemonPipelineExecutionHandleOptions {
   ownerBound?: boolean;
   /** Closes the run's model-step owner context with its final state (CAN-5095 D16). */
   detachOwner?: (finalState: ExecutionState | null) => Promise<void>;
+  /**
+   * The run's worktree, for its `git-commit-push` precommit-failure hook,
+   * which Electron main runs from the stored outputs (CAN-6012 D3).
+   */
+  commitHooks?: {
+    readonly scope: DaemonCommitHookScope;
+    readonly getWindow?: () => BrowserWindow | null;
+  };
 }
 
 type Observers = {
@@ -164,12 +177,25 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
 
   private readonly completion: Promise<ExecutionState>;
 
+  /** The `git-commit-push` attempts this follower has handled (CAN-6012 D3). */
+  private readonly commitHooks: DaemonCommitHookFollower | undefined;
+
   private resolveCompletion: (state: ExecutionState) => void = () => undefined;
 
   constructor(private readonly options: DaemonPipelineExecutionHandleOptions) {
     this.id = options.executionId;
     this.state = options.initialState;
     this.storeOnly = options.openEvents === undefined;
+    this.commitHooks =
+      options.commitHooks &&
+      new DaemonCommitHookFollower({
+        executionId: options.executionId,
+        executionsDir: options.executionsDir,
+        scope: options.commitHooks.scope,
+        ...(options.commitHooks.getWindow && {
+          getWindow: options.commitHooks.getWindow,
+        }),
+      });
     this.completion = new Promise((resolve) => {
       this.resolveCompletion = resolve;
     });
@@ -182,6 +208,7 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
   follow(options: { readonly resumed?: boolean } = {}): void {
     if (this.settled || this.following) return;
     this.following = true;
+    this.runCommitHooks();
     // Main follows after the daemon started the run, so it starts the run's
     // lifecycle itself, as an in-process run's first event does; a run an
     // earlier launch already started is only resumed.
@@ -262,7 +289,13 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
       this.options.executionsDir,
     ).catch(() => null);
     if (stored) this.state = stored;
+    this.runCommitHooks();
     return this.state;
+  }
+
+  /** In the background: a hook never holds up the run's events. */
+  private runCommitHooks(): void {
+    void this.commitHooks?.scan(this.state);
   }
 
   private deliver(type: ExecutionEvent['type']): void {

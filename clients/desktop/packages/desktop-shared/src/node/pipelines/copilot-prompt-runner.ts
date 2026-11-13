@@ -25,7 +25,7 @@ import {
   appendCodexSchemaInstruction,
   buildCodexStructuredOutputRetryPrompt,
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
-} from '../../builtin-actions/agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import type { CopilotAccount } from '../../types/copilot-connection';
@@ -60,7 +60,7 @@ import {
 import type {
   CopilotPromptRunnerRequest,
   CopilotPromptRunnerResult,
-} from './executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 
 export interface CopilotPromptHost {
   /** The host's admitted recipient; it holds the identity for every read. */

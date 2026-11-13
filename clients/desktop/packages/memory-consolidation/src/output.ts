@@ -10,7 +10,7 @@ import { isMemoryIndexWithinLimits } from './memory-index';
 import { lineReferencesFileKey } from './pruning';
 import { redactMemoryContent } from './redaction';
 import { utf8ByteLength } from './text';
-import { topicIdentity } from './topic-identity';
+import { topicIdentity, type ScopeTopicInventory } from './topic-identity';
 import {
   findTopicReferences,
   normalizeOutputTopicFilename,
@@ -128,10 +128,15 @@ export interface TopicWritePolicy {
   existing: ReadonlySet<string>;
 }
 
-/** The run's write set: the topics its prompt included, never the profile. */
+/**
+ * The run's write set: the topics its prompt included, never the profile.
+ * What exists comes from the scope's inventory and never from the input, so
+ * a topic the input budget left out is existing without being replaceable.
+ * Every host builds its policy here, so no path can read one from the other.
+ */
 export function consolidationWritePolicy(
   input: ConsolidationInput,
-  existing: ReadonlySet<string>,
+  scope: ScopeTopicInventory,
 ): TopicWritePolicy {
   return {
     replaceable: new Set(
@@ -139,7 +144,7 @@ export function consolidationWritePolicy(
         .filter((file) => !isChatHistoryProfileTopic(file.filename))
         .map((file) => topicIdentity(file.filename)),
     ),
-    existing,
+    existing: scope.identities,
   };
 }
 
@@ -151,7 +156,7 @@ export function consolidationWritePolicy(
 export function compactionWritePolicy(
   runPolicy: TopicWritePolicy,
   output: ConsolidationOutput,
-  existing: ReadonlySet<string>,
+  scope: ScopeTopicInventory,
 ): TopicWritePolicy {
   const returned = new Set(
     (output.topicFiles ?? []).map((topic) => topicIdentity(topic.filename)),
@@ -164,7 +169,7 @@ export function compactionWritePolicy(
     ),
     existing: new Set([
       ...Array.from(runPolicy.existing),
-      ...Array.from(existing),
+      ...Array.from(scope.identities),
     ]),
   };
 }
@@ -315,7 +320,7 @@ function canonicalReferenceSource(
 
 export function resolveOutputIndexReferences(
   output: ConsolidationOutput,
-  existingNames: string[],
+  existingNames: readonly string[],
   diagnostics: string[],
 ): string {
   const filenames = new Map(
@@ -363,7 +368,7 @@ export function resolveOutputIndexReferences(
 export function preservePartialConsolidationSources(
   input: ConsolidationInput,
   output: ConsolidationOutput,
-  existingNames: string[],
+  existingNames: readonly string[],
 ): ConsolidationOutput {
   const existing = new Set(existingNames.map(topicIdentity));
   const topicFiles = (output.topicFiles ?? []).filter(

@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
 import { getFilenameFromPath } from '@/lib/file-type';
-import { FileTypeIcon } from '@/components/shared/file-icons';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { FileAttachmentChip } from '@canopy/ui-shared/components';
 
 interface MessageAttachmentsProps {
@@ -40,8 +40,7 @@ export function MessageAttachments({
             icon={
               <FileTypeIcon
                 filename={filename}
-                size={20}
-                boxSize={14}
+                size="sm"
                 className="shrink-0"
               />
             }

@@ -2,7 +2,7 @@ import type * as InlineHelperRuns from './helpers/inline-helper-runs';
 import type {
   ExecutionRuntime,
   ExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import type {
   PipelineAdvisorSdkTurnInput,
   PipelineAdvisorSdkTurnResult,
@@ -78,7 +78,7 @@ const state: ExecutionState = {
   project_id: 'project-1',
   worktree_id: 'worktree-1',
 };
-jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
+jest.mock('@canopy/execution-engine/node/pipelines/executor', () => ({
   loadExecutionState: (): Promise<ExecutionState> => Promise.resolve(state),
 }));
 jest.mock('../pipelines/pipeline-advisor-store', () => ({

@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   Button,
   Divider,
@@ -76,7 +76,7 @@ export function SurfacesSpecimen(): JSX.Element {
         <VariantGrid />
       </SpecimenPanel>
       <SpecimenPanel title="Variants, on the page background">
-        <Surface variant="inset" padding="default">
+        <Surface variant="pane" padding="default">
           <VariantGrid />
         </Surface>
       </SpecimenPanel>
@@ -107,6 +107,22 @@ export function SurfacesSpecimen(): JSX.Element {
                 className="w-full"
               >
                 <span className="text-xs fg-primary">src/main/index.ts</span>
+              </Surface>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Drawer: the composer drawer's 22px corners">
+        <SpecimenGrid min={180}>
+          {VARIANTS.map(({ variant }) => (
+            <SpecimenCell key={variant} label={variant}>
+              <Surface
+                variant={variant}
+                size="drawer"
+                padding="compact"
+                className="w-full"
+              >
+                <Sample title="Release checklist" />
               </Surface>
             </SpecimenCell>
           ))}
@@ -169,7 +185,7 @@ export function SurfacesSpecimen(): JSX.Element {
               <Sample title="Pull request" />
               <Surface variant="inset" padding="tight">
                 <span
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-xs fg-secondary`}
+                  className={`${REPLAY_BLOCK_CLASS} font-mono text-xs fg-secondary`}
                 >
                   git push origin feat/surfaces
                 </span>

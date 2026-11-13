@@ -31,6 +31,7 @@ import {
 import { useNavigationStore } from '../navigationStore';
 import { useProjectsStore } from '../projectsStore';
 import { isStandaloneChatArchiveOverlayOpen } from '../standaloneChatVisibility';
+import { isMainContentCoveredByAppAdvisorDock } from '../appAdvisorDockCover';
 import { CLAUDE_UNREAD_CHAT_NOTIFICATION_DELAY_MS } from './constants';
 import {
   WORKTREE_CHAT_OPEN_ARCHIVE_TRANSCRIPT_EVENT,
@@ -267,7 +268,9 @@ export function clearUnreadOnResumedTurn(
 export function getVisibleWorktreeKey(
   selection: WorktreeSelection | null,
 ): string | null {
-  if (!selection) {
+  // The docked Orchestrator page covers whichever page is open; the chat
+  // under it stays mounted but is out of view.
+  if (!selection || isMainContentCoveredByAppAdvisorDock()) {
     return null;
   }
 
@@ -617,23 +620,24 @@ export async function navigateToUnreadChat(
 }
 
 /**
- * While App Advisor sits in the main window's floating panel, the main window
- * mirrors its turns and owns their notifications; the panel's own renderer
+ * While App Advisor sits in the main window's floating panel or docked page,
+ * the main window mirrors its turns and owns their notifications; its own renderer
  * must stay quiet or every toast shows twice. The full App Advisor window, or
  * any App Advisor once the main window has closed (macOS keeps the app
  * running), raises its own.
  */
-function isFloatingAppAdvisorRenderer(): boolean {
+function isMainWindowHostedAppAdvisorRenderer(): boolean {
   if (typeof document === 'undefined') return false;
   const { body } = document;
   return (
     body.dataset.rendererSurface === 'app-advisor' &&
-    body.hasAttribute('data-app-advisor-floating') &&
+    (body.hasAttribute('data-app-advisor-floating') ||
+      body.hasAttribute('data-app-advisor-docked')) &&
     useNavigationStore.getState().appAdvisorMainWindowOpen
   );
 }
 
-/** Whether the floating App Advisor panel defers, and the main page's outages so far. */
+/** Whether the hosted App Advisor page defers, and the main page's outages so far. */
 interface AppAdvisorDeferral {
   deferred: boolean;
   mainWindowDownCount: number;
@@ -641,14 +645,14 @@ interface AppAdvisorDeferral {
 
 function captureAppAdvisorDeferral(): AppAdvisorDeferral {
   return {
-    deferred: isFloatingAppAdvisorRenderer(),
+    deferred: isMainWindowHostedAppAdvisorRenderer(),
     mainWindowDownCount:
       useNavigationStore.getState().appAdvisorMainWindowDownCount,
   };
 }
 
 /**
- * A delayed notification the floating App Advisor panel deferred when it was
+ * A delayed notification the hosted App Advisor page deferred when it was
  * scheduled is the main window's only while its page stays up until it is
  * due. A reply that finished while the page was down never reached it, and a
  * page that goes down mid-delay, even briefly, takes its own pending timer
@@ -657,14 +661,14 @@ function captureAppAdvisorDeferral(): AppAdvisorDeferral {
 function mainWindowDeliversDeferred(scheduled: AppAdvisorDeferral): boolean {
   return (
     scheduled.deferred &&
-    isFloatingAppAdvisorRenderer() &&
+    isMainWindowHostedAppAdvisorRenderer() &&
     useNavigationStore.getState().appAdvisorMainWindowDownCount ===
       scheduled.mainWindowDownCount
   );
 }
 
 export function showUnreadChatToast(options: UnreadChatToastOptions): void {
-  if (isFloatingAppAdvisorRenderer()) return;
+  if (isMainWindowHostedAppAdvisorRenderer()) return;
   deliverUnreadChatToast(options);
 }
 
@@ -790,7 +794,7 @@ export function maybeShowUnreadChatToast(
 export function fireChatActivityNotification(
   options: UnreadChatToastOptions,
 ): void {
-  if (isFloatingAppAdvisorRenderer()) return;
+  if (isMainWindowHostedAppAdvisorRenderer()) return;
   deliverChatActivityNotification(options);
 }
 

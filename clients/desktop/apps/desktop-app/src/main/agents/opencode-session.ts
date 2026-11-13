@@ -59,6 +59,7 @@ import {
 } from '@canopy/desktop-shared/lib/cursor-capabilities';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
 import { runOpenCodeTurn } from '@canopy/desktop-shared/node/opencode/turn-driver';
+import { captureHomeCapabilities } from './delegation/capture-home-capabilities';
 import { resolveOpenCodeMcpCall } from '../opencode/mcp-servers';
 import {
   createApprovalSession,
@@ -186,6 +187,9 @@ export class OpenCodeProvider implements AgentProvider {
     let forkContextLoaded = false;
     let currentTurn: string | undefined;
     let managedDelegation: ManagedDelegationSession | undefined;
+    // The home skills, commands and plugins the current turn materialized,
+    // frozen for the delegates it spawns; cleared when the next turn starts.
+    let inheritedCapabilityOverlay: AgentSessionOptions['inheritedCapabilityOverlay'];
     let rtkEnabled = opts.rtkEnabled !== false;
     let model = opts.model;
     let thinking = opts.thinkingLevel;
@@ -293,6 +297,7 @@ export class OpenCodeProvider implements AgentProvider {
           currentTurn: () => currentTurn,
           currentOptions: () => ({
             ...opts,
+            inheritedCapabilityOverlay,
             model,
             selectedModel: model,
             thinkingLevel: thinking,
@@ -320,6 +325,7 @@ export class OpenCodeProvider implements AgentProvider {
         if (lifetime.signal.aborted) created.detach();
         else managedDelegation = created;
       }
+      inheritedCapabilityOverlay = undefined;
       const turnModel = requested.model;
       if (
         !turnModel ||
@@ -606,7 +612,30 @@ export class OpenCodeProvider implements AgentProvider {
         const prepared = await materializeSelectedCapabilityRoot(
           capabilityRoot,
           capabilities,
+          { verifyContent: true, signal: abort.signal },
         );
+        inheritedCapabilityOverlay = undefined;
+        if (managedDelegation) {
+          // Freeze the materialized home capabilities for this turn's
+          // delegates, as a Copilot chat does; the delegate reads private
+          // retained copies, never the home folders.
+          const captured = await captureHomeCapabilities({
+            root: capabilityRoot,
+            projection: capabilities,
+            inheritedPluginBindings: resolved?.inheritedPluginBindings,
+            prepared,
+            signal: abort.signal,
+          });
+          inheritedCapabilityOverlay = captured.overlay;
+          if (captured.skipped.length) {
+            const text = `Some home capabilities could not be passed to delegates: ${Array.from(new Set(captured.skipped)).join(', ')}.`;
+            if (!announcedNotices.has(text)) {
+              announcedNotices.add(text);
+              // Child inheritance diagnostics do not belong in the parent chat.
+              logMainProcessWarn('[opencode-delegation-capabilities]', text);
+            }
+          }
+        }
         for (const warning of resolved?.warnings ?? [])
           logMainProcessWarn(
             '[opencode-session] Capability resolution',

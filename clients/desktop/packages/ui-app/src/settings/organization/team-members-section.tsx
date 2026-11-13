@@ -27,10 +27,9 @@ import {
 import { formatUsd } from '@canopy/ui-shared/lib';
 import { BILLING_NO_SAVED_CARD_CODE } from '@canopy/protocol/billing';
 import {
-  SettingsOperationError,
   type OrganizationCreatedInvite,
   type OrganizationDetail,
-  type OrganizationInvite,
+  type OrganizationOpenInvite,
   type OrganizationMember,
   type OrganizationRole,
   type OrganizationSubTeam,
@@ -125,7 +124,7 @@ type PendingAction =
   | { type: 'revoke'; inviteId: string; email: string | null };
 
 /** One invite from `organization.invitations.list`. */
-type TeamInvite = OrganizationInvite;
+type TeamInvite = OrganizationOpenInvite;
 
 /**
  * Invite links leave the host (the invitee opens them), so they are built on
@@ -146,6 +145,15 @@ const LAST_OWNER_KNOWN_ERRORS: readonly KnownSettingsError[] = [
     status: 409,
     copy: 'An organization needs at least one owner. Make someone else an owner first.',
   },
+];
+
+const ROLE_CHANGE_KNOWN_ERRORS: readonly KnownSettingsError[] = [
+  {
+    status: 409,
+    serverCode: 'member_role_changed',
+    copy: 'This member’s role changed. Refresh the page and try again.',
+  },
+  ...LAST_OWNER_KNOWN_ERRORS,
 ];
 
 /**
@@ -183,13 +191,12 @@ function titleCaseRole(role: OrganizationRole): string {
 }
 
 /**
- * Members list with avatar/initials, email, role control (OWNER-gated), team
+ * Members list with avatar/initials, email, permission-filtered role control, team
  * chips, and remove. The single "Add member" action always creates a pending
  * invitation and the server emails the invitee their link, so the admin sees one
  * outcome whether or not that address already had an account. Outstanding
- * invites render as pending rows below the members, each with a Copy link
- * fallback for a bounced email. The viewer can leave the organization from their
- * own row.
+ * invites render below the members with organization-scoped revocation.
+ * The viewer can leave the organization from their own row.
  */
 export function TeamMembersSection({
   detail,
@@ -204,7 +211,6 @@ export function TeamMembersSection({
 }: TeamMembersSectionProps): JSX.Element {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(MEMBERS_ERROR_SCOPE);
-  const webOrigin = useSettingsHost().webOrigin();
   const { blockClassName } = useSettingsPrivacy();
   // Removal, role changes, and Leave stay available while lapsed; adding a
   // member is gated by the shell, which owns the invite action.
@@ -217,7 +223,11 @@ export function TeamMembersSection({
   const [error, setError] = useState<SettingsFailure | null>(null);
   const [busyMemberId, setBusyMemberId] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
-  const [pendingInvites, setPendingInvites] = useState<TeamInvite[]>([]);
+  const [loadedInvites, setPendingInvites] = useState<TeamInvite[]>([]);
+  const inviteRefreshVersion = useRef(0);
+  const [loadedInviteScope, setLoadedInviteScope] = useState('');
+  const inviteScope = `${detail.id}:${detail.viewerRole}`;
+  const pendingInvites = loadedInviteScope === inviteScope ? loadedInvites : [];
   const [revokingId, setRevokingId] = useState<string | null>(null);
   // Destructive actions confirm via a modal before firing (see ConfirmDialog).
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(
@@ -236,38 +246,45 @@ export function TeamMembersSection({
   const roleLabelPrefix = useId();
 
   const refreshInvites = useCallback(async (): Promise<void> => {
+    const version = ++inviteRefreshVersion.current;
     if (!manageMembers) {
       return;
     }
     try {
-      const parsed = await client
-        .read('organization.invitations.list', { organizationId: detail.id })
-        .catch((error: unknown) => {
-          // A refused read leaves the list as it was; a malformed body clears
-          // it below, as the hand-written guard did.
-          if (
-            error instanceof SettingsOperationError &&
-            error.code === 'invalid_response'
-          )
-            return null;
-          throw error;
+      const invites: TeamInvite[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = await client.read('organization.invitations.list', {
+          organizationId: detail.id,
+          ...(cursor === undefined ? {} : { cursor }),
         });
-      if (parsed === null || !parsed.enabled) {
-        setPendingInvites([]);
-        return;
-      }
-      setPendingInvites(
-        parsed.invites.filter(
-          (invite) =>
-            invite.organizationId === detail.id && invite.status === 'ACTIVE',
-        ),
-      );
+        if (version !== inviteRefreshVersion.current) return;
+        if (!page.enabled) {
+          setPendingInvites([]);
+          return;
+        }
+        invites.push(
+          ...page.items.filter(
+            (invite) =>
+              invite.organizationId === detail.id && invite.status === 'ACTIVE',
+          ),
+        );
+        cursor = page.nextCursor ?? undefined;
+        if (cursor !== undefined) {
+          if (cursors.has(cursor))
+            throw new Error('Repeated invitation cursor');
+          cursors.add(cursor);
+        }
+      } while (cursor !== undefined);
+      setPendingInvites(invites);
+      setLoadedInviteScope(inviteScope);
     } catch {
       // Pending invites are supplementary; a load failure leaves the list
       // empty rather than blocking the members view.
-      setPendingInvites([]);
+      if (version === inviteRefreshVersion.current) setPendingInvites([]);
     }
-  }, [client, detail.id, manageMembers]);
+  }, [client, detail.id, manageMembers, inviteScope]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -275,6 +292,7 @@ export function TeamMembersSection({
     }, 0);
     return (): void => {
       window.clearTimeout(timeoutId);
+      inviteRefreshVersion.current += 1;
     };
   }, [refreshInvites]);
 
@@ -282,7 +300,12 @@ export function TeamMembersSection({
     member: OrganizationMember,
     role: OrganizationRole,
   ): Promise<void> => {
-    if (role === member.role) {
+    if (
+      role === member.role ||
+      !canAssignRole(detail.viewerRole, member.role, role) ||
+      (detail.viewerRole === 'ADMIN' &&
+        member.email.trim().toLowerCase() === normalizedViewerEmail)
+    ) {
       return;
     }
     try {
@@ -299,7 +322,7 @@ export function TeamMembersSection({
       setError(
         errorCopy.actionFailure(err, {
           action: 'change the role',
-          known: LAST_OWNER_KNOWN_ERRORS,
+          known: ROLE_CHANGE_KNOWN_ERRORS,
         }),
       );
     } finally {
@@ -379,7 +402,12 @@ export function TeamMembersSection({
         {detail.members.map((member) => {
           const isViewer =
             member.email.trim().toLowerCase() === normalizedViewerEmail;
-          const canEditRole = canAssignRole(detail.viewerRole, member.role);
+          const roleOptions = ASSIGNABLE_ROLES.filter((nextRole) =>
+            canAssignRole(detail.viewerRole, member.role, nextRole),
+          );
+          const canEditRole =
+            roleOptions.length > 0 &&
+            !(detail.viewerRole === 'ADMIN' && isViewer);
           const canRemove =
             !isViewer && canRemoveMember(detail.viewerRole, member.role);
           const busy = busyMemberId === member.id;
@@ -443,7 +471,7 @@ export function TeamMembersSection({
                       // replay-blocked page, so the member's name stays off it.
                       aria-labelledby={`${roleLabelPrefix}-caption ${roleLabelPrefix}-name-${member.id}`}
                       data-testid="team-member-role"
-                      options={ASSIGNABLE_ROLES.map((role) => ({
+                      options={roleOptions.map((role) => ({
                         value: role,
                         label: titleCaseRole(role),
                       }))}
@@ -489,12 +517,14 @@ export function TeamMembersSection({
             Pending invitations
           </Heading>
           <p className="mt-1 text-xs fg-secondary">
-            People you&apos;ve invited who haven&apos;t joined yet.
+            {detail.viewerRole === 'OWNER'
+              ? 'People invited to this organization who haven’t joined yet.'
+              : 'People you’ve invited who haven’t joined yet.'}
           </p>
           <ul className={`mt-3 ${SETTINGS_GROUP_CLASS}`}>
             {pendingInvites.map((invite) => (
               <li
-                key={invite.id}
+                key={invite.externalId}
                 data-testid="team-pending-invite-row"
                 className="flex flex-wrap items-center justify-between gap-3"
               >
@@ -538,30 +568,20 @@ export function TeamMembersSection({
                   </Stack>
                 </div>
                 <div className="flex items-center gap-2">
-                  {invite.seatPaymentState === 'READY' && (
-                    <CopyButton
-                      value={buildInviteUrl(webOrigin, invite.code)}
-                      label="Copy link"
-                      copiedLabel="Copied"
-                      ariaLabel="Copy invite link"
-                      variant="secondary"
-                      size="compact"
-                    />
-                  )}
                   <Button
                     size="compact"
                     onClick={() =>
                       setPendingAction({
                         type: 'revoke',
-                        inviteId: invite.id,
+                        inviteId: invite.externalId,
                         email: invite.invitedEmail,
                       })
                     }
-                    disabled={revokingId === invite.id}
+                    disabled={revokingId === invite.externalId}
                     data-testid="team-invite-revoke"
                   >
                     <Trash2 size={13} />
-                    {revokingId === invite.id ? 'Revoking…' : 'Revoke'}
+                    {revokingId === invite.externalId ? 'Revoking…' : 'Revoke'}
                   </Button>
                 </div>
               </li>
@@ -575,7 +595,7 @@ export function TeamMembersSection({
           orgId={detail.id}
           teamName={detail.name}
           subTeams={detail.subTeams}
-          canAssignAdmin={canAssignRole(detail.viewerRole, 'ADMIN')}
+          canAssignAdmin={canAssignRole(detail.viewerRole, 'MEMBER', 'ADMIN')}
           canManageBilling={detail.viewerRole === 'OWNER'}
           onClose={() => onAddingChange(false)}
           onInvited={() => {
@@ -590,7 +610,7 @@ export function TeamMembersSection({
       {pendingAction?.type === 'leave' && (
         <SettingsConfirmDialog
           title="Leave this organization?"
-          message="You'll lose access to this organization and its teams. An owner will have to invite you back to rejoin."
+          message="You'll lose access to this organization and its teams. Worktrees, chats and Cowork entries you shared here stop being available to everyone. Your private projects here are archived, but your local files stay."
           confirmLabel="Leave organization"
           busyLabel="Leaving…"
           busy={leaving}
@@ -603,22 +623,16 @@ export function TeamMembersSection({
 
       {pendingAction?.type === 'remove' && (
         <SettingsConfirmDialog
-          title="Remove member?"
-          message={
+          title={
             <>
               Remove{' '}
-              <span
-                className={joinClassNames(
-                  'font-medium fg-primary',
-                  blockClassName,
-                )}
-              >
+              <span className={blockClassName}>
                 {pendingAction.member.name}
-              </span>{' '}
-              from this organization? They&apos;ll lose access to it and its
-              teams.
+              </span>
+              ?
             </>
           }
+          message="They'll lose access to this organization and its teams. Worktrees, chats and Cowork entries they shared here stop being available to everyone. Their private projects here are archived. They keep their local files, but this organization's projects move to their Personal space."
           confirmLabel="Remove member"
           busyLabel="Removing…"
           busy={busyMemberId === pendingAction.member.id}
@@ -674,7 +688,7 @@ interface AddMemberDialogProps {
   orgId: string;
   teamName: string;
   subTeams: OrganizationSubTeam[];
-  /** Whether the viewer may grant the ADMIN role (owner-only). */
+  /** Whether the viewer may invite an Admin (Owners and Admins). */
   canAssignAdmin: boolean;
   /**
    * Whether the viewer may add a payment method (owner-only, matching the

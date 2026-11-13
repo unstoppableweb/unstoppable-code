@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   CanopyQueryRequestMetadataSchema,
   CanopyRequestMetadataSchema,
+  CanopyWorkspaceScopeSchema,
 } from '../../common';
 import {
   defineCanopyInstruction,
@@ -23,16 +24,30 @@ export const ARCHIVE_GRANTS = {
 const ID = z.string().min(1).max(512);
 const TIMESTAMP = z.string().min(1).max(64);
 
-export const ArchiveContainerKindSchema = z.enum(['worktree', 'work-entry']);
+// `workspace`, a whole retained project, is the web core's only (CAN-6109).
+export const ArchiveContainerKindSchema = z.enum([
+  'worktree',
+  'work-entry',
+  'workspace',
+]);
+const REVISION = z.number().int().nonnegative();
 
 export const ArchiveContainerSummarySchema = z.strictObject({
   archiveId: ID,
   kind: ArchiveContainerKindSchema,
+  /** The project the container belongs to, or is (kind `workspace`). */
+  workspaceId: ID,
+  workspaceName: z.string(),
+  /** The container's own revision; null where the host keeps none. */
+  revision: REVISION.nullable(),
   name: z.string(),
   branchName: z.string().nullable(),
   archivedAt: TIMESTAMP,
-  /** When the retention sweep removes it; a locked container is kept. */
-  expiresAt: TIMESTAMP,
+  /**
+   * When the retention sweep removes it; a locked container is kept. Null
+   * where a locked container has no retention date (the web core).
+   */
+  expiresAt: TIMESTAMP.nullable(),
   locked: z.boolean(),
   lockedAt: TIMESTAMP.nullable(),
   chatCount: z.number().int().nonnegative(),
@@ -40,18 +55,28 @@ export const ArchiveContainerSummarySchema = z.strictObject({
   executionCount: z.number().int().nonnegative(),
   /** Some of it was restored; restoring again retries what is pending. */
   partiallyRestored: z.boolean(),
+  /** A worktree whose setup was cancelled, so nothing was saved. */
+  checkpointUnavailable: z.boolean().optional(),
+  /**
+   * The container's own ids (its project, and its worktree or chat), as a
+   * restore's `restoredScope` names them, so a client never parses the
+   * opaque `archiveId`. The web core sets it; the desktop omits it.
+   */
+  scope: CanopyWorkspaceScopeSchema.optional(),
 });
 export type ArchiveContainerSummary = z.output<
   typeof ArchiveContainerSummarySchema
 >;
 
 export const ArchiveContainerListParamsSchema = z.strictObject({
-  workspaceId: ID,
+  /** Omitted: every project of the caller's (the web core only). */
+  workspaceId: ID.optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
 export const ArchiveContainerListResultSchema = z.strictObject({
-  workspaceId: ID,
+  /** The project listed; null for an account-wide list. */
+  workspaceId: ID.nullable(),
   containers: z.array(ArchiveContainerSummarySchema),
 });
 export type ArchiveContainerListResult = z.output<
@@ -91,6 +116,8 @@ export const ArchiveContainerUpdateParamsSchema = z.strictObject({
   workspaceId: ID,
   archiveId: ID,
   locked: z.boolean(),
+  /** The container's listed `revision`; a host that keeps none refuses it. */
+  expectedRevision: REVISION.optional(),
   _meta: CanopyRequestMetadataSchema.extend({ idempotencyKey: ID }),
 });
 export type ArchiveContainerUpdateParams = z.output<
@@ -100,6 +127,25 @@ export type ArchiveContainerUpdateParams = z.output<
 export const ArchiveContainerUpdateResultSchema = z.strictObject({
   container: ArchiveContainerSummarySchema,
 });
+
+export const ArchiveContainerDeleteParamsSchema = z.strictObject({
+  workspaceId: ID,
+  archiveId: ID,
+  expectedRevision: REVISION,
+  _meta: CanopyRequestMetadataSchema.extend({ idempotencyKey: ID }),
+});
+export type ArchiveContainerDeleteParams = z.output<
+  typeof ArchiveContainerDeleteParamsSchema
+>;
+
+export const ArchiveContainerDeleteResultSchema = z.strictObject({
+  archiveId: ID,
+  deleted: z.literal(true),
+  revision: REVISION,
+});
+export type ArchiveContainerDeleteResult = z.output<
+  typeof ArchiveContainerDeleteResultSchema
+>;
 
 /** A caller of another authority: an archive answers only its own desktop. */
 const FOREIGN_AUTHORITY = 'core.archive.foreignAuthority';
@@ -117,8 +163,9 @@ const BASE = {
 } as const;
 
 // Served by the desktop dispatcher over Electron main's archived containers
-// (CAN-6007). Like the restore, they stay out of the shared registries: the
-// daemon and the web core do not serve them.
+// (CAN-6007), and by the web core over its retained items (CAN-6109). Like the
+// restore, they stay out of the shared registries: the daemon does not serve
+// them.
 export const CORE_ARCHIVE_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
   'core',
   {
@@ -159,6 +206,28 @@ export const CORE_ARCHIVE_INSTRUCTION_DEFINITIONS =
       error: keyedOperationErrorSchema([
         'core.archive.workspace.invalid',
         'core.archive.container.notFound',
+        'core.archive.revisionConflict',
+        FOREIGN_AUTHORITY,
+      ]),
+    }),
+  });
+
+// Served by the web core only (CAN-6109): the desktop deletes its archives
+// through its own IPC until a follow-up moves that delete here.
+export const CORE_ARCHIVE_DELETE_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.archive.container.delete': defineCanopyInstruction({
+      ...BASE,
+      idempotency: 'keyed',
+      requiredGrants: [ARCHIVE_GRANTS.write],
+      params: ArchiveContainerDeleteParamsSchema,
+      result: ArchiveContainerDeleteResultSchema,
+      error: keyedOperationErrorSchema([
+        'core.archive.workspace.invalid',
+        'core.archive.container.notFound',
+        'core.archive.locked',
+        'core.archive.revisionConflict',
+        'core.archive.restoreInProgress',
         FOREIGN_AUTHORITY,
       ]),
     }),

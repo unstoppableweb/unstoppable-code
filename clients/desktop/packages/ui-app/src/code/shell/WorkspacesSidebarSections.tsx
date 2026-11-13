@@ -226,6 +226,9 @@ export interface WorktreeRowSlotContext {
  */
 const WORKTREE_ROW_OVERRIDE_KEYS = [
   'uiStatus',
+  // A cloud task the host is still creating, or failed to (CAN-6098).
+  'setupPhase',
+  'creationFailure',
   'statusModel',
   'lastActivityAt',
   'runtimeState',
@@ -1059,7 +1062,7 @@ export interface WorkspacesSidebarSectionsProps {
   /**
    * Row-level workspace removal. Rendered on the section header only where the
    * row reports `workspaceRemoval` and has no settings dialog to hang it in
-   * (`workspaceSettings !== 'full'`); hosts with a settings dialog keep removal
+   * (`workspaceSettings` unset or `false`); hosts with a settings dialog keep removal
    * in its danger tab.
    */
   readonly onRemoveWorkspace?: (workspaceLocalId: string) => void;
@@ -1695,7 +1698,8 @@ export function WorkspacesSidebarSections({
       workspaceCapabilities.worktreeCreation === true &&
       !workspaceCommandsDisabled;
     const canOpenSettings =
-      workspaceCapabilities.workspaceSettings === 'full' &&
+      (workspaceCapabilities.workspaceSettings === 'full' ||
+        workspaceCapabilities.workspaceSettings === 'details') &&
       onOpenWorkspaceSettings !== undefined;
     // PLACEMENT, so it reads layout — not `type`. A cloud workspace classifies
     // as `cowork` but projects its chats into `worktrees`, so it must fall
@@ -2019,7 +2023,8 @@ export function WorkspacesSidebarSections({
       onRemoveWorkspace !== undefined &&
       workspaceRemoval !== undefined &&
       workspaceRemoval !== false &&
-      workspaceCapabilities.workspaceSettings !== 'full';
+      workspaceCapabilities.workspaceSettings !== 'full' &&
+      workspaceCapabilities.workspaceSettings !== 'details';
     const workspaceContext: WorkspaceSectionSlotContext = {
       workspace,
       selected: workspaceSelected,
@@ -2959,6 +2964,8 @@ export function WorkspacesSidebarSections({
         }
         contextMenuActions={
           onShareWorkspaceTemplate === undefined ||
+          // Sharing is a tab of the full settings dialog.
+          workspaceCapabilities.workspaceSettings !== 'full' ||
           workspace.type !== 'cowork' ||
           workspace.backend === 'remote-control'
             ? undefined
@@ -3191,7 +3198,9 @@ export function WorkspacesSidebarSections({
                     className={`py-2 ${SIDEBAR_ROW_TEXT_INSET_CLASSNAME} pr-2 text-s fg-quaternary`}
                     data-testid={testIds?.workspaceEmpty?.(workspace.localId)}
                   >
-                    No {childUnitLabelPlural}
+                    {workspaceCapabilities.workspaceContents === false
+                      ? 'Not available here yet'
+                      : `No ${childUnitLabelPlural}`}
                   </div>
                 ) : (
                   wrappedVisibleList

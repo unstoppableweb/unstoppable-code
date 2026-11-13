@@ -2,6 +2,8 @@ import {
   WorkerPipelineExecutionSchema,
   type WorkerPipelineCancelMode,
   type WorkerPipelineExecution,
+  type WorkerPipelineExecutionResumeParams,
+  type WorkerPipelineExecutionRetryParams,
   type WorkerPipelineExecutionStartParams,
   type WorkerPipelineHostLaunch,
   type WorkerPipelineHostRequest,
@@ -25,6 +27,21 @@ export interface PipelineHostLaunch {
   readonly processEnvironment: Readonly<Record<string, string>>;
 }
 
+/**
+ * A recovery control (CAN-4141) the host runs on a run it stored (CAN-6103),
+ * without its secret bindings: the supervisor redeemed them into the
+ * launch it sends beside it.
+ */
+export type PipelineHostControl =
+  | {
+      readonly operation: 'worker.pipeline.execution.resume';
+      readonly params: Omit<WorkerPipelineExecutionResumeParams, 'secrets'>;
+    }
+  | {
+      readonly operation: 'worker.pipeline.execution.retry';
+      readonly params: Omit<WorkerPipelineExecutionRetryParams, 'secrets'>;
+    };
+
 /** How the supervisor ended one host request (CAN-5771). */
 export type PipelineHostStepSettlement =
   | {
@@ -47,6 +64,47 @@ export interface PipelineHostLauncherCommand {
   readonly args: readonly string[];
 }
 
+/**
+ * The delegation lease a cloud runner incarnation holds (CAN-6198): its
+ * epoch, from the runner credential the relay admitted it with, and when the
+ * lease lapses unless the web core renews it, in epoch milliseconds.
+ */
+export interface PipelineOwnerLease {
+  readonly leaseEpoch: number;
+  readonly expiresAt: number;
+}
+
+/** How a lease fence ends: unrenewed past its expiry, or a newer epoch exists. */
+export type PipelineOwnerLeaseEnd = 'lapsed' | 'superseded';
+
+/** The host's answer to `lease`: its fence after the observation. */
+export interface PipelineOwnerLeaseAnswer {
+  readonly state: 'held' | PipelineOwnerLeaseEnd;
+}
+
+/**
+ * What the runner learned about its lease over the relay (CAN-6198):
+ * `renewed` moves the expiry of its own epoch, or names a newer epoch the
+ * web core reported; `superseded` means a newer epoch exists, such as when
+ * the relay closed the runner's leg with `superseded`, whose number the
+ * runner may not know.
+ */
+export type PipelineOwnerLeaseObservation =
+  | { readonly kind: 'renewed'; readonly lease: PipelineOwnerLease }
+  | { readonly kind: 'superseded'; readonly leaseEpoch?: number };
+
+/**
+ * A sized host's memory (CAN-6325): a cloud runner's run sandbox. The host
+ * holds a step that would start while its own processes and the machine
+ * leave less than the step needs.
+ */
+export interface PipelineHostMemoryBudget {
+  /** What the host's steps may take together. */
+  readonly budgetBytes: number;
+  /** Kept free for chats sharing the sandbox; worktree runs leave it alone. */
+  readonly chatReserveBytes?: number;
+}
+
 export type PipelineHostRequest =
   /** Sent once, first, by the supervisor; the host refuses every other op before it. */
   | {
@@ -54,6 +112,18 @@ export type PipelineHostRequest =
       dataRoot: string;
       /** The pipeline host's Codex MCP launcher (CAN-5095 D18). */
       codexMcpLauncher?: PipelineHostLauncherCommand;
+      /**
+       * A cloud runner's delegation lease (CAN-6198): the host fences its
+       * writes with the lease epoch instead of its process identity.
+       */
+      ownerLease?: PipelineOwnerLease;
+      /** A sized host's memory; absent, steps start without waiting (CAN-6325). */
+      memory?: PipelineHostMemoryBudget;
+      /**
+       * A remote owner's lease TTL (CP-11): an owner request the host would
+       * give the short deadline waits at least this long instead.
+       */
+      ownerRequestDeadlineMs?: number;
     }
   | { op: 'start'; start: PipelineHostLaunch }
   /** With `detail`, the host answers the summary and its detail (CAN-6117). */
@@ -63,6 +133,13 @@ export type PipelineHostRequest =
   | { op: 'cancel'; executionId: string; mode: WorkerPipelineCancelMode }
   | { op: 'sweep'; executionIds: string[] }
   | { op: 'checkpoint' }
+  /**
+   * Run a recovery control on a stored run (CAN-6103), as a cloud runner
+   * serves it: `start` is the run's launch, resolved again for the control
+   * (for a `from_start` retry, the new run's). The host answers a
+   * `WorkerPipelineControlResult`.
+   */
+  | { op: 'control'; control: PipelineHostControl; start: PipelineHostLaunch }
   /** The supervisor's answer to a host request the host raised (CAN-5771). */
   | {
       op: 'hostSettled';
@@ -75,7 +152,24 @@ export type PipelineHostRequest =
    * without it the pause records `app_shutdown`, as on desktop.
    */
   | { op: 'pause'; executionIds: string[]; reason?: 'owner_lost' }
+  /**
+   * Checkpoint one run so its host can roll over (CAN-6199): no new step
+   * starts, running steps may finish within `drainMs`, then the rest pauses
+   * with `host_rollover`. Answered with the run once it stopped.
+   */
+  | { op: 'checkpointRun'; executionId: string; drainMs: number }
+  /**
+   * What the runner learned about the lease it configured (CAN-6198); the
+   * host answers {@link PipelineOwnerLeaseAnswer}.
+   */
+  | { op: 'lease'; observation: PipelineOwnerLeaseObservation }
   /** Close admission and exit once nothing runs. */
+  /**
+   * The owner-request deadline floor for a host that started before the
+   * remote owner's lease TTL was known (CP-11), as `ownerRequestDeadlineMs`
+   * at configure.
+   */
+  | { op: 'ownerDeadline'; ownerRequestDeadlineMs: number }
   | { op: 'exit' };
 
 export interface PipelineHostRequestMessage {
@@ -91,6 +185,8 @@ export type PipelineHostErrorCode =
   | 'cancel_failed'
   | 'checkpoint_failed'
   | 'host_steps'
+  /** The executor refused a recovery control (CAN-6103). */
+  | 'control_failed'
   | 'closed';
 
 export type PipelineHostMessage =
@@ -129,7 +225,9 @@ export type PipelineHostMessage =
   | { kind: 'process'; state: 'exited'; id: string }
   /** An owner-bound run's host step or owner request, for the owner to settle (CAN-5771, CAN-5095). */
   | { kind: 'hostRequest'; request: WorkerPipelineHostRequest }
-  | { kind: 'hostRequestWithdrawn'; executionId: string; requestId: string };
+  | { kind: 'hostRequestWithdrawn'; executionId: string; requestId: string }
+  /** The host's lease fence closed for good: it stopped its runs (CAN-6198). */
+  | { kind: 'fenced'; state: PipelineOwnerLeaseEnd };
 
 function isOptionalCount(value: unknown, minimum: number): boolean {
   return (
@@ -145,6 +243,7 @@ const HOST_ERROR_CODES: ReadonlySet<string> = new Set<PipelineHostErrorCode>([
   'cancel_failed',
   'checkpoint_failed',
   'host_steps',
+  'control_failed',
   'closed',
 ]);
 
@@ -221,6 +320,8 @@ export function isPipelineHostMessage(
         typeof value.requestId === 'string' &&
         value.requestId.length > 0
       );
+    case 'fenced':
+      return value.state === 'lapsed' || value.state === 'superseded';
     default:
       return false;
   }

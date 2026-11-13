@@ -10,6 +10,7 @@ import {
   type RepoRulesScanResponse,
   type RepoRulesApplyResponse,
   type RepoRulesStatus,
+  type RepoRulesCheckResponse,
   type RepoRulesPreviewResponse,
   type EditorSetupPresence,
 } from '@canopy/protocol/repo-rules';
@@ -109,6 +110,22 @@ export function registerRepoRulesHandlers(
       return preserveRuntimeCauseError(
         dispatcher.query(
           'core.workspace.repoRules.status',
+          request,
+          reading(caller),
+        ),
+      );
+    },
+  );
+  registerIpcHandler<[unknown], RepoRulesCheckResponse>(
+    IPC_CHANNELS.repoRulesCheck,
+    async (event, input) => {
+      const request = repoRulesScanRequestSchema
+        .pick({ workspaceId: true })
+        .parse(input);
+      const caller = await authorize(event, request.workspaceId);
+      return preserveRuntimeCauseError(
+        dispatcher.query(
+          'core.workspace.repoRules.check',
           request,
           reading(caller),
         ),

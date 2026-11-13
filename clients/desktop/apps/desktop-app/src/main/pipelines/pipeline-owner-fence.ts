@@ -3,7 +3,7 @@ import {
   hostPlatformOperatingSystem,
   hostPlatformServices,
 } from '@canopy/core-platform';
-import { configurePipelineOwnerFence } from '@canopy/desktop-shared/node/pipelines/executor';
+import { configurePipelineOwnerFence } from '@canopy/execution-engine/node/pipelines/executor';
 import { selectWindowsProcessPath } from '../canopy-runtime/electron-daemon-host';
 
 /**

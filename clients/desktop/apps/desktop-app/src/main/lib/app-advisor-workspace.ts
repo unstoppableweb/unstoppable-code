@@ -12,6 +12,7 @@ import {
 import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
 import {
   MAX_ARCHIVE_RETENTION_DAYS,
+  appAdvisorPurgeRetentionDays,
   resolveAutoArchiveDays,
 } from '@canopy/desktop-shared/lib/archive-retention';
 import { readChatArchivesFile, removeChatArchive } from './chat-archives';
@@ -111,13 +112,19 @@ export async function readAppAdvisorWorkspaceSettings(): Promise<AppAdvisorWorks
   }
 }
 
+/**
+ * `precondition` runs under the settings lock with the stored settings and may
+ * throw to refuse the save before anything is written (CAN-6004).
+ */
 export async function saveAppAdvisorWorkspaceSettings(
   request: AppAdvisorSettingsSaveRequest,
+  precondition?: (current: AppAdvisorWorkspaceSettingsFile) => void,
 ): Promise<AppAdvisorWorkspaceSettingsFile> {
   return withArchivedWorkspaceOperationLock(
     APP_ADVISOR_PROJECT_ID,
     async () => {
       const current = await readAppAdvisorWorkspaceSettings();
+      precondition?.(current);
       const settings = normalizeSettings({ ...current, ...request });
       const enablingAutoArchive =
         resolveAutoArchiveDays(
@@ -152,8 +159,10 @@ export async function saveAppAdvisorClaudeMd(contents: string): Promise<void> {
 
 export async function applyAppAdvisorArchiveRetention(): Promise<void> {
   const settings = await readAppAdvisorWorkspaceSettings();
-  const retentionDays = settings.archiveRetentionDays;
-  if (typeof retentionDays !== 'number' || retentionDays <= 0) {
+  const retentionDays = appAdvisorPurgeRetentionDays(
+    settings.archiveRetentionDays,
+  );
+  if (retentionDays === null) {
     return;
   }
 

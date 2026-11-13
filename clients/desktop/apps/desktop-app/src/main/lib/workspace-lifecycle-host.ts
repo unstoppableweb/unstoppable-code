@@ -659,6 +659,7 @@ async function resumeUnfinishedArchive(
   workspaceId: string,
   worktreeId: string,
   expectedCreatedAt: string | undefined,
+  archiveTrigger: 'agent' | 'manual',
 ): Promise<void> {
   if (!isWritableScope(workspaceId))
     throw refusal(
@@ -671,6 +672,7 @@ async function resumeUnfinishedArchive(
       workspaceId,
       worktreeId,
       source: WIRE_SOURCE,
+      archiveTrigger,
       ...(expectedCreatedAt !== undefined && { expectedCreatedAt }),
       lockAfterArchive: true,
     }),
@@ -690,6 +692,7 @@ async function repeatArchive(
   worktreeId: string,
   workspaceIds: readonly string[],
   expectedCreatedAt: string | undefined,
+  archiveTrigger: 'agent' | 'manual',
 ): Promise<CoreWorktreeCommandResult> {
   const targets: RepeatTarget[] = [];
   for (const workspaceId of workspaceIds) {
@@ -712,6 +715,7 @@ async function repeatArchive(
       target.workspaceId,
       worktreeId,
       expectedCreatedAt,
+      archiveTrigger,
     );
     const resumed = await findRetainedWorktree(
       target.workspaceId,
@@ -961,7 +965,7 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
       throw wireRefusal(error);
     }
   },
-  async archiveWorktree(input) {
+  async archiveWorktree(input, call) {
     const projected = takeWorkspaceLifecycleProjection('core.worktree.archive');
     if (projected) return answerWorkspaceLifecycleProjection(projected);
     const read = await readWorktree(input.worktreeId, input.scope);
@@ -970,6 +974,7 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
         input.worktreeId,
         await repeatWorkspaceIds(input.worktreeId, input.scope),
         input.expectedCreatedAt,
+        call.caller.interfaceKind === 'mcp' ? 'agent' : 'manual',
       );
     const { projection } = read;
     const { workspaceId } = projection;
@@ -982,6 +987,7 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
         input.worktreeId,
         [workspaceId],
         input.expectedCreatedAt,
+        call.caller.interfaceKind === 'mcp' ? 'agent' : 'manual',
       );
     if (!isWritableScope(workspaceId))
       throw refusal(
@@ -997,6 +1003,8 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
         workspaceId,
         worktreeId: input.worktreeId,
         source: WIRE_SOURCE,
+        archiveTrigger:
+          call.caller.interfaceKind === 'mcp' ? 'agent' : 'manual',
         expectedRevision: input.expectedRevision,
         expectedCreatedAt: projection.createdAt,
         lockAfterArchive: true,
@@ -1014,6 +1022,8 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
     await asWireCall(() =>
       deleteWorktree({
         caller: receiptCaller(call, WIRE_SOURCE),
+        archiveTrigger:
+          call.caller.interfaceKind === 'mcp' ? 'agent' : 'manual',
         idempotencyKey: call.idempotencyKey,
         parameters,
         resolveRequest: async () => {
@@ -1031,6 +1041,8 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
             workspaceId,
             worktreeId: input.worktreeId,
             source: WIRE_SOURCE,
+            archiveTrigger:
+              call.caller.interfaceKind === 'mcp' ? 'agent' : 'manual',
             expectedRevision,
             ...(expectedCreatedAt !== undefined && {
               expectedCreatedAt,

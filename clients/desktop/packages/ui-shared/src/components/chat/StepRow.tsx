@@ -18,6 +18,7 @@ import {
   useStepBadgeRows,
 } from '../chat-look';
 import { revealDisclosure } from './reveal-disclosure';
+import { ShimmerCopies } from './ShimmerCopies';
 
 /**
  * The clean chat look's one row for every agent step: tool calls, step
@@ -88,7 +89,7 @@ export const STEP_ROW_DETAIL_INK_CLASS = 'fg-tertiary';
 const STRETCHED_TOGGLE_CLASS =
   "focus-ring-stretched focus-ring-inset before:absolute before:inset-0 before:rounded-sm before:content-['']";
 
-/** One shimmer sweep, matching `canopy-text-shimmer-sweep` in the tokens CSS. */
+/** One shimmer sweep, matching `canopy-text-shimmer-strong` in the tokens CSS. */
 const SHIMMER_CYCLE_MS = 2400;
 
 export type ShimmerStyle = CSSProperties & {
@@ -197,19 +198,8 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
     const badgeRow = useStepBadgeRows();
     const badges = step && badgeRow;
     const statusLine = badges && prioritizeDetail && detail != null;
-    const words = (
-      <span
-        className={`${
-          badges
-            ? statusLine
-              ? BADGE_STATUS_LINE_CLASS
-              : BADGE_LINE_CLASS
-            : 'min-w-0 truncate'
-        }${running ? ' canopy-text-shimmer-strong' : ''}`}
-        ref={motionRef}
-        style={shimmerStyle}
-        data-step-row-words=""
-      >
+    const wordsContent = (
+      <>
         {badges ? (
           <StepBadgeLine>
             {statusLine ? (
@@ -232,13 +222,32 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
             {detail}
           </span>
         )}
+      </>
+    );
+    const words = (
+      <span
+        className={`${
+          badges
+            ? statusLine
+              ? BADGE_STATUS_LINE_CLASS
+              : BADGE_LINE_CLASS
+            : 'min-w-0 truncate'
+        }${running ? ' canopy-text-shimmer-strong' : ''}`}
+        ref={motionRef}
+        style={shimmerStyle}
+        data-step-row-words=""
+      >
+        {wordsContent}
+        {running && <ShimmerCopies>{wordsContent}</ShimmerCopies>}
       </span>
     );
     const content = (
       <>
         {icon != null && (
+          // A 16px glyph on the 12 line puts the words on the 36 line, the
+          // same as every other block's text after a glyph.
           <span
-            className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center fg-secondary [&_svg]:size-3.5"
+            className="flex size-4 flex-shrink-0 items-center justify-center fg-secondary [&_svg]:size-4"
             aria-hidden="true"
           >
             {icon}
@@ -253,7 +262,6 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
             Failed
           </span>
         )}
-        {trailing}
         {expandable && (
           // 4px from the words, half the icon gap: the chevron belongs to
           // them.
@@ -270,9 +278,12 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
             <ChevronRightIcon />
           </span>
         )}
+        {trailing}
       </>
     );
-    const rowClass = `group ${STEP_ROW_TEXT_CLASS} flex min-w-0 max-w-full items-center gap-2 py-1 text-left${className === '' ? '' : ` ${className}`}`;
+    // A row with a glyph is 32px tall: the steps' rhythm, with no gap
+    // between rows. A header without one keeps its own height.
+    const rowClass = `group ${STEP_ROW_TEXT_CLASS} flex min-w-0 max-w-full items-center gap-2 py-1${icon != null ? ' min-h-8' : ''} text-left${className === '' ? '' : ` ${className}`}`;
     if (!expandable) {
       return (
         <div className={rowClass} data-testid={dataTestId} data-step-row="">
@@ -302,10 +313,16 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
 );
 
 /**
- * Opened step content: indented under the words (the 14px icon plus the
+ * Opened step content: starts on the row's words (the 16px icon plus the
  * row's 8px gap), no box around prose.
  */
-export const STEP_ROW_BODY_CLASS = 'ml-5.5 mt-1 text-s';
+export const STEP_ROW_BODY_CLASS = 'mb-1 ml-6 text-s';
 
-/** Steps keep a 4px gap, including across provider message boundaries. */
-export const STEP_GROUP_BODY_CLASS = 'flex flex-col gap-1 pt-1';
+/**
+ * A run of steps: rows with no gap between them (the 32px row is the
+ * rhythm), including across provider message boundaries.
+ */
+export const STEP_GROUP_BODY_CLASS = 'flex flex-col';
+
+/** An opened group's steps, each glyph on the group row's words. */
+export const STEP_GROUP_NESTED_BODY_CLASS = `${STEP_GROUP_BODY_CLASS} pl-6`;

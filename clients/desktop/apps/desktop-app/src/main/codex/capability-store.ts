@@ -1,4 +1,4 @@
-import { CodexCapabilityStore } from '@canopy/desktop-shared/node/codex-runtime';
+import { CodexCapabilityStore } from '@canopy/execution-engine/node/codex-runtime';
 import { getDataDir } from '../lib/paths';
 
 let store: CodexCapabilityStore | null = null;

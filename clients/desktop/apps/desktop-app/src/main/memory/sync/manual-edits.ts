@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizeMemoryDocumentContent } from '@canopy/memory-consolidation/document-merge';
 import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
@@ -6,12 +6,17 @@ import {
   MEMORY_INDEX_PATH,
   MEMORY_SYNC_LIMITS,
   isMemoryDocumentPath,
+  memoryDocumentContentRefusal,
   memoryDocumentIdentity,
   memorySyncJsonBytes,
   type MemoryDocumentChange,
 } from '@canopy/protocol/memory-sync';
 import { withMemoryWriteLock } from '../local/edit-coordination';
-import { isMemoryMarkdownFileName, isNodeError } from '../local/memory-files';
+import {
+  isMemoryMarkdownFileName,
+  isNodeError,
+  readMemoryFile,
+} from '../local/memory-files';
 import { readMemorySyncState, sha256Hex } from './replica-files';
 
 /*
@@ -26,6 +31,8 @@ export type MemoryReplicaEditRefusal =
   /** A topic name a replica cannot carry. */
   | 'name'
   | 'too_large'
+  /** Bytes that are not UTF-8 text, which a commit cannot carry. */
+  | 'not_text'
   /** Content the cloud would refuse as a secret (design §10.5). */
   | 'secret'
   /** A new topic past the scope's topic limit (design §19). */
@@ -95,20 +102,9 @@ export function fitMemoryCommit(
   return fitted;
 }
 
-async function readText(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT') || isNodeError(error, 'ENOTDIR')) {
-      return null;
-    }
-    throw error;
-  }
-}
-
 async function liveDocumentPaths(scopeDir: string): Promise<string[]> {
   const paths =
-    (await readText(join(scopeDir, MEMORY_INDEX_PATH))) === null
+    (await readMemoryFile(join(scopeDir, MEMORY_INDEX_PATH))) === null
       ? []
       : [MEMORY_INDEX_PATH];
   try {
@@ -127,25 +123,22 @@ async function liveDocumentPaths(scopeDir: string): Promise<string[]> {
 
 const INDEX_IDENTITY = memoryDocumentIdentity(MEMORY_INDEX_PATH);
 
-/**
- * A live document as the cloud would hold it. Only the text read is
- * normalized, never the file: another editor may save it again meanwhile.
- */
+/** A live document's bytes, and as the cloud would hold it when it is text. */
 async function readNormalized(
   scopeDir: string,
   path: string,
-): Promise<string | null> {
-  const content = await readText(join(scopeDir, path));
-  return content === null ? null : normalizeMemoryDocumentContent(content);
+): Promise<{ text: string | null } | null> {
+  const file = await readMemoryFile(join(scopeDir, path));
+  if (file === null) return null;
+  return {
+    text: file.text === null ? null : normalizeMemoryDocumentContent(file.text),
+  };
 }
 
 /** Why the cloud would refuse `content` as a document, if it would. */
 function documentRefusal(content: string): MemoryReplicaEditRefusal | null {
-  if (
-    Buffer.byteLength(content, 'utf8') > MEMORY_SYNC_LIMITS.documentMaxBytes
-  ) {
-    return 'too_large';
-  }
+  const outside = memoryDocumentContentRefusal(content);
+  if (outside !== null) return outside;
   return redactMemoryContent(content) === content ? null : 'secret';
 }
 
@@ -189,8 +182,16 @@ export function collectReplicaEdits(
         refused.push({ path, reason: 'name' });
         continue;
       }
-      const content = await readNormalized(scopeDir, path);
-      if (content === null) continue;
+      const read = await readNormalized(scopeDir, path);
+      if (read === null) continue;
+      const { text: content } = read;
+      // Bytes no UTF-8 decode can round-trip: the lossy U+FFFD text a decode
+      // leaves is not the document, so the file stays here untouched and the
+      // scope reports it, as the cloud carries UTF-8 LF text only.
+      if (content === null) {
+        refused.push({ path, reason: 'not_text' });
+        continue;
+      }
       const contentHash = sha256Hex(content);
       if (base.get(identity)?.hashes.has(contentHash)) continue;
       if (changed.has(identity)) {

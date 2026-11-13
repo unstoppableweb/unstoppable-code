@@ -1,5 +1,5 @@
 import { dirname } from 'node:path';
-import { worktreeListProcessLock } from '@canopy/desktop-shared/node/w5-host-cohort/process-file-lock';
+import { worktreeListProcessLock } from '@canopy/execution-engine/node/w5-host-cohort/process-file-lock';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { windowsW5ConfinedFileReader } from '@canopy/core-platform/w5-confined-read';
 import {

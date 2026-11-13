@@ -123,6 +123,7 @@ export function createRecordedWorkerGitSyncHost<
         unlessCancelled({ kind: 'fetch-origin', prune }),
       currentBranch: async () =>
         (await succeeded({ kind: 'current-branch' })).trim(),
+      head: async () => (await succeeded({ kind: 'head-sha' })).trim(),
       pullFastForward: (branch) =>
         unlessCancelled({ kind: 'pull-fast-forward', branch }),
       pullRebase: (branch) => unlessCancelled({ kind: 'pull-rebase', branch }),

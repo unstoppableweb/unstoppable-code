@@ -1,4 +1,4 @@
-import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
+import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import {
   IPC_CHANNELS,
   type OverlayLayerFocusRequest,
@@ -8,16 +8,18 @@ import { isOverlayLayerSlot } from '@canopy/desktop-shared/lib/overlay-layer';
 import { registerIpcHandler } from './register';
 
 const INVALID_REQUEST = 'Invalid overlay layer request.';
-const INVALID_SENDER = 'Overlay layer IPC requires the live main window.';
+const INVALID_SENDER =
+  'Overlay layer IPC requires a live renderer that hosts Browser views.';
 
 export interface OverlayLayerHandlerAccessors {
-  getMainWindow: () => BrowserWindow | null;
+  /**
+   * Whether `contents` is a trusted renderer that may drive its own layers:
+   * the main renderer, or the Orchestrator page in its full window.
+   */
+  isOverlayLayerOpener: (contents: WebContents) => boolean;
   overlayLayerHost: {
-    setBounds(
-      window: BrowserWindow,
-      request: OverlayLayerSetBoundsRequest,
-    ): void;
-    focus(window: BrowserWindow, request: OverlayLayerFocusRequest): void;
+    setBounds(opener: WebContents, request: OverlayLayerSetBoundsRequest): void;
+    focus(opener: WebContents, request: OverlayLayerFocusRequest): void;
   };
 }
 
@@ -81,21 +83,18 @@ function parseFocusRequest(request: unknown): OverlayLayerFocusRequest {
   return { slot, target };
 }
 
-function assertMainWindowSender(
+function assertOpenerSender(
   event: IpcMainInvokeEvent,
   accessors: OverlayLayerHandlerAccessors,
-): BrowserWindow {
-  const window = accessors.getMainWindow();
+): WebContents {
   const { sender } = event;
   if (
-    window === null ||
-    window.isDestroyed() ||
     sender.isDestroyed() ||
-    sender !== window.webContents ||
-    event.senderFrame !== sender.mainFrame
+    event.senderFrame !== sender.mainFrame ||
+    !accessors.isOverlayLayerOpener(sender)
   )
     throw new Error(INVALID_SENDER);
-  return window;
+  return sender;
 }
 
 export function registerOverlayLayerHandlers(
@@ -104,9 +103,9 @@ export function registerOverlayLayerHandlers(
   registerIpcHandler<[request: unknown], void>(
     IPC_CHANNELS.overlayLayerSetBounds,
     (event, request): void => {
-      const window = assertMainWindowSender(event, accessors);
+      const opener = assertOpenerSender(event, accessors);
       accessors.overlayLayerHost.setBounds(
-        window,
+        opener,
         parseSetBoundsRequest(request),
       );
     },
@@ -115,8 +114,8 @@ export function registerOverlayLayerHandlers(
   registerIpcHandler<[request: unknown], void>(
     IPC_CHANNELS.overlayLayerFocus,
     (event, request): void => {
-      const window = assertMainWindowSender(event, accessors);
-      accessors.overlayLayerHost.focus(window, parseFocusRequest(request));
+      const opener = assertOpenerSender(event, accessors);
+      accessors.overlayLayerHost.focus(opener, parseFocusRequest(request));
     },
   );
 }

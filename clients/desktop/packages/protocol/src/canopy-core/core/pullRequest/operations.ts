@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { CanopyWorkspaceScopeSchema } from '../../common';
 import {
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
@@ -116,8 +117,10 @@ export type CorePullRequestListResult = z.output<
 export const CorePullRequestCreateParamsSchema = z.strictObject({
   integrationId: OpaqueIdSchema,
   repositoryId: OpaqueIdSchema,
-  title: z.string().min(1).max(1024),
-  body: z.string().max(200_000),
+  /** Absent, a core that can write one generates the title and body. */
+  title: z.string().min(1).max(1024).optional(),
+  /** Absent with a title, the body is empty. */
+  body: z.string().max(200_000).optional(),
   baseBranch: z.string().max(512),
   headBranch: z.string().max(512),
   expectedHeadSha: GitObjectIdSchema,
@@ -158,11 +161,198 @@ export const CorePullRequestMergeParamsSchema = z.strictObject({
   /** The projection's `revision` the caller read; any other refuses the merge. */
   expectedRevision: z.number().int().min(0),
   expectedHeadSha: GitObjectIdSchema,
-  strategy: z.enum(CORE_PULL_REQUEST_MERGE_STRATEGIES),
+  /** Absent, the repository's preferred method. */
+  strategy: z.enum(CORE_PULL_REQUEST_MERGE_STRATEGIES).optional(),
+  /** The base and head branches the caller saw; another refuses the merge. */
+  expectedBaseBranch: z.string().max(512).optional(),
+  expectedHeadBranch: z.string().max(512).optional(),
 });
 
 export type CorePullRequestMergeParams = z.output<
   typeof CorePullRequestMergeParamsSchema
+>;
+
+/**
+ * The minor schema revision `core.pullRequest.refresh` serves (protocol rule
+ * 5, CAN-6093): revision 2 adds what the cloud pull request panel shows that
+ * revision 1 leaves out. A client asks for it with `revision` only when the
+ * runtime advertises it; a client that does not ask gets revision 1 output.
+ */
+export const CORE_PULL_REQUEST_REFRESH_SCHEMA_REVISION = 2;
+
+export const CorePullRequestRefreshParamsSchema = z.strictObject({
+  /** The caller's worktree. */
+  scope: CanopyWorkspaceScopeSchema.pick({
+    workspaceId: true,
+    worktreeId: true,
+    authorityId: true,
+    targetId: true,
+  }).required({ workspaceId: true, worktreeId: true }),
+  /**
+   * One repository, as a Git checkout scope names it. Absent, every
+   * repository of the worktree.
+   */
+  repoId: OpaqueIdSchema.optional(),
+  /** Revision 2 output, sent only when the runtime advertises it. */
+  revision: z.literal(CORE_PULL_REQUEST_REFRESH_SCHEMA_REVISION).optional(),
+});
+
+export type CorePullRequestRefreshParams = z.output<
+  typeof CorePullRequestRefreshParamsSchema
+>;
+
+/**
+ * The pull request a refresh found, as the refresh read it: the summary the
+ * pull request actions show, not the full `core.pullRequest.get` projection.
+ */
+export const CorePullRequestRefreshSummarySchema = z.strictObject({
+  number: z.number().int().min(1),
+  url: z.string().max(8192),
+  state: z.enum(CORE_PULL_REQUEST_STATES),
+  /** An open draft. */
+  draft: z.boolean(),
+  title: z.string().max(1024),
+  /** Every check of the head together; `none` without checks. */
+  checkStatus: z.enum(['passing', 'failing', 'pending', 'neutral', 'none']),
+  checks: z.array(
+    z.strictObject({
+      name: z.string().max(512),
+      status: z.enum(['success', 'failure', 'pending', 'neutral']),
+      url: z.string().max(8192).nullable(),
+      /** Revision 2: GitHub's finer state; absent when unrecognized. */
+      executionState: z
+        .enum([
+          'queued',
+          'running',
+          'success',
+          'failure',
+          'cancelled',
+          'timed_out',
+          'skipped',
+          'action_required',
+          'neutral',
+        ])
+        .optional(),
+    }),
+  ),
+  reviewDecision: CorePullRequestSchema.shape.reviewDecision,
+  hasConflicts: z.boolean(),
+  /** GitHub's checks, reviews and mergeability all allow a merge. */
+  mergeReady: z.boolean(),
+  /** Null when the review threads could not be read. */
+  unresolvedReviewThreadCount: z.number().int().min(0).nullable(),
+  /** As `core.pullRequest.get` projects it; merge sends it back. */
+  revision: CorePullRequestSchema.shape.revision,
+  /** Revision 2: the pull request's base branch on GitHub. */
+  baseBranch: z.string().max(512).optional(),
+  /** Revision 2: its labels, in GitHub's order. */
+  labels: z
+    .array(
+      z.strictObject({
+        name: z.string().max(512),
+        /** Hex without `#`; empty when GitHub gave none. */
+        color: z.string().max(64),
+        description: z.string().max(4096).nullable(),
+      }),
+    )
+    .optional(),
+  /** Revision 2: conversation and review comments together. */
+  commentCount: z.number().int().min(0).optional(),
+  /** Revision 2: GitHub's last update, as GitHub wrote it. */
+  updatedAt: TimestampSchema.optional(),
+});
+
+/** One repository's pull request and action eligibility, the root first. */
+export const CorePullRequestRefreshRepositorySchema = z.strictObject({
+  repositoryId: OpaqueIdSchema,
+  /**
+   * Revision 2: the id a Git checkout scope names this repository by (its
+   * checkout id in a multi-repository worktree), which `repoId` takes.
+   */
+  repoId: OpaqueIdSchema.optional(),
+  /** The name the repository shows in a multi-repository worktree. */
+  repoName: z.string().max(512),
+  /** False when this repository could not be read; the others still answer. */
+  available: z.boolean(),
+  /**
+   * The pull request found for the branch (the open one, else the newest)
+   * and recorded; `core.pullRequest.get` reads it in full. Null with none.
+   */
+  pullRequestId: OpaqueIdSchema.nullable(),
+  /** Null exactly when `pullRequestId` is. */
+  pullRequest: CorePullRequestRefreshSummarySchema.nullable(),
+  /** The tracked base a new pull request targets; null when unresolved. */
+  baseBranch: z.string().max(512).nullable(),
+  headBranch: z.string().max(512),
+  /**
+   * The head eligibility was decided from (with the sandbox asleep, the open
+   * pull request's); null when unreadable. Create sends it back.
+   */
+  headSha: GitObjectIdSchema.nullable(),
+  /** The open pull request's head on GitHub, which merge sends back. */
+  prHeadSha: GitObjectIdSchema.nullable(),
+  /** Uncommitted changes; false when the checkout could not be read. */
+  dirty: z.boolean(),
+  /** Commits not on the upstream; null without an upstream or a read. */
+  ahead: z.number().int().min(0).nullable(),
+  /** Upstream commits not in the head; null without an upstream or a read. */
+  behind: z.number().int().min(0).nullable(),
+  /** The branch has an upstream. */
+  published: z.boolean(),
+  /** The branch has commits its base does not; null when unknown. */
+  commitsAheadOfBase: z.boolean().nullable(),
+  canCreate: z.boolean(),
+  /** Set exactly when `canCreate` is false. */
+  createBlockedReason: z
+    .enum([
+      'pr_open',
+      'pr_status_unavailable',
+      'no_remote',
+      'detached_head',
+      'base_branch',
+      'no_changes',
+      'needs_pull',
+      'worktree_asleep',
+    ])
+    .optional(),
+  canMerge: z.boolean(),
+  /** Set exactly when `canMerge` is false. */
+  mergeBlockedReason: z
+    .enum([
+      'no_pr',
+      'draft',
+      'conflicts',
+      'checks_failing',
+      'checks_pending',
+      'review_pending',
+      'local_changes',
+      'other_repo_changes',
+      'not_ready',
+    ])
+    .optional(),
+  /** Merge is offered with a warning: unresolved or unknown review threads. */
+  mergeWarning: z.boolean(),
+});
+
+export const CorePullRequestRefreshResultSchema = z.strictObject({
+  repositories: z.array(CorePullRequestRefreshRepositorySchema).min(1),
+  refreshedAt: TimestampSchema,
+  /**
+   * Revision 2: the first repository's checkout as sampled, without waking:
+   * its branch (null when detached) and upstream (null without one). Null
+   * when it could not be sampled.
+   */
+  checkout: z
+    .strictObject({
+      branch: z.string().max(512).nullable(),
+      upstream: z.string().max(1024).nullable(),
+    })
+    .nullable()
+    .optional(),
+});
+
+export type CorePullRequestRefreshResult = z.output<
+  typeof CorePullRequestRefreshResultSchema
 >;
 
 const CORE_PULL_REQUEST_READ_CODES = [
@@ -213,6 +403,11 @@ export const CORE_PULL_REQUEST_MERGE_ERROR_CODES = [
   'core.pullRequest.merge.mergeQueueRequired',
   'core.pullRequest.projectionUnavailable',
   'core.pullRequest.idempotencyKeyReused',
+] as const;
+
+export const CORE_PULL_REQUEST_REFRESH_ERROR_CODES = [
+  'core.pullRequest.repositoryUnavailable',
+  'core.pullRequest.notAuthenticated',
 ] as const;
 
 /** Pull request reads, served by the desktop dispatcher (CAN-4109). */
@@ -286,6 +481,28 @@ export const CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS =
       result: CorePullRequestSchema,
       error: keyedOperationErrorSchema(CORE_PULL_REQUEST_MERGE_ERROR_CODES),
       idempotency: 'keyed',
+      requiredGrants: ['core.pullRequest.write'],
+    }),
+  });
+
+/**
+ * Served by the web core only (CAN-6115): the cloud Git panel's refresh. The
+ * desktop dispatcher does not compose it, so it answers
+ * `capability_unavailable`. Inherent: each call records what it then reads.
+ */
+export const CORE_PULL_REQUEST_REFRESH_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.pullRequest.refresh': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'pullRequest',
+      version: 1,
+      placement: 'core-only',
+      params: CorePullRequestRefreshParamsSchema,
+      result: CorePullRequestRefreshResultSchema,
+      error: inherentOperationErrorSchema(
+        CORE_PULL_REQUEST_REFRESH_ERROR_CODES,
+      ),
+      idempotency: 'inherent',
       requiredGrants: ['core.pullRequest.write'],
     }),
   });

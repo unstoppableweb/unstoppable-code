@@ -72,6 +72,18 @@ export type AgentModelListResult = {
     available: boolean;
     isDefault: boolean;
     thinkingLevels: string[] | null;
+    /**
+     * The other execution harnesses a new chat may run this model on, for
+     * chat.create's `executionHarness`; null when the host offers none.
+     */
+    harnessChoices:
+      | {
+          harness: string;
+          provider: ModelCatalogOption['provider'];
+          thinkingLevels: string[] | null;
+          funding: 'ai-credits' | 'org-gateway' | null;
+        }[]
+      | null;
   }[];
   defaultModelId: string | null;
 };
@@ -197,6 +209,16 @@ export function modelListResult(list: AgentModelList): AgentModelListResult {
       available: model.available,
       isDefault: model.id === list.defaultModelId,
       thinkingLevels: modelThinkingLevels(model),
+      harnessChoices: model.harnessChoices?.length
+        ? model.harnessChoices.map((choice) => ({
+            harness: choice.harness,
+            provider: choice.provider,
+            thinkingLevels: choice.supportedThinkingLevels
+              ? [...choice.supportedThinkingLevels]
+              : null,
+            funding: choice.funding ?? null,
+          }))
+        : null,
     })),
     defaultModelId: list.defaultModelId,
   };

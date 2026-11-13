@@ -291,9 +291,11 @@ export interface SendMessageDispatchOptions {
   onDispatchRejected?: () => void;
   /**
    * Called only when dispatch is rejected before the message is queued or
-   * committed, so a composer can safely restore its submitted draft.
+   * committed, so a composer can safely restore its submitted draft. Returns
+   * `true` once the composer holds that draft again; a cloud send the web
+   * core refused leaves the transcript only then (CAN-6364).
    */
-  onPreDispatchRejected?: () => void;
+  onPreDispatchRejected?: () => boolean | void;
   /**
    * Called when the send was parked in a queue instead of being dispatched,
    * naming which queue holds it (see {@link QueuedWithoutDispatchLocation}).
@@ -432,6 +434,12 @@ export interface ChatTab extends Omit<
   }>;
   /** Home first send presented before dispatch (CAN-4742); never persisted. */
   provisionalFirstSend?: ProvisionalFirstSend;
+  /**
+   * Why the web core refused this cloud chat's last send (CAN-6364): the
+   * composer shows it beside the draft it took back. Renderer-only and never
+   * persisted; the next send or a dismiss clears it.
+   */
+  sendRefusal?: string;
   /** Starter for a confirmed new worktree, awaiting initial canonical creation. */
   pendingInitialCreation?: boolean;
   /**

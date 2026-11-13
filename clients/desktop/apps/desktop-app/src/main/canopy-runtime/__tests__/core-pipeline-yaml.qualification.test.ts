@@ -68,8 +68,9 @@ import {
 import {
   PIPELINE_DEFINITION_AGENT_CALLER,
   getPipelineDefinition,
+  listPipelineDefinitions,
 } from '../pipeline-definition-dispatch';
-import { withSelfFilteringAgentRead } from '../self-filtering-agent-reads';
+import { withAgentPlace, type AgentPlace } from '../agent-place';
 
 jest.setTimeout(120_000);
 
@@ -111,6 +112,38 @@ function dispatcher(
   const adapter = createCorePipelineDefinitionAdapter(
     desktopPipelineDefinitionHost,
     (ids) => Promise.resolve(new Set(ids.filter((id) => hidden.has(id)))),
+  );
+  return createCanopyDispatcher({
+    profile: 'core',
+    definitions: {
+      queries: PIPELINE_DEFINITION_QUERY_DEFINITIONS,
+      instructions: {},
+      streams: {},
+    },
+    handlers: { queries: adapter.queries, instructions: {}, streams: {} },
+  });
+}
+
+const OWNER: AgentPlace = { workspaceId: 'owner-ws', worktreeId: 'owner-wt' };
+const ELSEWHERE: AgentPlace = { workspaceId: 'ws', worktreeId: 'wt' };
+
+/** `owned` is visible to agents only from the owning automation's place. */
+function placeDispatcher(owned: string): ReturnType<typeof dispatcher> {
+  const adapter = createCorePipelineDefinitionAdapter(
+    desktopPipelineDefinitionHost,
+    (ids, place) =>
+      Promise.resolve(
+        new Set(
+          ids.filter(
+            (id) =>
+              id === owned &&
+              !(
+                place?.workspaceId === OWNER.workspaceId &&
+                place.worktreeId === OWNER.worktreeId
+              ),
+          ),
+        ),
+      ),
   );
   return createCanopyDispatcher({
     profile: 'core',
@@ -234,69 +267,6 @@ describe('core.pipeline.definition.get for ReadPipelineYaml (CAN-5991)', () => {
     });
   });
 
-  it('an agent read that names no place sees no owned workflow; only main’s own shared caller object is exempt', async () => {
-    const OWNED = 'bundled-refine-plan';
-    const runtime = dispatcher(new Set([OWNED]));
-    const refusal = {
-      payload: { code: 'core.pipeline.definitionNotFound' },
-    };
-    await expect(
-      runtime.query(
-        'core.pipeline.definition.get',
-        { definitionId: OWNED },
-        { caller: AGENT },
-      ),
-    ).rejects.toMatchObject(refusal);
-    // The same principal and client strings, as a relay or socket could
-    // claim them, without main's in-process mark.
-    await expect(
-      runtime.query(
-        'core.pipeline.definition.get',
-        { definitionId: OWNED },
-        { caller: { ...PIPELINE_DEFINITION_AGENT_CALLER } },
-      ),
-    ).rejects.toMatchObject(refusal);
-    // Main's shared resource-action read applies the rule itself.
-    mockRuntime = runtime;
-    const definition = await getPipelineDefinition(
-      OWNED,
-      {},
-      PIPELINE_DEFINITION_AGENT_CALLER,
-    );
-    expect(definition.definitionId).toBe(OWNED);
-    await expect(
-      getPipelineDefinition(OWNED, {}, { ...PIPELINE_DEFINITION_AGENT_CALLER }),
-    ).rejects.toMatchObject(refusal);
-
-    // The mark covers one dispatch for its own caller: another caller
-    // dispatching inside it, and a second dispatch after it, are refused.
-    await withSelfFilteringAgentRead(
-      PIPELINE_DEFINITION_AGENT_CALLER,
-      async () => {
-        await expect(
-          runtime.query(
-            'core.pipeline.definition.get',
-            { definitionId: OWNED },
-            { caller: AGENT },
-          ),
-        ).rejects.toMatchObject(refusal);
-        const marked = await runtime.query(
-          'core.pipeline.definition.get',
-          { definitionId: OWNED },
-          { caller: PIPELINE_DEFINITION_AGENT_CALLER },
-        );
-        expect(marked.definition.definitionId).toBe(OWNED);
-        await expect(
-          runtime.query(
-            'core.pipeline.definition.get',
-            { definitionId: OWNED },
-            { caller: PIPELINE_DEFINITION_AGENT_CALLER },
-          ),
-        ).rejects.toMatchObject(refusal);
-      },
-    );
-  });
-
   it('reads a project workflow from a registered chat scope through the worktree it borrows', async () => {
     const { definition } = await dispatcher().query(
       'core.pipeline.definition.get',
@@ -313,25 +283,106 @@ describe('core.pipeline.definition.get for ReadPipelineYaml (CAN-5991)', () => {
     expect(definition.definitionId).toBe(MEMBER_ID);
   });
 
-  it('the shared caller’s marked read with a workspace but no worktree applies its own rule; another agent is refused', async () => {
+  it('checks the owned-workflow rule against main’s host-local place, never the read’s scope (CAN-6032)', async () => {
     const OWNED = 'bundled-refine-plan';
-    const runtime = dispatcher(new Set([OWNED]));
-    const scope = { workspaceId: 'standalone-chat' };
-    await expect(
+    const runtime = placeDispatcher(OWNED);
+    const refusal = {
+      payload: { code: 'core.pipeline.definitionNotFound' },
+    };
+    const get = (
+      who: CanopyCallerDescriptor,
+      scope: { workspaceId?: string; worktreeId?: string } = {},
+    ): Promise<unknown> =>
       runtime.query(
         'core.pipeline.definition.get',
         { definitionId: OWNED, scope },
-        { caller: AGENT },
-      ),
-    ).rejects.toMatchObject({
-      payload: { code: 'core.pipeline.definitionNotFound' },
+        { caller: who },
+      );
+    // A caller naming the owner's place in its own scope gains nothing.
+    await expect(
+      get(AGENT, {
+        workspaceId: OWNER.workspaceId,
+        worktreeId: OWNER.worktreeId,
+      }),
+    ).rejects.toMatchObject(refusal);
+    await expect(get(AGENT)).rejects.toMatchObject(refusal);
+    // Main's place reaches the rule only through its in-process mark.
+    await expect(
+      withAgentPlace(AGENT, OWNER, () => get(AGENT)),
+    ).resolves.toMatchObject({ definition: { definitionId: OWNED } });
+    await expect(
+      withAgentPlace(AGENT, ELSEWHERE, () => get(AGENT)),
+    ).rejects.toMatchObject(refusal);
+    // The mark covers one dispatch for its own caller only.
+    await withAgentPlace(PIPELINE_DEFINITION_AGENT_CALLER, OWNER, async () => {
+      await expect(get(AGENT)).rejects.toMatchObject(refusal);
+      await expect(
+        get(PIPELINE_DEFINITION_AGENT_CALLER),
+      ).resolves.toMatchObject({ definition: { definitionId: OWNED } });
+      await expect(get(PIPELINE_DEFINITION_AGENT_CALLER)).rejects.toMatchObject(
+        refusal,
+      );
     });
+    // Main's shared caller no longer reads owned workflows without a place.
     mockRuntime = runtime;
-    const definition = await getPipelineDefinition(
-      OWNED,
-      scope,
-      PIPELINE_DEFINITION_AGENT_CALLER,
-    );
-    expect(definition.definitionId).toBe(OWNED);
+    await expect(
+      getPipelineDefinition(OWNED, {}, PIPELINE_DEFINITION_AGENT_CALLER),
+    ).rejects.toMatchObject(refusal);
   });
+
+  // Each former self-filtering caller sends the same scope as before, so its
+  // source rows are unchanged; the rule now hides from its place what the
+  // caller hid itself before (CAN-6032).
+  it.each([
+    [
+      'worktree pipeline actions (listing and reads, no scope)',
+      { sources: ['bundled' as const] },
+      {},
+    ],
+    [
+      'resource actions in a worktree or Cowork chat (workspace scope)',
+      { sources: ['bundled' as const], scope: { workspaceId: 'ws' } },
+      { workspaceId: 'ws' },
+    ],
+    [
+      'App Advisor resource actions (empty scope)',
+      { sources: ['bundled' as const], scope: {} },
+      {},
+    ],
+  ])(
+    'returns the rows %s saw before, from its own place',
+    async (_caller, listParams, readScope) => {
+      const OWNED = 'bundled-refine-plan';
+      const runtime = placeDispatcher(OWNED);
+      mockRuntime = runtime;
+      const unfiltered = await runtime.query(
+        'core.pipeline.definition.list',
+        { ...listParams },
+        { caller: WINDOW },
+      );
+      for (const place of [OWNER, ELSEWHERE]) {
+        const before = unfiltered.items
+          .map((item) => item.definitionId)
+          .filter((id) => !(id === OWNED && place !== OWNER));
+        const after = await listPipelineDefinitions(
+          listParams,
+          PIPELINE_DEFINITION_AGENT_CALLER,
+          place,
+        );
+        expect(after.items.map((item) => item.definitionId)).toEqual(before);
+        const read = getPipelineDefinition(
+          OWNED,
+          readScope,
+          PIPELINE_DEFINITION_AGENT_CALLER,
+          place,
+        );
+        if (place === OWNER)
+          await expect(read).resolves.toMatchObject({ definitionId: OWNED });
+        else
+          await expect(read).rejects.toMatchObject({
+            payload: { code: 'core.pipeline.definitionNotFound' },
+          });
+      }
+    },
+  );
 });

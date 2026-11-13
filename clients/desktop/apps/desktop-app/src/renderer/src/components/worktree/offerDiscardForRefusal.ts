@@ -1,4 +1,7 @@
-import { offerWorktreeDiscard } from '@canopy/app-state';
+import {
+  offerWorktreeDiscard,
+  offerLifecycleJournalQuarantine,
+} from '@canopy/app-state';
 import {
   WorktreeArchiveRefusalError,
   WorktreeRemovalRefusedError,
@@ -24,13 +27,27 @@ export function offerDiscardForRefusal(
     !(error instanceof WorktreeArchiveRefusalError)
   )
     return false;
+  if (
+    error instanceof WorktreeArchiveRefusalError &&
+    error.recovery?.destination.kind === 'journal-review'
+  ) {
+    offerLifecycleJournalQuarantine(
+      undefined,
+      error.recovery.destination.reason,
+    );
+    return true;
+  }
   offerWorktreeDiscard({
     workspaceId: target.projectId,
     worktreeId: target.worktreeId,
     worktreeName: target.worktreeName,
     message: error.message,
     ...(error instanceof WorktreeArchiveRefusalError
-      ? { description: error.discard }
+      ? {
+          description: error.discard,
+          ...(error.recovery ? { recovery: error.recovery } : {}),
+          ...(error.removal ? { removal: error.removal } : {}),
+        }
       : {}),
     retry: target.retry,
   });

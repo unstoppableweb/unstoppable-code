@@ -95,6 +95,11 @@ export interface HandshakeResult {
   shortAuthenticationString: string;
   /** The initiator's hello1 delegation, on the responder side only. */
   delegation: HostedDelegation | null;
+  /**
+   * Authenticates session resume messages (`resume1`, `resume2`). Derived
+   * like the traffic keys under its own label, so it never encrypts.
+   */
+  resumeKey: Buffer;
 }
 
 export class HandshakeError extends Error {
@@ -244,6 +249,9 @@ function deriveResult(
   );
   const initiatorToResponder = traffic.subarray(0, 32);
   const responderToInitiator = traffic.subarray(32, 64);
+  const resumeKey = Buffer.from(
+    hkdfSync('sha256', shared, transcript, `${HANDSHAKE_PROTOCOL} resume`, 32),
+  );
   const sas = Buffer.from(
     hkdfSync('sha256', shared, transcript, `${HANDSHAKE_PROTOCOL} sas`, 4),
   ).readUInt32BE(0);
@@ -257,6 +265,7 @@ function deriveResult(
     transcriptHash: transcript,
     shortAuthenticationString: String(sas % 1_000_000).padStart(6, '0'),
     delegation: null,
+    resumeKey,
   };
 }
 

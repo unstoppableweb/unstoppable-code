@@ -523,6 +523,36 @@ export function createApprovalSession(
         pathCaseInsensitive: await pathCaseInsensitive(),
       };
     }
+    if (approvalCheck.kind === 'tool') {
+      // Only this branch may set `resolvedReadPath`; drop a caller's copy so
+      // Auto never trusts a canonical path main did not resolve.
+      const { toolName, readPath } = approvalCheck;
+      if (readPath === undefined) {
+        return {
+          check: { kind: 'tool', toolName },
+          workspaceRoot: ctx.workspaceRoot,
+        };
+      }
+      // A dangling or unreadable link leaves `resolvedReadPath` unset, so Auto
+      // has no canonical target and the read prompts.
+      const [resolvedReadPath, workspaceRoot, caseInsensitive] =
+        await Promise.all([
+          resolveExistingAncestorPath(readPath),
+          canonicalWorkspaceRoot(),
+          pathCaseInsensitive(),
+        ]);
+      return {
+        check: {
+          kind: 'tool',
+          toolName,
+          readPath,
+          ...(resolvedReadPath ? { resolvedReadPath } : {}),
+        },
+        ...(resolvedReadPath && workspaceRoot
+          ? { workspaceRoot, pathCaseInsensitive: caseInsensitive }
+          : {}),
+      };
+    }
     if (approvalCheck.kind !== 'file-write') {
       return { check: approvalCheck, workspaceRoot: ctx.workspaceRoot };
     }

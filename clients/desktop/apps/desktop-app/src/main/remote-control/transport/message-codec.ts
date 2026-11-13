@@ -19,10 +19,16 @@ export {
  * into fragments that, sealed and framed, fill one relay frame exactly.
  *
  * Fragment: `[flags u8][bytes]`. Bit 0 marks the final fragment; bit 1 marks
- * a deflated message (set on every fragment of that message).
+ * a deflated message (set on every fragment of that message). Bit 2 marks a
+ * transport-control fragment, which belongs to no message: it is sent only
+ * once both sides negotiated session resume, and read before the assembler.
  */
 const FLAG_FINAL = 0x01;
 const FLAG_COMPRESSED = 0x02;
+const FLAG_TRANSPORT_CONTROL = 0x04;
+/** Transport-control kind: `[kind u8][nextExpected u64 BE]`. */
+const CONTROL_ACK = 0x01;
+const ACK_FRAGMENT_BYTES = 1 + 1 + 8;
 
 export class MessageCodecError extends Error {
   constructor(message: string) {
@@ -74,6 +80,34 @@ export function encodeMessage(
   return fragments;
 }
 
+/**
+ * A transport-control fragment acknowledging every frame below
+ * `nextExpected`, so the sender can stop holding them for a resume.
+ */
+export function encodeAckFragment(nextExpected: bigint): Buffer {
+  const fragment = Buffer.alloc(ACK_FRAGMENT_BYTES);
+  fragment[0] = FLAG_TRANSPORT_CONTROL | FLAG_FINAL;
+  fragment[1] = CONTROL_ACK;
+  fragment.writeBigUInt64BE(nextExpected, 2);
+  return fragment;
+}
+
+export function isTransportControlFragment(fragment: Buffer): boolean {
+  return ((fragment[0] ?? 0) & FLAG_TRANSPORT_CONTROL) !== 0;
+}
+
+/** Reads an ack fragment; throws for any other transport-control fragment. */
+export function decodeAckFragment(fragment: Buffer): bigint {
+  if (
+    fragment.byteLength !== ACK_FRAGMENT_BYTES ||
+    fragment[0] !== (FLAG_TRANSPORT_CONTROL | FLAG_FINAL) ||
+    fragment[1] !== CONTROL_ACK
+  ) {
+    throw new MessageCodecError('Unknown transport-control fragment.');
+  }
+  return fragment.readBigUInt64BE(2);
+}
+
 /** Reassembles fragments from one ordered session into whole messages. */
 export class MessageAssembler {
   private parts: Buffer[] = [];
@@ -90,6 +124,9 @@ export class MessageAssembler {
       throw new MessageCodecError('Empty message fragment.');
     }
     const flags = fragment[0] ?? 0;
+    if ((flags & FLAG_TRANSPORT_CONTROL) !== 0) {
+      throw new MessageCodecError('Unexpected transport-control fragment.');
+    }
     const body = fragment.subarray(1);
     // Senders split only at full fragments, so every fragment but the last
     // is full: this bounds how many one message can arrive in.

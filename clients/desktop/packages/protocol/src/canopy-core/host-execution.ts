@@ -213,6 +213,42 @@ export const WorkerPipelineLaunchInputsSchema = z
   .record(z.string().min(1).max(256), z.string().max(65_536))
   .refine((inputs) => Object.keys(inputs).length <= 256);
 
+/** The longest plan or task text a launch event carries, as UTF-8: a shared plan's limit. */
+export const WORKER_PIPELINE_LAUNCH_EVENT_TEXT_MAX_BYTES = 1024 * 1024;
+
+const launchEventText = z
+  .string()
+  .min(1)
+  .refine(
+    (text) =>
+      utf8ByteLength(text) <= WORKER_PIPELINE_LAUNCH_EVENT_TEXT_MAX_BYTES,
+    'The text exceeds its limit.',
+  );
+
+/**
+ * The trigger event a run starts from, when it is not `dispatch` (CAN-6327):
+ * a `plan_ready` run's plan, with the plan it revises when it has one, or a
+ * `task_ready` run's task. Text, never a path: the host writes it into the
+ * run's own folder and hands the steps that file as `plan_path` or
+ * `task_path`, and a `task_ready` run's plan is written beside it. What a run
+ * writes to `plan_path` returns to its owner through `owner.plan.*`.
+ */
+export const WorkerPipelineLaunchEventSchema = z.discriminatedUnion('name', [
+  z.strictObject({
+    name: z.literal('plan_ready'),
+    planText: launchEventText,
+    /** The owner's plan the run revises; absent for a plan it has not kept yet. */
+    planId: z.string().min(1).max(512).optional(),
+  }),
+  z.strictObject({
+    name: z.literal('task_ready'),
+    taskText: launchEventText,
+  }),
+]);
+export type WorkerPipelineLaunchEvent = z.output<
+  typeof WorkerPipelineLaunchEventSchema
+>;
+
 /**
  * An absolute host path: POSIX, or a Windows drive path (CAN-5091). A path
  * that starts with two separators, in either direction, is refused: on
@@ -266,11 +302,20 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
     .refine((paths) => Object.keys(paths).length <= 64)
     .optional(),
   executionCheckoutRoot: HostPathSchema.nullable().optional(),
+  /**
+   * `ExecutionOptions.globalWorkspaceDir` (CAN-6317): the folder a top-level
+   * global run works in, instead of one inside its execution folder. A cloud
+   * runner names the pipeline's kept workspace, so files its steps write
+   * there last from one run to the next.
+   */
+  globalWorkspaceDir: HostPathSchema.optional(),
   /** `ExecutionOptions.env`: layered over the base environment by the executor. */
   env: CanopyChildEnvironmentSchema,
   /** `ExecutionOptions.secretEnv`: masked in step output. */
   secretEnv: CanopyChildEnvironmentSchema,
   inputs: WorkerPipelineLaunchInputsSchema.optional(),
+  /** The run's trigger event; absent for `dispatch` (CAN-6327). */
+  event: WorkerPipelineLaunchEventSchema.optional(),
   target: CanopyJsonValueSchema.optional(),
   pipelinePreferenceLocator: CanopyJsonValueSchema.optional(),
   sharedPipelineSource: CanopyJsonValueSchema.optional(),
@@ -299,8 +344,20 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
    * model steps that load plugins (CAN-5832); like providerBinaries (D21).
    */
   bundledResourcesDir: HostPathSchema.optional(),
+  /**
+   * The tsx CLI (`tsx/dist/cli.mjs`) the host runs `tsx` steps and actions
+   * with on `nodeProcess` (CAN-6316 G1). A cloud runner stages its own;
+   * without it the host refuses tsx steps, and desktop runs them in process.
+   */
+  tsxRuntime: HostPathSchema.optional(),
   /** The model registry its model steps resolve against (CAN-5095). */
   modelCatalog: WorkerPipelineModelCatalogSchema.optional(),
+  /**
+   * The owner runs `git-commit-push`'s precommit-failure hook from the stored
+   * outputs, so the host admits that action (CAN-6012 D3). Cloud runners
+   * leave it out until CP-30.
+   */
+  precommitHooks: z.literal('owner').optional(),
   /** The run's Codex app-server environment, when it has a Codex step (CAN-5095 D20). */
   codexEnvironment: z
     .strictObject({
@@ -401,6 +458,14 @@ export const WorkerPipelineOwnerValuesSchema = z.strictObject({
       allowedTools: z.array(z.string().min(1).max(512)).max(256),
       secretValues: z.array(z.string().min(1).max(4096)).max(64),
     })
+    .optional(),
+  /**
+   * One `owner.mcp.authorize` answer's `Authorization` header (CAN-6168),
+   * for one upstream request: the worker writes it once and keeps it no
+   * longer than MCP_AUTHORIZATION_TTL_MS.
+   */
+  mcpAuthorization: z
+    .strictObject({ authorization: z.string().min(1).max(16_384) })
     .optional(),
 });
 export type WorkerPipelineOwnerValues = z.output<

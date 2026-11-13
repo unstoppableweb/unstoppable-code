@@ -1,5 +1,5 @@
 import type { ExecutionLease } from '@canopy/core-runtime';
-import type { ExecutionHandle } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutionHandle } from '@canopy/execution-engine/node/pipelines/executor';
 import { getExecutionAccounting } from '../execution-accounting';
 import {
   getFollowedDaemonPipelineExecutionHandles,

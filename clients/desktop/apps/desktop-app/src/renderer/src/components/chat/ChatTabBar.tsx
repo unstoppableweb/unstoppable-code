@@ -11,6 +11,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { useShallow } from 'zustand/shallow';
 import {
   getOnlyQueuedHookPlaceholderQueueId,
@@ -40,7 +41,7 @@ import {
 } from '@/lib/file-viewer/desktop-file-session-controller';
 import { resolveOverallDefault } from '@canopy/desktop-shared/types';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
-import { FileTypeIcon } from '../shared/file-icons';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { resolveChatTabProvider } from '@/lib/providerUi';
 import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
@@ -333,7 +334,8 @@ export const ChatTabBar = memo(function ChatTabBar({
   const scopeWorktreeId = effectiveScope?.worktreeId;
   useEffect(() => {
     setWorktreeRootPath(undefined);
-    if (!scopeProjectId || !scopeWorktreeId) {
+    // A cloud scope has no worktree path on this computer (CAN-6395).
+    if (!scopeProjectId || !scopeWorktreeId || isWebCoreScope(scopeProjectId)) {
       return;
     }
     let cancelled = false;
@@ -593,12 +595,7 @@ export const ChatTabBar = memo(function ChatTabBar({
             { byChat: liveTaskByChat },
           );
     const leading = isFileTab ? (
-      <FileTypeIcon
-        filename={tab.title}
-        size={20}
-        boxSize={14}
-        className="shrink-0"
-      />
+      <FileTypeIcon filename={tab.title} size="sm" className="shrink-0" />
     ) : isWorking && !awaitingApproval && !awaitingToolApproval ? (
       <ThinkingSpinner
         // Matches the 12px provider/plan glyphs it alternates with, so the tab
@@ -711,12 +708,7 @@ export const ChatTabBar = memo(function ChatTabBar({
     // A pinned tab shows only its icon, so hovering it names the tab: the
     // status glyph and the full title (a file tab's path).
     const hoverLeading: ReactNode = isFileTab ? (
-      <FileTypeIcon
-        filename={tab.title}
-        size={20}
-        boxSize={16}
-        className="shrink-0"
-      />
+      <FileTypeIcon filename={tab.title} size="md" className="shrink-0" />
     ) : isWorking && !awaitingApproval && !awaitingToolApproval ? (
       <ThinkingSpinner tone="accent" className="shrink-0" />
     ) : backgroundTasks > 0 && !awaitingApproval && !awaitingToolApproval ? (
@@ -965,10 +957,12 @@ export const ChatTabBar = memo(function ChatTabBar({
                 void (async (): Promise<void> => {
                   let worktreePath: string | undefined;
                   try {
-                    worktreePath = await window.api.getWorktreePath({
-                      projectId: sel.projectId,
-                      worktreeId: sel.worktreeId,
-                    });
+                    worktreePath = isWebCoreScope(sel.projectId)
+                      ? undefined
+                      : await window.api.getWorktreePath({
+                          projectId: sel.projectId,
+                          worktreeId: sel.worktreeId,
+                        });
                   } catch {
                     worktreePath = undefined;
                   }

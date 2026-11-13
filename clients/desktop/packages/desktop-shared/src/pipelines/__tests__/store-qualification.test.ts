@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type * as AtomicFile from '../../node/lib/atomic-file';
+import type * as AtomicFile from '@canopy/execution-engine/node/lib/atomic-file';
 import type {
   PipelineIndex,
   PipelineSaveInput,
@@ -41,9 +41,9 @@ jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
     join(mockRoot, 'pipelines', 'index.json'),
   getBundledPipelinesDir: (): string => join(mockRoot, 'bundled'),
 }));
-jest.mock('../../node/lib/atomic-file', () => {
+jest.mock('@canopy/execution-engine/node/lib/atomic-file', () => {
   const actual = jest.requireActual<typeof AtomicFile>(
-    '../../node/lib/atomic-file',
+    '@canopy/execution-engine/node/lib/atomic-file',
   );
   return {
     ...actual,
@@ -74,7 +74,7 @@ import {
   saveStoredPipeline,
   writeStoredPipeline,
   writeStoredPipelineRemoteMetadata,
-} from '../store';
+} from '@canopy/execution-engine/pipelines/store';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { createStoredPipelineDefinitionWriter } from '../../node/pipelines/definition-sources';
 

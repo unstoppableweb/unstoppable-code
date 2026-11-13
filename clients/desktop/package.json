@@ -96,7 +96,7 @@
     "@types/js-yaml": "^4.0.9",
     "builder-util-runtime": "9.5.1",
     "colorjs.io": "^0.6.1",
-    "electron": "^45.2.2",
+    "electron": "^45.3.0",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.25.12",
     "micromark": "^4.0.2",
@@ -422,7 +422,7 @@
   },
   "codex": {
     "version": "0.167.0",
-    "appServerTypesDir": "packages/desktop-shared/src/node/codex-runtime/generated",
+    "appServerTypesDir": "packages/execution-engine/src/node/codex-runtime/generated",
     "models": [
       {
         "id": "gpt-6-astra",

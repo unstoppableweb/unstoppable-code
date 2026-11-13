@@ -20,6 +20,9 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
+import { entryIdForSelection } from '@canopy/desktop-shared/lib/capability-entry-id';
+
+export { entryIdForSelection };
 import { TRIGGER_META } from '@/components/pipeline/pipeline-trigger-meta';
 
 /** The capability whose detail page is asking for related items. */
@@ -89,27 +92,6 @@ function selectionMatchesSubject(
     );
   }
   return false;
-}
-
-/**
- * Unified Plugins-page entry id for a resolved capability selection. Curated
- * marketplace plugins surface as `curated:<name>` entries in the discovery
- * projection; every other marketplace plugin is `mkt:<id>/<name>`.
- */
-export function entryIdForSelection(
-  selection: PipelineCapabilitySelection,
-  marketplaces: readonly Pick<MarketplaceInfo, 'id' | 'curated'>[],
-): string {
-  if (selection.kind === 'skill') {
-    return `skill:${selection.sourceId}:${selection.skillName}`;
-  }
-  const marketplace = marketplaces.find(
-    (candidate) => candidate.id === selection.marketplaceId,
-  );
-  if (marketplace?.curated === true) {
-    return `curated:${selection.pluginName}`;
-  }
-  return `mkt:${selection.marketplaceId}/${selection.pluginName}`;
 }
 
 function selectionKey(selection: PipelineCapabilitySelection): string {

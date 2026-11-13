@@ -1,13 +1,14 @@
 import type { JSX, ReactNode } from 'react';
 import { Button } from './Button';
-import { Stack } from './Stack';
+import { Inline } from './Stack';
+import { Surface } from './Surface';
 
 export interface RunConfirmationCardProps {
   /** Prompt copy — typically "Run <label>?". Caller supplies the sentence so
    * the displayed label can vary per section. */
   prompt: ReactNode;
   /** Section-specific details — script command preview, hook action list,
-   * etc. Pre-formatted by the caller. */
+   * etc. Pre-formatted by the caller, as `inset` wells. */
   details: ReactNode;
   onConfirm: () => void;
   onCancel: () => void;
@@ -18,35 +19,30 @@ export interface RunConfirmationCardProps {
 }
 
 /**
- * Amber-tinted inline confirmation card rendered in place of a row when a
- * manual run is awaiting confirmation. Pure display.
+ * Inline confirmation rendered in place of a row when a manual run is
+ * awaiting confirmation: a pending-input form, so a neutral `group` box
+ * (docs/design/surfaces.md), with Cancel then Run at its end. Pure display.
  */
 export function RunConfirmationCard({
   prompt,
   details,
   onConfirm,
   onCancel,
-  confirmLabel = 'Confirm',
+  confirmLabel = 'Run',
   cancelLabel = 'Cancel',
 }: RunConfirmationCardProps): JSX.Element {
   return (
-    <div className="rounded-lg border border-line-attention bg-warning/[0.06] px-2.5 py-2 text-xs">
-      <Stack gap="inline">
-        <div className="flex flex-col gap-1.5">
-          <p className="fg-primary/80">{prompt}</p>
-          {details === undefined || details === null ? null : (
-            <div>{details}</div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="primary" size="compact" onClick={onConfirm}>
-            {confirmLabel}
-          </Button>
-          <Button size="compact" onClick={onCancel}>
-            {cancelLabel}
-          </Button>
-        </div>
-      </Stack>
-    </div>
+    <Surface variant="group" padding="tight" gap="inline">
+      <p className="text-xs fg-primary">{prompt}</p>
+      {details === undefined || details === null ? null : <div>{details}</div>}
+      <Inline gap="inline" justify="end">
+        <Button size="compact" onClick={onCancel}>
+          {cancelLabel}
+        </Button>
+        <Button variant="primary" size="compact" onClick={onConfirm}>
+          {confirmLabel}
+        </Button>
+      </Inline>
+    </Surface>
   );
 }

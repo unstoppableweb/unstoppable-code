@@ -1,4 +1,11 @@
-import { access, readFile, readdir, stat, unlink } from 'node:fs/promises';
+import {
+  access,
+  lstat,
+  readFile,
+  readdir,
+  stat,
+  unlink,
+} from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import {
@@ -95,6 +102,51 @@ async function listMarkdownFiles(directory: string): Promise<string[]> {
     if (isNodeError(error, 'ENOENT')) return [];
     throw error;
   }
+}
+
+/** A file a restore or rebuild replaces, deletes or moves, as a revision sees it. */
+export interface MemoryReplacementFile {
+  fileKey: string;
+  modifiedAt: string;
+  sizeBytes: number;
+}
+
+/**
+ * Every file a restore or rebuild of the scope replaces, deletes or moves:
+ * the index, each topic a snapshot keeps and the inbox and import notes,
+ * pending or consolidated. By name and file status only, with no lock and no
+ * backfill, so a caller holding the scope's write lock can read it (CAN-6005).
+ */
+export async function listMemoryReplacementFiles(
+  scopeDir: string,
+): Promise<MemoryReplacementFile[]> {
+  const fileKeys = [
+    'MEMORY.md',
+    ...(await listTopicFilenames(scopeDir)).map((name) => `topics/${name}`),
+  ];
+  for (const folder of [
+    'inbox',
+    `inbox/${ARCHIVE_DIRNAME}`,
+    'imported',
+    `imported/${ARCHIVE_DIRNAME}`,
+  ])
+    for (const name of await listMarkdownFiles(join(scopeDir, folder)))
+      fileKeys.push(`${folder}/${name}`);
+  const files: MemoryReplacementFile[] = [];
+  for (const fileKey of fileKeys.sort()) {
+    try {
+      const entry = await lstat(join(scopeDir, fileKey));
+      if (entry.isFile())
+        files.push({
+          fileKey,
+          modifiedAt: entry.mtime.toISOString(),
+          sizeBytes: entry.size,
+        });
+    } catch (error) {
+      if (!isNodeError(error, 'ENOENT')) throw error;
+    }
+  }
+  return files;
 }
 
 function markdownStem(filename: string): string {

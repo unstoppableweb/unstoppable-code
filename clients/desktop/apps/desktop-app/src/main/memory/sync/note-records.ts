@@ -3,7 +3,6 @@ import {
   MemoryNoteSchema,
   MemoryOrganizationIdSchema,
   MemoryProjectIdSchema,
-  MemoryUuidSchema,
   isMemoryUlid,
   type MemoryDeviceRef,
   type MemoryNote,
@@ -76,22 +75,6 @@ function noteOrigin(
   };
 }
 
-function noteDevice(
-  fields: Record<string, FrontMatterValue>,
-  thisDevice: MemoryDeviceRef,
-): MemoryDeviceRef {
-  const deviceId = MemoryUuidSchema.safeParse(scalar(fields.device));
-  if (!deviceId.success) return thisDevice;
-  const label = scalar(fields.deviceLabel)?.slice(
-    0,
-    MEMORY_SYNC_LIMITS.deviceLabelMaxChars,
-  );
-  return {
-    deviceId: deviceId.data,
-    label: label === undefined || label.length === 0 ? thisDevice.label : label,
-  };
-}
-
 /** An inbox note file's wire body, or null without front matter. */
 export function inboxNoteBody(content: string): string | null {
   const frontMatter = readMemoryNoteFrontMatter(content);
@@ -100,8 +83,15 @@ export function inboxNoteBody(content: string): string | null {
 
 /**
  * The wire note for an inbox note file, or null when it cannot travel (no
- * ID, an empty body, a name a replica cannot carry). A note without a
- * `device` was saved here before this device registered.
+ * ID, an empty body, a name a replica cannot carry).
+ *
+ * `device` is always `thisDevice`, the one sending the note: the server pins
+ * it to the sending session and refuses any other, and `MemoryDeviceRef` is
+ * the sender, not provenance. So a note this device sends that another one
+ * wrote, a peer note a re-enable sends again or an edit of one made here,
+ * travels as this device's. The file keeps the `device` and `deviceLabel`
+ * front matter it arrived with, which is where that provenance stays and
+ * what the replica reads to tell its own notes from a peer's.
  */
 export function inboxNoteToWire(input: {
   fileKey: string;
@@ -125,7 +115,7 @@ export function inboxNoteToWire(input: {
     contentHash: sha256Hex(body),
     createdAt,
     modifiedAt: isoTime(scalar(fields.modified), Date.parse(createdAt)),
-    device: noteDevice(fields, input.thisDevice),
+    device: input.thisDevice,
     source: noteSource(fields),
     origin: noteOrigin(fields),
     ...(isMemoryUlid(supersedes) && supersedes !== noteId

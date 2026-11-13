@@ -47,6 +47,8 @@ export function createRemoteControlApi(
       ipc.invoke(IPC_CHANNELS.remoteControlOpenMachine, deviceId),
     setAllowIncoming: (allow) =>
       ipc.invoke(IPC_CHANNELS.remoteControlSetAllowIncoming, allow),
+    setAllowRemoteUpdates: (allow) =>
+      ipc.invoke(IPC_CHANNELS.remoteControlSetAllowRemoteUpdates, allow),
     openPairingWindow: () =>
       ipc.invoke(IPC_CHANNELS.remoteControlOpenPairingWindow),
     closePairingWindow: () =>

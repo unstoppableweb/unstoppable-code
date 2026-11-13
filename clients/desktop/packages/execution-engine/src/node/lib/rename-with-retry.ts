@@ -10,7 +10,7 @@ export interface RenameWithRetryOptions {
    * without renaming, so a commit fence checked before the first attempt
    * also holds across the backoff.
    */
-  beforeRetry?: () => void;
+  beforeRetry?: () => void | Promise<void>;
 }
 
 /** Retry transient sharing violations without ever deleting the destination. */
@@ -37,7 +37,7 @@ export async function renameWithRetry(
         throw error;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
-      options?.beforeRetry?.();
+      await options?.beforeRetry?.();
     }
   }
 }

@@ -91,7 +91,7 @@ export function TrialEndingBanner({
         Your trial ends {endsAtLabel}. Add a payment method to keep {planLabel}.{' '}
         <SettingsLink
           href="/account"
-          className="font-medium fg-accent underline underline-offset-2 hover:no-underline"
+          className="font-medium fg-accent-strong underline underline-offset-2 hover:no-underline"
         >
           Add payment method
         </SettingsLink>{' '}
@@ -100,7 +100,7 @@ export function TrialEndingBanner({
         </span>{' '}
         <SettingsLink
           href="/pricing"
-          className="font-medium fg-accent underline underline-offset-2 hover:no-underline"
+          className="font-medium fg-accent-strong underline underline-offset-2 hover:no-underline"
         >
           View plans
         </SettingsLink>

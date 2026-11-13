@@ -30,6 +30,67 @@ export interface CoreWatcherHost {
   ): Promise<ToolReport>;
 }
 
+/**
+ * Where a watcher's calling session works (CAN-6031): the host resolves it
+ * from the recipient's ids, never from a path in the request.
+ */
+export interface CoreWatcherDirectories {
+  /** A chat's directory: the one its session was started in. */
+  chat(
+    workspaceId: string,
+    worktreeId: string,
+    repoId: string | undefined,
+  ): Promise<string>;
+  /** A managed delegate's live run's directory, or undefined without one. */
+  delegate(
+    scope: { projectId: string; worktreeId: string; chatId: string },
+    delegationId: string,
+  ): Promise<string | undefined>;
+}
+
+const desktopWatcherDirectories: CoreWatcherDirectories = {
+  chat: async (workspaceId, worktreeId, repoId) =>
+    (await import('../lib/resolve-worktree')).resolveWorktreeCwd(
+      workspaceId,
+      worktreeId,
+      repoId,
+    ),
+  delegate: async (scope, delegationId) =>
+    (
+      await import('../agents/delegation/service')
+    ).managedDelegationWorkingDirectory(scope, delegationId),
+};
+
+/** The directory a command or GitHub watcher's session works in. */
+export async function resolveWatcherDirectory(
+  destination: AppAdvisorWatcherDestination,
+  repoId: string | undefined,
+  directories: CoreWatcherDirectories = desktopWatcherDirectories,
+): Promise<string> {
+  if (destination.delegationId === undefined)
+    return directories.chat(
+      destination.projectId,
+      destination.worktreeId,
+      repoId,
+    );
+  const directory = await directories.delegate(
+    {
+      projectId: destination.projectId,
+      worktreeId: destination.worktreeId,
+      chatId: destination.chatId,
+    },
+    destination.delegationId,
+  );
+  if (directory === undefined)
+    throw new CanopyOperationError({
+      kind: 'failed_precondition',
+      code: 'core.initiatedWork.watcher.unavailable',
+      message: 'This delegated task has no live run on this host.',
+      retry: { kind: 'never' },
+    });
+  return directory;
+}
+
 function invalidRequest(message: string): CanopyOperationError {
   return new CanopyOperationError({
     kind: 'invalid_argument',
@@ -85,9 +146,10 @@ const desktopWatcherHost: CoreWatcherHost = {
           {
             ...(call.createdBy ? { toolUseId: call.createdBy } : {}),
             signal: call.signal,
-            ...(request.repositoryCwd
-              ? { repositoryCwd: request.repositoryCwd }
-              : {}),
+            repositoryCwd: await resolveWatcherDirectory(
+              destination,
+              request.repoId,
+            ),
           },
         );
       }
@@ -102,7 +164,7 @@ const desktopWatcherHost: CoreWatcherHost = {
                 command: request.command,
                 intervalSeconds: request.intervalSeconds,
                 maxAttempts: request.maxAttempts,
-                cwd: request.cwd,
+                cwd: await resolveWatcherDirectory(destination, request.repoId),
               }
             : {
                 kind: 'scheduled_wakeup',

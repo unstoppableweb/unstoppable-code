@@ -6,11 +6,15 @@ import type {
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
+import type { WorkerPipelineExecutionView } from '@canopy/protocol/canopy-core';
 import { compactPipelineStatusReasonLabel } from '@canopy/ui-shared/lib';
 import {
   NO_PROJECT_LABEL,
+  cloudWorkflowRunRow,
+  isListedCloudRun,
   normalizeAutomationRunStatus,
   sortWorkflowRunRows,
+  workflowRunStarterOf,
   workflowRunStatusFromPipeline,
   workflowRunStatusFromWatcher,
   type WorkflowAutomationRunRow,
@@ -80,6 +84,13 @@ export interface RunFeedInput {
    */
   readonly orphanRunInScope: (run: ScheduledActivityRun) => boolean;
   readonly executionInScope: (execution: ExecutionSummary) => boolean;
+  /**
+   * The signed-in account's cloud runs (CAN-6326), present only while the
+   * feed may list them. Their rows say they ran in the cloud, and every
+   * pipeline row then says where it ran.
+   */
+  readonly cloudRuns?: readonly WorkerPipelineExecutionView[];
+  readonly cloudRunInScope?: (view: WorkerPipelineExecutionView) => boolean;
   readonly watcherInScope: (watcher: AppAdvisorWatcherSummary) => boolean;
   /**
    * Actions the existing execution handlers allow for one execution
@@ -138,17 +149,11 @@ function automationRunStarter(run: ScheduledActivityRun): WorkflowRunStarter {
 }
 
 function executionStarter(execution: ExecutionSummary): WorkflowRunStarter {
-  if (execution.trigger_source?.kind === 'hook') return 'hook';
-  switch (execution.event_name) {
-    case 'plan_ready':
-      return 'plan-approved';
-    case 'task_ready':
-      return 'task-ready';
-    case 'workflow':
-      return 'workflow';
-    default:
-      return 'manual';
-  }
+  return workflowRunStarterOf({
+    initiator: execution.initiator,
+    event: execution.event_name,
+    hook: execution.trigger_source?.kind === 'hook',
+  });
 }
 
 /** Where a pipeline automation with no project runs. */
@@ -525,6 +530,7 @@ function buildPipelineRow(
     name: execution.pipeline_name,
     status: workflowRunStatusFromPipeline(execution.status),
     starter: executionStarter(execution),
+    ...(input.cloudRuns === undefined ? {} : { location: 'local' }),
     where: joinWhere(project, worktree),
     startedAt: parseTime(execution.started_at),
     endedAt: parseTime(execution.completed_at),
@@ -632,6 +638,12 @@ export function buildWorkflowRunRows(
     if (ownedExecutionIds.has(execution.id)) continue;
     if (!input.executionInScope(execution)) continue;
     rows.push(buildPipelineRow(execution, input));
+  }
+
+  for (const view of input.cloudRuns ?? []) {
+    if (!isListedCloudRun(view)) continue;
+    if (input.cloudRunInScope && !input.cloudRunInScope(view)) continue;
+    rows.push(cloudWorkflowRunRow(view));
   }
 
   for (const watcher of input.watchers) {

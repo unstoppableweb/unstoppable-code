@@ -18,7 +18,7 @@ import {
 import {
   classifyDaemonPipeline,
   type DaemonPipelineClassifierContext,
-} from '../daemon-eligibility';
+} from '@canopy/execution-engine/node/pipelines/daemon-eligibility';
 
 const BUNDLED_ACTIONS = resolve(__dirname, '../../../../resources/actions');
 

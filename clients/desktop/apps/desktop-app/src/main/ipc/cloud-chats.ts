@@ -32,7 +32,8 @@ function cloudChatsEnabled(): boolean {
   );
 }
 
-async function signedInAccountId(): Promise<string | null> {
+/** The signed-in cloud account's external id, or null. */
+export async function signedInAccountId(): Promise<string | null> {
   const read = await readCanopyCloudAccountWithStatus();
   return (read.status === 'ok' ? read.entry?.account?.id : null) ?? null;
 }

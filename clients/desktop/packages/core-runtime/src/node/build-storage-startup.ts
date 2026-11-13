@@ -33,11 +33,22 @@ export class BuildStorageStartupRefused extends Error {
 export function assertBuildStorageStartup(options: {
   readonly build: ProductBuild;
   readonly internalState: InternalRootStartupState;
-  readonly migrationCommand: string;
+  readonly migrationCommand?: string;
 }): void {
   if (options.build !== 'internal') return;
   const state = options.internalState;
   if (state === 'fresh' || state === 'complete') return;
+  // Installed builds do not ship a source checkout or its migration script.
+  if (!options.migrationCommand) {
+    throw new BuildStorageStartupRefused(
+      `internal-migration-${state}`,
+      state === 'stable-owned'
+        ? "Couldn't start the internal build because secure storage belongs to the stable build. Keep both installations unchanged and contact support with this message."
+        : state === 'required'
+          ? 'This install needs an internal data migration; contact support with this message.'
+          : `This install has ${state} internal migration data; contact support with this message.`,
+    );
+  }
   const freshStartCommand = `${options.migrationCommand.replace(/ --apply(?: --declare-internal)?$/, '')} --skip-migration`;
   // Whole-tree migration cannot transfer stable's nested secure storage.
   if (state === 'stable-owned')

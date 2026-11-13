@@ -84,6 +84,19 @@ export function promptEntryCostBytes(file: PromptEntryFile): number {
   return utf8ByteLength(serialized) + 2 * lines + 2;
 }
 
+// Whether a prompt entry could fit an input budget at all, with nothing
+// else selected. A 'stop' selection keeps FIFO order by stopping at the
+// first entry that does not fit the room left, which is right only while
+// that entry leads the next run: an entry this rejects leads nothing, so
+// stopping at it would hold every later entry back forever. Selections pass
+// such an entry over and report it instead.
+export function promptEntryFitsBudget(
+  file: PromptEntryFile,
+  budgetBytes: number,
+): boolean {
+  return promptEntryCostBytes(file) <= budgetBytes;
+}
+
 // Import staging refuses files whose serialized prompt entry could never fit
 // the imports budget — staged anyway, they would sit undrainable forever
 // behind the 'stop' selection.

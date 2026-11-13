@@ -1,3 +1,5 @@
+import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
+import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import type { BrowserWindow } from 'electron';
 import {
   IPC_CHANNELS,
@@ -368,6 +370,8 @@ export function registerWorktreeHandlers(
       const response = await withTypedArchiveRefusal(
         {
           typedRefusal: request.typedRefusal,
+          intent: worktreeRemovalIntent(request.lockAfterArchive),
+          expectedCreatedAt: request.expectedCreatedAt,
           workspaceId: request.projectId,
           worktreeId: request.worktreeId,
         },
@@ -381,22 +385,25 @@ export function registerWorktreeHandlers(
                 request.deleteWithoutRetentionIfMissing,
             },
             () =>
-              archiveWorktree({
-                workspaceId: request.projectId,
-                worktreeId: request.worktreeId,
-                source: 'single_repo',
-                expectedKind: 'single-repo',
-                expectedCreatedAt: request.expectedCreatedAt,
-                expectedBranchName: request.expectedBranchName,
-                deleteBranch: request.deleteBranch,
-                lockAfterArchive: request.lockAfterArchive,
-                deleteWithoutRetentionIfMissing:
-                  request.deleteWithoutRetentionIfMissing,
-                remainingWorktreeOrder: request.remainingWorktreeOrder,
-                expectedRemainingWorktreeOrder:
-                  request.expectedRemainingWorktreeOrder,
-                repoPath: request.repoPath,
-              }),
+              archiveWorktree(
+                {
+                  workspaceId: request.projectId,
+                  worktreeId: request.worktreeId,
+                  source: 'single_repo',
+                  expectedKind: 'single-repo',
+                  expectedCreatedAt: request.expectedCreatedAt,
+                  expectedBranchName: request.expectedBranchName,
+                  deleteBranch: request.deleteBranch,
+                  lockAfterArchive: request.lockAfterArchive,
+                  deleteWithoutRetentionIfMissing:
+                    request.deleteWithoutRetentionIfMissing,
+                  remainingWorktreeOrder: request.remainingWorktreeOrder,
+                  expectedRemainingWorktreeOrder:
+                    request.expectedRemainingWorktreeOrder,
+                  repoPath: request.repoPath,
+                },
+                { telemetryParent: 'inherit' },
+              ),
           ),
       );
       if (!response.refusal)
@@ -436,47 +443,56 @@ export function registerWorktreeHandlers(
     async (event, request: DiffStatsRequest): Promise<DiffStats> => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
-
-      const worktreePath = resolveWorktreeCwd(
+      return withWorktreeGitRead<DiffStats>(
         request.projectId,
         request.worktreeId,
-      );
-      // worker.git.diff.get computes the stats; fetching, base selection and
-      // the code-graph nudge stay here (CAN-4103).
-      const readDiffStats = createLegacyDiffStatsReader(
-        runtime.dispatcher,
-        () => runtime.resolveCaller(event),
-        request,
-      );
+        { insertions: 0, deletions: 0 },
+        async () => {
+          validateId(request.projectId, 'projectId');
+          validateId(request.worktreeId, 'worktreeId');
 
-      if (isMultiRepoWorkspace(request.projectId)) {
-        const result = await aggregateMultiRepoDiffStatsService(
-          request.projectId,
-          request.worktreeId,
-          worktreePath,
-          { readDiffStats },
-        );
-        nudgeCodeGraphRefreshAfterDiffStats(
-          request.projectId,
-          request.worktreeId,
-        );
-        return result.stats;
-      }
+          const worktreePath = resolveWorktreeCwd(
+            request.projectId,
+            request.worktreeId,
+          );
+          // worker.git.diff.get computes the stats; fetching, base selection and
+          // the code-graph nudge stay here (CAN-4103).
+          const readDiffStats = createLegacyDiffStatsReader(
+            runtime.dispatcher,
+            () => runtime.resolveCaller(event),
+            request,
+          );
 
-      const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
-        projectId: request.projectId,
-        worktreeId: request.worktreeId,
-        repoPath: worktreePath,
-      });
-      const stats = await readDiffStats(
-        { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: worktreePath },
-        effectiveBaseBranch.branch ?? undefined,
+          if (isMultiRepoWorkspace(request.projectId)) {
+            const result = await aggregateMultiRepoDiffStatsService(
+              request.projectId,
+              request.worktreeId,
+              worktreePath,
+              { readDiffStats },
+            );
+            nudgeCodeGraphRefreshAfterDiffStats(
+              request.projectId,
+              request.worktreeId,
+            );
+            return result.stats;
+          }
+
+          const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
+            projectId: request.projectId,
+            worktreeId: request.worktreeId,
+            repoPath: worktreePath,
+          });
+          const stats = await readDiffStats(
+            { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: worktreePath },
+            effectiveBaseBranch.branch ?? undefined,
+          );
+          nudgeCodeGraphRefreshAfterDiffStats(
+            request.projectId,
+            request.worktreeId,
+          );
+          return stats;
+        },
       );
-      nudgeCodeGraphRefreshAfterDiffStats(
-        request.projectId,
-        request.worktreeId,
-      );
-      return stats;
     },
   );
 

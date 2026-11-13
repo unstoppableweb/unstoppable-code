@@ -6,11 +6,20 @@ export {
 } from './invoker';
 export {
   createCoreCoworkStore,
+  RECONNECT_DELAYS_MS,
   type CoreCoworkProject,
+  type CoreCoworkStoreOptions,
   type CoreCoworkState,
   type CoreCoworkStatus,
   type CoreCoworkTask,
+  type CoreCoworkTaskStart,
 } from './create-core-cowork-store';
+export {
+  CORE_COWORK_TASK_BRANCH,
+  coreCoworkSidebarRows,
+  type CoreCoworkSidebarRows,
+  type CoreCoworkSidebarRowsOptions,
+} from './sidebar-rows';
 export {
   createCloudChatCatalog,
   mapCloudChatCatalog,
@@ -29,3 +38,26 @@ export {
   type CloudChatThreadTarget,
   type ProjectCloudChatMessages,
 } from './cloud-chat-thread';
+export {
+  cloudCapabilityRows,
+  type CloudCapabilityRow,
+  type CloudCapabilityRowsInput,
+  type CloudCapabilityState,
+  type CloudCapabilityUnavailableReason,
+} from './cloud-capability-rows';
+export {
+  DURABLE_PTY_SKIPPED_MARKER,
+  DurablePtyClient,
+  type DurablePtyClientOptions,
+  type DurablePtyClientState,
+  type DurablePtyCloseReason,
+  type DurablePtyDimensions,
+  type DurablePtyResume,
+  type DurableTerminalConnection,
+} from './durable-pty-client';
+export {
+  createDurableTerminalClient,
+  type DurableTerminalClient,
+  type DurableTerminalClientOptions,
+} from './durable-terminal-client';
+export { createScopedTerminalClient } from './scoped-terminal-client';

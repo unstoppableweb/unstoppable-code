@@ -1,4 +1,3 @@
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import {
   alwaysAvailableReason,
   BUNDLED_SKILL_FOOTNOTE,
@@ -14,6 +13,7 @@ import {
   type UnifiedPluginEntry,
   type InstalledEntryStatusState,
   type InstalledEntryStatusStates,
+  type InstalledStatusFilterValue,
 } from '@canopy/ui-shared/lib';
 import {
   buildMarketplaceBrowseGroups,
@@ -85,8 +85,12 @@ export interface CustomizeTabModelInput {
   readonly pipelineCategory?: string | null;
   readonly installedExpanded?: boolean;
   readonly keepInstalledVisible?: boolean;
-  /** Ignored on tabs without statuses (`customizeTabHasInstalledStatuses`). */
-  readonly installedStatusFilter?: InstalledItemStatus;
+  /**
+   * Ignored on tabs without statuses (`customizeTabHasInstalledStatuses`),
+   * and `update-available` on tabs that do not offer it
+   * (`customizeTabOffersUpdateFilter`).
+   */
+  readonly installedStatusFilter?: InstalledStatusFilterValue;
   readonly installedStatusStates?: InstalledEntryStatusStates;
   /** Pinned filter membership; entries absent from it are evaluated live. */
   readonly installedStatusSnapshot?: InstalledStatusMembership;
@@ -126,6 +130,101 @@ export function customizeTabHasInstalledStatuses(
     case 'blueprint':
       return false;
   }
+}
+
+/** The update kinds a status tab's Installed rows can hold. */
+function customizeTabUpdateKinds(
+  tab: MarketplaceTypeTabId,
+): readonly CustomizeUpdateKind[] {
+  switch (tab) {
+    case 'all':
+      return ['skill', 'automation', 'collection'];
+    case 'skill':
+      return ['skill'];
+    case 'collection':
+      return ['collection'];
+    case 'plugin':
+    case 'app':
+    case 'workflow':
+    case 'agent':
+    case 'sources':
+    case 'blueprint':
+      return [];
+  }
+}
+
+/**
+ * Whether a tab offers the Update available status filter (CAN-5309): it
+ * carries statuses and the host surfaces updates for one of its kinds. The
+ * offer depends only on the tab and the host, never on the current rows.
+ */
+export function customizeTabOffersUpdateFilter(
+  tab: MarketplaceTypeTabId,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
+): boolean {
+  return (
+    customizeTabHasInstalledStatuses(tab) &&
+    customizeTabUpdateKinds(tab).some((kind) =>
+      supportedUpdateKinds?.includes(kind),
+    )
+  );
+}
+
+/**
+ * The status filter a tab applies, which hosts also show in the search row.
+ * A stored filter the tab cannot apply (a navigation intent or `?installed=`
+ * landing on a tab without it) reads as Any; the host's stored value is left
+ * alone.
+ */
+export function effectiveInstalledStatusFilter(
+  tab: MarketplaceTypeTabId,
+  filter: InstalledStatusFilterValue | undefined,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
+): InstalledStatusFilterValue | undefined {
+  if (filter === undefined || !customizeTabHasInstalledStatuses(tab))
+    return undefined;
+  if (
+    filter === 'update-available' &&
+    !customizeTabOffersUpdateFilter(tab, supportedUpdateKinds)
+  )
+    return undefined;
+  return filter;
+}
+
+/**
+ * An update the Updates section lists: the host surfaces updates for the
+ * entry's kind and the entry's source has one. Shared copies are separate
+ * (`shareUpdateAvailable`); they update through the reviewed share flow.
+ */
+function surfacedUpdate(
+  entry: UnifiedPluginEntry,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
+): boolean {
+  return (
+    entry.updateAvailable === true &&
+    ((entry.kind === 'skill' &&
+      entry.ref.type === 'skill' &&
+      !entry.builtIn &&
+      !entry.custom &&
+      supportedUpdateKinds?.includes('skill') === true) ||
+      (entry.kind === 'automation' &&
+        entry.ref.type === 'automation' &&
+        supportedUpdateKinds?.includes('automation') === true) ||
+      (entry.kind === 'collection' &&
+        entry.ref.type === 'local-collection' &&
+        supportedUpdateKinds?.includes('collection') === true))
+  );
+}
+
+/** A surfaced update or a shared copy whose source changed (CAN-5309). */
+function entryHasUpdate(
+  entry: UnifiedPluginEntry,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
+): boolean {
+  return (
+    surfacedUpdate(entry, supportedUpdateKinds) ||
+    entry.shareUpdateAvailable === true
+  );
 }
 
 /** Entry id to whether it matched the status filter when first read ready. */
@@ -191,9 +290,13 @@ export function statusEntryIdOf(entry: UnifiedPluginEntry): string {
 
 export function installedStatusMatches(
   entry: UnifiedPluginEntry,
-  filter: InstalledItemStatus,
+  filter: InstalledStatusFilterValue,
   state: InstalledEntryStatusState | undefined,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
 ): boolean {
+  // Updates are not a status, so the status state does not decide them.
+  if (filter === 'update-available')
+    return entryHasUpdate(entry, supportedUpdateKinds);
   if (state?.kind === 'ready')
     return (
       state.item.status === filter ||
@@ -218,40 +321,69 @@ export function installedStatusMatches(
 
 /**
  * Filter membership: a pinned ready match keeps its place, but a fixed or
- * unreadable status always decides on its own.
+ * unreadable status always decides on its own. Update membership only
+ * extends: a pinned update stays, anything else is evaluated live.
  */
 function installedStatusMember(
   entry: UnifiedPluginEntry,
-  filter: InstalledItemStatus,
+  filter: InstalledStatusFilterValue,
   states: InstalledEntryStatusStates | undefined,
   snapshot: InstalledStatusMembership | undefined,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
 ): boolean {
   const state = installedStatusState(entry, states);
+  if (filter === 'update-available')
+    return (
+      snapshot?.[installedStatusEntryId(entry)] === true ||
+      installedStatusMatches(entry, filter, state, supportedUpdateKinds)
+    );
   const pinned =
     state?.kind === 'fixed' || state?.kind === 'read-only'
       ? undefined
       : snapshot?.[installedStatusEntryId(entry)];
-  return pinned ?? installedStatusMatches(entry, filter, state);
+  return (
+    pinned ?? installedStatusMatches(entry, filter, state, supportedUpdateKinds)
+  );
 }
 
 /**
  * Pins the filter match of every entry whose status is ready and not pinned
  * yet, so a status change while filtered keeps the row in place. Returns the
  * same reference when nothing was added; render-time callers rely on that.
+ *
+ * Update available pins only matches, whatever the status: a shared copy's
+ * source hash resolves after the inventory, so a row may join later, and a
+ * row that stops matching stays until the filter changes (CAN-5309).
  */
 export function extendInstalledStatusSnapshot(
   snapshot: InstalledStatusMembership,
-  filter: InstalledItemStatus,
+  filter: InstalledStatusFilterValue,
   entries: readonly UnifiedPluginEntry[],
   states: InstalledEntryStatusStates | undefined,
+  supportedUpdateKinds: readonly CustomizeUpdateKind[] | undefined,
 ): InstalledStatusMembership {
   let next: Record<string, boolean> | undefined;
   for (const entry of entries) {
     const key = installedStatusEntryId(entry);
     const state = installedStatusState(entry, states);
+    if (filter === 'update-available') {
+      if (
+        (next ?? snapshot)[key] === true ||
+        !installedStatusMatches(entry, filter, state, supportedUpdateKinds)
+      )
+        continue;
+      next ??= { ...snapshot };
+      next[key] = true;
+      continue;
+    }
     if (state?.kind !== 'ready' || key in (next ?? snapshot)) continue;
     next ??= { ...snapshot };
-    next[key] = installedStatusMatches(entry, filter, state);
+    next[key] = installedStatusMatches(
+      entry,
+      filter,
+      state,
+      supportedUpdateKinds,
+    );
   }
   return next ?? snapshot;
 }
@@ -483,11 +615,11 @@ export function buildCustomizeTabModel(
   const canonicalInstalls = canonicalInstallsOf(entries);
   // Missing desktop inventory does not erase known cloud/project installs.
   const allInstalled = [...canonicalInstalls.values()];
-  const statusFilter =
-    input.installedStatusFilter !== undefined &&
-    customizeTabHasInstalledStatuses(input.tab)
-      ? input.installedStatusFilter
-      : undefined;
+  const statusFilter = effectiveInstalledStatusFilter(
+    input.tab,
+    input.installedStatusFilter,
+    input.supportedUpdateKinds,
+  );
   const matchesStatus = (entry: UnifiedPluginEntry): boolean =>
     statusFilter === undefined ||
     installedStatusMember(
@@ -495,22 +627,11 @@ export function buildCustomizeTabModel(
       statusFilter,
       input.installedStatusStates,
       input.installedStatusSnapshot,
+      input.supportedUpdateKinds,
     );
   const installed = allInstalled.filter(matchesStatus);
-  const updates = installed.filter(
-    (entry) =>
-      entry.updateAvailable === true &&
-      ((entry.kind === 'skill' &&
-        entry.ref.type === 'skill' &&
-        !entry.builtIn &&
-        !entry.custom &&
-        input.supportedUpdateKinds?.includes('skill')) ||
-        (entry.kind === 'automation' &&
-          entry.ref.type === 'automation' &&
-          input.supportedUpdateKinds?.includes('automation')) ||
-        (entry.kind === 'collection' &&
-          entry.ref.type === 'local-collection' &&
-          input.supportedUpdateKinds?.includes('collection'))),
+  const updates = installed.filter((entry) =>
+    surfacedUpdate(entry, input.supportedUpdateKinds),
   );
   if (updates.length) section('updates', 'Updates', updates);
   if (

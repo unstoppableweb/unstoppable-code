@@ -2589,14 +2589,40 @@ function isPathInsideWorkspace(
 }
 
 /**
+ * Whether a canonical read target is a protected policy file, or, for Glob
+ * and Grep, a directory whose traversal would read one.
+ */
+function readTargetsProtectedFile(
+  check: Extract<ApprovalCheck, { kind: 'tool' }>,
+  ctx: ApprovalEvaluationContext,
+): boolean {
+  const target = check.resolvedReadPath;
+  if (target === undefined) return false;
+  const traverses = check.toolName === 'Glob' || check.toolName === 'Grep';
+  return (
+    ctx.protectedFileWritePaths?.some((path) => {
+      const relation = protectedFileRelation(
+        target,
+        path,
+        ctx.pathCaseInsensitive,
+      );
+      return relation === 'exact' || (traverses && relation === 'ancestor');
+    }) === true
+  );
+}
+
+/**
  * Evaluates a single approval check against the current mode and rule sets.
  *
  * Order of precedence:
  *   1. Hardcoded safety denies (skipped entirely in `'full-access'` mode).
  *   2. Deny rules, across all three tiers (session/project/global).
- *   3. Allow rules, across all three tiers.
+ *   3. Protected policy files prompt (writes, commands, and canonical read
+ *      targets, including a Glob/Grep directory that contains one), then
+ *      allow rules, across all three tiers.
  *   4. Mode-based fallback: `'full-access'` allows everything; `'auto'`
- *      allows `file-write` checks resolved inside `ctx.workspaceRoot`.
+ *      allows `file-write` checks resolved inside `ctx.workspaceRoot`, and
+ *      read `tool` checks whose canonical `resolvedReadPath` is inside it.
  *   5. Otherwise, prompt the user.
  */
 export function evaluateApproval(
@@ -2651,7 +2677,8 @@ export function evaluateApproval(
               ctx.pathCaseInsensitive,
             ) === 'exact',
       )) ||
-      (check.kind === 'command' && commandTargetsProtectedFile(check, ctx)))
+      (check.kind === 'command' && commandTargetsProtectedFile(check, ctx)) ||
+      (check.kind === 'tool' && readTargetsProtectedFile(check, ctx)))
   ) {
     return { outcome: 'prompt' };
   }
@@ -2695,8 +2722,33 @@ export function evaluateApproval(
     return { outcome: 'allow' };
   }
 
+  // Only the canonical target qualifies: an unresolved `readPath` never
+  // auto-allows, unlike the write fallback above.
+  if (
+    ctx.mode === 'auto' &&
+    check.kind === 'tool' &&
+    READ_TOOL_NAMES.has(check.toolName) &&
+    check.resolvedReadPath !== undefined &&
+    ctx.workspaceRoot !== undefined &&
+    isPathInsideWorkspace(
+      check.resolvedReadPath,
+      ctx.workspaceRoot,
+      ctx.pathCaseInsensitive,
+    )
+  ) {
+    return { outcome: 'allow' };
+  }
+
   return { outcome: 'prompt' };
 }
+
+/** The only tools whose canonical target Auto may allow without a prompt. */
+const READ_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'Read',
+  'NotebookRead',
+  'Glob',
+  'Grep',
+]);
 
 /** Type guard for {@link ApprovalMode}. */
 export function isApprovalMode(value: unknown): value is ApprovalMode {

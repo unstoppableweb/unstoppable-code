@@ -85,6 +85,12 @@ export {
   type PipelineRunDefinitionUsedProps,
 } from './pipelines/PipelineRunDefinitionUsed';
 export {
+  CLOUD_MODEL_DIALOG_TEST_IDS,
+  CloudModelReplacementDialog,
+  confirmedCloudModelChoices,
+  type CloudModelReplacementDialogProps,
+} from './pipelines/CloudModelReplacementDialog';
+export {
   GitHubWorkflowRunRow,
   githubWorkflowJobDagStatus,
   githubWorkflowRunRowStatus,
@@ -109,7 +115,6 @@ export {
   type ChatPanelProps,
   type ChatPanelSendContext,
   type ChatComposerSendOptions,
-  type ChatComposerTypeaheadProps,
   type ChatComposerHostControls,
   type ChatTranscriptHostControls,
 } from './code/ChatPanel';
@@ -140,6 +145,7 @@ export {
   type ChatMessageAuthorResolver,
 } from './code/ChatMessageAuthorContext';
 export {
+  CHAT_PART_REPLAY_POLICY,
   ChatPartView,
   ToolNamespaceContext,
   type ChatPartViewProps,
@@ -549,6 +555,11 @@ export {
   type SidebarNavItemAction,
 } from './code/shell/SidebarSurface';
 export {
+  SidebarChatsSkeleton,
+  SidebarProjectsSkeleton,
+  SidebarRailSkeleton,
+} from './code/shell/SidebarProjectsSkeleton';
+export {
   isSidebarActivityAvailable,
   prepareSidebarActivityLoader,
   withSidebarActivitySpaceMute,
@@ -811,7 +822,6 @@ export * from './feedback/FeedbackReportDialogEntry';
 export * from './feedback/ReportThisAction';
 
 export {
-  ChatMessageAttachments,
   ChatMessageMedia,
   useChatMessageAttachmentSplit,
   type ChatMessageAttachmentSplit,
@@ -822,7 +832,6 @@ export {
   ChatMessageAttachmentInteractionProvider,
   useChatMessageAttachmentInteraction,
   type ChatMessageAttachmentInteraction,
-  type ChatMessageAttachmentsProps,
 } from './code/ChatMessageAttachments';
 export {
   SidebarContextRow,
@@ -932,9 +941,19 @@ export {
   type ComposerDraftSnapshot,
 } from './code/composer/composer-draft';
 export {
-  CommandsPopup,
-  type CommandsPopupProps,
-} from './code/composer/CommandsPopup';
+  ComposerMenu,
+  type ComposerMenuCommand,
+  type ComposerMenuCommandOutcome,
+  type ComposerMenuItem,
+  type ComposerMenuLinear,
+  type ComposerMenuPick,
+  type ComposerMenuPlugin,
+  type ComposerMenuProps,
+} from './code/composer/ComposerMenu';
+export {
+  ComposerEditorMenu,
+  type ComposerEditorMenuProps,
+} from './code/composer/ComposerEditorMenu';
 export { DirectoryPickerHeading } from './code/composer/DirectoryPickerHeading';
 export {
   PortalDirectoryPicker,

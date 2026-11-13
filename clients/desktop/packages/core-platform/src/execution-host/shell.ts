@@ -204,12 +204,28 @@ export function runExecutionHostShell(
   worker.stdout.pipe(process.stdout, { end: false });
   worker.stderr.pipe(process.stderr, { end: false });
   if (worker.stdin) process.stdin.pipe(worker.stdin);
+  // A launcher that died (a killed core) leaves this process writing into
+  // broken pipes. The entry still unwinds on its own disconnect handling, so
+  // a write error must not end the process under it, and what the entry
+  // writes is drained so it never waits on a reader that is gone (CAN-6481).
+  let launcherGone = false;
+  for (const stream of [process.stdout, process.stderr])
+    stream.on('error', () => {
+      launcherGone = true;
+      worker.stdout.resume();
+      worker.stderr.resume();
+    });
 
   const finish = (code: number): void => {
     if (finished) return;
     finished = true;
     clearInterval(sampler);
     clearTimeout(heapSampler);
+    // Nothing can reach a launcher that is gone.
+    if (launcherGone) {
+      process.exit(code);
+      return;
+    }
     // Every byte the entry wrote reaches the launcher before the exit, so a
     // terminal message is never lost to the shell's own exit.
     void Promise.all(outputs).then(() =>

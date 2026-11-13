@@ -177,8 +177,12 @@ export class GitHubRequestError extends Error {
 }
 
 export interface GitHubMergePolicy {
-  readonly allowedStrategies: readonly CorePullRequestMergeParams['strategy'][];
-  readonly preferredStrategy: CorePullRequestMergeParams['strategy'];
+  readonly allowedStrategies: readonly NonNullable<
+    CorePullRequestMergeParams['strategy']
+  >[];
+  readonly preferredStrategy: NonNullable<
+    CorePullRequestMergeParams['strategy']
+  >;
   readonly queueRequired: boolean;
 }
 
@@ -187,7 +191,7 @@ export interface GitHubMergeResult {
   readonly projection?: GitHubPullRequestRecord | null;
   readonly outcome: 'merged' | 'enqueued';
   readonly newlyMerged?: boolean;
-  readonly mergeMethod: CorePullRequestMergeParams['strategy'];
+  readonly mergeMethod: NonNullable<CorePullRequestMergeParams['strategy']>;
   readonly mergeCommitSha: string | null;
   readonly queuePosition?: number | null;
 }

@@ -21,7 +21,7 @@ import {
   type LifecycleJournalUnreadableEntry,
 } from '@canopy/protocol/portal/lifecycle-journal';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { syncDirectory } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { syncDirectory } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   getDataDir,
   getW5DestructiveLifecycleDir,

@@ -12,6 +12,7 @@ import {
   type CanopyInjectedToolKey,
 } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { PIPELINE_EDITOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
+import { isAskUserQuestionToolName as isSharedAskUserQuestionToolName } from '@canopy/ui-shared/components';
 
 /**
  * Codex's built-in ask-user tool name. It's NOT Canopy-injected — the
@@ -92,7 +93,16 @@ const UPDATE_LEDGER_ENTRY_ALIAS_SET = new Set(UPDATE_LEDGER_ENTRY_TOOL_ALIASES);
 export function isAskUserQuestionToolName(
   toolName: string | null | undefined,
 ): boolean {
-  return typeof toolName === 'string' && ASK_USER_ALIAS_SET.has(toolName);
+  return (
+    typeof toolName === 'string' &&
+    // The shared tool display labels any app namespace's question tool, such
+    // as the one a cloud chat's Agentic Core session names under its own
+    // brand namespace, "Asked you N question". Route the same names to the
+    // question card, or an answered cloud question reads as interrupted
+    // (CAN-6394).
+    (ASK_USER_ALIAS_SET.has(toolName) ||
+      isSharedAskUserQuestionToolName(toolName))
+  );
 }
 
 /**
@@ -174,7 +184,7 @@ export function normalizeCanopyToolDisplayName(
   if (toolName === CODEX_BUILTIN_ASK_USER_TOOL_NAME) {
     return CANOPY_INJECTED_TOOL_REGISTRY.ask_user_question.displayName;
   }
-  if (ASK_USER_ALIAS_SET.has(toolName)) {
+  if (isAskUserQuestionToolName(toolName)) {
     return CANOPY_INJECTED_TOOL_REGISTRY.ask_user_question.displayName;
   }
   const key =
@@ -201,7 +211,7 @@ export function resolveCanopyOrBuiltinKey(
   if (toolName === CODEX_BUILTIN_ASK_USER_TOOL_NAME) {
     return { builtin: 'request_user_input' };
   }
-  if (ASK_USER_ALIAS_SET.has(toolName)) {
+  if (isAskUserQuestionToolName(toolName)) {
     return 'ask_user_question';
   }
   return (

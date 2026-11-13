@@ -29,7 +29,7 @@ import {
   deletePipelinePluginCollectionPreferences,
   loadPipelinePluginCollectionPreferences,
   savePipelinePluginCollectionPreferences,
-} from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+} from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import {
   APP_ADVISOR_PROJECT_ID,
   type AutomationAction,

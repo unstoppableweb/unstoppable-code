@@ -335,6 +335,26 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
         props: { uiStatus: 'idle', setupPhase: 'running-setup' },
       },
       {
+        id: 'cloud-task-creating',
+        label: 'Creating cloud task',
+        description:
+          'A cloud task opened before the web core created it (CAN-6098): the setup loader, worded as creating the task.',
+        props: { uiStatus: 'idle', setupPhase: 'creating' },
+      },
+      {
+        id: 'cloud-task-creation-failed',
+        label: 'Cloud task not created',
+        description:
+          'The web core refused the task (CAN-6098): the status line reads why, with Try again under the same id. No loader.',
+        props: {
+          uiStatus: 'idle',
+          creationFailure: {
+            reason: 'This project has reached its task limit.',
+            onRetry: (): void => undefined,
+          },
+        },
+      },
+      {
         id: 'teardown',
         label: 'Deleting worktree',
         description:

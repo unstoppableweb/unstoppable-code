@@ -33,6 +33,7 @@ import type { CanopyCloudCredentialContext } from '../canopy-cloud/client';
 import type { StrictAuthenticatedPortalResult } from '../canopy-cloud/authenticated-portal';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { isRecord } from '../lib/type-guards';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 /**
  * Main-side dispatch for hosted account and organization settings.
@@ -113,6 +114,8 @@ export type SettingsWriteFollowUp = () => Promise<void>;
 export type SettingsWriteFollowUpResolver = (
   name: SettingsOperationName,
   validatedInput: unknown,
+  /** The signed-in account the write was authorized for. */
+  accountId: string,
 ) => SettingsWriteFollowUp | null;
 
 export type SettingsWriteObserver = (
@@ -548,13 +551,18 @@ export function createAccountOrganizationSettingsService<
           const followUp = deps.resolveWriteFollowUp?.(
             prepared.name,
             prepared.input,
+            request.accountId,
           );
           if (followUp !== undefined && followUp !== null) await followUp();
-        } catch {
-          // Resolver and refresh errors may contain credentials or payloads.
-          process.stderr.write(
-            '[settings] Post-write follow-up failed; periodic account refresh will retry synchronization.\n',
-          );
+        } catch (error) {
+          // Resolver and refresh errors may contain credentials or payloads,
+          // so only the error's class name is logged. The periodic account
+          // refresh retries synchronization.
+          logMainProcessWarn('[settings] Post-write follow-up failed', {
+            operation: prepared.name,
+            errorName:
+              error instanceof Error ? error.constructor.name : typeof error,
+          });
         }
         if (!stillCurrent(request.accountId, session))
           return failure('uncertain');

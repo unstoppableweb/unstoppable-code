@@ -10,13 +10,21 @@ import type {
   PipelineExecutionScope,
 } from '@canopy/execution-engine/types/pipeline';
 import {
+  PIPELINE_RUN_CONTEXT_COPY,
   PipelineRunContextFields,
   type PipelineRunLocation,
+  type PipelineRunOn,
 } from '@canopy/ui-app/workflows';
 import type { WatcherRecipientGroup } from '@/components/watchers/WatcherRecipientPicker';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { usePipelineWorktreeContext } from './usePipelineWorktreeContext';
+import {
+  cloudRunSourceUnavailable,
+  loadPipelineRunOn,
+  savePipelineRunOn,
+  usePipelineCloudRuns,
+} from './pipelineRunOn';
 import {
   usePipelineRunOwnerChoices,
   usePipelineRunOwnerSelection,
@@ -127,6 +135,8 @@ interface WorkflowsRunPipelineModalProps {
   /** The selected task, offered as **Current task** when it can run the pipeline. */
   currentTarget?: { projectId: string; worktreeId: string };
   initialPipelineId?: string;
+  /** Opens on `initialPipelineId`'s run settings, as its editor's Run does. */
+  startOnSettings?: boolean;
   onClose: () => void;
   onRun: (
     pipeline: PipelineData,
@@ -134,6 +144,8 @@ interface WorkflowsRunPipelineModalProps {
     selectedRepoId: string | undefined,
     pluginCollectionContext: PipelinePluginCollectionRunContext,
     destination: PipelineRunDestination,
+    /** Where the run executes, apart from where it goes (CAN-6187). */
+    runOn: PipelineRunOn,
   ) => Promise<void>;
   isRunning?: boolean;
   runError?: string | null;
@@ -154,6 +166,7 @@ interface WorkflowsRunPipelineModalProps {
 export function WorkflowsRunPipelineModal({
   currentTarget,
   initialPipelineId,
+  startOnSettings = false,
   onClose,
   onRun,
   isRunning = false,
@@ -191,6 +204,30 @@ export function WorkflowsRunPipelineModal({
     location: PipelineRunLocation;
   } | null>(null);
 
+  // CAN-6187: "Run on" shows only while this computer's web core reports
+  // cloud runs available, and remembers the last choice per workflow.
+  const cloudRuns = usePipelineCloudRuns();
+  const [chosenRunOn, setChosenRunOn] = useState<{
+    pipelineId: string;
+    runOn: PipelineRunOn;
+  } | null>(null);
+  const runOnFor = useCallback(
+    (
+      pipeline: PipelineData,
+    ): { value: PipelineRunOn; unavailable?: string } => {
+      if (cloudRuns.pipelineCloudRuns !== true) return { value: 'local' };
+      const unavailable = cloudRunSourceUnavailable(pipeline);
+      if (unavailable !== undefined) return { value: 'local', unavailable };
+      return {
+        value:
+          chosenRunOn?.pipelineId === pipeline.info.id
+            ? chosenRunOn.runOn
+            : (loadPipelineRunOn(pipeline.info.id) ?? 'local'),
+      };
+    },
+    [chosenRunOn, cloudRuns.pipelineCloudRuns],
+  );
+
   const resolve = useCallback(
     (pipeline: PipelineData): ResolvedRunContext =>
       resolveWorkflowsRunContext({
@@ -200,21 +237,44 @@ export function WorkflowsRunPipelineModal({
           chosenLocation?.pipelineId === pipeline.info.id
             ? chosenLocation.location
             : undefined,
+        runOn: runOnFor(pipeline).value,
         choices,
         selection,
         rereadPipeline,
       }),
-    [choices, chosenLocation, rereadPipeline, selection, taskScope],
+    [choices, chosenLocation, rereadPipeline, runOnFor, selection, taskScope],
   );
 
   const runContextReview = useCallback(
     (pipeline: PipelineData): PipelineRunContextReview => {
       const context = resolve(pipeline);
       const global = context.location === 'global';
+      const runOn = runOnFor(pipeline);
+      const cloud = runOn.value === 'cloud';
+      // Cloud runs start with no project only, for now (CP-36, CP-29).
+      const cloudBlockedReason =
+        cloud && !global
+          ? PIPELINE_RUN_CONTEXT_COPY.cloudDestinationUnavailable
+          : undefined;
       return {
         fields: (
           <PipelineRunContextFields
             disabled={isRunning}
+            runOn={{
+              capabilities: cloudRuns,
+              value: runOn.value,
+              onChange: (value: PipelineRunOn): void => {
+                setChosenRunOn({ pipelineId: pipeline.info.id, runOn: value });
+                savePipelineRunOn(pipeline.info.id, value);
+                onClearError?.();
+              },
+              ...(runOn.unavailable !== undefined
+                ? { cloudUnavailableReason: runOn.unavailable }
+                : {}),
+              ...(cloudBlockedReason !== undefined
+                ? { cloudBlockedReason }
+                : {}),
+            }}
             {...(context.showLocation
               ? {
                   location: {
@@ -235,15 +295,21 @@ export function WorkflowsRunPipelineModal({
         ),
         // A task-only pipeline keeps today's Run; anything with a choice or
         // an owner to confirm is reviewed first.
-        needsReview: global || context.showLocation,
-        runBlocked: context.runBlocked,
+        needsReview:
+          global ||
+          context.showLocation ||
+          cloudRuns.pipelineCloudRuns === true,
+        runBlocked: context.runBlocked || cloudBlockedReason !== undefined,
         ...(context.blockedReason !== undefined
           ? { blockedReason: context.blockedReason }
           : {}),
-        targeted: !global,
+        // Repository, watcher and model choices apply to a run on this
+        // computer; a cloud run takes its models from the cloud preflight.
+        targeted: !global && !cloud,
+        executesElsewhere: cloud,
       };
     },
-    [isRunning, onClearError, resolve],
+    [cloudRuns, isRunning, onClearError, resolve, runOnFor],
   );
 
   const handleRun = async (
@@ -255,6 +321,8 @@ export function WorkflowsRunPipelineModal({
   ): Promise<void> => {
     const context = resolve(pipeline);
     if (context.runBlocked) return;
+    const runOn = runOnFor(pipeline).value;
+    if (runOn === 'cloud' && context.location !== 'global') return;
     let destination: PipelineRunDestination;
     if (context.location === 'current-task') {
       if (!currentTarget) return;
@@ -263,6 +331,7 @@ export function WorkflowsRunPipelineModal({
       const owner = context.ownerValue ?? '';
       destination = {
         kind: 'global',
+        owner,
         ...(context.requestedOwner !== undefined
           ? { requestedOwner: context.requestedOwner }
           : {}),
@@ -280,6 +349,7 @@ export function WorkflowsRunPipelineModal({
       selectedRepoId,
       pluginCollectionContext,
       destination,
+      runOn,
     );
   };
 
@@ -298,6 +368,7 @@ export function WorkflowsRunPipelineModal({
       runContextReview={runContextReview}
       reloadToken={(reloadToken ?? 0) + ownerReread}
       initialPipelineId={initialPipelineId}
+      startOnSettings={startOnSettings}
       onClose={onClose}
       onRun={handleRun}
       isRunning={isRunning}

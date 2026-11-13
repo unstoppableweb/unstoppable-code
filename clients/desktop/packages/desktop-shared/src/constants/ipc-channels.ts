@@ -13,6 +13,8 @@ export const PIPELINE_CHANNELS = {
   RESOLVE_ACTION: 'pipelines:resolve-action',
   LIST_ACTIONS: 'pipelines:list-actions',
   EXECUTE: REMOTE_IPC_CHANNELS.pipelinesExecute,
+  // Whether the Run dialog may offer "Run on: Cloud" (CAN-6187).
+  CLOUD_RUNS_AVAILABILITY: 'pipelines:cloud-runs-availability',
   RESUME: REMOTE_IPC_CHANNELS.pipelinesResume,
   RESUME_AUTOMATION: 'pipelines:resume-automation',
   RETRY_EXECUTION: REMOTE_IPC_CHANNELS.pipelinesRetryExecution,

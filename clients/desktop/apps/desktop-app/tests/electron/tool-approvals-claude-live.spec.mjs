@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -81,8 +81,9 @@ import { stripHookErrorPrefix } from '../../../../packages/ui-shared/src/compone
 // so it reliably reaches Canopy's approval gate.
 // ---------------------------------------------------------------------------
 
-// Every seeded chat here is stamped `approvalMode: 'ask'`: Full Access is the
-// product default (CAN-3055) and would run these tool calls without a card.
+// Every seeded chat here is stamped `approvalMode: 'ask'` or `'auto'`: Full
+// Access is the product default (CAN-3055) and would run these tool calls
+// without a card.
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -142,6 +143,43 @@ function persistedErrorOutputs(userDataDir) {
   return rawPersistedErrorOutputs(userDataDir).map(stripHookErrorPrefix);
 }
 
+// Watch the whole turn: a final count of zero cannot prove a card never
+// flashed up and resolved.
+async function watchForApprovalCard(window) {
+  await window.evaluate(() => {
+    const seen = { card: false };
+    Reflect.set(window, '__can4811ApprovalCardSeen', seen);
+    const check = () => {
+      if (document.querySelector('[data-testid="tool-approval-card"]')) {
+        seen.card = true;
+      }
+    };
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const added of record.addedNodes) {
+          if (
+            added instanceof Element &&
+            (added.matches('[data-testid="tool-approval-card"]') ||
+              added.querySelector('[data-testid="tool-approval-card"]'))
+          )
+            seen.card = true;
+        }
+      }
+      check();
+    }).observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+    check();
+  });
+}
+
+function approvalCardSeen(window) {
+  return window.evaluate(
+    () => Reflect.get(window, '__can4811ApprovalCardSeen')?.card,
+  );
+}
+
 test.describe('live tool-approval round trip (Claude)', () => {
   test('an Ask-mode force-push is denied by a safety rule with a visible notice and no approval card', async () => {
     test.setTimeout(180_000);
@@ -192,34 +230,7 @@ test.describe('live tool-approval round trip (Claude)', () => {
         { timeout: 15_000 },
       );
 
-      // Watch the whole turn: a final count of zero cannot prove a card
-      // never flashed up and resolved.
-      await window.evaluate(() => {
-        const seen = { card: false };
-        Reflect.set(window, '__can4811ApprovalCardSeen', seen);
-        const check = () => {
-          if (document.querySelector('[data-testid="tool-approval-card"]')) {
-            seen.card = true;
-          }
-        };
-        new MutationObserver((records) => {
-          for (const record of records) {
-            for (const added of record.addedNodes) {
-              if (
-                added instanceof Element &&
-                (added.matches('[data-testid="tool-approval-card"]') ||
-                  added.querySelector('[data-testid="tool-approval-card"]'))
-              )
-                seen.card = true;
-            }
-          }
-          check();
-        }).observe(document.body, {
-          childList: true,
-          subtree: true,
-        });
-        check();
-      });
+      await watchForApprovalCard(window);
 
       const panel = window.getByTestId('panel-content-chat');
       const composer = window.getByRole('textbox').first();
@@ -295,11 +306,7 @@ test.describe('live tool-approval round trip (Claude)', () => {
       // Still visible once the completed turn collapses its tool rows.
       await expect(notice).toBeVisible();
 
-      expect(
-        await window.evaluate(
-          () => Reflect.get(window, '__can4811ApprovalCardSeen')?.card,
-        ),
-      ).toBe(false);
+      expect(await approvalCardSeen(window)).toBe(false);
       expect(existsSync(markerPath)).toBe(false);
       const safetyMessage =
         'Blocked by a safety rule (force-push). This call cannot be approved from a prompt. Do not retry or repackage the blocked operation. Choose a safe alternative or explain the block to the user.';
@@ -602,6 +609,240 @@ test.describe('live tool-approval round trip (Claude)', () => {
             expect.objectContaining({ behavior: 'allow', origin: 'prompt' }),
           ]),
         );
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  // CAN-4998: Claude Edit refuses a file it has not read in the session, so
+  // the Read must run first. Before the fix this Read raised a bare
+  // "Claude wants to use Read" card in Accept edits.
+  test('Accept edits runs an in-worktree Read then Edit with no approval card', async () => {
+    test.setTimeout(180_000);
+    const CONVERSATION_MARKER = 'Canopy-CAPPROVELIVE-READ-AUTO';
+    const FOLLOW_UP_REPLY = 'Read and edited the notes file';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-live-read-auto-'),
+    );
+    const seeded = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    const target = path.join(
+      seeded.workspaces[0].worktreePath,
+      'can-4998-notes.md',
+    );
+    writeFileSync(target, 'line one\n');
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat', approvalMode: 'auto' }],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, CONVERSATION_MARKER, {
+      llm: {
+        steps: [
+          {
+            toolCalls: [{ name: 'Read', input: { file_path: target } }],
+            stopReason: 'tool_use',
+          },
+          {
+            toolCalls: [
+              {
+                name: 'Edit',
+                input: {
+                  file_path: target,
+                  old_string: 'line one',
+                  new_string: 'line two',
+                },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+          { text: FOLLOW_UP_REPLY, stopReason: 'end_turn' },
+        ],
+      },
+    });
+
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({ userDataDir }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      await expect(window.getByTestId('approval-mode-picker')).toHaveAttribute(
+        'aria-label',
+        'Tool approval mode, current mode Accept edits',
+        { timeout: 15_000 },
+      );
+
+      await watchForApprovalCard(window);
+
+      const panel = window.getByTestId('panel-content-chat');
+      const composer = window.getByRole('textbox').first();
+      await composer.fill(
+        `[${CONVERSATION_MARKER}] Read the notes file, then edit it.`,
+      );
+      await window.getByRole('button', { name: 'Send message' }).click();
+
+      await expect(panel.getByText(FOLLOW_UP_REPLY).first()).toBeVisible({
+        timeout: 90_000,
+      });
+      expect(await approvalCardSeen(window)).toBe(false);
+      // Only an executed Edit, which needs the executed Read, changes the file.
+      expect(readFileSync(target, 'utf8')).toContain('line two');
+      await expect(
+        panel.locator(
+          '[data-tool-name="Read"][data-tool-status="pending"], [data-tool-name="Edit"][data-tool-status="pending"]',
+        ),
+      ).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('an Ask-mode Read card names its file and Allow once reads it', async () => {
+    test.setTimeout(180_000);
+    const CONVERSATION_MARKER = 'Canopy-CAPPROVELIVE-READ-ASK';
+    const FOLLOW_UP_REPLY = 'Read the approved notes file';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-live-read-ask-'),
+    );
+    const seeded = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    const target = path.join(
+      seeded.workspaces[0].worktreePath,
+      'can-4998-notes.md',
+    );
+    writeFileSync(target, 'line one\n');
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat', approvalMode: 'ask' }],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, CONVERSATION_MARKER, {
+      llm: {
+        steps: [
+          {
+            toolCalls: [{ name: 'Read', input: { file_path: target } }],
+            stopReason: 'tool_use',
+          },
+          { text: FOLLOW_UP_REPLY, stopReason: 'end_turn' },
+        ],
+      },
+    });
+
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({ userDataDir }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      await expect(window.getByTestId('approval-mode-picker')).toHaveAttribute(
+        'aria-label',
+        'Tool approval mode, current mode Ask',
+        { timeout: 15_000 },
+      );
+
+      const panel = window.getByTestId('panel-content-chat');
+      const composer = window.getByRole('textbox').first();
+      await composer.fill(`[${CONVERSATION_MARKER}] Read the notes file.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+
+      const card = window.getByTestId('tool-approval-card');
+      await expect(card).toBeVisible({ timeout: 60_000 });
+      await expect(
+        card.getByTestId('tool-approval-file-target-label'),
+      ).toHaveText('can-4998-notes.md');
+      await card.getByTestId('tool-approval-file-target').click();
+      await expect(
+        card.getByTestId('tool-approval-file-target-full'),
+      ).toHaveText(target);
+
+      await window.getByTestId('tool-approval-allow').click();
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+      await expect(panel.getByText(FOLLOW_UP_REPLY).first()).toBeVisible({
+        timeout: 90_000,
+      });
+      expect(readFileSync(target, 'utf8')).toBe('line one\n');
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('Accept edits still asks before a Read outside the worktree', async () => {
+    test.setTimeout(180_000);
+    const CONVERSATION_MARKER = 'Canopy-CAPPROVELIVE-READ-AUTO-OUTSIDE';
+    const FOLLOW_UP_REPLY = 'Read the approved outside file';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-live-read-outside-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    const outside = path.join(
+      mkdtempSync(path.join(os.tmpdir(), 'canopy-approval-outside-')),
+      'can-4998-outside.md',
+    );
+    writeFileSync(outside, 'outside\n');
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat', approvalMode: 'auto' }],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, CONVERSATION_MARKER, {
+      llm: {
+        steps: [
+          {
+            toolCalls: [{ name: 'Read', input: { file_path: outside } }],
+            stopReason: 'tool_use',
+          },
+          { text: FOLLOW_UP_REPLY, stopReason: 'end_turn' },
+        ],
+      },
+    });
+
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({ userDataDir }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      await expect(window.getByTestId('approval-mode-picker')).toHaveAttribute(
+        'aria-label',
+        'Tool approval mode, current mode Accept edits',
+        { timeout: 15_000 },
+      );
+
+      const panel = window.getByTestId('panel-content-chat');
+      const composer = window.getByRole('textbox').first();
+      await composer.fill(`[${CONVERSATION_MARKER}] Read the outside file.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+
+      // Accept edits covers the worktree only: this read must still ask.
+      const card = window.getByTestId('tool-approval-card');
+      await expect(card).toBeVisible({ timeout: 60_000 });
+      await card.getByTestId('tool-approval-file-target').click();
+      await expect(
+        card.getByTestId('tool-approval-file-target-full'),
+      ).toHaveText(outside);
+
+      await window.getByTestId('tool-approval-allow').click();
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+      await expect(panel.getByText(FOLLOW_UP_REPLY).first()).toBeVisible({
+        timeout: 90_000,
+      });
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

@@ -1,3 +1,13 @@
+import { rememberDestructiveFailure } from './destructive-failure-context';
+import {
+  setArchiveFailurePhase,
+  withArchiveFailureTelemetry,
+} from './archive-failure-telemetry';
+import { WorkspaceDeletionRefusedError } from './workspace-deletion-refusal';
+export {
+  WorkspaceDeletionRefusedError,
+  type WorkspaceDeletionRefusal,
+} from './workspace-deletion-refusal';
 import {
   assertFailedChildArchivesResumed,
   completeSupersededChildArchives,
@@ -231,33 +241,6 @@ const GIT_CLEANUP_PENDING_REFUSAL =
 const CONFIGURATION_UNAVAILABLE_REFUSAL =
   'Cannot delete this project while its configuration is unavailable. Reload and try again.';
 
-export type WorkspaceDeletionRefusal =
-  | 'protected'
-  | 'configuration-unavailable'
-  | 'not-single-repo'
-  | 'not-cowork'
-  | 'git-cleanup-pending'
-  | 'archive-recovery-unverified'
-  | 'source-unavailable'
-  | 'archive-in-progress';
-
-/** An admission check refused the deletion before anything was removed. */
-export class WorkspaceDeletionRefusedError extends Error {
-  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
-  /** The admission check's own failure, when it caused the refusal. */
-  declare readonly cause?: unknown;
-
-  constructor(
-    readonly reason: WorkspaceDeletionRefusal,
-    message: string,
-    cause?: unknown,
-  ) {
-    super(message);
-    this.name = 'WorkspaceDeletionRefusedError';
-    if (cause !== undefined) this.cause = cause;
-  }
-}
-
 /**
  * The typed in-process workspace deletion boundary (CAN-3809). Every
  * deletion of a whole workspace goes through it: the renderer
@@ -282,6 +265,21 @@ export class WorkspaceDeletionRefusedError extends Error {
  * for the renderer, `portal` for the browser Remote Control) in CRUD telemetry.
  */
 export async function deleteWorkspace(
+  request: WorkspaceDeletionRequest,
+  wire?: W5WireCall,
+): Promise<WorkspaceDeletionOutcome> {
+  return withArchiveFailureTelemetry(
+    {
+      workspaceId: request.workspaceId,
+      archiveTrigger: USER_DELETION_SOURCES.has(request.source)
+        ? 'project-deletion'
+        : 'internal-rollback',
+    },
+    () => deleteWorkspaceAdmitted(request, wire),
+  );
+}
+
+async function deleteWorkspaceAdmitted(
   request: WorkspaceDeletionRequest,
   wire?: W5WireCall,
 ): Promise<WorkspaceDeletionOutcome> {
@@ -340,6 +338,9 @@ export async function deleteWorkspace(
         return withDestructiveLifecycle(
           {
             operation: 'workspace-delete',
+            trigger: USER_DELETION_SOURCES.has(request.source)
+              ? 'project-deletion'
+              : 'internal-rollback',
             workspaceId,
             beforeEffects: attempt?.beforeEffects,
             projectOutcome: (result) =>
@@ -380,13 +381,16 @@ async function assertNoStrandedRecoveryOrArchive(
     workspaceId,
     archivesWorktrees ? 'workspace-delete' : undefined,
   );
-  if (inFlight)
-    throw new WorkspaceDeletionRefusedError(
+  if (inFlight) {
+    const error = new WorkspaceDeletionRefusedError(
       'archive-in-progress',
       `A worktree in this project is still being ${
         inFlight.operation === 'worktree-delete' ? 'deleted' : 'archived'
       }. Retry after it finishes.`,
     );
+    rememberDestructiveFailure(error, inFlight);
+    throw error;
+  }
 }
 
 /** {@link deleteWorkspace} for callers that only need it to finish. */
@@ -556,6 +560,7 @@ async function deleteWorkspaceSerialized(
     // Set before the call: the fence goes up before cancellation can fail.
     watchersFenced = true;
     await getAppAdvisorWatcherService().cancelLocalWorkspace(workspaceId);
+    setArchiveFailurePhase('project-cleanup');
     if (archivedKind) {
       // Every client gets the cleanup of an archive from the app (CAN-3799
       // B2): teardown scripts, live sessions and Git worktree registrations.

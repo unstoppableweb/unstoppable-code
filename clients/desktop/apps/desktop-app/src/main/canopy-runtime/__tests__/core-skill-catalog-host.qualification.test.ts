@@ -8,6 +8,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanopyDispatcher } from '@canopy/core-runtime';
@@ -75,11 +76,13 @@ jest.mock('../../lib/main-process-logging', () => ({
 }));
 
 import { CUSTOM_SOURCE_ID, getSkillDir } from '../../skills/paths';
+import * as skillService from '../../skills/skill-service';
 import { removeSkill, saveCustomSkill } from '../../skills/skill-service';
 import { runSkillMutation } from '../../skills/skill-mutations';
 import * as skillContext from '../../skills/skill-install-context';
 import { readSkillLockSnapshot } from '../../skills/skill-lock-snapshot';
 import { createDesktopSkillCatalogHost } from '../core-skill-catalog-host';
+import type { InstalledSkillInfo } from '@canopy/protocol/skills';
 
 const caller = (
   grant: CanopyCallerDescriptor['grants'][number],
@@ -232,6 +235,85 @@ describe('desktop skill catalog host (CAN-4124)', () => {
       entryId: skillEntryId({ sourceId: 'github:o:r', skillName: 'x' }),
       version: { skillFolderHash: 'abc', skillPath: 'skills/x' },
     });
+  });
+
+  it('links a skill to its cloud copy by ids and hashes, preferring the author share (CAN-6176)', async () => {
+    await saveCustom('c');
+    await saveCustom('d');
+    const sha = (text: string): string =>
+      createHash('sha256').update(text, 'utf8').digest('hex');
+    const custom = sha(await skillService.readRawSkill('custom:app/c'));
+    const received = sha(await skillService.readRawSkill('custom:app/d'));
+    const loadSkills: typeof skillService.loadSkills = () => {
+      const loaded = skillService.loadSkills();
+      if (!loaded.success || loaded.data === undefined) return loaded;
+      return {
+        success: true,
+        data: loaded.data.map(
+          (row): InstalledSkillInfo =>
+            row.name === 'c'
+              ? {
+                  ...row,
+                  remote: {
+                    remoteId: 'author-share',
+                    contentHash: custom,
+                    shareScope: 'private',
+                    sharedAt: '2026-11-10T00:00:00.000Z',
+                    publicLink: 'https://example.com/s/secret-link',
+                  },
+                  installedFromShare: {
+                    remoteId: 'ignored',
+                    contentHash: custom,
+                  },
+                }
+              : row,
+        ),
+      };
+    };
+    // The recipient link comes only from the install receipts the host reads.
+    const annotateSharedSkillInstalls: typeof skillContext.annotateSharedSkillInstalls =
+      (rows) =>
+        Promise.resolve(
+          rows.map((row) =>
+            row.name === 'd'
+              ? { ...row, installedFromShare: { remoteId: 'recipient-share' } }
+              : row,
+          ),
+        );
+    const { skills } = await compose({
+      service: { ...skillService, loadSkills },
+      context: { ...skillContext, annotateSharedSkillInstalls },
+    }).query('core.catalog.skill.list', {}, { caller: reader });
+    const byName = new Map(skills.map((row) => [row.skillName, row]));
+    expect(byName.get('c')?.cloudShare).toEqual({
+      role: 'author',
+      remoteId: 'author-share',
+      linkedContentHash: custom,
+      localContentHash: custom,
+    });
+    expect(byName.get('d')?.cloudShare).toEqual({
+      role: 'recipient',
+      remoteId: 'recipient-share',
+      linkedContentHash: null,
+      localContentHash: received,
+    });
+    expect(byName.get('b')?.cloudShare).toBeUndefined();
+  });
+
+  it('still lists skills when the install receipts cannot be read, without recipient links (CAN-6176)', async () => {
+    await saveCustom('d');
+    const unreadable = await compose({
+      context: {
+        ...skillContext,
+        annotateSharedSkillInstalls: () =>
+          Promise.reject(new Error('receipts unreadable')),
+      },
+    }).query('core.catalog.skill.list', {}, { caller: reader });
+    const listed = new Map(
+      unreadable.skills.map((row) => [row.skillName, row]),
+    );
+    expect(listed.get('d')?.origin).toBe('custom');
+    expect(listed.get('d')?.cloudShare).toBeUndefined();
   });
 
   it('reads frontmatter past the old bound and leaves out only values past the wire bound (CAN-5873)', async () => {

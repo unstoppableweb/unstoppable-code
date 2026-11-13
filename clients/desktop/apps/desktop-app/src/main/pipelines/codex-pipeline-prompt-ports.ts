@@ -1,4 +1,4 @@
-import type { CodexPipelinePromptPorts } from '@canopy/desktop-shared/node/pipelines/codex-pipeline-prompt';
+import type { CodexPipelinePromptPorts } from '@canopy/execution-engine/node/pipelines/codex-pipeline-prompt';
 import { resolveAiCreditsRoutingOverride } from '../agents/ai-credits-routing';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
 import { getCodexRuntimeService } from '../codex/runtime-service';

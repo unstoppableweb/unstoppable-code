@@ -20,7 +20,26 @@ import {
   type WindowsMigrationFilesystem,
   type MigrationFilesystemObservation,
 } from '@canopy/core-platform/internal-migration-filesystem';
-import { InternalRootMigrationRefused } from '@canopy/core-runtime/node/internal-root-migration';
+import {
+  InternalRootMigrationRefused,
+  type InternalRootSpace,
+} from '@canopy/core-runtime/node/internal-root-migration';
+import { internalRootMigrationProgress } from './progress';
+
+export async function internalRootCopySpace(
+  destination: string,
+  sourceBytes: number,
+): Promise<InternalRootSpace> {
+  const volume = await statfs(dirname(destination));
+  return {
+    // APFS clones share payload blocks; reserve 64 MiB for construction metadata.
+    requiredBytes:
+      hostOperatingSystem() === 'darwin' && volume.type === 26
+        ? 64 * 1024 * 1024
+        : sourceBytes,
+    availableBytes: volume.bavail * volume.bsize,
+  };
+}
 
 export interface InternalRootFilesystemHost {
   readonly windows?: WindowsMigrationFilesystem;
@@ -169,6 +188,7 @@ export async function copyInternalRootTree(
   const windows = hostOperatingSystem() === 'win32';
   if (!windows) await qualifyCopyVolume(source, destination);
   const device = (await lstat(source)).dev;
+  let entries = 0;
   async function visit(from: string, to: string, relative = ''): Promise<void> {
     if (omitted(relative)) return;
     const before = await lstat(from);
@@ -176,6 +196,7 @@ export async function copyInternalRootTree(
       refuse(`Unsafe source tree entry: ${from}`);
     qualifyMigrationGroup(from, before);
     await observeMigrationNode(from, before, host);
+    internalRootMigrationProgress('inspected copy source entry');
     const beforeIdentity = windows
       ? await migrationNodeIdentity(from, before)
       : null;
@@ -318,6 +339,8 @@ export async function copyInternalRootTree(
         (!windows && (copied.uid !== before.uid || copied.gid !== before.gid)))
     )
       refuse(`Copied entry identity or ownership differs: ${to}`);
+    entries += 1;
+    internalRootMigrationProgress(`${entries} copied entries`);
   }
   await visit(source, destination);
 }

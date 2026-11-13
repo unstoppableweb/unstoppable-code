@@ -16,11 +16,13 @@ import {
 import { isCloudImageAttachmentMediaType } from '@canopy/protocol/cloud-attachments';
 import type { PortalChatMessageAttachment } from '@canopy/protocol/portal';
 import {
-  FileAttachmentChip,
   ErrorBanner,
+  MessageFileTile,
   MessageMediaRow,
   MessageMediaTile,
+  type MessageImageAttachment,
 } from '@canopy/ui-shared/components';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { VIDEO_FILENAME } from '@canopy/ui-shared/lib';
 
 /**
@@ -160,7 +162,7 @@ export function ChatAssetImage({
           <img
             src={image.src}
             alt={reference.filename ?? 'Tool image'}
-            className="max-h-80 max-w-full rounded-md object-contain"
+            className={`${REPLAY_BLOCK_CLASS} max-h-80 max-w-full rounded-md object-contain`}
           />
         </button>
       )}
@@ -197,10 +199,6 @@ export function useChatMessageAttachmentInteraction(): ChatMessageAttachmentInte
   return useContext(ChatMessageAttachmentInteractionContext);
 }
 
-export interface ChatMessageAttachmentsProps {
-  readonly attachments: readonly PortalChatMessageAttachment[];
-}
-
 /**
  * Whether an attachment is a video. A desktop chat projected to the Portal
  * knows its files by name only: it types anything outside the cloud
@@ -223,38 +221,38 @@ function isChatMessageImage(attachment: PortalChatMessageAttachment): boolean {
 /** One attachment shown as a tile in the bubble's media row. */
 export interface ChatMessageMediaItem {
   readonly attachment: PortalChatMessageAttachment;
-  readonly kind: 'image' | 'video';
-  /** The host's URL for an image; `null` for a video or one to resolve. */
+  /** A picture (`image`, `video`) or a file shown by its type and name. */
+  readonly kind: 'image' | 'video' | 'file';
+  /** The host's URL for an image; `null` for anything else or one to resolve. */
   readonly src: string | null;
   /** An image without a URL that the tile reads through the host's resolver. */
   readonly resolve: boolean;
 }
 
-/** Where a sent message's attachments go: tiles in the bubble, chips under it. */
+/** A sent message's attachments as tiles in its bubble, in attach order. */
 export interface ChatMessageAttachmentSplit {
   readonly media: readonly ChatMessageMediaItem[];
-  readonly files: readonly PortalChatMessageAttachment[];
   /**
-   * A tile has no picture to show (it failed to load, or the resolver found
-   * none): the attachment moves to the chips.
+   * A picture tile has nothing to show (it failed to load, or the resolver
+   * found none): the attachment becomes its file tile.
    */
   readonly onMediaFailed: (attachmentId: string) => void;
 }
 
 /**
- * Splits a sent message's attachments the way desktop's `useSentAttachments`
- * does. A video is always a tile, its play mark alone where no frame is
- * drawn. An image is a tile while its picture can show: the host's URL, or
- * a picture its resolver may return. Each tile reads its own picture
- * (`useChatAssetImage`), so one slow read never holds the others back, and
- * a tile that ends with nothing to show reports it through `onMediaFailed`.
- * An image with no source, or one that failed, is its named file chip,
- * never a blank square. Everything else is a chip. An attachment id that
- * repeats is shown once.
+ * Orders a sent message's attachments the way desktop's `useSentAttachments`
+ * does. A video is always a picture tile, its play mark alone where no frame
+ * is drawn. An image is a picture tile while its picture can show: the
+ * host's URL, or a picture its resolver may return. Each tile reads its own
+ * picture (`useChatAssetImage`), so one slow read never holds the others
+ * back, and a tile that ends with nothing to show reports it through
+ * `onMediaFailed`. An image with no source, or one that failed, is its file
+ * tile, never a blank square, and so is everything else. An attachment id
+ * that repeats is shown once.
  *
  * A failure belongs to the source that failed: if the host's URL or its
- * resolver changes (a reconnected session), the image is a tile again and
- * tries the new source.
+ * resolver changes (a reconnected session), the image is a picture again
+ * and tries the new source.
  */
 export function useChatMessageAttachmentSplit(
   attachments: readonly PortalChatMessageAttachment[],
@@ -271,9 +269,11 @@ export function useChatMessageAttachmentSplit(
   const sources = useRef<ReadonlyMap<string, unknown>>(new Map());
   const split = useMemo(() => {
     const media: ChatMessageMediaItem[] = [];
-    const files: PortalChatMessageAttachment[] = [];
     const current = new Map<string, unknown>();
     const seen = new Set<string>();
+    const file = (attachment: PortalChatMessageAttachment): void => {
+      media.push({ attachment, kind: 'file', src: null, resolve: false });
+    };
     for (const attachment of attachments) {
       if (seen.has(attachment.attachmentId)) continue;
       seen.add(attachment.attachmentId);
@@ -282,19 +282,19 @@ export function useChatMessageAttachmentSplit(
         continue;
       }
       if (!isChatMessageImage(attachment)) {
-        files.push(attachment);
+        file(attachment);
         continue;
       }
       const url = imageSrc?.(attachment) ?? null;
       const source: unknown =
         url ?? (resolve && attachment.assetId !== undefined ? resolve : null);
       if (source === null) {
-        files.push(attachment);
+        file(attachment);
         continue;
       }
       current.set(attachment.attachmentId, source);
       if (failed.get(attachment.attachmentId) === source) {
-        files.push(attachment);
+        file(attachment);
       } else {
         media.push({
           attachment,
@@ -304,7 +304,7 @@ export function useChatMessageAttachmentSplit(
         });
       }
     }
-    return { media, files, current };
+    return { media, current };
   }, [attachments, failed, imageSrc, resolve]);
   useLayoutEffect(() => {
     sources.current = split.current;
@@ -321,7 +321,6 @@ export function useChatMessageAttachmentSplit(
   return useMemo(
     (): ChatMessageAttachmentSplit => ({
       media: split.media,
-      files: split.files,
       onMediaFailed,
     }),
     [split, onMediaFailed],
@@ -329,21 +328,26 @@ export function useChatMessageAttachmentSplit(
 }
 
 /**
- * A sent message's images and videos inside its bubble: the shared media
- * row desktop uses, 64px tiles in attach order, a video with its play mark.
- * Takes the `media` of `useChatMessageAttachmentSplit`.
+ * A sent message's attachments inside its bubble: the shared media row
+ * desktop uses, 64px tiles in attach order (seven and a “+N” past eight).
+ * Images and videos show as pictures, a video with its play mark; other
+ * files show their type and name. Takes the `media` of
+ * `useChatMessageAttachmentSplit`.
  */
 export const ChatMessageMedia = memo(function ChatMessageMedia({
   media,
   onMediaFailed,
+  alone = false,
 }: {
   readonly media: readonly ChatMessageMediaItem[];
   readonly onMediaFailed: (attachmentId: string) => void;
+  /** The message has no text under the row. */
+  readonly alone?: boolean;
 }): JSX.Element | null {
   const interaction = useChatMessageAttachmentInteraction();
   if (media.length === 0) return null;
   return (
-    <MessageMediaRow>
+    <MessageMediaRow alone={alone}>
       {media.map((item) => (
         <ChatMessageMediaTile
           key={item.attachment.attachmentId}
@@ -385,7 +389,7 @@ function ChatMessageMediaTile({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const onOpen = interaction?.onOpen;
   // The tile opens the file; a host that cannot open files downloads it
-  // instead, as the file chip would.
+  // instead.
   const activate =
     onOpen !== undefined
       ? (): void => onOpen(attachment)
@@ -400,19 +404,32 @@ function ChatMessageMediaTile({
           }
         : undefined;
   const downloads = onOpen === undefined && activate !== undefined;
+  const action: Pick<MessageImageAttachment, 'onOpen' | 'actionLabel'> = {
+    ...(activate === undefined ? {} : { onOpen: activate }),
+    ...(downloads ? { actionLabel: 'Download' } : {}),
+  };
   return (
     <>
-      <MessageMediaTile
-        image={{
-          key: attachment.attachmentId,
-          src: item.resolve ? read.src : item.src,
-          kind: item.kind,
-          alt: attachment.filename,
-          onError: (): void => onMediaFailed(attachment.attachmentId),
-          ...(activate === undefined ? {} : { onOpen: activate }),
-          ...(downloads ? { actionLabel: 'Download' } : {}),
-        }}
-      />
+      {item.kind === 'file' ? (
+        <MessageFileTile
+          file={{
+            key: attachment.attachmentId,
+            name: attachment.filename,
+            ...action,
+          }}
+        />
+      ) : (
+        <MessageMediaTile
+          image={{
+            key: attachment.attachmentId,
+            src: item.resolve ? read.src : item.src,
+            kind: item.kind,
+            alt: attachment.filename,
+            onError: (): void => onMediaFailed(attachment.attachmentId),
+            ...action,
+          }}
+        />
+      )}
       {downloadError && (
         <div className="basis-full">
           <ErrorBanner className="" error={downloadError} />
@@ -421,119 +438,3 @@ function ChatMessageMediaTile({
     </>
   );
 }
-
-/**
- * Files attached to one user message, under its bubble: the desktop-parity
- * wrapping chip row, a file icon plus filename per attachment. A host passes
- * the `files` of `useChatMessageAttachmentSplit`; images and videos that show
- * as pictures are `ChatMessageMedia`, inside the bubble. With a host
- * interaction the chip opens the file and carries a Download control;
- * without one the chips are display-only.
- */
-export const ChatMessageAttachments = memo(function ChatMessageAttachments({
-  attachments,
-}: ChatMessageAttachmentsProps): JSX.Element | null {
-  const interaction = useChatMessageAttachmentInteraction();
-  if (attachments.length === 0) return null;
-  return (
-    <div
-      className="mt-1 flex flex-wrap items-end gap-1"
-      data-testid="chat-message-attachments"
-    >
-      {attachments.map((attachment) => (
-        <ChatMessageAttachmentChip
-          key={attachment.attachmentId}
-          attachment={attachment}
-          interaction={interaction}
-        />
-      ))}
-    </div>
-  );
-});
-
-const ChatMessageAttachmentChip = memo(function ChatMessageAttachmentChip({
-  attachment,
-  interaction,
-}: {
-  attachment: PortalChatMessageAttachment;
-  interaction: ChatMessageAttachmentInteraction | null;
-}): JSX.Element {
-  const downloadOwner = interaction?.downloadContext ?? interaction?.onDownload;
-  const [downloadState, setDownloadState] = useState<{
-    downloadOwner: typeof downloadOwner;
-    assetId: string | undefined;
-    attachmentId: string;
-    downloading: boolean;
-    error: string | null;
-  } | null>(null);
-  const downloadController = useRef<AbortController | null>(null);
-  useLayoutEffect(
-    () => (): void => {
-      downloadController.current?.abort();
-      downloadController.current = null;
-    },
-    [attachment.assetId, attachment.attachmentId, downloadOwner],
-  );
-  const currentDownload =
-    downloadState?.downloadOwner === downloadOwner &&
-    downloadState?.assetId === attachment.assetId &&
-    downloadState?.attachmentId === attachment.attachmentId
-      ? downloadState
-      : null;
-  const downloading = currentDownload?.downloading ?? false;
-  const downloadError = currentDownload?.error ?? null;
-  const { filename } = attachment;
-  const onOpen = interaction?.onOpen;
-  const download = (): void => {
-    if (interaction === null || downloading) return;
-    const identity = {
-      downloadOwner,
-      assetId: attachment.assetId,
-      attachmentId: attachment.attachmentId,
-    };
-    setDownloadState({ ...identity, downloading: true, error: null });
-    const controller = new AbortController();
-    downloadController.current = controller;
-    void Promise.resolve()
-      .then(() => {
-        if (!controller.signal.aborted)
-          return interaction.onDownload(attachment, controller.signal);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted)
-          setDownloadState({
-            ...identity,
-            downloading: false,
-            error: `Couldn’t download ${filename}. Try again.`,
-          });
-      })
-      .finally(() => {
-        if (downloadController.current === controller)
-          downloadController.current = null;
-        if (!controller.signal.aborted)
-          setDownloadState((current) =>
-            current ? { ...current, downloading: false } : current,
-          );
-      });
-  };
-  return (
-    <div
-      className="flex max-w-full flex-col items-start gap-1"
-      data-testid="chat-message-attachment"
-    >
-      <FileAttachmentChip
-        filename={filename}
-        {...(onOpen === undefined
-          ? {}
-          : { onOpen: (): void => onOpen(attachment) })}
-        {...(interaction === null ? {} : { onDownload: download })}
-      />
-      {downloading && (
-        <span role="status" className="text-2xs fg-secondary">
-          Downloading {filename}…
-        </span>
-      )}
-      <ErrorBanner className="" error={downloadError} />
-    </div>
-  );
-});

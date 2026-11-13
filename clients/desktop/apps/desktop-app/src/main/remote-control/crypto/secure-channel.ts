@@ -23,11 +23,28 @@ function nonceFor(counter: bigint): Buffer {
 }
 
 /**
+ * The counter a sealed frame claims, read without authenticating it, or null
+ * for a frame too short to be one. Only for discarding a frame unopened.
+ */
+export function sealedFrameCounter(frame: Uint8Array): bigint | null {
+  if (frame.byteLength < COUNTER_BYTES + TAG_BYTES) return null;
+  return Buffer.from(
+    frame.buffer,
+    frame.byteOffset,
+    frame.byteLength,
+  ).readBigUInt64BE(0);
+}
+
+/**
  * AES-256-GCM framing for one established session. (Electron's BoringSSL
  * build does not expose ChaCha20-Poly1305 through `createCipheriv`.) Each direction has
  * its own key and a strictly increasing counter used as the nonce. The relay
  * path is an ordered stream, so a frame whose counter is not exactly the next
  * one is a replay, a drop, or a reorder and ends the session.
+ *
+ * Session resume reuses the counters as sequence numbers: a sealed frame is
+ * kept and re-sent byte for byte, never sealed again, so no nonce is ever
+ * used for two plaintexts.
  *
  * Frame: `[counter u64 BE][ciphertext][tag 16]`, authenticated together with
  * the caller's associated data (the session header).
@@ -43,6 +60,16 @@ export class SecureChannel {
     if (sendKey.byteLength !== 32 || receiveKey.byteLength !== 32) {
       throw new Error('Secure channel keys are 32 bytes.');
     }
+  }
+
+  /** The counter the next sealed frame gets. */
+  get nextSendCounter(): bigint {
+    return this.sendCounter;
+  }
+
+  /** The counter the next frame opened must carry. */
+  get nextReceiveCounter(): bigint {
+    return this.receiveCounter;
   }
 
   seal(plaintext: Uint8Array, associatedData: Uint8Array): Buffer {

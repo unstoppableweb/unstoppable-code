@@ -1,22 +1,22 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getCodexRuntimeService } from '../codex/runtime-service';
-import type { CodexRuntimeAdmin } from '@canopy/desktop-shared/node/codex-runtime';
+import type { CodexRuntimeAdmin } from '@canopy/execution-engine/node/codex-runtime';
 import { isPathInside } from '../lib/path-safety';
 import { codexMarketplaceRootFromPath } from './codex-marketplace-paths';
-import type { MarketplaceAddParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/MarketplaceAddParams';
-import type { MarketplaceRemoveParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/MarketplaceRemoveParams';
-import type { MarketplaceUpgradeParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/MarketplaceUpgradeParams';
-import type { PluginInstallParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginInstallParams';
-import type { PluginInstallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginInstallResponse';
-import type { PluginInstalledParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginInstalledParams';
-import type { PluginListParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginListParams';
-import type { PluginListResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginListResponse';
-import type { PluginMarketplaceEntry } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
-import type { PluginReadParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginReadParams';
-import type { PluginReadResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginReadResponse';
-import type { PluginSource } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginSource';
-import type { PluginSummary } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginSummary';
+import type { MarketplaceAddParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/MarketplaceAddParams';
+import type { MarketplaceRemoveParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/MarketplaceRemoveParams';
+import type { MarketplaceUpgradeParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/MarketplaceUpgradeParams';
+import type { PluginInstallParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginInstallParams';
+import type { PluginInstallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginInstallResponse';
+import type { PluginInstalledParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginInstalledParams';
+import type { PluginListParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginListParams';
+import type { PluginListResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginListResponse';
+import type { PluginMarketplaceEntry } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
+import type { PluginReadParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginReadParams';
+import type { PluginReadResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginReadResponse';
+import type { PluginSource } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSource';
+import type { PluginSummary } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSummary';
 
 export interface CodexMarketplaceOperationResult {
   accepted: boolean;

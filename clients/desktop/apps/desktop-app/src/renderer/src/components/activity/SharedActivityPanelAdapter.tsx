@@ -4,6 +4,7 @@ import {
 } from '@/components/shared/panel-section';
 import { useActivityEventSubscriptions } from '@/hooks/useActivityEventSubscriptions';
 import { useAiCreditsOnlyBilling } from '@/hooks/useAiCreditsOnlyBilling';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { requestComposerAction } from '@/lib/composerShortcutRequests';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { earlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -33,6 +34,7 @@ import type {
   WorktreeSelection,
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import { isActivitySectionVisibleForTarget } from '@canopy/app-state';
 import type {
   PortalChatTodoProjection,
   PortalWorktreeSummaryEntity,
@@ -204,10 +206,14 @@ export function SharedActivityPanelAdapter({
   // rail sums the whole worktree, so unlike the composer it gates on the
   // account alone, not on how any one chat was billed.
   const creditsOnly = useAiCreditsOnlyBilling();
+  const { costInsights } = useScopeCapabilities({
+    projectId: selectedWorktree?.projectId ?? '',
+  });
   const costEntry =
     selectedWorktree &&
     selectedWorktree.projectId !== APP_ADVISOR_PROJECT_ID &&
-    !creditsOnly
+    !creditsOnly &&
+    costInsights === true
       ? selectedWorktree
       : null;
 
@@ -258,6 +264,21 @@ function SharedActivityPanelAdapterContents({
     ).catch(() => undefined);
   }, [isSharedContainer, selectedWorktree]);
   const lastOutputWorktreeKeyRef = useRef<string | null>(null);
+  // A scope whose client implements only some sections (a cloud chat) never
+  // loads the others, so none of its ids reach the local bridge.
+  const scopeCapabilities = useScopeCapabilities({
+    projectId: selectedWorktree?.projectId ?? '',
+  });
+  const loadsScripts = isActivitySectionVisibleForTarget(
+    'scripts',
+    undefined,
+    scopeCapabilities,
+  );
+  const loadsHooks = isActivitySectionVisibleForTarget(
+    'hooks',
+    undefined,
+    scopeCapabilities,
+  );
 
   useEffect(() => {
     const previousKey = lastOutputWorktreeKeyRef.current;
@@ -268,16 +289,26 @@ function SharedActivityPanelAdapterContents({
     if (!selectedWorktree || !selectedWorktreeKey) return;
 
     cancelOutputUnload(selectedWorktreeKey);
-    void useScriptsStore
-      .getState()
-      .loadWorktreeRuns(selectedWorktree.projectId, selectedWorktree.worktreeId)
-      .catch(() => undefined);
-    void useHooksStore
-      .getState()
-      .loadWorktreeRuns(selectedWorktree.projectId, selectedWorktree.worktreeId)
-      .catch(() => undefined);
+    if (loadsScripts) {
+      void useScriptsStore
+        .getState()
+        .loadWorktreeRuns(
+          selectedWorktree.projectId,
+          selectedWorktree.worktreeId,
+        )
+        .catch(() => undefined);
+    }
+    if (loadsHooks) {
+      void useHooksStore
+        .getState()
+        .loadWorktreeRuns(
+          selectedWorktree.projectId,
+          selectedWorktree.worktreeId,
+        )
+        .catch(() => undefined);
+    }
     return (): void => scheduleOutputUnload(selectedWorktreeKey);
-  }, [selectedWorktree, selectedWorktreeKey]);
+  }, [selectedWorktree, selectedWorktreeKey, loadsScripts, loadsHooks]);
 
   const projectId = selectedWorktree?.projectId ?? null;
   const [memoryState, setMemoryState] = useState<{

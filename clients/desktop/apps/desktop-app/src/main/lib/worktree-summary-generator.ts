@@ -20,7 +20,7 @@ import {
   StructuredHelperQueryError,
 } from '@canopy/desktop-shared/lib/structured-helper-query';
 import { claudeNativeMemoryOptions } from '@canopy/execution-engine/node/lib/native-memory';
-import { READ_ONLY_TOOLS } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
+import { READ_ONLY_TOOLS } from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
   GENERATED_WORKTREE_LABEL_INSTRUCTIONS,

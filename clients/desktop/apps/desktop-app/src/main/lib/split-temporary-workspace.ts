@@ -55,7 +55,7 @@ import {
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   allocateAdhocDestinationWorktreeId,
@@ -2078,6 +2078,7 @@ async function runSplitBackgroundPhase(args: {
   // temporary workspace (kept alive when a root archive container remains).
   try {
     const teardown = await archiveMultiRepoWorktree({
+      archiveTrigger: 'split',
       workspaceId: request.workspaceId,
       worktreeId: request.worktreeId,
       observabilityMode: hooks?.liveServices
@@ -2199,6 +2200,7 @@ async function archiveRemovedRepo(params: {
       worktree: record,
     });
     const archiveResponse = await archiveSingleRepoWorktree({
+      archiveTrigger: 'split',
       workspaceId: destination.id,
       worktreeId: destinationWorktreeId,
       observabilityMode: 'persisted-only',

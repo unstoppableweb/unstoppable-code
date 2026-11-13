@@ -1,5 +1,4 @@
 import type { JSX } from 'react';
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import {
   InstalledStatusFilterDropdown,
   MarketplaceSearchField,
@@ -7,7 +6,10 @@ import {
   PageSearchRow,
   type MarketplaceSearchFieldProps,
 } from '@canopy/ui-shared/components';
-import type { MarketplaceTypeTabId } from '@canopy/ui-shared/lib';
+import type {
+  InstalledStatusFilterValue,
+  MarketplaceTypeTabId,
+} from '@canopy/ui-shared/lib';
 import { customizeTabHasInstalledStatuses } from './customizeSections';
 
 export interface CustomizeSearchRowProps {
@@ -15,11 +17,17 @@ export interface CustomizeSearchRowProps {
   /** The row owns the field's placement. */
   readonly search: Omit<MarketplaceSearchFieldProps, 'className'>;
   /** `null` or omitted is Any status. */
-  readonly installedStatusFilter?: InstalledItemStatus | null;
+  readonly installedStatusFilter?: InstalledStatusFilterValue | null;
   /** Omit to render the search alone. */
   readonly onInstalledStatusFilterChange?: (
-    value: InstalledItemStatus | null,
+    value: InstalledStatusFilterValue | null,
   ) => void;
+  /**
+   * The tab offers Update available (`customizeTabOffersUpdateFilter`,
+   * CAN-5309). Pass the effective filter, so a stored value this tab cannot
+   * apply reads as Any.
+   */
+  readonly updateFilterAvailable?: boolean;
   readonly className?: string;
 }
 
@@ -33,6 +41,7 @@ export function CustomizeSearchRow({
   search,
   installedStatusFilter,
   onInstalledStatusFilterChange,
+  updateFilterAvailable = false,
   className,
 }: CustomizeSearchRowProps): JSX.Element {
   return (
@@ -45,6 +54,7 @@ export function CustomizeSearchRow({
             <InstalledStatusFilterDropdown
               value={installedStatusFilter ?? null}
               onChange={onInstalledStatusFilterChange}
+              includeUpdateAvailable={updateFilterAvailable}
             />
           </PageSearchControls>
         )}

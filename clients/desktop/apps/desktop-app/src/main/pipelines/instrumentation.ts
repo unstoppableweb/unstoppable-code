@@ -13,8 +13,8 @@ import type {
   IPCResult,
   PipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
-import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import { getExecutionRunDurationMs } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
+import { getExecutionRunDurationMs } from '@canopy/execution-engine/node/pipelines/executor';
 
 const PIPELINE_CRUD_OPERATION_NAME = 'canopy.pipeline_crud';
 const PIPELINE_EXECUTION_OPERATION_NAME = 'canopy.pipeline_execution';

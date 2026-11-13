@@ -1,5 +1,8 @@
 import type { CopilotReceiptStorage } from '@canopy/copilot-recipient/receipt-storage';
-import { writeFileAtomically, syncDirectory } from '../lib/atomic-file';
+import {
+  writeFileAtomically,
+  syncDirectory,
+} from '@canopy/execution-engine/node/lib/atomic-file';
 
 export const copilotReceiptStorage: CopilotReceiptStorage = {
   write: (path, contents): Promise<void> =>

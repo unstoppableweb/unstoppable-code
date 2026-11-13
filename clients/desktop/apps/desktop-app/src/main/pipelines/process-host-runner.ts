@@ -6,7 +6,7 @@ import type {
   SpawnedProcessResult,
   SpawnedProcessRunOptions,
   SpawnedProcessSpec,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import type {
   PipelineProcessHostRequest,

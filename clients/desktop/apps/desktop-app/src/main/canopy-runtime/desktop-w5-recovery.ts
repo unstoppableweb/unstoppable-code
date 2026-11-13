@@ -8,7 +8,7 @@ import type {
   W5RecoveryEntry,
   W5RecoveryStatus,
 } from '@canopy/protocol/portal';
-import { listW5HostPeers } from '@canopy/desktop-shared/node/w5-host-cohort';
+import { listW5HostPeers } from '@canopy/execution-engine/node/w5-host-cohort';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
 import { isW5RecoveryAvailable } from '../lib/w5-recovery-gates';
 import {

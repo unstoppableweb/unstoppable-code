@@ -49,6 +49,7 @@ export interface W5Diagnosis {
     readonly operation: string;
     readonly state: string;
     readonly diagnostics: string | null;
+    readonly paths?: readonly string[];
     /** Operations of the receipts (keys) the commit holds; abandoning it releases them. */
     readonly receiptOperations: readonly string[];
   }[];
@@ -211,13 +212,15 @@ async function copyLogForDiagnosis(
 /**
  * Offline-only reader: does not open W5CommitLog or its auto-recovering host.
  * No source migration, recovery, compensation, reservation transition or write.
- * Internal-root callers may prove schema upgrades on the disposable copy.
+ * Internal-root callers may preview schema upgrades and abandoned file history
+ * on the disposable copy; commit rows remain visible for opt-in validation.
  * Kept outside the running desktop graph; production exposure remains blocked.
  */
 export async function diagnoseW5State(
   dataRoot: string,
   scope: W5DiagnosisScope = 'all-artifacts',
   upgradeSchemaCopy = false,
+  previewAbandonCommits: readonly number[] = [],
 ): Promise<W5Diagnosis> {
   const root = join(dataRoot, 'workspaces');
   const issues: W5FileIssue[] = [];
@@ -396,6 +399,16 @@ export async function diagnoseW5State(
           operation: row.operation,
           state: row.state,
           diagnostics: row.diagnostics_json,
+          paths: db
+            .prepare(
+              'SELECT path FROM w5_commit_files WHERE commit_id = ? ORDER BY path',
+            )
+            .all(row.commit_id)
+            .map(({ path }) => {
+              if (typeof path !== 'string')
+                throw new Error('Invalid commit path');
+              return path;
+            }),
           receiptOperations,
         });
       }
@@ -422,10 +435,13 @@ export async function diagnoseW5State(
       for (const row of db
         .prepare(
           `SELECT f.path, f.new_fingerprint FROM w5_commit_files f
-        WHERE f.commit_id = (SELECT MAX(last.commit_id) FROM w5_commit_files last WHERE last.path = f.path)
+        WHERE f.commit_id = (
+          SELECT MAX(last.commit_id) FROM w5_commit_files last
+          WHERE last.path = f.path AND last.commit_id NOT IN (SELECT value FROM json_each(?))
+        )
         ORDER BY f.path`,
         )
-        .all()) {
+        .all(JSON.stringify(previewAbandonCommits))) {
         if (
           typeof row.path !== 'string' ||
           (row.new_fingerprint !== null &&
@@ -475,4 +491,44 @@ export async function diagnoseW5State(
     commits,
     reservations,
   };
+}
+
+/** Lossless rows removed by W5 abandon, read from the same disposable-copy reader. */
+export async function readW5CommitAbandonmentEvidence(
+  dataRoot: string,
+  commitIds: readonly number[],
+): Promise<string> {
+  const copy = await copyLogForDiagnosis(
+    join(dataRoot, 'w5/commit-log.sqlite'),
+    false,
+  );
+  try {
+    const commits = commitIds.map((commitId) => {
+      const commit = copy.db
+        .prepare('SELECT * FROM w5_commits WHERE commit_id = ?')
+        .get(commitId);
+      if (commit?.state !== 'recovery-required')
+        throw new Error(`Commit ${commitId} is not recovery-required`);
+      return {
+        commit,
+        files: copy.db
+          .prepare(
+            'SELECT * FROM w5_commit_files WHERE commit_id = ? ORDER BY path',
+          )
+          .all(commitId),
+        receipts: copy.db
+          .prepare('SELECT * FROM w5_receipts WHERE commit_id = ?')
+          .all(commitId),
+      };
+    });
+    return JSON.stringify(
+      { version: 1, source: dataRoot, commits },
+      (_key, value: unknown) =>
+        value instanceof Uint8Array
+          ? { base64: Buffer.from(value).toString('base64') }
+          : value,
+    );
+  } finally {
+    await copy.close();
+  }
 }

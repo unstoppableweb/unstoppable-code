@@ -4,7 +4,7 @@ import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import type { WorkerPipelineHostLaunch } from '@canopy/protocol/canopy-core';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
-import { isInheritedSensitiveEnv } from './executor/step-runner';
+import { isInheritedSensitiveEnv } from '@canopy/execution-engine/node/pipelines/executor/step-runner';
 
 /*
  * What every client that sends a workflow to the daemon's pipeline host

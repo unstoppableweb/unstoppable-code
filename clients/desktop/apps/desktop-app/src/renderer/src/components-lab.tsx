@@ -4,6 +4,7 @@ import { brand } from '@/lib/brand';
 import { applyBrandDocumentHead } from '@/lib/brandDocumentHead';
 import { applyTheme, installBrandDefaultTheme } from '@/lib/theme';
 import { ComponentsLabPage } from '@/components/dev/ComponentsLabPage';
+import { LabBrandDisplayNameContext } from '@/components/dev/componentsLabStageContext';
 
 applyBrandDocumentHead(brand);
 installBrandDefaultTheme();
@@ -14,4 +15,8 @@ if (!rootElement) {
   throw new Error('Root element not found');
 }
 
-createRoot(rootElement).render(<ComponentsLabPage />);
+createRoot(rootElement).render(
+  <LabBrandDisplayNameContext.Provider value={brand.displayName}>
+    <ComponentsLabPage />
+  </LabBrandDisplayNameContext.Provider>,
+);

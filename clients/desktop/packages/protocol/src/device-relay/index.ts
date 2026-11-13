@@ -198,12 +198,42 @@ export const DEVICE_RELAY_ERROR_CODES = [
 ] as const;
 export type DeviceRelayErrorCode = (typeof DEVICE_RELAY_ERROR_CODES)[number];
 
+/**
+ * WebSocket close codes the relay uses when it ends a connection. A relay
+ * that refuses a message first sends an `error` naming the code it closes
+ * with, and the close reason repeats that error code.
+ */
+export const DEVICE_RELAY_CLOSE_CODES = {
+  /** The relay is shutting down, for example for a deploy. */
+  shuttingDown: 1001,
+  invalidMessage: 4400,
+  unauthorized: 4401,
+  /** No `hello` arrived in time after the upgrade. */
+  helloTimeout: 4408,
+  /** Another connection for this device replaced this one. */
+  replaced: 4409,
+  stalled: 4410,
+  tooManyDevices: 4429,
+} as const;
+export type DeviceRelayCloseCode =
+  (typeof DEVICE_RELAY_CLOSE_CODES)[keyof typeof DEVICE_RELAY_CLOSE_CODES];
+
+/** The close reason the relay gives with `shuttingDown`. */
+export const DEVICE_RELAY_SHUTDOWN_REASON = 'shutting down';
+
 export const DeviceRelayServerMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('ready'),
     features: z.array(z.string().min(1).max(64)).max(32).optional(),
     deviceId: z.string().regex(DEVICE_ID_PATTERN),
     peers: z.array(DeviceRelayDeviceInfoSchema),
+    /**
+     * The longest this connection is expected to live: the load balancer in
+     * front of the relay closes it then. A client may reconnect shortly
+     * before it elapses instead of being cut. Absent when the relay does not
+     * know. The relay itself never enforces it.
+     */
+    maxConnectionAgeMs: z.number().int().positive().optional(),
   }),
   z.object({
     type: z.literal('peer.online'),

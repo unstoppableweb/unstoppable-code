@@ -371,6 +371,9 @@ export async function readArchivedContainerRecoveryJournal(
   worktreeId: string,
 ): Promise<{
   createdAt: string;
+  phase: RecoveryJournal['phase'];
+  identity: string | null;
+  recovery: Recovery;
   repositories: {
     referenceRepoPath: string;
     repositoryIdentity: string | null;
@@ -380,6 +383,11 @@ export async function readArchivedContainerRecoveryJournal(
   if (!journal) return null;
   return {
     createdAt: journal.createdAt,
+    phase: journal.phase,
+    identity: journal.identity
+      ? `${journal.identity.dev}:${journal.identity.ino}:${journal.identity.birthtimeMs}`
+      : null,
+    recovery: journal.recovery,
     repositories: (journal.repositories ?? []).map((repository) => ({
       referenceRepoPath: repository.referenceRepoPath,
       repositoryIdentity: repository.repositoryIdentity?.path ?? null,
@@ -1718,9 +1726,15 @@ export async function recoverArchivedFileTeardownsForWorkspace(
           },
         };
         if (config.type === 'single-repo')
-          await service.archiveSingleRepoWorktree(options);
+          await service.archiveSingleRepoWorktree({
+            ...options,
+            archiveTrigger: 'internal-rollback',
+          });
         else if (config.type === 'multi-repo')
-          await service.archiveMultiRepoWorktree(options);
+          await service.archiveMultiRepoWorktree({
+            ...options,
+            archiveTrigger: 'internal-rollback',
+          });
       } else {
         // Intentional local import breaks the archive/recovery initialization
         // cycle; build:e2e verifies this module resolves in packaged bytecode.

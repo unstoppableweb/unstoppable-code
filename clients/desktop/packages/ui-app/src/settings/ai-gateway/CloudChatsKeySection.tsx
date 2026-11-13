@@ -66,6 +66,38 @@ const REFRESH_CODES: ReadonlySet<string | undefined> = new Set([
 ]);
 
 /**
+ * Whether cloud chats take a key for this organization's gateway, whether or
+ * not the gateway is on: the key routes answer 404 while cloud keys are off.
+ * `null` until the read answers, or when it fails for another reason.
+ */
+export function useCloudChatsKeysAvailable(
+  organizationId: string,
+): boolean | null {
+  const client = useSettingsClient();
+  const [available, setAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void client
+      .read('organization.settings.ai-gateway.cloud-key.read', {
+        organizationId,
+      })
+      .then(
+        () => {
+          if (!cancelled) setAvailable(true);
+        },
+        (err: unknown) => {
+          if (!cancelled)
+            setAvailable(settingsErrorFacts(err).status === 404 ? false : null);
+        },
+      );
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, organizationId]);
+  return available;
+}
+
+/**
  * The member's own key for cloud chats, saved on the server for this
  * organization's gateway (Personal included). Cloud chats can't reach a
  * device's secure storage, so this is separate from any desktop key. The
@@ -77,14 +109,12 @@ export function CloudChatsKeySection({
   organizationId,
   baseUrl,
   revision,
-  onAvailabilityChange,
 }: {
   readonly organizationId: string;
   /** Re-reads the status when the gateway address changes. */
   readonly baseUrl?: string;
   /** Re-reads the status after a key is saved elsewhere on the page. */
   readonly revision?: number;
-  readonly onAvailabilityChange?: (available: boolean) => void;
 }): JSX.Element | null {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
@@ -101,8 +131,6 @@ export function CloudChatsKeySection({
   // replace the status the mutation returned.
   const generationRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const availabilityRef = useRef(onAvailabilityChange);
-  availabilityRef.current = onAvailabilityChange;
 
   useEffect(() => {
     let cancelled = false;
@@ -118,13 +146,11 @@ export function CloudChatsKeySection({
         (result) => {
           if (stale()) return;
           setStatus(result.status);
-          availabilityRef.current?.(true);
         },
         (err: unknown) => {
           if (stale()) return;
           if (settingsErrorFacts(err).status === 404) {
             setStatus('off');
-            availabilityRef.current?.(false);
           } else {
             setLoadError(errorCopy.loadFailure(err));
           }

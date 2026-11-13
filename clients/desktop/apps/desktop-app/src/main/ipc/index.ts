@@ -15,11 +15,13 @@ import { registerSpaceNotificationHandlers } from './space-notifications';
 import { registerManagedDelegationHandlers } from './managed-delegation';
 import { registerNativeSubagentHandlers } from './native-subagents';
 import { registerLocalMemoryHandlers } from './local-memory';
+import { registerMemorySyncHandlers } from './memory-sync';
 import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from 'electron';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type {
   AppAdvisorWindowCommand,
   AppAdvisorWindowOpenRequest,
+  AppAdvisorDockResult,
   AppAdvisorWindowState,
   ChatWindowCommand,
   ChatStateCommandPort,
@@ -68,6 +70,7 @@ import { registerApprovalHandlers } from './approvals';
 import { registerCopilotConnectionHandlers } from './copilot-connection';
 import { registerOpenCodeConnectionHandlers } from './opencode-connection';
 import { registerAccountProxyHandlers } from './account-proxy';
+import { registerLocalModelGatewayHandlers } from './local-model-gateway';
 import { registerCursorConnectionHandlers } from './cursor-connection';
 import { registerCursorApprovalCheckHandlers } from './cursor-approval-check';
 import { registerFileAnnotationsHandlers } from './file-annotations';
@@ -176,8 +179,10 @@ import type { ChatScopeKey } from '../services/chat-state-contracts';
 
 export interface WindowAccessors {
   getMainWindow: () => BrowserWindow | null;
-  /** Native presentation layers owned by the main renderer. */
+  /** Native presentation layers, each owned by the renderer that opened it. */
   overlayLayerHost?: OverlayLayerHandlerAccessors['overlayLayerHost'];
+  /** Renderers allowed to drive their own layers; the main renderer by default. */
+  isOverlayLayerOpener?: OverlayLayerHandlerAccessors['isOverlayLayerOpener'];
   getAppAdvisorWindow: () => BrowserWindow | null;
   openAppAdvisorWindow: (
     request?: AppAdvisorWindowOpenRequest,
@@ -196,6 +201,10 @@ export interface WindowAccessors {
   ) => AppAdvisorWindowState;
   /** Resizes the floating panel; the size is untrusted renderer input. */
   setAppAdvisorFloatingSize: (size: unknown) => AppAdvisorWindowState;
+  setAppAdvisorDock: (
+    sender: WebContents,
+    request: unknown,
+  ) => Promise<AppAdvisorDockResult>;
   sendAppAdvisorWindowCommand: (command: AppAdvisorWindowCommand) => void;
   sendChatWindowCommand: (command: ChatWindowCommand) => boolean;
   /** Backend adapter for app-managed App Advisor settings/instructions. */
@@ -302,6 +311,7 @@ export function registerAllIpcHandlers(
   registerCopilotConnectionHandlers();
   registerOpenCodeConnectionHandlers();
   registerAccountProxyHandlers();
+  registerLocalModelGatewayHandlers();
   registerFileAnnotationsHandlers(
     () => [accessors.getMainWindow(), accessors.getAppAdvisorWindow()],
     canopyRuntime.dispatcher,
@@ -325,7 +335,7 @@ export function registerAllIpcHandlers(
   registerRepoHandlers(canopyRuntime);
   registerCloneJobHandlers();
   registerWorktreeHandlers(getMainWindow, canopyRuntime);
-  registerWorktreeDiscardHandlers();
+  registerWorktreeDiscardHandlers(canopyRuntime);
   registerWorktreeDiscoveryHandlers(getMainWindow);
   registerHomeSurfaceHandlers(canopyRuntime);
   registerFileTreeHandlers(
@@ -384,6 +394,7 @@ export function registerAllIpcHandlers(
     getMainWindow,
     canopyRuntime.dispatcher,
     canopyRuntime.resolveCaller,
+    accessors.getAppAdvisorWindow,
   );
   registerTelemetrySyncHandlers(getMainWindow);
   registerMcpServerHandlers(getMainWindow);
@@ -396,7 +407,7 @@ export function registerAllIpcHandlers(
     canopyRuntime.dispatcher,
     canopyRuntime.resolveCaller,
   );
-  registerUpdateHandlers();
+  registerUpdateHandlers(canopyRuntime.dispatcher, canopyRuntime.resolveCaller);
   registerModelRegistryHandlers(getMainWindow, canopyRuntime);
   registerModelHarnessAssignmentHandlers();
   if (isOllamaSupportedOnPlatform()) {
@@ -426,7 +437,9 @@ export function registerAllIpcHandlers(
   registerCodexSpeedHandlers();
   if (accessors.overlayLayerHost) {
     registerOverlayLayerHandlers({
-      getMainWindow,
+      isOverlayLayerOpener:
+        accessors.isOverlayLayerOpener ??
+        ((contents): boolean => contents === getMainWindow()?.webContents),
       overlayLayerHost: accessors.overlayLayerHost,
     });
   }
@@ -484,6 +497,7 @@ export function registerAllIpcHandlers(
   registerExternalProjectHandlers();
   registerArchivedContainerHandlers(canopyRuntime);
   registerLocalMemoryHandlers();
+  registerMemorySyncHandlers();
   return () => {
     closeRendererRelay();
     relayBridgeClosed = true;

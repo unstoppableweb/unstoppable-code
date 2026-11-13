@@ -39,6 +39,10 @@ export function getDataDir(): string {
   return getCanopyDataDir();
 }
 
+export function getRootMigrationChatNoticesDir(): string {
+  return join(getDataDir(), 'migration-chat-notices');
+}
+
 export function getPipelinePackagesDir(): string {
   return join(getDataDir(), 'pipeline-packages', 'v1');
 }
@@ -335,6 +339,24 @@ export function getExternalProjectImportsFilePath(): string {
  */
 export function getActivationJourneyFilePath(): string {
   return join(getDataDir(), 'activation-journey.json');
+}
+
+/**
+ * The MCP servers each signed-in account allowed in its cloud chats
+ * (CAN-6176 reach-back): main-owned, written only by
+ * `mcp/cloud-reach-back/allow-list.ts`, never part of MCP config.
+ */
+export function getCloudReachBackFilePath(): string {
+  return join(getDataDir(), 'cloud-reach-back.json');
+}
+
+/**
+ * What cloud chats called on this computer through reach-back (CAN-6176):
+ * the last 200 calls per account, never their arguments or results. Written
+ * only by `mcp/cloud-reach-back/activity-log.ts`.
+ */
+export function getCloudReachBackActivityFilePath(): string {
+  return join(getDataDir(), 'cloud-reach-back-activity.json');
 }
 
 /**
@@ -1174,6 +1196,14 @@ export function getAccountProxyLocalRuntimeDir(): string {
 
 export function getModelGatewayCredentialStorePath(): string {
   return join(getSecureStorageDir(), 'model-gateway-credentials.json');
+}
+
+/**
+ * The device AI gateway used while no account names a Personal organization:
+ * its non-secret config and its encrypted key, as one endpoint-bound record.
+ */
+export function getLocalModelGatewayStorePath(): string {
+  return join(getSecureStorageDir(), 'local-model-gateway.json');
 }
 
 export function getInternalLegacySharedModelGatewayCredentialStorePath():

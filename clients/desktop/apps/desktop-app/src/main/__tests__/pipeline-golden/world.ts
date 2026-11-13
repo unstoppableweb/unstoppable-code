@@ -25,7 +25,7 @@ import {
   normalizeGoldenValue,
   writeGoldenBundledResources,
   type GoldenReplacement,
-} from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
+} from '@canopy/execution-engine/node/pipelines/__tests__/golden-fixtures';
 
 export const GOLDEN_WORKSPACE_ID = 'golden-ws';
 export const GOLDEN_WORKTREE_ID = 'golden-wt';
@@ -696,7 +696,7 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
   });
 
   const { saveStoredPipeline } =
-    await import('@canopy/desktop-shared/pipelines/store');
+    await import('@canopy/execution-engine/pipelines/store');
   const { parsePipelineText } =
     await import('@canopy/execution-engine/pipelines/parse-pipeline');
   const content = parsePipelineText(GOLDEN_USER_PIPELINE_YAML);

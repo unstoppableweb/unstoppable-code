@@ -114,6 +114,7 @@ pipeline:
 | `model_aliases`                  | array            | no       | Named model slots that agent steps can use with `with.model`; supports inline `base`/`instructions`/`plugin_collection_id` or Agent-backed `agent_id` defaults                            |
 | `assets`                         | array            | no       | Folders of files the pipeline reads at run time, read as `${{ assets.<id>.path }}`. See [Assets and local state](#assets-and-local-state)                                                 |
 | `local_state`                    | array            | no       | Per-runner paths (databases, caches, checkouts) that must never travel with a share                                                                                                       |
+| `sandbox.vcpus`                  | number           | no       | Cloud runs only: 1, 2, 4 or 8 vCPUs (2 GiB of memory each). Raises the run's default sandbox; desktop ignores it                                                                          |
 | `jobs`                           | map              | yes      | Job definitions keyed by ID                                                                                                                                                               |
 
 Set `hint-hide-ui-option: true` on a trigger input to hide it from UI input pickers when the input is optional or has a default.

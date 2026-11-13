@@ -47,6 +47,28 @@ export const CATALOG_SKILL_RISK_LEVELS = [
   'unknown',
 ] as const;
 
+const SkillContentHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * The cloud custom skill a local skill is linked to (CAN-6176): the share its
+ * author published (`author`) or the share it was installed from
+ * (`recipient`). Ids and hashes only. Hashes are SHA-256 over the raw
+ * SKILL.md bytes, as the cloud hashes them. Only a core that holds local
+ * skills sets it; the web core never does.
+ */
+export const CatalogSkillCloudShareSchema = z.strictObject({
+  role: z.enum(['author', 'recipient']),
+  /** The cloud skill's id, its `skillName` under the `cloud-custom` source. */
+  remoteId: IdSchema,
+  /** The SKILL.md hash the link recorded; null when it recorded none. */
+  linkedContentHash: SkillContentHashSchema.nullable(),
+  /** The local SKILL.md hash now; null when it could not be read. */
+  localContentHash: SkillContentHashSchema.nullable(),
+});
+export type CatalogSkillCloudShare = z.output<
+  typeof CatalogSkillCloudShareSchema
+>;
+
 export const CatalogSkillRowSchema = z.strictObject({
   entryId: IdSchema,
   sourceId: IdSchema,
@@ -64,6 +86,7 @@ export const CatalogSkillRowSchema = z.strictObject({
       skillPath: z.string().max(4096),
     })
     .nullable(),
+  cloudShare: CatalogSkillCloudShareSchema.optional(),
 });
 export type CatalogSkillRow = z.output<typeof CatalogSkillRowSchema>;
 

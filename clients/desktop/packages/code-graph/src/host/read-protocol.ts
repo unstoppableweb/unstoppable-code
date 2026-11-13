@@ -94,7 +94,13 @@ export type CodeGraphWorkerReadTask =
       repoId: string;
       rootPath: string;
       envelope: CodeGraphSnapshotEnvelope;
-    };
+    }
+  /**
+   * Validates a worktree's custom languages end to end: loads each grammar
+   * and compiles its tags queries. Its loaded grammars cannot be freed, so the
+   * worker exits after answering.
+   */
+  | { kind: 'languages-validate'; worktreeRoot: string; resourcesDir: string };
 
 export interface CodeGraphWorkerReadRequest {
   dbPath: string;
@@ -119,8 +125,30 @@ export type CodeGraphWorkerReadResult =
       kind: 'change-impact';
       value: { report: ChangeImpactReport; lastBuildAt: number | null };
     }
-  | { kind: 'snapshot-export'; value: CodeGraphSnapshotEnvelope }
-  | { kind: 'snapshot-import'; value: CodeGraphSnapshotImportResult };
+  /** Null when the graph holds no rows for the repository (CAN-6010). */
+  | { kind: 'snapshot-export'; value: CodeGraphSnapshotEnvelope | null }
+  | { kind: 'snapshot-import'; value: CodeGraphSnapshotImportResult }
+  | { kind: 'languages-validate'; value: CodeGraphLanguagesValidation };
+
+/**
+ * A worktree's custom-language configuration as validation found it. Only a
+ * validation that loaded the grammars reports each one's config `index` and
+ * `abiVersion`.
+ */
+export interface CodeGraphLanguagesValidation {
+  config: 'absent' | 'invalid' | 'present';
+  languages: Array<{
+    id: string;
+    extensions: string[];
+    index?: number;
+    abiVersion?: number;
+  }>;
+  diagnostics: Array<{
+    entryId: string | null;
+    index: number;
+    message: string;
+  }>;
+}
 
 /** Host utility-only identity check. No paths or raw marker text in results. */
 export type CodeGraphBaseIdentityReadResult =

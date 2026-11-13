@@ -61,7 +61,7 @@ export type WorkspaceOwnerRecordSource =
    * project, adoption, move back to Personal and their setup journal sweep
    * (`org-projects:*`).
    */
-  'org_project_materialization';
+  'org_project_materialization' | 'organization_access_loss';
 
 export interface WorkspaceOwnerRecord {
   workspaceId: string;
@@ -92,6 +92,9 @@ export function recordWorkspaceOwner(
         kind: 'ownership.owner',
         owner: next.owner,
         ownershipTransfer: next.ownershipTransfer,
+        ...(Object.prototype.hasOwnProperty.call(next, 'detachedOwner')
+          ? { detachedOwner: next.detachedOwner }
+          : {}),
       }
     );
   });

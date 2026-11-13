@@ -66,7 +66,7 @@ export type CancelActionButtonTone =
   | 'merged';
 
 const TONE_CLASS_NAMES: Record<CancelActionButtonTone, string> = {
-  accent: 'fg-accent hover:bg-accent-subtle',
+  accent: 'fg-accent hover:bg-accent-subtle hover:fg-accent-strong',
   warning: 'fg-warning hover:bg-warning-subtle',
   destructive: 'fg-destructive hover:bg-destructive-subtle',
   merged: 'fg-special-strong hover:bg-special-subtle',

@@ -10,7 +10,12 @@ import { BOT_ACTION_TYPES } from './bot-discovery';
 import { PROJECT_ACTION_CATALOG } from '@canopy/agent-actions/families/projects/catalog';
 import { BOT_ACTION_CATALOG } from '@canopy/agent-actions/families/bots/catalog';
 import { BROWSER_ACTION_CATALOG } from '@canopy/agent-actions/families/browser/catalog';
+import {
+  PIPELINE_EXECUTION_ACTION_CATALOG,
+  PIPELINE_EXECUTION_CHAIN_ACTION_CATALOG,
+} from '@canopy/agent-actions/families/pipeline-executions/catalog';
 import { editorSetupActionCatalog } from '@canopy/agent-actions/families/editor-setup/catalog';
+import { cloudChatActionCatalog } from '@canopy/agent-actions/families/cloud-chats/catalog';
 import { CODE_GRAPH_QUERY_MODES } from '../types/code-graph-tools';
 // Subpath imports keep the agent action tool engine out of renderer bundles.
 import {
@@ -51,6 +56,7 @@ import { PIPELINE_EDITOR_REQUIRED_SKILL_REF } from './pipeline-editor-tools';
 import { MAX_ARCHIVE_RETENTION_DAYS } from './archive-retention';
 
 const appName = BRAND.displayName;
+
 const cloudName = `${appName} Cloud`;
 const portalDisplayName = REMOTE_CONTROL_LABEL;
 // Lowercase form for mid-sentence prose; portalDisplayName stays proper-cased
@@ -64,7 +70,11 @@ const portalDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
  * or navigation.open_settings with section environment.
  */
 const COMPATIBILITY_ALIAS_NAVIGATION_PAGES: ReadonlySet<NavigationPage> =
-  new Set<NavigationPage>(['mcp-account-connections', 'environments']);
+  new Set<NavigationPage>([
+    'mcp-account-connections',
+    'environments',
+    'cloud-chat',
+  ]);
 
 export type AppAdvisorActionField = AgentActionField;
 
@@ -2181,9 +2191,19 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'memory.import_external',
       category: 'settings',
       summary:
-        'Import Claude Code memories into device-local memory for the current project and user scope.',
-      fields: [],
+        'Import Claude Code and Codex memories into device-local memory, for user memory and an optional named project.',
+      fields: [
+        field(
+          'workspaceId',
+          'string',
+          false,
+          "The project whose repositories' memories are imported with the user's. Without it, every project's user memory is imported. The selected project is never used.",
+        ),
+      ],
       example: { type: 'memory.import_external' },
+      additionalExamples: [
+        { type: 'memory.import_external', workspaceId: 'project-1' },
+      ],
       keywords: [
         'memory import',
         'import memory',
@@ -2195,16 +2215,26 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
       notes: [
         'Uses the same gated, idempotent importer as the automatic startup and project imports.',
-        'Local memory must be enabled. The import includes user scope and the currently selected code project when available.',
+        'Local memory must be enabled. A person confirms first, in a question that lists the files to import by name; nothing is imported without their answer, and only the files listed are read.',
       ],
     },
     {
       type: 'memory.consolidate_now',
       category: 'settings',
       summary:
-        'Fold pending device-local memory notes into the memory index now, for the user scope and the current project.',
-      fields: [],
+        'Fold pending device-local memory notes into the memory index now, for user memory and an optional named project.',
+      fields: [
+        field(
+          'workspaceId',
+          'string',
+          false,
+          "The project whose memory is consolidated with the user's. The selected project is never used.",
+        ),
+      ],
       example: { type: 'memory.consolidate_now' },
+      additionalExamples: [
+        { type: 'memory.consolidate_now', workspaceId: 'project-1' },
+      ],
       keywords: [
         'consolidate memory',
         'memory consolidation',
@@ -2254,7 +2284,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
       notes: [
         'Only run when the user asks to rebuild memory. It replaces the memory index and topics, so confirm the scope first.',
-        'Send the current UI revision. A stale revision, or a project that no longer exists, is refused rather than rebuilding another project.',
+        'A person confirms first. The memory is rebuilt only if it is unchanged since they were asked; a project that no longer exists is refused rather than rebuilding another project.',
         'Saves a snapshot of the current index and topics before changing anything, then returns every consolidated note and import to the pending queue and consolidates until nothing is pending. The chat history profile is kept.',
         'Can take many minutes and one model run per batch of notes. Returns the rebuild status (completed, stopped, failed, or skipped), its reason, the snapshot id, restored counts, and the scope status.',
         'When the chosen local memory model cannot run right now (for example, Ollama is not running), nothing changes and the status is skipped with that reason; it never rebuilds with another model.',
@@ -2348,7 +2378,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
       notes: [
         'Only run when the user asks to restore memory. It replaces the memory index and topics, so confirm the scope and snapshot first.',
-        'Send the current UI revision. A stale revision, or a project that no longer exists, is refused rather than restoring another project.',
+        'A person confirms first. The memory is restored only if it is unchanged since they were asked; a project that no longer exists is refused rather than restoring another project.',
         'Saves a snapshot of the current index and topics first. Returns the restore status (restored or skipped), its reason, and the id of the snapshot it saved, so the restore can be undone.',
         'A scope that is consolidating or rebuilding is left unchanged and reported as skipped.',
       ],
@@ -2477,6 +2507,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
     },
     ...editorSetupActionCatalog,
+    ...cloudChatActionCatalog,
     ...scriptPreferencesActionCatalog,
     {
       type: 'navigation.open_command_palette',
@@ -8803,6 +8834,30 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
     },
     {
+      type: 'plan.unshare',
+      category: 'plan',
+      summary: `Stop sharing a tracked plan: delete its copy from the configured ${cloudName} account so teammates lose access. Comments on the shared copy are deleted; the local plan and its comments are kept. Sharing again creates a new link.`,
+      fields: [
+        PROJECT_FIELD,
+        WORKTREE_FIELD,
+        field('planId', 'string', true, 'Tracked plan id to stop sharing.'),
+      ],
+      example: {
+        type: 'plan.unshare',
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        planId: 'plan-1',
+      },
+      keywords: [
+        'plan',
+        'unshare',
+        'stop sharing',
+        'revoke',
+        'remove',
+        'canopy cloud',
+      ],
+    },
+    {
       type: 'runs.share',
       category: 'plan',
       summary: `Share a redacted finished session as a team or organization run in the configured ${cloudName} account. The share proceeds even when ambient telemetry sync is off.`,
@@ -9252,186 +9307,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       example: { type: 'pipeline.debug_run', executionId: 'execution-1' },
       keywords: ['pipeline', 'debug', 'failed run', 'failure'],
     },
-    {
-      type: 'pipeline.execution_list_for_worktree',
-      category: 'pipeline',
-      summary: `List pipeline executions for a specific ${WORKTREE_LABEL} entry (worktree), with filters for fuzzy name, pipeline id, and status.`,
-      fields: [
-        PROJECT_FIELD,
-        WORKTREE_FIELD,
-        field('query', 'string', false, 'Fuzzy pipeline name/id filter.'),
-        field('pipelineId', 'string', false, 'Exact pipeline id filter.'),
-        field('status', 'ExecutionState.status', false, 'Status filter.'),
-        field('limit', 'number', false, 'Maximum rows to return.'),
-      ],
-      example: {
-        type: 'pipeline.execution_list_for_worktree',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        status: 'failure',
-      },
-      keywords: [
-        'pipeline',
-        'execution',
-        'history',
-        'list',
-        'worktree',
-        'code',
-      ],
-    },
-    {
-      type: 'pipeline.execution_list',
-      category: 'pipeline',
-      summary:
-        'List pipeline executions globally, optionally filtered by workspace/worktree, fuzzy name, pipeline id, or status.',
-      fields: [
-        field('projectId', 'string', false, `${appName} project/workspace id.`),
-        field('worktreeId', 'string', false, `${appName} worktree id.`),
-        field('query', 'string', false, 'Fuzzy pipeline name/id filter.'),
-        field('pipelineId', 'string', false, 'Exact pipeline id filter.'),
-        field('status', 'ExecutionState.status', false, 'Status filter.'),
-        field('limit', 'number', false, 'Maximum rows to return.'),
-      ],
-      example: {
-        type: 'pipeline.execution_list',
-        projectId: 'project-1',
-        status: 'running',
-      },
-      keywords: ['pipeline', 'execution', 'history', 'list', 'global'],
-    },
-    {
-      type: 'pipeline.execution_get',
-      category: 'pipeline',
-      summary:
-        'Inspect/monitor one pipeline execution with status, timing, job summaries, and optional report/plan content.',
-      fields: [
-        EXECUTION_FIELD,
-        field('includeReport', 'boolean', false, 'Include report content.'),
-        field('includePlan', 'boolean', false, 'Include plan file content.'),
-        field('maxChars', 'number', false, 'Maximum report/plan characters.'),
-      ],
-      example: {
-        type: 'pipeline.execution_get',
-        executionId: 'execution-1',
-        includeReport: true,
-      },
-      keywords: ['pipeline', 'execution', 'inspect', 'monitor', 'status'],
-    },
-    {
-      type: 'pipeline.execution_cancel',
-      category: 'pipeline',
-      summary: 'Cancel a running or cancellable pipeline execution.',
-      fields: [EXECUTION_FIELD],
-      example: {
-        type: 'pipeline.execution_cancel',
-        executionId: 'execution-1',
-      },
-      keywords: ['pipeline', 'execution', 'cancel', 'stop'],
-    },
-    {
-      type: 'pipeline.execution_retry_matrix_job',
-      category: 'pipeline',
-      summary:
-        'Retry all, failed, or selected variants of a terminal matrix job, or retry a failed dynamic expansion.',
-      fields: [
-        EXECUTION_FIELD,
-        field('jobId', 'string', true, 'Logical matrix job id.'),
-        field(
-          'mode',
-          "'all' | 'failed' | 'variants' | 'expansion'",
-          true,
-          'Which matrix work to retry.',
-        ),
-        field(
-          'variantJobIds',
-          'string[]',
-          false,
-          'Required physical variant ids when mode is variants.',
-        ),
-      ],
-      example: {
-        type: 'pipeline.execution_retry_matrix_job',
-        executionId: 'execution-1',
-        jobId: 'review',
-        mode: 'failed',
-      },
-      keywords: ['pipeline', 'matrix', 'retry', 'failed', 'variant'],
-    },
-    {
-      type: 'pipeline.execution_cancel_matrix_variant',
-      category: 'pipeline',
-      summary: 'Cancel one queued or running matrix variant.',
-      fields: [
-        EXECUTION_FIELD,
-        field('jobId', 'string', true, 'Logical matrix job id.'),
-        field('variantJobId', 'string', true, 'Physical matrix variant id.'),
-      ],
-      example: {
-        type: 'pipeline.execution_cancel_matrix_variant',
-        executionId: 'execution-1',
-        jobId: 'review',
-        variantJobId: '__matrix__review__0',
-      },
-      keywords: ['pipeline', 'matrix', 'cancel', 'stop', 'variant'],
-    },
-    {
-      type: 'pipeline.execution_resume',
-      category: 'pipeline',
-      summary:
-        'Resume an observed pipeline pause as an automation-initiated action by selecting recovery reasons or answering requested inputs.',
-      fields: [
-        EXECUTION_FIELD,
-        field(
-          'statusReasonIds',
-          'string[]',
-          false,
-          'Non-empty unique status-reason ids from pipeline.execution_get or current UI state. Required when pauseResponses is omitted.',
-        ),
-        field(
-          'pauseResponses',
-          'Array<{ checkpointId: string; jobId: string; stepId: string; answers?: Record<string, string | number | boolean> }>',
-          false,
-          'Responses for input requests reported by pipeline.execution_get. Required when statusReasonIds is omitted. Every response requires the exact checkpointId so stale answers cannot target a newer pause. Agent-submitted answers are intentionally recorded as automation-initiated, not as proof of human approval.',
-        ),
-      ],
-      example: {
-        type: 'pipeline.execution_resume',
-        executionId: 'execution-1',
-        statusReasonIds: ['123e4567-e89b-42d3-a456-426614174000'],
-      },
-      additionalExamples: [
-        {
-          type: 'pipeline.execution_resume',
-          executionId: 'execution-1',
-          pauseResponses: [
-            {
-              checkpointId: 'checkpoint-1',
-              jobId: 'review',
-              stepId: 'approval',
-              answers: { reviewer: 'Ada' },
-            },
-          ],
-        },
-      ],
-      keywords: [
-        'pipeline',
-        'execution',
-        'resume',
-        'paused',
-        'recover',
-        'status reason',
-        'input request',
-        'pause response',
-      ],
-    },
-    {
-      type: 'pipeline.execution_retry',
-      category: 'pipeline',
-      summary: 'Retry a failed or cancelled root pipeline execution in place.',
-      fields: [EXECUTION_FIELD],
-      example: { type: 'pipeline.execution_retry', executionId: 'execution-1' },
-      keywords: ['pipeline', 'execution', 'retry'],
-    },
+    ...PIPELINE_EXECUTION_ACTION_CATALOG,
     {
       type: 'pipeline.execution_start_over',
       category: 'pipeline',
@@ -9502,34 +9378,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       },
       keywords: ['pipeline', 'execution', 'plan', 'chat', 'agent'],
     },
-    {
-      type: 'pipeline.execution_chain',
-      category: 'pipeline',
-      summary:
-        'Run a plan_ready follow-up pipeline using the plan produced by another execution.',
-      fields: [
-        EXECUTION_FIELD,
-        field('pipelineId', 'string', true, 'Follow-up pipeline id to run.'),
-        field(
-          'inputs',
-          'Record<string,string>',
-          false,
-          'Follow-up pipeline input values.',
-        ),
-        field(
-          'repoId',
-          'string',
-          false,
-          'Optional repo id for source-backed project execution cwd.',
-        ),
-      ],
-      example: {
-        type: 'pipeline.execution_chain',
-        executionId: 'execution-1',
-        pipelineId: 'implement-plan',
-      },
-      keywords: ['pipeline', 'execution', 'chain', 'follow up', 'plan_ready'],
-    },
+    ...PIPELINE_EXECUTION_CHAIN_ACTION_CATALOG,
     {
       type: 'file.open',
       category: 'file',
@@ -10727,7 +10576,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'worktree_pipeline target chooses where it runs; omit target to keep the behavior above. { kind: "global" } runs with no project in its own scratch folder: omit workspaceId, baseWorktreeId, repoId, and projectPipelineFilename; the pipeline must declare scope: global and cannot be a project pipeline (pipelineSource "project"). { kind: "new_worktree" } creates a fresh worktree each run on a code project. { kind: "task", taskId } runs in an existing worktree (code) or Work Entry (cowork) of workspaceId without creating anything. { kind: "project" } runs directory-scoped in the project folder of workspaceId without creating a task. Every kind except global requires workspaceId; baseWorktreeId applies only to new_worktree.',
         "A pipeline automation with no project is owned by the caller: a code or cowork agent creates it in its own project's owner, Orchestrator in the selected owner. It keeps that owner when it is turned on, run, or edited, and a user pipeline it names must belong to the same owner. Do not pass executionContext.",
         'Agent-dispatched automation.create cannot configure an If Command gate because it would execute host shell content. Configure trusted gates manually in the Automations UI.',
-        'For prompt actions, optional model, modelConfig, pluginSelections, legacy portable plugins, and approvalMode mirror the Automations page chat settings; omit model/modelConfig/approvalMode to use the destination defaults. pluginSelections uses the full chat picker shape: collectionIds, skillRefs, pluginRefs, and mcpServerRefs. worktree_prompt also supports planMode and interfaceMode; baseBranch creates a fresh branch from an existing local/remote branch, while existingBranch checks out that branch directly. baseWorktreeId, baseBranch, and existingBranch are mutually exclusive.',
+        'For prompt actions, model accepts agent_model_<id>@<model-id> for any Agent, overriding its default with a selectable, compatible, policy-allowed model under normal approval. Optional model, modelConfig, pluginSelections, legacy portable plugins, and approvalMode mirror the Automations page chat settings; omit model/modelConfig/approvalMode to use the destination defaults. pluginSelections uses the full chat picker shape: collectionIds, skillRefs, pluginRefs, and mcpServerRefs. worktree_prompt also supports planMode and interfaceMode; baseBranch creates a fresh branch from an existing local/remote branch, while existingBranch checks out that branch directly. baseWorktreeId, baseBranch, and existingBranch are mutually exclusive.',
         'worktree_prompt existingWorktreeId opens the NEW chat on that already-existing worktree with no provisioning (no worktree row, no setup scripts); the run fails when the worktree does not exist in the target project. It cannot be combined with baseWorktreeId, baseBranch, or existingBranch. Get a worktree id from a prior automation run result ({ worktreeId } — the same-worktree handoff case) or from projects.list_tasks for the code project: the returned taskId is the worktree id, scoped by projectId. This still opens a fresh chat tab; it never injects into an existing chat session.',
         'app_advisor_prompt and standalone_prompt workEntryId likewise open the NEW chat inside that already-existing Work Entry (an Orchestrator Work Entry, or a Work Entry of the cowork project) instead of creating a Work Entry per run; the run fails when the entry no longer exists. The Automations page authors these, and existingWorktreeId, as its "Existing chat" Run-in mode with "New chat" picked.',
         `sidebarGroupName is an optional destination-local group name for prompt actions; each newly created Work Entry or worktree joins that group (created if needed). Blank is absent, names are trimmed to at most ${SIDEBAR_ITEM_GROUP_NAME_LIMIT} Unicode code points, existing Work Entry/worktree targets ignore it, and this local customization is not included in a shared automation document.`,

@@ -1,0 +1,45 @@
+{
+  "secret": "pipeline-runner-session-vector-secret-0123",
+  "credentialId": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+  "sessionKey": "G96D-U-6GWY56BLnjmxov5Cg526wqdphDPDrRSoOS7Q",
+  "coreNonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+  "runnerNonce": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+  "coreHello": {
+    "v": 1,
+    "t": "hello",
+    "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+  },
+  "runnerHello": {
+    "v": 1,
+    "t": "hello",
+    "nonce": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "mac": "dX0nzfO5gIjwpt7MvQr-bni7XI50c_VETRHrk-iCUsk"
+  },
+  "coreReady": {
+    "v": 1,
+    "t": "ready",
+    "mac": "7vTZQHx8EFxMWSrTper1OK_CsapGYjyzCuIiqh0DakE"
+  },
+  "coreData": [
+    {
+      "plaintext": "{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"method\":\"worker.pipeline.execution.get\",\"params\":{\"executionId\":\"run\"}}",
+      "frame": {
+        "v": 1,
+        "t": "data",
+        "seq": 0,
+        "ct": "ubw9DsmrCFyiJWD0mWneWo6N5GEmtsVw_btSOBszZCUHY9iwdfAX3srPaj4c1pgLOs0spe4auWXUV-CT9oWPhPBg-tVmvnV5ldxE4oPTbNuvh0UanS6IN_0bCxgw_wUQN8dMNB-WfGCOjCkY_1sH1hB0Kw"
+      }
+    }
+  ],
+  "runnerData": [
+    {
+      "plaintext": "{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"result\":{}}",
+      "frame": {
+        "v": 1,
+        "t": "data",
+        "seq": 0,
+        "ct": "CAas5U8lffoLE-sm2NwTgfy46oQGaZVwwl1eCLPbvamIHujyk6ZruINd-qCt8Qptl3tLZlKyWw"
+      }
+    }
+  ]
+}

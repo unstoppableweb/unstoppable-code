@@ -283,7 +283,7 @@ async function main() {
 
   // 2. Runtime + profile (unchanged restricted delegation profile) -----------
   const runtimeModule =
-    await import('@canopy/desktop-shared/node/codex-runtime/index.ts');
+    await import('@canopy/execution-engine/node/codex-runtime/index.ts');
   const runtime = runtimeModule.default ?? runtimeModule;
   const configPaths =
     await import('@canopy/execution-engine/pipelines/config-paths.ts');

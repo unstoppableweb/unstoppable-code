@@ -47,6 +47,13 @@ export type QueuedToastInput = Omit<QueuedToast, 'id'>;
 export interface ToastQueueOptions<T extends QueuedToastInput> {
   /** A newer toast evicts the oldest beyond this. Uncapped when omitted. */
   readonly maxVisible?: number;
+  /**
+   * What makes two toasts the same toast. A newer unkeyed toast replaces a
+   * visible unkeyed one with the same identity, so a repeated event shows
+   * once, with a fresh clock. Defaults to the type and message ({@link defaultToastIdentity});
+   * hosts whose toasts carry more visible text (a title, a project) add it.
+   */
+  readonly identity?: (toast: T) => string;
   /** Runs once per added toast, after subscribers saw it. */
   readonly onAdd?: (toast: T & { readonly id: string }) => void;
 }
@@ -71,6 +78,11 @@ export interface ToastQueue<T extends QueuedToastInput> {
 
 const GENERATED_ID = /^toast-(\d+)$/;
 
+/** Two toasts with the same type and message read as one. */
+export function defaultToastIdentity(toast: QueuedToastInput): string {
+  return `${toast.type}\u0000${toast.message}`;
+}
+
 /**
  * A small, framework-free list of live toasts, one per host. The queue decides
  * which toasts exist; the shared `ToastStack` decides how long each stays up
@@ -79,6 +91,7 @@ const GENERATED_ID = /^toast-(\d+)$/;
  */
 export function createToastQueue<T extends QueuedToastInput>({
   maxVisible,
+  identity = defaultToastIdentity,
   onAdd,
 }: ToastQueueOptions<T> = {}): ToastQueue<T> {
   let toasts: readonly (T & { readonly id: string })[] = [];
@@ -108,10 +121,17 @@ export function createToastQueue<T extends QueuedToastInput>({
       }
       const id = supplied ?? `toast-${String(++lastGeneratedId)}`;
       const toast = { ...input, id };
-      const retained =
-        input.key === undefined
-          ? toasts
-          : toasts.filter((entry) => entry.key !== input.key);
+      // A newer toast replaces the visible one it repeats: the same key (a
+      // condition's newer state), or the same visible content between toasts
+      // with the same key identity. An unkeyed repeat never removes a keyed
+      // toast: producers leave the key off stale events so they can't
+      // replace a newer state.
+      const same = identity(input);
+      const retained = toasts.filter(
+        (entry) =>
+          entry.key !== input.key ||
+          (input.key === undefined && identity(entry) !== same),
+      );
       const next = [...retained, toast];
       publish(maxVisible === undefined ? next : next.slice(-maxVisible));
       onAdd?.(toast);

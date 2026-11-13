@@ -4,6 +4,7 @@ import {
   SUBAGENT_UNTITLED_LABEL,
 } from '../subagent-copy';
 import { SubagentIcon } from '../../../../icons/SubagentIcon';
+import { REPLAY_BLOCK_CLASS } from '../../../../lib/replay-privacy';
 
 export interface SubagentReferenceChipProps {
   readonly title: string;
@@ -23,7 +24,10 @@ export function SubagentReferenceChip({
     >
       <SubagentIcon size={12} />
       <span className="sr-only">{SUBAGENT_REFERENCE_PREFIX} </span>
-      <span className="min-w-0 truncate" title={visibleTitle}>
+      <span
+        className={`${REPLAY_BLOCK_CLASS} min-w-0 truncate`}
+        title={visibleTitle}
+      >
         {visibleTitle}
       </span>
     </span>

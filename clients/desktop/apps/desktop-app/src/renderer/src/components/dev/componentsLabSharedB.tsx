@@ -11,6 +11,7 @@ import {
   ChatDetailControl,
   ChatMessageContextMenu,
   ChatMessageLinkActionsProvider,
+  ChatMessageLookUpProvider,
   CHECKLIST_ROW_CLASS_NAME,
   ChecklistAction,
   ChecklistDismiss,
@@ -242,14 +243,11 @@ function BubbleCopySheet(): JSX.Element {
   return (
     <SpecimenPanel title="BubbleCopyBadge">
       <SpecimenGrid min={260}>
-        <SpecimenCell label="Default: Copy your message; click to see Copied">
+        <SpecimenCell label="Default: Copy; click to see Copied">
           <BubbleCopyBadge copyText="Can you rename the settings page to Preferences?" />
         </SpecimenCell>
-        <SpecimenCell label="Custom label (queued message)">
-          <BubbleCopyBadge
-            copyText="Run the tests again after the rebase."
-            label="Copy to clipboard"
-          />
+        <SpecimenCell label="Queued message: the same Copy">
+          <BubbleCopyBadge copyText="Run the tests again after the rebase." />
         </SpecimenCell>
         <SpecimenCell label="Beside a long user bubble">
           <div className="flex w-full items-start gap-2">
@@ -457,6 +455,7 @@ function MenuOpener({
             x: at.x,
             y: at.y,
             selection: at.selection,
+            selectionRanges: [],
             linkUrl: at.linkUrl,
             returnFocusTo: null,
           }}
@@ -504,6 +503,15 @@ function MessageContextMenuSheet(): JSX.Element {
               selection="rename the settings page"
               linkUrl={null}
             />
+          </SpecimenCell>
+          <SpecimenCell label="With a selection on macOS: Look up follows Copy selection">
+            <ChatMessageLookUpProvider value={noop}>
+              <MenuOpener
+                label="Open with a dictionary"
+                selection="idempotent"
+                linkUrl={null}
+              />
+            </ChatMessageLookUpProvider>
           </SpecimenCell>
           <SpecimenCell label="No selection: Copy selection is disabled">
             <MenuOpener

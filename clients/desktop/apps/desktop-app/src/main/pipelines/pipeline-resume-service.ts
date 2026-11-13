@@ -1,3 +1,4 @@
+import { resolveReplayLocation } from '@canopy/execution-engine/node/pipelines/executor/replay-location';
 import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
 import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import { authorizePipelineReplay } from './pipeline-replay-authorization';
@@ -13,7 +14,7 @@ import {
   loadExecutionState,
   type ExecutionOptions,
   type ExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import type { PipelineScalar } from '@canopy/execution-engine/types/pipeline';
 import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-environment';
 import { readPreferencesFile } from '../lib/preferences-store';
@@ -261,10 +262,13 @@ async function resumeOnLocalWorker(
     await import('./execution-runtime');
   const runtime = createElectronExecutionRuntime(request.getWindow);
   runtime.resourceMonitor = getResourceMonitorService();
-  const state = await loadExecutionState(
+  const storedState = await loadExecutionState(
     request.executionId,
     runtime.executionsDir,
   );
+  const state = storedState
+    ? await resolveReplayLocation(storedState, runtime)
+    : null;
   if (!state) throw new Error(`Execution "${request.executionId}" not found`);
   const speedError = pipelineSpeedError(state.model_config);
   if (speedError) throw new Error(speedError);

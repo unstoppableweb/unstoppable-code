@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { WebSocketServer } from 'ws';
-import runtime from '../../../../packages/desktop-shared/src/node/codex-runtime/index.ts';
+import runtime from '../../../../packages/execution-engine/src/node/codex-runtime/index.ts';
 import {
   handleLlmRequest,
   resolveResponsesReply,

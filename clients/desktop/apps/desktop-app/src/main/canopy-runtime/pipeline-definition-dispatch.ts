@@ -24,7 +24,7 @@ import type {
 import {
   getStoredPipelineIndexEntry,
   listStoredPipelines,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
@@ -35,7 +35,7 @@ import {
 } from '../pipelines/pipeline-definition-presentation';
 import { buildSharedPipelineInfo } from '../pipelines/shared-pipeline-info';
 import { getDesktopCanopyRuntime } from './desktop-runtime-access';
-import { withSelfFilteringAgentRead } from './self-filtering-agent-reads';
+import { withAgentPlace, type AgentPlace } from './agent-place';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 
 /*
@@ -273,21 +273,22 @@ export async function deleteUserPipeline(
 
 /** Every definition a list names, across its pages. */
 /**
- * Runs a read as `caller`. Only main's own shared agent caller object marks
- * the read as one that applies the CAN-4551 rule itself (CAN-5991).
+ * Runs a read as `caller`, from the agent place main passes for its own
+ * agent reads (CAN-6032). Core checks the CAN-4551 owned-workflow rule
+ * against that place, never against the read's scope.
  */
 function asCaller<Result>(
   caller: CanopyCallerDescriptor,
+  agentPlace: AgentPlace | undefined,
   read: () => Promise<Result>,
 ): Promise<Result> {
-  return caller === PIPELINE_DEFINITION_AGENT_CALLER
-    ? withSelfFilteringAgentRead(caller, read)
-    : read();
+  return agentPlace ? withAgentPlace(caller, agentPlace, read) : read();
 }
 
 export async function listPipelineDefinitions(
   params: Omit<PipelineDefinitionListParams, 'cursor' | 'limit' | '_meta'>,
   caller: CanopyCallerDescriptor,
+  agentPlace?: AgentPlace,
 ): Promise<{
   items: PipelineDefinitionSummary[];
   unavailableSources: PipelineDefinitionSource[];
@@ -301,7 +302,7 @@ export async function listPipelineDefinitions(
       limit: PIPELINE_DEFINITION_LIST_MAX_LIMIT,
       ...(cursor === undefined ? {} : { cursor }),
     };
-    const page = await asCaller(caller, () =>
+    const page = await asCaller(caller, agentPlace, () =>
       getDesktopCanopyRuntime().query(
         'core.pipeline.definition.list',
         pageParams,
@@ -319,9 +320,10 @@ export async function getPipelineDefinition(
   definitionId: string,
   scope: CanopyWorkspaceScope,
   caller: CanopyCallerDescriptor,
+  agentPlace?: AgentPlace,
 ): Promise<PipelineDefinition> {
   return (
-    await asCaller(caller, () =>
+    await asCaller(caller, agentPlace, () =>
       getDesktopCanopyRuntime().query(
         'core.pipeline.definition.get',
         { definitionId, scope },
@@ -412,9 +414,10 @@ export interface DesktopPipelineListing {
 export async function listDesktopPipelines(
   params: Omit<PipelineDefinitionListParams, 'cursor' | 'limit' | '_meta'>,
   caller: CanopyCallerDescriptor,
+  agentPlace?: AgentPlace,
 ): Promise<DesktopPipelineListing> {
   return withPipelinePresentation(async (presentation) => {
-    const listed = await listPipelineDefinitions(params, caller);
+    const listed = await listPipelineDefinitions(params, caller, agentPlace);
     const stored = new Map<string, PipelineInfo>();
     if (
       listed.items.some(
@@ -466,8 +469,11 @@ export async function readDesktopPipeline(
   definitionId: string,
   scope: CanopyWorkspaceScope,
   caller: CanopyCallerDescriptor,
+  agentPlace?: AgentPlace,
 ): Promise<PipelineData> {
-  return (await readDesktopPipelineSnapshot(definitionId, scope, caller)).data;
+  return (
+    await readDesktopPipelineSnapshot(definitionId, scope, caller, agentPlace)
+  ).data;
 }
 
 /** {@link readDesktopPipeline}, with the checksum of the document core read. */
@@ -475,9 +481,15 @@ export function readDesktopPipelineSnapshot(
   definitionId: string,
   scope: CanopyWorkspaceScope,
   caller: CanopyCallerDescriptor,
+  agentPlace?: AgentPlace,
 ): Promise<{ data: PipelineData; checksum: string }> {
   return withPipelinePresentation(async (presentation) => {
-    const definition = await getPipelineDefinition(definitionId, scope, caller);
+    const definition = await getPipelineDefinition(
+      definitionId,
+      scope,
+      caller,
+      agentPlace,
+    );
     return {
       data: desktopPipelineData(definition, presentation),
       checksum: definition.checksum,

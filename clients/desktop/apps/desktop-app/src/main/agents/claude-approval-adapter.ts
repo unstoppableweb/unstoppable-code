@@ -194,6 +194,156 @@ function checkForFileWrite(
   };
 }
 
+/**
+ * True for a Glob pattern that stays under its search root: not absolute on
+ * either platform, no leading `~`, and no `..` segment on either separator,
+ * inside a brace or extglob alternative (`{..,x}`, `@(..)`), or spelled with
+ * escaped dots (`\.\.`), and no alternative that starts with a separator,
+ * `~` or a drive letter (`{/etc,x}`) or is a `.` that can join another into
+ * `..` (`.{.,}`), any of which an engine that expands or unescapes before
+ * matching would follow. `{.github,docs}` stays contained.
+ * Managed delegation children and Auto read containment both rely on it.
+ */
+export function isContainedGlobPattern(pattern: unknown): pattern is string {
+  return (
+    typeof pattern === 'string' &&
+    !nodePath.isAbsolute(pattern) &&
+    !nodePath.win32.isAbsolute(pattern) &&
+    !pattern.startsWith('~') &&
+    !pattern.split(/[\\/{},()|]/).includes('..') &&
+    !pattern
+      .replace(/\\(.)/g, '$1')
+      .split(/[/{},()|]/)
+      .includes('..') &&
+    !/[{(|,]\s*(?:[\\/~]|[A-Za-z]:|\.(?:[.,})|\\/]|$))/.test(pattern)
+  );
+}
+
+/**
+ * True for a read target Auto may trust: absolute, with no `~` or `..`
+ * segment. Splitting on both separators can only make it stricter.
+ */
+function isCertainReadPath(rawPath: string): boolean {
+  return (
+    nodePath.isAbsolute(rawPath) &&
+    !rawPath
+      .split(/[\\/]/)
+      .some((segment) => segment === '..' || segment.startsWith('~'))
+  );
+}
+
+/**
+ * For hosts whose native-tool mappers resolve a path before this adapter runs
+ * (Copilot, OpenCode): keep the read target only when every raw path argument
+ * of the operation is one {@link isCertainReadPath} trusts, so a relative,
+ * `~` or `..` argument the mapper collapsed still prompts in Auto. Only a Glob
+ * or Grep may name no raw path, because it then searches the launch cwd. A
+ * dropped target also drops the mapper's projection from the card, which then
+ * shows the raw path the agent sent.
+ */
+export function guardMappedReadPath(
+  result: ClaudeToolCheckResult,
+  rawPaths: readonly unknown[],
+): ClaudeToolCheckResult {
+  const { check, details } = result;
+  if (check.kind !== 'tool' || check.readPath === undefined) return result;
+  const defaultsToCwd = check.toolName === 'Glob' || check.toolName === 'Grep';
+  if (
+    (rawPaths.length > 0 || defaultsToCwd) &&
+    rawPaths.every(
+      (value) => typeof value === 'string' && isCertainReadPath(value),
+    )
+  )
+    return result;
+  // Each host passes one operation's raw path, so the first is the target.
+  const [rawPath] = rawPaths;
+  const path =
+    typeof rawPath === 'string'
+      ? rawPath
+      : details.kind === 'tool'
+        ? details.path
+        : undefined;
+  return {
+    ...result,
+    check: { kind: 'tool', toolName: check.toolName },
+    details:
+      details.kind === 'tool'
+        ? {
+            kind: 'tool',
+            toolName: details.toolName,
+            ...(path !== undefined ? { path } : {}),
+            ...(details.inputSummary !== undefined
+              ? { inputSummary: details.inputSummary }
+              : {}),
+            ...(details.reason !== undefined ? { reason: details.reason } : {}),
+          }
+        : details,
+  };
+}
+
+function readInputSummary(
+  toolName: string,
+  input: Record<string, unknown>,
+): string | undefined {
+  if (toolName !== 'Glob' && toolName !== 'Grep') return undefined;
+  if (typeof input.pattern !== 'string') return undefined;
+  if (toolName === 'Grep' && typeof input.glob === 'string' && input.glob)
+    return `${input.pattern} in ${input.glob}`;
+  return input.pattern;
+}
+
+/**
+ * Read tools carry their target on the `tool` check so Auto can allow
+ * canonical in-workspace reads. `readPath` is omitted, and the read prompts,
+ * whenever its meaning is not certain: relative paths (the provider resolves
+ * them against its current directory, which a shell `cd` can move away from
+ * the launch cwd), any `~` segment (the provider may expand it, including
+ * after a mapper joined it onto the cwd), any `..` segment (collapsing it
+ * lexically before symlinks resolve can name a different file from the one
+ * the OS opens), and Glob patterns that can leave their root. A Glob or Grep
+ * with no `path` arrives here as the launch cwd. That relies on the provider
+ * keeping its current directory inside the launch cwd's tree: Claude Code
+ * resets its shell cwd when a command leaves the allowed directories, and
+ * Canopy grants it none beyond the worktree.
+ */
+function checkForFileRead(
+  toolName: string,
+  rawPath: unknown,
+  input: Record<string, unknown>,
+  cwd?: string,
+): ClaudeToolCheckResult {
+  if (typeof rawPath !== 'string') {
+    return toolFallback(toolName);
+  }
+  const readPath = isCertainReadPath(rawPath)
+    ? nodePath.resolve(rawPath)
+    : undefined;
+  const containedPattern =
+    toolName !== 'Glob' || isContainedGlobPattern(input.pattern);
+  // An uncertain target shows exactly what the agent sent: a lexical
+  // projection would collapse `link/..` into a harmless-looking name.
+  const displayPath = readPath
+    ? (approvalFileDisplayPath(rawPath, cwd) ??
+      (cwd !== undefined && rawPath === cwd ? '.' : undefined))
+    : undefined;
+  const inputSummary = readInputSummary(toolName, input);
+  return {
+    check: {
+      kind: 'tool',
+      toolName,
+      ...(readPath && containedPattern ? { readPath } : {}),
+    },
+    details: {
+      kind: 'tool',
+      toolName,
+      path: rawPath,
+      ...(displayPath ? { displayPath } : {}),
+      ...(inputSummary ? { inputSummary } : {}),
+    },
+    suggestedTarget: { kind: 'tool', toolName },
+  };
+}
+
 function checkForNetwork(
   toolName: string,
   input: Record<string, unknown>,
@@ -336,6 +486,15 @@ export function approvalCheckForClaudeTool(
   }
   if (toolName === 'Skill') {
     return checkForSkill(toolName, input);
+  }
+  if (toolName === 'Read') {
+    return checkForFileRead(toolName, input.file_path, input, cwd);
+  }
+  if (toolName === 'NotebookRead') {
+    return checkForFileRead(toolName, input.notebook_path, input, cwd);
+  }
+  if (toolName === 'Glob' || toolName === 'Grep') {
+    return checkForFileRead(toolName, input.path ?? cwd, input, cwd);
   }
   if (toolName.startsWith('mcp__')) {
     const remainder = toolName.slice('mcp__'.length);

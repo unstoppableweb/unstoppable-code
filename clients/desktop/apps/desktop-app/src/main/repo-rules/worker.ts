@@ -2,6 +2,7 @@ import type { EditorSetupPresence } from '@canopy/protocol/repo-rules';
 import type { RepoRulesCheckoutReader } from '@canopy/core-runtime/node/workspace/repo-rules';
 import {
   discoverRules,
+  missingCheckouts,
   readSessionRules,
   type RepoCheckout,
 } from './discovery';
@@ -16,5 +17,6 @@ export interface RepoRulesWorkerPort extends RepoRulesCheckoutReader {
 export const repoRulesWorker: RepoRulesWorkerPort = {
   scan: discoverRules,
   readSession: readSessionRules,
+  missingCheckouts,
   presence: editorSetupPresence,
 };

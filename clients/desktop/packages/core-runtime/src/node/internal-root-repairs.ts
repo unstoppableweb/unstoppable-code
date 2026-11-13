@@ -31,6 +31,7 @@ export interface InternalRootRepairPlan {
   /** In-memory evidence; persistence keeps it in a transaction-bound sidecar. */
   readonly lifecycleJournals?: readonly InternalRootLifecycleJournalEvidence[];
   readonly abandonedPaths?: readonly string[];
+  readonly abandonedCheckouts?: readonly string[];
   readonly transition: RelocationTransition;
   readonly gitPlan: RelocationGitPlan;
   readonly ownedPaths: readonly string[];
@@ -113,6 +114,7 @@ export async function projectInternalRootMetadata(
 
 /** Worker/platform host supplies observation, durability and read-only qualification. */
 export interface InternalRootRepairWorker {
+  readonly onProgress?: (detail: string) => void;
   /** Reconstruct named owners when legacy plans also contain incidental link targets. */
   ownedPathsForProof?(plan: InternalRootRepairPlan): readonly string[];
   readonly replaceBacklink?: RelocationRepairContext['replaceBacklink'];
@@ -171,6 +173,7 @@ export function createInternalRootRepairs(
         replaceBacklink: worker.replaceBacklink,
         ownedPaths: worker.ownedPathsForProof?.(plan) ?? plan.ownedPaths,
         carryPayloadLinks: true,
+        onProgress: worker.onProgress,
         admit: () => worker.admit(context, plan),
         recordAuthority: () => worker.recordAuthority(context, plan),
         repairMetadata: () => worker.repairMetadata(context, plan, images),

@@ -11,7 +11,10 @@
 export const REPLAY_BLOCK_CLASS = 'ph-no-capture';
 
 /** Mask. The recorder replaces every visible character of text inside an
- * element carrying this class with `*`, keeping spaces. Put it on the text
- * element of a user-authored project, chat, tab, or worktree title, never on
- * the row, tab, or button around it. */
+ * element carrying this class with `*`, keeping spaces, and replaces the
+ * attributes that can carry that content (`placeholder`, `title`,
+ * `aria-label`, `data-value` and the like) with a fixed mask. Put it on the
+ * text element of a user-authored project, chat, tab, or worktree title,
+ * never on the row, tab, or button around it, or around a field whose
+ * placeholder is conversation content. */
 export const REPLAY_MASK_CLASS = 'ph-mask';

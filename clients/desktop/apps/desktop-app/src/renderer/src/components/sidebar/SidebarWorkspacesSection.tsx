@@ -39,10 +39,12 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SidebarList,
+  SidebarRailSkeleton,
   SidebarSection,
   useProjectListPagination,
 } from '@canopy/ui-app';
 import {
+  DelayedLoadingPlaceholder,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
@@ -74,7 +76,6 @@ import { ProjectSection } from '../worktree/ProjectSection';
 import { canDragSidebarRow } from '@/lib/sidebar-ordering';
 import { SidebarSortMenuItems } from './SidebarSortMenuItems';
 import { ProjectIcon } from '../shared/ProjectIcon';
-import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
 import { SidebarProjectVisibilityMenuItems } from './SidebarProjectVisibilityMenuItems';
 import { useSidebarWorkspaces } from './useSidebarWorkspaces';
 import { hasMultipleWorkspaces } from '@/lib/workspaceChoice';
@@ -421,8 +422,9 @@ export function SidebarWorkspacesSection({
       isDefaultCoworkWorkspaceId(project.id),
     );
 
-  // Early access: the project list disclosure reads More / Less, no count.
-  const compactProjectPagination = useLabsExperimentEnabled('sidebar');
+  // The compact sidebar style (early access): the project list disclosure
+  // reads More / Less with no count, and rows show status in a leading dot.
+  const compactSidebar = useLabsExperimentEnabled('sidebar');
   const projectPage = useProjectListPagination(
     listedProjects,
     (project) => project.id,
@@ -629,9 +631,14 @@ export function SidebarWorkspacesSection({
       >
         <MoreStickyLead key="more" lead={stickyHeaderLead} />
         <StickyWorkspaceControls />
-        {/* While workspaces load, the header is hidden and the measured
-        skeleton of the project rows takes its place. */}
-        <SidebarProjectsSkeleton />
+        {/* While workspaces load, the measured skeleton of the Chats and
+        Projects sections, headers kept as themselves, takes their place. */}
+        <DelayedLoadingPlaceholder slowNote="Still loading projects…">
+          <SidebarRailSkeleton
+            testId="sidebar-section-code-loading"
+            rowStatusPlacement={compactSidebar ? 'leading' : 'trailing'}
+          />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }
@@ -894,7 +901,7 @@ export function SidebarWorkspacesSection({
               expanded={projectPage.expanded}
               onShowMore={projectPage.showMore}
               onShowLess={projectPage.showLess}
-              compactLabels={compactProjectPagination}
+              compactLabels={compactSidebar}
             />
             {createPortal(
               <DragOverlay dropAnimation={null}>

@@ -46,17 +46,24 @@ export function resolveAppAdvisorWindowLayout({
 
 /**
  * The layout an open request asks for. The archive views (an archived
- * container, an archived chat, the archived overview) only render in the
- * full window, so a request for one asks for it; the request's background
- * and focus options still decide how it shows. `archivedChat`: the request's
- * `chatId` names an archived chat (known once main resolves it).
+ * container, an archived chat, the archived overview) render in the full
+ * window and the docked page, not the floating panel, so a request for one
+ * asks for the full window unless the docked page shows; the request's
+ * background and focus options still decide how it shows. `archivedChat`:
+ * the request's `chatId` names an archived chat (known once main resolves
+ * it). `docked`: the docked page shows now.
  */
 export function appAdvisorRequestedLayout(
   request: AppAdvisorWindowOpenRequest | undefined,
-  { archivedChat = false }: { readonly archivedChat?: boolean } = {},
+  {
+    archivedChat = false,
+    docked = false,
+  }: { readonly archivedChat?: boolean; readonly docked?: boolean } = {},
 ): AppAdvisorWindowLayout | undefined {
   if (archivedChat || request?.archivedContainer || request?.archivedOverview)
-    return 'full';
+    return request?.layout === 'docked' || (docked && !request?.layout)
+      ? 'docked'
+      : 'full';
   return request?.layout;
 }
 

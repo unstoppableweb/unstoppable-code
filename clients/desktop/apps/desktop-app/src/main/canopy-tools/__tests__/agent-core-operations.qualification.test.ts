@@ -35,6 +35,8 @@ import {
   CORE_CHAT_MESSAGE_INSTRUCTION_DEFINITIONS,
   CORE_CHAT_VISUAL_STAGE_GRANTS,
   CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
+  WORKER_VISUAL_GRANTS,
+  WORKER_VISUAL_QUERY_DEFINITIONS,
   CORE_CONFIG_QUERY_DEFINITIONS,
   CORE_INITIATED_WORK_WATCHER_GRANTS,
   CORE_INITIATED_WORK_WATCHER_INSTRUCTION_DEFINITIONS,
@@ -251,6 +253,7 @@ describe('agent core operations (CAN-4125)', () => {
       ...CORE_AGENT_DEFERRED_TOOLS_QUERY_DEFINITIONS,
       ...CORE_AGENT_DEFERRED_TOOLS_INSTRUCTION_DEFINITIONS,
       ...CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
+      ...WORKER_VISUAL_QUERY_DEFINITIONS,
     };
     expect(Object.keys(AGENT_CORE_TOOL_OPERATIONS.annotation)).toEqual([
       'core.annotation.thread.get',
@@ -647,6 +650,66 @@ describe('agent core operations for local memory (CAN-5993)', () => {
     ).rejects.toBeInstanceOf(AgentToolOperationRefusedError);
   });
 
+  it('ReadMemory opens archive keys from search through tool validation and refuses pruned or escaping keys', async () => {
+    const read = recordingDispatcher(
+      {
+        memory: 'workspace',
+        fileKey: 'inbox/.consolidated/note.md',
+        content: 'archived detail',
+      },
+      { params: true },
+    );
+    useDispatcher(read.dispatcher);
+    const runtime: CanopyInjectedToolRuntime = {
+      requestUserAnswers: (): Promise<never> =>
+        Promise.reject(new Error('Unused')),
+      loadScriptOutput: (): Promise<never> =>
+        Promise.reject(new Error('Unused')),
+      readLocalMemory: (request: ReadLocalMemoryInput): Promise<string> =>
+        readLocalMemory({ ...chat, ...request }),
+    };
+    for (const file of [
+      'inbox/.consolidated/note.md',
+      'imported/.consolidated/import.md',
+    ]) {
+      await expect(
+        executeCanopyInjectedTool(
+          'read_memory',
+          { scope: 'workspace', file },
+          runtime,
+        ),
+      ).resolves.toEqual({ text: 'archived detail' });
+    }
+    expect(read.recorded).toHaveLength(2);
+    expect(read.recorded.map((entry) => entry.params)).toEqual([
+      {
+        scope: { workspaceId: 'p', worktreeId: 'w' },
+        memory: 'workspace',
+        fileKey: 'inbox/.consolidated/note.md',
+      },
+      {
+        scope: { workspaceId: 'p', worktreeId: 'w' },
+        memory: 'workspace',
+        fileKey: 'imported/.consolidated/import.md',
+      },
+    ]);
+    for (const file of [
+      'inbox/.consolidated/topic-pruned.md',
+      'inbox/.consolidated/Topic-pruned-2.md',
+      'inbox/.consolidated/../../private.md',
+      'inbox/.consolidated/nested/note.md',
+    ]) {
+      await expect(
+        executeCanopyInjectedTool(
+          'read_memory',
+          { scope: 'workspace', file },
+          runtime,
+        ),
+      ).resolves.toMatchObject({ isError: true });
+    }
+    expect(read.recorded).toHaveLength(2);
+  });
+
   it('the memory scope comes only from the calling chat, never from tool input', async () => {
     const { dispatcher, recorded } = recordingDispatcher(
       { memory: 'workspace', fileKey: 'inbox/n.md', hits: [], content: '' },
@@ -898,7 +961,7 @@ describe('agent core operations for watchers (CAN-5994)', () => {
     expect(keys[0]).not.toBe(keys[1]);
   });
 
-  it('WatchCommand and WatchGitHubItems take their directories from the session, and refuse a path in tool input', async () => {
+  it('WatchCommand and WatchGitHubItems send the session ids, never a path, and refuse a path in tool input', async () => {
     const { dispatcher, recorded } = recordingDispatcher(
       { accepted: true, report: '{"ok":true}' },
       { params: true },
@@ -914,6 +977,13 @@ describe('agent core operations for watchers (CAN-5994)', () => {
         worktreeId: 'w',
         chatId: 'c',
         cwd: '/session/checkout',
+      },
+      worktreeActionRuntime: {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'c',
+        cwd: '/session/checkout',
+        repoId: 'repo-a',
       },
     } as unknown as CanopyInjectedToolRuntime;
     const command = { command: 'true', intervalSeconds: 5, maxAttempts: 1 };
@@ -940,17 +1010,16 @@ describe('agent core operations for watchers (CAN-5994)', () => {
         toolUseId: 't2',
       },
     );
+    const anyInput: unknown = expect.any(Object);
     expect(
       recorded.map(
         (entry) =>
           (entry.params as { request: Record<string, unknown> }).request,
       ),
     ).toEqual([
-      expect.objectContaining({ kind: 'command', cwd: '/session/checkout' }),
-      expect.objectContaining({
-        kind: 'github',
-        repositoryCwd: '/session/checkout',
-      }),
+      // CAN-6031: the host resolves the directory from these ids.
+      { kind: 'command', ...command, repoId: 'repo-a' },
+      { kind: 'github', input: anyInput, repoId: 'repo-a' },
     ]);
   });
 
@@ -1169,7 +1238,7 @@ describe('agent core operations for pipeline YAML (CAN-5991)', () => {
 });
 
 describe('agent core operations for visuals (CAN-5996)', () => {
-  it('ShowVisual stages only through core.chat.visual.stage, as its own principal with only the chat write grant', async () => {
+  it('ShowVisual measures through worker.visual.render and stages only through core.chat.visual.stage, as its own principal with one grant per call (CAN-6040)', async () => {
     const { dispatcher, recorded } = recordingDispatcher(
       {
         visualId: 'vis_00000000-0000-4000-8000-000000000001',
@@ -1196,8 +1265,12 @@ describe('agent core operations for visuals (CAN-5996)', () => {
       } as unknown as CanopyInjectedToolRuntime,
     );
     expect(result.isError).toBeUndefined();
-    expect(recorded).toHaveLength(1);
-    const [call] = recorded;
+    expect(recorded).toHaveLength(2);
+    const [measure, call] = recorded;
+    expect(measure?.name).toBe('worker.visual.render');
+    expect(measure?.grants).toEqual([WORKER_VISUAL_GRANTS.render]);
+    expect(measure?.principalId).toBe('desktop-agent-visuals');
+    expect(measure?.params).toMatchObject({ scope: {}, mode: 'measure' });
     const params = call?.params as {
       recipient: unknown;
       visual: { visualId: string; html: string; title: string };
@@ -1226,6 +1299,9 @@ describe('agent core operations for visuals (CAN-5996)', () => {
       ]),
       dispatchInstruction(family, 'core.chat.archive', ['core.chat.write']),
       dispatchQuery(family, 'core.chat.visual.read', ['core.chat.read']),
+      dispatchQuery(family, 'worker.filesystem.file.read', [
+        'worker.filesystem.read',
+      ]),
     ])
       await expect(attempt).rejects.toBeInstanceOf(
         AgentToolOperationRefusedError,
@@ -1233,6 +1309,7 @@ describe('agent core operations for visuals (CAN-5996)', () => {
     expect(recorded).toEqual([]);
     expect(AGENT_CORE_TOOL_OPERATIONS.visuals).toEqual({
       'core.chat.visual.stage': ['core.chat.write'],
+      'worker.visual.render': ['worker.visual.render'],
     });
   });
 });

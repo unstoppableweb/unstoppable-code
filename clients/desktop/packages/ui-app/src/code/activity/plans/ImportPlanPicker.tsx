@@ -450,7 +450,7 @@ export function ImportPlanPicker({
         onDoubleClick={(): void => runPrimary(item)}
         className={`${OPTION_ROW_CLASS} transition-colors aria-disabled:opacity-50 ${
           selected
-            ? 'bg-accent-subtle fg-accent'
+            ? 'bg-accent-subtle fg-accent-strong'
             : 'fg-primary hover:bg-secondary'
         }`}
       >

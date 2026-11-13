@@ -1,7 +1,11 @@
 import { isOrchestratorLabel, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
 import type { AppError } from '@canopy/protocol/app-errors';
-import { captureToastFailure } from '@/lib/renderer-app-error';
+import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
+import {
+  captureToastFailure,
+  readRecordedToastFailure,
+} from '@/lib/renderer-app-error';
 import {
   maybeFireOsNotification,
   shouldShowInAppNotification,
@@ -9,6 +13,10 @@ import {
 } from '@/lib/osNotifications';
 import {
   createToastQueue,
+  defaultToastIdentity,
+  HELD_TOAST_LIFETIME_MS,
+  INFO_TOAST_LIFETIME_MS,
+  OPEN_TARGET_TOAST_LIFETIME_MS,
   recordSurfacedError,
   toastQueueLifetimeMs,
   type ToastFailure,
@@ -69,6 +77,8 @@ export interface ToastLink {
  */
 export interface ToastAction {
   label: ReactNode;
+  /** The action button's `data-testid`; defaults to `toast-action`. */
+  testId?: string;
   /**
    * Runs the action. Return a promise for work that takes a while (`Try
    * again` on a failed action): the button spins inside its capsule until it
@@ -77,6 +87,17 @@ export interface ToastAction {
   onClick: () => unknown;
   /** The label while a returned promise runs (`Trying again…`). */
   busyLabel?: string;
+  /**
+   * The work runs outside the button and its producer tracks it, such as a
+   * pinned condition's retry: the button spins while this is true.
+   */
+  busy?: boolean;
+  /**
+   * The toast stays up once the action has run, for a pinned condition
+   * whose card reports the outcome itself (it leaves when the condition
+   * clears).
+   */
+  keepOpen?: boolean;
 }
 
 export interface ToastMeta {
@@ -105,7 +126,12 @@ export interface ToastMeta {
    * in one step (e.g. turning off "Only allow local sites").
    */
   action?: ToastAction;
-  /** Use an extended one-minute lifetime instead of the default 15 seconds. */
+  /**
+   * The raw reason behind a failure, offered through Copy details and never
+   * rendered on the card.
+   */
+  copyDetails?: string;
+  /** Use an extended one-minute lifetime instead of the default 8 seconds. */
   persistent?: boolean;
   /** Transactional offer: available until use, explicit dismissal or invalidation. */
   keepUntilDismissed?: boolean;
@@ -177,40 +203,225 @@ const MAX_NOTIFICATIONS = 50;
 // them through the Pipeline preference instead of silently skipping OS alerts.
 const UNCATEGORIZED_TOAST_CATEGORY: ToastCategory = 'Pipeline';
 
-/** How long a toast stays on screen. */
-const TOAST_LIFETIME_MS = 15_000;
-/** How long a `meta.persistent` toast stays on screen. */
-const PERSISTENT_TOAST_LIFETIME_MS = 60_000;
-
 /**
- * A toast's on-screen lifetime: a failure stays until it is closed, a success
- * leaves after 6 s, and a `meta.persistent` toast stays a minute.
+ * A toast's on-screen lifetime, the same on every host: a failure or a
+ * warning stays until it is closed, a success leaves after 6 s, an update
+ * after 8 s, one that opens what it reports after 15 s, and a
+ * `meta.persistent` toast stays a minute.
  */
-export function toastLifetimeMs(toast: Pick<Toast, 'meta' | 'type'>): number {
+export function toastLifetimeMs(
+  toast: Pick<Toast, 'meta' | 'type' | 'onClick'>,
+): number {
   return toastQueueLifetimeMs(
     toast.type,
-    TOAST_LIFETIME_MS,
+    toast.onClick === undefined
+      ? INFO_TOAST_LIFETIME_MS
+      : OPEN_TARGET_TOAST_LIFETIME_MS,
     toast.meta?.keepUntilDismissed === true
       ? 0
       : toast.meta?.persistent === true
-        ? PERSISTENT_TOAST_LIFETIME_MS
+        ? HELD_TOAST_LIFETIME_MS
         : undefined,
   );
 }
 
+/** Two toasts that show the same headline, message and destination are one. */
+function toastIdentity(toast: Omit<Toast, 'id'>): string {
+  const meta = toast.meta;
+  return [
+    defaultToastIdentity(toast),
+    meta?.title ?? '',
+    meta?.category ?? '',
+    meta?.projectId ?? '',
+    meta?.worktreeId ?? '',
+    meta?.chatId ?? '',
+  ].join('\u0000');
+}
+
 // The window's visible toasts. Private so that every addition passes the
 // notification gate and every removal keeps history right.
-const queue = createToastQueue<Omit<Toast, 'id'>>();
+const queue = createToastQueue<Omit<Toast, 'id'>>({ identity: toastIdentity });
 
-/** Read access to the visible stack, for `useSyncExternalStore`. */
+/**
+ * A condition shown as a card in the same stack until it clears or is closed,
+ * such as the background service being unreachable. Its producer owns it:
+ * it never enters notification history, never raises a native banner and
+ * is not subject to the notification preferences, because it reports the
+ * app's own state rather than an event.
+ */
+export interface PinnedToastInput {
+  /**
+   * The condition's identity. Pinning the same id again updates the card in
+   * place; a producer that wants a closed card to come back for a newer
+   * state gives that state a new id.
+   */
+  id: string;
+  message: string;
+  type: Extract<ToastType, 'error' | 'warning'>;
+  meta?: Pick<
+    ToastMeta,
+    | 'title'
+    | 'action'
+    | 'copyDetails'
+    | 'blockMessageFromReplay'
+    | 'messageContext'
+  >;
+  /** The card's `data-testid`. */
+  testId?: string;
+  /**
+   * The structured error behind the card. It is recorded once per
+   * `referenceId`, and the card shows the recorder's reference row, with
+   * `Report this` for a defect.
+   */
+  reference?: AppError;
+  /**
+   * `reference` is already the recorder's answer: its producer recorded the
+   * episode (the standing conditions do, once per episode), so the card shows
+   * it without recording it again.
+   */
+  referenceRecorded?: boolean;
+  /**
+   * Leave the reference row off the card. `Report this` still carries the
+   * reference, and the error is still recorded.
+   */
+  hideReference?: boolean;
+  /** Runs once when the person closes the card. */
+  onDismiss?: () => void;
+}
+
+export type PinnedToast = Toast & {
+  readonly testId?: string;
+  /** The error as the recorder answered for it, whose reference the card shows. */
+  readonly reference?: AppError;
+  /** Session links read when `reference` was recorded, for Report this. */
+  readonly referenceTelemetry?: FeedbackReportTelemetry;
+  /** The `referenceId` the producer passed, to record each error once. */
+  readonly referenceSourceId?: string;
+  /** The card leaves the reference row off; `Report this` still has it. */
+  readonly hideReference?: boolean;
+};
+
+let pinned: readonly PinnedToast[] = [];
+let stackSnapshot: readonly PinnedToast[] = [];
+let stackSources: readonly [readonly PinnedToast[], readonly Toast[]] = [
+  pinned,
+  [],
+];
+const pinnedListeners = new Set<() => void>();
+
+function publishPinned(next: readonly PinnedToast[]): void {
+  pinned = next;
+  for (const listener of Array.from(pinnedListeners)) listener();
+}
+
+/** Shows or updates a condition's card. See {@link PinnedToastInput}. */
+export function pinToast(input: PinnedToastInput): void {
+  const previous = pinned.find((entry) => entry.id === input.id);
+  const identifier = input.testId ?? 'pinned';
+  // Record each occurrence once: the structured error when there is one, so
+  // the card shows the reference the recorder returned; otherwise a sighting
+  // of the text. A replacement while the card is up is a new occurrence.
+  let reference: Pick<
+    PinnedToast,
+    'reference' | 'referenceTelemetry' | 'referenceSourceId'
+  > = {};
+  if (input.reference !== undefined) {
+    if (
+      previous?.referenceSourceId === input.reference.referenceId &&
+      previous.reference !== undefined
+    ) {
+      reference = {
+        reference: previous.reference,
+        referenceSourceId: input.reference.referenceId,
+        ...(previous.referenceTelemetry === undefined
+          ? {}
+          : { referenceTelemetry: previous.referenceTelemetry }),
+      };
+    } else {
+      const { error, telemetry } =
+        input.referenceRecorded === true
+          ? readRecordedToastFailure(input.reference)
+          : captureToastFailure(input.reference, identifier, true);
+      reference = {
+        reference: error,
+        referenceSourceId: input.reference.referenceId,
+        ...(telemetry === undefined ? {} : { referenceTelemetry: telemetry }),
+      };
+    }
+  } else if (
+    input.type === 'error' &&
+    (previous === undefined || previous.message !== input.message)
+  ) {
+    recordSurfacedError({
+      chokePoint: 'toast',
+      identifier,
+      surface: 'toast',
+      text: input.message,
+      textIsSensitive: true,
+    });
+  }
+  const entry: PinnedToast = {
+    id: input.id,
+    message: input.message,
+    type: input.type,
+    createdAt: previous?.createdAt ?? Date.now(),
+    ...(input.meta === undefined ? {} : { meta: input.meta }),
+    ...(input.testId === undefined ? {} : { testId: input.testId }),
+    ...reference,
+    ...(input.hideReference === true ? { hideReference: true } : {}),
+    ...(input.onDismiss === undefined
+      ? {}
+      : { onDismiss: runOnce(input.onDismiss) }),
+  };
+  publishPinned(
+    previous === undefined
+      ? [...pinned, entry]
+      : pinned.map((existing) => (existing.id === input.id ? entry : existing)),
+  );
+}
+
+/** The condition cleared: its card leaves. No dismiss callback runs. */
+export function unpinToast(id: string): void {
+  if (!pinned.some((entry) => entry.id === id)) return;
+  publishPinned(pinned.filter((entry) => entry.id !== id));
+}
+
+/** Closes a pinned card as the person did. False when `id` is not pinned. */
+function dismissPinned(id: string): boolean {
+  const entry = pinned.find((existing) => existing.id === id);
+  if (entry === undefined) return false;
+  entry.onDismiss?.();
+  unpinToast(id);
+  return true;
+}
+
+/**
+ * Read access to the visible stack, for `useSyncExternalStore`: the pinned
+ * conditions, then the toasts, oldest first, so a new toast lands in front.
+ */
 export const toastStack = {
-  subscribe: queue.subscribe,
-  getSnapshot: queue.getSnapshot,
+  subscribe: (listener: () => void): (() => void) => {
+    pinnedListeners.add(listener);
+    const unsubscribe = queue.subscribe(listener);
+    return (): void => {
+      pinnedListeners.delete(listener);
+      unsubscribe();
+    };
+  },
+  getSnapshot: (): readonly PinnedToast[] => {
+    const toasts = queue.getSnapshot();
+    if (stackSources[0] !== pinned || stackSources[1] !== toasts) {
+      stackSources = [pinned, toasts];
+      stackSnapshot = pinned.length === 0 ? toasts : [...pinned, ...toasts];
+    }
+    return stackSnapshot;
+  },
 };
 
 /** Empties the visible stack. History stays and no dismiss callback runs. */
 export function resetToastStack(): void {
   queue.reset();
+  publishPinned([]);
 }
 
 interface ToastHistoryState {
@@ -231,6 +442,7 @@ interface ToastHistoryState {
 export const useToastStore = create<ToastHistoryState>((set, get) => ({
   notifications: [],
   dismissToast: (id): void => {
+    if (dismissPinned(id)) return;
     const toast =
       toastStack.getSnapshot().find((entry) => entry.id === id) ??
       get().notifications.find((entry) => entry.id === id);
@@ -241,6 +453,8 @@ export const useToastStore = create<ToastHistoryState>((set, get) => ({
     }));
   },
   expireToast: (id): void => {
+    // A condition has no clock; a swipe or Escape closes it as Dismiss does.
+    if (dismissPinned(id)) return;
     queue.dismiss(id);
   },
   dismissNotification: (id): void => {

@@ -1,5 +1,5 @@
 import type { PipelineTrustedCaller } from '@canopy/agent-actions';
-import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { PipelineHostActionCaller } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { PipelineHostRefusal } from '@canopy/execution-engine/pipelines/host-actions';
 import type { ProjectOwnerContext } from '@canopy/desktop-shared/types';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';

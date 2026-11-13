@@ -227,12 +227,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         title: 'Claude or Codex unreachable (defect)',
         note: 'Two failed auth probes, 5 seconds apart. Retests every 30 seconds until it recovers.',
         intent: 'destructive',
-        heading: "Couldn't reach Claude.",
-        message:
-          "Agents on it can't start. Try again, or report this if it continues.",
-        detail: 'Reference ERR-0000AB12',
+        heading: "Couldn't connect to Claude.",
+        message: 'Retry, or switch to another model.',
         aside: '2 more issues',
-        actions: [{ label: 'Try again' }, { label: 'Report this' }],
+        actions: [{ label: 'Retry now' }, { label: 'Report this' }],
         actionsPlacement: 'below',
       },
       {
@@ -242,7 +240,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'attention',
         heading: "Couldn't reach Ollama.",
         message: 'Start it or check its connection settings.',
-        actions: [{ label: 'Open Ollama settings' }],
+        actions: [{ label: 'Open settings' }],
       },
       {
         id: 'standing-sync-paused',

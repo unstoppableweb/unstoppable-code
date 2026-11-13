@@ -19,7 +19,7 @@ import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 import type {
   ExecutionHandle,
   ExecutionOptions,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import type {
   ExecutionState,
   Pipeline,
@@ -240,6 +240,19 @@ export async function controlPipelineThroughLocalWorker(
     control.operation === 'worker.pipeline.execution.retry' ||
     control.operation === 'worker.pipeline.matrixJob.retry'
   ) {
+    // The app takes the run over: its own post-process runs the commit hooks
+    // from here, so first claim what the daemon left unclaimed (CAN-6012 D3).
+    const [
+      { drainDaemonCommitHooksBeforeTakeover },
+      { createElectronExecutionRuntime },
+    ] = await Promise.all([
+      import('./daemon-pipeline-route'),
+      import('./execution-runtime'),
+    ]);
+    await drainDaemonCommitHooksBeforeTakeover(
+      executionId,
+      createElectronExecutionRuntime().executionsDir,
+    );
     if (secretBindings.length) control.params.secrets = [...secretBindings];
     grant = getDesktopExecutionSecrets().stage(
       { operation: control.operation, key: requestId },

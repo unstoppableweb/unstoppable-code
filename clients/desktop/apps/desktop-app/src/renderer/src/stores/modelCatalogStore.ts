@@ -28,6 +28,7 @@ import {
   type ModelPolicyIndex,
 } from '@canopy/desktop-shared/lib/model-policy';
 import {
+  localModelGatewayProjection,
   resolveModelGatewayIndex,
   type ModelGatewayIndex,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
@@ -348,6 +349,21 @@ let isTabInOwnerScope: (
   executionContext: string | undefined,
   hasConversationContent: boolean,
 ) => boolean = () => true;
+/**
+ * Latest `refreshPolicy` call. A registry update and `preferencesChanged`
+ * both start one, so an older, slower account read must not overwrite a
+ * newer one.
+ */
+let policyRefreshSeq = 0;
+
+/** The gateway part of a registry snapshot, to tell whether it changed. */
+function gatewaySignature(snapshot: ModelRegistrySnapshot | null): string {
+  return JSON.stringify([
+    snapshot?.aiGatewayModels ?? [],
+    snapshot?.gatewayRoutes ?? [],
+    snapshot?.aiGatewayCatalogStatus ?? null,
+  ]);
+}
 const EMPTY_POLICY_INDEX: ModelPolicyIndex = {
   byOrganization: new Map(),
   union: NO_POLICY,
@@ -504,12 +520,16 @@ function applySnapshot(
   //   1. managed/gateway/Ollama catalogs and gateway routes,
   //   2. the authoritative harness-assignment snapshot,
   //   3. chat-tab reconciliation against the fully hydrated registries.
-  if (snapshot.cursor) {
+  if (snapshot.cursor !== undefined) {
     initCursorModels(snapshot.cursor);
     hydrateCursorModelCache(window.api, snapshot.cursor);
   }
-  initCopilotModels(snapshot.copilot ?? []);
-  initOpenCodeModels(snapshot.opencode ?? []);
+  if (snapshot.copilot !== undefined) {
+    initCopilotModels(snapshot.copilot);
+  }
+  if (snapshot.opencode !== undefined) {
+    initOpenCodeModels(snapshot.opencode);
+  }
   initModelAliases(snapshot.aliases);
   initClaudeModels(omitModelFeatureFlags(snapshot.claude));
   initCodexModels(omitModelFeatureFlags(snapshot.codex));
@@ -605,12 +625,26 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
   },
 
   refreshPolicy: async (): Promise<void> => {
+    const seq = ++policyRefreshSeq;
     let policyIndex: ModelPolicyIndex = EMPTY_POLICY_INDEX;
     let gatewayIndex: ModelGatewayIndex = EMPTY_GATEWAY_INDEX;
     try {
+      // Read beside the account. A failed device gateway read is no device
+      // gateway, as in main.
+      const devicePromise = Promise.allSettled([
+        window.api.localModelGateway.read(),
+      ]).then(([result]) =>
+        result.status === 'fulfilled' ? result.value : null,
+      );
       const account = await window.api.loadCanopyCloudAccount();
+      const device = await devicePromise;
+      if (seq !== policyRefreshSeq) return;
       policyIndex = resolveModelPolicyIndex(account);
-      gatewayIndex = resolveModelGatewayIndex(account);
+      // The device AI gateway routes while the account names no Personal org.
+      gatewayIndex = resolveModelGatewayIndex(
+        account,
+        localModelGatewayProjection(device?.gateway),
+      );
     } catch {
       // A failed renderer-side read leaves the picker unfiltered; enforcement
       // itself lives at the main-process session guard, which fails closed for
@@ -693,11 +727,20 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     });
     const unsubRegistry = window.api.onModelRegistryUpdated(
       (snapshot: ModelRegistrySnapshot) => {
+        const gatewayChanged =
+          gatewaySignature(get().snapshot) !== gatewaySignature(snapshot);
         applySnapshot(snapshot, get().policyIndex, false);
         set({
           snapshot,
           aiGatewayCatalogStatus: snapshot.aiGatewayCatalogStatus ?? null,
         });
+        // When the gateway models changed, re-read the account too, so the
+        // gateway section never lags the models it labels. Other updates skip
+        // the read. A rename changes the models' `familyLabel`, so it counts;
+        // a change to the gateway's URL, models or enforcement also sends
+        // `preferencesChanged`, which re-reads. The sequence guard keeps the
+        // newest read.
+        if (gatewayChanged) void get().refreshPolicy();
         void window.api
           .loadPreferences()
           .then((prefs) => {
@@ -713,11 +756,15 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     const unsubPolicy = window.api.onPreferencesChanged(() => {
       void get().refreshPolicy();
     });
+    const unsubDeviceGateway = window.api.localModelGateway.onChanged(() => {
+      void get().refreshPolicy();
+    });
     return (): void => {
       unsubContext();
       unsubFlags();
       unsubRegistry();
       unsubPolicy();
+      unsubDeviceGateway();
     };
   },
 

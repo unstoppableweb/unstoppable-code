@@ -256,7 +256,6 @@ export async function resolveEffectiveBaseBranchesForWorktree(params: {
     params.projectId,
     params.worktreeId,
   );
-
   return resolveEffectiveBaseBranchesWithState(params, state, false);
 }
 

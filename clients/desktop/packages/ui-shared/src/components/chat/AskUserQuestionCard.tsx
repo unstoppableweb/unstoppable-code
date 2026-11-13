@@ -30,6 +30,10 @@ import { Select, TextArea, TextInput, FieldError } from '../Field';
 import { Notice } from '../Notice';
 import { useCleanChatLook } from '../chat-look';
 import { QuestionOptionText } from './QuestionOptionText';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '../../lib/replay-privacy';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -155,10 +159,14 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
               }`}
               data-testid="answered-question"
             >
-              <div className="whitespace-pre-wrap break-words fg-tertiary">
+              <div
+                className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words fg-tertiary`}
+              >
                 {answer.question}
               </div>
-              <div className="whitespace-pre-wrap break-words fg-primary">
+              <div
+                className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words fg-primary`}
+              >
                 {answer.answer ? (
                   <>
                     {answer.answer}
@@ -377,6 +385,16 @@ function ChoiceShortcut({ index }: { index: number }): JSX.Element | null {
       <Kbd shortcut={[String.fromCharCode(65 + index)]} />
     </span>
   );
+}
+
+/** The `Select` value (an option's index) of a single-select answer. */
+function selectedOptionValue(
+  options: readonly string[],
+  selected: ReadonlySet<string>,
+): string | null {
+  const [chosen] = selected;
+  const index = chosen === undefined ? -1 : options.indexOf(chosen);
+  return index === -1 ? null : String(index);
 }
 
 function isDirectField(question: PortalAskUserQuestion): boolean {
@@ -654,6 +672,9 @@ function AskUserQuestionCardImpl({
   const nativeField =
     q !== undefined && (isDirectField(q) || control === 'select');
   const QuestionLabel = nativeField ? 'label' : 'div';
+  // Content-bearing names point at blocked text: replay records attributes.
+  const headerId = `${groupName}-header`;
+  const questionId = `${groupName}-question`;
 
   return (
     <form
@@ -736,7 +757,7 @@ function AskUserQuestionCardImpl({
       {q && (
         <div
           role="group"
-          aria-label={q.header ? `${q.header}: ${q.question}` : q.question}
+          aria-labelledby={q.header ? `${headerId} ${questionId}` : questionId}
           ref={stepHeading}
           tabIndex={-1}
           className="flex flex-col outline-none gap-2"
@@ -744,7 +765,10 @@ function AskUserQuestionCardImpl({
           <div className="flex items-start gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               {q.header && (
-                <div className="text-xs fg-secondary">
+                <div
+                  id={headerId}
+                  className={`${REPLAY_BLOCK_CLASS} text-xs fg-secondary`}
+                >
                   {renderText(q.header)}
                 </div>
               )}
@@ -752,7 +776,12 @@ function AskUserQuestionCardImpl({
                 htmlFor={nativeField ? groupName : undefined}
                 className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-s fg-primary"
               >
-                <span className="min-w-0">{renderText(q.question)}</span>
+                <span
+                  id={questionId}
+                  className={`${REPLAY_BLOCK_CLASS} min-w-0`}
+                >
+                  {renderText(q.question)}
+                </span>
                 {q.control && !q.required && (
                   <span className="fg-tertiary">Optional</span>
                 )}
@@ -791,11 +820,12 @@ function AskUserQuestionCardImpl({
 
           <div className="-mx-2 flex flex-col gap-0.5">
             {isDirectField(q) ? (
-              <div className="px-2">
+              // The agent writes the placeholder; replay masks it and records the field.
+              <div className={`${REPLAY_MASK_CLASS} px-2`}>
                 {q.control === 'textarea' && !q.secret ? (
                   <TextArea
                     id={groupName}
-                    aria-label={q.question}
+                    aria-labelledby={questionId}
                     value={otherTexts.get(step) ?? ''}
                     onChange={(e) => setOtherText(step, e.target.value)}
                     disabled={controlsDisabled}
@@ -805,7 +835,7 @@ function AskUserQuestionCardImpl({
                 ) : (
                   <TextInput
                     id={groupName}
-                    aria-label={q.question}
+                    aria-labelledby={questionId}
                     type={q.secret ? 'password' : q.control}
                     value={otherTexts.get(step) ?? ''}
                     onChange={(e) => setOtherText(step, e.target.value)}
@@ -820,24 +850,28 @@ function AskUserQuestionCardImpl({
               <div className="px-2">
                 <Select
                   id={groupName}
-                  aria-label={q.question}
-                  options={q.options.map((option) => ({
-                    value: option,
+                  aria-labelledby={questionId}
+                  // Values are indexes: replay records them.
+                  options={q.options.map((option, optionIndex) => ({
+                    value: String(optionIndex),
                     label: option,
                   }))}
-                  value={Array.from(selected)[0] ?? null}
+                  value={selectedOptionValue(q.options, selected)}
                   placeholder={q.placeholder ?? 'Choose an option'}
+                  blockLabelsInReplay
                   disabled={controlsDisabled}
                   required={q.required}
-                  onValueChange={(value) =>
+                  onValueChange={(value) => {
+                    const option = q.options[Number(value)];
+                    if (option === undefined) return;
                     commitForm((prev) => ({
                       ...prev,
                       selections: new Map(prev.selections).set(
                         step,
-                        new Set([value]),
+                        new Set([option]),
                       ),
-                    }))
-                  }
+                    }));
+                  }}
                 />
               </div>
             ) : control === 'buttons' ? (
@@ -845,7 +879,7 @@ function AskUserQuestionCardImpl({
                 <button
                   key={option}
                   type="button"
-                  aria-label={option}
+                  aria-labelledby={`${groupName}-option-${optionIndex}`}
                   data-question-option="true"
                   aria-keyshortcuts={
                     optionIndex < 26
@@ -863,7 +897,10 @@ function AskUserQuestionCardImpl({
                     className="mt-0.5"
                   />
                   <span className="min-w-0">
-                    <QuestionOptionText label={option} />
+                    <QuestionOptionText
+                      id={`${groupName}-option-${optionIndex}`}
+                      label={option}
+                    />
                   </span>
                   <ChoiceShortcut index={optionIndex} />
                 </button>
@@ -952,7 +989,8 @@ function AskUserQuestionCardImpl({
       {validationError && (
         <div>
           <FieldError id={validationErrorId} announce>
-            {validationError}
+            {/* The message can quote the question. */}
+            <span className={REPLAY_BLOCK_CLASS}>{validationError}</span>
           </FieldError>
         </div>
       )}

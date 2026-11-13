@@ -119,6 +119,12 @@ export interface WorkflowEditShellProps {
    * `Error` to keep it open with that message so the user can retry.
    */
   readonly onDelete?: () => Promise<void>;
+  /**
+   * Opens the delete confirmation each time it changes to a new number, for
+   * a host control that deletes the item (a workflow's last schedule's
+   * Remove). Ignored while Delete is hidden or `onDelete` is absent.
+   */
+  readonly deleteRequest?: number;
   /** Whether the item is turned on. `Off` shows beside the name when not. */
   readonly enabled?: boolean;
   readonly onToggleEnabled?: (next: boolean) => void;
@@ -266,6 +272,7 @@ export function WorkflowEditShell({
   onShare,
   onDuplicate,
   onDelete,
+  deleteRequest,
   enabled = false,
   onToggleEnabled,
   actionLabels,
@@ -289,6 +296,19 @@ export function WorkflowEditShell({
   if (confirmingKey !== targetKey) {
     setConfirmingKey(targetKey);
     setConfirmingDelete(null);
+  }
+  // A host's request opens the same confirmation as the menu's Delete; the
+  // first number a host passes is where it starts, not a request.
+  const [seenDeleteRequest, setSeenDeleteRequest] = useState(deleteRequest);
+  if (deleteRequest !== seenDeleteRequest) {
+    setSeenDeleteRequest(deleteRequest);
+    if (
+      seenDeleteRequest !== undefined &&
+      deleteRequest !== undefined &&
+      onDelete !== undefined &&
+      plan.actions.delete.visible
+    )
+      setConfirmingDelete({ busy: false, error: null });
   }
   const mountedRef = useRef(true);
   useEffect(() => {

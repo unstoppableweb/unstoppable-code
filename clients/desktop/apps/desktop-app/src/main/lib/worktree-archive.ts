@@ -1,3 +1,8 @@
+import {
+  withArchiveFailureTelemetry,
+  type ArchiveTrigger,
+  type ArchiveFailureTelemetryOptions,
+} from './archive-failure-telemetry';
 import { WorktreeArchiveRefusedError } from './worktree-archive-refusal';
 import {
   assertNoDestructiveRecovery,
@@ -36,7 +41,6 @@ import {
 import { listArchivedContainerManifests } from './archived-containers';
 import { isWorktreeArchiveSourceUnavailable } from './archived-container-recovery';
 import { recordWorktreeCrudTelemetry } from './desktop-telemetry';
-import { queueTrackedGitHubWorktreeSync } from './post-archive-sync';
 import { getWorkspaceWorktreeDir } from './paths';
 import { validateId } from './validation';
 import {
@@ -74,6 +78,7 @@ export interface WorktreeArchiveRequest {
   workspaceId: string;
   worktreeId: string;
   source: WorktreeArchiveSource;
+  archiveTrigger?: ArchiveTrigger;
   /** Refuse unless the project is of this kind (the IPC channels are per kind). */
   expectedKind?: 'single-repo' | 'multi-repo';
   /** The incarnation the caller saw; a repeat matches only that one. */
@@ -222,10 +227,21 @@ async function archiveWithTeardown(
  */
 export function archiveWorktree(
   request: WorktreeArchiveRequest,
+  telemetry?: ArchiveFailureTelemetryOptions,
 ): Promise<WorktreeArchiveOutcome> {
-  return archiveWorktreeTransition(request, {
-    operation: 'core.worktree.archive',
-  });
+  return withArchiveFailureTelemetry(
+    {
+      ...request,
+      archiveTrigger:
+        request.archiveTrigger ??
+        (request.source === 'workspace_delete' ? 'project-deletion' : 'manual'),
+    },
+    () =>
+      archiveWorktreeTransition(request, {
+        operation: 'core.worktree.archive',
+      }),
+    telemetry,
+  );
 }
 
 /** Explicit keyed deletion; existing internal callers keep no container. */
@@ -242,6 +258,7 @@ const archiveOutcomeSchema = destructiveArchiveOutcomeSchema.extend({
 /** A wire call addresses only after receipt lookup and before reservation. */
 export interface WorktreeDeleteWireCall {
   readonly caller: string;
+  readonly archiveTrigger?: ArchiveTrigger;
   readonly idempotencyKey: string;
   readonly parameters: unknown;
   readonly resolveRequest: () => Promise<WorktreeDeleteRequest>;
@@ -249,6 +266,30 @@ export interface WorktreeDeleteWireCall {
 
 export async function deleteWorktree(
   input: WorktreeDeleteRequest | WorktreeDeleteWireCall,
+): Promise<WorktreeArchiveOutcome> {
+  let addressed = 'resolveRequest' in input ? undefined : input;
+  return withArchiveFailureTelemetry(
+    () =>
+      addressed
+        ? {
+            ...addressed,
+            archiveTrigger:
+              addressed.archiveTrigger ??
+              (addressed.source === 'workspace_delete'
+                ? 'project-deletion'
+                : 'manual'),
+          }
+        : { archiveTrigger: input.archiveTrigger },
+    () =>
+      deleteWorktreeAdmitted(input, (request) => {
+        addressed = request;
+      }),
+  );
+}
+
+async function deleteWorktreeAdmitted(
+  input: WorktreeDeleteRequest | WorktreeDeleteWireCall,
+  onAddressed: (request: WorktreeDeleteRequest) => void,
 ): Promise<WorktreeArchiveOutcome> {
   const direct = 'resolveRequest' in input ? undefined : input;
   const wire = 'resolveRequest' in input ? input : undefined;
@@ -262,10 +303,12 @@ export async function deleteWorktree(
     const {
       expectedRevision: _revision,
       idempotencyKey: _key,
+      archiveTrigger: _trigger,
       ...rest
     } = request;
     void _revision;
     void _key;
+    void _trigger;
     return rest;
   };
   return runW5BoundaryOperation(
@@ -281,6 +324,7 @@ export async function deleteWorktree(
       ...(wire && {
         admit: async (): Promise<void> => {
           admitted = await wire.resolveRequest();
+          onAddressed(admitted);
           validate(admitted);
         },
       }),
@@ -292,36 +336,49 @@ export async function deleteWorktree(
     async (options, attempt) => {
       const request = direct ?? admitted;
       if (!request) throw new Error('Worktree deletion was not addressed.');
-      const {
-        expectedRevision,
-        retainAsArchivedContainer,
-        idempotencyKey: _key,
-        ...fields
-      } = request;
-      void _key;
-      const pending = await admitLifecycleJournals(attempt, () =>
-        readDestructiveRecovery(request.workspaceId, request.worktreeId),
-      );
-      // Retained repeats skip a stale revision: the transition checks it
-      // only while the live incarnation is still present (A3(a)).
-      if (
-        retainAsArchivedContainer !== true &&
-        (!pending || pending.state === 'completed')
-      ) {
-        await checkW5ExpectedRevision(
-          {
-            kind: 'worktree',
-            workspaceId: request.workspaceId,
-            worktreeId: request.worktreeId,
-          },
-          expectedRevision,
-        );
-      }
-      return archiveWorktreeTransition(
-        { ...fields, expectedRevision },
-        options,
-        attempt,
-        retainAsArchivedContainer ?? false,
+      return withArchiveFailureTelemetry(
+        {
+          ...request,
+          archiveTrigger:
+            request.archiveTrigger ??
+            (request.source === 'workspace_delete'
+              ? 'project-deletion'
+              : 'manual'),
+        },
+        async () => {
+          const {
+            expectedRevision,
+            retainAsArchivedContainer,
+            idempotencyKey: _key,
+            ...fields
+          } = request;
+          void _key;
+          const pending = await admitLifecycleJournals(attempt, () =>
+            readDestructiveRecovery(request.workspaceId, request.worktreeId),
+          );
+          // Retained repeats skip a stale revision: the transition checks it
+          // only while the live incarnation is still present (A3(a)).
+          if (
+            retainAsArchivedContainer !== true &&
+            (!pending || pending.state === 'completed')
+          ) {
+            await checkW5ExpectedRevision(
+              {
+                kind: 'worktree',
+                workspaceId: request.workspaceId,
+                worktreeId: request.worktreeId,
+              },
+              expectedRevision,
+            );
+          }
+          return archiveWorktreeTransition(
+            { ...fields, expectedRevision },
+            options,
+            attempt,
+            retainAsArchivedContainer ?? false,
+          );
+        },
+        { telemetryParent: 'inherit' },
       );
     },
   );
@@ -460,6 +517,9 @@ async function archiveWorktreeTransition(
       request.expectedRevision,
     );
   const options = {
+    archiveTrigger:
+      request.archiveTrigger ??
+      (request.source === 'workspace_delete' ? 'project-deletion' : 'manual'),
     w5Commit: {
       ...w5Commit,
       expectedRevisions: w5ExpectedRevision(
@@ -510,14 +570,20 @@ async function archiveWorktreeTransition(
     // After the teardown lease is admitted: a busy refusal touches nothing.
     const teardown = runAutoArchiveTeardown ? { runAutoArchiveTeardown } : {};
     return kind === 'multi-repo'
-      ? archiveMultiRepoWorktree({ ...options, ...teardown })
-      : archiveSingleRepoWorktree({
-          ...options,
-          ...teardown,
-          ...(request.repoPath !== undefined
-            ? { repoPath: request.repoPath }
-            : {}),
-        });
+      ? archiveMultiRepoWorktree(
+          { ...options, ...teardown },
+          { telemetryParent: 'inherit' },
+        )
+      : archiveSingleRepoWorktree(
+          {
+            ...options,
+            ...teardown,
+            ...(request.repoPath !== undefined
+              ? { repoPath: request.repoPath }
+              : {}),
+          },
+          { telemetryParent: 'inherit' },
+        );
   };
   const { teardownOperation } = request;
   const response =
@@ -530,7 +596,6 @@ async function archiveWorktreeTransition(
           teardownOperation,
           archive,
         );
-  queueTrackedGitHubWorktreeSync();
   recordWorktreeCrudTelemetry({
     action: 'archive',
     workspaceId,
@@ -632,14 +697,17 @@ export async function archiveWorkspaceWorktrees(
 ): Promise<void> {
   for (const worktree of await readWorkspaceWorktrees(workspaceId)) {
     try {
-      await archiveWorktree({
-        workspaceId,
-        worktreeId: worktree.id,
-        source: 'workspace_delete',
-        expectedKind: kind,
-        expectedCreatedAt: worktree.createdAt,
-        teardownOperation: 'Project deletion',
-      });
+      await archiveWorktree(
+        {
+          workspaceId,
+          worktreeId: worktree.id,
+          source: 'workspace_delete',
+          expectedKind: kind,
+          expectedCreatedAt: worktree.createdAt,
+          teardownOperation: 'Project deletion',
+        },
+        { telemetryParent: 'inherit' },
+      );
     } catch (error) {
       if (
         error instanceof WorktreeArchiveRefusedError &&

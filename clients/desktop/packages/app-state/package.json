@@ -20,7 +20,8 @@
     "./worktree-discard": "./src/worktree-discard/index.ts",
     "./conversation": "./src/conversation/index.ts",
     "./conversation/conformance": "./src/conversation/conformance.ts",
-    "./core-cowork": "./src/core-cowork/index.ts"
+    "./core-cowork": "./src/core-cowork/index.ts",
+    "./cloud-pipeline-runs": "./src/cloud-pipeline-runs/index.ts"
   },
   "dependencies": {
     "@canopy/app-core": "workspace:*",

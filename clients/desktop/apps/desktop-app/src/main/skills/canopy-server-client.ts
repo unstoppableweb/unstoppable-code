@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BUILTIN_SOURCE_ID, CUSTOM_SOURCE_ID } from './paths';
 import { withPackageVersionNegotiation } from '../canopy-cloud/package-version-negotiation';
 import {
@@ -33,8 +34,29 @@ import {
   assertResourceShareTransition,
 } from '../lib/resource-share-context';
 import { assertShareScopeTarget } from '../lib/share-scope-target';
+import { ShareOperationError } from '../sharing/share-operation-result';
 
 const API_PREFIX = `/api/v1/${BRAND.web.apiNamespace}`;
+
+/**
+ * Refuses to send SKILL.md bytes other than the ones the caller checked: the
+ * resource-context path reads the file again, and an edit in between must not
+ * upload (CAN-6176).
+ */
+function assertCheckedSource(
+  rawSkill: string,
+  expectedSourceSha256: string | undefined,
+): void {
+  if (
+    expectedSourceSha256 !== undefined &&
+    createHash('sha256').update(rawSkill).digest('hex') !== expectedSourceSha256
+  )
+    throw new ShareOperationError(
+      'dependency-review',
+      'This skill changed after its files were checked. Check them again.',
+      'prepare',
+    );
+}
 
 /**
  * Declares which package fields this build can read, so a server holding a
@@ -52,8 +74,10 @@ const SKILLS_CAPABILITY = 'skills-crud-v1';
  * a share attempt reports the missing capability instead of a raw 404. The IPC
  * handlers assert the same capability before every shared-skill call.
  */
-export async function assertSharedSkillsSupported(): Promise<void> {
-  await assertCanopyCloudCapability(SKILLS_CAPABILITY);
+export async function assertSharedSkillsSupported(
+  credentials?: CanopyCloudCredentialContext,
+): Promise<void> {
+  await assertCanopyCloudCapability(SKILLS_CAPABILITY, credentials);
 }
 
 export async function listSharedSkills(
@@ -91,6 +115,7 @@ function sharedSkillQuery(request: ListSharedSkillsRequest): URLSearchParams {
 
 export async function getSharedSkill(
   skillId: string,
+  credentialContext?: CanopyCloudCredentialContext,
 ): Promise<SharedSkillDetail> {
   const snapshot = skillResourceContextEnabled()
     ? await skillContextSnapshot()
@@ -98,7 +123,10 @@ export async function getSharedSkill(
   const detail = await withPackageVersionNegotiation((version) =>
     requestCanopyCloudJson<SharedSkillDetail>(
       `${API_PREFIX}/skills/${encodeURIComponent(skillId)}`,
-      { headers: { [PIPELINE_PACKAGE_VERSION_HEADER]: String(version) } },
+      {
+        headers: { [PIPELINE_PACKAGE_VERSION_HEADER]: String(version) },
+        ...(credentialContext ? { credentialContext } : {}),
+      },
     ),
   );
   if (snapshot !== undefined) {
@@ -154,6 +182,7 @@ export async function createSharedSkill(
     await assertSkillContext({ owner });
     rawSkill = await authorizedSkillSource(request.sourceSkillId, owner);
   }
+  assertCheckedSource(rawSkill, request.expectedSourceSha256);
   const body: {
     rawSkill: string;
     shareScope?: CreateSharedSkillRequest['shareScope'];
@@ -191,7 +220,8 @@ export async function updateSharedSkill(
   assertShareScopeTarget(request, 'a skill');
   let rawSkill = request.rawSkill;
   if (skillResourceContextEnabled()) {
-    const current = await getSharedSkill(request.skillId);
+    // The caller's account, so a switch mid-update can't read another's copy.
+    const current = await getSharedSkill(request.skillId, credentialContext);
     const destination = request.shareScope
       ? await assertResourceShareDestination(request)
       : undefined;
@@ -213,6 +243,7 @@ export async function updateSharedSkill(
       destinationOwner,
     );
   }
+  assertCheckedSource(rawSkill, request.expectedSourceSha256);
   return requestCanopyCloudJson<SharedSkillDetail>(
     `${API_PREFIX}/skills/${encodeURIComponent(request.skillId)}`,
     {

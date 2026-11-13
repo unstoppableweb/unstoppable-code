@@ -12,8 +12,8 @@ import {
   codexServiceTierForModelConfig,
   mapThinkingToReasoningEffort,
 } from '@canopy/execution-engine/lib/codex-model-config';
-import type { CodexThreadHandle } from '@canopy/desktop-shared/node/codex-runtime';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { CodexThreadHandle } from '@canopy/execution-engine/node/codex-runtime';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import {
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,

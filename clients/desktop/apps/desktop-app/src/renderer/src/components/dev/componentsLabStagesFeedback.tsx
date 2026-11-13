@@ -15,6 +15,7 @@ import {
   SearchField,
   Skeleton,
   TextArea,
+  ToastNotice,
   ToastStack,
   Tooltip,
   type NoticeIntent,
@@ -250,17 +251,12 @@ export function ToastStage(): JSX.Element {
               placement="bottom-right"
               onClose={noop}
               renderToast={(toast): JSX.Element => (
-                <Notice
+                <ToastNotice
                   intent={toastIntent(toast)}
-                  surface="none"
-                  shape="toast"
-                  titleLayout="stacked"
-                  role="none"
                   title={toast.title}
+                  text={toast.body}
                   onDismiss={noop}
-                >
-                  {toast.body}
-                </Notice>
+                />
               )}
             />
           </div>

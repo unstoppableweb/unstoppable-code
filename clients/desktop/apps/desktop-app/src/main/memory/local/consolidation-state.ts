@@ -148,7 +148,7 @@ export function consolidationRunOutcome(
     case 'clean':
       return { result: 'skipped', reason: 'clean' };
     case 'cancelled':
-      return { result: 'cancelled', reason: 'cancelled' };
+      return { result: 'cancelled', reason: result.reason ?? 'cancelled' };
     case 'partial':
       return { result: 'failed', reason: result.reason ?? 'partial-output' };
     case 'invalid-output':

@@ -151,15 +151,18 @@ export async function desktopAgentActionCall(
         }
       : {}),
   };
-  // A run replays by tool call. A worktree chat's MCP request id restarts with
-  // each connection, so the turn, when known, keeps a later turn's call from
-  // replaying an earlier run; a run never requires one.
-  const pipelineRun =
+  // A run, and a cloud run's cancel or resume (CAN-6354), replay by tool
+  // call. A worktree chat's MCP request id restarts with each connection, so
+  // the turn, when known, keeps a later turn's call from replaying an earlier
+  // one; neither ever requires one.
+  const keyedByCall =
     typeof action === 'object' &&
     action !== null &&
     'type' in action &&
-    action.type === 'pipeline.run';
-  if (!keyedByTurn(key, rawArgs) && !pipelineRun) return call;
+    (action.type === 'pipeline.run' ||
+      action.type === 'pipeline.execution_cancel' ||
+      action.type === 'pipeline.execution_resume');
+  if (!keyedByTurn(key, rawArgs) && !keyedByCall) return call;
   const turnKey = await resolveDesktopTurnKey(call);
   return turnKey ? { ...call, turnKey } : call;
 }

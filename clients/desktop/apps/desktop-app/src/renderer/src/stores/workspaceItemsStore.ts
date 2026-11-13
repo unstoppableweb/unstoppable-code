@@ -9,6 +9,7 @@
  * `main/ipc/workspace-items.ts`) — this store is storage-agnostic.
  */
 import { create } from 'zustand';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type ClipboardAttachmentData,
@@ -112,9 +113,12 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
 
     loadNotes: async (projectId, worktreeId): Promise<void> => {
       try {
-        const items = await window.api.workspaceItems.listNotes(
-          itemsScope(projectId, worktreeId),
-        );
+        // Notes live in a local workspace; a cloud project has none here.
+        const items = isWebCoreScope(projectId)
+          ? []
+          : await window.api.workspaceItems.listNotes(
+              itemsScope(projectId, worktreeId),
+            );
         const key = workspaceItemsKey(projectId, worktreeId);
         set((state) => ({ notes: { ...state.notes, [key]: items } }));
       } catch {
@@ -157,9 +161,12 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
 
     loadPrompts: async (projectId, worktreeId): Promise<void> => {
       try {
-        const items = await window.api.workspaceItems.listPrompts(
-          itemsScope(projectId, worktreeId),
-        );
+        // Prompts live in a local workspace; a cloud project has none here.
+        const items = isWebCoreScope(projectId)
+          ? []
+          : await window.api.workspaceItems.listPrompts(
+              itemsScope(projectId, worktreeId),
+            );
         const key = workspaceItemsKey(projectId, worktreeId);
         set((state) => ({
           prompts: { ...state.prompts, [key]: items },

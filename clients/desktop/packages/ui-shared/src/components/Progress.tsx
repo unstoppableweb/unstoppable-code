@@ -1,8 +1,8 @@
 import type { JSX, Ref } from 'react';
 import { STATUS_GLYPHS, type StatusGlyphState } from '../lib/status-glyph';
+import { CometSpinner } from './CometSpinner';
 import { SpinnerStyleProvider } from './spinner-style';
 import { StatusGlyph } from './StatusGlyph';
-import { ThinkingSpinner } from './ThinkingSpinner';
 
 /**
  * The one progress set (docs/design/feedback.md#progress): a labelled 6px
@@ -323,7 +323,10 @@ export interface ProgressStep {
 }
 
 export interface ProgressStepsProps {
-  /** Compact inline job strips use six-pixel dots; full step rows use glyphs. */
+  /**
+   * Compact inline job strips use 4px state dots with a 12px comet for running
+   * work; full step rows use glyphs.
+   */
   readonly appearance?: 'glyphs' | 'dots';
   /**
    * The steps in order, grouped into stages. Steps in one stage run side by
@@ -338,6 +341,52 @@ export interface ProgressStepsProps {
   /** Placement only. */
   readonly className?: string;
   readonly dataTestId?: string;
+}
+
+/**
+ * A compact strip's job: a 4px dot in its state's ink. Work that hasn't run
+ * (queued, cancelled) is a faint dot, so finished and failed jobs stand out.
+ */
+function StepDot({ state }: { readonly state: StatusGlyphState }): JSX.Element {
+  const ink =
+    state === 'queued' || state === 'cancelled'
+      ? 'fg-tertiary/40'
+      : STATUS_GLYPHS[state].ink || 'fg-tertiary';
+  return (
+    <svg
+      width={4}
+      height={4}
+      viewBox="0 0 4 4"
+      aria-hidden="true"
+      className={ink}
+    >
+      <circle cx={2} cy={2} r={2} fill="currentColor" />
+    </svg>
+  );
+}
+
+/**
+ * A compact strip's running job, like an in-progress CI check: the 12px comet
+ * turning around a center dot over a faint ring.
+ */
+function RunningStepDot(): JSX.Element {
+  return (
+    <span className="relative inline-flex size-3 shrink-0 items-center justify-center">
+      <span className="absolute inset-0 rounded-full border-2 border-current fg-primary/25" />
+      <span className="absolute inset-0 flex items-center justify-center">
+        <CometSpinner sizePx={12} tone="primary" />
+      </span>
+      <svg
+        width={4}
+        height={4}
+        viewBox="0 0 4 4"
+        aria-hidden="true"
+        className="fg-primary"
+      >
+        <circle cx={2} cy={2} r={2} fill="currentColor" />
+      </svg>
+    </span>
+  );
 }
 
 function isFinished(state: StatusGlyphState): boolean {
@@ -359,6 +408,7 @@ export function ProgressSteps({
   const steps = stages.flat();
   if (steps.length === 0) return null;
   const finished = steps.filter((step) => isFinished(step.state)).length;
+  const dots = appearance === 'dots';
   const named = label !== undefined;
   return (
     <SpinnerStyleProvider value="comet">
@@ -378,14 +428,19 @@ export function ProgressSteps({
       >
         {stages.map((stage, stageIndex) =>
           stage.length === 0 ? null : (
-            <span key={stage[0].id} className="inline-flex items-center gap-1">
+            <span
+              key={stage[0].id}
+              className={`inline-flex items-center ${dots ? 'gap-1.5' : 'gap-1'}`}
+            >
               {stageIndex > 0 && (
                 <span
                   className="h-px w-1.5 bg-fg-primary/20"
                   data-progress-stage-separator=""
                 />
               )}
-              <span className="inline-flex items-center gap-0.75">
+              <span
+                className={`inline-flex items-center ${dots ? 'gap-1.5' : 'gap-0.75'}`}
+              >
                 {stage.map((step) => (
                   <span
                     key={step.id}
@@ -393,33 +448,12 @@ export function ProgressSteps({
                     data-progress-step={step.id}
                     data-status-glyph-state={step.state}
                   >
-                    {appearance === 'glyphs' ? (
+                    {!dots ? (
                       <StatusGlyph state={step.state} size={12} />
                     ) : step.state === 'running' ? (
-                      <ThinkingSpinner sizePx={6} tone="secondary" />
+                      <RunningStepDot />
                     ) : (
-                      <svg
-                        width={6}
-                        height={6}
-                        viewBox="0 0 6 6"
-                        aria-hidden="true"
-                        className={
-                          STATUS_GLYPHS[step.state].ink || 'fg-tertiary'
-                        }
-                      >
-                        <circle
-                          cx={3}
-                          cy={3}
-                          r={2.5}
-                          fill={
-                            step.state === 'queued' ||
-                            step.state === 'cancelled'
-                              ? 'none'
-                              : 'currentColor'
-                          }
-                          stroke="currentColor"
-                        />
-                      </svg>
+                      <StepDot state={step.state} />
                     )}
                   </span>
                 ))}

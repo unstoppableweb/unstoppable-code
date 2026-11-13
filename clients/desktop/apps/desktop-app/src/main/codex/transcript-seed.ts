@@ -2,7 +2,7 @@ import type {
   PersistedChatBlock,
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { readChatTabsFile, readChatTranscript } from '../lib/chat-tabs-reader';
 import { readCodexReconstructionSeed } from './reconstruction-seed-store';
 

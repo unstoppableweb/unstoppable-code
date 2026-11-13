@@ -7,10 +7,12 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { AgentIcon, MinusIcon, PlusIcon } from '../../icons';
 import { useCleanChatLook } from '../chat-look';
 import { Inline } from '../Stack';
+import { StatusLabel } from '../StatusLabel';
 import { StepRow } from './StepRow';
 import { formatDuration, formatTokenCount } from '../../lib/format-usage';
 import { AgentCardOpenChatAction } from './AgentCardOpenChatAction';
 import { ToolCallCard, toolCallResultFrom } from './ToolCallCard';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 function formatReasoningEffort(reasoningEffort: string): string {
   if (isThinkingLevel(reasoningEffort)) {
@@ -267,7 +269,11 @@ export function AgentBlockCard({
           {runInBackground ? ' (background)' : ''}
         </>
       }
-      detail={(!isExpanded || !prompt) && preview ? preview : undefined}
+      detail={
+        (!isExpanded || !prompt) && preview ? (
+          <span className={REPLAY_BLOCK_CLASS}>{preview}</span>
+        ) : undefined
+      }
       running={isRunning}
       failed={isError}
       expandable
@@ -309,13 +315,17 @@ export function AgentBlockCard({
             </span>
           )}
           {(!isExpanded || !prompt) && preview && (
-            <span className="ml-2 text-2xs fg-secondary">{preview}</span>
+            <span
+              className={`${REPLAY_BLOCK_CLASS} ml-2 text-2xs fg-secondary`}
+            >
+              {preview}
+            </span>
           )}
         </span>
         {isRunning && pendingSpinner != null && (
           <span className="flex-shrink-0 fg-accent">{pendingSpinner}</span>
         )}
-        {isError && <span className="text-3xs fg-destructive/80">error</span>}
+        {isError && <StatusLabel size="3xs">error</StatusLabel>}
       </Inline>
       {headerTrailing}
     </button>
@@ -376,7 +386,9 @@ export function AgentBlockCard({
                 {subBlocks}
               </div>
             ) : isRunning && description ? (
-              <div className="px-2.5 py-2 text-xs fg-secondary">
+              <div
+                className={`${REPLAY_BLOCK_CLASS} px-2.5 py-2 text-xs fg-secondary`}
+              >
                 {description}
               </div>
             ) : null}
@@ -392,7 +404,7 @@ export function AgentBlockCard({
                 </button>
                 {showResult && (
                   <pre
-                    className={`max-h-75 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs ${
+                    className={`${REPLAY_BLOCK_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs ${
                       isError ? 'fg-destructive/80' : 'fg-secondary'
                     }`}
                   >
@@ -412,7 +424,9 @@ export function AgentBlockCard({
                   {showPrompt ? 'Hide prompt' : 'Show prompt'}
                 </button>
                 {showPrompt && (
-                  <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs fg-secondary">
+                  <pre
+                    className={`${REPLAY_BLOCK_CLASS} max-h-50 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs fg-secondary`}
+                  >
                     {prompt}
                   </pre>
                 )}

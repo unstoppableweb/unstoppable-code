@@ -6,7 +6,9 @@ import {
   settingsOperationRequest,
   type SettingsOperationName,
 } from '@canopy/protocol/settings';
+import { ACCOUNT_SETTINGS_OPERATIONS } from '@canopy/protocol/settings/operations-account';
 import { ORGANIZATION_SETTINGS_OPERATIONS } from '@canopy/protocol/settings/operations-organization';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import type { PersonalOrganizationUpgradeService } from './personal-organization-upgrade';
 import type {
@@ -92,31 +94,127 @@ export function createSettingsOrchestratedOperations(
   };
 }
 
-/** Membership writes refresh main's account and finish context processing. */
-export function createSettingsWriteFollowUps(
-  refresh: SettingsWriteFollowUp = async (): Promise<void> => {
+/** Effects a settings write's follow-up may run; injectable for tests. */
+export interface SettingsWriteFollowUpEffects {
+  /** One account refresh, then finish context processing. */
+  refresh: SettingsWriteFollowUp;
+  /** Like `refresh`, retrying a superseded or offline miss in the background. */
+  refreshWithRetry(operationName: SettingsOperationName): Promise<void>;
+  /** Delete this device's stored key for a removed gateway. */
+  clearRemovedGatewayKey(
+    organizationId: string,
+    accountId: string,
+  ): Promise<unknown>;
+}
+
+async function finishWorkspaceContextProcessing(): Promise<void> {
+  const { getWorkspaceContextService } =
+    await import('../lib/workspace-context-service');
+  await getWorkspaceContextService().whenIdle();
+}
+
+const DEFAULT_SETTINGS_WRITE_FOLLOW_UP_EFFECTS: SettingsWriteFollowUpEffects = {
+  refresh: async (): Promise<void> => {
     const { reprobeAndApplyCanopyCloudEnforcedSettings } =
       await import('../ipc/settings');
     await reprobeAndApplyCanopyCloudEnforcedSettings();
-    const { getWorkspaceContextService } =
-      await import('../lib/workspace-context-service');
-    await getWorkspaceContextService().whenIdle();
+    await finishWorkspaceContextProcessing();
   },
+  refreshWithRetry: async (operationName): Promise<void> => {
+    const { refreshAccountAfterSettingsWrite } =
+      await import('../ipc/settings');
+    await refreshAccountAfterSettingsWrite(operationName);
+    await finishWorkspaceContextProcessing();
+  },
+  clearRemovedGatewayKey: async (organizationId, accountId) => {
+    const { clearModelGatewayCredentialForRemovedGateway } =
+      await import('../ipc/settings');
+    return clearModelGatewayCredentialForRemovedGateway(
+      organizationId,
+      accountId,
+    );
+  },
+};
+
+/**
+ * The organization whose gateway a validated write removes (its URL set to
+ * null), or null when the write keeps or replaces the gateway.
+ */
+function removedGatewayOrganizationId(
+  name: SettingsOperationName,
+  validatedInput: unknown,
+): string | null {
+  if (name === 'account.settings.ai-gateway.update') {
+    const input =
+      ACCOUNT_SETTINGS_OPERATIONS[name].input.safeParse(validatedInput);
+    return input.success && input.data.baseUrl === null
+      ? input.data.expectedOrganizationId
+      : null;
+  }
+  if (name === 'organization.settings.policies.update') {
+    const input =
+      ORGANIZATION_SETTINGS_OPERATIONS[name].input.safeParse(validatedInput);
+    return input.success && input.data.modelGatewayBaseUrl === null
+      ? input.data.organizationId
+      : null;
+  }
+  return null;
+}
+
+/**
+ * Membership writes refresh main's account and finish context processing.
+ * Gateway writes retry a missed refresh so the change reaches enforcement
+ * without waiting for the periodic re-probe; a write that removes a gateway
+ * first deletes this device's key for it, so a reconnect prompted by the
+ * refreshed state cannot reuse the key.
+ */
+export function createSettingsWriteFollowUps(
+  effects: SettingsWriteFollowUpEffects = DEFAULT_SETTINGS_WRITE_FOLLOW_UP_EFFECTS,
 ): SettingsWriteFollowUpResolver {
-  return (name, validatedInput): SettingsWriteFollowUp | null => {
+  return (name, validatedInput, accountId): SettingsWriteFollowUp | null => {
     switch (name) {
       case 'account.settings.ai-gateway.update':
-      case 'organization.settings.policies.update':
+      case 'organization.settings.policies.update': {
+        const removedOrganizationId = removedGatewayOrganizationId(
+          name,
+          validatedInput,
+        );
+        if (removedOrganizationId === null)
+          return () => effects.refreshWithRetry(name);
+        return async (): Promise<void> => {
+          try {
+            await effects.clearRemovedGatewayKey(
+              removedOrganizationId,
+              accountId,
+            );
+          } catch (error) {
+            logMainProcessWarn(
+              '[settings] Removed AI gateway key clear failed',
+              {
+                operation: name,
+                organizationId: removedOrganizationId,
+                errorName:
+                  error instanceof Error
+                    ? error.constructor.name
+                    : typeof error,
+              },
+            );
+          }
+          await effects.refreshWithRetry(name);
+        };
+      }
       case 'organization.create':
       case 'organization.delete':
       case 'organization.leave':
-        return refresh;
+        return effects.refresh;
       case 'organization.invitations.respond': {
         const input =
           ORGANIZATION_SETTINGS_OPERATIONS[name].input.safeParse(
             validatedInput,
           );
-        return input.success && input.data.action === 'accept' ? refresh : null;
+        return input.success && input.data.action === 'accept'
+          ? effects.refresh
+          : null;
       }
       default:
         return null;

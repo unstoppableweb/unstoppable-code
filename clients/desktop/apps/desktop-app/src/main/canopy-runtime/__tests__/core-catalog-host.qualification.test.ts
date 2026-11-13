@@ -15,6 +15,7 @@ import {
   pluginEntryId,
   skillEntryId,
   type CanopyCallerDescriptor,
+  type CatalogPluginHarnesses,
 } from '@canopy/protocol/canopy-core';
 import type { PortalPluginCatalog } from '@canopy/protocol/portal';
 import { INHERITED_PLUGIN_DEFAULTS_VERSION } from '@canopy/desktop-shared/lib/effective-plugin-selections';
@@ -133,6 +134,24 @@ function marketplace(
   };
 }
 
+function harnesses(member: string): CatalogPluginHarnesses {
+  const harness = (supported: boolean): CatalogPluginHarnesses['claude'] => ({
+    supported,
+    enabled: true,
+    installed: supported,
+    members: supported
+      ? [{ kind: 'skill' as const, name: member, description: '' }]
+      : [],
+  });
+  return {
+    claude: harness(true),
+    codex: harness(false),
+    ollama: harness(true),
+    copilot: harness(false),
+    opencode: harness(false),
+  };
+}
+
 function workspaceConfig(
   overrides: Partial<WorkspaceConfigFile> = {},
 ): WorkspaceConfigFile {
@@ -214,6 +233,8 @@ function fakes(): Fakes {
           marketplaces: state.marketplaces,
         },
       }),
+    readPluginHarnessFacts: (_marketplace, plugin) =>
+      Promise.resolve(harnesses(plugin.name)),
     readInstalledItemPolicy: () =>
       Promise.resolve({
         isDisabled: (item) => item.kind === 'skill',
@@ -258,7 +279,8 @@ function fakes(): Fakes {
         : Promise.resolve({
             workspaceId: params.workspaceId,
             written: true,
-            ...(params.change.kind === 'setDefaults'
+            ...(params.change.kind === 'setDefaults' &&
+            params.change.defaultPluginSelections !== null
               ? {
                   defaultPluginSelections:
                     params.change.defaultPluginSelections,
@@ -316,6 +338,74 @@ describe('desktop catalog host (CAN-4123)', () => {
       kind: 'collection',
       entryIds: ['skill:s/sk', 'plugin:m/p1'],
     });
+  });
+
+  it('adds the harness facts, source labels and description fallback search reads (CAN-6034)', async () => {
+    const f = fakes();
+    f.marketplaces = [
+      marketplace('m', {
+        name: 'M',
+        description: 'Marketplace description',
+        plugins: [
+          {
+            name: 'p1',
+            marketplaceId: 'm',
+            sourcePath: '/cache/p1',
+            version: '1.0.0',
+            providerSupport: { claude: 'native', codex: 'none' },
+            facets: {},
+          },
+        ],
+      }),
+    ];
+    const { entries } = await createDesktopCatalogHost(f.deps).snapshot();
+    for (const entry of entries)
+      expect(CatalogEntrySchema.safeParse(entry).success).toBe(true);
+    const byId = new Map(entries.map((entry) => [entry.entryId, entry]));
+
+    const p1 = byId.get(pluginEntryId(ref('p1')));
+    expect(p1?.description).toBe('Marketplace description');
+    expect(p1?.sourceLabel).toBe('M');
+    expect(p1?.content).toMatchObject({ harnesses: harnesses('p1') });
+    // A row the cache doesn't hold carries no facts rather than guessed ones.
+    const p2 = byId.get(pluginEntryId(ref('p2')));
+    expect(p2?.content.kind === 'plugin' && p2.content.harnesses).toBe(
+      undefined,
+    );
+    expect(byId.get('skill:s/sk')?.sourceLabel).toBe('user');
+    const server = byId.get(
+      mcpServerEntryId({ serverId: 'srv', configId: 'cfg' }),
+    );
+    expect(server?.sourceLabel).toBe('Server');
+    expect(server?.content).toMatchObject({ configName: 'Default' });
+  });
+
+  it("serves the snapshot when one plugin's facts cannot be read", async () => {
+    const f = fakes();
+    const plugin = (name: string): PluginInfo => ({
+      name,
+      marketplaceId: 'm',
+      sourcePath: `/cache/${name}`,
+      version: '1.0.0',
+      providerSupport: { claude: 'native', codex: 'none' },
+      facets: {},
+    });
+    f.marketplaces = [
+      marketplace('m', { plugins: [plugin('p1'), plugin('p2')] }),
+    ];
+    const { entries } = await createDesktopCatalogHost({
+      ...f.deps,
+      readPluginHarnessFacts: (_marketplace, row) =>
+        row.name === 'p2'
+          ? Promise.reject(new Error('Invalid MCP OAuth token store'))
+          : Promise.resolve(harnesses(row.name)),
+    }).snapshot();
+    const content = (id: string): unknown =>
+      entries.find((entry) => entry.entryId === id)?.content;
+    expect(content(pluginEntryId(ref('p1')))).toMatchObject({
+      harnesses: harnesses('p1'),
+    });
+    expect(content(pluginEntryId(ref('p2')))).not.toHaveProperty('harnesses');
   });
 
   it("reads a chat's effective selection through every layer and its tombstones", async () => {

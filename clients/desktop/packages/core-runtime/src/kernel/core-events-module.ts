@@ -33,6 +33,8 @@ export interface CoreEventsModuleOptions {
   readonly journal: EventJournal<CoreEventRecord>;
   /** Served families; a subscriber may name these or a dot-boundary refinement. */
   readonly families: readonly string[];
+  /** Events under a served family this core never emits; naming one is refused. */
+  readonly unserved?: readonly string[];
   /** Matched entries waiting for room before the stream ends; default 1,024. */
   readonly maxPending?: number;
 }
@@ -84,8 +86,10 @@ export function createCoreEventsModule(
   if (!Number.isSafeInteger(maxPending) || maxPending < 1)
     throw new RangeError('maxPending must be a positive integer.');
   const subscriptions = new Map<string, Subscription>();
+  const unserved = options.unserved ?? [];
   const served = (family: string): boolean =>
-    families.some((root) => familyMatches(root, family));
+    families.some((root) => familyMatches(root, family)) &&
+    !unserved.some((name) => familyMatches(name, family));
 
   return defineRuntimeModule({
     name: 'core.events',

@@ -28,7 +28,7 @@ import type {
 import type {
   ExecutionEvent,
   ExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 
 export interface GoldenChatTurnStart {
   projectId: string;

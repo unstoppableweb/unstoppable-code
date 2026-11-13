@@ -9,7 +9,10 @@ import {
   EMPTY_INSTALLED_STATUS_SNAPSHOT,
   MarketplaceUnshareAction,
   buildCustomizeTabModel,
+  customizeTabOffersUpdateFilter,
+  effectiveInstalledStatusFilter,
   mcpSharedPluginEntryIds,
+  type CustomizeUpdateKind,
   type InstalledStatusSnapshot,
   useOpenCreatedCustomItem,
   useResourceContext,
@@ -166,7 +169,10 @@ import {
 } from '@canopy/ui-shared/lib';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
+import {
+  parseInstalledStatusFilter,
+  type InstalledStatusFilterValue,
+} from '@canopy/ui-shared/lib/installed-item-status';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useShareAction } from '@/hooks/useShareAction';
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
@@ -185,6 +191,7 @@ import { useSkillsChangedRefresh } from '@/lib/skillsChanged';
 import { COLLECTIONS_CHANGED_EVENT } from '../share/installReveal';
 import { marketplaceEntryInstallLink } from '@/lib/sharedResourceInstallLink';
 import { useDesktopInstalledItemStatuses } from '@/hooks/useDesktopInstalledItemStatuses';
+import { useInstalledShareSourceHashes } from '@/hooks/useInstalledShareSourceHashes';
 import {
   installedEntryStatusStates,
   type PluginsEntryStatusBinding,
@@ -251,6 +258,15 @@ interface PluginsPageProps {
  * opening the pre-existing dialog.
  */
 const SCROLL_PRESENTATION_WRITE_DELAY_MS = 150;
+/**
+ * One value for the Updates section and the Update available filter offer,
+ * so the two cannot drift (CAN-5309).
+ */
+const CUSTOMIZE_SUPPORTED_UPDATE_KINDS: readonly CustomizeUpdateKind[] = [
+  'skill',
+  'automation',
+  'collection',
+];
 
 interface RowUnshareTarget {
   readonly kind: MarketplaceUnshareKind;
@@ -714,8 +730,10 @@ export function PluginsPage({
   );
   const deferredCategoryQuery = useDeferredValue(categoryQuery);
   const [installedStatusFilter, setInstalledStatusFilter] =
-    useState<InstalledItemStatus | null>(
-      savedPresentation?.browse.installedStatusFilter ?? null,
+    useState<InstalledStatusFilterValue | null>(
+      parseInstalledStatusFilter(
+        savedPresentation?.browse.installedStatusFilter,
+      ) ?? null,
     );
   // Held here, not in the list, so a row changed while filtered keeps its
   // place across an entry detail page, which unmounts the list (CAN-4838).
@@ -836,6 +854,28 @@ export function PluginsPage({
 
   const publisherSkills = usePublisherSkills();
   const { personalOrganizationId } = useResourceContext();
+  // A shared copy's row shows Update available from the same source read as
+  // its detail (CAN-5309); unresolved sources leave the hash out.
+  const shareSourceHashes = useInstalledShareSourceHashes(
+    skills,
+    capabilityInventory.skillCloudAccount,
+  );
+  const installedSkills = useMemo(
+    () =>
+      shareSourceHashes.size === 0
+        ? skills
+        : skills.map((skill) => {
+            const remoteId = skill.installedFromShare?.remoteId;
+            const sourceContentHash =
+              remoteId === undefined
+                ? undefined
+                : shareSourceHashes.get(remoteId);
+            return sourceContentHash === undefined
+              ? skill
+              : { ...skill, sourceContentHash };
+          }),
+    [skills, shareSourceHashes],
+  );
   const entries = useMemo(
     () =>
       buildUnifiedPluginEntries({
@@ -853,7 +893,7 @@ export function PluginsPage({
             installed: !pluginNeedsInstall(plugin),
           })),
         })),
-        installedSkills: skills,
+        installedSkills,
         mcpServers: pickerServers,
         mcpStatuses,
         curatedMcpServers,
@@ -893,7 +933,7 @@ export function PluginsPage({
       personalOrganizationId,
       marketplaces,
       publisherSkills.skills,
-      skills,
+      installedSkills,
       pickerServers,
       mcpStatuses,
       curatedMcpServers,
@@ -1483,7 +1523,7 @@ export function PluginsPage({
         installedInventory: capabilityInventory.installedInventory,
         ownershipAvailable:
           ownershipAvailable && !!capabilityInventory.viewerId,
-        supportedUpdateKinds: ['skill', 'automation', 'collection'],
+        supportedUpdateKinds: CUSTOMIZE_SUPPORTED_UPDATE_KINDS,
         pipelineFilters,
         pipelineCategory: category,
         suggestedNames,
@@ -1665,7 +1705,9 @@ export function PluginsPage({
       setCategory(destination.category ?? null);
       setKindFilter(destination.tab === 'all' ? null : destination.tab);
       setFocusSection(destination.focusSection ?? null);
-      setInstalledStatusFilter(destination.installedStatusFilter ?? null);
+      setInstalledStatusFilter(
+        parseInstalledStatusFilter(destination.installedStatusFilter) ?? null,
+      );
       setInstalledExpanded(destination.installedExpanded === true);
       setPipelineFilterValues(
         destination.pipelineFilters ?? DEFAULT_PIPELINE_FILTERS,
@@ -3781,7 +3823,17 @@ export function PluginsPage({
                       testId: 'plugins-search',
                       clearTestId: 'plugins-search-clear',
                     }}
-                    installedStatusFilter={installedStatusFilter}
+                    installedStatusFilter={
+                      effectiveInstalledStatusFilter(
+                        activeTypeTab,
+                        installedStatusFilter ?? undefined,
+                        CUSTOMIZE_SUPPORTED_UPDATE_KINDS,
+                      ) ?? null
+                    }
+                    updateFilterAvailable={customizeTabOffersUpdateFilter(
+                      activeTypeTab,
+                      CUSTOMIZE_SUPPORTED_UPDATE_KINDS,
+                    )}
                     onInstalledStatusFilterChange={(value) => {
                       setInstalledStatusFilter(value);
                       setFocusSection(null);
@@ -3903,11 +3955,7 @@ export function PluginsPage({
                         ownershipAvailable={
                           ownershipAvailable && !!capabilityInventory.viewerId
                         }
-                        supportedUpdateKinds={[
-                          'skill',
-                          'automation',
-                          'collection',
-                        ]}
+                        supportedUpdateKinds={CUSTOMIZE_SUPPORTED_UPDATE_KINDS}
                         pipelineFilters={pipelineFilters}
                         pipelineCategory={category}
                         suggestedNames={suggestedNames}

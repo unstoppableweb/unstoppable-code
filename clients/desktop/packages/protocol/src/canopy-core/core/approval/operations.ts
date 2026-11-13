@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { ApprovalRequestDetails } from '../../approval-prompt';
 import {
   CanopyRequestMetadataSchema,
   CanopyWorkspaceScopeSchema,
@@ -94,16 +95,115 @@ export const CoreApprovalRequestSchema = z.strictObject({
 });
 export type CoreApprovalRequest = z.output<typeof CoreApprovalRequestSchema>;
 
+/**
+ * The minor schema revision of `core.approval.request.list` (protocol rule
+ * 5): each request's `presentation` and the result's `viewer` (CAN-6092).
+ */
+export const CORE_APPROVAL_REQUEST_LIST_SCHEMA_REVISION = 2;
+
+// Display text as the cloud's own approval card carries it.
+const text = z.string().max(8 * 1024 * 1024);
+const reason = { reason: text.optional() };
+const fileChange = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('edit'),
+    oldText: text,
+    newText: text,
+    replaceAll: z.boolean().optional(),
+    truncated: z.boolean().optional(),
+  }),
+  z.object({
+    kind: z.literal('write'),
+    content: text,
+    truncated: z.boolean().optional(),
+  }),
+]);
+const origins = { origin: text, topOrigin: text.optional() };
+
+/** What the person deciding sees of the tool call, as a desktop prompt shows it. */
+export const CoreApprovalRequestDetailsSchema: z.ZodType<ApprovalRequestDetails> =
+  z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('command'),
+      command: text,
+      cwd: text.optional(),
+      ...reason,
+    }),
+    z.object({
+      kind: z.literal('file-write'),
+      path: text.optional(),
+      displayPath: text.optional(),
+      change: fileChange.optional(),
+      itemId: text.optional(),
+      ...reason,
+    }),
+    z.object({
+      kind: z.literal('mcp'),
+      server: text,
+      tool: text,
+      paramsDisplay: text.optional(),
+      ...reason,
+    }),
+    z.object({ kind: z.literal('network'), host: text, ...reason }),
+    z.object({
+      kind: z.literal('tool'),
+      toolName: text,
+      path: text.optional(),
+      displayPath: text.optional(),
+      inputSummary: text.optional(),
+      ...reason,
+    }),
+    z.object({
+      kind: z.literal('browser-upload'),
+      ...origins,
+      files: z.array(
+        z.object({ displayPath: text, sizeBytes: z.number().int().min(0) }),
+      ),
+      ...reason,
+    }),
+    z.object({
+      kind: z.literal('browser-file-request'),
+      ...origins,
+      purpose: text.optional(),
+      multiple: z.boolean(),
+    }),
+  ]);
+
+/** A listed request; `presentation` only for a revision 2 caller. */
+export const CoreApprovalListedRequestSchema = CoreApprovalRequestSchema.extend(
+  {
+    presentation: z
+      .strictObject({
+        toolCallId: id.nullable(),
+        details: CoreApprovalRequestDetailsSchema,
+        /** Whether a denial's reason and stop reach the agent. */
+        explainable: z.boolean(),
+      })
+      .optional(),
+  },
+);
+export type CoreApprovalListedRequest = z.output<
+  typeof CoreApprovalListedRequestSchema
+>;
+
 export const CoreApprovalRequestListParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   states: z.array(z.enum(CORE_APPROVAL_REQUEST_STATES)),
   cursor: id.nullable(),
   limit: z.number().int().min(1).max(500),
+  revision: z.literal(CORE_APPROVAL_REQUEST_LIST_SCHEMA_REVISION).optional(),
 });
 
 export const CoreApprovalRequestListResultSchema = z.strictObject({
-  requests: z.array(CoreApprovalRequestSchema),
+  requests: z.array(CoreApprovalListedRequestSchema),
   nextCursor: id.nullable(),
+  /** What the caller may answer in the chat; only for a revision 2 caller. */
+  viewer: z
+    .strictObject({
+      canAnswerQuestions: z.boolean(),
+      canApprove: z.boolean(),
+    })
+    .optional(),
 });
 
 export const CoreApprovalRequestRespondParamsSchema = z.strictObject({

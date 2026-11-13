@@ -20,16 +20,16 @@ import {
   listExecutionSummaries,
   loadExecutionState,
   saveExecutionState,
-} from '../executor/execution-state';
-import { createInitialState } from '../executor/pipeline-executor';
-import type { ExecutionState } from '../executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import { createInitialState } from '@canopy/execution-engine/node/pipelines/executor/pipeline-executor';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   EXECUTION_ID,
   createRuntime,
   legacyFixture,
   pausedState,
-} from '../executor/__tests__/execution-state-fixtures';
-import { listPipelineExecutionPage } from '../execution-list';
+} from '@canopy/execution-engine/node/pipelines/executor/__tests__/execution-state-fixtures';
+import { listPipelineExecutionPage } from '@canopy/execution-engine/node/pipelines/execution-list';
 import {
   projectPipelineExecution,
   projectPipelineExecutionDetail,

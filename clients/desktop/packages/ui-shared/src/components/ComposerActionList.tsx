@@ -19,7 +19,10 @@ import { groupContiguousRuns } from '../lib/group-runs';
 import {
   SlashCommandAvailabilityTag,
   SlashCommandGroupHeading,
+  SlashCommandPendingSpinner,
 } from './SlashCommandPrimitives';
+import { Notice } from './Notice';
+import { EmptyStateRow, ErrorBanner } from './StatusBlocks';
 
 export interface ComposerActionRow {
   id: string;
@@ -46,7 +49,29 @@ export interface ComposerActionRow {
   completion?: boolean;
   /** Selecting this row enables its skill or plugin before insertion. */
   available?: boolean;
+  /**
+   * The row's pick is still running (its skill or plugin is being enabled):
+   * the row stays in place and in the keyboard's reach, shows a spinner,
+   * says so in `description`, and ignores activation until it settles.
+   */
+  busy?: boolean;
   onSelect: () => void;
+}
+
+/**
+ * A pick that did not do what it set out to, shown above the rows until the
+ * person moves on: a failure (`error`, the default), or a pick that finished
+ * part of its work (`attention`: a command was enabled but not added).
+ */
+export interface ComposerActionListError {
+  message: string;
+  /** `attention` only: leads the message, like a notice title. */
+  title?: string;
+  tone?: 'error' | 'attention';
+  /** Only for a failure that trying again can fix. */
+  onRetry?: () => void;
+  /** The retry is running. */
+  retrying?: boolean;
 }
 
 /** A control that expands a capped result list; never a completion row. */
@@ -77,6 +102,7 @@ export function ComposerActionList({
   groupRuns = false,
   flat = false,
   showAll,
+  error = null,
 }: {
   rows: ComposerActionRow[];
   menuRef?: RefObject<HTMLDivElement | null>;
@@ -103,13 +129,19 @@ export function ComposerActionList({
   flat?: boolean;
   /** Renders after the groups when a capped list has hidden rows. */
   showAll?: ComposerShowAllControl;
+  /** A failed pick, above the rows, while the menu stays open. */
+  error?: ComposerActionListError | null;
 }): JSX.Element {
   const listId = useId();
   const [localActiveId, setLocalActiveId] = useState<string | null>(null);
   const highlightedId = activeId === undefined ? localActiveId : activeId;
   const setHighlightedId = onActiveIdChange ?? setLocalActiveId;
+  // No rows means no results group: an empty one would add its bottom margin
+  // above the empty and loading message.
   const groups = flat
-    ? [{ key: 'Search results', occurrence: 0, rows }]
+    ? rows.length > 0
+      ? [{ key: 'Search results', occurrence: 0, rows }]
+      : []
     : groupRuns
       ? groupContiguousRuns(rows, (row) => row.group)
       : Array.from(new Set(rows.map((row) => row.group))).map((group) => ({
@@ -188,6 +220,32 @@ export function ComposerActionList({
           </Button>
         </div>
       )}
+      {error && (
+        // The banner keeps the editor's focus like the rows do; its Try
+        // again is still a button for keyboard users.
+        <div
+          className="shrink-0 px-2 pt-2"
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {error.tone === 'attention' ? (
+            <Notice
+              intent="attention"
+              {...(error.title ? { title: error.title } : {})}
+              data-testid={`${dataTestIdPrefix}-menu-notice`}
+            >
+              {error.message}
+            </Notice>
+          ) : (
+            <ErrorBanner
+              className=""
+              error={error.message}
+              {...(error.onRetry ? { onRetry: error.onRetry } : {})}
+              retrying={error.retrying ?? false}
+              testId={`${dataTestIdPrefix}-menu-error`}
+            />
+          )}
+        </div>
+      )}
       <OverlayScrollArea
         className="min-h-0 flex-1"
         viewport="menu"
@@ -226,6 +284,8 @@ export function ComposerActionList({
                     data-completion-row={row.completion || undefined}
                     data-testid={row.dataTestId}
                     disabled={row.disabled}
+                    aria-disabled={row.busy || undefined}
+                    aria-busy={row.busy || undefined}
                     role={isRadioRow(row) ? 'radio' : undefined}
                     tabIndex={
                       radioGroup ? (row === tabStop ? 0 : -1) : undefined
@@ -234,7 +294,7 @@ export function ComposerActionList({
                     aria-pressed={isRadioRow(row) ? undefined : row.ariaChecked}
                     aria-haspopup={row.popupRole}
                     onMouseDown={(event) => event.preventDefault()}
-                    onClick={row.onSelect}
+                    onClick={row.busy ? undefined : row.onSelect}
                     onPointerEnter={(event) =>
                       onHoveredIdChange?.(
                         row.disabled ? null : event.currentTarget.id,
@@ -261,6 +321,7 @@ export function ComposerActionList({
                       )}
                     </span>
                     {row.available && <SlashCommandAvailabilityTag />}
+                    {row.busy && <SlashCommandPendingSpinner />}
                     {(row.value !== undefined || row.opensMenu) && (
                       <span
                         data-menu-trailing
@@ -326,11 +387,18 @@ export function ComposerActionList({
           </button>
         )}
         {rows.length === 0 && (
-          <p className="px-3 py-5 text-xs fg-tertiary">
-            {loading
-              ? 'Discovering skills and commands…'
-              : 'No matching actions, skills, or plugins'}
-          </p>
+          // The shared empty-list line owns its height and type; the wrapper
+          // only sets the rows' inset, so the empty and loading menus keep the
+          // list's normal padding instead of a tall card.
+          <div className="px-2">
+            <EmptyStateRow
+              title={
+                loading
+                  ? 'Discovering skills and commands…'
+                  : 'No matching actions, skills, or plugins'
+              }
+            />
+          </div>
         )}
       </OverlayScrollArea>
     </div>

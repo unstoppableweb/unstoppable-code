@@ -1,4 +1,8 @@
 import {
+  assertWorkingDirectoryAvailable,
+  workingDirectoryLaunchError,
+} from '@canopy/desktop-shared/node/lib/working-directory';
+import {
   classifyGitError,
   rethrowClassifiedGitError,
 } from './git-error-classification';
@@ -215,6 +219,7 @@ async function runGit(
     skipLfsSmudge?: boolean;
   },
 ): Promise<string> {
+  await assertWorkingDirectoryAvailable(cwd);
   const launch = prepareBackgroundProcessLaunch(
     await getResolvedGitExecutableForSpawn(),
     args,
@@ -258,12 +263,16 @@ async function runGit(
             const messageIncludesStderr = Boolean(
               trimmedStderr && baseMessage.includes(trimmedStderr),
             );
-            reject(
-              classifyGitError(
-                new Error(
-                  trimmedStderr && !messageIncludesStderr
-                    ? `${baseMessage}\n${trimmedStderr}`
-                    : baseMessage,
+            void workingDirectoryLaunchError(error, cwd).then((launchError) =>
+              reject(
+                classifyGitError(
+                  new Error(
+                    launchError !== error && launchError instanceof Error
+                      ? launchError.message
+                      : trimmedStderr && !messageIncludesStderr
+                        ? `${baseMessage}\n${trimmedStderr}`
+                        : baseMessage,
+                  ),
                 ),
               ),
             );
@@ -306,7 +315,9 @@ async function runGit(
   if (launch.lowerPriorityAfterSpawn && typeof pending.child.pid === 'number') {
     lowerSpawnedProcessPriority(pending.child.pid);
   }
-  const { stdout } = await pending.catch(rethrowClassifiedGitError);
+  const { stdout } = await pending.catch(async (error: unknown) =>
+    rethrowClassifiedGitError(await workingDirectoryLaunchError(error, cwd)),
+  );
 
   return options?.preserveWhitespace ? stdout : stdout.trim();
 }
@@ -316,6 +327,7 @@ async function runGitRaw(
   cwd?: string,
   options?: { disableReplaceObjects?: boolean },
 ): Promise<string> {
+  await assertWorkingDirectoryAvailable(cwd);
   const { stdout } = await execFileAsync(
     await getResolvedGitExecutableForSpawn(),
     args,
@@ -339,6 +351,7 @@ async function runGitBuffer(
   cwd?: string,
   options?: { disableReplaceObjects?: boolean },
 ): Promise<Buffer> {
+  await assertWorkingDirectoryAvailable(cwd);
   const { stdout } = await execFileAsync(
     await getResolvedGitExecutableForSpawn(),
     args,
@@ -369,6 +382,7 @@ async function runGitUntrimmedBuffer(
     args,
     false,
   );
+  await assertWorkingDirectoryAvailable(cwd);
   const { stdout } = await execFileAsync(launch.command, launch.args, {
     cwd,
     env: withGitRequestContextEnv(
@@ -2301,6 +2315,21 @@ export async function materializeGitCommitRaw(
 }
 
 export async function fetchOrigin(
+  repoPath: string,
+  options: Parameters<typeof fetchAvailableOrigin>[1] = {},
+): Promise<void> {
+  // Only automatic observations may silently skip an unavailable target.
+  // Explicit and lifecycle fetches keep their ordinary Git success/error contract.
+  if (options.ttlMs !== undefined) {
+    const { withGitReadPath } = await import('./worktree-read-availability');
+    return withGitReadPath(repoPath, undefined, () =>
+      fetchAvailableOrigin(repoPath, options),
+    );
+  }
+  return fetchAvailableOrigin(repoPath, options);
+}
+
+async function fetchAvailableOrigin(
   repoPath: string,
   options: {
     prune?: boolean;

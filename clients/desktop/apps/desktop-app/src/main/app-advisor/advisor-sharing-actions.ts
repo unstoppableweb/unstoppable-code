@@ -13,6 +13,7 @@ export const ADVISOR_SHARING_ACTION_TYPES = [
   'agents.publish_public_share',
   'agents.revoke_public_share',
   'plan.share',
+  'plan.unshare',
   'runs.share',
   'runs.unshare',
 ] as const;
@@ -45,6 +46,12 @@ export interface AdvisorSharingActionHost {
   memberOrganizationIds(): Promise<ReadonlySet<string>>;
   /** Whether the tracked plan is in the named worktree. */
   planExists(
+    projectId: string,
+    worktreeId: string,
+    planId: string,
+  ): Promise<boolean>;
+  /** Whether the tracked plan carries a share (CAN-5904); false when missing. */
+  planShared(
     projectId: string,
     worktreeId: string,
     planId: string,
@@ -99,6 +106,12 @@ export interface AdvisorSharingActionHost {
       organizationId?: string;
     },
   ): Promise<ShareOperationResult<{ externalId?: string | null }>>;
+  /** Stops sharing the plan; the answered plan has no `share`. */
+  unsharePlan(request: {
+    projectId: string;
+    worktreeId: string;
+    planId: string;
+  }): Promise<ShareOperationResult<{ id: string } | null>>;
   unshareRun(target: ChatTarget): Promise<{ unshared: boolean }>;
   /** core.chat.update chat.patch_tab_settings {sharedRun} on this chat only. */
   setSharedRunMarker(
@@ -135,9 +148,12 @@ const ORGANIZATION_SHARE_CONTEXT_MESSAGE =
  * belongs to it now, otherwise the one the window's sidebar scopes to. A
  * forged or former organization is refused before any hosted call.
  */
-async function resolveOrganization(
+export async function resolveOrganization(
   action: { shareScope?: string; organizationId?: string },
-  host: AdvisorSharingActionHost,
+  host: Pick<
+    AdvisorSharingActionHost,
+    'memberOrganizationIds' | 'selectedOrganizationId'
+  >,
 ): Promise<{ organizationId?: string } | { response: Response }> {
   if (action.organizationId !== undefined) {
     if (!(await host.memberOrganizationIds()).has(action.organizationId))
@@ -162,7 +178,7 @@ async function resolveOrganization(
 }
 
 /** A hosted share's failure, retryable only when nothing was published. */
-function shareFailure(
+export function shareFailure(
   result: Extract<ShareOperationResult<unknown>, { ok: false }>,
 ): Response {
   return failure(
@@ -263,6 +279,41 @@ async function run(
           shareScope: plan.share?.shareScope ?? null,
         },
       };
+    }
+    case 'plan.unshare': {
+      // Only a plan in the named worktree, as the window's Stop sharing.
+      if (
+        !(await host.planExists(
+          action.projectId,
+          action.worktreeId,
+          action.planId,
+        ))
+      )
+        return failure(
+          'not_found',
+          `Tracked plan ${action.planId} was not found.`,
+        );
+      if (
+        !(await host.planShared(
+          action.projectId,
+          action.worktreeId,
+          action.planId,
+        ))
+      )
+        return { ok: true, result: { planId: action.planId, unshared: false } };
+      const unshared = await host.unsharePlan({
+        projectId: action.projectId,
+        worktreeId: action.worktreeId,
+        planId: action.planId,
+      });
+      if (!unshared.ok) return shareFailure(unshared);
+      // The plan was removed after the checks above, so nothing was unshared.
+      if (unshared.value === null)
+        return failure(
+          'not_found',
+          `Tracked plan ${action.planId} was not found.`,
+        );
+      return { ok: true, result: { planId: action.planId, unshared: true } };
     }
     case 'runs.share': {
       const organization = await resolveOrganization(action, host);

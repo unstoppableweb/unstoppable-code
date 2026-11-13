@@ -1,17 +1,17 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { syncTreeDurably } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { syncTreeDurably } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   deleteExecutionState,
   listExecutionSummaries,
   listExecutionSummariesForArchival,
   loadExecutionState,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import type {
   ExecutionRuntime,
   ExecutionSummary,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 import { relocateExecutionStateArtifactPaths } from './execution-state-relocation';
 

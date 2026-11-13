@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { OpenCodePipelineCapabilities } from '@canopy/desktop-shared/node/pipelines/opencode-prompt-runner';
-import type { OpenCodePromptRunnerRequest } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { OpenCodePromptRunnerRequest } from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   emptyCursorCapabilityProjection,
   expandLeadingCursorCommand,
@@ -22,6 +22,10 @@ import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { buildOpenCodeMcpServers } from '../opencode/mcp-servers';
 import { snapshotOpenCodeMcpTools } from '../opencode/capability-snapshot';
 import { validateOpenCodeMcpSchema } from '../opencode/schema-validation';
+import {
+  openPipelineLedgerOpenCodeTools,
+  type PipelineLedgerOpenCodeTools,
+} from './pipeline-ledger';
 
 /** Owns the selected capability files and proxy routes for one pipeline step. */
 export async function prepareOpenCodePipelineCapabilities(
@@ -36,12 +40,14 @@ export async function prepareOpenCodePipelineCapabilities(
   const sessionKey = `opencode-pipeline-capabilities:${request.executionId}:${randomUUID()}`;
   const routeIdentities = new Map<string, string>();
   let disposed = false;
+  let ledger: PipelineLedgerOpenCodeTools | undefined;
   const dispose = (): void => {
     disposed = true;
     signal.removeEventListener('abort', dispose);
     // Resolution can finish after withdrawal and register another route. Always
     // unregister again when that late result is disposed.
     proxy.unregisterRoutesForSession(sessionKey);
+    ledger?.dispose();
   };
   signal.addEventListener('abort', dispose, { once: true });
   try {
@@ -118,22 +124,72 @@ export async function prepareOpenCodePipelineCapabilities(
       definitions: resolved.mcpServers,
       cwd: request.cwd,
     });
+    const serverIdentities: Record<string, unknown> = Object.fromEntries(
+      mcpServers.map((server) => [
+        server.name,
+        {
+          binding: resolved.mcpServerBindings[server.name],
+          definition:
+            ('url' in server ? routeIdentities.get(server.url) : undefined) ??
+            openCodeCapabilityDigest(resolved.mcpServers[server.name]),
+        },
+      ]),
+    );
+    // The step's Ledger tools ride the app's own server on a per-run route;
+    // its identity is the app surface, not a selected capability. A route
+    // that cannot open costs the step its Feed tools, never the step.
+    let ledgerWarning: string | undefined;
+    if (request.ledgerAttemptKey !== undefined) {
+      try {
+        ledger = await openPipelineLedgerOpenCodeTools(
+          request.ledgerAttemptKey,
+          request.cwd,
+        );
+      } catch (error) {
+        ledgerWarning = `Feed tools are unavailable for this step: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (signal.aborted || disposed) {
+        // Withdrawal during the open: the route registered after `dispose`
+        // ran, so it is released here, before the withdrawal is reported.
+        ledger?.dispose();
+        ledger = undefined;
+        signal.throwIfAborted();
+        throw new Error('OpenCode pipeline capability session is unavailable.');
+      }
+      const ledgerName = ledger?.server.name;
+      if (ledger && mcpServers.some(({ name }) => name === ledgerName)) {
+        // `buildOpenCodeMcpServers` reserves the brand namespace; a selected
+        // server that still carries it must not inherit the Ledger branch's
+        // gate, so the Ledger route yields.
+        ledgerWarning = `Feed tools are unavailable for this step: a selected MCP server is named "${ledgerName}".`;
+        ledger.dispose();
+        ledger = undefined;
+      }
+      if (ledger) {
+        mcpServers.push({
+          type: 'http',
+          name: ledger.server.name,
+          url: ledger.server.url,
+          headers: [
+            {
+              name: 'Authorization',
+              value: `Bearer ${ledger.server.authToken}`,
+            },
+          ],
+        });
+        serverIdentities[ledger.server.name] = {
+          app: ledger.server.name,
+          surface: 'pipeline-ledger',
+        };
+      }
+    }
     const mcpSnapshot = await snapshotOpenCodeMcpTools(
       mcpServers,
-      Object.fromEntries(
-        mcpServers.map((server) => [
-          server.name,
-          {
-            binding: resolved.mcpServerBindings[server.name],
-            definition:
-              ('url' in server ? routeIdentities.get(server.url) : undefined) ??
-              openCodeCapabilityDigest(resolved.mcpServers[server.name]),
-          },
-        ]),
-      ),
+      serverIdentities,
       request.cwd,
       signal,
     );
+    const ledgerServer = ledger?.server.name;
     const check = async (
       server: string,
       tool: string,
@@ -199,13 +255,18 @@ export async function prepareOpenCodePipelineCapabilities(
       },
       mcpServers,
       mcpSnapshot,
-      instructions: projection.skills
-        .filter((skill) => prepared.skillIds.includes(skill.id))
-        .map(
-          (skill) =>
-            `Selected skill ${skill.label}: ${skill.description}\nRead ${JSON.stringify(join(capabilityRoot, 'skills', skill.id, 'SKILL.md'))} for its instructions.`,
-        )
-        .join('\n\n'),
+      instructions: [
+        ...projection.skills
+          .filter((skill) => prepared.skillIds.includes(skill.id))
+          .map(
+            (skill) =>
+              `Selected skill ${skill.label}: ${skill.description}\nRead ${JSON.stringify(join(capabilityRoot, 'skills', skill.id, 'SKILL.md'))} for its instructions.`,
+          ),
+        ...(ledger ? [ledger.instructions] : []),
+      ].join('\n\n'),
+      ...(ledgerServer === undefined
+        ? {}
+        : { ledger: { server: ledgerServer } }),
       expandPrompt: (prompt: string): string =>
         expandLeadingCursorCommand(
           prompt,
@@ -214,15 +275,33 @@ export async function prepareOpenCodePipelineCapabilities(
           ),
         ),
       warnings: [
-        ...resolved.warnings,
-        ...resolved.cursorNotices,
-        ...prepared.warnings,
-      ].map((warning) => warning.split('Cursor').join('OpenCode')),
+        ...[
+          ...resolved.warnings,
+          ...resolved.cursorNotices,
+          ...prepared.warnings,
+        ].map((warning) => warning.split('Cursor').join('OpenCode')),
+        ...(ledgerWarning === undefined ? [] : [ledgerWarning]),
+      ],
       authorizeMcpTool: async (input): Promise<ApprovalOutcome> => {
         const identity = resolveOpenCodeMcpSnapshotTool(
           mcpSnapshot,
           input.toolName,
         );
+        if (identity && identity.server === ledgerServer) {
+          // The Ledger route gates each call with the attempt's approval
+          // session when it arrives; here only the snapshot is checked.
+          const matches =
+            !disposed &&
+            !signal.aborted &&
+            (await openCodeMcpCallMatchesSnapshot(
+              mcpSnapshot,
+              identity.server,
+              identity.tool.name,
+              input.toolArgs,
+              { validate: validateOpenCodeMcpSchema, signal },
+            ));
+          return { decision: matches && !disposed ? 'allow' : 'deny' };
+        }
         const allowed =
           identity &&
           (await check(

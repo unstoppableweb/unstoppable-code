@@ -45,7 +45,7 @@ import { readCachedCuratedMcpDesktopOnlyKeys } from '../mcp/curated-catalog';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import {
   CODEX_MCP_STDIO_LAUNCHER_COMMAND,
   createLocalCapabilityRoot,
@@ -53,7 +53,7 @@ import {
   type CodexStdioMcpLaunchRequest,
   type CodexStdioMcpLaunchRoute,
   type CodexStdioMcpRegistrationOptions,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 import {
   isCodexConfig,
   type CodexConfig,
@@ -73,7 +73,8 @@ import {
 import {
   resolveCwdRelativePathArg,
   resolvePluginServerCwd,
-} from '@canopy/desktop-shared/node/plugins/plugin-resolver';
+} from '@canopy/execution-engine/node/plugins/plugin-resolver';
+import { readPluginManifest } from './plugin-manifest';
 import { safeReadJson, safeReadJsonAsync, safeReadText } from '../lib/fs-utils';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
@@ -114,6 +115,7 @@ import {
 } from '../skills/paths';
 import type {
   AgentProviderType,
+  ModelHarness,
   ChatTabPluginSelections,
   CodexSelectedCapabilityRoot,
   McpHttpAuthHandler,
@@ -162,6 +164,11 @@ import {
   registeredClaudePluginId,
 } from './claude-enabled-plugins';
 import { probeMcpHttpOAuthRequirement } from '../mcp/oauth-probe';
+import {
+  mcpOAuthSubjectForRegistration,
+  type McpOAuthSubject,
+} from '../mcp/oauth-credentials';
+import { pluginMcpServerContentHash } from '@canopy/execution-engine/node/plugins/plugin-mcp-content-hash';
 import { migratePluginMcpOAuthToken } from '../mcp/oauth-token-store';
 import { getDesktopCodexCapabilityStore } from '../codex/capability-store';
 import { materializeCodexPluginsOffMain } from './codex-plugin-materialization-runner';
@@ -2175,6 +2182,61 @@ async function determineStandaloneProxyAuth(args: {
   };
 }
 
+/**
+ * Registers the integration server's loopback route for one enabled HTTP
+ * config of a device server, as a local chat's would be: the route injects
+ * the config's token, headers or OAuth credential, so none leaves main.
+ * Used by cloud reach-back (CAN-6176 D25), which answers a cloud chat's
+ * request through the route. Null for a config that isn't an enabled HTTP
+ * one, or whose server an account connection handles (the cloud reaches
+ * that one itself). The caller unregisters the route.
+ */
+export async function registerDeviceHttpMcpRoute(args: {
+  readonly serverFile: McpServerFile;
+  readonly configId: string;
+  readonly sessionId: string;
+  readonly service: McpHttpProxyServiceForResolver;
+  readonly port: number;
+}): Promise<{ readonly routeId: string; readonly url: string } | null> {
+  const definition = args.serverFile.server.definition;
+  const config = args.serverFile.server.configs.find(
+    (candidate) => candidate.id === args.configId,
+  );
+  if (definition.type !== 'http' || !definition.url || !config?.enabled)
+    return null;
+  const indexEntry = await readMcpAccountIndexEntry(definition.id);
+  if (indexEntry?.accountConnectionId) return null;
+  const headers: Record<string, string> = {
+    ...(definition.headers ?? {}),
+    ...config.extraHeaders,
+  };
+  if (config.authToken) headers.Authorization = `Bearer ${config.authToken}`;
+  await args.service.ensureStarted(args.port);
+  const proxyAuth = await determineStandaloneProxyAuth({
+    definition,
+    config,
+    headers,
+  });
+  const routeId = await args.service.registerRoute({
+    sessionId: args.sessionId,
+    serverId: definition.id,
+    configId: config.id,
+    displayName: definition.name,
+    upstreamUrl: definition.url,
+    headers,
+    oauthEnabled: proxyAuth.oauthEnabled,
+    oauthRequired: proxyAuth.oauthRequired,
+    oauthDefinition: proxyAuth.oauthEnabled ? definition : undefined,
+    oauthConfig: proxyAuth.oauthEnabled ? config : undefined,
+  });
+  try {
+    return { routeId, url: args.service.getProxyUrl(routeId) };
+  } catch (error) {
+    args.service.unregisterRoute(routeId);
+    throw error;
+  }
+}
+
 interface ResolvedDeviceHttpMcpServer {
   serverName: string;
   server: ResolvedStandaloneMcpServer;
@@ -2582,17 +2644,8 @@ export function loadPluginManifest(
   pluginPath: string,
   provider: PluginResolvedPath['provider'] = 'claude',
 ): PluginManifest | null {
-  const manifestPath = path.join(
-    pluginPath,
-    provider === 'codex' ? '.codex-plugin' : '.claude-plugin',
-    'plugin.json',
-  );
-  const manifest = safeReadJson<PluginManifest>(manifestPath);
-  if (manifest || provider === 'codex') {
-    return manifest;
-  }
-  return safeReadJson<PluginManifest>(
-    path.join(pluginPath, '.codex-plugin', 'plugin.json'),
+  return readPluginManifest(provider, (relativePath) =>
+    safeReadJson<PluginManifest>(path.join(pluginPath, relativePath)),
   );
 }
 
@@ -2751,6 +2804,98 @@ export async function readPluginMcpAuthEntries(
       return { serverName, rawValue, identity };
     }),
   );
+}
+
+/** The credential and upstream this app binds for one plugin HTTP MCP server (CAN-6168). */
+export interface PluginMcpOAuthRoute {
+  readonly subject: McpOAuthSubject;
+  readonly upstreamUrl: string;
+}
+
+/**
+ * The OAuth credential subject and upstream of one plugin HTTP MCP server, as
+ * this app's own Codex resolution binds them, for a daemon run that names the
+ * server and the hash of the declaration it read (CAN-6168). Everything is
+ * read here: the plugin's install, its declaration and this app's settings;
+ * the request contributes only names and the hash. Null refuses: a different
+ * declaration, an unknown or disabled plugin or server, a server this app
+ * reaches some other way (a curated member, an account handler, static
+ * headers) or without OAuth.
+ */
+export async function resolvePluginMcpOAuthRoute(request: {
+  marketplaceId: string;
+  pluginName: string;
+  serverName: string;
+  contentHash: string;
+}): Promise<PluginMcpOAuthRoute | null> {
+  const preferences = await readPreferencesFile();
+  const policy = await readInstalledItemPolicy(preferences);
+  if (
+    policy.isDisabled({
+      kind: 'plugin',
+      marketplaceId: request.marketplaceId,
+      pluginName: request.pluginName,
+    })
+  )
+    return null;
+  if (
+    (preferences.mcpHttpAuthDefaultHandler ?? DEFAULT_MCP_HTTP_AUTH_HANDLER) !==
+    'canopy'
+  )
+    return null;
+  const cache = await loadMarketplaces();
+  const plugin = await resolvePluginSelection(
+    request.marketplaceId,
+    request.pluginName,
+    cache.success && cache.data ? cache.data.marketplaces : [],
+    [],
+    false,
+    'codex-session',
+    new Set(preferences.codexCompatDisabledPlugins ?? []),
+  );
+  if (!plugin) return null;
+  const entries = await readPluginMcpAuthEntries(
+    plugin.pluginPath,
+    plugin.marketplaceId,
+    plugin.pluginName,
+    plugin.provider,
+    plugin.primaryAuthPluginPath,
+  );
+  const entry = entries.find(
+    (candidate) => candidate.serverName === request.serverName,
+  );
+  if (
+    !entry ||
+    pluginMcpServerContentHash(entry.rawValue) !== request.contentHash
+  )
+    return null;
+  const { rawValue, identity } = entry;
+  if (
+    typeof rawValue.url !== 'string' ||
+    (rawValue.type !== undefined && rawValue.type !== 'http') ||
+    rawValue.enabled === false ||
+    curatedPluginMcpMemberKey(plugin.marketplaceId, rawValue) !== undefined ||
+    Object.keys(resolvePluginHttpHeaders(rawValue).headers).length > 0
+  )
+    return null;
+  const oauthLike = hasPluginOAuthLikeMetadata(rawValue);
+  if (
+    !oauthLike &&
+    (await probeMcpHttpOAuthRequirement(rawValue.url, {}, 1_000))
+      ?.requiresOAuth !== true
+  )
+    return null;
+  const server = buildPluginHttpMcpServerForAuth(identity, rawValue, true);
+  if (!server || server.definition.oauth === undefined) return null;
+  return {
+    subject: mcpOAuthSubjectForRegistration({
+      serverId: server.definition.id,
+      configId: server.config.id,
+      oauthDefinition: server.definition,
+      oauthConfig: server.config,
+    }),
+    upstreamUrl: server.definition.url ?? rawValue.url,
+  };
 }
 
 export async function resolvePluginAuthPrimaryPath(
@@ -3462,6 +3607,52 @@ async function resolvePluginSelection(
     provider: 'claude',
     mode: 'compat',
   };
+}
+
+/** Presence check only; no credentials, transports, proxy routes or runtime files are materialized. */
+export async function isSelectedAgentMcpAvailable(ref: {
+  serverId: string;
+  configId: string;
+}): Promise<boolean> {
+  const accountOnly =
+    legacyAccountMcpConnectionId(ref.serverId) !== undefined ||
+    isCustomAccountMcpServerKey(ref.serverId);
+  if (!accountOnly) {
+    try {
+      const file = normalizeMcpServerFile(
+        await safeReadJsonAsync<unknown>(getMcpServerFilePath(ref.serverId)),
+        ref.serverId,
+      );
+      const config = file.server.configs.find(
+        (entry) => entry.id === ref.configId,
+      );
+      if (config) return config.enabled !== false;
+    } catch {
+      // The account catalog may own the reference instead of a device file.
+    }
+  }
+  if (!accountMcpConnectionsEnabled()) return false;
+  const connections = await loadAccountMcpRefConnections();
+  const config = accountMcpConnectionForRef(ref, connections ?? []);
+  return config !== undefined && config.enabled !== false;
+}
+
+/** Read-only facet choice for Agent model admission; never materializes compatibility files. */
+export async function inspectSelectedAgentPlugin(
+  selection: { marketplaceId: string; pluginName: string },
+  marketplaces: readonly MarketplaceInfo[],
+  harness: ModelHarness,
+): Promise<PluginResolvedPath | null> {
+  const preferences = await readPreferencesFile();
+  return resolvePluginSelection(
+    selection.marketplaceId,
+    selection.pluginName,
+    marketplaces,
+    [],
+    false,
+    harness === 'codex' ? 'codex-session' : 'claude-session',
+    new Set(preferences.codexCompatDisabledPlugins ?? []),
+  );
 }
 
 /** Fail configured prompt mentions closed using the same path and provider checks as chat selection. */

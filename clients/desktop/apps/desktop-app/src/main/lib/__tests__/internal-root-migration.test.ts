@@ -1,3 +1,4 @@
+import * as migrationProgress from '@canopy/desktop-shared/node/internal-root-migration/progress';
 import { inertArchiveGroup } from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
 import {
   freezeInternalRootJournals,
@@ -37,16 +38,17 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import * as authorityHost from '@canopy/core-platform';
+import * as hostPlatform from '@canopy/core-platform/host-platform';
 import * as storageObservation from '@canopy/core-platform/storage-path-observation';
 import { createServer } from 'node:net';
 import {
   listW5HostPeers,
   inspectW5MaintenanceOwner,
-} from '@canopy/desktop-shared/node/w5-host-cohort';
+} from '@canopy/execution-engine/node/w5-host-cohort';
 import {
   encodeMemberRecord,
   encodeMaintenanceRecord,
-} from '@canopy/desktop-shared/node/w5-host-cohort/records';
+} from '@canopy/execution-engine/node/w5-host-cohort/records';
 import { tmpdir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -56,7 +58,7 @@ import {
 } from '@canopy/core-platform';
 import { DatabaseSync } from 'node:sqlite';
 import { LedgerRepository } from '@canopy/desktop-shared/node/ledger';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import canopy from '../../../../../../brands/canopy/brand.json';
 import unstoppableCode from '../../../../../../brands/unstoppable-code/brand.json';
 import {
@@ -85,6 +87,7 @@ import {
   type W5CommitRequest,
   fingerprintW5File,
 } from '@canopy/core-runtime/node/w5/commit-log';
+import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
 import {
   internalRootFilesystemHost,
   createPrivateMigrationDirectory,
@@ -145,6 +148,7 @@ jest.mock('node:worker_threads', () =>
 jest.setTimeout(60_000);
 import {
   cloneInternalRoot,
+  readInternalRootAbandonmentPlan,
   statIfPresent,
 } from '@canopy/desktop-shared/node/internal-root-migration/filesystem';
 
@@ -671,6 +675,79 @@ describe('offline operator option admission', () => {
     ]);
   });
 
+  test('checkout opt-ins accept both forms and preserve the frozen set', () => {
+    const first = join(tmpdir(), 'broken one');
+    const second = join(tmpdir(), 'broken-two');
+    const paths = [first, second];
+    expect(
+      parseInternalRootMigrationOptions([
+        '--brand=canopy',
+        '--apply',
+        '--abandon-checkout',
+        first,
+        `--abandon-checkout=${second}`,
+      ]).abandonCheckouts,
+    ).toEqual(paths);
+    expect(
+      selectInternalRootArchiveAbandonments([], paths, 'Checkout'),
+    ).toEqual(paths);
+    expect(() =>
+      selectInternalRootArchiveAbandonments([first], paths, 'Checkout'),
+    ).toThrow('Checkout abandonment is already frozen');
+  });
+
+  test('accepts explicit restart options separately from completed rebuild', () => {
+    expect(
+      parseInternalRootMigrationOptions([
+        '--brand=canopy',
+        '--apply',
+        '--restart',
+      ]),
+    ).toMatchObject({ apply: true, restart: true, rebuild: false });
+    for (const args of [
+      ['--restart'],
+      ['--inventory', '--restart'],
+      ['--skip-migration', '--restart'],
+      ['--apply', '--restart', '--rebuild'],
+    ])
+      expect(() =>
+        parseInternalRootMigrationOptions(['--brand=canopy', ...args]),
+      ).toThrow('Usage:');
+  });
+
+  test('restart accepts all opt-ins and retains all recovery flags in usage', () => {
+    const checkout = join(tmpdir(), 'broken checkout');
+    for (const optIn of [
+      ['--abandon-checkout', checkout],
+      [`--abandon-checkout=${checkout}`],
+    ])
+      expect(
+        parseInternalRootMigrationOptions([
+          '--brand=canopy',
+          '--apply',
+          '--restart',
+          '--abandon-archive=fixture/crow',
+          '--abandon-commit',
+          '80724',
+          '--abandon-commit=80725',
+          ...optIn,
+        ]),
+      ).toMatchObject({
+        restart: true,
+        abandonArchives: ['fixture/crow'],
+        abandonCommits: [80724, 80725],
+        abandonCheckouts: [checkout],
+      });
+    for (const flag of [
+      '--restart',
+      '--rebuild',
+      '--abandon-archive',
+      '--abandon-commit',
+      '--abandon-checkout',
+    ])
+      expect(() => parseInternalRootMigrationOptions([])).toThrow(flag);
+  });
+
   test.each(['--inventory', '--apply'])(
     'accepts repeated abandonment for %s',
     (mode) => {
@@ -685,6 +762,36 @@ describe('offline operator option admission', () => {
       ).toEqual(['fixture/crow', 'fixture/gnat-2']);
     },
   );
+  test.each(['--inventory', '--apply'])(
+    'accepts repeated commit opt-ins for %s',
+    (mode) => {
+      expect(
+        parseInternalRootMigrationOptions([
+          '--brand=canopy',
+          mode,
+          '--abandon-commit',
+          '80724',
+          '--abandon-commit=80725',
+        ]).abandonCommits,
+      ).toEqual([80724, 80725]);
+    },
+  );
+  test.each([
+    ['--abandon-commit'],
+    ['--abandon-commit='],
+    ['--abandon-commit=0'],
+    ['--abandon-commit=-1'],
+    ['--abandon-commit=1.5'],
+    ['--abandon-commit=01'],
+    ['--abandon-commit=9007199254740992'],
+    ['--abandon-commit=oops'],
+    ['--abandon-commit=1', '--abandon-commit', '1'],
+    ['--skip-migration', '--abandon-commit=1'],
+  ])('refuses invalid commit opt-ins %j', (...args) => {
+    expect(() =>
+      parseInternalRootMigrationOptions(['--brand=canopy', ...args]),
+    ).toThrow('Usage:');
+  });
   test.each([
     ['--skip-migration', '--source-dir=/selected'],
     ['--skip-migration', '--apply'],
@@ -694,6 +801,11 @@ describe('offline operator option admission', () => {
     ['--source-dir='],
     ['--source-dir=/one', '--source-dir=/two'],
     ['--apply', '--apply'],
+    ['--abandon-checkout'],
+    ['--abandon-checkout='],
+    ['--abandon-checkout=relative/path'],
+    ['--abandon-checkout=/one', '--abandon-checkout=/one'],
+    ['--skip-migration', '--abandon-checkout=/one'],
     ['--abandon-archive'],
     ['--abandon-archive='],
     ['--abandon-archive', '../crow'],
@@ -1723,6 +1835,865 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     },
   );
 
+  (windows ? test.skip : test)(
+    'Linux apply-peak census refuses inventory and first apply before any journal, including external Git roots',
+    async () => {
+      await source();
+      const externalRoot = '/external/.git';
+      const externalFile = `${externalRoot}/worktrees/installed/gitdir`;
+      const coldExternalFiles = jest.fn(() => Promise.resolve([externalFile]));
+      const save = jest.spyOn(worker, 'saveJournal');
+      const build = jest.spyOn(worker, 'build');
+      const io: authorityHost.LinuxColdIO = {
+        text: (file) => {
+          if (file === '/proc/self/mountinfo')
+            return Promise.resolve('10 0 8:1 / / rw - ext4 /dev/sda1 rw\n');
+          return Promise.reject(new Error(`Unexpected proc read ${file}`));
+        },
+        entry: (file) =>
+          Promise.resolve({
+            dev: 2049n,
+            ino:
+              file === identity.source ? 1n : file === externalRoot ? 2n : 3n,
+            mode:
+              file === identity.source || file === externalRoot
+                ? 0o040700n
+                : 0o100600n,
+            ctimeNs: 0n,
+            mtimeNs: 0n,
+          }),
+        list: (file) =>
+          Promise.resolve(
+            file === identity.source ? ['preferences.json'] : ['one', 'two'],
+          ),
+        pin: () => Promise.reject(new Error('Unexpected pin')),
+        identity: () => Promise.reject(new Error('Unexpected identity')),
+        link: () => Promise.reject(new Error('Unexpected link')),
+      };
+      const linuxWorker: InternalRootMigrationWorker = {
+        ...worker,
+        os: 'linux',
+        proveCold: async (_identity, externalFiles) => {
+          expect(externalFiles).toEqual([externalFile]);
+          try {
+            await authorityHost.observeLinuxColdProcesses({
+              io,
+              uid: 1000,
+              roots: [identity.source, externalRoot],
+              census: { predictApplyPeak: true, entryCap: 4104 },
+            });
+          } catch (error) {
+            throw new InternalRootMigrationRefused(
+              'cold-proof-unavailable',
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        },
+      };
+      const scopedRepairs = { ...repairs, coldExternalFiles };
+      const result = await migrateInternalRoot(
+        linuxWorker,
+        identity,
+        { apply: false, declareInternal: true },
+        scopedRepairs,
+      );
+      const recovery: unknown = expect.stringContaining('cap=4104');
+      expect(result).toMatchObject({
+        kind: 'inventory',
+        journal: null,
+        coldProof: {
+          kind: 'refused',
+          reason: 'cold-proof-unavailable',
+          recovery,
+        },
+      });
+      await expect(
+        migrateInternalRoot(linuxWorker, identity, apply, scopedRepairs),
+      ).rejects.toMatchObject({ reason: 'cold-proof-unavailable' });
+      expect(coldExternalFiles).toHaveBeenCalledTimes(2);
+      expect(save).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      expect(recover).not.toHaveBeenCalled();
+      expect(await worker.readJournal(identity)).toBeNull();
+      expect(existsSync(identity.destination)).toBe(false);
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    {
+      resume: true,
+      discover: true,
+      settleSourceFirst: true,
+      splitScope: false,
+    },
+    {
+      resume: true,
+      discover: false,
+      settleSourceFirst: true,
+      splitScope: false,
+    },
+    {
+      resume: false,
+      discover: false,
+      settleSourceFirst: true,
+      splitScope: false,
+    },
+    {
+      resume: false,
+      discover: false,
+      settleSourceFirst: false,
+      splitScope: false,
+    },
+    { resume: true, discover: true, settleSourceFirst: true, splitScope: true },
+  ])(
+    'Linux renews apply-peak admission before staging when external scope expands (resume=$resume, discover=$discover, settleSourceFirst=$settleSourceFirst, splitScope=$splitScope)',
+    async ({ resume, discover, settleSourceFirst, splitScope }) => {
+      await source();
+      const externalRoot = join(home, 'repository', '.git');
+      const externalFile = join(externalRoot, 'gitdir');
+      await mkdir(externalRoot, { recursive: true });
+      await writeFile(externalFile, 'retained external evidence');
+      const priorRoot = join(home, 'prior-repository', '.git');
+      const priorFile = join(priorRoot, 'gitdir');
+      const priorFiles = splitScope ? [priorFile] : [];
+      if (splitScope) {
+        await mkdir(priorRoot, { recursive: true });
+        await writeFile(priorFile, 'retained journaled evidence');
+      }
+      const inventory = await worker.inventory(identity);
+      if (resume) {
+        const release = await worker.coordinate(identity);
+        try {
+          await worker.saveJournal({
+            version: 7,
+            transactionId: worker.transactionId(),
+            identity,
+            internalDeclaration: true,
+            phase: 'prepared',
+            inventory,
+            externalFiles: priorFiles,
+            stagingRoot: worker.stagingRoot(identity),
+            secureRelocation: 'pending',
+          });
+        } finally {
+          await release();
+        }
+      }
+      const journalPath = join(identity.coordination, 'journal.json');
+      const before = resume ? await readFile(journalPath, 'utf8') : null;
+      const roots = new Set([
+        identity.source,
+        identity.destination,
+        identity.historicalSecure,
+        identity.coordination,
+        worker.stagingRoot(identity),
+        externalRoot,
+        ...(splitScope ? [priorRoot] : []),
+      ]);
+      const inodes = new Map<string, bigint>();
+      const mounts =
+        '10 0 8:1 / / rw - ext4 /dev/sda1 rw\n11 10 0:1 / /proc rw - proc proc rw\n';
+      const io: authorityHost.LinuxColdIO = {
+        text: (file) =>
+          Promise.resolve().then(() => {
+            if (file.endsWith('/mountinfo')) return mounts;
+            if (file === '/proc/sys/kernel/random/boot_id')
+              return '01234567-0123-0123-0123-0123456789ab\n';
+            if (file.endsWith('/status'))
+              return 'Uid:\t1000\t1000\t1000\t1000\n';
+            if (file.endsWith('/stat'))
+              return `${process.pid} (node) S 1 ${Array(17).fill('0').join(' ')} 42 0\n`;
+            throw new Error(`Unexpected proc read ${file}`);
+          }),
+        entry: (file) =>
+          Promise.resolve().then(() => {
+            const ino = inodes.get(file) ?? BigInt(inodes.size + 1);
+            inodes.set(file, ino);
+            return {
+              dev: 2049n,
+              ino,
+              mode: roots.has(file) ? 0o040700n : 0o100600n,
+              ctimeNs: 0n,
+              mtimeNs: 0n,
+            };
+          }),
+        list: (file) =>
+          Promise.resolve().then(() => {
+            if (file === '/proc' || file.endsWith('/task'))
+              return [String(process.pid)];
+            if (file === externalRoot || (splitScope && file === priorRoot))
+              return Array.from(
+                { length: splitScope ? 600 : 1000 },
+                (_, index) => `entry-${index}`,
+              );
+            return ['entry'];
+          }),
+        pin: () => Promise.resolve({ dev: 2049n, ino: 999999n, mountId: '10' }),
+        identity: () => Promise.resolve({ dev: 2049n, ino: 999999n }),
+        link: (file) =>
+          Promise.resolve().then(() => {
+            const namespace = /\/ns\/(mnt|user|pid)$/.exec(file)?.[1];
+            if (namespace) return `${namespace}:[123]`;
+            if (file.endsWith('/exe')) return process.execPath;
+            if (file.endsWith('/cwd') || file.endsWith('/root')) return '/';
+            throw new Error(`Unexpected proc link ${file}`);
+          }),
+      };
+      const observe = authorityHost.observeLinuxColdProcesses;
+      const observation = jest
+        .spyOn(authorityHost, 'observeLinuxColdProcesses')
+        .mockImplementation((options) =>
+          observe({
+            ...options,
+            io,
+            uid: 1000,
+            census: { ...options?.census, entryCap: 6000 },
+          }),
+        );
+      const platform = jest
+        .spyOn(hostPlatform, 'hostOperatingSystem')
+        .mockReturnValue('linux');
+      try {
+        const nativeWorker = createInternalRootMigrationWorker({
+          filesystemHost: host,
+          ...filesystemOptions,
+          recoverW5: recover,
+          nativeColdHost: { kind: 'repository', root: home },
+          executableBrands: [canopy],
+        });
+        // Exercise native admission, not the host-dependent Linux copy preflight.
+        nativeWorker.inventory = (): ReturnType<
+          InternalRootMigrationWorker['inventory']
+        > => Promise.resolve(inventory);
+        nativeWorker.space = (): ReturnType<
+          InternalRootMigrationWorker['space']
+        > => Promise.resolve({ requiredBytes: 0, availableBytes: 1 });
+        if (splitScope) {
+          // Each root fits alone; only the combined scope exceeds admission.
+          await expect(
+            nativeWorker.proveCold(identity, priorFiles),
+          ).resolves.toBeUndefined();
+          await expect(
+            nativeWorker.proveCold(identity, [externalFile]),
+          ).resolves.toBeUndefined();
+        }
+        const build = jest
+          .spyOn(nativeWorker, 'build')
+          .mockImplementation(() =>
+            Promise.reject(
+              new Error('Construction began before peak-capacity refusal'),
+            ),
+          );
+        const expose = jest.spyOn(nativeWorker, 'exposeStaging');
+        const save = jest.spyOn(nativeWorker, 'saveJournal');
+        const scopedRepairs: InternalRootRepairs = {
+          ...repairs,
+          settleSourceFirst,
+          coldExternalFiles: () =>
+            Promise.resolve(discover ? [externalFile] : []),
+          prepare: () =>
+            Promise.resolve({ kind: 'ready', externalFiles: [externalFile] }),
+        };
+        const recovery: unknown = expect.stringContaining('cap=6000');
+        await expect(
+          migrateInternalRoot(nativeWorker, identity, apply, scopedRepairs),
+        ).rejects.toMatchObject({
+          reason: 'cold-proof-unavailable',
+          recovery,
+        });
+        expect(build).not.toHaveBeenCalled();
+        expect(expose).not.toHaveBeenCalled();
+        expect(existsSync(nativeWorker.stagingRoot(identity))).toBe(false);
+        expect(existsSync(join(identity.coordination, 'staging'))).toBe(false);
+        expect(existsSync(identity.destination)).toBe(false);
+        const journal = await worker.readJournal(identity);
+        if (resume || settleSourceFirst)
+          expect(journal?.phase).toBe('prepared');
+        else expect(journal).toBeNull();
+        if (before !== null)
+          expect(await readFile(journalPath, 'utf8')).toBe(before);
+        if (discover || !settleSourceFirst) {
+          expect(save).not.toHaveBeenCalled();
+          expect(recover).not.toHaveBeenCalled();
+        } else expect(recover).toHaveBeenCalledTimes(1);
+        expect(await readFile(externalFile, 'utf8')).toBe(
+          'retained external evidence',
+        );
+        if (splitScope)
+          expect(await readFile(priorFile, 'utf8')).toBe(
+            'retained journaled evidence',
+          );
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('{"theme":"dark"}');
+      } finally {
+        platform.mockRestore();
+        observation.mockRestore();
+      }
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    { withSibling: false, relativeLinks: false, internalCommon: false },
+    { withSibling: true, relativeLinks: false, internalCommon: false },
+    { withSibling: true, relativeLinks: true, internalCommon: false },
+    { withSibling: true, relativeLinks: true, internalCommon: true },
+  ])(
+    'Linux pre-journal Git census matches journaled backlink roots ($withSibling sibling, $relativeLinks relative, $internalCommon internal)',
+    async ({ withSibling, relativeLinks, internalCommon }) => {
+      await source();
+      const repository = join(
+        internalCommon ? identity.source : home,
+        'repository',
+      );
+      const standalone = join(home, 'standalone');
+      const installed = join(identity.source, 'checkout');
+      const sibling = join(home, 'sibling');
+      const git = async (
+        cwd: string,
+        args: readonly string[],
+      ): Promise<string> =>
+        (
+          await promisify(execFile)('git', ['--no-optional-locks', ...args], {
+            cwd,
+          })
+        ).stdout;
+      for (const root of [repository, standalone]) {
+        await mkdir(root);
+        await git(root, ['init']);
+        await git(root, [
+          '-c',
+          'user.name=Fixture',
+          '-c',
+          'user.email=fixture@example.test',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'fixture',
+        ]);
+      }
+      await git(repository, ['worktree', 'add', '-b', 'installed', installed]);
+      if (withSibling)
+        await git(repository, ['worktree', 'add', '-b', 'sibling', sibling]);
+      const prunable = join(home, 'prunable');
+      await git(repository, ['worktree', 'add', '-b', 'prunable', prunable]);
+      await rm(prunable, { recursive: true });
+      if (relativeLinks)
+        for (const checkout of [installed, ...(withSibling ? [sibling] : [])]) {
+          const admin = join(
+            repository,
+            '.git',
+            'worktrees',
+            basename(checkout),
+          );
+          const dotGit = join(checkout, '.git');
+          await writeFile(dotGit, `gitdir: ${relative(checkout, admin)}\n`);
+          await writeFile(
+            join(admin, 'gitdir'),
+            `${relative(admin, dotGit)}\n`,
+          );
+        }
+      const metadata = join(identity.source, 'workspaces', 'fixture');
+      await mkdir(metadata, { recursive: true });
+      await writeFile(
+        join(metadata, 'workspace.json'),
+        JSON.stringify({ sourceRepoPath: standalone }),
+      );
+      const plan = await prepareRelocationGit(
+        git,
+        [repository, standalone, installed, ...(withSibling ? [sibling] : [])],
+        { portableFilesystem: true },
+      );
+      const journaledFiles = plan.backlinks
+        .map(({ path }) => path)
+        .filter((file) => !isWithin(identity.source, file));
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      if (!live.coldExternalFiles) throw new Error('Missing cold Git scope');
+      const files = await live.coldExternalFiles({
+        identity,
+        transactionId: 'fixture',
+        inventory: await worker.inventory(identity),
+        workingRoot: identity.source,
+        externalFiles: [],
+      });
+      expect(new Set(files)).toEqual(new Set(journaledFiles));
+      const observed: (readonly string[])[] = [];
+      const observation = jest
+        .spyOn(authorityHost, 'observeLinuxColdProcesses')
+        .mockImplementation((options) => {
+          observed.push(options?.roots ?? []);
+          return Promise.reject(
+            new InternalRootMigrationRefused(
+              'cold-proof-unavailable',
+              'fixture stopped after census root mapping',
+            ),
+          );
+        });
+      const platform = jest
+        .spyOn(hostPlatform, 'hostOperatingSystem')
+        .mockReturnValue('linux');
+      try {
+        const nativeWorker = createInternalRootMigrationWorker({
+          filesystemHost: host,
+          recoverW5: recover,
+          nativeColdHost: { kind: 'repository', root: home },
+        });
+        for (const externalFiles of [files, journaledFiles])
+          await expect(
+            nativeWorker.proveCold(identity, externalFiles),
+          ).rejects.toThrow('fixture stopped after census root mapping');
+        const [before, after] = observed;
+        expect(new Set(before)).toEqual(new Set(after));
+        if (internalCommon)
+          expect(before).not.toContain(join(repository, '.git'));
+        else expect(before).toContain(join(repository, '.git'));
+        expect(before).not.toContain(repository);
+        expect(before).not.toContain(standalone);
+        expect(before).not.toContain(join(standalone, '.git'));
+        expect(before).not.toContain(prunable);
+        if (withSibling) expect(before).toContain(sibling);
+        else expect(before).not.toContain(sibling);
+      } finally {
+        platform.mockRestore();
+        observation.mockRestore();
+      }
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    'unindexed',
+    'indexed',
+    'unreadable index',
+    'pending owner',
+    'malformed link',
+    'linked admin directory',
+    'mismatched backlink',
+  ])(
+    'Linux Git hint respects canonical workspace membership in peak prediction: %s',
+    async (scenario) => {
+      await source();
+      const checkout = join(home, 'unrelated-checkout');
+      const common = join(home, 'repository/.git');
+      const admin = join(common, 'worktrees/external');
+      await mkdir(checkout);
+      await mkdir(admin, { recursive: true });
+      if (scenario === 'linked admin directory') {
+        await mkdir(join(checkout, '.git'));
+        await writeFile(join(checkout, '.git/commondir'), `${common}\n`);
+      } else
+        await writeFile(
+          join(checkout, '.git'),
+          scenario === 'malformed link' ? 'opaque\0' : `gitdir: ${admin}\n`,
+        );
+      await writeFile(join(admin, 'commondir'), '../..\n');
+      await writeFile(
+        join(admin, 'gitdir'),
+        `${join(checkout, scenario === 'mismatched backlink' ? 'other' : '.git')}\n`,
+      );
+      const metadata = join(identity.source, 'workspaces/fixture');
+      await mkdir(metadata, { recursive: true });
+      const manifest = JSON.stringify({ version: 1, repoPath: checkout });
+      await writeFile(join(metadata, 'workspace.json'), manifest);
+      if (scenario === 'unindexed') {
+        await mkdir(join(metadata, 'checkout'));
+        await writeFile(join(metadata, 'checkout/.git'), `gitdir: ${admin}\n`);
+      }
+      await writeFile(
+        join(identity.source, 'workspaces/index.json'),
+        scenario === 'unreadable index'
+          ? '{partial W5 image'
+          : JSON.stringify({
+              version: 1,
+              workspaces:
+                scenario === 'unindexed'
+                  ? []
+                  : [
+                      {
+                        id: 'fixture',
+                        name: 'Fixture',
+                        type: 'single-repo',
+                        color: 'blue',
+                      },
+                    ],
+            }),
+      );
+      if (scenario === 'pending owner') {
+        await mkdir(join(identity.source, 'w5'));
+        const log = W5CommitLog.open(
+          join(identity.source, 'w5/commit-log.sqlite'),
+        );
+        try {
+          log.commit({
+            operation: 'fixture.pending-owner',
+            advance: [{ kind: 'workspace', workspaceId: 'fixture' }],
+            files: [
+              {
+                path: join(metadata, 'workspace.json'),
+                previousFingerprint: null,
+                contents: manifest,
+              },
+            ],
+            outcome: {},
+          });
+        } finally {
+          log.close();
+        }
+      }
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      const proof = jest.fn((): Promise<void> => Promise.resolve());
+      const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        const result = await migrateInternalRoot(
+          { ...worker, os: 'linux', proveCold: proof },
+          identity,
+          { apply: false, declareInternal: true },
+          {
+            ...repairs,
+            coldExternalFiles: (context) => {
+              if (!live.coldExternalFiles) throw new Error('Missing Git scope');
+              return live.coldExternalFiles(context);
+            },
+          },
+        );
+        expect(result).toMatchObject({ kind: 'inventory', journal: null });
+        expect(proof).toHaveBeenCalledTimes(1);
+        if (scenario === 'indexed') {
+          expect(proof).toHaveBeenCalledWith(
+            identity,
+            expect.arrayContaining([
+              join(checkout, '.git'),
+              join(admin, 'gitdir'),
+              join(admin, 'commondir'),
+            ]),
+          );
+        } else {
+          expect(proof).toHaveBeenCalledWith(identity, []);
+        }
+        if (scenario === 'indexed' || scenario === 'unindexed')
+          expect(warning).not.toHaveBeenCalled();
+        else
+          expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+        expect(await readFile(join(metadata, 'workspace.json'), 'utf8')).toBe(
+          manifest,
+        );
+        expect(await worker.readJournal(identity)).toBeNull();
+        expect(existsSync(worker.stagingRoot(identity))).toBe(false);
+        expect(recover).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
+
+  (windows ? test.skip : test)(
+    'Linux scope skips unsettled current/pending owner hints without freezing owners or writing source evidence',
+    async () => {
+      await source();
+      const physicalRepo = join(home, 'physical');
+      const currentRepo = join(home, 'current');
+      const pendingRepo = join(home, 'pending');
+      const repositories = [physicalRepo, currentRepo, pendingRepo];
+      const physical = join(identity.source, 'checkout');
+      const expectedFiles: string[] = [];
+      for (const repository of repositories) {
+        const admin = join(repository, '.git', 'worktrees', 'installed');
+        const checkout =
+          repository === physicalRepo
+            ? physical
+            : join(home, `${basename(repository)}-linked`);
+        await mkdir(admin, { recursive: true });
+        await mkdir(checkout);
+        const dotGit = join(checkout, '.git');
+        await writeFile(dotGit, `gitdir: ${admin}\n`);
+        await writeFile(join(admin, 'gitdir'), `${dotGit}\n`);
+        await writeFile(join(admin, 'commondir'), '../..\n');
+        if (repository === physicalRepo)
+          expectedFiles.push(join(admin, 'gitdir'), join(admin, 'commondir'));
+      }
+      const metadata = join(identity.source, 'workspaces', 'fixture');
+      await mkdir(metadata, { recursive: true });
+      await writeFile(
+        join(identity.source, 'workspaces', 'index.json'),
+        '{partial W5 image',
+      );
+      await writeFile(
+        join(metadata, 'workspace.json'),
+        JSON.stringify({ sourceRepoPath: currentRepo }),
+      );
+      await mkdir(join(identity.source, 'w5'));
+      const log = W5CommitLog.open(
+        join(identity.source, 'w5', 'commit-log.sqlite'),
+      );
+      try {
+        log.commit({
+          operation: 'fixture.pending-owner',
+          advance: [{ kind: 'workspaces' }],
+          files: [
+            {
+              path: join(metadata, 'workspace.json'),
+              previousFingerprint: null,
+              contents: JSON.stringify({ repos: [{ repoPath: pendingRepo }] }),
+            },
+          ],
+          outcome: {},
+        });
+      } finally {
+        log.close();
+      }
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      const before = await worker.inventory(identity);
+      const logBefore = await readFile(
+        join(identity.source, 'w5', 'commit-log.sqlite'),
+      );
+      const prepare = jest.fn(() => {
+        expect(recover).toHaveBeenCalledTimes(1);
+        return Promise.reject(
+          new Error('reached preparation after W5 recovery'),
+        );
+      });
+      const proof = jest.fn(
+        (_identity: InternalRootIdentity, files?: readonly string[]) => {
+          if (!recover.mock.calls.length)
+            expect(new Set(files)).toEqual(new Set(expectedFiles));
+          return Promise.resolve();
+        },
+      );
+      const linux = { ...worker, os: 'linux' as const, proveCold: proof };
+      const selected = { ...live, prepare };
+      const result = await migrateInternalRoot(
+        linux,
+        identity,
+        { apply: false, declareInternal: true },
+        selected,
+      );
+      expect(result).toMatchObject({
+        kind: 'inventory',
+        journal: null,
+        coldProof: { kind: 'ready' },
+      });
+      expect(await worker.inventory(identity)).toEqual(before);
+      expect(
+        await readFile(join(identity.source, 'w5', 'commit-log.sqlite')),
+      ).toEqual(logBefore);
+      expect(recover).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      await expect(
+        migrateInternalRoot(linux, identity, apply, selected),
+      ).rejects.toThrow('reached preparation after W5 recovery');
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect((await worker.readJournal(identity))?.phase).toBe('prepared');
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    'opaque W5',
+    'abandoned retained checkout',
+    'abandoned quarantine',
+    'malformed external link',
+  ])(
+    'Linux Git scope is a lower-bound hint without excluding census entries: %s',
+    async (scenario) => {
+      await source();
+      const abandoned = scenario.startsWith('abandoned');
+      if (abandoned)
+        await strandedArchiveFixture(identity.source, 'P0', 'crow');
+      const malformed =
+        scenario === 'opaque W5'
+          ? join(identity.source, 'w5/.git')
+          : abandoned
+            ? join(
+                identity.source,
+                'workspaces/fixture/worktrees',
+                scenario === 'abandoned quarantine'
+                  ? '.crow.archive-quarantine'
+                  : 'crow',
+                '.git',
+              )
+            : join(home, 'external/.git');
+      await mkdir(dirname(malformed), { recursive: true });
+      const bytes = Buffer.from('Opaque history\u0000');
+      await writeFile(malformed, bytes);
+      if (scenario === 'malformed external link') {
+        const metadata = join(identity.source, 'workspaces/fixture');
+        await mkdir(metadata, { recursive: true });
+        await writeFile(
+          join(identity.source, 'workspaces/index.json'),
+          JSON.stringify({
+            version: 1,
+            workspaces: [
+              {
+                id: 'fixture',
+                name: 'Fixture',
+                type: 'single-repo',
+                color: 'blue',
+              },
+            ],
+          }),
+        );
+        await writeFile(
+          join(metadata, 'workspace.json'),
+          JSON.stringify({ version: 1, repoPath: dirname(malformed) }),
+        );
+      }
+      // A broken hint must not discard other discoverable external roots.
+      const checkout = join(identity.source, 'valid-checkout');
+      const admin = join(home, 'valid/.git/worktrees/installed');
+      await mkdir(checkout);
+      await mkdir(admin, { recursive: true });
+      await writeFile(join(checkout, '.git'), `gitdir: ${admin}\n`);
+      await writeFile(join(admin, 'commondir'), '../..\n');
+      await writeFile(join(admin, 'gitdir'), `${join(checkout, '.git')}\n`);
+      const tree = new Map<string, { ino: bigint; names: string[] | null }>();
+      async function snapshot(file: string): Promise<void> {
+        const state = await lstat(file);
+        const names = state.isDirectory() ? await readdir(file) : null;
+        tree.set(file, { ino: BigInt(tree.size + 1), names });
+        for (const name of names ?? []) await snapshot(join(file, name));
+      }
+      await snapshot(identity.source);
+      const counted = new Map<string, number>();
+      const mounts =
+        '10 0 8:1 / / rw - ext4 /dev/sda1 rw\n11 10 0:1 / /proc rw - proc proc rw\n';
+      const io: authorityHost.LinuxColdIO = {
+        text: (file) => {
+          if (file.endsWith('/mountinfo')) return Promise.resolve(mounts);
+          if (file === '/proc/sys/kernel/random/boot_id')
+            return Promise.resolve('01234567-0123-0123-0123-0123456789ab\n');
+          if (file.endsWith('/status'))
+            return Promise.resolve('Uid:\t1000\t1000\t1000\t1000\n');
+          if (file.endsWith('/stat'))
+            return Promise.resolve(
+              `${process.pid} (node) S 1 ${Array(17).fill('0').join(' ')} 42 0\n`,
+            );
+          return Promise.reject(new Error(`Unexpected proc read ${file}`));
+        },
+        entry: (file) => {
+          const entry = tree.get(file);
+          if (!entry) return Promise.reject(new Error(`Missing entry ${file}`));
+          counted.set(file, (counted.get(file) ?? 0) + 1);
+          return Promise.resolve({
+            dev: 2049n,
+            ino: entry.ino,
+            mode: entry.names === null ? 0o100600n : 0o040700n,
+            ctimeNs: 0n,
+            mtimeNs: 0n,
+          });
+        },
+        list: (file) =>
+          Promise.resolve(
+            tree.get(file)?.names ??
+              (file === '/proc' || file.endsWith('/task')
+                ? [String(process.pid)]
+                : ['entry']),
+          ),
+        pin: () => Promise.resolve({ dev: 2049n, ino: 999999n, mountId: '10' }),
+        identity: () => Promise.resolve({ dev: 2049n, ino: 999999n }),
+        link: (file) => {
+          const namespace = /\/ns\/(mnt|user|pid)$/.exec(file)?.[1];
+          if (namespace) return Promise.resolve(`${namespace}:[123]`);
+          if (file.endsWith('/exe')) return Promise.resolve(process.execPath);
+          if (file.endsWith('/cwd') || file.endsWith('/root'))
+            return Promise.resolve('/');
+          return Promise.reject(new Error(`Unexpected proc link ${file}`));
+        },
+      };
+      const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        for (const selected of abandoned ? [false, true] : [false]) {
+          counted.clear();
+          const live = createInternalRootRelocationRepairs({
+            ...nativeRepairOptions(),
+            durability: desktopW5Durability,
+            abandonArchives: selected ? ['fixture/crow'] : [],
+          });
+          const proof = jest.fn(async (): Promise<void> => {
+            await authorityHost.observeLinuxColdProcesses({
+              io,
+              uid: 1000,
+              roots: [identity.source],
+              census: { predictApplyPeak: true },
+            });
+          });
+          const result = await migrateInternalRoot(
+            { ...worker, os: 'linux', proveCold: proof },
+            identity,
+            { apply: false, declareInternal: true },
+            {
+              ...repairs,
+              coldExternalFiles: (context) => {
+                if (!live.coldExternalFiles)
+                  throw new Error('Missing Git scope');
+                return live.coldExternalFiles(context);
+              },
+            },
+          );
+          expect(result).toMatchObject({
+            kind: 'inventory',
+            journal: null,
+            coldProof: { kind: 'ready' },
+          });
+          expect(proof).toHaveBeenCalledWith(
+            identity,
+            expect.arrayContaining([
+              join(admin, 'gitdir'),
+              join(admin, 'commondir'),
+            ]),
+          );
+          for (const file of tree.keys())
+            expect(counted.get(file)).toBeGreaterThanOrEqual(2);
+        }
+        if (scenario === 'malformed external link')
+          expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+        else expect(warning).not.toHaveBeenCalled();
+        expect(await readFile(malformed)).toEqual(bytes);
+        expect(await worker.readJournal(identity)).toBeNull();
+        expect(existsSync(worker.stagingRoot(identity))).toBe(false);
+        if (scenario === 'malformed external link') {
+          const externalAdmin = join(
+            home,
+            'external-admin/.git/worktrees/linked',
+          );
+          await mkdir(externalAdmin, { recursive: true });
+          await writeFile(malformed, `gitdir: ${externalAdmin}\n`);
+          await writeFile(join(externalAdmin, 'commondir'), '../..\n');
+          await writeFile(join(externalAdmin, 'gitdir'), `${malformed}\n`);
+          warning.mockClear();
+          const live = createInternalRootRelocationRepairs({
+            ...nativeRepairOptions(),
+            durability: desktopW5Durability,
+          });
+          if (!live.coldExternalFiles) throw new Error('Missing Git scope');
+          const files = await live.coldExternalFiles({
+            identity,
+            transactionId: 'fixture',
+            inventory: await worker.inventory(identity),
+            workingRoot: identity.source,
+            externalFiles: [],
+          });
+          expect(files).toEqual(
+            expect.arrayContaining([
+              malformed,
+              join(externalAdmin, 'gitdir'),
+              join(externalAdmin, 'commondir'),
+            ]),
+          );
+          expect(warning).not.toHaveBeenCalled();
+        }
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
+
   test('rollback sidecar without its log refuses inventory and settlement', async () => {
     await source();
     await mkdir(join(identity.source, 'w5'), { mode: 0o700 });
@@ -2101,10 +3072,40 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     }
     const before = await readFile(path);
     expect(await diagnoseInternalRootW5(identity.source)).toEqual([
-      'W5 pending commit 1: fixture.applied-history state=committed',
+      'W5 pending commit 1: fixture.applied-history state=committed paths=["workspaces/index.json"] reason="not recorded"',
       'W5 reservation pending-fixture: core.worktree.create state=reserved',
     ]);
     expect(await readFile(path)).toEqual(before);
+  });
+
+  test('inventory prints every pending commit even when the summary is bounded', async () => {
+    await source();
+    await createPrivateMigrationDirectory(join(identity.source, 'w5'), host);
+    const log = W5CommitLog.open(join(identity.source, 'w5/commit-log.sqlite'));
+    const ids: number[] = [];
+    try {
+      for (let i = 0; i < 45; i++) {
+        const { commitId } = log.commit({
+          operation: 'w5.worktree_list.write',
+          advance: [],
+          files: [],
+          outcome: {},
+        });
+        log.markCommitRecoveryRequired(commitId, { error: 'ENOSPC' });
+        ids.push(commitId);
+      }
+    } finally {
+      log.close();
+    }
+    const output = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      await diagnoseInternalRootW5(identity.source);
+      const details = output.mock.calls.map(([text]) => String(text)).join('');
+      for (const id of ids)
+        expect(details).toContain(`--abandon-commit ${id}\n`);
+    } finally {
+      output.mockRestore();
+    }
   });
 
   test('inventory refuses a schema-v2 log whose upgrade cannot complete', async () => {
@@ -2633,6 +3634,190 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     expect(await git('worktree', 'list', '--porcelain', '-z')).toBe(before);
   });
 
+  test.each([
+    'external-pruned',
+    'fresh',
+    'building',
+    'removed',
+    'publishing-sibling',
+    'publishing-destination',
+    'complete-pending',
+    'restoring-external',
+    'rebuilding',
+  ] as const)(
+    'restarts real Git repairs and retains pruned/removed checkout data (%s)',
+    async (phase) => {
+      const restart = phase !== 'fresh';
+      const pruned = [
+        'fresh',
+        'building',
+        'removed',
+        'external-pruned',
+      ].includes(phase);
+      const externalPruned = phase === 'external-pruned';
+      await source();
+      const repository = externalPruned
+        ? join(identity.source, 'managed-repo')
+        : join(home, 'external-repo');
+      const metadata = join(identity.source, 'workspaces', 'fixture');
+      const checkout = externalPruned
+        ? join(home, 'external-checkout')
+        : join(metadata, 'worktrees', 'pruned-checkout\u00a0');
+      const publishedCheckout = externalPruned
+        ? checkout
+        : join(identity.destination, relative(identity.source, checkout));
+      await mkdir(metadata, { recursive: true, mode: 0o700 });
+      await writeFile(
+        join(identity.source, 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: [
+            {
+              id: 'fixture',
+              name: 'Fixture',
+              type: 'multi-repo',
+              color: 'blue',
+            },
+          ],
+        }),
+      );
+      await writeFile(
+        join(metadata, 'workspace.json'),
+        JSON.stringify({
+          version: 1,
+          id: 'fixture',
+          repos: [{ id: 'repo', repoPath: repository }],
+        }),
+      );
+      await writeFile(
+        join(metadata, 'worktrees.json'),
+        JSON.stringify({
+          version: 1,
+          worktrees: [
+            {
+              id: 'pruned-checkout',
+              branchName: 'pruned-fixture',
+              createdAt: '2026-11-10T00:00:00.000Z',
+              creation: {
+                checkouts: [
+                  { repositoryPath: repository, checkoutPath: checkout },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      await mkdir(repository);
+      const git = async (...args: string[]): Promise<string> =>
+        (
+          await promisify(execFile)('git', ['--no-optional-locks', ...args], {
+            cwd: repository,
+          })
+        ).stdout;
+      await git('init');
+      await git(
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'fixture',
+      );
+      await git('worktree', 'add', '-b', 'pruned-fixture', checkout);
+      await writeFile(join(checkout, 'uncommitted'), 'preserve this work');
+      const admin = (
+        await git('-C', checkout, 'rev-parse', '--absolute-git-dir')
+      ).replace(/\r?\n$/, '');
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      if (restart) {
+        if (pruned) {
+          await expect(
+            migrateInternalRoot(worker, identity, apply, {
+              ...repairs,
+              repair: async (context) => {
+                await repairs.repair(context);
+                throw new Error('unsealed repair stopped');
+              },
+            }),
+          ).rejects.toThrow('unsealed repair stopped');
+        } else {
+          await expect(
+            migrateInternalRoot(
+              {
+                ...worker,
+                relocateSecure: () =>
+                  Promise.reject(new Error('secure pending')),
+              },
+              identity,
+              apply,
+              repairs,
+            ),
+          ).rejects.toThrow('secure pending');
+          const old = await readFixtureJournal(identity);
+          if (!old) throw new Error('missing journal');
+          await worker.saveJournal({
+            ...old,
+            phase: phase.startsWith('publishing-')
+              ? 'publishing'
+              : phase === 'complete-pending'
+                ? 'complete'
+                : phase === 'restoring-external'
+                  ? 'restoring-external'
+                  : 'rebuilding',
+          });
+          if (phase === 'publishing-sibling')
+            await rename(identity.destination, worker.stagingRoot(identity));
+        }
+        await writeFile(join(identity.source, 'continued-work'), 'keep');
+      }
+      if (pruned) await rm(admin, { recursive: true });
+      if (phase === 'removed') await rm(checkout, { recursive: true });
+      const stderr = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        await expect(
+          migrateInternalRoot(worker, identity, { ...apply, restart }, repairs),
+        ).resolves.toMatchObject({ kind: 'complete' });
+        expect(
+          await readFile(
+            join(identity.destination, 'workspaces/fixture/worktrees.json'),
+            'utf8',
+          ),
+        ).toContain(publishedCheckout);
+        if (phase === 'removed') {
+          expect(await statIfPresent(publishedCheckout)).toBeNull();
+          expect(await statIfPresent(admin)).toBeNull();
+          return;
+        }
+        expect(
+          await readFile(join(publishedCheckout, 'uncommitted'), 'utf8'),
+        ).toBe('preserve this work');
+        expect(await readFile(join(publishedCheckout, '.git'), 'utf8')).toBe(
+          await readFile(join(checkout, '.git'), 'utf8'),
+        );
+        if (pruned) {
+          expect(stderr.mock.calls.flat().join('')).toContain(checkout);
+          expect(stderr.mock.calls.flat().join('')).toContain(
+            'pruned-git-worktree-records',
+          );
+        } else {
+          expect(
+            await git('-C', publishedCheckout, 'status', '--porcelain'),
+          ).toContain('uncommitted');
+          expect(await readFile(join(admin, 'gitdir'), 'utf8')).toContain(
+            identity.destination,
+          );
+        }
+      } finally {
+        stderr.mockRestore();
+      }
+    },
+  );
+
   (windows ? test.skip : test)(
     'nonprivate historical secure root prints an exact quoted remediation without changing permissions',
     async () => {
@@ -2813,6 +3998,69 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       journal: { transactionId: legacy?.transactionId },
     });
   });
+
+  test.each(['after-staging', 'after-evidence', 'after-journal'])(
+    'restarts with frozen lifecycle evidence after preservation interrupted %s',
+    async (cut) => {
+      await source();
+      await lifecycleFixture('completed', 'worktree-delete');
+      const newRepairs = (): InternalRootRepairs =>
+        createInternalRootRelocationRepairs({
+          ...nativeRepairOptions(),
+          durability: desktopW5Durability,
+        });
+      repairs = newRepairs();
+      const expose = worker.exposeStaging.bind(worker);
+      worker.exposeStaging = (): Promise<void> =>
+        Promise.reject(new Error('before exposure'));
+      await expect(run()).rejects.toThrow('before exposure');
+      const old = await readFixtureJournal(identity);
+      if (!old?.repairPlan?.lifecycleJournals?.length)
+        throw new Error('Expected frozen lifecycle evidence');
+      const journalPath = join(identity.coordination, 'journal.json');
+      const saved = await readFile(journalPath);
+      const evidenceNames = (await readdir(identity.coordination)).filter(
+        (name) => name.startsWith('lifecycle-journals'),
+      );
+      const evidence = await Promise.all(
+        evidenceNames.map((name) =>
+          readFile(join(identity.coordination, name)),
+        ),
+      );
+      const retained = join(
+        identity.coordination,
+        `restarted-${old.transactionId}`,
+      );
+      await createPrivateMigrationDirectory(retained, host);
+      await rename(
+        join(identity.coordination, 'staging'),
+        join(retained, 'staging'),
+      );
+      if (cut !== 'after-staging')
+        for (const name of evidenceNames)
+          await rename(join(identity.coordination, name), join(retained, name));
+      if (cut === 'after-journal')
+        await rename(journalPath, join(retained, 'journal.json'));
+      await writeFile(join(identity.source, 'new-work'), 'current source');
+      worker.exposeStaging = expose;
+      repairs = newRepairs();
+      await expect(
+        migrateInternalRoot(
+          worker,
+          identity,
+          { ...apply, restart: true },
+          repairs,
+        ),
+      ).resolves.toMatchObject({ kind: 'complete' });
+      expect(await readFile(join(retained, 'journal.json'))).toEqual(saved);
+      for (const [index, name] of evidenceNames.entries())
+        expect(await readFile(join(retained, name))).toEqual(evidence[index]);
+      expect(
+        await readFile(join(identity.destination, 'new-work'), 'utf8'),
+      ).toBe('current source');
+      await checkInstalledShape();
+    },
+  );
 
   test.each([
     'valid',
@@ -3561,12 +4809,21 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
               'utf8',
             ),
           );
-          expect(JSON.parse(result.stdout)).toMatchObject({
+          const output: unknown = JSON.parse(result.stdout);
+          expect(output).toMatchObject({
             kind: 'inventory',
             identity,
             journal: null,
+            space: {
+              requiredBytes:
+                process.platform === 'darwin' ? 64 * 1024 * 1024 : before.bytes,
+            },
             cleanupCandidates: savedReport,
           });
+          expect(output).toHaveProperty(
+            'space.availableBytes',
+            expect.any(Number),
+          );
           expect(
             result.stderr
               .split('\n')
@@ -5182,6 +6439,708 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     );
   });
 
+  test.each(['dangling gitdir', 'empty .git directory'])(
+    'apply names a dangling or empty .git checkout under the source root without changing it (%s)',
+    async (layout) => {
+      await source();
+      const checkout = join(identity.source, 'repos', 'broken checkout');
+      await mkdir(checkout, { recursive: true });
+      const dotGit = join(checkout, '.git');
+      const contents = `gitdir: ${join(home, 'missing-repository', '.git', 'worktrees', 'broken')}\n`;
+      if (layout === 'dangling gitdir') await writeFile(dotGit, contents);
+      else await mkdir(dotGit);
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      const before = await worker.inventory(identity);
+      const error: unknown = await run().catch((error: unknown) => error);
+      expect(error).toHaveProperty(
+        'message',
+        expect.stringContaining(JSON.stringify(checkout)),
+      );
+      expect(error).toHaveProperty(
+        'message',
+        expect.stringContaining('--abandon-checkout'),
+      );
+      expect(error).toHaveProperty(
+        'message',
+        expect.stringContaining(
+          'git --no-optional-locks worktree list --porcelain -z',
+        ),
+      );
+      expect(error).toHaveProperty(
+        'message',
+        expect.stringContaining('fatal:'),
+      );
+      if (layout === 'dangling gitdir')
+        expect(await readFile(dotGit, 'utf8')).toBe(contents);
+      else expect(await readdir(dotGit)).toEqual([]);
+      expect(await worker.inventory(identity)).toEqual(before);
+      expect(await statIfPresent(identity.destination)).toBeNull();
+      expect(
+        await statIfPresent(`${identity.destination}.migration-staging`),
+      ).toBeNull();
+
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+        abandonCheckouts: [checkout],
+      });
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      const after = await worker.inventory(identity);
+      expect(after.sourceIdentity).toBe(before.sourceIdentity);
+      expect(after.fingerprint).toBe(before.fingerprint);
+      if (layout === 'dangling gitdir')
+        expect(await readFile(dotGit, 'utf8')).toBe(contents);
+      else expect(await readdir(dotGit)).toEqual([]);
+      expect(
+        await statIfPresent(
+          join(identity.destination, 'repos', 'broken checkout'),
+        ),
+      ).toBeNull();
+      expect(
+        (await worker.readJournal(identity))?.repairPlan?.abandonedCheckouts,
+      ).toEqual([checkout]);
+      await checkInstalledShape();
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      await expect(run()).rejects.toMatchObject({ reason: 'already-complete' });
+      const report = await reportInternalRootCleanup(
+        identity,
+        true,
+        host,
+        before.bytes,
+        [],
+        [checkout],
+      );
+      expect(report.entries).toContainEqual({
+        path: checkout,
+        bytes: layout === 'dangling gitdir' ? Buffer.byteLength(contents) : 0,
+        category: 'abandoned-archive',
+        disposition: 'review before deleting',
+        reason: `Broken checkout ${JSON.stringify(checkout)}: explicitly omitted from migration; retained in the old root.`,
+        copy: 'old-root',
+        restoreSource: identity.source,
+      });
+      expect(report.warnings).toEqual([]);
+    },
+  );
+
+  test.each([
+    'healthy',
+    'outside',
+    'missing',
+    'no .git',
+    'source root',
+    'symlink',
+    'Git runtime failure',
+  ])('checkout abandonment refuses %s without source changes', async (kind) => {
+    await source();
+    const checkout =
+      kind === 'outside'
+        ? join(home, 'outside')
+        : join(identity.source, 'repos', 'candidate');
+    await mkdir(checkout, { recursive: true });
+    if (kind === 'healthy' || kind === 'Git runtime failure')
+      await promisify(execFile)('git', ['init', checkout]);
+    else if (kind !== 'no .git')
+      await writeFile(join(checkout, '.git'), 'gitdir: /missing/repository\n');
+    if (kind === 'Git runtime failure')
+      await writeFile(join(checkout, '.git', 'config'), '[invalid config\n');
+    let requested = checkout;
+    if (kind === 'missing') requested = join(identity.source, 'missing');
+    if (kind === 'source root') requested = identity.source;
+    if (kind === 'symlink') {
+      requested = join(identity.source, 'alias');
+      await symlink(checkout, requested, 'dir');
+    }
+    const before = await worker.inventory(identity);
+    repairs = createInternalRootRelocationRepairs({
+      ...nativeRepairOptions(),
+      durability: desktopW5Durability,
+      abandonCheckouts: [requested],
+    });
+    const result = run();
+    await expect(result).rejects.toThrow(
+      kind === 'Git runtime failure'
+        ? `Git command failed at ${JSON.stringify(requested)}: git --no-optional-locks rev-parse --absolute-git-dir`
+        : `--abandon-checkout ${JSON.stringify(requested)} must name a broken checkout directory under ${JSON.stringify(identity.source)}; preserve the folder.`,
+    );
+    if (kind === 'Git runtime failure')
+      await expect(result).rejects.toThrow('fatal: bad config line');
+    expect(await worker.inventory(identity)).toEqual(before);
+    expect(await statIfPresent(identity.destination)).toBeNull();
+  });
+
+  test.each(['moved', 'repaired', 'aliased parent'])(
+    'inventory refreshes cleanup after a frozen abandoned checkout is %s',
+    async (action) => {
+      await source();
+      const execute = promisify(execFile);
+      const repository = join(home, 'repository');
+      const displaced = join(home, 'displaced-repository');
+      const checkout = join(identity.source, 'repos', 'abandoned');
+      await execute('git', ['init', repository]);
+      await execute('git', [
+        '-C',
+        repository,
+        '-c',
+        'user.name=Migration fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'Fixture',
+      ]);
+      await execute('git', [
+        '-C',
+        repository,
+        'worktree',
+        'add',
+        '--detach',
+        checkout,
+      ]);
+      await writeFile(join(checkout, 'keep.txt'), 'unique work');
+      await rename(repository, displaced);
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+        abandonCheckouts: [checkout],
+      });
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      if (action === 'moved') {
+        await rename(checkout, join(home, 'kept-aside'));
+      } else if (action === 'aliased parent') {
+        const parent = join(identity.source, 'repos');
+        const retained = join(home, 'kept-repos');
+        await rename(parent, retained);
+        await symlink(retained, parent, 'dir');
+      } else {
+        await rename(displaced, repository);
+        await execute('git', [
+          '-C',
+          repository,
+          'worktree',
+          'repair',
+          checkout,
+        ]);
+        await execute('git', [
+          '-C',
+          checkout,
+          'rev-parse',
+          '--absolute-git-dir',
+        ]);
+      }
+      const frozen = (await worker.readJournal(identity))?.repairPlan;
+      const selected = selectInternalRootArchiveAbandonments(
+        [],
+        frozen?.abandonedCheckouts,
+        'Checkout',
+      );
+      expect(selected).toEqual([checkout]);
+      await expect(
+        migrateInternalRoot(
+          worker,
+          identity,
+          { apply: false, declareInternal: true },
+          repairs,
+        ),
+      ).resolves.toMatchObject({ kind: 'inventory' });
+      const report = await reportInternalRootCleanup(
+        identity,
+        true,
+        host,
+        undefined,
+        [],
+        selected,
+      );
+      expect(report.entries.filter((entry) => entry.path === checkout)).toEqual(
+        action === 'repaired'
+          ? [
+              expect.objectContaining({
+                path: checkout,
+                disposition: 'review before deleting',
+                copy: 'old-root',
+              }),
+            ]
+          : [],
+      );
+      if (action === 'aliased parent')
+        expect(report.warnings).toContain(
+          `Could not fully inspect ${JSON.stringify(checkout)}; do not infer that unlisted data is disposable.`,
+        );
+      else expect(report.warnings).toEqual([]);
+      expect(await readFile(report.reportPath, 'utf8')).toBe(
+        `${JSON.stringify(report)}\n`,
+      );
+      const retained = action === 'moved' ? join(home, 'kept-aside') : checkout;
+      expect(await readFile(join(retained, 'keep.txt'), 'utf8')).toBe(
+        'unique work',
+      );
+      expect(
+        await statIfPresent(join(identity.destination, 'repos', 'abandoned')),
+      ).toBeNull();
+    },
+  );
+
+  test.each(
+    [
+      'GIT_DIR',
+      'GIT_OBJECT_DIRECTORY',
+      'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+      'GIT_CONFIG_COUNT',
+      'GIT_CONFIG_PARAMETERS',
+    ].flatMap((key) => ['healthy', 'broken'].map((kind) => ({ key, kind }))),
+  )(
+    'checkout abandonment probes the actual $kind checkout despite inherited $key',
+    async ({ key, kind }) => {
+      await source();
+      const checkout = join(identity.source, 'repos', 'candidate');
+      const otherRepository = join(home, 'other-repository');
+      const execute = promisify(execFile);
+      await execute('git', ['init', otherRepository]);
+      await mkdir(checkout, { recursive: true });
+      if (kind === 'healthy') await execute('git', ['init', checkout]);
+      else
+        await writeFile(
+          join(checkout, '.git'),
+          'gitdir: /missing/repository\n',
+        );
+      const before = await worker.inventory(identity);
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+        abandonCheckouts: [checkout],
+      });
+      const previous = process.env[key];
+      try {
+        process.env[key] =
+          key === 'GIT_CONFIG_COUNT' || key === 'GIT_CONFIG_PARAMETERS'
+            ? 'invalid'
+            : kind === 'healthy'
+              ? join(home, 'missing-repository')
+              : join(otherRepository, '.git');
+        if (kind === 'healthy')
+          await expect(run()).rejects.toThrow('--abandon-checkout');
+        else await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      } finally {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      }
+      const after = await worker.inventory(identity);
+      expect(after.sourceIdentity).toBe(before.sourceIdentity);
+      expect(after.fingerprint).toBe(before.fingerprint);
+      expect(
+        await statIfPresent(join(identity.destination, 'repos', 'candidate')),
+      ).toBeNull();
+      if (kind === 'healthy')
+        expect(await statIfPresent(identity.destination)).toBeNull();
+    },
+  );
+
+  test('fresh start refuses retained migration evidence after interrupted restart', async () => {
+    await source();
+    worker.build = (): ReturnType<InternalRootMigrationWorker['build']> =>
+      Promise.reject(new Error('before copy'));
+    await expect(run()).rejects.toThrow('before copy');
+    const old = await worker.readJournal(identity);
+    if (!old) throw new Error('Missing stopped transaction');
+    const preserve = worker.preserveUnpublished.bind(worker);
+    worker.preserveUnpublished = async (journal, checkOnly): Promise<void> => {
+      await preserve(journal, checkOnly);
+      if (!checkOnly) throw new Error('after preservation');
+    };
+    await expect(
+      migrateInternalRoot(
+        worker,
+        identity,
+        { ...apply, restart: true },
+        repairs,
+      ),
+    ).rejects.toThrow('after preservation');
+    expect(await worker.readJournal(identity)).toBeNull();
+    expect(startup).toThrow();
+    await expect(freshStart()).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
+    expect(await statIfPresent(identity.destination)).toBeNull();
+    expect(
+      await statIfPresent(join(home, '.canopy-internal-startup.json')),
+    ).toBeNull();
+    expect(
+      await statIfPresent(
+        join(
+          identity.coordination,
+          `restarted-${old.transactionId}`,
+          'journal.json',
+        ),
+      ),
+    ).not.toBeNull();
+  });
+
+  test.each([
+    'after-preservation',
+    'after-prepared',
+    'after-second-preservation',
+  ])(
+    'restart retains combined abandonment selections when interrupted %s',
+    async (cut) => {
+      await source();
+      const archive = await strandedArchiveFixture(
+        identity.source,
+        'P0',
+        'crow',
+      );
+      const checkout = join(identity.source, 'repos', 'broken checkout');
+      await mkdir(checkout, { recursive: true });
+      await writeFile(join(checkout, '.git'), 'gitdir: /missing/repository\n');
+      await writeFile(join(checkout, 'keep.txt'), 'unique work');
+      const selected = {
+        abandonArchives: ['fixture/crow'],
+        abandonCheckouts: [checkout],
+      };
+      const newRepairs = (choices = selected): InternalRootRepairs =>
+        createInternalRootRelocationRepairs({
+          ...nativeRepairOptions(),
+          durability: desktopW5Durability,
+          ...choices,
+        });
+      repairs = newRepairs();
+      const build = worker.build.bind(worker);
+      worker.build = (): ReturnType<InternalRootMigrationWorker['build']> =>
+        Promise.reject(new Error('before copy'));
+      await expect(run()).rejects.toThrow('before copy');
+      worker.build = build;
+      const old = await worker.readJournal(identity);
+      if (!old) throw new Error('Missing frozen transaction');
+      const saved = await readFile(join(identity.coordination, 'journal.json'));
+      const preserve = worker.preserveUnpublished.bind(worker);
+      if (cut === 'after-preservation')
+        worker.preserveUnpublished = async (
+          journal,
+          checkOnly,
+        ): Promise<void> => {
+          await preserve(journal, checkOnly);
+          if (!checkOnly) throw new Error('interrupted restart');
+        };
+      else
+        worker.recoverW5 = (): Promise<void> =>
+          Promise.reject(new Error('interrupted restart'));
+      await writeFile(join(identity.source, 'new-work'), 'current source');
+      if (!windows && cut === 'after-preservation') {
+        const move = fs.rename;
+        const interrupted = jest
+          .spyOn(fs, 'rename')
+          .mockImplementation(async (from, to) => {
+            if (to === join(identity.coordination, 'restart.json'))
+              throw new Error('pointer replacement interrupted');
+            await move(from, to);
+          });
+        try {
+          await expect(
+            migrateInternalRoot(
+              worker,
+              identity,
+              { ...apply, restart: true },
+              repairs,
+            ),
+          ).rejects.toThrow('pointer replacement interrupted');
+        } finally {
+          interrupted.mockRestore();
+        }
+      }
+      await expect(
+        migrateInternalRoot(
+          worker,
+          identity,
+          { ...apply, restart: true },
+          repairs,
+        ),
+      ).rejects.toThrow('interrupted restart');
+      worker.preserveUnpublished = preserve;
+      worker.recoverW5 = (): Promise<void> => Promise.resolve();
+      if (cut === 'after-second-preservation') {
+        worker.preserveUnpublished = async (
+          journal,
+          checkOnly,
+        ): Promise<void> => {
+          await preserve(journal, checkOnly);
+          if (!checkOnly) throw new Error('interrupted restart');
+        };
+        await expect(
+          migrateInternalRoot(
+            worker,
+            identity,
+            { ...apply, restart: true },
+            repairs,
+          ),
+        ).rejects.toThrow('interrupted restart');
+        worker.preserveUnpublished = preserve;
+      }
+      // Match CLI selection after a fresh invocation with neither abandonment flag.
+      const plan = await readInternalRootAbandonmentPlan(
+        identity,
+        await worker.readJournal(identity),
+        host,
+      );
+      const frozenArchives = plan?.lifecycleJournals?.flatMap((entry) =>
+        entry.abandoned
+          ? [`${entry.abandoned.workspaceId}/${entry.abandoned.worktreeId}`]
+          : [],
+      );
+      const choices = {
+        abandonArchives: [
+          ...selectInternalRootArchiveAbandonments(
+            [],
+            plan ? (frozenArchives ?? []) : undefined,
+          ),
+        ],
+        abandonCheckouts: [
+          ...selectInternalRootArchiveAbandonments(
+            [],
+            plan ? (plan.abandonedCheckouts ?? []) : undefined,
+            'Checkout',
+          ),
+        ],
+      };
+      expect(choices).toEqual(selected);
+      const marker = join(identity.coordination, 'restart.json');
+      const markerBytes = await readFile(marker);
+      const restartMarker: unknown = JSON.parse(markerBytes.toString('utf8'));
+      if (
+        typeof restartMarker !== 'object' ||
+        restartMarker === null ||
+        !('transactionId' in restartMarker)
+      )
+        throw new Error('Missing restart transaction');
+      expect(restartMarker.transactionId).toBe(old.transactionId);
+      const current = await worker.readJournal(identity);
+      await writeFile(
+        marker,
+        JSON.stringify({ version: 1, transactionId: '../outside' }),
+      );
+      await expect(
+        readInternalRootAbandonmentPlan(identity, current, host),
+      ).rejects.toThrow(JSON.stringify(marker));
+      await writeFile(marker, markerBytes);
+      expect(() =>
+        selectInternalRootArchiveAbandonments(
+          ['fixture/other'],
+          choices.abandonArchives,
+        ),
+      ).toThrow('already frozen');
+      expect(() =>
+        selectInternalRootArchiveAbandonments(
+          [join(identity.source, 'repos/other')],
+          choices.abandonCheckouts,
+          'Checkout',
+        ),
+      ).toThrow('already frozen');
+      await rename(join(checkout, '.git'), join(home, 'broken-git'));
+      execFileSync('git', ['init', '-q', checkout]);
+      // Report refresh is advisory; new construction must still reject a healed checkout.
+      const cleanupEntries: unknown = expect.arrayContaining([
+        expect.objectContaining({ path: checkout, copy: 'old-root' }),
+      ]);
+      await expect(
+        reportInternalRootCleanup(
+          identity,
+          false,
+          host,
+          undefined,
+          choices.abandonArchives,
+          choices.abandonCheckouts,
+        ),
+      ).resolves.toMatchObject({
+        entries: cleanupEntries,
+      });
+      repairs = newRepairs(choices);
+      await expect(run()).rejects.toThrow('must name a broken checkout');
+      await rm(join(checkout, '.git'), { recursive: true });
+      await rename(join(home, 'broken-git'), join(checkout, '.git'));
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      expect(
+        await readFile(
+          join(
+            identity.coordination,
+            `restarted-${old.transactionId}`,
+            'journal.json',
+          ),
+        ),
+      ).toEqual(saved);
+      expect(await readFile(archive.path, 'utf8')).toBe(archive.bytes);
+      expect(await readFile(join(checkout, 'keep.txt'), 'utf8')).toBe(
+        'unique work',
+      );
+      expect(
+        await statIfPresent(
+          join(identity.destination, relative(identity.source, checkout)),
+        ),
+      ).toBeNull();
+      expect(
+        await statIfPresent(
+          join(identity.destination, relative(identity.source, archive.path)),
+        ),
+      ).toBeNull();
+      const report = await reportInternalRootCleanup(
+        identity,
+        true,
+        host,
+        undefined,
+        choices.abandonArchives,
+        choices.abandonCheckouts,
+      );
+      expect(report.entries).toContainEqual(
+        expect.objectContaining({
+          path: checkout,
+          copy: 'old-root',
+          disposition: 'review before deleting',
+        }),
+      );
+      expect(
+        await readFile(join(identity.destination, 'new-work'), 'utf8'),
+      ).toBe('current source');
+    },
+  );
+
+  test.each(['resume', 'restart'])(
+    'checkout abandonment preserves multiple frozen omissions on %s after interruption',
+    async (mode) => {
+      await source();
+      const checkouts = ['first broken', 'second broken'].map((name) =>
+        join(identity.source, 'repos', name),
+      );
+      const contents = 'gitdir: /missing/repository\n';
+      for (const checkout of checkouts) {
+        await mkdir(checkout, { recursive: true });
+        await writeFile(join(checkout, '.git'), contents);
+        await writeFile(join(checkout, 'keep.txt'), 'unique work');
+      }
+      const before = await worker.inventory(identity);
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+        abandonCheckouts: checkouts,
+      });
+      const build = worker.build.bind(worker);
+      worker.build = (): ReturnType<InternalRootMigrationWorker['build']> =>
+        Promise.reject(new Error('interrupted before copy'));
+      await expect(run()).rejects.toThrow('interrupted before copy');
+      worker.build = build;
+      await checkInstalledShape();
+      const old = await worker.readJournal(identity);
+      const oldJournalContents = await readFile(
+        join(identity.coordination, 'journal.json'),
+        'utf8',
+      );
+      const frozen = old?.repairPlan;
+      expect(frozen?.abandonedCheckouts).toEqual(checkouts);
+      expect(() =>
+        selectInternalRootArchiveAbandonments(
+          checkouts.slice(0, 1),
+          frozen?.abandonedCheckouts,
+          'Checkout',
+        ),
+      ).toThrow('Checkout abandonment is already frozen');
+      let expected = before;
+      if (mode === 'restart') {
+        await writeFile(
+          join(identity.source, 'continued-work'),
+          'keep new work',
+        );
+        await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+        expected = await worker.inventory(identity);
+      }
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+        ...(mode === 'restart'
+          ? {
+              abandonCheckouts: selectInternalRootArchiveAbandonments(
+                [],
+                frozen?.abandonedCheckouts,
+                'Checkout',
+              ),
+            }
+          : {}),
+      });
+      await expect(
+        migrateInternalRoot(
+          worker,
+          identity,
+          {
+            ...apply,
+            restart: mode === 'restart',
+          },
+          repairs,
+        ),
+      ).resolves.toMatchObject({ kind: 'complete' });
+      if (mode === 'restart') {
+        if (!old) throw new Error('Missing stopped transaction');
+        const retained = join(
+          identity.coordination,
+          `restarted-${old.transactionId}`,
+        );
+        expect(await readFile(join(retained, 'journal.json'), 'utf8')).toBe(
+          oldJournalContents,
+        );
+        expect((await worker.readJournal(identity))?.transactionId).not.toBe(
+          old.transactionId,
+        );
+        expect(
+          await readFile(join(identity.destination, 'continued-work'), 'utf8'),
+        ).toBe('keep new work');
+      }
+      expect(
+        (await worker.readJournal(identity))?.repairPlan?.abandonedCheckouts,
+      ).toEqual(checkouts);
+      const after = await worker.inventory(identity);
+      expect(after.sourceIdentity).toBe(before.sourceIdentity);
+      expect(after.fingerprint).toBe(expected.fingerprint);
+      const report = await reportInternalRootCleanup(
+        identity,
+        true,
+        host,
+        expected.bytes,
+        [],
+        selectInternalRootArchiveAbandonments(
+          [],
+          frozen?.abandonedCheckouts,
+          'Checkout',
+        ),
+      );
+      for (const checkout of checkouts) {
+        expect(await readFile(join(checkout, '.git'), 'utf8')).toBe(contents);
+        expect(await readFile(join(checkout, 'keep.txt'), 'utf8')).toBe(
+          'unique work',
+        );
+        expect(
+          await statIfPresent(
+            join(identity.destination, relative(identity.source, checkout)),
+          ),
+        ).toBeNull();
+        expect(report.entries.find((entry) => entry.path === checkout)).toEqual(
+          {
+            path: checkout,
+            bytes:
+              Buffer.byteLength(contents) + Buffer.byteLength('unique work'),
+            category: 'abandoned-archive',
+            disposition: 'review before deleting',
+            reason: `Broken checkout ${JSON.stringify(checkout)}: explicitly omitted from migration; retained in the old root.`,
+            copy: 'old-root',
+            restoreSource: identity.source,
+          },
+        );
+      }
+    },
+  );
+
   test('the repository script cannot mutate before CAN-5785 is installed', async () => {
     await source();
     await expect(
@@ -5618,6 +7577,338 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       await readFile(join(identity.destination, 'preferences.json'), 'utf8'),
     ).toBe('{"recovered":true}');
   });
+
+  function countWalks(): {
+    inventory: jest.SpyInstance<
+      ReturnType<InternalRootMigrationWorker['inventory']>,
+      Parameters<InternalRootMigrationWorker['inventory']>
+    >;
+    publication: jest.SpyInstance<
+      ReturnType<InternalRootMigrationWorker['publicationRoot']>,
+      Parameters<InternalRootMigrationWorker['publicationRoot']>
+    >;
+    inspections: jest.SpyInstance<
+      ReturnType<typeof migrationProgress.internalRootMigrationProgress>,
+      Parameters<typeof migrationProgress.internalRootMigrationProgress>
+    >;
+    walks: () => number;
+    restore: () => void;
+  } {
+    const inventory = jest.spyOn(worker, 'inventory');
+    const publication = jest.spyOn(worker, 'publicationRoot');
+    const inspections = jest.spyOn(
+      migrationProgress,
+      'internalRootMigrationProgress',
+    );
+    return {
+      inventory,
+      publication,
+      inspections,
+      // This fixture has only its root and preferences.json in each tree.
+      walks: () =>
+        inspections.mock.calls.filter(
+          ([detail]) => detail === 'inspected manifest entry',
+        ).length / 2,
+      restore: () => {
+        inventory.mockRestore();
+        publication.mockRestore();
+        inspections.mockRestore();
+      },
+    };
+  }
+
+  test('fresh apply uses nine tree walks instead of sixteen', async () => {
+    await source();
+    const counts = countWalks();
+    try {
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      expect(counts.inventory).toHaveBeenCalledTimes(5);
+      expect(counts.publication).toHaveBeenCalledTimes(2);
+      expect(
+        counts.publication.mock.calls.every(
+          ([, fingerprint]) => typeof fingerprint === 'string',
+        ),
+      ).toBe(true);
+      expect(counts.walks()).toBe(9);
+    } finally {
+      counts.restore();
+    }
+  });
+
+  test.each([
+    { phase: 'prepared', inventories: 5, publications: 2, walks: 9 },
+    { phase: 'source-settled', inventories: 4, publications: 2, walks: 8 },
+    { phase: 'building', inventories: 4, publications: 2, walks: 8 },
+    { phase: 'publishing', inventories: 3, publications: 2, walks: 5 },
+    { phase: 'published', inventories: 2, publications: 2, walks: 3 },
+    { phase: 'complete', inventories: 0, publications: 0, walks: 0 },
+    { phase: 'complete-rebuild', inventories: 6, publications: 2, walks: 10 },
+    { phase: 'restoring-external', inventories: 6, publications: 2, walks: 10 },
+    { phase: 'rebuilding', inventories: 5, publications: 2, walks: 9 },
+  ])(
+    're-walks in a new invocation resuming $phase',
+    async ({ phase, inventories, publications, walks }) => {
+      await source();
+      const rebuilding = [
+        'complete-rebuild',
+        'restoring-external',
+        'rebuilding',
+      ].includes(phase);
+      if (rebuilding) await run();
+      const save = worker.saveJournal.bind(worker);
+      const publish = worker.publish.bind(worker);
+      const resumeOptions = { ...apply, rebuild: rebuilding };
+      if (phase !== 'complete-rebuild') {
+        worker.saveJournal = async (value): Promise<void> => {
+          await save(value);
+          if (value.phase === phase) throw new Error('walk-count interruption');
+        };
+        if (phase === 'published') {
+          worker.publish = async (...args): Promise<void> => {
+            await publish(...args);
+            throw new Error('walk-count interruption');
+          };
+        }
+        await expect(
+          migrateInternalRoot(worker, identity, resumeOptions, repairs),
+        ).rejects.toThrow('walk-count interruption');
+        worker.saveJournal = save;
+        worker.publish = publish;
+      }
+      const counts = countWalks();
+      const coordinate = jest.spyOn(worker, 'coordinate');
+      const secure = jest.spyOn(worker, 'validateSecureResume');
+      const qualify = jest.spyOn(repairs, 'qualifyPublished');
+      const relocate = jest.spyOn(worker, 'relocateSecure');
+      const build = jest.spyOn(worker, 'build');
+      const publishResume = jest.spyOn(worker, 'publish');
+      const restore = jest.spyOn(worker, 'restoreExternal');
+      const discard = jest.spyOn(worker, 'discardDestination');
+      const recoverResume = jest.spyOn(worker, 'recoverW5');
+      try {
+        await expect(
+          migrateInternalRoot(worker, identity, resumeOptions, repairs),
+        ).resolves.toMatchObject({ kind: 'complete' });
+        expect(counts.inventory).toHaveBeenCalledTimes(inventories);
+        expect(counts.publication).toHaveBeenCalledTimes(publications);
+        const discardScan = rebuilding && process.platform !== 'darwin' ? 1 : 0;
+        expect(counts.walks()).toBe(walks + discardScan);
+        if (inventories) {
+          const postLock = counts.inventory.mock.invocationCallOrder[1];
+          expect(postLock).toBeGreaterThan(
+            coordinate.mock.invocationCallOrder[0],
+          );
+          for (const step of [
+            build,
+            publishResume,
+            restore,
+            discard,
+            recoverResume,
+          ])
+            for (const call of step.mock.invocationCallOrder)
+              expect(call).toBeGreaterThan(postLock);
+        } else {
+          expect(secure).toHaveBeenCalledTimes(1);
+          expect(qualify).toHaveBeenCalledTimes(1);
+          expect(secure.mock.invocationCallOrder[0]).toBeLessThan(
+            qualify.mock.invocationCallOrder[0],
+          );
+          expect(qualify.mock.invocationCallOrder[0]).toBeLessThan(
+            relocate.mock.invocationCallOrder[0],
+          );
+        }
+        if (phase === 'publishing' || phase === 'published')
+          expect(counts.publication.mock.calls[0][1]).toBeUndefined();
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('{"theme":"dark"}');
+      } finally {
+        for (const spy of [
+          coordinate,
+          secure,
+          qualify,
+          relocate,
+          build,
+          publishResume,
+          restore,
+          discard,
+          recoverResume,
+        ])
+          spy.mockRestore();
+        counts.restore();
+      }
+    },
+  );
+
+  test.each(['repair', 'verify-before-seal', 'verify-before-publish'])(
+    'source changes during retained %s window are refused',
+    async (window) => {
+      await source();
+      let verifications = 0;
+      const changeSource = async (): Promise<void> => {
+        await writeFile(
+          join(identity.source, 'preferences.json'),
+          '{"changed":true,"retain":true}',
+        );
+      };
+      repairs.repair = async (): ReturnType<InternalRootRepairs['repair']> => {
+        if (window === 'repair') await changeSource();
+        return { kind: 'ok' };
+      };
+      repairs.verify = async (): ReturnType<InternalRootRepairs['verify']> => {
+        verifications += 1;
+        if (
+          window ===
+          (verifications === 1 ? 'verify-before-seal' : 'verify-before-publish')
+        )
+          await changeSource();
+        return { kind: 'ok' };
+      };
+      const publish = jest.spyOn(worker, 'publish');
+      try {
+        await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+        expect(publish).not.toHaveBeenCalled();
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('{"changed":true,"retain":true}');
+        expect(await statIfPresent(identity.destination)).toBeNull();
+      } finally {
+        publish.mockRestore();
+      }
+    },
+  );
+
+  test('a cached post-lock inventory still refuses stable ownership', async () => {
+    await source();
+    const inventory = worker.inventory.bind(worker);
+    let calls = 0;
+    worker.inventory = async (
+      ...args
+    ): ReturnType<InternalRootMigrationWorker['inventory']> => {
+      const current = await inventory(...args);
+      calls += 1;
+      return { ...current, stableOwned: calls === 2 };
+    };
+    await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+    expect(recover).not.toHaveBeenCalled();
+    expect(calls).toBe(2);
+  });
+
+  test.each(['identity', 'stable-owner', 'fingerprint'])(
+    'reused build inventory still compares %s',
+    async (field) => {
+      await source();
+      const build = worker.build.bind(worker);
+      worker.build = async (
+        value,
+      ): ReturnType<InternalRootMigrationWorker['build']> => {
+        const result = await build(value);
+        return {
+          ...result,
+          sourceInventory: {
+            ...result.sourceInventory,
+            ...(field === 'identity' ? { sourceIdentity: '1:999999' } : {}),
+            ...(field === 'stable-owner' ? { stableOwned: true } : {}),
+            ...(field === 'fingerprint' ? { fingerprint: 'changed' } : {}),
+          },
+        };
+      };
+      const repair = jest.spyOn(repairs, 'repair');
+      try {
+        await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+        expect(repair).not.toHaveBeenCalled();
+        expect(await statIfPresent(identity.source)).not.toBeNull();
+      } finally {
+        repair.mockRestore();
+      }
+    },
+  );
+
+  test.each(['restoreExternal', 'discardDestination'] as const)(
+    'invalidates source inventory after %s during rebuild',
+    async (step) => {
+      await source();
+      await run();
+      const original = worker[step].bind(worker);
+      worker[step] = async (value): Promise<void> => {
+        await original(value);
+        await writeFile(
+          join(identity.source, 'preferences.json'),
+          'source changed during rebuild',
+        );
+      };
+      const build = jest.spyOn(worker, 'build');
+      try {
+        await expect(
+          migrateInternalRoot(
+            worker,
+            identity,
+            { ...apply, rebuild: true },
+            repairs,
+          ),
+        ).rejects.toMatchObject({ reason: 'source-changed' });
+        expect(build).not.toHaveBeenCalled();
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('source changed during rebuild');
+      } finally {
+        build.mockRestore();
+      }
+    },
+  );
+
+  test('repairs.verify invalidates the sealed staging walk before publish', async () => {
+    await source();
+    let verifications = 0;
+    repairs.verify = async (
+      context,
+    ): ReturnType<InternalRootRepairs['verify']> => {
+      verifications += 1;
+      if (verifications === 2)
+        await writeFile(
+          join(context.workingRoot, 'preferences.json'),
+          'staging changed after seal',
+        );
+      return { kind: 'ok' };
+    };
+    await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+    expect(verifications).toBe(2);
+    expect(await statIfPresent(identity.destination)).toBeNull();
+    expect(await statIfPresent(identity.source)).not.toBeNull();
+  });
+
+  test.each(['before-rename', 'after-rename'])(
+    'cached publication fingerprint still checks inode %s',
+    async (window) => {
+      await source();
+      const publish = worker.publish.bind(worker);
+      worker.publish = async (...args): Promise<void> => {
+        const path =
+          window === 'before-rename'
+            ? worker.stagingRoot(identity)
+            : identity.destination;
+        if (window === 'after-rename') await publish(...args);
+        await rename(path, join(home, 'retained-publication'));
+        await createPrivateMigrationDirectory(path, host);
+        await writeFile(join(path, 'independent'), 'never adopt');
+        if (window === 'before-rename') await publish(...args);
+      };
+      await expect(run()).rejects.toMatchObject({
+        reason: 'destination-exists',
+      });
+      const path =
+        window === 'before-rename'
+          ? worker.stagingRoot(identity)
+          : identity.destination;
+      expect(await readFile(join(path, 'independent'), 'utf8')).toBe(
+        'never adopt',
+      );
+      expect(
+        await statIfPresent(join(home, 'retained-publication')),
+      ).not.toBeNull();
+      expect(await statIfPresent(identity.source)).not.toBeNull();
+    },
+  );
 
   test('unresolved W5 state leaves the source intact without creating a destination', async () => {
     await source();
@@ -8402,6 +10693,538 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     },
   );
 
+  test.each([false, true])(
+    'commit abandonment preview matches real W5 deletion across selected files (unrelated mismatch=%s)',
+    async (unrelatedMismatch) => {
+      await source();
+      await mkdir(join(identity.source, 'workspaces'), { mode: 0o700 });
+      await mkdir(join(identity.source, 'workspaces/fixture'), { mode: 0o700 });
+      await mkdir(join(identity.source, 'w5'), { mode: 0o700 });
+      const path = join(identity.source, 'workspaces/index.json');
+      const backup = `${path}.bak`;
+      const worktrees = join(
+        identity.source,
+        'workspaces/fixture/worktrees.json',
+      );
+      const old = '{"version":1,"workspaces":[]}';
+      const current = '{"version":1,"workspaces":[],"retained":true}';
+      const pending = '{"version":1,"workspaces":[],"pending":true}';
+      const oldWorktrees = '{"version":1,"worktrees":[]}';
+      await writeFile(path, current);
+      await writeFile(backup, old);
+      await writeFile(worktrees, oldWorktrees);
+      const logPath = join(identity.source, 'w5/commit-log.sqlite');
+      const log = W5CommitLog.open(logPath);
+      const ids: number[] = [];
+      try {
+        const initial = log.commit({
+          operation: 'fixture.initial',
+          advance: [],
+          files: [
+            { path, contents: old, previousFingerprint: null },
+            {
+              path: worktrees,
+              contents: oldWorktrees,
+              previousFingerprint: null,
+            },
+            {
+              path: backup,
+              contents: unrelatedMismatch ? pending : old,
+              previousFingerprint: null,
+            },
+          ],
+          outcome: {},
+        });
+        log.markApplied(initial.commitId);
+        const failedWorktrees = log.commit({
+          operation: 'w5.worktree_list.write',
+          advance: [],
+          files: [
+            {
+              path: worktrees,
+              contents: '{"version":1,"worktrees":[],"pending":true}',
+              previousFingerprint: fingerprintW5File(oldWorktrees),
+            },
+          ],
+          outcome: {},
+        });
+        log.markCommitRecoveryRequired(failedWorktrees.commitId, {
+          error: 'ENOSPC',
+        });
+        ids.push(failedWorktrees.commitId);
+        for (const state of ['applied', 'recovery-required']) {
+          const result = log.commit({
+            operation: 'w5.workspace_index.write',
+            advance: [],
+            files: [
+              {
+                path,
+                contents: state === 'applied' ? current : pending,
+                previousFingerprint: fingerprintW5File(
+                  state === 'applied' ? old : current,
+                ),
+              },
+            ],
+            outcome: {},
+          });
+          if (state === 'applied') log.markApplied(result.commitId);
+          else {
+            log.markCommitRecoveryRequired(result.commitId, {
+              error: 'ENOSPC',
+            });
+            ids.unshift(result.commitId);
+          }
+        }
+      } finally {
+        log.close();
+      }
+      const before = await readFile(logPath);
+      const preview = await diagnoseW5State(
+        identity.source,
+        'w5-owned',
+        true,
+        ids,
+      );
+      expect(preview.logIssue).toBeNull();
+      expect(preview.commits.map(({ commitId }) => commitId)).toEqual(
+        [...ids].reverse(),
+      );
+      const blockers = unrelatedMismatch
+        ? ['log-mismatch: index.json.bak']
+        : [];
+      if (!windows)
+        expect(await diagnoseInternalRootW5(identity.source, [], ids)).toEqual(
+          blockers,
+        );
+      expect(await readFile(logPath)).toEqual(before);
+      const writer = W5CommitLog.open(logPath);
+      try {
+        for (const id of ids) writer.abandonRecoveryRequiredCommit(id);
+      } finally {
+        writer.close();
+      }
+      const actual = await diagnoseW5State(identity.source, 'w5-owned');
+      expect(actual.logIssue).toBeNull();
+      expect(actual.commits).toEqual([]);
+      expect(preview.files).toEqual(actual.files);
+      expect(await diagnoseInternalRootW5(identity.source)).toEqual(blockers);
+      expect(await readFile(path, 'utf8')).toBe(current);
+      expect(await readFile(backup, 'utf8')).toBe(old);
+      expect(await readFile(worktrees, 'utf8')).toBe(oldWorktrees);
+    },
+  );
+
+  test.each([
+    { target: 'worktree', history: 'matching' },
+    { target: 'index', history: 'matching' },
+    { target: 'index', history: 'mismatched' },
+    { target: 'index', history: 'untracked' },
+  ])(
+    'ENOSPC pending $target save with $history history requires a named opt-in, retains evidence and keeps files',
+    async ({ target, history }) => {
+      await source();
+      for (const name of ['runtime', 'workspaces', 'w5', 'workspaces/fixture'])
+        await createPrivateMigrationDirectory(
+          join(identity.source, name),
+          host,
+        );
+      await writeFile(
+        join(identity.source, 'workspaces/index.json'),
+        '{"version":1,"workspaces":[]}',
+        { mode: 0o600 },
+      );
+      const relativePath =
+        target === 'worktree' ? 'fixture/worktrees.json' : 'index.json';
+      const path = join(identity.source, 'workspaces', relativePath);
+      const operation =
+        target === 'worktree'
+          ? 'w5.worktree_list.write'
+          : 'w5.workspace_index.write';
+      const before =
+        target === 'worktree'
+          ? '{"version":1,"worktrees":[]}'
+          : '{"version":1,"workspaces":[]}';
+      const after =
+        target === 'worktree'
+          ? '{"version":1,"worktrees":[],"pending":true}'
+          : '{"version":1,"workspaces":[],"pending":true}';
+      await writeFile(path, before, { mode: 0o600 });
+      const original = await lstat(path);
+      const log = W5CommitLog.open(
+        join(identity.source, 'w5/commit-log.sqlite'),
+      );
+      let commitId: number;
+      let appliedId: number;
+      let keyedId: number;
+      const receipt = {
+        caller: 'fixture',
+        operation: 'core.worktree.update',
+        idempotencyKey: 'pending-one-decision',
+        fingerprint: 'fixture-parameters',
+      };
+      const enospc: unknown = expect.stringContaining('ENOSPC');
+      try {
+        const applied = log.commit({
+          operation: 'fixture.applied',
+          advance: [],
+          files:
+            history === 'untracked'
+              ? []
+              : [
+                  {
+                    path,
+                    contents: history === 'matching' ? before : after,
+                    previousFingerprint: null,
+                  },
+                ],
+          outcome: {},
+        });
+        appliedId = applied.commitId;
+        log.markApplied(appliedId);
+        const result = log.commit({
+          operation,
+          advance:
+            target === 'worktree'
+              ? [{ kind: 'worktrees', workspaceId: 'fixture' }]
+              : [{ kind: 'workspaces' }],
+          files: [
+            {
+              path,
+              contents: after,
+              previousFingerprint: fingerprintW5File(before),
+            },
+          ],
+          outcome: { saved: true },
+        });
+        commitId = result.commitId;
+        const pending = log
+          .listPendingCommits()
+          .find((row) => row.commitId === commitId);
+        if (!pending) throw new Error('Missing pending save');
+        expect(
+          await applyW5Commit(log, pending, {
+            root: join(identity.source, 'workspaces'),
+            durability: {
+              ...desktopW5Durability,
+              writeFileDurably: () =>
+                Promise.reject(
+                  new Error('ENOSPC: no space left on device, write'),
+                ),
+            },
+          }),
+        ).toMatchObject({ status: 'recovery-required', error: enospc });
+        const keyed = log.commit({
+          operation: receipt.operation,
+          receipt,
+          advance: [],
+          files: [],
+          outcome: { saved: true },
+        });
+        keyedId = keyed.commitId;
+        log.markCommitRecoveryRequired(keyedId, { error: 'ENOSPC' });
+      } finally {
+        log.close();
+      }
+      let ids: readonly number[] = [];
+      worker = createInternalRootMigrationWorker({
+        filesystemHost: host,
+        ...filesystemOptions,
+        proveCold: () => Promise.resolve(),
+        diagnose: (root) => diagnoseInternalRootW5(root, [], ids),
+        recoverW5: (root, qualification) =>
+          settleInternalRootW5(
+            root,
+            join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+            windows
+              ? { ...qualification, assertCold: qualification.assertHeld }
+              : qualification,
+            {
+              ownedChildPath: filesystemOptions.ownedChildPath,
+              windowsProcessPath: resolve(
+                '.cache/bin/win32-x64/canopy-process-identity.exe',
+              ),
+              abandonCommits: ids,
+            },
+          ).then(() => undefined),
+      });
+      const blockers = (await diagnoseInternalRootW5(identity.source)).join(
+        '\n',
+      );
+      for (const text of [
+        operation,
+        `paths=["workspaces/${relativePath}"]`,
+        'reason="ENOSPC: no space left on device, write"',
+        `--abandon-commit ${commitId}`,
+      ])
+        expect(blockers).toContain(text);
+      await expect(run()).rejects.toThrow('ENOSPC');
+      expect(await readFile(path, 'utf8')).toBe(before);
+      for (const unknown of [commitId + 100, appliedId]) {
+        await expect(
+          diagnoseInternalRootW5(identity.source, [], [unknown]),
+        ).rejects.toThrow('does not match');
+        ids = [unknown];
+        await expect(run()).rejects.toThrow(
+          windows ? 'macOS/Linux' : 'does not match',
+        );
+      }
+      ids = [commitId];
+      if (windows) {
+        expect(
+          (await diagnoseInternalRootW5(identity.source, [], ids)).join(' '),
+        ).toContain('macOS/Linux');
+        await expect(run()).rejects.toThrow('macOS/Linux');
+        return;
+      }
+      expect(
+        (await diagnoseInternalRootW5(identity.source, [], ids)).join(' '),
+      ).toContain(`--abandon-commit ${keyedId}`);
+      ids = [commitId, keyedId];
+      const logPath = join(identity.source, 'w5/commit-log.sqlite');
+      const logBeforePreview = await readFile(logPath);
+      const preview = await migrateInternalRoot(
+        worker,
+        identity,
+        { apply: false, declareInternal: true },
+        repairs,
+      );
+      expect(await readFile(logPath)).toEqual(logBeforePreview);
+      expect(await readFile(path, 'utf8')).toBe(before);
+      if (history === 'mismatched') {
+        expect(preview).toMatchObject({
+          kind: 'inventory',
+          preflight: { blockers: ['log-mismatch: index.json'] },
+        });
+        await expect(run()).rejects.toThrow('log-mismatch');
+        return;
+      }
+      expect(preview).toMatchObject({
+        kind: 'inventory',
+        preflight: { blockers: [] },
+      });
+      expect((await diagnoseW5State(identity.source)).commits).toHaveLength(2);
+      const actualOpen = fs.open;
+      const failEvidence = jest
+        .spyOn(fs, 'open')
+        .mockImplementation(async (...args) => {
+          if (String(args[0]).includes('abandoned-w5-commits-'))
+            throw new Error('ENOSPC: cannot retain evidence');
+          return actualOpen(...args);
+        });
+      try {
+        await expect(run()).rejects.toThrow('cannot retain evidence');
+      } finally {
+        failEvidence.mockRestore();
+      }
+      expect((await diagnoseW5State(identity.source)).commits).toHaveLength(2);
+      const syncFailures: jest.SpyInstance[] = [];
+      const failEvidenceSync = jest
+        .spyOn(fs, 'open')
+        .mockImplementation(async (...args) => {
+          const file = await actualOpen(...args);
+          if (String(args[0]).includes('abandoned-w5-commits-'))
+            syncFailures.push(
+              jest
+                .spyOn(file, 'sync')
+                .mockRejectedValueOnce(
+                  new Error('ENOSPC: cannot sync evidence'),
+                ),
+            );
+          return file;
+        });
+      try {
+        await expect(run()).rejects.toThrow('cannot sync evidence');
+      } finally {
+        failEvidenceSync.mockRestore();
+        for (const failure of syncFailures) failure.mockRestore();
+      }
+      expect((await diagnoseW5State(identity.source)).commits).toHaveLength(2);
+      const previousEvidence = new Set(await readdir(identity.coordination));
+      const interruptBatch = jest.spyOn(
+        W5CommitLogHost.prototype,
+        'abandonRecoveryRequiredCommit',
+      );
+      const abandon = interruptBatch.getMockImplementation();
+      if (!abandon) throw new Error('Missing original abandon implementation');
+      interruptBatch.mockImplementation(async function (
+        this: W5CommitLogHost,
+        id,
+      ) {
+        if (id === keyedId)
+          throw new Error('fixture interrupted second abandon');
+        await abandon.call(this, id);
+      });
+      try {
+        await expect(run()).rejects.toThrow('interrupted second abandon');
+      } finally {
+        interruptBatch.mockRestore();
+      }
+      expect(
+        (await diagnoseW5State(identity.source)).commits.map(
+          ({ commitId }) => commitId,
+        ),
+      ).toEqual([keyedId]);
+      expect(await readFile(path, 'utf8')).toBe(before);
+      const evidenceName = (await readdir(identity.coordination)).find(
+        (name) =>
+          name.startsWith('abandoned-w5-commits-') &&
+          !previousEvidence.has(name),
+      );
+      if (!evidenceName) throw new Error('Missing commit evidence');
+      await expect(
+        diagnoseInternalRootW5(identity.source, [], ids),
+      ).rejects.toThrow('does not match');
+      ids = [keyedId];
+      const build = worker.build.bind(worker);
+      worker.build = (): ReturnType<InternalRootMigrationWorker['build']> =>
+        Promise.reject(new Error('after W5 abandonment'));
+      await expect(run()).rejects.toThrow('after W5 abandonment');
+      worker.build = build;
+      const stopped = await worker.readJournal(identity);
+      if (!stopped) throw new Error('Missing stopped migration');
+      ids = [];
+      await writeFile(join(identity.source, 'new-work'), 'current source');
+      await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+      const preserve = worker.preserveUnpublished.bind(worker);
+      worker.preserveUnpublished = async (
+        journal,
+        checkOnly,
+      ): Promise<void> => {
+        await preserve(journal, checkOnly);
+        if (!checkOnly)
+          throw new Error('interrupted restart after W5 abandonment');
+      };
+      const restart = (): ReturnType<typeof migrateInternalRoot> =>
+        migrateInternalRoot(
+          worker,
+          identity,
+          { ...apply, restart: true },
+          repairs,
+        );
+      await expect(restart()).rejects.toThrow(
+        'interrupted restart after W5 abandonment',
+      );
+      worker.preserveUnpublished = preserve;
+      expect(await worker.readJournal(identity)).toBeNull();
+      await expect(
+        createFreshInternalRoot({ identity, worker, ...filesystemOptions }),
+      ).rejects.toMatchObject({ reason: 'recovery-required' });
+      expect(
+        await statIfPresent(
+          join(
+            identity.coordination,
+            `restarted-${stopped.transactionId}`,
+            'journal.json',
+          ),
+        ),
+      ).not.toBeNull();
+      const retainedEvidence = await readFile(
+        join(identity.coordination, evidenceName),
+      );
+      await expect(restart()).resolves.toMatchObject({ kind: 'complete' });
+      expect(await readFile(join(identity.coordination, evidenceName))).toEqual(
+        retainedEvidence,
+      );
+      expect(
+        await readFile(join(identity.destination, 'new-work'), 'utf8'),
+      ).toBe('current source');
+      expect(await readFile(path, 'utf8')).toBe(before);
+      expect(
+        await readFile(
+          join(identity.destination, 'workspaces', relativePath),
+          'utf8',
+        ),
+      ).toBe(before);
+      const unchanged = await lstat(path);
+      expect({ ino: unchanged.ino, mtime: unchanged.mtimeMs }).toEqual({
+        ino: original.ino,
+        mtime: original.mtimeMs,
+      });
+      expect((await diagnoseW5State(identity.source)).commits).toEqual([]);
+      const evidence: unknown = JSON.parse(
+        await readFile(join(identity.coordination, evidenceName), 'utf8'),
+      );
+      expect(evidence).toMatchObject({
+        source: identity.source,
+        commits: [
+          {
+            commit: {
+              commit_id: commitId,
+              operation,
+              diagnostics_json: enospc,
+            },
+            files: [
+              {
+                path,
+                contents: after,
+                previous_fingerprint: fingerprintW5File(before),
+              },
+            ],
+          },
+          {
+            commit: { commit_id: keyedId, operation: receipt.operation },
+            receipts: [
+              {
+                operation: receipt.operation,
+                idempotency_key: receipt.idempotencyKey,
+              },
+            ],
+          },
+        ],
+      });
+      await assertPrivate(
+        join(identity.coordination, evidenceName),
+        'file',
+        0o600,
+      );
+      await checkInstalledShape();
+      ids = [commitId, keyedId];
+      await expect(
+        diagnoseInternalRootW5(identity.source, [], ids),
+      ).rejects.toThrow('does not match');
+    },
+  );
+
+  test('commit opt-ins refuse unsafe receipt release without dropping any selected record', async () => {
+    await source();
+    await createPrivateMigrationDirectory(join(identity.source, 'w5'), host);
+    const path = join(identity.source, 'w5/commit-log.sqlite');
+    const log = W5CommitLog.open(path);
+    const ids: number[] = [];
+    try {
+      for (const operation of [
+        'core.worktree.update',
+        'core.worktree.create',
+      ]) {
+        const { commitId } = log.commit({
+          operation,
+          advance: [],
+          files: [],
+          outcome: {},
+          receipt: {
+            caller: 'fixture',
+            operation,
+            idempotencyKey: operation,
+            fingerprint: operation,
+          },
+        });
+        log.markCommitRecoveryRequired(commitId, { error: 'ENOSPC' });
+        ids.push(commitId);
+      }
+    } finally {
+      log.close();
+    }
+    const before = await readFile(path);
+    await expect(
+      diagnoseInternalRootW5(identity.source, [], ids),
+    ).rejects.toThrow('operation-excluded');
+    expect(await readFile(path)).toEqual(before);
+    expect(
+      (await diagnoseW5State(identity.source)).commits.map(
+        ({ commitId }) => commitId,
+      ),
+    ).toEqual(ids);
+  });
   test.each([
     'settled',
     'reservation',
@@ -9427,7 +12250,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     });
     if (windows) {
       const build = worker.build.bind(worker);
-      worker.build = async (journal): Promise<string> => {
+      worker.build = async (
+        journal,
+      ): ReturnType<InternalRootMigrationWorker['build']> => {
         const inode = await build(journal);
         await chmod(join(identity.source, 'preferences.json'), 0o400);
         return inode;
@@ -9461,7 +12286,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     });
     if (windows) {
       const build = worker.build.bind(worker);
-      worker.build = async (journal): Promise<string> => {
+      worker.build = async (
+        journal,
+      ): ReturnType<InternalRootMigrationWorker['build']> => {
         const inode = await build(journal);
         attempts++;
         if (attempts === 1) {
@@ -9519,7 +12346,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       let failed = false;
       worker = {
         ...worker,
-        build: async (journal): Promise<string> => {
+        build: async (
+          journal,
+        ): ReturnType<InternalRootMigrationWorker['build']> => {
           if (
             point === 'returned-to-private' &&
             !failed &&
@@ -9867,8 +12696,8 @@ lsofParserFixture(
   },
 );
 
-// Permission failures in unrelated macOS system trees must not block migration.
-lsofParserFixture.each(['EACCES', 'EPERM'])(
+// Protected or deleted macOS mappings retain their accessible ancestor aliases.
+lsofParserFixture.each(['EACCES', 'EPERM', 'ENOENT'])(
   'POSIX lsof cold proof projects %s paths through the deepest accessible ancestor',
   async (code) => {
     const home = await mkdtemp(join(tmpdir(), 'cold-open-files-'));
@@ -9898,7 +12727,9 @@ lsofParserFixture.each(['EACCES', 'EPERM'])(
           for (const kind of ['open-file', 'skipped-mount']) {
             const check = (): void =>
               assertInternalRootColdOpenFiles(
-                kind === 'open-file' ? `${self}p200\0f3\0n${path}\0` : self,
+                kind === 'open-file'
+                  ? `${self}p200\0f3\0n${path} (deleted)\0`
+                  : self,
                 kind === 'skipped-mount'
                   ? `lsof: WARNING: can't stat() apfs file system ${path}\n      Output information may be incomplete.\n`
                   : '',
@@ -9920,7 +12751,7 @@ lsofParserFixture.each(['EACCES', 'EPERM'])(
 );
 
 lsofParserFixture.each(['EIO', 'ENOENT', 'ELOOP'])(
-  'POSIX lsof cold proof retains non-permission observation failure %s',
+  'POSIX lsof cold proof retains observation failure %s without a resolvable ancestor',
   (code) => {
     const failure = Object.assign(new Error('Injected observation failure'), {
       code,
@@ -9946,7 +12777,7 @@ lsofParserFixture.each(['EIO', 'ENOENT', 'ELOOP'])(
             new Set([100]),
           ),
         ).toThrow(failure);
-        expect(observation).toHaveBeenCalledTimes(1);
+        expect(observation).toHaveBeenCalledTimes(code === 'ENOENT' ? 3 : 1);
       }
       observation.mockImplementation((path) => {
         if (path === '/unrelated/file') throw failure;

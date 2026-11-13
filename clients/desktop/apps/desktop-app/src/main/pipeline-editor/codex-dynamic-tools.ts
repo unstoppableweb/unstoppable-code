@@ -2,9 +2,9 @@ import {
   PIPELINE_EDITOR_TOOL_ENTRIES,
   getCanonicalPipelineEditorToolKey,
 } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
-import type { DynamicToolCallParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallParams';
-import type { DynamicToolCallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallResponse';
-import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
+import type { DynamicToolCallParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallParams';
+import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
+import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
 import type { CanopyInjectedToolContext } from '../canopy-tools/core';
 import { defineCodexFunctionToolSpec } from '../codex/dynamic-tool-spec';
 import { ASK_USER_QUESTION_DESCRIPTION } from '../canopy-tools/definitions';

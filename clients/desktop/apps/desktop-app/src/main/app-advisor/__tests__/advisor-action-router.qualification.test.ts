@@ -77,8 +77,9 @@ jest.mock('../action-caller', (): object => {
   };
 });
 
-// automation.share is legacy; this file treats it as core to prove the
-// runtime refuses to hand a core type to the renderer.
+// automation.open_editor is presentation, so it never gets a main executor;
+// this file treats it as core to prove the runtime refuses to hand a core
+// type to the renderer.
 jest.mock(
   '@canopy/desktop-shared/lib/app-advisor-action-dispositions',
   (): object => {
@@ -90,7 +91,7 @@ jest.mock(
       appAdvisorActionDisposition: (
         type: string,
       ): ReturnType<typeof actual.appAdvisorActionDisposition> =>
-        type === 'automation.share'
+        type === 'automation.open_editor'
           ? { kind: 'core', access: 'read', executor: 'automation' }
           : actual.appAdvisorActionDisposition(type),
     };
@@ -421,11 +422,11 @@ describe('App Advisor action router (CAN-4133)', () => {
       },
     );
 
-    const share = action({ type: 'automation.share', id: 'a' });
-    if (share.type !== 'automation.share')
+    const open = action({ type: 'automation.open_editor', id: 'a' });
+    if (open.type !== 'automation.open_editor')
       throw new Error('Unexpected action.');
     const response = await created.dispatchRendererAction(
-      share,
+      open,
       undefined,
       'toolu_3',
     );
@@ -435,8 +436,9 @@ describe('App Advisor action router (CAN-4133)', () => {
       ok: false,
       error: {
         code: 'unsupported_action',
-        message:
-          APP_ADVISOR_ACTION_TEXTS.coreReachedRenderer('automation.share'),
+        message: APP_ADVISOR_ACTION_TEXTS.coreReachedRenderer(
+          'automation.open_editor',
+        ),
       },
     });
     expect(mockRequestRendererTool).not.toHaveBeenCalled();

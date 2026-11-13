@@ -63,6 +63,8 @@ import {
   registerPendingTabCreation,
 } from './pending-tab-creation';
 import type { ChatCommandDisposition } from './revisioned-commands';
+import { chatBackendFor } from './backend';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 export function shouldEmitNewChatStartedWatcher(
   tab: ChatTab | undefined,
@@ -240,8 +242,10 @@ export function appendNewTab(
     sel.worktreeId,
     get().worktreeDefaultPlugins,
   );
+  // A cloud chat starts on the web core's own default model until one is
+  // picked; this computer's defaults never stand in for it (CAN-6365).
   const resolvedDefaults =
-    sel.model && sel.thinkingLevel
+    (sel.model && sel.thinkingLevel) || isWebCoreScope(sel.projectId)
       ? {}
       : resolveTabDefaults(sel.projectId, get().modelDefaults);
   const defaultModel = resolvedDefaults.model;
@@ -577,7 +581,7 @@ export async function requestCodexThreadForClonedTab(
   log: string,
 ): Promise<string | undefined> {
   try {
-    const { forkedThreadId } = await window.api.chat.forkCodexThread({
+    const { forkedThreadId } = await chatBackendFor(args).chat.forkCodexThread({
       projectId: args.projectId,
       worktreeId: args.worktreeId,
       chatId: args.clonedTabId,

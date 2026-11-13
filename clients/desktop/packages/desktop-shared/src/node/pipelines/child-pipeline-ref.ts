@@ -2,8 +2,8 @@ import type { PipelineScalar } from '@canopy/pipeline-interop/document';
 import {
   buildExpressionContext,
   cascadeEnv,
-} from './executor/execution-context';
-import { interpolateExpression } from './executor/expression-evaluator';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-context';
+import { interpolateExpression } from '@canopy/execution-engine/node/pipelines/executor/expression-evaluator';
 
 /**
  * Why a child pipeline ref cannot be resolved before a run.

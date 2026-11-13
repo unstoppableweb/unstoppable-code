@@ -41,6 +41,11 @@ export interface AgentPipelineRunExecution {
   worktreeId?: string;
   eventName: string;
   startedAt: string;
+  /**
+   * `cloud` for a run started in the cloud (CAN-6187): `executionId` is then
+   * the cloud run's operation id and `executionStatus` its admission.
+   */
+  location?: 'cloud';
 }
 
 export type AgentPipelineRunResult =

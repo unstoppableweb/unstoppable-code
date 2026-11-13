@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { isPathInside } from '../lib/path-safety';
-import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { ExecutionRuntime } from '@canopy/execution-engine/node/pipelines/executor/types';
 import type {
   ActionDefinition,
   ActionInputDef,

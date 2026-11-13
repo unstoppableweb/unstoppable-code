@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MEMORY_SYNC_LIMITS } from './constants';
+import { MEMORY_SYNC_LIMITS, MEMORY_SYNC_QUOTAS } from './constants';
 import {
   MemoryChangeCursorSchema,
   compareMemoryChangeSeq,
@@ -77,6 +77,19 @@ export const MemoryProjectSettingResponseSchema = z.strictObject({
   projectId: MemoryProjectIdSchema,
   mode: MemorySyncModeSchema,
 });
+
+/**
+ * Every project the account chose a mode for (design §22). A project not
+ * listed follows the account's `defaultProjectScope`.
+ */
+export const MemoryProjectSettingListResponseSchema = z.strictObject({
+  projects: z
+    .array(MemoryProjectSettingResponseSchema)
+    .max(MEMORY_SYNC_QUOTAS.scopesPerAccount),
+});
+export type MemoryProjectSettingList = z.output<
+  typeof MemoryProjectSettingListResponseSchema
+>;
 
 export const MemoryAccountPolicySchema = z.strictObject({
   blockedOriginOrganizationIds: z

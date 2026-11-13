@@ -6,6 +6,7 @@ import type {
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
+import type { WorkerPipelineExecutionView } from '@canopy/protocol/canopy-core';
 import {
   isSameWorkspaceContext,
   parseWorkspaceContext,
@@ -24,6 +25,7 @@ import {
   isTerminalExecutionStatus,
 } from '@/lib/execution-actions';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
+import { useCloudPipelineRuns } from '@/lib/workflows/cloud-runs';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import {
   retainExecutionFeed,
@@ -39,6 +41,7 @@ import {
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { usePipelineCloudRuns } from '../../activity/pipelineRunOn';
 import { resolveAutomationRunDestination } from '../../automations/resolveAutomationRunDestination';
 import { watcherDestinationDisplay } from '../../watchers/watcherDisplay';
 
@@ -50,11 +53,18 @@ export interface WorkflowRunFeed {
   readonly executionsById: ReadonlyMap<string, ExecutionSummary>;
   readonly runsById: ReadonlyMap<string, ScheduledActivityRun>;
   readonly watchersById: ReadonlyMap<string, AppAdvisorWatcherSummary>;
+  /** Cloud runs by execution id, while the feed lists them (CAN-6326). */
+  readonly cloudRunsById: ReadonlyMap<string, WorkerPipelineExecutionView>;
   /** The executions could not be listed. */
   readonly error: string | null;
+  /** The cloud runs could not be listed; the ones listed before are kept. */
+  readonly cloudError: string | null;
   /** The first load of the executions or the automations has not finished. */
   readonly loading: boolean;
+  /** Older automation runs may follow. */
   readonly hasMore: boolean;
+  /** Older cloud runs may follow. */
+  readonly cloudHasMore: boolean;
   readonly loadingMore: boolean;
   /** The last Load more could not read some automation's older runs. */
   readonly loadMoreFailed: boolean;
@@ -162,6 +172,13 @@ export function useWorkflowRunFeed({
   );
   const projects = useProjectsStore((state) => state.projects);
   const chatTitles = useChatTabTitles();
+  // Cloud runs join the feed only while the web core manifest says they are
+  // available (CAN-6085); otherwise nothing about the feed changes. A feed
+  // narrowed to one workspace lists none: cloud runs belong to no project yet.
+  const { pipelineCloudRuns } = usePipelineCloudRuns();
+  const listsCloud = pipelineCloudRuns === true && predicates === undefined;
+  const cloud = useCloudPipelineRuns(listsCloud);
+  const cloudRuns = listsCloud ? cloud.state.runs : undefined;
 
   // Older automation runs, loaded on demand and merged behind the hot window.
   const [olderRuns, setOlderRuns] = useState<readonly ScheduledActivityRun[]>(
@@ -232,6 +249,14 @@ export function useWorkflowRunFeed({
           : scope.context === undefined ||
             projectIdsInContext.has(execution.project_id),
       watcherInScope: scope.watcherInContext,
+      cloudRuns,
+      // A cloud run belongs to no project yet, so its recorded owner files it.
+      cloudRunInScope: (view) =>
+        unprojectedExecutionInContext(
+          view.execution.owner ?? undefined,
+          scope.context,
+          parseOwner,
+        ),
       ...predicates,
       executionActions: executionRunActions,
       automationRunResult: (run) => {
@@ -275,6 +300,7 @@ export function useWorkflowRunFeed({
   }, [
     activities,
     chatTitles,
+    cloudRuns,
     error,
     executions,
     executionsLoaded,
@@ -302,7 +328,11 @@ export function useWorkflowRunFeed({
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
 
+  const cloudStore = cloud.store;
+  const cloudHasMore =
+    cloudRuns !== undefined && cloud.state.nextCursor !== null;
   const loadMore = useCallback((): void => {
+    if (cloudHasMore) void cloudStore?.loadMore();
     if (loadingMoreRef.current) return;
     const api = window.api?.automations;
     if (!api?.listRuns) {
@@ -340,7 +370,7 @@ export function useWorkflowRunFeed({
       loadingMoreRef.current = false;
       setLoadingMore(false);
     })();
-  }, [candidates, runs]);
+  }, [candidates, cloudHasMore, cloudStore, runs]);
 
   // Another context lists other automations, so their cursors start over.
   const contextKey =
@@ -379,16 +409,26 @@ export function useWorkflowRunFeed({
       executionsById: new Map(executions.map((entry) => [entry.id, entry])),
       runsById: new Map(runs.map((run) => [run.id, run])),
       watchersById: new Map(watchers.map((watcher) => [watcher.id, watcher])),
+      cloudRunsById: new Map(
+        (cloudRuns ?? []).map((view) => [view.execution.executionId, view]),
+      ),
       error,
+      cloudError:
+        cloudRuns === undefined ? null : (cloud.state.error?.message ?? null),
       loading: !executionsLoaded || automationsLoading,
       hasMore: !exhausted && candidates.length > 0,
-      loadingMore,
+      cloudHasMore,
+      loadingMore: loadingMore || cloud.state.loadingMore,
       loadMoreFailed,
       loadMore,
     }),
     [
       automationsLoading,
       candidates,
+      cloud.state.error,
+      cloud.state.loadingMore,
+      cloudHasMore,
+      cloudRuns,
       error,
       executions,
       executionsLoaded,

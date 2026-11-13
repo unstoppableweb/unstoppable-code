@@ -11,6 +11,8 @@ import {
 export interface InterruptedWorkScan {
   chatScopes: Array<{ projectId: string; worktreeId: string }>;
   pipelineIds: string[];
+  /** Daemon runs with a commit step whose hooks startup catches up on (CAN-6012 D3). */
+  daemonCommitHookIds: string[];
   errors: string[];
 }
 const interruptedStatuses = new Set([
@@ -32,6 +34,14 @@ async function directories(path: string, errors: string[]): Promise<Dirent[]> {
     return [];
   }
 }
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 /** Parse histories only in a worker. Return identities, never transcript contents. */
 export async function scanInterruptedWork(
   roots: string[],
@@ -40,6 +50,7 @@ export async function scanInterruptedWork(
   const result: InterruptedWorkScan = {
     chatScopes: [],
     pipelineIds: [],
+    daemonCommitHookIds: [],
     errors: [],
   };
   for (const root of roots) {
@@ -220,14 +231,21 @@ export async function scanInterruptedWork(
   for (const entry of await directories(executionsDir, result.errors)) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     try {
-      const state: unknown = JSON.parse(
-        await readFile(join(executionsDir, entry.name), 'utf8'),
-      );
+      const text = await readFile(join(executionsDir, entry.name), 'utf8');
+      const state: unknown = JSON.parse(text);
+      const executionId = entry.name.slice(0, -5);
       if (
         record(state) &&
         ['running', 'pending'].includes(String(state.status))
       )
-        result.pipelineIds.push(entry.name.slice(0, -5));
+        result.pipelineIds.push(executionId);
+      if (
+        text.includes('builtin/git-commit-push') &&
+        (await exists(
+          join(executionsDir, executionId, 'host', 'commit-hooks-pending.json'),
+        ))
+      )
+        result.daemonCommitHookIds.push(executionId);
     } catch (error) {
       result.errors.push(`Pipeline recovery ${entry.name}: ${String(error)}`);
     }

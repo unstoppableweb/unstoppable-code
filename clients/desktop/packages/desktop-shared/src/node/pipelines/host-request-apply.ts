@@ -10,18 +10,18 @@ import type {
   PipelineAgentChatAddress,
   PipelineExecutionInitiator,
 } from '@canopy/execution-engine/types/pipeline';
-import { hostArtifactsDir } from './executor/host-action-runner';
+import { hostArtifactsDir } from '@canopy/execution-engine/node/pipelines/executor/host-action-runner';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
   PipelineHostActionResult,
   PipelineHostActions,
-} from './executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   fromPortableHostActionRequest,
   toPortableHostResult,
   UNPORTABLE_HOST_RESULT,
-} from './host-request-portable';
+} from '@canopy/execution-engine/node/pipelines/host-request-portable';
 
 /*
  * The owner's side of a daemon host step (CAN-5771): one request raised by a

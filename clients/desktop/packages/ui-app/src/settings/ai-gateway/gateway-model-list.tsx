@@ -122,7 +122,15 @@ export function GatewayModelList({
 
 export interface AddGatewayModelFormProps {
   busy: boolean;
+  /** Every row the new model must not duplicate, on or off. */
   existing: readonly ModelGatewayModel[];
+  /**
+   * The gateway already has as many enabled models as it can hold. Defaults
+   * to `existing` reaching the limit, for a caller whose rows are all saved.
+   */
+  atCapacity?: boolean;
+  /** Prefills the gateway ID: a search that found nothing. */
+  initialGatewayId?: string;
   organizationId: string;
   onAdd: (model: ModelGatewayModel) => void;
   onCancel: () => void;
@@ -138,12 +146,14 @@ export interface AddGatewayModelFormProps {
 export function AddGatewayModelForm({
   busy,
   existing,
+  atCapacity = existing.length >= MODEL_GATEWAY_MAX_MODELS,
+  initialGatewayId = '',
   organizationId,
   onAdd,
   onCancel,
 }: AddGatewayModelFormProps): JSX.Element {
   const [label, setLabel] = useState('');
-  const [gatewayId, setGatewayId] = useState('');
+  const [gatewayId, setGatewayId] = useState(initialGatewayId);
   const [harness, setHarness] = useState<ModelGatewayModel['harness']>('codex');
   const [contextWindow, setContextWindow] = useState(
     String(DEFAULT_GATEWAY_CONTEXT_WINDOW),
@@ -168,7 +178,7 @@ export function AddGatewayModelForm({
     trimmedLabel.length <= MODEL_GATEWAY_MAX_LABEL_LENGTH &&
     trimmedGatewayId.length > 0 &&
     trimmedGatewayId.length <= MODEL_GATEWAY_MAX_ID_LENGTH &&
-    existing.length < MODEL_GATEWAY_MAX_MODELS &&
+    !atCapacity &&
     slug.length > 0 &&
     Number.isSafeInteger(parsedContext) &&
     String(parsedContext) === contextWindow.trim() &&

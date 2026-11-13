@@ -114,6 +114,8 @@ const CURSOR_READ_ONLY_APP_TOOL_KEYS: ReadonlySet<CanopyInjectedToolKey> =
     'get_script_output',
     'get_git_preferences',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'read_pipeline_yaml',
     'show_files',

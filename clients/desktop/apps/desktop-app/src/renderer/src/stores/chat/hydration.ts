@@ -14,6 +14,7 @@ import { relabelFileTabs } from './persisted-tabs';
 import { resolveTabProviderType } from './tab-utils';
 import { blockedPersistenceKeys } from './persistence';
 import { chatStoreApi } from './store-ref';
+import { chatBackendFor } from './backend';
 
 export function mergeHydratedWorktreeChatState(
   hydratedState: WorktreeChatState,
@@ -598,7 +599,7 @@ export async function canUnloadIdleWorktreeChat(
   now: number,
 ): Promise<IdleWorktreeChatCandidate | null> {
   try {
-    const active = await window.api.chat.activeSessions({
+    const active = await chatBackendFor(candidate).chat.activeSessions({
       projectId: candidate.projectId,
       worktreeId: candidate.worktreeId,
     });

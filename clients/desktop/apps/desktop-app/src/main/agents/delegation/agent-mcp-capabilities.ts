@@ -16,7 +16,7 @@ import {
   normalizeManagedMcpServerLabel,
   readManagedMcpServerNameDigest,
 } from '@canopy/execution-engine/node/plugins/mcp-server-name';
-import { resolvePluginServerCwd } from '@canopy/desktop-shared/node/plugins/plugin-resolver';
+import { resolvePluginServerCwd } from '@canopy/execution-engine/node/plugins/plugin-resolver';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { getMcpHttpAuthHandler } from '@canopy/execution-engine/lib/mcp-http-auth';
 import type {

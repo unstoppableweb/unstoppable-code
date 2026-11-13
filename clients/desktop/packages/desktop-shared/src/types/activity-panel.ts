@@ -18,6 +18,7 @@ import type {
   TrackedPlanData,
   TrackedPlanGetRequest,
   TrackedPlanListRequest,
+  UnshareTrackedPlanRequest,
   UpdateTrackedPlanRequest,
   WorktreeSummaryData,
 } from '../types';
@@ -443,6 +444,10 @@ export interface ActivityPanelApi {
     ): Promise<void>;
     share(
       request: ShareTrackedPlanRequest,
+    ): Promise<ShareOperationResult<TrackedPlanData | null>>;
+    /** Stop sharing a plan (CAN-5904); the answered plan has no `share`. */
+    unshare(
+      request: UnshareTrackedPlanRequest,
     ): Promise<ShareOperationResult<TrackedPlanData | null>>;
     import(
       request: ImportTrackedPlanRequest,

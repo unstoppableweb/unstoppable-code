@@ -119,13 +119,18 @@ export interface LocalMemoryStore {
   consolidateNow(
     scope: LocalMemoryScopeRequest,
   ): Promise<ManualConsolidationOutcome>;
-  rebuild(scope: LocalMemoryScopeRequest): Promise<LocalMemoryRebuildResult>;
+  /** `precondition` runs under the scope's write lock before anything changes. */
+  rebuild(
+    scope: LocalMemoryScopeRequest,
+    precondition?: () => Promise<void>,
+  ): Promise<LocalMemoryRebuildResult>;
   listSnapshots(
     scope: LocalMemoryScopeRequest,
   ): Promise<LocalMemorySnapshotSummary[]>;
   restoreSnapshot(
     scope: LocalMemoryScopeRequest,
     snapshotId: string,
+    precondition?: () => Promise<void>,
   ): Promise<LocalMemorySnapshotRestoreResponse>;
   /** Counts a use of each file now. */
   recordUsage(
@@ -212,19 +217,19 @@ export const localMemoryStore: LocalMemoryStore = {
       await import('./manual-consolidation-trigger');
     return runManualLocalMemoryConsolidation(scope);
   },
-  rebuild: async (scope) => {
+  rebuild: async (scope, precondition) => {
     const { runManualLocalMemoryRebuild } =
       await import('./manual-consolidation-trigger');
-    return runManualLocalMemoryRebuild(scope);
+    return runManualLocalMemoryRebuild(scope, precondition);
   },
   listSnapshots: async (scope) => {
     const { listLocalMemorySnapshots } = await import('./snapshots');
     return listLocalMemorySnapshots(dir(scope));
   },
-  restoreSnapshot: async (scope, snapshotId) => {
+  restoreSnapshot: async (scope, snapshotId, precondition) => {
     const { restoreManualLocalMemorySnapshot } =
       await import('./manual-consolidation-trigger');
-    return restoreManualLocalMemorySnapshot(scope, snapshotId);
+    return restoreManualLocalMemorySnapshot(scope, snapshotId, precondition);
   },
   recordUsage: (scope, fileKeys) => recordUsage(dir(scope), fileKeys),
   recordUsageSoon: (scope, fileKeys, deferredKeys) => {

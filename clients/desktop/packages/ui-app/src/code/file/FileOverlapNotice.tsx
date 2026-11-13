@@ -201,7 +201,7 @@ function OverlapOption({
   onChoose,
 }: {
   readonly side: OverlapChoice;
-  /** The choice's visible label: `Keep mine`, `Use {App}'s`, `Use latest`. */
+  /** The choice's visible label: `Keep mine`, `Keep {App}'s`, `Keep latest`. */
   readonly label: string;
   /** Names the wording for the expand control: `your wording`. */
   readonly wordingName: string;
@@ -377,7 +377,7 @@ function optionNotes(
 
 /**
  * Compares each passage both the user and a newer version changed: two
- * choices per passage, **Keep mine** and **Use {App}'s** / **Use latest**,
+ * choices per passage, **Keep mine** and **Keep {App}'s** / **Keep latest**,
  * each quoting its wording with its own edits marked and noting which of
  * the other side's edits it drops. Changes outside the passages are kept.
  * Choices apply to the buffer once every passage has one; nothing is written
@@ -407,11 +407,11 @@ export function FileOverlapNotice({
     change?.reloading === true ||
     (saveConflict !== null && saveConflict.resolving !== null);
   const source = saveConflict?.source ?? change?.source ?? null;
-  const attributed = appName !== undefined && source === 'agent-edit';
+  const attributed = Boolean(appName) && source === 'agent-edit';
   const total = overlap.regions.length;
   const plural = total > 1;
   const active = firstUnresolvedPassage(overlap);
-  const theirsChoice = attributed ? `Use ${appName}'s` : 'Use latest';
+  const theirsChoice = attributed ? `Keep ${appName}'s` : 'Keep latest';
   const theirsOwner = attributed ? `${appName}'s` : 'the latest';
   const askAction =
     attributed && onAskToKeepEdits !== undefined ? onAskToKeepEdits : null;

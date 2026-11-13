@@ -2,17 +2,14 @@ import type { JSX } from 'react';
 import { AvatarsSpecimen } from './componentsLabAvatars';
 import { ButtonsSpecimen, ListRowSpecimen } from './componentsLabButtons';
 import { ChipSection, ContextSection } from './MarkersLabPage';
+import { FieldsSpecimen } from './FieldsLabPage';
 import {
   FailureSpecimen,
   NoticeSpecimen,
   ToastSpecimen,
 } from './componentsLabFeedback';
 import { IconScaleSpecimen } from './componentsLabIcons';
-import {
-  DialogsSpecimen,
-  FieldsSpecimen,
-  MarkersSpecimen,
-} from './componentsLabGroups';
+import { DialogsSpecimen, MarkersSpecimen } from './componentsLabGroups';
 import {
   FactsSpecimen,
   ReferenceChipsSpecimen,
@@ -28,9 +25,12 @@ import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
 import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
 import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
 import { AgentSentSpecimen } from './componentsLabAgentSent';
+import { ComposerActionsSpecimen } from './componentsLabComposerActions';
+import { AgentAliasModelSpecimen } from './componentsLabAgentAliasModel';
 import { DisclosuresSpecimen } from './componentsLabDisclosures';
 import { HeadingsSpecimen } from './componentsLabHeadings';
 import { LoadingSpecimen } from './componentsLabLoading';
+import { ColorSwatchesSpecimen } from './componentsLabColorSwatches';
 import { SurfacesSpecimen } from './componentsLabSurfaces';
 import { SidebarPartsSpecimen } from './componentsLabSidebar';
 import { StatusPartsSpecimen } from './componentsLabStatus';
@@ -181,6 +181,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: FieldsSpecimen,
   },
   {
+    id: 'agent-alias-model',
+    name: 'Agent alias model fields',
+    group: 'Unified',
+    note: "An Agent alias inherits its agent's model or chooses a concrete model, with separate Agent and Model errors and a clear action.",
+    source: 'packages/ui-shared/src/components/AgentAliasModelFields.tsx',
+    prs: [],
+    View: AgentAliasModelSpecimen,
+  },
+  {
     id: 'icon-scale',
     name: 'Icon scale',
     group: 'Unified',
@@ -239,6 +248,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     prs: [7081],
     Stage: LoadingStage,
     View: LoadingSpecimen,
+  },
+  {
+    id: 'color-swatches',
+    name: 'Color swatches',
+    group: 'Unified',
+    note: 'ColorSwatchPicker: one row of fixed palette swatches as a radio group, each named by the color it renders in, never a free-form color.',
+    source: 'packages/ui-shared/src/components/ColorSwatchPicker.tsx',
+    prs: [],
+    View: ColorSwatchesSpecimen,
   },
   {
     id: 'progress',
@@ -545,6 +563,16 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/chat-look.tsx',
     prs: [],
     View: ChatLookSpecimen,
+  },
+  {
+    id: 'composer-actions',
+    name: 'Composer actions',
+    group: 'Unified',
+    note: 'The trailing composer action sends, stops, or runs a terminal command. The terminal label shows the run location or the last error.',
+    source:
+      'packages/ui-shared/src/components/{ComposerSendButton,TerminalComposerMode}.tsx',
+    prs: [],
+    View: ComposerActionsSpecimen,
   },
   {
     id: 'composer-plan-chip',

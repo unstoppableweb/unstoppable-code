@@ -4,17 +4,13 @@ import { DropdownMenuDivider } from '@canopy/ui-shared/components';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import {
-  RemoteControlComputerMenuItems,
   RemoteControlComputerPicker,
+  RemoteControlComputersMenuItem,
   remoteHostStatus,
   type RemoteControlComputerMenuItemsProps,
   type RemoteHostStatus,
 } from '@canopy/ui-app/remote-control';
-import {
-  COMPUTERS_LABEL,
-  THIS_COMPUTER_LABEL,
-  describeError,
-} from './remote-access-copy';
+import { THIS_COMPUTER_LABEL, describeError } from './remote-access-copy';
 
 export interface SidebarMachinePickerProps {
   /**
@@ -86,13 +82,13 @@ function useComputerMenu(): {
 }
 
 /**
- * The computers section of this computer's account menu, under the
- * Personal/organization accounts. This computer's sidebar has no picker, so
- * switching to a paired computer starts here. Rendered only in this
- * computer's own windows while remote access is available and signed in;
- * ends with a divider before the next section.
+ * The Computers row of this computer's account menu, between the account's
+ * own rows and Sign out, with the computers in its submenu. This computer's
+ * sidebar has no picker, so switching to a paired computer starts here.
+ * Rendered only in this computer's own windows while remote access is
+ * available and signed in; ends with a divider before Sign out.
  */
-export function AccountMenuComputersSection({
+export function AccountMenuComputersItem({
   onClose,
 }: {
   readonly onClose: () => void;
@@ -107,23 +103,11 @@ export function AccountMenuComputersSection({
   if (!local || !ready) return null;
   return (
     <>
-      <div
-        data-testid="sidebar-account-menu-computers-label"
-        className="pb-1 pl-2 pr-1 pt-1 text-xs fg-tertiary"
-      >
-        {COMPUTERS_LABEL}
-      </div>
-      <div
-        data-testid="sidebar-account-menu-computers"
-        className="flex flex-col gap-px"
-      >
-        <RemoteControlComputerMenuItems
-          {...menu}
-          onClose={onClose}
-          testIdPrefix="sidebar-account-menu-computer"
-          dividerBeforeAdd={false}
-        />
-      </div>
+      <RemoteControlComputersMenuItem
+        {...menu}
+        onClose={onClose}
+        testIdPrefix="sidebar-account-menu-computers"
+      />
       <DropdownMenuDivider />
     </>
   );
@@ -136,7 +120,7 @@ export function AccountMenuComputersSection({
  * Only a window opened for a paired computer renders it, with the
  * connection's status dot on the trigger. This computer's own windows reach
  * the same computers from the account menu instead
- * ({@link AccountMenuComputersSection}), so their sidebar looks as it does
+ * ({@link AccountMenuComputersItem}), so their sidebar looks as it does
  * with remote access off. The presentation is the shared
  * `RemoteControlComputerPicker`, which the web mounts too.
  */

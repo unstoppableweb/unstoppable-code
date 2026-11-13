@@ -38,7 +38,7 @@ export function DrawerWatcherControl({
       dataTestId={dataTestId ? `${dataTestId}-tooltip` : undefined}
       surfacePadding="card"
       content={
-        <div className="flex w-64 max-w-full flex-col gap-2 text-xs">
+        <div className="flex w-64 max-w-full flex-col gap-2 text-s">
           <div className="flex items-center gap-1.5 fg-tertiary">
             {heading} <span className="fg-quaternary">{count}</span>
           </div>
@@ -68,6 +68,8 @@ export function DrawerWatcherControl({
     >
       {label !== undefined ? (
         <DrawerInspectorAction
+          // It sits at the row's end among the row's controls.
+          alignment="inline"
           aria-label={ariaLabel}
           aria-haspopup="dialog"
           data-testid={dataTestId}
@@ -87,7 +89,6 @@ export function DrawerWatcherControl({
           aria-haspopup="dialog"
           stopKeyDownPropagation={false}
           dataTestId={dataTestId}
-          className="-ml-3"
           onClick={(): void => {
             setPreviewOpen(false);
             onClick();

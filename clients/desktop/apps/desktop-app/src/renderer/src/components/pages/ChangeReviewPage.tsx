@@ -706,10 +706,7 @@ function RichTooltipsAfter(): JSX.Element {
             onClick={noop}
           />
           <FastModeButton value={fastMode} onChange={setFastMode} />
-          <BubbleCopyBadge
-            copyText="Copied from the review page"
-            label="Copy to clipboard"
-          />
+          <BubbleCopyBadge copyText="Copied from the review page" />
           <VoiceInputButton
             state="idle"
             error={null}

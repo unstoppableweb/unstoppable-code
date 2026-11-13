@@ -44,6 +44,7 @@ import { AgentRow, type BackgroundTrayAgent } from './AgentRow';
 import { GROUP_LABEL_PX, useDrawerClock } from './drawer-layout';
 import { runCornerDot, summarizeDrawer } from './drawer-summary';
 import { DrawerRow } from './DrawerRow';
+import { DRAWER_ROW_LIST_CLASS } from './drawer-presentation';
 import {
   RUN_STATUS_LABELS,
   RunRow,
@@ -135,11 +136,11 @@ export interface BackgroundTrayProps {
   readonly renderRunWatcher?: (run: BackgroundTrayRun) => ReactNode;
   /**
    * `drawer` (default): its own section of the composer drawer, a summary
-   * line that opens the list. `tab`: only the list, always open, for the
-   * Background tab of `ComposerWorkDrawer`, which draws the header.
+   * line that opens the list. `tab`: only the list, always open. `grouped`:
+   * the composer work pills (`ComposerWorkDrawer`), with `composerQueue` as
+   * the Queued pill.
    */
   readonly presentation?: 'drawer' | 'tab' | 'grouped';
-  readonly groupedWithinDrawer?: boolean;
   readonly composerQueue?: {
     readonly count: number;
     readonly panel: ReactNode;
@@ -246,7 +247,6 @@ export function BackgroundTray({
   renderRunWatcher,
   presentation = 'drawer',
   composerQueue,
-  groupedWithinDrawer,
   renderWithDetails,
 }: BackgroundTrayProps): JSX.Element | null {
   const grouped = presentation === 'grouped';
@@ -578,24 +578,24 @@ export function BackgroundTray({
     onExpandedChange: setExpanded,
     needsYou:
       needsInputRuns.length + pausedRuns.length + approvalAgents.length > 0 ? (
-        <ul className="flex flex-col gap-px">
+        <ul className={DRAWER_ROW_LIST_CLASS}>
           {groups.find(({ group }) => group === 'needs-you')?.rows}
         </ul>
       ) : null,
     running:
       executionRows.length > 0 ? (
-        <ul className="flex flex-col gap-px">{executionRows}</ul>
+        <ul className={DRAWER_ROW_LIST_CLASS}>{executionRows}</ul>
       ) : null,
     watching:
       watchingRuns.length + watchers.length > 0 ? (
-        <ul className="flex flex-col gap-px">
+        <ul className={DRAWER_ROW_LIST_CLASS}>
           {watchingRuns.map(runRow)}
           {watcherRows}
         </ul>
       ) : null,
     pullRequests:
       pullRequests.length > 0 ? (
-        <ul className="flex flex-col gap-px">{pullRequests.map(runRow)}</ul>
+        <ul className={DRAWER_ROW_LIST_CLASS}>{pullRequests.map(runRow)}</ul>
       ) : null,
     completed:
       completedRuns.length > 0 ? (
@@ -626,7 +626,6 @@ export function BackgroundTray({
   if (grouped)
     return renderSurface(
       <ComposerWorkDrawer
-        surface={groupedWithinDrawer ? 'section' : 'drawer'}
         queuedCount={composerQueue?.count ?? 0}
         queuedPanel={composerQueue?.panel}
         background={{
@@ -669,7 +668,7 @@ export function BackgroundTray({
         {tab && (viewTree || stopAll || stopAllWork) && (
           // The tab row has no room for the header's actions; they lead
           // the list instead.
-          <div className="flex h-9 items-center justify-end gap-1 pr-1">
+          <div className="flex h-9 items-center justify-end pr-1">
             {viewTree}
             {stopAll}
             {stopAllWork}
@@ -686,7 +685,7 @@ export function BackgroundTray({
           >
             {(labelled || group === 'watching') && (
               <p
-                className="sticky top-0 z-10 flex h-7 items-end bg-depth px-2.75 pb-1 text-xs fg-tertiary"
+                className="sticky top-0 z-10 flex h-7 items-end bg-depth px-2.75 pb-1 text-s fg-tertiary"
                 data-testid="background-tray-group-label"
               >
                 {GROUP_LABELS[group]}
@@ -720,7 +719,7 @@ export function BackgroundTray({
     summary !== '' ? (
       <ComposerDrawerSection>
         <div
-          className="flex min-w-0 flex-col text-xs"
+          className="flex min-w-0 flex-col text-s"
           data-testid="background-tray"
           data-expanded={expanded}
           // While open the drawer owns Esc: the desktop's capture-phase

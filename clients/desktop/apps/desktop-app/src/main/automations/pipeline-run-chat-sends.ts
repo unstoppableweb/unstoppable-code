@@ -4,7 +4,7 @@ import type {
   ExecutionState,
   PipelineChatSendRecord,
 } from '@canopy/execution-engine/types/pipeline';
-import { listExecutionChatSends } from '@canopy/desktop-shared/node/pipelines/executor/chat-sends';
+import { listExecutionChatSends } from '@canopy/execution-engine/node/pipelines/executor/chat-sends';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { logMainProcessError } from '../lib/main-process-logging';
 

@@ -81,6 +81,30 @@ export function isBrowserActivationPending(browserId: string): boolean {
 }
 
 /** Makes the Browser panel selected by a grid intent the active session. */
+/** A Browser panel the person selected, focused or moved in the grid. */
+export interface BoundBrowserPanelSelection {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly browserId: string;
+}
+
+const boundBrowserSelectionListeners = new Set<
+  (selection: BoundBrowserPanelSelection) => void
+>();
+
+/**
+ * Subscribe to the person's Browser panel selections (the grid's own tab,
+ * focus and move intents; not agent requests). Returns an unsubscribe fn.
+ */
+export function subscribeBoundBrowserPanelSelection(
+  listener: (selection: BoundBrowserPanelSelection) => void,
+): () => void {
+  boundBrowserSelectionListeners.add(listener);
+  return (): void => {
+    boundBrowserSelectionListeners.delete(listener);
+  };
+}
+
 export function activateBoundBrowserPanel(
   projectId: string,
   worktreeId: string,
@@ -111,6 +135,9 @@ export function activateBoundBrowserPanel(
     void useBrowserStore
       .getState()
       .setActiveBrowser(projectId, worktreeId, browserId);
+    for (const listener of boundBrowserSelectionListeners) {
+      listener({ projectId, worktreeId, browserId });
+    }
   }
 }
 
@@ -212,18 +239,21 @@ function activateTarget(
     return 'activated';
   }
 
-  const addOpts = {
-    panelId: browserPanelIdFor(browserId),
-    instance: { browserId },
-    ...(shouldFocus ? {} : { activate: false }),
-  } as const;
+  // Retain the origin even when its chat is popped out. The main layout
+  // shows its content while that chat cannot be selected in this window.
+  const chatScope =
+    originChatTabId === undefined ? {} : { chatScope: originChatTabId };
   const addTo = (layoutKey: string, groupId: string): string | null =>
-    usePanelLayoutStore
-      .getState()
-      .addTab(layoutKey, groupId, 'browser', addOpts) ??
+    usePanelLayoutStore.getState().addTab(layoutKey, groupId, 'browser', {
+      panelId: browserPanelIdFor(browserId),
+      instance: { browserId },
+      ...(shouldFocus ? {} : { activate: false }),
+      ...chatScope,
+    }) ??
     usePanelLayoutStore.getState().addTab(layoutKey, groupId, 'browser', {
       instance: { browserId },
       ...(shouldFocus ? {} : { activate: false }),
+      ...chatScope,
     });
 
   let added: string | null = null;

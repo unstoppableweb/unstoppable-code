@@ -1,7 +1,13 @@
+import { desktopChatHistoryPort } from './desktop-chat-history-port';
+import {
+  createChatHistoryActionFamily,
+  type AgentChatHistoryPort,
+} from '@canopy/agent-actions/families/chat-history';
 import { desktopBrowserPort } from './desktop-browser-port';
 import { desktopExperimentsPort } from './desktop-experiments-port';
 import { desktopInstalledItemsPort } from './desktop-installed-items-port';
 import { desktopSettingsPort } from './desktop-settings-port';
+import { desktopPipelineExecutionsPort } from './desktop-pipeline-executions-port';
 import { desktopPipelinesPort } from './desktop-pipelines-port';
 import { desktopCapabilityPackagePort } from './desktop-capability-package-port';
 import {
@@ -15,10 +21,12 @@ import {
   type AgentInstalledItemsPort,
   createSettingsActionFamily,
   createCapabilityPackageActionFamily,
+  createPipelineExecutionsActionFamily,
   createPipelinesActionFamily,
   type AgentBrowserPort,
   type AgentCapabilityPackagePort,
   type AgentExperimentsPort,
+  type AgentPipelineExecutionsPort,
   type AgentPipelinesPort,
   type AgentSettingsPort,
   defineAgentActionHost,
@@ -58,8 +66,9 @@ import { createDesktopTranscriptReadPort } from './desktop-transcript-read-port'
  */
 export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
   id: 'desktop',
-  // Editor setup mounts only in App Advisor's navigation surface, through
-  // desktop-editor-setup-port; scoped chat surfaces keep their current families.
+  // Editor setup and cloud chats mount only in App Advisor's navigation
+  // surface, through desktop-editor-setup-port and desktop-cloud-chats-port;
+  // scoped chat surfaces keep their current families.
   families: [
     'environment',
     'transcript-read',
@@ -70,9 +79,13 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
     'settings',
     'capability-package',
     'pipelines',
+    'pipeline-executions',
     'browser',
     'desktop-legacy',
     'editor-setup',
+    // History actions mount on the Orchestrator; scoped chats use the injected tools.
+    'chat-history',
+    'cloud-chats',
   ],
   profiles: {
     worktree: {
@@ -152,6 +165,7 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
 });
 
 export interface DesktopAgentActionPorts {
+  chatHistory?: AgentChatHistoryPort<CanopyInjectedToolRuntime>;
   /** Runs browser actions on the calling chat's in-app browser. */
   browser?: AgentBrowserPort<CanopyInjectedToolRuntime>;
   installedItems?: AgentInstalledItemsPort<CanopyInjectedToolRuntime>;
@@ -161,6 +175,8 @@ export interface DesktopAgentActionPorts {
   settings?: AgentSettingsPort<CanopyInjectedToolRuntime>;
   /** Starts pipeline runs through the main-process start path. */
   pipelines?: AgentPipelinesPort<CanopyInjectedToolRuntime>;
+  /** Lists, reads and controls runs on the worktree action path. */
+  pipelineExecutions?: AgentPipelineExecutionsPort<CanopyInjectedToolRuntime>;
   environment: AgentEnvironmentPort<CanopyInjectedToolRuntime>;
   transcriptRead: AgentTranscriptReadPort<CanopyInjectedToolRuntime>;
   /** Explicit-target project and bot reads through project discovery. */
@@ -179,6 +195,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
   if (!defaultPorts) {
     const receipts = desktopAgentActionReceipts;
     defaultPorts = {
+      chatHistory: desktopChatHistoryPort,
       environment: createDesktopEnvironmentPort(desktopEnvironmentPortDeps()),
       transcriptRead: createDesktopTranscriptReadPort(),
       limits: desktopAgentActionLimits,
@@ -192,6 +209,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
       settings: desktopSettingsPort,
       capabilityPackage: desktopCapabilityPackagePort,
       pipelines: desktopPipelinesPort,
+      pipelineExecutions: desktopPipelineExecutionsPort,
       browser: desktopBrowserPort,
     };
   }
@@ -216,6 +234,7 @@ export function desktopAgentActionFamilies(
       receipts: ports.receipts,
     }),
     createTranscriptReadActionFamily({ port: ports.transcriptRead }),
+    createChatHistoryActionFamily(ports.chatHistory ?? desktopChatHistoryPort),
     createProjectActionFamily(ports.projectBot ?? desktopProjectBotPort),
     createBotActionFamily(ports.projectBot ?? desktopProjectBotPort),
     createInstalledItemsActionFamily({
@@ -237,6 +256,9 @@ export function desktopAgentActionFamilies(
     createPipelinesActionFamily({
       port: ports.pipelines ?? desktopPipelinesPort,
       receipts: ports.receipts,
+    }),
+    createPipelineExecutionsActionFamily({
+      port: ports.pipelineExecutions ?? desktopPipelineExecutionsPort,
     }),
     createBrowserActionFamily({
       port: ports.browser ?? desktopBrowserPort,

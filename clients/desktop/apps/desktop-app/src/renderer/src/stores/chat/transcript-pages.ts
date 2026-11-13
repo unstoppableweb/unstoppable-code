@@ -29,8 +29,30 @@ import {
   isLocallyRebasedTranscriptWindow,
 } from './transcript-reset';
 import { useActivityStore } from '../activityStore';
+import { chatBackendFor, servesTurnPages } from './backend';
+import { retireFinishedPendingTurn } from './canonical-changes';
 
 export const TRANSCRIPT_PAGE_LOAD_ERROR = "Couldn't load messages.";
+
+/**
+ * Whether a transcript loads its newest page before it can page back: it is
+ * not loaded, or it is a raw window to upgrade to a turn view where its host
+ * serves one. A host without turn frames pages its window back by `before`.
+ */
+export function needsNewestTranscriptPage(
+  transcript:
+    | Pick<PersistedChatTab, 'transcriptLoaded' | 'transcriptWindow'>
+    | null
+    | undefined,
+  scope: { readonly projectId: string } | undefined,
+): boolean {
+  return (
+    transcript?.transcriptLoaded === false ||
+    (transcript?.transcriptWindow?.before !== undefined &&
+      transcript.transcriptWindow.view !== 'turns' &&
+      (scope === undefined || servesTurnPages(scope)))
+  );
+}
 
 function watchTranscriptWindow(
   api: ReturnType<typeof chatStoreApi>,
@@ -438,7 +460,7 @@ export async function loadChatTranscriptPage(
   try {
     let page: TranscriptPage;
     try {
-      page = await window.api.chat.getTranscriptPage({
+      page = await chatBackendFor(target).chat.getTranscriptPage({
         ...target,
         view: 'turns',
         ...(knownTurn ? { turnId } : {}),
@@ -500,9 +522,13 @@ export async function loadChatTranscriptPage(
             ...scope,
             tabs: scope.tabs.map((tab) =>
               tab.id === target.chatId
-                ? catchUp
-                  ? catchUp(tab, page)
-                  : installTranscriptPage(tab, page, older)
+                ? // A page can carry the prompt's echo after its turn ended.
+                  retireFinishedPendingTurn(
+                    catchUp
+                      ? catchUp(tab, page)
+                      : installTranscriptPage(tab, page, older),
+                    state.runtimeByChatId[target.chatId],
+                  )
                 : tab,
             ),
           },
@@ -636,7 +662,7 @@ async function reloadTranscriptWindowAfterResetLoop(
       let page: TranscriptPage;
       requests += 1;
       try {
-        page = await window.api.chat.getTranscriptPage({
+        page = await chatBackendFor(target).chat.getTranscriptPage({
           ...target,
           view: 'turns',
           ...(newestRequest
@@ -759,7 +785,12 @@ async function reloadTranscriptWindowAfterResetLoop(
           [key]: {
             ...scope,
             tabs: scope.tabs.map((tab) =>
-              tab.id === target.chatId ? finalTab : tab,
+              tab.id === target.chatId
+                ? retireFinishedPendingTurn(
+                    finalTab,
+                    state.runtimeByChatId[target.chatId],
+                  )
+                : tab,
             ),
           },
         },

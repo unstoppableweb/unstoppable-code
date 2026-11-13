@@ -31,8 +31,8 @@ import {
   createInitialState,
   normalizePipeline,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
-import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor';
+import type { ExecutionRuntime } from '@canopy/execution-engine/node/pipelines/executor/types';
 
 jest.mock('../lib/w5-boundary-operation', () => ({
   runW5BoundaryOperation: (

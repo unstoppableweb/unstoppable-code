@@ -37,7 +37,7 @@ import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
   PipelineHostActionResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { getWorkspaceWorktreeDir, getWorktreeDir } from '../lib/paths';
 import { logMainProcessWarn } from '../lib/main-process-logging';

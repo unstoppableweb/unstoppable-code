@@ -65,16 +65,12 @@ export async function authorizeCursorTool(
   let normalized: ReturnType<typeof approvalCheckForClaudeTool>;
   const read = cursorReadToolInput(tool, input);
   if (read) {
+    // The shared adapter names the target on the card, like a Claude read.
     normalized = approvalCheckForClaudeTool(
       read.toolName,
       read.input,
       context.cwd,
     );
-    normalized.details = {
-      kind: 'tool',
-      toolName: read.toolName,
-      inputSummary: read.summary,
-    };
   } else if (tool === 'Fetch' || tool === 'WebFetch') {
     const url = cursorFetchUrl(input);
     if (url === undefined)
@@ -115,15 +111,11 @@ export async function authorizeCursorTool(
       return { decision: 'deny' };
     normalized = approvalCheckForClaudeTool(
       tool === 'Delete' ? 'Write' : tool,
-      { ...input, file_path: resolve(filePath) },
+      // A Read keeps its raw path so the adapter sees any `..` segment, which
+      // `resolve` would collapse before Auto read containment could refuse it.
+      { ...input, file_path: tool === 'Read' ? filePath : resolve(filePath) },
       context.cwd,
     );
-    if (tool === 'Read')
-      normalized.details = {
-        kind: 'tool',
-        toolName: 'Read',
-        inputSummary: filePath,
-      };
   } else if (tool === 'Shell') {
     const command = shellToolCommand(input);
     if (context.planMode || command === undefined) return { decision: 'deny' };

@@ -14,7 +14,7 @@ import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipe
 import {
   getStoredPipelineText,
   saveStoredPipeline,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import { createResourceInstallReceiptsStore } from '../../lib/resource-install-receipts';
 import { recoverInterruptedPipelineInstalls } from '../pipeline-install-intents';
 import {

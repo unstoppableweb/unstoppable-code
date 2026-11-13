@@ -1,3 +1,4 @@
+import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import {
   getJobOrder,
@@ -263,6 +264,14 @@ export function getDraftValidation(pipeline: Pipeline): ValidationIssue[] {
     const defaults = alias.defaults;
     if (defaults) {
       if ('agent_id' in defaults) {
+        const parsed = parsePipelineAgentAliasRoute(defaults);
+        if (!parsed.ok) {
+          issues.push({
+            type: 'error',
+            path: aliasPath,
+            message: parsed.error,
+          });
+        }
         if (!defaults.agent_id || defaults.agent_id.trim() === '') {
           issues.push({
             type: 'error',

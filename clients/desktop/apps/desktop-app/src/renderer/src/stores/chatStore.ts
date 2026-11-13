@@ -105,6 +105,7 @@ import { useNavigationStore } from './navigationStore';
 import { subscribeChatPanelVisibility } from '@/lib/worktree-layout-prefs';
 import { setVisibleContext } from '@/lib/osNotifications';
 import { subscribeStandaloneChatArchiveOverlay } from './standaloneChatVisibility';
+import { subscribeAppAdvisorDockCover } from './appAdvisorDockCover';
 
 const chatStore = createStore<ChatState>()((...a) => ({
   ...createRevisionedSlice(...a),
@@ -517,8 +518,23 @@ export function initializeVisibleContextSync(): () => void {
       }
     });
 
+  // The docked Orchestrator page covers the open page, and leaving it shows
+  // that page again, so both change what is actually visible.
+  const unsubscribeAppAdvisorDockCover = subscribeAppAdvisorDockCover(() => {
+    const next = computeVisibleContext(useChatStore.getState());
+    if (
+      next.worktreeKey !== lastVisibleWorktreeKey ||
+      next.chatId !== lastVisibleChatId
+    ) {
+      lastVisibleWorktreeKey = next.worktreeKey;
+      lastVisibleChatId = next.chatId;
+      setVisibleContext(next.worktreeKey, next.chatId);
+    }
+  });
+
   disposeVisibleContextSync = (): void => {
     unsubscribeChatStore();
+    unsubscribeAppAdvisorDockCover();
     unsubscribeNavigationStore();
     unsubscribeChatPanelVisibility();
     unsubscribeStandaloneChatArchiveOverlay();

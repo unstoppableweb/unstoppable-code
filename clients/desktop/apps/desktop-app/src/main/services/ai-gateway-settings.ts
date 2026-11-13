@@ -21,6 +21,11 @@ import {
   GatewayCredentialStorageUnavailableError,
 } from '../lib/model-gateway-credential-store';
 import { probeModelGateway } from './model-gateway-probe';
+import {
+  getLocalModelGatewayOrganizationId,
+  LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
+} from '../lib/local-model-gateway-store';
+import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
 
 export function requireAiGatewaySettings(): void {
   if (
@@ -157,5 +162,89 @@ export async function connectDesktopGateway(
     });
   } finally {
     stopAccountWatch();
+  }
+}
+
+/**
+ * Device gateway writes refuse once an account names a Personal organization,
+ * with the hosted stale-scope failure so shared copy applies.
+ */
+export async function requireDeviceGatewayScope(): Promise<void> {
+  const current = await readCanopyCloudAccountWithStatus();
+  if (current.status !== 'ok' || !accountUsesDeviceModelGateway(current.entry))
+    throw new SettingsOperationError({
+      code: 'failed',
+      status: 409,
+      serverCode: 'stale_scope',
+    });
+}
+
+/**
+ * The device gateway's connect: the same discovery and key storage as
+ * `connectDesktopGateway`, with no hosted authorization, because nothing
+ * leaves the device. Refused once an account names a Personal organization.
+ */
+export async function connectDeviceGateway(
+  raw: unknown,
+  signal?: AbortSignal,
+): Promise<AiGatewayConnectionResult> {
+  requireAiGatewaySettings();
+  const parsed = aiGatewayConnectSchema
+    .extend({ expectedOrganizationId: z.uuid() })
+    .parse(raw);
+  const organizationId = await getLocalModelGatewayOrganizationId();
+  if (parsed.expectedOrganizationId !== organizationId)
+    throw new SettingsOperationError({
+      code: 'failed',
+      status: 409,
+      serverCode: 'stale_scope',
+    });
+  await requireDeviceGatewayScope();
+  const {
+    enqueueModelGatewayCredentialSave,
+    saveModelGatewayCredentialInOrder,
+  } = await import('../ipc/settings');
+  try {
+    return await enqueueModelGatewayCredentialSave(
+      organizationId,
+      async (): Promise<AiGatewayConnectionResult> => {
+        signal?.throwIfAborted();
+        const saved = parsed.apiKey
+          ? null
+          : await loadModelGatewayCredential(organizationId, parsed.baseUrl);
+        const apiKey = parsed.apiKey ?? saved?.apiKey;
+        if (!apiKey) return { status: 'key_required' };
+        const result = await probeModelGateway({
+          baseUrl: parsed.baseUrl,
+          apiKey,
+          ...(signal ? { signal } : {}),
+        });
+        if (result.status !== 'connected') return result;
+        if (parsed.apiKey) {
+          const validation = await saveModelGatewayCredentialInOrder(
+            { organizationId, baseUrl: result.baseUrl, apiKey },
+            {
+              ...(signal ? { signal } : {}),
+              expectedAccountId: LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
+              beforeSave: requireDeviceGatewayScope,
+            },
+          );
+          if (!validation.valid) return { status: 'unreachable' };
+        }
+        return result;
+      },
+    );
+  } catch (error) {
+    if (error instanceof GatewayCredentialStorageUnavailableError)
+      throw new SettingsOperationError({
+        code: 'failed',
+        serverCode: 'secure_storage_unavailable',
+      });
+    if (error instanceof SettingsOperationError) throw error;
+    // Do not include storage/network errors, which can contain secrets.
+    throw new SettingsOperationError({
+      code: 'failed',
+      serverCode: 'secure_storage_failed',
+    });
   }
 }

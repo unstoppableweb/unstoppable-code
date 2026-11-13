@@ -29,8 +29,10 @@ The relay accepts an injected `RelayBindingProvider`. The isolated
 in-process dispatcher. Lane C replaces this provider at CAN-3729; it supplies
 no persistence, leases, or daemon initialization policy. Its host-local
 `releaseStream` hook closes the existing in-process stream handle. K1 has no
-wire cancellation; an adapter without this hook closes the whole connection
-when a renderer abandons a stream.
+wire cancellation of its own; the web core serves `core.events.unsubscribe`,
+which the shared client sends when a stream is released (CAN-5970). An adapter
+without this hook closes the whole connection when a renderer abandons a
+stream.
 
 `core.client.capabilities.register` forwards validated presentation capability
 declarations to a main-owned connection table. Registrations and bounded

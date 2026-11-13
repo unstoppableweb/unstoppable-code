@@ -9,6 +9,9 @@
  * page (`workflowSchedule`), and an owner whose pipeline other schedules
  * share is not chat-editable: one record's chat action would regenerate the
  * steps the others run.
+ *
+ * CAN-6183: a cloud schedule's stub shows the values of its server record,
+ * so desktop and web show one schedule.
  */
 import { ownedPipelineToChatAction } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import type {
@@ -18,6 +21,7 @@ import type {
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import { ownedChatPipelineState, ownedPipelineId } from './owned-pipeline';
+import { cachedCloudRecord, projectCloudScheduleStub } from './cloud-schedules';
 import {
   isAgentGrantedPipeline,
   isSharedByOtherSchedules,
@@ -31,9 +35,11 @@ import {
  * workflow schedule and an owner is never counted as shared.
  */
 export function projectOwnedChatAutomation(
-  activity: ScheduledActivity,
+  record: ScheduledActivity,
   activities?: readonly ScheduledActivity[],
 ): ScheduledActivity {
+  // CAN-6183: a cloud stub shows its server record's values.
+  const activity = projectCloudScheduleStub(record, cachedCloudRecord(record));
   const { action } = activity;
   if (action.type !== 'worktree_pipeline') return activity;
   const scheduled = scheduledUserPipelineId(activity);

@@ -273,7 +273,7 @@ export type AgentWritePreparation =
 
 /** The tool result of an action response, as the surface engine renders it. */
 export function agentActionToolResult(
-  response: AgentActionResponse,
+  response: AgentActionResponse<string>,
 ): AgentActionToolResult {
   return {
     text: JSON.stringify(response, null, 2),

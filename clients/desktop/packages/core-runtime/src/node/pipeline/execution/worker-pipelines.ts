@@ -38,6 +38,7 @@ import {
 import {
   CanopyOperationError,
   canopyInternalError,
+  canopyInvalidArgumentError,
 } from '../../../runtime/errors';
 import type {
   CanopyHandlerContext,
@@ -147,6 +148,19 @@ export interface PipelineExecutionWorker {
     params: WorkerPipelineExecutionStartParams,
     execution?: CanopyHostExecution,
   ): Promise<WorkerPipelineExecution | null>;
+  /**
+   * Takes a portable start sent again for a run the worker already holds
+   * (CAN-6376), as a new runner incarnation does once its owner restored
+   * the run there: the run is not started again, but the start becomes the
+   * launch its recovery controls run with. Resolves the run as `stored`
+   * holds it, without redeeming the start's secrets. Throws what
+   * {@link start} would refuse, and when the stored run is another
+   * workflow's. Without it, a held run answers as it is.
+   */
+  adoptStart?(
+    params: WorkerPipelineExecutionStartParams,
+    stored: WorkerPipelineExecution,
+  ): Promise<WorkerPipelineExecution>;
   /**
    * Run the launch core prepared for this execution, once. Throws
    * {@link pipelineLaunchUnavailableError} when there is none, so a client
@@ -489,6 +503,152 @@ export function pipelineCheckpointFailedError(
   );
 }
 
+/**
+ * A pipeline data import or export while a run of that pipeline is running
+ * on the runner (CAN-6317): its files may be mid-write. Also an import
+ * while another import of it unpacks, or after a start used its data on
+ * this incarnation. Checkpoint the run or let it end, then call again with
+ * a new key.
+ */
+export function pipelineDataBusyError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.dataBusy',
+    message: "This workflow's data is in use by a run or a restore.",
+    retry: { kind: 'never' },
+  });
+}
+
+/**
+ * A pipeline data archive the runner refuses (CAN-6317): over its limit, a
+ * chunk out of order, a digest that does not match, or an entry that would
+ * leave the data folder.
+ */
+export function pipelineDataRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.dataRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** An export that continues a snapshot the runner no longer holds (CAN-6317). */
+export function pipelineDataSnapshotGoneError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.dataSnapshotGone',
+    message: "This workflow's data snapshot is gone. Export it again.",
+    retry: { kind: 'never' },
+  });
+}
+
+/**
+ * A run handoff export or import while the run is pending or running on the
+ * runner (CAN-6376): its state still moves. Also an import while another
+ * import of the run unpacks. Checkpoint the run first, then call again with
+ * a new key.
+ */
+export function pipelineHandoffBusyError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.handoffBusy',
+    message: 'This workflow run is running or being restored.',
+    retry: { kind: 'never' },
+  });
+}
+
+/**
+ * A run handoff the runner refuses (CAN-6376): over its limit, a chunk out
+ * of order, a digest that does not match, an archive that holds anything
+ * but the named run and its sessions, or an import once the lease ended.
+ */
+export function pipelineHandoffRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.handoffRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** A handoff export that continues a snapshot the runner no longer holds (CAN-6376). */
+export function pipelineHandoffSnapshotGoneError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.handoffSnapshotGone',
+    message: "This workflow run's handoff snapshot is gone. Export it again.",
+    retry: { kind: 'never' },
+  });
+}
+
+/** A transcript export of a step that recorded none (CAN-6421). */
+export function pipelineTranscriptNotFoundError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'not_found',
+    code: 'worker.pipeline.transcriptNotFound',
+    message: 'This step has no transcript.',
+    retry: { kind: 'never' },
+  });
+}
+
+/** A transcript over its limit, or one that is not a file of the run (CAN-6421). */
+export function pipelineTranscriptRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.transcriptRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/**
+ * A capability delivery over its limit, out of order or not matching its
+ * digest, or a bundle or blob that fails its checks (CAN-6439).
+ */
+export function pipelineCapabilitiesRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.capabilitiesRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** A transcript export that continues a transcript that changed since (CAN-6421). */
+export function pipelineTranscriptSnapshotGoneError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.transcriptSnapshotGone',
+    message: "This step's transcript changed. Export it again.",
+    retry: { kind: 'never' },
+  });
+}
+
 const TERMINAL: ReadonlySet<string> = new Set(
   WORKER_PIPELINE_TERMINAL_STATUSES,
 );
@@ -516,8 +676,9 @@ export interface PipelineOutputBudget {
 }
 
 /**
- * The most portable starts whose receipts a worker keeps for keyed
- * resends (CAN-6161); a runner serves one delegation's runs.
+ * The most portable starts (CAN-6161), and resumes and retries (CAN-6103),
+ * whose receipts a worker keeps for keyed resends; a runner serves one
+ * delegation's runs.
  */
 const PORTABLE_START_RECEIPTS_MAX = 1_024;
 
@@ -592,6 +753,72 @@ export function createWorkerPipelineHandlers(
   /** Each portable start this worker took, by execution id (CAN-6161). */
   const portableStarts = new Map<string, Promise<WorkerPipelineExecution>>();
   const targetId = options.targetId ?? CANOPY_IN_PROCESS_WORKER_TARGET_ID;
+  /** Each resume or retry a portable worker took, by request id (CAN-6103). */
+  const controls = new Map<
+    string,
+    {
+      readonly fingerprint: string;
+      readonly result: Promise<WorkerPipelineControlResult>;
+    }
+  >();
+  const redeemedControl = async (
+    request: Extract<
+      PipelineControlRequest,
+      {
+        operation:
+          | 'worker.pipeline.execution.resume'
+          | 'worker.pipeline.execution.retry';
+      }
+    >,
+    signal: AbortSignal,
+  ): Promise<WorkerPipelineControlResult> =>
+    worker.control(
+      request,
+      signal,
+      await redeemExecutionSecrets(
+        options.secrets,
+        { operation: request.operation, key: request.params.requestId },
+        request.params.secrets,
+        signal,
+      ),
+    );
+  /**
+   * A resume or retry, once per request id on a worker that maps portable
+   * starts (CAN-6103): a remote caller resends a keyed control when a reply
+   * is lost, and the resend joins the first, which redeemed the one-shot
+   * secret grant. Any other worker runs each as it comes; its core keeps
+   * the receipts.
+   */
+  const controlOnce = async (
+    request: Parameters<typeof redeemedControl>[0],
+    signal: AbortSignal,
+  ): Promise<WorkerPipelineControlResult> => {
+    if (worker.portableLaunches !== true)
+      return redeemedControl(request, signal);
+    const { requestId } = request.params;
+    const fingerprint = JSON.stringify(request);
+    const receipt = controls.get(requestId);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint)
+        throw canopyInvalidArgumentError(
+          'This workflow control was already requested with other details.',
+        );
+      return receipt.result;
+    }
+    const result = redeemedControl(request, signal);
+    controls.set(requestId, { fingerprint, result });
+    const oldest = controls.keys().next();
+    if (controls.size > PORTABLE_START_RECEIPTS_MAX && !oldest.done)
+      controls.delete(oldest.value);
+    try {
+      return await result;
+    } catch (error) {
+      // A refused or failed control changed nothing; a retry runs it again.
+      if (controls.get(requestId)?.result === result)
+        controls.delete(requestId);
+      throw error;
+    }
+  };
   return {
     queries: {
       'worker.pipeline.execution.get': async ({
@@ -656,10 +883,15 @@ export function createWorkerPipelineHandlers(
           const first = await receipt;
           return { execution: (await worker.get(executionId)) ?? first };
         }
-        // Without a receipt (evicted, or a restarted worker), a run the
-        // worker already holds answers as it is: nothing runs twice.
-        const run = (async (): Promise<WorkerPipelineExecution> =>
-          (await worker.get(executionId)) ?? startOnce())();
+        // Without a receipt (evicted, or a new incarnation its owner
+        // restored the run on), a run the worker already holds answers as it
+        // is, and the worker takes the start as that run's (CAN-6376):
+        // nothing runs twice, and no secret is redeemed for it.
+        const run = (async (): Promise<WorkerPipelineExecution> => {
+          const held = await worker.get(executionId);
+          if (!held) return startOnce();
+          return worker.adoptStart ? worker.adoptStart(params, held) : held;
+        })();
         portableStarts.set(executionId, run);
         const oldest = portableStarts.keys().next();
         if (portableStarts.size > PORTABLE_START_RECEIPTS_MAX && !oldest.done)
@@ -673,33 +905,15 @@ export function createWorkerPipelineHandlers(
           throw error;
         }
       },
-      'worker.pipeline.execution.resume': async (params, { signal }) =>
-        worker.control(
+      'worker.pipeline.execution.resume': (params, { signal }) =>
+        controlOnce(
           { operation: 'worker.pipeline.execution.resume', params },
           signal,
-          await redeemExecutionSecrets(
-            options.secrets,
-            {
-              operation: 'worker.pipeline.execution.resume',
-              key: params.requestId,
-            },
-            params.secrets,
-            signal,
-          ),
         ),
-      'worker.pipeline.execution.retry': async (params, { signal }) =>
-        worker.control(
+      'worker.pipeline.execution.retry': (params, { signal }) =>
+        controlOnce(
           { operation: 'worker.pipeline.execution.retry', params },
           signal,
-          await redeemExecutionSecrets(
-            options.secrets,
-            {
-              operation: 'worker.pipeline.execution.retry',
-              key: params.requestId,
-            },
-            params.secrets,
-            signal,
-          ),
         ),
       'worker.pipeline.matrixJob.retry': async (params, { signal }) =>
         worker.control(
@@ -968,11 +1182,13 @@ type JournaledDelivery =
   | { readonly end: CanopyErrorPayload | null };
 
 /**
- * The most deliveries one journaled stream holds for a slow consumer, room
- * for a full journal's replay and as much again live. Past it the stream
- * ends `snapshotRequired`; dropped output counts once per run of drops.
+ * How many journals' worth of deliveries one journaled stream holds for a
+ * slow consumer: room for a full journal's replay and as much again live,
+ * whatever the journal keeps (a runner's keeps 8,192 items). Past it the
+ * stream ends `snapshotRequired`; dropped output counts once per run of
+ * drops.
  */
-const JOURNALED_QUEUE_MAX = 4_096;
+const JOURNALED_QUEUE_JOURNALS = 2;
 
 /**
  * `worker.pipeline.execution.events` over the worker's event journal
@@ -1110,7 +1326,7 @@ async function serveJournaledEvents({
       } else queue.push({ dropped: 1, at: entry.cursor });
       return;
     }
-    if (queue.length >= JOURNALED_QUEUE_MAX) {
+    if (queue.length >= JOURNALED_QUEUE_JOURNALS * journal.maxEntries) {
       queue.length = 0;
       queue.push({ end: pipelineSnapshotRequiredError().payload });
     } else queue.push({ entry, live: true });

@@ -157,13 +157,19 @@ export function resolveStandingConditions(
   });
 }
 
-/** The catalog keeps generic copy; a runtime's title names the runtime. */
+/**
+ * The catalog keeps generic copy; a runtime's title names the runtime. A
+ * bundled runtime (Claude, Codex) is one the app connects to; a local one
+ * (Ollama) is one it reaches.
+ */
 export function standingConditionTitle(
   condition: Pick<StandingCondition, 'error' | 'runtime'>,
 ): string {
-  return condition.runtime === undefined
-    ? condition.error.copy.title
-    : `Couldn't reach ${getModelCatalogProviderLabel(condition.runtime)}.`;
+  if (condition.runtime === undefined) return condition.error.copy.title;
+  const label = getModelCatalogProviderLabel(condition.runtime);
+  return condition.error.code === 'app.runtime_unreachable'
+    ? `Couldn't connect to ${label}.`
+    : `Couldn't reach ${label}.`;
 }
 
 export function standingConditionCountLabel(remaining: number): string {

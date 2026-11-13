@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
-  shareSourceHashChanged,
+  installedShareUpdateAvailable,
   sharedSkillDisplayNames,
   type InstalledShareDisplayNames,
   type InstalledShareProvenanceOptions,
@@ -99,8 +99,9 @@ export function useInstalledShareProvenance(
         .openSkillViewer({ kind: 'shared', skillId: remoteId }),
   };
   if (current?.status === 'loaded') {
-    const updateAvailable = shareSourceHashChanged(
-      installedHash,
+    // The same rule as the Customize row's pill (CAN-5309).
+    const updateAvailable = installedShareUpdateAvailable(
+      origin,
       current.sourceHash,
     );
     // Update opens the same reviewed replacement as the shared skill's own

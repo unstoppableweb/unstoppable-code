@@ -185,6 +185,17 @@ async function storedIds(): Promise<string[]> {
     .sort();
 }
 
+// The watcher host imports these on its first call; loading them here keeps
+// a cold, busy machine's import time out of the first test's timeout
+// (CAN-6186).
+beforeAll(async () => {
+  await Promise.all([
+    import('../../agent-actions/desktop-watcher-port'),
+    import('../../canopy-tools/definitions'),
+    import('@canopy/agent-actions'),
+  ]);
+}, 120_000);
+
 beforeEach(async () => {
   mockDirectory = await mkdtemp(join(tmpdir(), 'core-watcher-ownership-'));
   await writeFile(

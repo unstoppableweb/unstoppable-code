@@ -30,6 +30,7 @@ import {
   createSubjectCapabilityPackage,
 } from '../pipelines/pipeline-package-service';
 import { installSkillCapabilityPackage } from './skill-package-install';
+import { analyzeSkillFromDisk } from './analyze-skill-package';
 import {
   getSkillDependencyReadiness,
   normalizeSkillDependencyReadinessRequest,
@@ -89,6 +90,67 @@ async function resolveSkillShareCredentials(): Promise<{
   return { credentialContext, accountId };
 }
 
+/*
+ * The window's skill calls a shared import makes, as owners, so App Advisor's
+ * imports in Electron main make the same ones (CAN-6003).
+ */
+
+export async function loadSkillsForCaller(): Promise<
+  ReturnType<typeof service.loadSkills>
+> {
+  const result = service.loadSkills();
+  if (result.success && result.data)
+    return {
+      ...result,
+      data: await annotateSharedSkillInstalls(
+        await filterStoredSkillContexts(result.data),
+      ),
+    };
+  return result;
+}
+
+export async function writeRawSkillForCaller(
+  input: WriteRawSkillRequest,
+): Promise<Awaited<ReturnType<typeof service.writeRawSkillForContext>>> {
+  const result = await service.writeRawSkillForContext(input);
+  refreshInvocableInventoryAfterMutation('skills:write-raw');
+  return result;
+}
+
+export async function getSharedSkillForCaller(
+  skillId: string,
+): Promise<Awaited<ReturnType<typeof getSharedSkillWithInstallState>>> {
+  await assertSkillsSupported();
+  return getSharedSkillWithInstallState(skillId);
+}
+
+export async function installSkillPackageForCaller(
+  request: InstallSkillCapabilityPackageRequest,
+): Promise<Awaited<ReturnType<typeof installSkillCapabilityPackage>>> {
+  // A public share's package endpoints are anonymous, exactly like a
+  // public pipeline or automation package, so a signed-out recipient of a
+  // public link gets the whole skill. Only an owned team or organization
+  // package needs the account and its skills capability.
+  if (request.publicShare !== true) await assertSkillsSupported();
+  const result = await installSkillCapabilityPackage(request);
+  refreshInvocableInventoryAfterMutation('skills:package-install');
+  return result;
+}
+
+export async function recordSkillShareOriginForCaller(
+  request: RecordSkillShareOriginRequest,
+): Promise<void> {
+  const storePath = getPipelinePackageInstallStorePath();
+  const owner = { kind: 'skill' as const, localId: request.localId };
+  await insertCapabilityPackageInstallIfAbsent(storePath, {
+    owner,
+    originExternalId: request.originExternalId,
+    pipelineContentHash: request.contentHash,
+    distributionMode: 'definition_only',
+    installedAt: new Date().toISOString(),
+  });
+}
+
 export function registerSkillHandlers(): void {
   registerIpcHandler(SKILLS_CHANNELS.MARKETPLACE_LIST, () =>
     listDesktopPublisherSkills(),
@@ -105,17 +167,7 @@ export function registerSkillHandlers(): void {
     };
   };
 
-  registerIpcHandler(SKILLS_CHANNELS.LOAD, async () => {
-    const result = service.loadSkills();
-    if (result.success && result.data)
-      return {
-        ...result,
-        data: await annotateSharedSkillInstalls(
-          await filterStoredSkillContexts(result.data),
-        ),
-      };
-    return result;
-  });
+  registerIpcHandler(SKILLS_CHANNELS.LOAD, () => loadSkillsForCaller());
   registerIpcHandler(
     SKILLS_CHANNELS.FETCH_AVAILABLE,
     (_event, source: string) => fetchAvailableSkillsThroughCore(source),
@@ -165,11 +217,7 @@ export function registerSkillHandlers(): void {
   );
   registerIpcHandler(
     SKILLS_CHANNELS.WRITE_RAW,
-    async (_event, input: WriteRawSkillRequest) => {
-      const result = await service.writeRawSkillForContext(input);
-      refreshInvocableInventoryAfterMutation('skills:write-raw');
-      return result;
-    },
+    (_event, input: WriteRawSkillRequest) => writeRawSkillForCaller(input),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.SHARED_LIST,
@@ -178,12 +226,8 @@ export function registerSkillHandlers(): void {
       return listSharedSkills(request);
     },
   );
-  registerIpcHandler(
-    SKILLS_CHANNELS.SHARED_GET,
-    async (_event, skillId: string) => {
-      await assertSkillsSupported();
-      return getSharedSkillWithInstallState(skillId);
-    },
+  registerIpcHandler(SKILLS_CHANNELS.SHARED_GET, (_event, skillId: string) =>
+    getSharedSkillForCaller(skillId),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.SHARED_CREATE,
@@ -278,10 +322,15 @@ export function registerSkillHandlers(): void {
   // so it deliberately does NOT assert the cloud capability: a publisher can
   // review what would travel before deciding to share. The commit uploads
   // blobs and does assert it.
+  // The analysis reads the named skill's SKILL.md itself; the renderer's
+  // copy must be that same file (CAN-6403).
   registerIpcHandler(
     SKILLS_CHANNELS.PACKAGE_ANALYZE,
     (_event, request: AnalyzeSkillCapabilityPackageRequest) =>
-      analyzeSkillCapabilityPackage(request),
+      analyzeSkillFromDisk(request, {
+        readRawSkill: service.readRawSkill,
+        analyze: analyzeSkillCapabilityPackage,
+      }),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.PACKAGE_CANCEL_ANALYSIS,
@@ -291,16 +340,8 @@ export function registerSkillHandlers(): void {
   );
   registerIpcHandler(
     SKILLS_CHANNELS.PACKAGE_INSTALL,
-    async (_event, request: InstallSkillCapabilityPackageRequest) => {
-      // A public share's package endpoints are anonymous, exactly like a
-      // public pipeline or automation package, so a signed-out recipient of a
-      // public link gets the whole skill. Only an owned team or organization
-      // package needs the account and its skills capability.
-      if (request.publicShare !== true) await assertSkillsSupported();
-      const result = await installSkillCapabilityPackage(request);
-      refreshInvocableInventoryAfterMutation('skills:package-install');
-      return result;
-    },
+    (_event, request: InstallSkillCapabilityPackageRequest) =>
+      installSkillPackageForCaller(request),
   );
   // Local-only, like analysis: a recipient sees what a shared skill needs on
   // this machine before deciding to install it, signed in or not.
@@ -323,16 +364,7 @@ export function registerSkillHandlers(): void {
   );
   registerIpcHandler(
     SKILLS_CHANNELS.RECORD_SHARE_ORIGIN,
-    async (_event, request: RecordSkillShareOriginRequest) => {
-      const storePath = getPipelinePackageInstallStorePath();
-      const owner = { kind: 'skill' as const, localId: request.localId };
-      await insertCapabilityPackageInstallIfAbsent(storePath, {
-        owner,
-        originExternalId: request.originExternalId,
-        pipelineContentHash: request.contentHash,
-        distributionMode: 'definition_only',
-        installedAt: new Date().toISOString(),
-      });
-    },
+    (_event, request: RecordSkillShareOriginRequest) =>
+      recordSkillShareOriginForCaller(request),
   );
 }

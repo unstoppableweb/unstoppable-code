@@ -383,11 +383,7 @@ export function ScriptsSectionBody({
             details={
               entry.script.command ? (
                 // Script command lines can carry arguments and secrets.
-                <Surface
-                  variant="group"
-                  size="small"
-                  className="overflow-hidden"
-                >
+                <Surface variant="inset" className="overflow-hidden">
                   <pre
                     className={`${REPLAY_BLOCK_CLASS} max-h-20 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-2xs fg-secondary`}
                   >

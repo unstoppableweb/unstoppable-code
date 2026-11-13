@@ -27,25 +27,58 @@ import { Tooltip } from './Tooltip';
  * hover and keyboard focus and is the button's accessible description.
  */
 
+/** A status, or a row whose status cannot be read. */
+export type InstalledItemStatusGlyph = InstalledItemStatus | 'unavailable';
+
 /**
- * A clear state dot (CAN-4261): filled green for Active, filled neutral for
- * Available, an outline for Disabled. A dashed circle read as loading.
+ * One glyph per state (CAN-4261, CAN-5309): filled green for Active, filled
+ * neutral for Available, an outline for Disabled, and a slashed outline for
+ * Unavailable. A dashed circle read as loading. A read-only status keeps its
+ * own glyph; the missing chevron and the tooltip say it cannot change.
  */
-const STATUS_DOT: Record<InstalledItemStatus, string> = {
-  active: 'bg-success',
-  available: 'bg-fg-tertiary',
-  disabled: 'box-border border-2',
+const STATUS_INK: Record<InstalledItemStatusGlyph, string> = {
+  active: 'fg-success',
+  available: 'fg-tertiary',
+  disabled: 'fg-tertiary',
+  unavailable: 'fg-tertiary',
 };
+
+function StatusGlyph({
+  status,
+}: {
+  readonly status: InstalledItemStatusGlyph;
+}): JSX.Element {
+  if (status === 'active' || status === 'available')
+    return <circle cx="4" cy="4" r="4" fill="currentColor" />;
+  return (
+    <>
+      <circle
+        cx="4"
+        cy="4"
+        r="3.25"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      {status === 'unavailable' && (
+        <path
+          data-status-slash
+          d="M1.7 6.3 6.3 1.7"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      )}
+    </>
+  );
+}
 
 export function InstalledItemStatusIcon({
   status,
   size = 14,
-  disabled = false,
 }: {
-  readonly status: InstalledItemStatus;
+  readonly status: InstalledItemStatusGlyph;
   readonly size?: number;
-  /** Takes the disabled ink, for a status the user cannot change. */
-  readonly disabled?: boolean;
 }): JSX.Element {
   return (
     <span
@@ -53,22 +86,15 @@ export function InstalledItemStatusIcon({
       className="inline-flex shrink-0 items-center justify-center"
       style={{ width: size, height: size }}
     >
-      <span
+      <svg
         data-status-dot={status}
-        // Keep the glyph stroke above the unlayered universal border color.
-        style={
-          status === 'disabled'
-            ? { borderColor: 'var(--fg-tertiary)' }
-            : undefined
-        }
-        className={`h-2 w-2 rounded-full ${
-          disabled
-            ? status === 'disabled'
-              ? STATUS_DOT.disabled
-              : 'bg-fg-quaternary'
-            : STATUS_DOT[status]
-        }`}
-      />
+        width="8"
+        height="8"
+        viewBox="0 0 8 8"
+        className={`shrink-0 ${STATUS_INK[status]}`}
+      >
+        <StatusGlyph status={status} />
+      </svg>
     </span>
   );
 }
@@ -93,8 +119,9 @@ export interface InstalledItemStatusPickerProps {
 
 /**
  * The picker's trigger shape for a status that cannot change here: no menu
- * and no chevron, the disabled ink, and the reason on hover and keyboard
- * focus and as the button's accessible description.
+ * and no chevron, and the reason on hover and keyboard focus and as the
+ * button's accessible description. The label keeps secondary ink, so it
+ * reads at AA contrast (CAN-5309); the control stays inert.
  */
 function DisabledStatusTrigger({
   label,
@@ -106,7 +133,7 @@ function DisabledStatusTrigger({
 }: {
   readonly label: string;
   readonly ariaLabel: string;
-  readonly icon: InstalledItemStatus;
+  readonly icon: InstalledItemStatusGlyph;
   readonly reason: string;
   readonly status?: InstalledItemStatus;
   readonly testId: string;
@@ -118,14 +145,15 @@ function DisabledStatusTrigger({
         variant="ghost-overlay"
         size="compact"
         touchArea="contained"
+        readOnlyAppearance
         data-testid={testId}
         data-status={status}
         aria-label={ariaLabel}
         aria-disabled="true"
         aria-describedby={reasonId}
       >
-        <InstalledItemStatusIcon status={icon} disabled />
-        {label}
+        <InstalledItemStatusIcon status={icon} />
+        <span className="fg-secondary">{label}</span>
         {/* Holds the chevron's place, so labels line up with live pickers. */}
         <span className="w-3 shrink-0" aria-hidden />
         <span id={reasonId} className="sr-only">
@@ -153,7 +181,7 @@ export function InstalledItemStatusUnavailable({
     <DisabledStatusTrigger
       label="Unavailable"
       ariaLabel={`Status for ${itemName}: Unavailable`}
-      icon="available"
+      icon="unavailable"
       reason={reason}
       testId={testId}
     />

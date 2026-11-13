@@ -19,8 +19,10 @@ const target = {
   delegationId: 'child-run',
   runGeneration: 1,
 };
+const cloudPageNote =
+  'Cloud chats have no delegation runs yet, so this answers unsupported_action there.';
 const cloudNote =
-  'Not supported in cloud chats: retained transcripts belong to the paired desktop, and cloud has no authorized desktop read port.';
+  'Cloud chats read only primary transcripts of chats in the current project: use {kind: "primary", chatId} with a known message id. Cloud chats have no delegation runs yet, so delegation targets answer unsupported_action there.';
 const discoveryNote =
   'Use ListDelegates and InspectDelegate for your runs, or delegation.tree in App Advisor. Other chats, historical runs and archives require a known owner and run locator. Page results provide message ids and block ordinals.';
 const fields: Record<string, AgentActionField> = {
@@ -101,7 +103,7 @@ export function transcriptReadActionCatalog(): readonly AgentActionCatalogEntry<
       example: { type: 'chat.transcript.page', target },
       keywords: ['delegation', 'child', 'transcript', 'page', 'history'],
       notes: [
-        cloudNote,
+        cloudPageNote,
         discoveryNote,
         'Delegation targets only. Up to 500 rows, 768 KiB stored selection and 960,000 bytes for the core result. Rows within a page are oldest to newest; no cursor means completion. runTruncated means retained-source loss, not another page. Use chat.get for the latest primary response.',
       ],

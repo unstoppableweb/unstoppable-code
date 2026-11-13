@@ -143,6 +143,7 @@ function getMatrixVariantBreakdown(
     restarting: 'running',
     paused: 'paused',
     queued: 'queued',
+    waiting_for_capacity: 'queued',
     pending: 'queued',
     skipped: 'skipped',
     cancelled: 'cancelled',

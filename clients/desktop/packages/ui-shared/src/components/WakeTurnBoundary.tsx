@@ -2,9 +2,13 @@ import type { JSX } from 'react';
 import { ListStartIcon, MessageCircleDashedIcon } from '../icons/AppIcons';
 import { Button } from './Button';
 import { Tooltip } from './Tooltip';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
 export interface WakeTurnBoundaryProps {
-  /** The finished task; absent when the provider doesn't name it. */
+  /**
+   * The finished task, from its tool call's description, command or prompt;
+   * absent when the provider doesn't name it. Blocked in session replay.
+   */
   taskLabel?: string;
   /** The task reported an event and keeps running, rather than finishing. */
   event?: boolean;
@@ -44,7 +48,8 @@ export function WakeTurnBoundary({
         ) : scheduled ? (
           taskLabel ? (
             <>
-              Continued for the scheduled prompt <strong>{taskLabel}</strong>
+              Continued for the scheduled prompt{' '}
+              <strong className={REPLAY_BLOCK_CLASS}>{taskLabel}</strong>
             </>
           ) : (
             'Continued for a scheduled prompt'
@@ -52,14 +57,16 @@ export function WakeTurnBoundary({
         ) : event ? (
           taskLabel ? (
             <>
-              Continued after an event from <strong>{taskLabel}</strong>
+              Continued after an event from{' '}
+              <strong className={REPLAY_BLOCK_CLASS}>{taskLabel}</strong>
             </>
           ) : (
             'Continued after a background event'
           )
         ) : taskLabel ? (
           <>
-            Continued after <strong>{taskLabel}</strong> finished
+            Continued after{' '}
+            <strong className={REPLAY_BLOCK_CLASS}>{taskLabel}</strong> finished
           </>
         ) : (
           'Continued after background work finished'

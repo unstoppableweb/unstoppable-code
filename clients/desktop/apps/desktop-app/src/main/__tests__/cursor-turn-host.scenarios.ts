@@ -180,6 +180,26 @@ function request(
 }
 
 function scenarios(harness: OwnedProviderProcessHost): void {
+  test('refuses an unavailable exact model before a prompt can run on a fallback', async (t) => {
+    const directory = await directories(t);
+    const events: Record<string, unknown>[] = [];
+    const result = await runCursorTurn(
+      {
+        ...request(harness, directory, 'create the result file'),
+        rawModelId: 'withdrawn-model[]',
+      },
+      host(() => ({ decision: 'allow' }), events),
+    );
+    assert.equal(result.isError, true);
+    assert.equal(result.cancelled, false);
+    assert.match(result.message, /model is unavailable/i);
+    assert.equal(result.responseText, '');
+    await assert.rejects(
+      readFile(path.join(directory.cwd, 'result.txt'), 'utf8'),
+      { code: 'ENOENT' },
+    );
+  });
+
   test('streams response text into the projection and the result', async (t) => {
     const directory = await directories(t);
     const events: Record<string, unknown>[] = [];

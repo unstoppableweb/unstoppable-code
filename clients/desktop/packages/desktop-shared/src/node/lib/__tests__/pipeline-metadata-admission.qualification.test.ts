@@ -5,7 +5,7 @@ import {
   evaluateAdmittedWriter,
   STORAGE_OWNERSHIP,
 } from '@canopy/core-runtime/storage';
-import { writeFileAtomicallySync } from '../atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   admittedStorageRowForPath,
   isAdmittedStorageCandidate,

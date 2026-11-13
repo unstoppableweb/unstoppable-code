@@ -183,7 +183,14 @@ export const CoreWorkspacePluginsUpdateParamsSchema = z.strictObject({
   change: z.union([
     z.strictObject({
       kind: z.literal('setDefaults'),
-      defaultPluginSelections: CoreWorkspacePluginSelectionsSchema,
+      // Null clears the defaults, and the defaults revision guards the write
+      // as REST's PATCH does (CAN-6114); desktop refuses both.
+      defaultPluginSelections: CoreWorkspacePluginSelectionsSchema.nullable(),
+      expectedDefaultPluginSelectionsRevision: z
+        .number()
+        .int()
+        .min(0)
+        .optional(),
     }),
     z.strictObject({
       kind: z.literal('selectRecommended'),
@@ -216,6 +223,8 @@ export const CoreWorkspacePluginsUpdateResultSchema = openResult({
   written: z.boolean(),
   defaultPluginSelections: CoreWorkspacePluginSelectionsSchema.optional(),
   recommendedPluginOptOutKeys: z.array(z.string()).optional(),
+  // A cloud save's retried host-port sync failed (CAN-6114); desktop never sets it.
+  warnings: z.array(z.string()).optional(),
 });
 export type CoreWorkspacePluginsUpdateResult = z.output<
   typeof CoreWorkspacePluginsUpdateResultSchema
@@ -314,7 +323,8 @@ export const CoreWorkspaceCoworkUpdateParamsSchema = z.strictObject({
   // explicit default plugins are core.workspace.plugins.update's.
   settings: z.strictObject({
     description: z.string().optional(),
-    defaultModel: z.string().optional(),
+    // Null clears the default (CAN-6114); desktop refuses it.
+    defaultModel: z.string().nullable().optional(),
     defaultPresetId: z.string().optional(),
     presets: z
       .array(
@@ -358,6 +368,9 @@ export type CoreWorkspaceCoworkUpdateParams = z.output<
 
 export const CoreWorkspaceCoworkUpdateResultSchema = openResult({
   workspaceId: slug,
+  // The save landed but a best-effort side effect did not, such as the
+  // web core retrying a failed host-port sync (CAN-6114). Absent otherwise.
+  warnings: z.array(z.string()).optional(),
 });
 export type CoreWorkspaceCoworkUpdateResult = z.output<
   typeof CoreWorkspaceCoworkUpdateResultSchema

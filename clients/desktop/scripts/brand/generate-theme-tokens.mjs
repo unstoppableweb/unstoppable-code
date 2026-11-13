@@ -124,7 +124,7 @@ function sidebarForegroundDeclarations(dark) {
   return [
     `  --sidebar-fg-primary: rgb(${channel});`,
     `  --sidebar-fg-secondary: rgb(${channel} / 72%);`,
-    `  --sidebar-fg-tertiary: rgb(${channel} / 56%);`,
+    `  --sidebar-fg-tertiary: rgb(${channel} / 58%);`,
     `  --sidebar-fg-quaternary: rgb(${channel} / 36%);`,
   ].join('\n');
 }

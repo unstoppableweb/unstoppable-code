@@ -1,3 +1,6 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import { getWorkspaceWorktreesFilePath } from '../lib/paths';
+import { readWorkspaceWorktreesUnlocked } from '../lib/workspace-persistence';
 // CAN-4070 rule: captured on the unchanged `activity:changed-files`,
 // `activity:file-diff` and `activity:turn-file-diff` IPC handlers before
 // CAN-4103 served them through `worker.git.diff.get`. Real data root,
@@ -393,4 +396,24 @@ describe('activity:turn-file-diff', () => {
         }),
       );
   });
+});
+
+it('reads a healthy worktree when a peer row cannot be decoded', async () => {
+  const listPath = getWorkspaceWorktreesFilePath(SINGLE_WS);
+  const original = await readFile(listPath, 'utf8');
+  const { worktrees } = await readWorkspaceWorktreesUnlocked(SINGLE_WS);
+  const request = { projectId: SINGLE_WS, worktreeId: WORKTREE };
+  const expected = await changedFilesResult(request);
+  expect(expected.uncommitted.length).toBeGreaterThan(0);
+  try {
+    await writeFile(
+      listPath,
+      JSON.stringify({ version: 1, worktrees: [...worktrees, { id: 99 }] }),
+    );
+    const partial = await readWorkspaceWorktreesUnlocked(SINGLE_WS);
+    expect(partial.authority).toBe('partial');
+    expect(await changedFilesResult(request)).toEqual(expected);
+  } finally {
+    await writeFile(listPath, original);
+  }
 });

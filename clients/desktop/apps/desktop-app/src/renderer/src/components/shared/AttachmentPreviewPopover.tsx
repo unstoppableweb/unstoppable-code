@@ -1,3 +1,7 @@
+import {
+  cloudAttachmentPreview,
+  isCloudAttachmentPath,
+} from '@/cloud-chats/cloud-chat-attachments';
 import { memo, useCallback, useEffect, useState, type JSX } from 'react';
 import {
   Button,
@@ -144,6 +148,14 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
 
   // Fetch preview content
   useEffect(() => {
+    // A cloud chat's attachment is never read through main.
+    const cloud = cloudAttachmentPreview(absolutePath);
+    if (cloud !== undefined) {
+      setPreview(cloud);
+      setError(null);
+      setLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -243,13 +255,15 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
         )}
       </div>
 
-      {/* Footer */}
-      <div className="flex shrink-0 border-t px-2 py-1.5">
-        <Button variant="ghost" size="compact" onClick={handleOpen}>
-          <FileIcon size="sm" />
-          Open
-        </Button>
-      </div>
+      {/* Footer: a cloud chat's attachment has no file here to open. */}
+      {onOpen !== undefined || !isCloudAttachmentPath(absolutePath) ? (
+        <div className="flex shrink-0 border-t px-2 py-1.5">
+          <Button variant="ghost" size="compact" onClick={handleOpen}>
+            <FileIcon size="sm" />
+            Open
+          </Button>
+        </div>
+      ) : null}
     </RichHoverCard>
   );
 });

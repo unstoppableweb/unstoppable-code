@@ -17,6 +17,10 @@ export {
   type SidebarNoneFoundRowProps,
 } from './SidebarNoneFoundRow';
 export {
+  SidebarOfflineRow,
+  type SidebarOfflineRowProps,
+} from './SidebarOfflineRow';
+export {
   SidebarScrollArea,
   SIDEBAR_SCROLLBAR_HIDE_DELAY_MS,
 } from './SidebarScrollArea';

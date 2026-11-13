@@ -5,8 +5,11 @@ import { Button } from './Button';
 import { CopyStatusRegion, useAnnouncedCopy } from './copy-feedback';
 import { Tooltip } from './Tooltip';
 
-/** The user bubble's copy badge name (CAN-5354). */
-const USER_BUBBLE_COPY_LABEL = 'Copy your message';
+/**
+ * The user bubble's copy badge name (CAN-5354). One word, like every copy
+ * icon's tooltip: the badge sits on the message it copies.
+ */
+const USER_BUBBLE_COPY_LABEL = 'Copy';
 
 export interface BubbleCopyBadgeProps {
   /** Plain text written to the clipboard. */
@@ -20,9 +23,8 @@ export interface BubbleCopyBadgeProps {
 /**
  * A message bubble's corner copy action. It shares the copy behavior with
  * `CopyButton` and is drawn as the 28px secondary icon Button, the same
- * recipe as the revert badge beside it. Its name says whose words it
- * copies, apart from the reply's and plan's Copy actions, and a polite status
- * announces `Copied` (CAN-5354). The cluster reveals on focus-within, so
+ * recipe as the revert badge beside it. Its name and tooltip are `Copy`, and
+ * a polite status announces `Copied` (CAN-5354). The cluster reveals on focus-within, so
  * tabbing to the badge shows it.
  */
 export function BubbleCopyBadge(props: BubbleCopyBadgeProps): JSX.Element {

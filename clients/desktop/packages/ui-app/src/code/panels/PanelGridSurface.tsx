@@ -41,6 +41,7 @@ import {
 } from '@canopy/ui-shared/panels';
 import {
   makeWorktreePanelKey,
+  panelTabIndexForShownIndex,
   readPanelGroupRevealState,
   usePanelGridController,
   usePanelLayoutStore,
@@ -452,9 +453,19 @@ export function PanelGridSurface({
         activateBoundBrowserPanel(projectId, worktreeId, groupId);
       },
       onMovePanel: (panelId, targetGroupId, edge, targetIndex): void => {
+        // The strip's drop index counts only the selected chat's tabs.
+        const tabIndex =
+          targetIndex === undefined
+            ? undefined
+            : panelTabIndexForShownIndex(
+                key,
+                targetGroupId,
+                panelId,
+                targetIndex,
+              );
         if (
           !fixedTopology &&
-          store().movePanel(key, panelId, targetGroupId, edge, targetIndex)
+          store().movePanel(key, panelId, targetGroupId, edge, tabIndex)
         ) {
           activateBoundBrowserPanel(projectId, worktreeId, null, panelId);
         }
@@ -481,7 +492,12 @@ export function PanelGridSurface({
       // Reordering within a group leaves the topology alone, so a fixed
       // layout allows it too.
       onReorderTab: (groupId, panelId, toIndex): void => {
-        store().reorderTab(key, groupId, panelId, toIndex);
+        store().reorderTab(
+          key,
+          groupId,
+          panelId,
+          panelTabIndexForShownIndex(key, groupId, panelId, toIndex),
+        );
       },
       // Phase 8 pull-out: moves the group into a new OS window via the
       // host's panel-windows service (which guards window-bound tabs and the

@@ -2,7 +2,7 @@ import {
   authorizePipelineContextResources,
   pipelineContextResources,
 } from '@canopy/desktop-shared/node/background-execution-context';
-import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
+import type { ChildPipelineAuthorization } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 jest.mock('@electron-toolkit/utils', () => ({
   is: { dev: true },
 }));
@@ -30,7 +30,7 @@ jest.mock('../plugins/shareable-plugin-resolution', () => ({
   })),
 }));
 
-import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
+import { recoverOrphanedPipelineExecutions } from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
 import * as fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import * as os from 'node:os';
@@ -49,12 +49,12 @@ import {
   retryPipelineExecution,
   retryMatrixJobExecution,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import type {
   ExecutionRuntime,
   ExecutionState,
   ResolvePipelineTargetResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import type {
   Pipeline,
   PipelinePreferenceLocator,
@@ -64,7 +64,7 @@ import {
   listTrackedPlans,
   updateTrackedPlan,
 } from '../lib/plan-persistence';
-import { savePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+import { savePipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import {
   computePipelinePackageDigestSync,
   hashPipelinePackageYaml,

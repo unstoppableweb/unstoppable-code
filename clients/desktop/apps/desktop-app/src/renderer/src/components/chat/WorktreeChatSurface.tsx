@@ -1,4 +1,5 @@
 import { ComposerWorkDrawerProvider } from './composer-work-drawer-context';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import {
   memo,
   useEffect,
@@ -34,6 +35,7 @@ import {
 import { SuggestedPromptChips } from '@/components/suggestions/SuggestedPromptChips';
 import { useSuggestedPrompts } from '@/components/suggestions/useSuggestedPrompts';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useBlueprintCatalog } from '@/hooks/useBlueprintCatalog';
@@ -150,6 +152,10 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
   // A real Code worktree, a Cowork Work Entry, and the App Advisor may opt
   // into the Cursor harness; every other scope keeps Cursor out of its picker.
   const selectedProjectId = selectedWorktree?.projectId;
+  const { chatInterfaceModes, chatQueueEdits, chatResetToPoint, chatTabFork } =
+    useScopeCapabilities({
+      projectId: selectedProjectId ?? '',
+    });
   const allowCursor = useProjectsStore(
     (state) =>
       selectedProjectId === APP_ADVISOR_PROJECT_ID ||
@@ -262,6 +268,9 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
     {
       surface: coworkProjectId === null ? 'chat' : 'cowork',
       seedKey: chatTabId,
+      // A cloud chat's MCP servers are its cloud account's, not this
+      // computer's: it takes the cowork pool (CAN-6175 R5).
+      localInventory: !isWebCoreScope(selectedWorktree?.projectId ?? ''),
       ...(coworkProjectId === null
         ? {}
         : {
@@ -292,6 +301,7 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
   const interfaceModeControl = useMemo(
     (): ChatInterfaceModeControl | undefined =>
       !readOnly &&
+      chatInterfaceModes === true &&
       interfaceContext?.providerIsClaude &&
       targetProjectId !== undefined &&
       targetWorktreeId !== undefined
@@ -310,6 +320,7 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
           }
         : undefined,
     [
+      chatInterfaceModes,
       readOnly,
       interfaceContext,
       targetProjectId,
@@ -357,12 +368,14 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
                         chatId={interfaceContext.chatId}
                       />
                     )}
-                    <ClaudeTerminalForkButton
-                      projectId={selectedWorktree.projectId}
-                      worktreeId={selectedWorktree.worktreeId}
-                      chatId={interfaceContext.chatId}
-                      sdkSessionId={claudeTerminalRuntime.sdkSessionId}
-                    />
+                    {chatTabFork === true && (
+                      <ClaudeTerminalForkButton
+                        projectId={selectedWorktree.projectId}
+                        worktreeId={selectedWorktree.worktreeId}
+                        chatId={interfaceContext.chatId}
+                        sdkSessionId={claudeTerminalRuntime.sdkSessionId}
+                      />
+                    )}
                   </div>
                 ) : null}
                 <div className="pointer-events-auto">
@@ -446,13 +459,15 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
                     // A projected published chat carries no queue; the required
                     // clear handler stays wired, every other turn action is off.
                     onClearQueuedMessage={handleClearQueuedMessage}
-                    {...(readOnly
+                    {...(readOnly || chatQueueEdits !== true
                       ? {}
                       : {
                           onForceQueuedMessage: handleForceQueuedMessage,
                           onEditQueuedMessage: handleEditQueuedMessage,
-                          onResetToPoint: handleResetToPoint,
                         })}
+                    {...(readOnly || chatResetToPoint !== true
+                      ? {}
+                      : { onResetToPoint: handleResetToPoint })}
                     scheduledMessages={scheduledMessages}
                     onEditScheduledMessage={setEditingScheduledId}
                     onClearScheduledMessage={handleClearScheduledMessage}

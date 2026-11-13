@@ -17,12 +17,12 @@ import { mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { BotChatAddress } from '@canopy/desktop-shared/lib/bot-discovery';
 import type { ProjectChatAddress } from '@canopy/desktop-shared/lib/project-discovery';
-import { REPLY_READ_MARGIN_MINUTES } from '@canopy/desktop-shared/node/pipelines/executor/host-action-runner';
+import { REPLY_READ_MARGIN_MINUTES } from '@canopy/execution-engine/node/pipelines/executor/host-action-runner';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
   PipelineHostActionResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   PipelineHostRefusal,
   type PipelineHostFailureReason,

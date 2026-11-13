@@ -182,6 +182,7 @@ import { useNavigationStore } from '../../navigationStore';
 import { chatStoreApi } from '../store-ref';
 import { parseOrgMemoryUsedEvent } from '../memory';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import { chatBackendFor } from '../backend';
 
 const pendingCodexCompletionResults = new Set<string>();
 
@@ -266,7 +267,7 @@ function recoverExternallyPersistedChatTab(event: ChatEvent): void {
       return;
     }
 
-    const persisted = await window.api.chat.loadTabs({
+    const persisted = await chatBackendFor(event).chat.loadTabs({
       projectId: event.projectId,
       worktreeId: event.worktreeId,
     });
@@ -2218,7 +2219,9 @@ export const createEventsSlice: StateCreator<
             key,
           }): Promise<StreamingTabVerificationResult | null> => {
             try {
-              const active = await window.api.chat.activeSessions({
+              const active = await chatBackendFor({
+                projectId,
+              }).chat.activeSessions({
                 projectId,
                 worktreeId,
               });

@@ -17,7 +17,7 @@ import {
   FolderPlusIcon,
   MagnifyingGlassIcon,
   FolderIcon,
-  FileIcon,
+  FileTypeIcon,
   MentionIcon,
 } from '@canopy/ui-shared/icons';
 import {
@@ -643,7 +643,11 @@ export function FilesTab({
         className="px-2 py-1"
       >
         <div className="flex items-center gap-2">
-          {editor.isDir ? <FolderIcon /> : <FileIcon />}
+          {editor.isDir ? (
+            <FolderIcon />
+          ) : (
+            <FileTypeIcon filename={editor.value || 'untitled'} />
+          )}
           <div className="min-w-0 flex-1">
             <TextInput
               ref={editorInputRef}

@@ -1,5 +1,7 @@
 import {
+  createContext,
   memo,
+  useContext,
   type JSX,
   type MouseEvent,
   type ReactElement,
@@ -15,6 +17,7 @@ import { PluginsIcon } from '../icons/PluginsIcon';
 import { SkillIcon } from '../icons/SkillIcon';
 import { RichHoverTooltip, type TooltipTriggerProps } from './RichHoverTooltip';
 import { StatusGlyph } from './StatusGlyph';
+import { StepRow } from './chat/StepRow';
 import {
   capabilityTileStatusText,
   type CapabilityTileIconKind,
@@ -103,6 +106,41 @@ export const CAPABILITY_TILE_CELL_CLASS =
 // the right padding.
 const TRIGGER_CLASS = `flex flex-col rounded-lg border bg-card px-4 pt-3.25 pb-4 text-left no-underline supports-[grid-template-rows:subgrid]:grid-cols-1 supports-[grid-template-rows:subgrid]:gap-y-0 ${CAPABILITY_TILE_CELL_CLASS}`;
 const INTERACTIVE_CLASS = `focus-ring ${TRIGGER_CLASS} transition-colors hover:bg-fg-primary/[0.04]`;
+
+/**
+ * How a tile draws: a card (`tile`, the default) or, inside a turn's Agent
+ * activity, a quiet step row (`row`, AA1): its kind's icon, its name, what
+ * happened in the lighter ink, and its state at the end. The trigger, the
+ * accessible name, a host's `wrapTrigger` and `accessory` stay the same.
+ */
+export type CapabilityTileLayout = 'tile' | 'row';
+
+const CapabilityTileLayoutContext = createContext<CapabilityTileLayout>('tile');
+
+/** The layout tiles draw in here, for hosts that wrap a tile's trigger. */
+export function useCapabilityTileLayout(): CapabilityTileLayout {
+  return useContext(CapabilityTileLayoutContext);
+}
+
+/** Draws every `CapabilityTile` below it in `layout`. */
+export function CapabilityTileLayoutProvider({
+  layout,
+  children,
+}: {
+  readonly layout: CapabilityTileLayout;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <CapabilityTileLayoutContext.Provider value={layout}>
+      {children}
+    </CapabilityTileLayoutContext.Provider>
+  );
+}
+
+// A row is the step row itself: no surface and no hover change, so it reads
+// as part of the turn; keyboard focus draws the ring.
+const ROW_TRIGGER_CLASS =
+  'focus-ring flex min-w-0 flex-1 rounded-sm text-left no-underline';
 
 function isPlainClick(event: MouseEvent<HTMLAnchorElement>): boolean {
   return (
@@ -273,6 +311,57 @@ function TileBody({
   );
 }
 
+function RowBody({
+  model,
+  statusTooltip,
+}: {
+  model: CapabilityTileModel;
+  statusTooltip: boolean;
+}): JSX.Element {
+  const Icon = ICONS[model.iconKind];
+  const detail = [
+    model.kindPhrase,
+    model.sourceLabel,
+    model.changeSummary ?? model.summary,
+    model.reason,
+    model.removedNote,
+  ]
+    .filter((part): part is string => typeof part === 'string' && part !== '')
+    .join(' · ');
+  return (
+    <StepRow
+      step
+      icon={<Icon size="sm" />}
+      label={model.name}
+      detail={detail === '' ? undefined : `· ${detail}`}
+      className="w-full"
+      trailing={
+        <>
+          {model.external ? (
+            <span className="flex shrink-0 fg-tertiary" aria-hidden="true">
+              <ArrowUpRightIcon size="sm" />
+            </span>
+          ) : null}
+          {model.state?.glyph ? (
+            <TileStateGlyph
+              state={model.state}
+              glyph={model.state.glyph}
+              tooltip={statusTooltip}
+            />
+          ) : model.state ? (
+            <span
+              className={`ml-auto shrink-0 pl-2 text-xs ${TONE_INK[model.state.tone]}`}
+              data-testid="capability-tile-state"
+            >
+              {model.state.label}
+            </span>
+          ) : null}
+        </>
+      }
+    />
+  );
+}
+
 /**
  * Compact, display-only tile for a capability a chat turn created, changed,
  * ran, found or recommended. Hosts supply navigation; a removed item renders
@@ -292,13 +381,18 @@ export const CapabilityTile = memo(function CapabilityTile({
   const hint = action.kind === 'none' ? action.hint : undefined;
   const label = accessibleName(model, hint);
   const padForAccessory = Boolean(accessory);
-  const body = (
+  const row = useContext(CapabilityTileLayoutContext) === 'row';
+  const body = row ? (
+    <RowBody model={model} statusTooltip={statusTooltip} />
+  ) : (
     <TileBody
       model={model}
       padForAccessory={padForAccessory}
       statusTooltip={statusTooltip}
     />
   );
+  const interactiveClass = row ? ROW_TRIGGER_CLASS : INTERACTIVE_CLASS;
+  const staticClass = row ? ROW_TRIGGER_CLASS : TRIGGER_CLASS;
   let trigger: ReactElement<TooltipTriggerProps>;
   if (action.kind === 'link') {
     const { href, onNavigate } = action;
@@ -315,7 +409,7 @@ export const CapabilityTile = memo(function CapabilityTile({
               }
             : undefined
         }
-        className={INTERACTIVE_CLASS}
+        className={interactiveClass}
         data-testid={testId}
         {...(action.external
           ? { target: '_blank', rel: 'noopener noreferrer' }
@@ -336,7 +430,7 @@ export const CapabilityTile = memo(function CapabilityTile({
           event.preventDefault();
           action.onActivate();
         }}
-        className={INTERACTIVE_CLASS}
+        className={interactiveClass}
         data-testid={testId}
       >
         {body}
@@ -347,11 +441,28 @@ export const CapabilityTile = memo(function CapabilityTile({
       <div
         role="group"
         aria-label={label}
-        className={`${TRIGGER_CLASS}${model.removed ? ' opacity-70' : ''}`}
+        className={`${staticClass}${model.removed ? ' opacity-70' : ''}`}
         data-testid={testId}
         data-unavailable={model.removed ? 'true' : undefined}
       >
         {body}
+      </div>
+    );
+  }
+  if (row) {
+    // The accessory (Share) follows the row's words, outside the trigger.
+    return (
+      <div
+        className="relative flex min-w-0 items-center gap-1"
+        data-capability-tile=""
+        data-capability-tile-layout="row"
+      >
+        {wrapTrigger ? wrapTrigger(trigger) : trigger}
+        {accessory ? (
+          <div className="shrink-0" data-capability-tile-accessory="">
+            {accessory}
+          </div>
+        ) : null}
       </div>
     );
   }

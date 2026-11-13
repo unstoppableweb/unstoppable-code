@@ -76,6 +76,17 @@ channel.on('message', ({ data }) => {
     );
     child.unref();
     channel.postMessage({ type: 'grandchild', pid: child.pid });
+  } else if (type === 'orphan') {
+    // A host that unwinds on its own once its launcher is gone, writing more
+    // than a pipe holds on the way out (CAN-6481).
+    const code = Number(field(data, 'code'));
+    channel.onDisconnect(() => {
+      const payload = 'x'.repeat(64 * 1024);
+      for (let index = 0; index < 16; index += 1)
+        channel.postMessage({ type: 'chunk', index, payload });
+      channel.exit(code);
+    });
+    channel.postMessage({ type: 'orphan' });
   } else if (type === 'crash') {
     process.kill(process.pid, 'SIGKILL');
   } else if (type === 'exit') {

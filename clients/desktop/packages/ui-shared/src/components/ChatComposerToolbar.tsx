@@ -18,7 +18,7 @@ const ACTIVE_TONE_CLASS_NAMES: Record<
 > = {
   default: 'hover:bg-subtle',
   warning: 'bg-warning-subtle fg-warning hover:bg-warning-subtle',
-  accent: 'bg-accent-subtle fg-accent hover:bg-accent-subtle',
+  accent: 'bg-accent-subtle fg-accent-strong hover:bg-accent-subtle',
   // Something running on the chat's behalf (its watchers).
   'status-active': 'bg-info-subtle fg-info hover:bg-info-subtle',
 };

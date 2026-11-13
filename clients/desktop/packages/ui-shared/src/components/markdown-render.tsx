@@ -11,6 +11,8 @@ import { RuleType, type MarkdownToJSX } from 'markdown-to-jsx';
 import { Checkbox } from './Choice';
 import { DeferredMarkdownMath } from './DeferredMarkdownMath';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
+import { TEXT_LINK_INLINE_CLASS } from './TextLink';
+import { MarkdownImage } from './MarkdownImage';
 import { MarkdownMermaid } from './MarkdownMermaid';
 import { MAX_MERMAID_BLOCKS } from './markdown-mermaid-policy';
 import { parseFileLinkLineSuffix } from '../lib/file-link-line-suffix';
@@ -239,8 +241,7 @@ export function isNavigableTranscriptHref(href: string): boolean {
  * A text link in prose: accent ink over a faint underline set clear of the
  * descenders; the underline takes the ink's full colour on hover and focus.
  */
-export const TRANSCRIPT_LINK_CLASS =
-  'fg-accent underline decoration-accent/30 decoration-1 underline-offset-4 transition-[text-decoration-color] hover:decoration-current focus-visible:decoration-current';
+export const TRANSCRIPT_LINK_CLASS = TEXT_LINK_INLINE_CLASS;
 
 /**
  * Anchor override for agent transcripts: navigable URLs stay links, everything
@@ -315,6 +316,8 @@ export function MarkdownTableBlock({
   );
 }
 
+export { MarkdownImage, MarkdownImageUnavailable } from './MarkdownImage';
+
 /**
  * Typography for agent and user prose in a chat transcript. Desktop and web
  * transcripts both take it from here so their prose cannot drift apart.
@@ -330,6 +333,10 @@ export const DEFAULT_MARKDOWN_OVERRIDES: MarkdownToJSX.Overrides = {
   a: sanitizedAnchorOverride(),
   pre: MarkdownCodeBlock,
   table: MarkdownTableBlock,
+  // CAN-4785: one image for all default markdown (every transcript host and
+  // any caller without its own `img` override), so a failed load reads as
+  // announced alt text instead of a bare broken-image icon.
+  img: MarkdownImage,
   th: ({ children, ...props }: ComponentPropsWithoutRef<'th'>): JSX.Element => (
     <th {...props} {...markdownTableCellProps(children, true)}>
       {children}

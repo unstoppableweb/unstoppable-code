@@ -82,6 +82,7 @@ function LlmProviderSection({
           <ModelGatewayCredentialSection
             key={personalGateway.organizationId}
             gateway={personalGateway}
+            personal
           />
         ) : null}
         {/* Each org gateway is a provider row. Show the selected org first. */}

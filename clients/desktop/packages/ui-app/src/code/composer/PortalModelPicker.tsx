@@ -34,6 +34,8 @@ export interface PortalModelPickerProps {
   readonly menuAlignRef?: RefObject<HTMLElement | null>;
   readonly triggerTooltip?: string | null;
   readonly disabled?: boolean;
+  /** Opens the menu whenever it changes, as a host keyboard shortcut does. */
+  readonly openSignal?: number;
   readonly catalog: ModelCatalog;
   readonly currentModel?: string;
   readonly currentModelLabel?: string;
@@ -162,6 +164,7 @@ function optionHarness(
 
 /** Portal wiring for the browser-safe shared model picker. */
 export function PortalModelPicker({
+  openSignal,
   disabled,
   statusRow = false,
   compact = false,
@@ -619,6 +622,7 @@ export function PortalModelPicker({
   return (
     <ModelPickerMenu
       disabled={disabled}
+      {...(openSignal === undefined ? {} : { openSignal })}
       catalog={menuCatalog}
       libraryAccess={libraryAccess}
       currentModel={selectedModelId}

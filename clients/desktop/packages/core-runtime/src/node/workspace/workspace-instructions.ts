@@ -125,9 +125,20 @@ export function createCoreWorkspaceInstructionsHandlers(
     },
     instructions: {
       'core.workspace.instructions.update': async (
-        { workspaceId, content },
+        { workspaceId, content, revision },
         context,
       ): Promise<CoreWorkspaceInstructionsUpdateResult> => {
+        // The web core's warnings revision (CAN-6093); desktop advertises none.
+        if (revision !== undefined)
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'Desktop workspaces do not serve this revision.',
+            details: { unsupported: ['revision'], reason: 'unserved' },
+            retry: {
+              kind: 'after_refresh',
+              resource: 'core.runtime.manifest.get',
+            },
+          });
         try {
           await host.write(workspaceId, content, context.caller);
           return {};

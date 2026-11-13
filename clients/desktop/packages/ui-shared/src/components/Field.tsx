@@ -13,7 +13,7 @@ import {
 } from 'react';
 import type { AppError } from '@canopy/protocol/app-errors';
 import { ChevronDownMediumIcon, WarningIcon } from '../icons/AppIcons';
-import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { DROPDOWN_TRIGGER_INTERACTION_CLASS } from './Button';
 import { useDialogFormFieldDescribedBy } from './dialog-form-field-context';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
@@ -402,6 +402,12 @@ export interface SelectProps {
   readonly onValueChange: (value: string) => void;
   /** Shown in the tertiary ink while nothing is chosen. */
   readonly placeholder?: string;
+  /**
+   * The labels and placeholder are conversation content: session replay
+   * blocks them and records the field and its options. Option values are
+   * recorded (`data-value`), so they must carry no content.
+   */
+  readonly blockLabelsInReplay?: boolean;
   readonly disabled?: boolean;
   readonly required?: boolean;
   readonly id?: string;
@@ -445,6 +451,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
       value,
       onValueChange,
       placeholder = 'Choose an option',
+      blockLabelsInReplay = false,
       disabled = false,
       required,
       id,
@@ -492,7 +499,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
           onClick={() => setOpen((current) => !current)}
         >
           <span
-            className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}${chosen?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+            className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}${blockLabelsInReplay ? ` ${REPLAY_BLOCK_CLASS}` : chosen?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
           >
             {chosen?.label ?? placeholder}
           </span>
@@ -531,7 +538,9 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
               >
                 <PickerMenuOptionContent>
                   <PickerMenuOptionLabel>
-                    {option.maskInReplay ? (
+                    {blockLabelsInReplay ? (
+                      <span className={REPLAY_BLOCK_CLASS}>{option.label}</span>
+                    ) : option.maskInReplay ? (
                       <span className={REPLAY_MASK_CLASS}>{option.label}</span>
                     ) : (
                       option.label

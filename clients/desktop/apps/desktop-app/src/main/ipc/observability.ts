@@ -161,12 +161,19 @@ export function registerObservabilityHandlers(
   getWindow: () => BrowserWindow | null,
   dispatcher: Pick<DesktopCanopyDispatcher, 'query'>,
   resolveCaller: DesktopIpcCallerResolver,
+  getOrchestratorWindow: () => BrowserWindow | null = (): null => null,
 ): void {
   const service = getObservabilityService();
   registerRendererDiagnosticsHandler(getExecutionObservabilityIngest());
 
   service.subscribe((event) => {
     sendToWindow(getWindow(), IPC_CHANNELS.observabilityEvent, event);
+    // The Orchestrator's page shows usage too: its composer ring re-reads a
+    // plan's usage when a turn ends, which it learns from these entries.
+    const orchestrator = getOrchestratorWindow();
+    if (orchestrator !== null) {
+      sendToWindow(orchestrator, IPC_CHANNELS.observabilityEvent, event);
+    }
   });
 
   // Provider account usage stays with the desktop host (CAN-4180); core

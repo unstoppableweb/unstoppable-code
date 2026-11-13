@@ -1,14 +1,16 @@
-import { lstat, readFile, readdir, rename, unlink } from 'node:fs/promises';
+import { lstat, readFile, readdir, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import {
   MEMORY_INDEX_PATH,
   compareMemoryChangeCursors,
+  isMemoryNoteOriginBlocked,
   memoryDocumentIdentity,
   type MemoryChange,
   type MemoryConflictReason,
   type MemoryDocument,
   type MemoryDocumentChange,
   type MemoryNoteRecord,
+  type MemoryOriginPolicy,
   type MemoryRevisionRecord,
   type MemorySyncStateFile,
 } from '@canopy/protocol/memory-sync';
@@ -30,9 +32,12 @@ import {
   isMemoryMarkdownFileName,
   isNodeError,
   moveWithoutReplacing,
+  readMemoryFile,
   replaceMemoryFileIfUnchanged,
+  sameMemoryFileContent,
   writeMemoryFileAtomically,
   writeMemoryFileDurably,
+  type MemoryFileContent,
 } from '../local/memory-files';
 import {
   memoryNoteId,
@@ -43,6 +48,7 @@ import {
   normalizeMemoryDocumentContent,
   type MemoryDocumentMerge,
 } from '@canopy/memory-consolidation/document-merge';
+import { queueConflictNotes } from './conflict-notes';
 import { mergeMemoryDocumentOffMain } from './merge-runner';
 import { inboxNoteBody, renderPulledNote } from './note-records';
 import {
@@ -82,6 +88,8 @@ export class MemoryReplicaGapError extends Error {
 export interface MemoryReplicaWriteOptions {
   /** This device, whose own withheld notes stay as local-only. */
   deviceId: string;
+  /** This device's name, which the notes carrying its side of a conflict name. */
+  deviceLabel: string;
   /**
    * Organizations the account policy keeps off the cloud (design §10.4):
    * this device's user-scope notes saved under them are withheld, so a
@@ -106,6 +114,11 @@ export interface MemoryReplicaApplyResult {
   conflicts: number;
   /** How each pulled change that met a local edit was resolved. */
   merges: Record<MemoryDocumentMerge['kind'], number>;
+  /**
+   * For each note from another device written now, how long after the cloud
+   * received it (design §20 `sync.delay`).
+   */
+  delaysMs: number[];
 }
 
 interface LocalNote {
@@ -136,7 +149,7 @@ interface OutboxNotes {
 
 /** A replica file a pull or a snapshot would move aside, remove or replace. */
 type ReplicaFile =
-  | { kind: 'document'; path: string; live: string | null }
+  | { kind: 'document'; path: string; live: MemoryFileContent | null }
   | { kind: 'note'; noteId: string; local: LocalNote };
 
 type SnapshotKept = NonNullable<MemorySyncStateFile['snapshotKept']>;
@@ -149,16 +162,24 @@ const CONFLICTS_PREFIX = '.sync/conflicts/';
 /** Names tried for a pulled note before giving up. */
 const MAX_PULLED_NOTE_NAMES = 100;
 
+/** Names tried for a displaced or conflict file before giving up. */
+const MAX_FREE_NAMES = 100;
+
 /**
  * Times a live document another editor keeps saving is read and decided
- * again before its save is left as it is, as a local edit.
+ * again before its save is left as it is, as a local edit. Every retry in
+ * the writer is bounded by this: out of attempts the live file is left
+ * exactly as it is, under the spelling it was found under, and the pass goes
+ * on. The document still differs from the base, so the next commit reports
+ * it (`document_not_text` when its bytes are not text at all) rather than
+ * the writer spinning under the scope lock.
  */
 const MAX_LIVE_WRITE_ATTEMPTS = 5;
 
 /** The spelling a pulled put was decided on, as read, and whether it stays. */
 interface MergedSpelling {
   spelling: string;
-  live: string | null;
+  live: MemoryFileContent | null;
   kept: boolean;
 }
 
@@ -174,6 +195,7 @@ function emptyResult(): MemoryReplicaApplyResult {
     notesRemoved: 0,
     conflicts: 0,
     merges: { theirs: 0, ours: 0, same: 0, merged: 0, conflict: 0 },
+    delaysMs: [],
   };
 }
 
@@ -215,7 +237,7 @@ async function markdownNames(directory: string): Promise<string[]> {
  * Removes a replica file; with `unchanged`, only while it still holds right
  * before the removal (see {@link replaceMemoryFileIfUnchanged}).
  */
-async function removeMemoryFile(
+export async function removeMemoryFile(
   scopeDir: string,
   path: string,
   unchanged?: () => Promise<boolean>,
@@ -231,9 +253,22 @@ async function removeMemoryFile(
   return true;
 }
 
-/** Whether `path` still holds `expected`, null for no file. */
-function holds(path: string, expected: string | null): () => Promise<boolean> {
-  return async () => (await readTextOrNull(path)) === expected;
+/**
+ * Whether `path` still holds the file `expected` was read from, null for no
+ * file. Compared by its bytes: the text of a file that is not UTF-8 is a
+ * lossy decode, which no two reads can tell apart (see `readMemoryFile`).
+ */
+function holds(
+  path: string,
+  expected: MemoryFileContent | null,
+): () => Promise<boolean> {
+  return async () =>
+    sameMemoryFileContent(await readMemoryFile(path), expected);
+}
+
+/** Whether a conflict copy at `path` holds exactly `live`. */
+async function copyHolds(path: string, live: Buffer): Promise<boolean> {
+  return (await readMemoryFile(path))?.bytes.equals(live) === true;
 }
 
 /**
@@ -264,15 +299,26 @@ async function isSameFile(left: string, right: string): Promise<boolean> {
   }
 }
 
-/** Gives the one file of a case-insensitive file system `target`'s spelling. */
-async function respellMemoryFile(
+/**
+ * Gives `source` the spelling `target` (see {@link moveWithoutReplacing}).
+ * On a case-insensitive file system both name one file, which a rename
+ * respells. Otherwise the move never replaces a file: one another editor
+ * saved under `target` meanwhile makes it reject with EEXIST, and a save
+ * over `source` after it was linked, or bytes other than `expectedBytes`
+ * there, with ECHANGED; either changes nothing, so the caller decides again.
+ */
+export async function respellMemoryFile(
   scopeDir: string,
   source: string,
   target: string,
+  expectedBytes?: Buffer,
 ): Promise<void> {
-  await assertMemoryPathContained(scopeDir, dirname(source));
-  await assertMemoryScopeLockHeld();
-  await rename(source, target);
+  await moveWithoutReplacing(
+    scopeDir,
+    source,
+    target,
+    expectedBytes === undefined ? {} : { expectedBytes },
+  );
 }
 
 async function indexInboxNotes(
@@ -365,7 +411,7 @@ async function moveToFreeName(
   await ensureOwnerOnlyMemoryDir(scopeDir, directory);
   const name = basename(source);
   const stem = name.endsWith('.md') ? name.slice(0, -3) : name;
-  for (let attempt = 1; ; attempt += 1) {
+  for (let attempt = 1; attempt <= MAX_FREE_NAMES; attempt += 1) {
     const destination = join(
       directory,
       attempt === 1 ? name : `${stem}-${attempt}.md`,
@@ -377,6 +423,7 @@ async function moveToFreeName(
       if (!isNodeError(error, 'EEXIST')) throw error;
     }
   }
+  throw new Error(`No free name for ${name} in ${directory}`);
 }
 
 class ReplicaApply {
@@ -441,16 +488,17 @@ class ReplicaApply {
    * pull keeps neither twice: an edit a recorded copy holds is kept already,
    * and a copy cut short before its record is recorded rather than written
    * again. A conflict file is never replaced. `reason` tells the conflict
-   * view why the two were not merged.
+   * view why the two were not merged. The copy holds the live bytes as they
+   * were, so a file memory sync cannot carry is kept as the editor saved it.
    */
   private async recordConflict(
     path: string,
-    ours: string | null,
+    ours: MemoryFileContent | null,
     theirsRevision: number,
     reason: MemoryConflictReason,
     spelling = path,
   ): Promise<void> {
-    const kept = ours ?? '';
+    const kept = ours?.bytes ?? Buffer.alloc(0);
     if (await this.recordedCopyHolds(path, kept)) return;
     const at = this.options.now();
     const stem = spelling.slice(0, -'.md'.length);
@@ -472,13 +520,13 @@ class ReplicaApply {
 
   private async recordedCopyHolds(
     path: string,
-    live: string,
+    live: Buffer,
   ): Promise<boolean> {
     for (const conflict of this.state.conflicts) {
       if (
         conflict.path === path &&
         conflict.oursFile.startsWith(CONFLICTS_PREFIX) &&
-        (await readTextOrNull(join(this.scopeDir, conflict.oursFile))) === live
+        (await copyHolds(join(this.scopeDir, conflict.oursFile), live))
       ) {
         return true;
       }
@@ -489,7 +537,7 @@ class ReplicaApply {
   /** A copy of `live` under `stem` that no conflict records, by its name. */
   private async unrecordedCopyOf(
     stem: string,
-    live: string,
+    live: Buffer,
   ): Promise<string | null> {
     const slash = stem.lastIndexOf('/');
     const folder = stem.slice(0, slash + 1);
@@ -503,7 +551,7 @@ class ReplicaApply {
       if (
         name.startsWith(prefix) &&
         !recorded.has(`${CONFLICTS_PREFIX}${relative}`) &&
-        (await readTextOrNull(join(conflicts, relative))) === live
+        (await copyHolds(join(conflicts, relative), live))
       ) {
         return relative;
       }
@@ -512,9 +560,9 @@ class ReplicaApply {
   }
 
   /** Writes `live` under `name` in `.sync/conflicts/`, numbered when taken. */
-  private async writeConflictCopy(name: string, live: string): Promise<string> {
+  private async writeConflictCopy(name: string, live: Buffer): Promise<string> {
     const folder = memorySyncPrivateDir(this.scopeDir, 'conflicts');
-    for (let attempt = 1; ; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_FREE_NAMES; attempt += 1) {
       const relative = `${attempt === 1 ? name : `${name}-${attempt}`}.md`;
       try {
         await writeMemoryFileDurably(
@@ -530,6 +578,7 @@ class ReplicaApply {
         if (!isNodeError(error, 'EEXIST')) throw error;
       }
     }
+    throw new Error(`No free name for the conflict copy ${name}`);
   }
 
   /**
@@ -569,10 +618,15 @@ class ReplicaApply {
    */
   private isWithheldHere(local: LocalNote): boolean {
     return (
-      this.state.binding.kind === 'user' &&
       local.own &&
-      local.originOrganizationId !== null &&
-      this.options.blockedOriginOrganizationIds.has(local.originOrganizationId)
+      isMemoryNoteOriginBlocked(
+        {
+          scopeKind: this.state.binding.kind,
+          blockedOriginOrganizationIds:
+            this.options.blockedOriginOrganizationIds,
+        },
+        local.originOrganizationId,
+      )
     );
   }
 
@@ -587,19 +641,22 @@ class ReplicaApply {
    * with a pulled change, kept under `.sync/conflicts/` first or left in
    * place. Line endings another editor changed are no edit, as committing
    * normalizes them. One deleted here is a local edit when this replica
-   * applied it, and has nothing to lose otherwise. A note is unless only
-   * this device has it: kept local-only, one the outbox may still hold, an
-   * import staged here (imports are not pushed yet), or this device's own
-   * note its organization withholds.
+   * applied it, and has nothing to lose otherwise. Bytes that are not UTF-8
+   * text are never what was applied, since every applied document came from
+   * the cloud as text, so such a file is always a local edit. A note is
+   * unless only this device has it: kept local-only, one the outbox may
+   * still hold, an import staged here (imports are not pushed yet), or this
+   * device's own note its organization withholds.
    */
   private async preservedElsewhere(file: ReplicaFile): Promise<boolean> {
     if (file.kind === 'document') {
       const base = this.baseOf(file.path);
       if (file.live === null) return base === undefined;
+      const { text } = file.live;
       return (
+        text !== null &&
         base !== undefined &&
-        base.contentHash ===
-          sha256Hex(normalizeMemoryDocumentContent(file.live))
+        base.contentHash === sha256Hex(normalizeMemoryDocumentContent(text))
       );
     }
     const { noteId, local } = file;
@@ -614,7 +671,7 @@ class ReplicaApply {
   /** Whether the live document holds a local edit a change would lose. */
   private async isLocalEdit(
     path: string,
-    live: string | null,
+    live: MemoryFileContent | null,
   ): Promise<boolean> {
     return !(await this.preservedElsewhere({ kind: 'document', path, live }));
   }
@@ -627,14 +684,14 @@ class ReplicaApply {
    */
   private async mergeLocalEdit(
     path: string,
-    live: string | null,
+    live: MemoryFileContent | null,
     theirs: string | null,
     revision: number,
     spelling: string = path,
   ): Promise<{ keep: true } | { keep: false; content: string | null }> {
     const merge = await mergeMemoryDocumentOffMain(
       await this.baseContent(spelling),
-      live,
+      live?.text ?? null,
       theirs,
     );
     this.result.merges[merge.kind] += 1;
@@ -660,7 +717,7 @@ class ReplicaApply {
    */
   private async writeLive(
     path: string,
-    expected: string | null,
+    expected: MemoryFileContent | null,
     content: string | null,
   ): Promise<boolean> {
     await this.beforeDocumentWrite();
@@ -682,16 +739,31 @@ class ReplicaApply {
   /**
    * Moves a kept live document to the spelling a change pulled, where
    * letter case tells files apart, so the replica and its base name it the
-   * same way.
+   * same way. False, with nothing moved, when another editor saved under
+   * `to` meanwhile, or over `from` since `live` was read: that save is read
+   * and merged, never replaced or removed.
    */
-  private async respellLive(from: string, to: string): Promise<void> {
+  private async respellLive(
+    from: string,
+    to: string,
+    live: MemoryFileContent,
+  ): Promise<boolean> {
     await this.beforeDocumentWrite();
-    await respellMemoryFile(
-      this.scopeDir,
-      join(this.scopeDir, from),
-      join(this.scopeDir, to),
-    );
+    try {
+      await respellMemoryFile(
+        this.scopeDir,
+        join(this.scopeDir, from),
+        join(this.scopeDir, to),
+        live.bytes,
+      );
+    } catch (error) {
+      if (isNodeError(error, 'EEXIST') || isNodeError(error, 'ECHANGED')) {
+        return false;
+      }
+      throw error;
+    }
     this.result.documentsChanged += 1;
+    return true;
   }
 
   /** Forgets what was applied under every spelling of `path`. */
@@ -711,13 +783,13 @@ class ReplicaApply {
    */
   private async readLive(
     path: string,
-  ): Promise<{ spelling: string; live: string | null }> {
-    const live = await readTextOrNull(join(this.scopeDir, path));
+  ): Promise<{ spelling: string; live: MemoryFileContent | null }> {
+    const live = await readMemoryFile(join(this.scopeDir, path));
     const prior = this.basePathFor(path);
     if (live !== null || prior === path) return { spelling: path, live };
     return {
       spelling: prior,
-      live: await readTextOrNull(join(this.scopeDir, prior)),
+      live: await readMemoryFile(join(this.scopeDir, prior)),
     };
   }
 
@@ -774,11 +846,14 @@ class ReplicaApply {
   ): Promise<void> {
     const source = join(this.scopeDir, other);
     for (let attempt = 0; attempt < MAX_LIVE_WRITE_ATTEMPTS; attempt += 1) {
-      const ours = await readTextOrNull(source);
+      const ours = await readMemoryFile(source);
       if (ours === null) return;
       const edited =
-        normalizeMemoryDocumentContent(ours) !== content &&
-        !(merged?.spelling === other && merged.live === ours) &&
+        (ours.text === null ||
+          normalizeMemoryDocumentContent(ours.text) !== content) &&
+        !(
+          merged?.spelling === other && sameMemoryFileContent(merged.live, ours)
+        ) &&
         (await this.isLocalEdit(other, ours));
       if (edited && this.keepLiveDocuments) return;
       await this.beforeDocumentWrite();
@@ -822,29 +897,36 @@ class ReplicaApply {
    * Makes the live document of `path` hold `content`, or what its local
    * edit merges to with it, and returns the spelling that was decided on. A
    * save another editor makes meanwhile is read and merged again, never
-   * replaced; one that keeps coming is left as a local edit.
+   * replaced; one that keeps coming, within {@link MAX_LIVE_WRITE_ATTEMPTS}
+   * tries, is left as a local edit under the spelling it was read from, and
+   * so is a file whose bytes are not text (see {@link decideLive}).
    */
   private async putLive(
     path: string,
     content: string,
     revision: number,
   ): Promise<MergedSpelling | null> {
-    for (let attempt = 0; ; attempt += 1) {
-      const { spelling, live } = await this.readLive(path);
-      if (live === content && spelling === path) return null;
-      const next =
-        attempt >= MAX_LIVE_WRITE_ATTEMPTS
-          ? { keep: true as const }
-          : await this.decideLive(path, spelling, live, content, revision);
+    let read = await this.readLive(path);
+    for (let attempt = 0; attempt < MAX_LIVE_WRITE_ATTEMPTS; attempt += 1) {
+      const { spelling, live } = read;
+      if (live?.text === content && spelling === path) return null;
+      const next = await this.decideLive(
+        path,
+        spelling,
+        live,
+        content,
+        revision,
+      );
       if (next.keep) {
         if (live === null || spelling === path) {
           return { spelling, live, kept: true };
         }
-        await this.respellLive(spelling, path);
-        return { spelling: path, live, kept: true };
-      }
-      if (
-        (next.content === live && spelling === path) ||
+        // A save under the pulled spelling meanwhile is read and merged.
+        if (await this.respellLive(spelling, path, live)) {
+          return { spelling: path, live, kept: true };
+        }
+      } else if (
+        (next.content === live?.text && spelling === path) ||
         (await this.writeLive(
           path,
           spelling === path ? live : null,
@@ -853,17 +935,27 @@ class ReplicaApply {
       ) {
         return { spelling, live, kept: false };
       }
+      read = await this.readLive(path);
     }
+    // Out of attempts: the save that keeps coming stays where it is, under
+    // the spelling it was read from, and the next commit reports it.
+    return { ...read, kept: true };
   }
 
-  /** What a pulled change makes of the live document read under `spelling`. */
+  /**
+   * What a pulled change makes of the live document read under `spelling`.
+   * Bytes that are not UTF-8 text are kept as they are: nothing can merge
+   * them, and the lossy decode a merge would read is not the file, so
+   * replacing it would lose bytes only this device has.
+   */
   private async decideLive(
     path: string,
     spelling: string,
-    live: string | null,
+    live: MemoryFileContent | null,
     theirs: string | null,
     revision: number,
   ): Promise<{ keep: true } | { keep: false; content: string | null }> {
+    if (live !== null && live.text === null) return { keep: true };
     if (!(await this.isLocalEdit(spelling, live))) {
       return { keep: false, content: theirs };
     }
@@ -881,7 +973,7 @@ class ReplicaApply {
     revision: number,
   ): Promise<void> {
     for (let attempt = 0; attempt < MAX_LIVE_WRITE_ATTEMPTS; attempt += 1) {
-      const live = await readTextOrNull(join(this.scopeDir, spelling));
+      const live = await readMemoryFile(join(this.scopeDir, spelling));
       if (live === null) return;
       const next = await this.decideLive(path, spelling, live, null, revision);
       if (next.keep || (await this.writeLive(spelling, live, next.content))) {
@@ -1108,7 +1200,14 @@ class ReplicaApply {
 
   async applyNotePut(note: MemoryNoteRecord): Promise<void> {
     if (note.state === 'pending') {
+      const known = (await this.noteIndex()).has(note.noteId);
       await this.writePendingNote(note);
+      if (!known && note.device.deviceId !== this.options.deviceId) {
+        const delay =
+          this.options.now().getTime() - Date.parse(note.receivedAt);
+        if (Number.isFinite(delay))
+          this.result.delaysMs.push(Math.max(0, delay));
+      }
     } else if (note.state === 'consolidated') {
       await this.archiveNotes([note.noteId]);
     } else {
@@ -1189,7 +1288,7 @@ class ReplicaApply {
     ];
     for (const path of localDocuments) {
       if (listed.has(memoryDocumentIdentity(path))) continue;
-      const live = await readTextOrNull(join(this.scopeDir, path));
+      const live = await readMemoryFile(join(this.scopeDir, path));
       if (live === null) continue;
       const preserved = await this.preservedElsewhere({
         kind: 'document',
@@ -1443,6 +1542,26 @@ async function readBoundState(scopeDir: string): Promise<MemorySyncStateFile> {
 }
 
 /**
+ * Queues the notes that carry the conflicts an apply recorded to the next
+ * consolidation (see {@link queueConflictNotes}), in the apply's lock. A
+ * failure, such as an unreadable outbox, leaves them to the next pass.
+ */
+async function queueConflictNotesAfterApply(
+  scopeDir: string,
+  state: MemorySyncStateFile,
+  apply: ReplicaApply,
+  options: MemoryReplicaWriteOptions,
+): Promise<void> {
+  if (apply.result.conflicts === 0) return;
+  await queueConflictNotes(
+    scopeDir,
+    state.binding,
+    { deviceId: options.deviceId, label: options.deviceLabel },
+    options.now(),
+  ).catch(() => 0);
+}
+
+/**
  * Makes the replica hold exactly the snapshot: its documents at the pinned
  * revision and the notes pending at its cursor. Then records the cursor, so
  * pulling continues from there.
@@ -1474,6 +1593,7 @@ export function applyMemoryReplicaSnapshot(
       baseRevision: snapshot.revision,
       lastPulledAt: options.now().toISOString(),
     });
+    await queueConflictNotesAfterApply(scopeDir, state, apply, options);
     return apply.result;
   });
 }
@@ -1523,6 +1643,7 @@ export function applyMemoryReplicaChanges(
       cursor: page.nextCursor,
       lastPulledAt: options.now().toISOString(),
     });
+    await queueConflictNotesAfterApply(scopeDir, state, apply, options);
     return apply.result;
   });
 }
@@ -1555,6 +1676,7 @@ export function applyMemoryReplicaCommit(
       consumedNoteIds: [...commit.consumedNoteIds],
     });
     await writeMemorySyncState(scopeDir, state);
+    await queueConflictNotesAfterApply(scopeDir, state, apply, options);
     return apply.result;
   });
 }
@@ -1577,10 +1699,14 @@ export interface MemoryConsumableNote {
  * import this device staged and never sent is left for a later run (the
  * cloud refuses to consume a note it does not hold). While the outbox cannot be read, any note of this
  * device's may still be queued, as a snapshot assumes too. Only a pending
- * import claims its staged path, as in {@link indexImports}.
+ * import claims its staged path, as in {@link indexImports}. A note whose
+ * organization keeps it off the cloud is left out too: the cloud still
+ * lists one the sweep has not withheld yet, and cloud consolidation leaves
+ * it out by the same rule.
  */
 export async function listConsumableNotes(
   scopeDir: string,
+  origins: MemoryOriginPolicy,
 ): Promise<Map<string, MemoryConsumableNote>> {
   const state = await readBoundState(scopeDir);
   const outbox = await readMemorySyncOutbox(scopeDir, state.binding);
@@ -1610,7 +1736,8 @@ export async function listConsumableNotes(
       !local.archived &&
       local.fileKey.startsWith('inbox/') &&
       !held.has(noteId) &&
-      (outbox !== null || !local.own)
+      (outbox !== null || !local.own) &&
+      !isMemoryNoteOriginBlocked(origins, local.originOrganizationId)
     ) {
       notes.set(local.fileKey, { noteId, contentHash: null });
     }

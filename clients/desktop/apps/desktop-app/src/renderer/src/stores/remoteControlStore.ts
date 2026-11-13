@@ -64,6 +64,7 @@ export function defaultRemoteControlState(): RemoteControlState {
     relayDetail: null,
     thisDevice: null,
     allowIncoming: false,
+    allowRemoteUpdates: false,
     hosts: [],
     controllers: [],
     discoverable: [],
@@ -96,6 +97,7 @@ interface RemoteControlStoreState {
   /** Opens or focuses a computer's window; `null` is this computer. */
   openMachine: (deviceId: string | null) => Promise<void>;
   setAllowIncoming: (allow: boolean) => Promise<void>;
+  setAllowRemoteUpdates: (allow: boolean) => Promise<void>;
   /**
    * Opens, or replaces, the pairing link window. The link is returned to the
    * caller only; it is never cached here.
@@ -150,6 +152,8 @@ export const useRemoteControlStore = create<RemoteControlStoreState>((set) => {
     },
     setAllowIncoming: (allow): Promise<void> =>
       apply((api) => api.setAllowIncoming(allow)),
+    setAllowRemoteUpdates: (allow): Promise<void> =>
+      apply((api) => api.setAllowRemoteUpdates(allow)),
     openPairingWindow: (): Promise<RemoteControlOpenPairingWindowResult> =>
       requireRemoteControlApi().openPairingWindow(),
     startPairing: (deviceId): Promise<void> =>

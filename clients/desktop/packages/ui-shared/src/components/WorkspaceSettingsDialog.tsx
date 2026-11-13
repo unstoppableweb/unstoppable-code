@@ -68,6 +68,8 @@ export interface WorkspaceSettingsContentCopy {
 export interface WorkspaceSettingsDangerCopy {
   readonly title?: string;
   readonly description?: ReactNode;
+  /** Shown while the removal awaits confirmation. */
+  readonly confirmDescription?: ReactNode;
   readonly triggerLabel?: string;
   readonly confirmLabel?: string;
   readonly confirmInProgressLabel?: string;
@@ -434,7 +436,7 @@ export function WorkspaceSettingsDialog({
           title={dangerCopy?.title ?? `Delete ${WORKSPACE_LABEL.toLowerCase()}`}
           description={
             confirming
-              ? "This can't be undone."
+              ? (dangerCopy?.confirmDescription ?? "This can't be undone.")
               : (dangerCopy?.description ??
                 `Removes it and every worktree, chat and summary it owns on the desktop.`)
           }
@@ -564,6 +566,7 @@ export function WorkspaceSettingsDialog({
                     value={color}
                     palette={palette}
                     testId={testIds?.colorSwatches}
+                    label="Project color"
                     onChange={(swatch) => {
                       setJustSaved(false);
                       colorEditVersionRef.current += 1;

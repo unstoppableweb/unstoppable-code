@@ -48,15 +48,15 @@ import {
   type CodexRuntimeService,
   type CodexSpawnProfileRequest,
   type CodexThreadHandle,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 import type {
   AgentDelegationError,
   AgentDelegationUsage,
 } from '@canopy/protocol/delegation';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import type { UserInput } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/UserInput';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
+import type { UserInput } from '@canopy/execution-engine/node/codex-runtime/generated/v2/UserInput';
 import { codexRuntimeForWorkerRun } from '../../codex/runtime-service';
 import { CodexDelegationProgress } from './codex-progress';
 import { ChildAppendQueue } from './child-append-queue';
@@ -74,7 +74,7 @@ import {
   type CodexDelegationSandboxProfileName,
 } from './codex-sandbox-profile';
 import { recordDelegationModelRejection } from './model-rejections';
-import type { CodexErrorInfo } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/CodexErrorInfo';
+import type { CodexErrorInfo } from '@canopy/execution-engine/node/codex-runtime/generated/v2/CodexErrorInfo';
 import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import type {
   DelegationCapabilityReloadController,

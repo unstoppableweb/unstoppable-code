@@ -296,8 +296,24 @@ it.each(['fresh', 'complete'] as const)(
     ).not.toThrow();
   },
 );
+it.each(['required', 'stable-owned', 'incomplete', 'unsupported'] as const)(
+  'installed %s evidence returns its structured refusal reason',
+  (internalState) => {
+    const startup = (): void =>
+      assertBuildStorageStartup({ build: 'internal', internalState });
+    expect.assertions(1);
+    try {
+      startup();
+    } catch (error) {
+      expect(error).toMatchObject({
+        reason: `internal-migration-${internalState}`,
+      });
+    }
+  },
+);
 it('keeps journal parsing B-owned and refuses predecessor history without it', async () => {
   await mkdir(join(home, '.canopy'));
+  await writeFile(join(home, '.canopy', 'history'), 'retained history');
   expect(() =>
     assertHostBuildStorageStartup({
       home,
@@ -416,6 +432,21 @@ it.each([canopy, unstoppable])(
     await mkdir(join(home, `.${brand.id}-internal-secure`), { mode: 0o700 });
     expect(startup).not.toThrow();
     await mkdir(source, { mode: 0o700 });
+    const emptySource = await lstat(source);
+    expect(startup).not.toThrow();
+    expect(await readdir(source)).toEqual([]);
+    expect((await lstat(source)).ino).toBe(emptySource.ino);
+    await expect(lstat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+    const choice = join(home, `.${brand.id}-internal-startup.json`);
+    await writeFile(choice, '{}', { mode: 0o600 });
+    expect(startup).toThrow('unsupported');
+    await rm(choice);
+    const orphan = `${destination}.migration-staging`;
+    await mkdir(orphan, { mode: 0o700 });
+    expect(startup).toThrow('unsupported');
+    await rm(orphan, { recursive: true });
+    // Even a hidden entry is predecessor history, not an empty installation.
+    await writeFile(join(source, '.history'), 'retained history');
     expect(startup).toThrow('--apply');
     if (brand.id === 'unstoppable-code')
       expect(startup).toThrow('--declare-internal');
@@ -576,6 +607,36 @@ it.each([canopy, unstoppable])(
     expect(startup).not.toThrow();
     expect(windowsStartup()).toBe('complete');
     expect(getuid).not.toHaveBeenCalled();
+    const posixStartup = (os: 'darwin' | 'linux'): string =>
+      readInternalRootStartup({
+        home,
+        identity,
+        observation: {
+          os,
+          getuid: () => process.getuid?.(),
+          readWindowsAcl: windowsAcl,
+        },
+      });
+    const renumbered = `${root.dev + 1n}:${root.ino}`;
+    await save({
+      ...journal,
+      stagingIdentity: renumbered,
+      publicationIdentity: renumbered,
+    });
+    if (process.platform !== 'win32')
+      expect(posixStartup('darwin')).toBe('complete');
+    if (process.platform !== 'win32')
+      expect(posixStartup('linux')).toBe('incomplete');
+    expect(windowsStartup()).toBe('incomplete');
+    const replaced = `${root.dev + 1n}:${root.ino + 1n}`;
+    await save({
+      ...journal,
+      stagingIdentity: replaced,
+      publicationIdentity: replaced,
+    });
+    if (process.platform !== 'win32')
+      expect(posixStartup('darwin')).toBe('incomplete');
+    await save(journal);
     for (const failure of [
       { owner: 'S-1-5-21-2' },
       { aces: [{ type: 0, sid: 'S-1-1-0' }] },
@@ -1020,3 +1081,56 @@ describe('shared storage path observation matrix', () => {
     },
   );
 });
+
+(process.platform === 'win32' ? it.skip : it)(
+  'keeps an empty-internal choice across Darwin device renumbering, not root replacement',
+  async () => {
+    const destination = join(home, '.canopy-internal');
+    await mkdir(destination, { mode: 0o700 });
+    await mkdir(join(home, '.canopy'), { mode: 0o700 });
+    const root = await lstat(destination, { bigint: true });
+    const path = join(home, '.canopy-internal-startup.json');
+    const record = {
+      version: 1,
+      choice: 'empty-internal',
+      brandId: 'canopy',
+      destination,
+      principal: String(process.getuid?.()),
+      publicationIdentity: `${root.dev + 1n}:${root.ino}`,
+    };
+    const read = (os: 'darwin' | 'linux'): string =>
+      readInternalRootStartup({
+        home,
+        identity: { brandId: 'canopy', build: 'internal' },
+        observation: {
+          os,
+          getuid: () => process.getuid?.(),
+          readWindowsAcl: () => {
+            throw new Error('not Windows');
+          },
+        },
+      });
+    await writeFile(path, JSON.stringify(record), { mode: 0o600 });
+    expect(read('darwin')).toBe('fresh');
+    expect(read('linux')).toBe('unsupported');
+    for (const publicationIdentity of [
+      null,
+      '',
+      'not-an-identity',
+      `${root.dev + 1n}:${root.ino}\n`,
+      `device:${root.ino}`,
+      `${root.dev}:0`,
+    ]) {
+      await writeFile(path, JSON.stringify({ ...record, publicationIdentity }));
+      expect(read('darwin')).toBe('unsupported');
+    }
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...record,
+        publicationIdentity: `${root.dev + 1n}:${root.ino + 1n}`,
+      }),
+    );
+    expect(read('darwin')).toBe('unsupported');
+  },
+);

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
-import * as atomicFile from '@canopy/desktop-shared/node/lib/atomic-file';
+import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
 import type { PipelinePackageResource } from '@canopy/protocol/pipelines';
 
 let mockRoot = '';
@@ -17,9 +17,9 @@ jest.mock('../../lib/paths', () => ({
   getPipelineAssetsManifestPath: (id: string): string =>
     join(mockRoot, 'pipeline-data', id, 'assets.json'),
 }));
-jest.mock('@canopy/desktop-shared/node/lib/atomic-file', () => {
+jest.mock('@canopy/execution-engine/node/lib/atomic-file', () => {
   const actual = jest.requireActual<typeof atomicFile>(
-    '@canopy/desktop-shared/node/lib/atomic-file',
+    '@canopy/execution-engine/node/lib/atomic-file',
   );
   return {
     ...actual,
@@ -84,7 +84,7 @@ it('installs the metadata file durably with mode 0600', () => {
 
 it('keeps a metadata write whose folder flush failed', () => {
   const actual = jest.requireActual<typeof atomicFile>(
-    '@canopy/desktop-shared/node/lib/atomic-file',
+    '@canopy/execution-engine/node/lib/atomic-file',
   );
   jest
     .mocked(atomicFile.writeFileAtomicallySync)

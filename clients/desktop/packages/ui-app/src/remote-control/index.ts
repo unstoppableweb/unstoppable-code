@@ -21,7 +21,8 @@ export {
 } from './RemoteControlDevices';
 export {
   ADD_COMPUTER_LABEL,
-  CONNECT_COMPUTER_LABEL,
+  ADD_COMPUTER_ROW_LABEL,
+  COMPUTERS_LABEL,
   CONTROL_RISK_SENTENCE,
   HOSTED_CONTROLLER_LIMITS,
   PAIR_DEVICE_LABEL,
@@ -36,8 +37,10 @@ export {
 export {
   RemoteControlComputerMenuItems,
   RemoteControlComputerPicker,
+  RemoteControlComputersMenuItem,
   type RemoteControlComputerMenuItemsProps,
   type RemoteControlComputerPickerProps,
+  type RemoteControlComputersMenuItemProps,
   type RemoteControlComputerRow,
   type RemoteControlLocalComputer,
 } from './RemoteControlComputerPicker';

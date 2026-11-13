@@ -2,7 +2,7 @@ import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-m
 import {
   CODEX_PROJECT_DOC_THREAD_CONFIG,
   flattenCodexThreadConfig,
-} from '@canopy/desktop-shared/node/codex-runtime/thread-config';
+} from '@canopy/execution-engine/node/codex-runtime/thread-config';
 import {
   type AgentModelConfig,
   type ChatTabPluginSelections,

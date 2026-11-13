@@ -102,6 +102,12 @@ export interface ChatHydrationOptions {
   readonly waitingDelegationIds?: readonly string[];
   readonly inputDelivery?: readonly ChatInputDeliveryView[];
   readonly steeringCapabilities?: ChatSteeringCapabilities;
+  /**
+   * The claim this hydrate writes under. While a chat's transcript is
+   * claimed, only its claimant's hydrates write messages; others still apply
+   * their runtime state and settings.
+   */
+  readonly transcriptOwner?: object;
 }
 
 /** Live state for one chat thread, keyed by `chatId`. */
@@ -244,6 +250,14 @@ export interface ChatStoreState {
   ): void;
   /** Drop a thread's state, its turn-group cache, and any pending persist. */
   reset(chatId: string): void;
+  /**
+   * Make `owner` the only writer of `chatId`'s messages: transport message
+   * frames are dropped and other hydrates keep only their runtime state. The
+   * web core claims a cloud chat it serves (CAN-6092).
+   */
+  claimTranscript(chatId: string, owner: object): void;
+  /** Ends `owner`'s claim; another owner's claim stays. */
+  releaseTranscript(chatId: string, owner: object): void;
   /**
    * Apply one transport-delivered message frame. Public so the
    * {@link createChatStore} subscription can route events in; not intended to
@@ -506,7 +520,8 @@ function upsertMessage(
   return ordered;
 }
 
-function messageRevision(message: PortalChatMessage): number {
+/** A row's revision as the store compares it: a timer's completion counts. */
+export function messageRevision(message: PortalChatMessage): number {
   const frameRevision = message.updatedAtMs ?? message.createdAtMs;
   // Persisted timer messages retain their start timestamp; completion advances
   // only the embedded timer block.
@@ -723,6 +738,14 @@ export function createChatStore(
   const inFlightPersistCounts = new Map<string, number>();
   const persistEpochs = new Map<string, number>();
   const externallyReferencedMessageIds = new Map<string, number>();
+  /** Chats whose messages only their claimant writes. */
+  const transcriptOwners = new Map<string, object>();
+  /**
+   * Host echoes of sends that just left the host's queue while another writer
+   * claims the transcript. The claim fences the host's rows, and the echo is
+   * then the only copy of the message, so it stays until the claimant shows it.
+   */
+  const heldEchoes = new Map<string, readonly PortalChatMessage[]>();
   let disposed = false;
   let storeLifetime = 0;
   let triggerCleanup: ((chatId: string) => void) | null = null;
@@ -1308,13 +1331,18 @@ export function createChatStore(
             options?.residencyGeneration !== undefined &&
             options.residencyGeneration !==
               (residencyGenerations.get(chatId) ?? 0);
-          const fenceTranscript = hasStaleGeneration && !isRetained(chatId);
+          const claim = transcriptOwners.get(chatId);
+          const claimedElsewhere =
+            claim !== undefined && claim !== options?.transcriptOwner;
+          const fenceTranscript =
+            claimedElsewhere || (hasStaleGeneration && !isRetained(chatId));
           const hydrationMessages = fenceTranscript ? [] : messages;
           const replaceMessages = fenceTranscript
             ? false
             : options?.replaceMessages;
           const clearsIncompleteHistory =
             !hasStaleGeneration &&
+            !claimedElsewhere &&
             (messages.length > 0 || options?.replaceMessages === true);
           set(
             (state) => {
@@ -1547,12 +1575,84 @@ export function createChatStore(
               if (supersededOptimisticId !== undefined) {
                 removeOptimisticBinding(chatId);
               }
-              const ordered = orderMessages(
+              const shown =
                 supersededOptimisticId === undefined
                   ? merged
                   : merged.filter(
                       (message) => message.messageId !== supersededOptimisticId,
+                    );
+              // Only while another writer claims the transcript or echoes are held.
+              const withHeldEchoes = (): PortalChatMessage[] => {
+                const announced = new Set(
+                  prev.queuedMessages.flatMap(
+                    (message) => message.supersedesUserMessageId ?? [],
+                  ),
+                );
+                const stillQueued = new Set(
+                  (options?.queuedMessages ?? prev.queuedMessages).flatMap(
+                    (message) => message.supersedesUserMessageId ?? [],
+                  ),
+                );
+                const echoes = claimedElsewhere
+                  ? messages.filter(
+                      (message) =>
+                        message.role === 'user' &&
+                        announced.has(message.messageId) &&
+                        !stillQueued.has(message.messageId),
+                    )
+                  : [];
+                // shortcut: an echo lands on a user row with its text written from
+                // the send on, since a queued send's row is written when it runs; a
+                // repeated identical prompt can match early. Upgrade when the
+                // claimant's row names the send.
+                const ownerIds = new Set(
+                  hydrationMessages.map((message) => message.messageId),
+                );
+                const wasHeld = heldEchoes.get(chatId) ?? [];
+                const echoIds = new Set(
+                  [...wasHeld, ...echoes].map((echo) => echo.messageId),
+                );
+                // REST joins a prompt's text parts with blank lines, Core's
+                // transcript with none: compare without whitespace.
+                const words = (text: string): string =>
+                  text.replace(/\s+/g, '');
+                // Only the claimant's rows land an echo, never another echo.
+                const landed = (echo: PortalChatMessage): boolean =>
+                  ownerIds.has(echo.messageId) ||
+                  shown.some(
+                    (message) =>
+                      !echoIds.has(message.messageId) &&
+                      message.role === 'user' &&
+                      !isOptimisticMessage(message) &&
+                      words(message.text) === words(echo.text) &&
+                      message.createdAtMs >=
+                        echo.createdAtMs - RECONCILE_SKEW_MS,
+                  );
+                const held = [...echoes, ...wasHeld].filter(
+                  (echo, index, all) =>
+                    all.findIndex(
+                      (each) => each.messageId === echo.messageId,
+                    ) === index && !landed(echo),
+                );
+                if (held.length > 0) heldEchoes.set(chatId, held);
+                else heldEchoes.delete(chatId);
+                // A held echo stands for its send, so a bubble it matches goes.
+                return [
+                  ...held.reduce(
+                    (rows, echo) => reconcileOptimistic(rows, echo),
+                    shown.filter(
+                      (message) =>
+                        !echoIds.has(message.messageId) ||
+                        ownerIds.has(message.messageId),
                     ),
+                  ),
+                  ...held,
+                ];
+              };
+              const ordered = orderMessages(
+                claimedElsewhere || heldEchoes.has(chatId)
+                  ? withHeldEchoes()
+                  : shown,
               );
               const messagesUnchanged =
                 ordered.length === prev.messages.length &&
@@ -1751,8 +1851,20 @@ export function createChatStore(
           }
         },
 
+        claimTranscript(chatId, owner): void {
+          transcriptOwners.set(chatId, owner);
+        },
+
+        releaseTranscript(chatId, owner): void {
+          if (transcriptOwners.get(chatId) !== owner) return;
+          transcriptOwners.delete(chatId);
+          // The host's own rows, held echoes included, flow again.
+          heldEchoes.delete(chatId);
+        },
+
         reset(chatId): void {
           consumedBindingEchoes.delete(chatId);
+          heldEchoes.delete(chatId);
           cancelPersist(chatId);
           persistEpochs.set(chatId, (persistEpochs.get(chatId) ?? 0) + 1);
           inFlightPersistCounts.delete(chatId);
@@ -1787,6 +1899,7 @@ export function createChatStore(
         },
 
         ingestMessageEvent(event): void {
+          if (transcriptOwners.has(event.chatId)) return;
           const isAuthoritative = !isOptimisticMessage(event.message);
           if (isAuthoritative) {
             lastAuthoritativeArrivalAt.set(event.chatId, Date.now());
@@ -2457,6 +2570,8 @@ export function createChatStore(
     optimisticRaiseOwners.clear();
     optimisticSendBindings.clear();
     consumedBindingEchoes.clear();
+    transcriptOwners.clear();
+    heldEchoes.clear();
     caches.clear();
     for (const handles of Array.from(interestHandlesByChatId.values())) {
       for (const handle of Array.from(handles)) handle.live = false;

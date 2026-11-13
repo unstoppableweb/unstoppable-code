@@ -1,6 +1,6 @@
 import type { WorktreeActionRuntime } from './worktree-actions';
 import { z } from 'zod';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import type {
   CapabilityItemKind,
   CapabilityReferenceArtifactReceiptV1,

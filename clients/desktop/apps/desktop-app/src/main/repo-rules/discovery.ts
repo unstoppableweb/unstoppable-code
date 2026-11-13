@@ -306,3 +306,26 @@ export async function readSessionRules(
     false,
   );
 }
+/**
+ * The repository IDs whose checkout root no longer exists, within the same
+ * 32-repository bound as a session read (CAN-6368). Any other failure, such
+ * as a root it may not reach, leaves the repository to the session read,
+ * which reports it as unavailable.
+ */
+export async function missingCheckouts(
+  repos: RepoCheckout[],
+): Promise<string[]> {
+  const missing: string[] = [];
+  for (const repo of repos.slice(0, 32)) {
+    const gone = await lstat(repo.root).then(
+      () => false,
+      (e: unknown) =>
+        typeof e === 'object' &&
+        e !== null &&
+        'code' in e &&
+        (e.code === 'ENOENT' || e.code === 'ENOTDIR'),
+    );
+    if (gone) missing.push(repo.repoId);
+  }
+  return missing;
+}

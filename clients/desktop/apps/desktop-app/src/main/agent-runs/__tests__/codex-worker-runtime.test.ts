@@ -25,7 +25,7 @@ const mockCreateCodexRuntimeService = jest.fn<FakeRuntime, [unknown]>(() => {
 });
 
 jest.mock(
-  '@canopy/desktop-shared/node/codex-runtime',
+  '@canopy/execution-engine/node/codex-runtime',
   (): Record<string, unknown> => ({
     createCodexRuntimeService: (options: unknown): FakeRuntime =>
       mockCreateCodexRuntimeService(options),

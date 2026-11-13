@@ -202,6 +202,7 @@ async function removeCheckedRegistration(
   checked: { dev: number; ino: number },
   lockReason: string,
   comparableCheckouts: readonly string[],
+  canRemove?: () => Promise<boolean>,
 ): Promise<boolean> {
   // Random, so neither an id Git picks nor another removal's aside. Git still
   // reads it as an entry; a crash leaves it to the next removal's pass.
@@ -222,7 +223,8 @@ async function removeCheckedRegistration(
       moved.dev === checked.dev &&
       moved.ino === checked.ino &&
       (await readLockReason(aside)) === lockReason &&
-      (await registersAbsentCheckout(aside, comparableCheckouts));
+      (await registersAbsentCheckout(aside, comparableCheckouts)) &&
+      (!canRemove || (await canRemove()));
   } catch (error) {
     // An entry that can't be checked may be another checkout's: put it back.
     await restoreAside(aside, registrationEntry).catch(() => undefined);
@@ -260,7 +262,7 @@ async function removeCheckedRegistration(
 export async function removeAbsentWorktreeRegistrations(
   gitCommonDir: string,
   checkouts: readonly string[],
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; canRemove?: () => Promise<boolean> } = {},
 ): Promise<void> {
   const { signal } = options;
   signal?.throwIfAborted();
@@ -315,6 +317,7 @@ export async function removeAbsentWorktreeRegistrations(
           checked,
           lock.reason,
           comparableCheckouts,
+          options.canRemove,
         ))
       )
         continue;

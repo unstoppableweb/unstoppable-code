@@ -27,6 +27,7 @@ import {
 } from 'node:path';
 import { daemonName } from '../../packages/protocol/src/brand.ts';
 import { loadBrand } from '../brand/load-brand.mjs';
+import { acquireDirectoryLock } from './directory-lock.mjs';
 import { daemonBuildIdentity } from './check-migration-role-package.mjs';
 import { CODE_GRAPH_RUNTIME_MODULES } from '../../packages/core-platform/src/execution-host/daemon-payload.ts';
 import {
@@ -47,6 +48,11 @@ const OWNED_CHILD_NATIVE = join(
 );
 const OWNED_CHILD_SCRIPT = join('scripts', 'build-owned-child.mjs');
 const CORE_DAEMON_SCRIPT = join('scripts', 'build-core-daemon.mjs');
+// A build takes minutes; a lock held past the stale limit is a hung or
+// killed build whose pid was reused, and the wait gives up after that.
+const BUILD_LOCK_GRACE_MS = 30_000;
+const BUILD_LOCK_STALE_MS = 15 * 60_000;
+const BUILD_LOCK_TIMEOUT_MS = 20 * 60_000;
 
 function daemonReleaseFlavor(env) {
   return env.CANOPY_RELEASE_FLAVOR ?? 'stable';
@@ -398,6 +404,17 @@ function warnRunningDaemons({
     );
 }
 
+function notFresh(state) {
+  return [state.ownedChild, state.daemon].filter(
+    (status) => status.state !== 'fresh',
+  );
+}
+
+/** One build at a time per checkout; see `ensureDevCoreDaemon`. */
+function buildLockPath(root) {
+  return join(root, '.cache', 'dev-core-daemon.lock');
+}
+
 /**
  * `build` mode brings both artifacts up to date before Electron starts and
  * throws when a build fails; `check` mode only reports. Both say why any
@@ -433,16 +450,15 @@ export function ensureDevCoreDaemon({
       platform,
       warn,
     });
-  const pending = [initial.ownedChild, initial.daemon].filter(
-    (status) => status.state !== 'fresh',
-  );
-  if (pending.length === 0) {
+  const pending = notFresh(initial);
+  const upToDate = () => {
     log(
       `The core daemon at ${relative(root, initial.daemon.path)} and its owned-child addon match their sources.`,
     );
     reportOlderDaemons();
     return { built: [] };
-  }
+  };
+  if (pending.length === 0) return upToDate();
   if (mode === 'check' || env[SKIP_ENV] === '1') {
     const why =
       mode === 'check'
@@ -455,11 +471,62 @@ export function ensureDevCoreDaemon({
     reportOlderDaemons();
     return { built: [] };
   }
+  // Two dev runs (or two test workers) building at once overwrite and
+  // re-sign the same files under each other; the second waits instead, then
+  // builds only what the first left stale.
+  const lock = acquireDirectoryLock({
+    lockPath: buildLockPath(root),
+    timeoutMs: BUILD_LOCK_TIMEOUT_MS,
+    graceMs: BUILD_LOCK_GRACE_MS,
+    staleMs: BUILD_LOCK_STALE_MS,
+    timeoutMessage: `Timed out after ${BUILD_LOCK_TIMEOUT_MS / 60_000} minutes waiting for another process to build the core daemon (${relative(root, buildLockPath(root))}).`,
+    onWait: (holder) =>
+      log(
+        `Another process${holder?.pid ? ` (pid ${holder.pid})` : ''} is building the core daemon; waiting for it…`,
+      ),
+  });
+  try {
+    // Another process may have built between the first look and taking
+    // the lock, with or without this one waiting, so only what is still
+    // stale gets built.
+    const toBuild = notFresh(inspect());
+    if (toBuild.length === 0) return upToDate();
+    return buildPending({
+      root,
+      env,
+      platform,
+      arch,
+      log,
+      warn,
+      run,
+      inspect,
+      reportOlderDaemons,
+      pending: toBuild,
+      daemonStatusPath: initial.daemon.path,
+    });
+  } finally {
+    lock.release();
+  }
+}
+
+function buildPending({
+  root,
+  env,
+  platform,
+  arch,
+  log,
+  warn,
+  run,
+  inspect,
+  reportOlderDaemons,
+  pending,
+  daemonStatusPath,
+}) {
   const built = [];
   for (const status of pending) {
     log(`${describe(root, status)}; building it…`);
     const startedAtMs = Date.now();
-    const isDaemon = status === initial.daemon;
+    const isDaemon = status.path === daemonStatusPath;
     const exit = run({
       root,
       env,

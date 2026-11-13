@@ -58,7 +58,7 @@ export function IconToggleButton({
           pressed
             ? activeTone === 'special'
               ? 'bg-special-subtle fg-special'
-              : 'bg-accent-subtle fg-accent'
+              : 'bg-accent-subtle fg-accent-strong'
             : offTone === 'accent'
               ? 'fg-accent enabled:hover:bg-subtle'
               : 'fg-secondary enabled:hover:bg-subtle enabled:hover:fg-primary'

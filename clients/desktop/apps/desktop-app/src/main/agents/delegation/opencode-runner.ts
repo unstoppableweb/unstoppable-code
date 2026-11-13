@@ -30,7 +30,7 @@ import type {
   DelegationTranscriptChange,
   DelegationTranscriptPort,
 } from '@canopy/desktop-shared/node/delegation/transcript-port';
-import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
+import { isJsonValue } from '@canopy/execution-engine/node/codex-runtime';
 import { openCodeNativeOperations } from '@canopy/desktop-shared/node/opencode/tool-input';
 import { openCodeToolDisplay } from '@canopy/desktop-shared/node/opencode/tool-display';
 import type { OpenCodeToolInput } from '@canopy/desktop-shared/node/opencode/runtime';
@@ -50,7 +50,13 @@ import {
   delegateAppToolGuidance,
   type DelegateCanopyTools,
 } from './canopy-tools';
-import { childDelegationGuidance } from './child-tools';
+import { CHILD_LEDGER_TOOLS, childDelegationGuidance } from './child-tools';
+import {
+  childLedgerGuidance,
+  retainChildLedgerTools,
+  type ChildLedgerTools,
+} from './ledger-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   DELEGATION_STREAM_PREVIEW_LIMITS,
   DelegationTranscriptRecorder,
@@ -121,6 +127,13 @@ export function createOpenCodeDelegationRunner(options: {
     context: LocalDelegationContext,
   ): Promise<OpenCodeDelegationPreparation>;
   delegation?(context: LocalDelegationContext): DelegationParent | undefined;
+  /**
+   * The Agent Ledger tools for this run, when the Ledger is exposed to it.
+   * Served on the delegate's route beside its delegation and app tools.
+   */
+  ledger?: (
+    context: LocalDelegationContext,
+  ) => Promise<ChildLedgerTools | undefined>;
   reportError(error: unknown): void;
   transcriptPort?: DelegationTranscriptPort;
 }): LocalDelegationRunner {
@@ -137,6 +150,11 @@ export function createOpenCodeDelegationRunner(options: {
           delegation.detach();
           return Promise.resolve();
         });
+      const ledger = await retainChildLedgerTools(
+        context,
+        delegation,
+        options.ledger,
+      );
       const interrupted = new AbortController();
       const runtime = await openOpenCodeExecutionForWorkerRun(
         'opencodeDelegationRunner',
@@ -220,9 +238,22 @@ export function createOpenCodeDelegationRunner(options: {
       const key = `${request.parent.sessionKey}:opencode-delegate:${request.delegationId}:${request.runGeneration}`;
       const token = randomBytes(32).toString('base64url');
       const namespace = BRAND.tools.namespace;
+      // The Ledger tools under their advertised names, as a Claude child's
+      // in-process server lists them; they share the route's exclusive list.
+      const ledgerDefinitions =
+        ledger === undefined
+          ? []
+          : CHILD_LEDGER_TOOLS.map((definition) => ({
+              name: CANOPY_INJECTED_TOOL_REGISTRY[definition.key].displayName,
+              description: definition.description,
+              inputSchema: definition.inputSchema,
+              key: definition.key,
+              readOnly: definition.readOnly,
+            }));
       const definitions = [
         ...(delegation?.projection.tools ?? []),
         ...(prepared.appTools?.tools ?? []),
+        ...ledgerDefinitions,
       ].map((tool) => {
         if (!isJsonValue(tool.inputSchema))
           throw new Error('Invalid delegated tool schema.');
@@ -260,6 +291,33 @@ export function createOpenCodeDelegationRunner(options: {
             if (!transport?.requestId)
               return { text: 'Delegated run is unavailable.', isError: true };
             const callId = transport.requestId;
+            const ledgerTool = ledgerDefinitions.find(
+              (tool) => tool.name === name,
+            );
+            if (ledgerTool && ledger) {
+              // Ledger calls pass the parent's policy, as app tools do.
+              if (
+                !(await prepared.tools.authorizeAppTool(
+                  namespace,
+                  name,
+                  ledgerTool.readOnly,
+                  callId,
+                  signal,
+                ))
+              )
+                return {
+                  text: `${name} was denied by the delegated task's approval policy.`,
+                  isError: true,
+                };
+              check();
+              // The route key is unique to this run, so a repeated request ID
+              // on it is a retry of one call.
+              const result = await ledger.execute(ledgerTool.key, input, {
+                invocationId: `${key}:${callId}`,
+                signal,
+              });
+              return { text: result.text, isError: result.isError === true };
+            }
             const appTool = prepared.appTools?.tools.find(
               (tool) => tool.name === name,
             );
@@ -397,7 +455,7 @@ export function createOpenCodeDelegationRunner(options: {
             sessionId: request.resumeSessionId,
             signal,
             prompt: expandLeadingCursorCommand(request.task.prompt, commands),
-            instructions: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'opencode')}\n${commandGuidance}\n${skillGuidance}\nRead only specific granted files. Native directory searches, native subagents, background processes, and unselected skills are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.`,
+            instructions: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'opencode')}\n${commandGuidance}\n${skillGuidance}\nRead only specific granted files. Native directory searches, native subagents, background processes, and unselected skills are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.${childLedgerGuidance(ledger)}`,
             mcpServers: servers,
           },
           {

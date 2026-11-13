@@ -15,6 +15,7 @@
  * entry's tab metadata ({@link AppAdvisorStore.hydrateForNavigation}).
  */
 import { create } from 'zustand';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   APP_ADVISOR_FLOATING_DEFAULT_SIZE,
   APP_ADVISOR_PROJECT_ID,
@@ -24,6 +25,7 @@ import {
   type AppAdvisorAskUserQuestion,
   type AppAdvisorUiStateEnvelope,
   type AppAdvisorWindowLayout,
+  type AppAdvisorWindowOpenRequest,
   type AppAdvisorWindowState,
   type ChatInterfaceMode,
   type ChatModel,
@@ -32,6 +34,8 @@ import {
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
+import { getLabsFeatureEnabled } from '@/stores/labsExperimentsStore';
+import { ORCHESTRATOR_PAGE_EXPERIMENT_ID } from '@/lib/orchestratorPageExperiment';
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
@@ -110,8 +114,23 @@ export interface AppAdvisorStore {
    */
   syncWindowState: (state: AppAdvisorWindowState) => void;
   openDialog: () => void;
-  /** Turns the floating chat into the full App Advisor window. */
+  /**
+   * Opens the Orchestrator as a page in the main window, in the normal chat
+   * layout (the docked placement). `request` selects what it opens on.
+   */
+  openDocked: (
+    request?: Pick<
+      AppAdvisorWindowOpenRequest,
+      'workEntryId' | 'newWorkEntry' | 'openSettings' | 'archivedOverview'
+    >,
+  ) => void;
+  /** Turns the floating chat into the Orchestrator page in the main window. */
   expandDialog: () => void;
+  /**
+   * Moves the Orchestrator into its separate window, where its in-app
+   * browser panels show.
+   */
+  openSeparateWindow: () => void;
   closeDialog: () => void;
   /** Minimizes the floating chat to its bubble in the main window. */
   minimizeDialog: () => void;
@@ -314,8 +333,13 @@ export const useAppAdvisorStore = create<AppAdvisorStore>((set, get) => ({
       .catch(() => undefined);
   },
   expandDialog: (): void => {
+    // The Orchestrator page experiment opens the page in the main window;
+    // otherwise the separate window, as before.
+    const layout = getLabsFeatureEnabled(ORCHESTRATOR_PAGE_EXPERIMENT_ID)
+      ? 'docked'
+      : 'full';
     void window.api.appAdvisor
-      .openWindow({ layout: 'full', focus: true })
+      .openWindow({ layout, focus: true })
       .then((state) => get().syncWindowState(state))
       .catch(() => undefined);
   },
@@ -436,5 +460,26 @@ export const useAppAdvisorStore = create<AppAdvisorStore>((set, get) => ({
   readEnvelopeAfterFlush: async (): Promise<AppAdvisorUiStateEnvelope> => {
     await Promise.resolve();
     return useCurrentUiStateStore.getState().getEnvelope();
+  },
+  openDocked: (request): void => {
+    void window.api.appAdvisor
+      .openWindow({
+        ...request,
+        layout: 'docked',
+        focus: true,
+        focusComposer: request === undefined,
+      })
+      .then((state) => get().syncWindowState(state))
+      .catch((error: unknown) => {
+        reportClientAppError(error);
+      });
+  },
+  openSeparateWindow: (): void => {
+    void window.api.appAdvisor
+      .openWindow({ layout: 'full', focus: true })
+      .then((state) => get().syncWindowState(state))
+      .catch((error: unknown) => {
+        reportClientAppError(error);
+      });
   },
 }));

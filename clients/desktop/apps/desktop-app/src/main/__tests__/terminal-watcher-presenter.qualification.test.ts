@@ -6,7 +6,7 @@ import type {
   AppAdvisorWatcher,
   ChatWindowCommand,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionEvent } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutionEvent } from '@canopy/execution-engine/node/pipelines/executor';
 import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import type { AppAdvisorWatcherSurfaces } from '../app-advisor/watchers';
 import type * as WaitDiagnostics from '../observability/chat-wait-diagnostics';

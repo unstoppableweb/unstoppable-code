@@ -141,6 +141,7 @@ import {
   type PreparedChildStreamCommit,
 } from './chat-state-contracts';
 import type { ChatWaitOperation } from '../observability/chat-wait-diagnostics';
+import type { ChatFormat4Outcome } from './chat-format4-telemetry';
 
 /** Options of one repository transaction. */
 export type ChatStateTransactionOptions = V2MutationOptions & {
@@ -158,6 +159,11 @@ export interface ChatStateV2RepositoryOptions extends Omit<
   'hasLiveDependency'
 > {
   enableFormat4?: boolean;
+  /**
+   * Whether a writable format 3 scope may promote to format 4 now, asked at
+   * each promotion attempt. Absent means yes. Never demotes a format 4 scope.
+   */
+  format4Promotion?: (scope: ChatScopeKey) => boolean;
   /** Read-only capsule injection; absent until broker record-v3 adoption. */
   delegationReadMetadata?: DelegationReadMetadataSource;
   /** Test-only journal durability fault observation; absent in production. */
@@ -172,6 +178,12 @@ export interface ChatStateV2RepositoryOptions extends Omit<
    * stable release carries the relaxed stream metadata readers.
    */
   deltaJournalIncrementalStreamMetadata?: boolean;
+  /**
+   * Receives each content-free format 4 outcome (CAN-6217) after its local
+   * session diagnostic: promotion attempts, newer-format refusals and format 4
+   * checkpoint durations. Never changes the storage work.
+   */
+  format4Telemetry?: (outcome: ChatFormat4Outcome) => void;
   /** Records estimated above this take the version 2 path (tests). */
   deltaJournalLargeRecordBytes?: number;
   /** First retry delay of a failed promotion (doubles); default 30 s. */
@@ -717,6 +729,36 @@ export class ChatStateV2Repository {
     return scope.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID;
   }
 
+  /**
+   * A format 4 outcome: its own local session diagnostic (never the format 3
+   * `delta_journal_*` kinds), then the content-free telemetry.
+   */
+  private recordFormat4Outcome(
+    directory: string,
+    scope: ChatScopeKey,
+    outcome: ChatFormat4Outcome,
+  ): void {
+    const kind =
+      outcome.event === 'promoted'
+        ? 'format4_promoted'
+        : outcome.event === 'promotion_failed'
+          ? 'format4_promotion_failed'
+          : outcome.event === 'retries_exhausted'
+            ? 'format4_promotion_exhausted'
+            : undefined;
+    if (kind !== undefined)
+      this.recordDeltaJournalLifecycle(this.scopes.get(directory), scope, kind);
+    this.sendFormat4Telemetry(outcome);
+  }
+
+  private sendFormat4Telemetry(outcome: ChatFormat4Outcome): void {
+    try {
+      this.options.format4Telemetry?.(outcome);
+    } catch {
+      // Telemetry never changes the storage outcome.
+    }
+  }
+
   private recordDeltaJournalLifecycle(
     entry: ScopeEntry | undefined,
     scope: ChatScopeKey,
@@ -806,12 +848,8 @@ export class ChatStateV2Repository {
     ) {
       // False is a recovered promotion fault; a failed reopen must escape
       // and become a repository load/storage error, never a ready scope.
-      const promoted = await entry.backend.promoteToFormat4();
-      this.recordDeltaJournalLifecycle(
-        entry,
-        entry.scope,
-        promoted ? 'delta_journal_promoted' : 'delta_journal_promotion_failed',
-      );
+      // The backend reports the outcome, under the format 4 kinds.
+      await entry.backend.promoteToFormat4();
     }
   }
 
@@ -1251,8 +1289,14 @@ export class ChatStateV2Repository {
     store: ChatStorageV2,
     scope: ChatScopeKey,
   ): ChatStateV2Backend {
+    const format4Promotion = this.options.format4Promotion;
     return new ChatStateV2Backend(store, {
       enableFormat4: this.options.enableFormat4,
+      onFormat4Outcome: (outcome): void =>
+        this.recordFormat4Outcome(store.directory, scope, outcome),
+      ...(format4Promotion
+        ? { format4Promotion: (): boolean => format4Promotion(scope) }
+        : {}),
       deltaJournal: {
         onBoundary: this.options.deltaJournalOnBoundary,
         ...deltaJournalBackendOptions(this.options, (diagnostic): void =>
@@ -1926,16 +1970,26 @@ export class ChatStateV2Repository {
   public async generationStoreReadiness(scope: ChatScopeKey): Promise<{
     formatVersion: 1 | 2 | 3 | 4;
     enableFormat4: boolean;
+    /** Whether this format 3 scope may still promote: its attempt is due. */
+    promotes: boolean;
   }> {
     const entry = this.entry(scope);
     return this.serialized(entry, async () => {
       await this.load(scope, entry);
+      const wantsPromotion = async (): Promise<boolean> =>
+        (await entry.store.format()) === 'v3' &&
+        this.promotable(scope) &&
+        entry.backend.wantsFormat4Promotion();
+      // A scope loaded before promotion was allowed promotes here, on the
+      // same path a load takes, instead of refusing its spawns until reload.
+      if (await wantsPromotion()) await this.reconcileFormat(entry);
       const format = await entry.store.format();
       const formatVersion =
         format === 'v4' ? 4 : format === 'v3' ? 3 : format === 'v2' ? 2 : 1;
       return {
         formatVersion,
         enableFormat4: this.options.enableFormat4 === true,
+        promotes: await wantsPromotion(),
       };
     });
   }
@@ -2310,6 +2364,7 @@ export class ChatStateV2Repository {
     } catch {
       // An unreadable journal is still a refused newer format.
     }
+    this.sendFormat4Telemetry({ event: 'newer_format_refused' });
     this.recordStorageDiagnostic(entry, {
       kind: 'delta_journal_newer_format',
       occurredAt,

@@ -470,7 +470,11 @@ export const DagProgressBar = memo(DagProgressBarInner);
 export const DagProgressDots = memo(function DagProgressDots({
   tiers,
   jobs,
-}: Pick<DagProgressBarProps, 'tiers' | 'jobs'>): JSX.Element | null {
+  className,
+}: Pick<DagProgressBarProps, 'tiers' | 'jobs'> & {
+  /** Placement only. */
+  readonly className?: string;
+}): JSX.Element | null {
   const stages = useMemo(
     () =>
       tiers.map((tier) =>
@@ -485,6 +489,7 @@ export const DagProgressDots = memo(function DagProgressDots({
     <ProgressSteps
       appearance="dots"
       stages={stages}
+      className={className}
       dataTestId="dag-progress-dots"
     />
   );

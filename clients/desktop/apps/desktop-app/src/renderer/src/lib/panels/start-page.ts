@@ -21,6 +21,7 @@ import {
 } from '@/lib/start-page/project-start-page';
 import { isPanelHydrationGenerationCurrent } from './hydration-generation';
 import { consumeStartPageSuppressed } from './start-page-suppression';
+import { isWebCoreScope } from '@/lib/chat-authority';
 export {
   consumeStartPageSuppressed,
   markStartPageSuppressed,
@@ -193,6 +194,7 @@ export async function maybeOpenStartPage(
     !isCanopyDesktopStartPageEnabled() ||
     projectId === APP_ADVISOR_PROJECT_ID ||
     projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID ||
+    isWebCoreScope(projectId) ||
     consumeStartPageSuppressed(worktreeKey)
   ) {
     return;

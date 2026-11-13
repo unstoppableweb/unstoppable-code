@@ -10,6 +10,11 @@ export const PIPELINE_RUN_MODES = [
 
 export const PIPELINE_RUN_MAX_WATCHERS = 10;
 
+/** Where a run executes (CAN-6187): this computer, or the cloud. */
+export const PIPELINE_RUN_LOCATIONS = ['local', 'cloud'] as const;
+
+export type PipelineRunLocation = (typeof PIPELINE_RUN_LOCATIONS)[number];
+
 const terminalStatusSchema = z.enum(['success', 'failure', 'cancelled']);
 
 /**
@@ -37,6 +42,8 @@ const pipelineRunFields = {
   pipelineId: z.string().min(1),
   /** `global` runs with no project; omitted runs where the caller is. */
   scope: z.literal('global').optional(),
+  /** `cloud` starts the run in the cloud; omitted runs on this computer. */
+  runOn: z.enum(PIPELINE_RUN_LOCATIONS).optional(),
   inputs: z.record(z.string(), z.string()).optional(),
   runMode: z.enum(PIPELINE_RUN_MODES).optional(),
   planPath: z.string().optional(),
@@ -55,11 +62,18 @@ export const GLOBAL_PIPELINE_RUN_TARGET_MESSAGE =
   'A run with no project (scope "global") cannot take planPath, taskPath, planId, or repoId.';
 export const GLOBAL_PIPELINE_RUN_WATCHERS_MESSAGE =
   'Completion watchers are not available for a run with no project (scope "global").';
+export const CLOUD_PIPELINE_RUN_MODE_MESSAGE =
+  'A cloud run (runOn "cloud") from this chat supports only runMode "dispatch".';
+export const CLOUD_PIPELINE_RUN_TARGET_MESSAGE =
+  'A cloud run (runOn "cloud") cannot take planPath, taskPath, or planId.';
+export const CLOUD_PIPELINE_RUN_WATCHERS_MESSAGE =
+  'Completion watchers are not available for a cloud run (runOn "cloud") from this chat yet.';
 export const APP_ADVISOR_PIPELINE_RUN_TARGET_MESSAGE =
   'Pass projectId and worktreeId for a run in a task, or scope "global" without them for a run with no project.';
 
 interface PipelineRunShape {
   scope?: 'global';
+  runOn?: PipelineRunLocation;
   runMode?: (typeof PIPELINE_RUN_MODES)[number];
   planPath?: string;
   taskPath?: string;
@@ -68,28 +82,56 @@ interface PipelineRunShape {
   watchers?: unknown[];
 }
 
-/** A global run is a plain dispatch with no task inputs or watchers. */
+/**
+ * A global run is a plain dispatch with no task inputs or watchers. A cloud
+ * run is a plain dispatch too: with no project, or where the caller is, if
+ * the web core admits it there (CAN-6354); it takes no local plan or task
+ * file, and its completion watchers come later (CP-49).
+ */
 function refineGlobalRun(action: PipelineRunShape, ctx: z.RefinementCtx): void {
-  if (action.scope !== 'global') return;
+  if (action.scope === 'global') {
+    if (action.runMode !== undefined && action.runMode !== 'dispatch')
+      ctx.addIssue({
+        code: 'custom',
+        path: ['runMode'],
+        message: GLOBAL_PIPELINE_RUN_MODE_MESSAGE,
+      });
+    for (const field of ['planPath', 'taskPath', 'planId', 'repoId'] as const) {
+      if (action[field] !== undefined)
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: GLOBAL_PIPELINE_RUN_TARGET_MESSAGE,
+        });
+    }
+    if ((action.watchers?.length ?? 0) > 0)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['watchers'],
+        message: GLOBAL_PIPELINE_RUN_WATCHERS_MESSAGE,
+      });
+    return;
+  }
+  if (action.runOn !== 'cloud') return;
   if (action.runMode !== undefined && action.runMode !== 'dispatch')
     ctx.addIssue({
       code: 'custom',
       path: ['runMode'],
-      message: GLOBAL_PIPELINE_RUN_MODE_MESSAGE,
+      message: CLOUD_PIPELINE_RUN_MODE_MESSAGE,
     });
-  for (const field of ['planPath', 'taskPath', 'planId', 'repoId'] as const) {
+  for (const field of ['planPath', 'taskPath', 'planId'] as const) {
     if (action[field] !== undefined)
       ctx.addIssue({
         code: 'custom',
         path: [field],
-        message: GLOBAL_PIPELINE_RUN_TARGET_MESSAGE,
+        message: CLOUD_PIPELINE_RUN_TARGET_MESSAGE,
       });
   }
   if ((action.watchers?.length ?? 0) > 0)
     ctx.addIssue({
       code: 'custom',
       path: ['watchers'],
-      message: GLOBAL_PIPELINE_RUN_WATCHERS_MESSAGE,
+      message: CLOUD_PIPELINE_RUN_WATCHERS_MESSAGE,
     });
 }
 

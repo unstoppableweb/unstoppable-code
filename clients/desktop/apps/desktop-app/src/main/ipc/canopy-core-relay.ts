@@ -1,6 +1,10 @@
 import { app, ipcMain, webContents } from 'electron';
+import { CANOPY_DEFAULT_MAX_FRAME_BYTES } from '@canopy/core-transport';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
+  CORE_CHAT_LIVE_EVENTS_SCHEMA_REVISION,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
 import type {
   CanopyCoreRelayRequest,
   CanopyCoreRelayReply,
@@ -44,6 +48,9 @@ import {
   WEB_CORE_HOST_DEFINITIONS,
   WEB_CORE_RELAY_DEFINITIONS,
   webCoreRelayAllows,
+  webCoreRelayRefuseCall,
+  webCoreRelayNarrowParams,
+  webCoreRelayRefuseParams,
 } from '../canopy-runtime/renderer-relay/web-core-relay-definitions';
 
 export const RENDERER_RELAY_GRANTS: readonly CanopyCallerDescriptor['grants'][number][] =
@@ -58,22 +65,42 @@ export const RENDERER_RELAY_GRANTS: readonly CanopyCallerDescriptor['grants'][nu
   );
 
 /**
- * The web-core authority's relay: cloud chat operations only, main window
- * only, with main holding the connection's client lease and acknowledging
- * each stream item once it is handed to the renderer.
+ * The web-core authority's relay: cloud chat and cloud workflow run
+ * operations only, main window only, with main holding the connection's
+ * client lease and acknowledging each stream item once it is handed to the
+ * renderer. Requests and replies may be as large as the framed bindings
+ * carry, which the web core budgets file reads, saves and search pages
+ * against (CAN-6175).
  */
-export function createWebCoreRendererRelay(options: {
+export function createWebCoreRendererRelay({
+  cloudChatsEnabled = (): boolean => true,
+  ...options
+}: {
   readonly bindingProvider: RelayBindingProvider;
   readonly resolveSurface: (
     event: RendererRelayEvent,
   ) => RendererRelaySurfaceResolution;
+  /** `canopyDesktopCloudChats`; cloud run operations don't need it (CAN-6326). */
+  readonly cloudChatsEnabled?: () => boolean;
   readonly clientVersion?: string;
   readonly limits?: Partial<RendererRelayLimits>;
 }): RendererRelay {
   return createRendererRelay({
     ...options,
+    limits: {
+      maxFrameBytes: CANOPY_DEFAULT_MAX_FRAME_BYTES,
+      maxReplyBytes: CANOPY_DEFAULT_MAX_FRAME_BYTES,
+      ...options.limits,
+    },
     definitions: WEB_CORE_RELAY_DEFINITIONS,
     allows: webCoreRelayAllows,
+    refuseParams: webCoreRelayRefuseParams,
+    narrowParams: webCoreRelayNarrowParams,
+    refuseCall: (method) => webCoreRelayRefuseCall(method, cloudChatsEnabled),
+    // Live reply tool calls come only on revision 2 (CAN-6451).
+    streamRevisions: {
+      'core.chat.live.events': CORE_CHAT_LIVE_EVENTS_SCHEMA_REVISION,
+    },
     host: {
       definitions: WEB_CORE_HOST_DEFINITIONS,
       lease: { label: 'Desktop cloud chats', interfaceKind: 'http' },
@@ -138,8 +165,14 @@ export function registerCanopyCoreRelayHandlers(
     resolveSurface,
     clientVersion: app.getVersion(),
   });
+  // The connection opens whenever the account is signed in; each call checks
+  // its own feature, so cloud runs work without the cloud chats flag.
   const webCoreRelay = createWebCoreRendererRelay({
-    bindingProvider: createWebCoreBindingProvider(webCore),
+    bindingProvider: createWebCoreBindingProvider({
+      ...webCore,
+      isEnabled: () => true,
+    }),
+    cloudChatsEnabled: webCore.isEnabled,
     resolveSurface,
     clientVersion: app.getVersion(),
   });

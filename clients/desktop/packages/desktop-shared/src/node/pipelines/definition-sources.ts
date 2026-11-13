@@ -31,7 +31,7 @@ import {
   readStoredPipelineDocument,
   readStoredPipelineRevision,
   saveStoredPipeline,
-} from '../../pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
 
 export interface StoredPipelineDefinitionPortOptions {

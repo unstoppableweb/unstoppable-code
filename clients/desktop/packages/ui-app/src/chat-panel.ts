@@ -2,7 +2,6 @@ export {
   ChatPanel,
   type ChatPanelProps,
   type ChatComposerSendOptions,
-  type ChatComposerTypeaheadProps,
   type ChatComposerHostControls,
   type ChatTranscriptHostControls,
 } from './code/ChatPanel';
@@ -11,8 +10,3 @@ export {
   QueuedMessageComposer,
   type QueuedMessageEditControls,
 } from './code/composer/QueuedMessageComposer';
-export {
-  CloudChatComposer,
-  type CloudChatComposerProps,
-  type CloudComposerAttachment,
-} from './code/composer/CloudChatComposer';

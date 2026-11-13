@@ -1,5 +1,7 @@
 import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
 import {
+  gatewayDiscoveryHeaders,
+  MODEL_GATEWAY_DISCOVERY_MAX_BYTES,
   parseGatewayModelList,
   type AiGatewayConnectionResult,
 } from '@canopy/protocol/model-gateway/discovery';
@@ -25,11 +27,8 @@ export async function probeModelGateway(input: {
         method: 'GET',
         redirect: 'error',
         signal,
-        headers: {
-          authorization: `Bearer ${input.apiKey.trim()}`,
-          'x-api-key': input.apiKey.trim(),
-          'anthropic-version': '2023-06-01',
-        },
+        // Keyed on the real base URL, not the e2e mock origin.
+        headers: gatewayDiscoveryHeaders(baseUrl, input.apiKey.trim()),
       },
     );
     if (response.status === 401 || response.status === 403) {
@@ -40,7 +39,10 @@ export async function probeModelGateway(input: {
       await response.body?.cancel();
       return { status: 'unreachable' };
     }
-    if (Number(response.headers.get('content-length')) > 1024 * 1024) {
+    if (
+      Number(response.headers.get('content-length')) >
+      MODEL_GATEWAY_DISCOVERY_MAX_BYTES
+    ) {
       await response.body?.cancel();
       return { status: 'unreachable' };
     }
@@ -53,7 +55,7 @@ export async function probeModelGateway(input: {
         const { value, done } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > 1024 * 1024) {
+        if (size > MODEL_GATEWAY_DISCOVERY_MAX_BYTES) {
           await reader.cancel();
           return { status: 'unreachable' };
         }

@@ -395,9 +395,22 @@ export const WorkerCodeGraphSnapshotImportErrorSchema =
     retry: CanopyKeyedRetryDirectiveSchema,
   });
 
+/**
+ * How far language validation goes: `static` checks the config and its
+ * entries without loading anything; `load` also loads each grammar and
+ * compiles its tags queries, as a build would (CAN-6010).
+ */
+export const WORKER_CODE_GRAPH_LANGUAGE_CHECKS = ['static', 'load'] as const;
+
 export const WorkerCodeGraphLanguagesValidateParamsSchema = z.strictObject({
   scope: WorkerCodeGraphScopeSchema,
+  /** Defaults to `static`. */
+  check: z.enum(WORKER_CODE_GRAPH_LANGUAGE_CHECKS).optional(),
 });
+
+export type WorkerCodeGraphLanguagesValidateParams = z.output<
+  typeof WorkerCodeGraphLanguagesValidateParamsSchema
+>;
 
 export const WorkerCodeGraphLanguagesValidateResultSchema = z.strictObject({
   config: z.enum(['absent', 'invalid', 'present']),
@@ -406,6 +419,12 @@ export const WorkerCodeGraphLanguagesValidateResultSchema = z.strictObject({
       z.strictObject({
         id: z.string().min(1).max(512),
         extensions: z.array(z.string().min(1).max(256)).max(256),
+        /**
+         * Only a `load` check reports these: the entry's index in the
+         * config, and its loaded grammar's ABI version.
+         */
+        index: z.number().int().nonnegative().optional(),
+        abiVersion: z.number().int().nonnegative().optional(),
       }),
     )
     .max(256),

@@ -3,7 +3,9 @@
 // `ObservabilityService` writes into a temporary data root; only provider
 // accounts, prices, feature flags and the service locator are host inputs
 // here, and the harness in `golden/` fixes them for every host. Any change
-// to a stored line or an aggregated read fails the snapshot.
+// to a stored line or an aggregated read fails the snapshot. These audit
+// outputs also feed the legacy observability:event push to both windows;
+// this golden covers their data, not Electron window delivery.
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';

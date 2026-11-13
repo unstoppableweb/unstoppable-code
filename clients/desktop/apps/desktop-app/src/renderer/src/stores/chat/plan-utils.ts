@@ -21,6 +21,7 @@ import type {
   PendingPlanExit,
   WorktreeChatState,
 } from './types';
+import { chatBackendFor, reportUnlessUnavailable } from './backend';
 
 type PlanDispatchTarget = Pick<
   TrackedPlanData,
@@ -485,12 +486,14 @@ export function notifyPlanModeDisabled(
     return;
   }
 
-  void window.api.chat.togglePlanMode({
-    projectId,
-    worktreeId,
-    chatId,
-    enabled: false,
-  });
+  void chatBackendFor({ projectId })
+    .chat.togglePlanMode({
+      projectId,
+      worktreeId,
+      chatId,
+      enabled: false,
+    })
+    .catch(reportUnlessUnavailable);
   // A live managed terminal only honors the new permission mode after a
   // relaunch with fresh CLI args.
   void restartClaudeTerminalForSettingsChange(

@@ -13,7 +13,11 @@ import type {
   PluginMcpServerInfo,
   PluginProvider,
 } from '@canopy/protocol/plugins';
-import { DetailFact, ProviderSupportIcons } from '@canopy/ui-shared/components';
+import {
+  DetailFact,
+  ProviderSupportIcons,
+  TextLink,
+} from '@canopy/ui-shared/components';
 import {
   Button,
   ErrorBanner,
@@ -223,6 +227,26 @@ export interface PluginDetailHostProps {
   brandName?: string;
   compatibilityError?: string;
   formatDate?: (value: string) => string;
+}
+
+/** The plugin's source link; nothing when the source names no URL. */
+function ExternalSourceLink({
+  source,
+}: {
+  source: NonNullable<PluginDetailHostPlugin['externalSource']>;
+}): JSX.Element | null {
+  const url = typeof source === 'string' ? source : source.url;
+  if (url === undefined) return null;
+  return (
+    <TextLink
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      variant="quiet"
+    >
+      {url}
+    </TextLink>
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -710,20 +734,7 @@ export function PluginDetailHost({
                   valueTone="secondary"
                 >
                   <Fact label="Source" fit="truncate">
-                    <a
-                      href={
-                        typeof plugin.externalSource === 'string'
-                          ? plugin.externalSource
-                          : plugin.externalSource.url
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="focus-ring rounded fg-secondary hover:fg-primary hover:underline"
-                    >
-                      {typeof plugin.externalSource === 'string'
-                        ? plugin.externalSource
-                        : plugin.externalSource.url}
-                    </a>
+                    <ExternalSourceLink source={plugin.externalSource} />
                   </Fact>
                   {plugin.cachedAt && (
                     <Fact label="Last fetched">

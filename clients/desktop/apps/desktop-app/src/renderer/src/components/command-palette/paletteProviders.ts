@@ -30,7 +30,8 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { openArchivedContainerSurface } from '@/lib/archivedContainerNavigation';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
 import { navigateToLiveChat } from '@/lib/navigation/live-chat-navigation';
-import type { PaletteItem } from './paletteItems';
+import { workspaceColor } from '@canopy/ui-app';
+import type { PaletteItem, PaletteProjectBadge } from './paletteItems';
 import type { CommandExecutionResult, PaletteCommand } from './paletteCommands';
 
 /**
@@ -66,6 +67,28 @@ export interface WorktreeLabelIndex {
   >;
   /** `projectId` → workspace name (covers cowork / advisor rows without a worktree). */
   byProject: Map<string, string>;
+  /** `projectId` → the project's sidebar badge. */
+  badges: Map<string, PaletteProjectBadge>;
+}
+
+/** A project's badge as the sidebar draws it. */
+export function projectBadge(project: SidebarItem): PaletteProjectBadge {
+  const temporary = project.type === 'multi-repo' && project.temporary === true;
+  return {
+    kind:
+      project.type === 'multi-repo'
+        ? 'multi-repo'
+        : project.type === 'cowork'
+          ? 'cowork'
+          : 'single-repo',
+    color: workspaceColor({
+      localId: project.id,
+      color: project.color,
+      temporary,
+    }),
+    temporary,
+    ...(project.type === 'single-repo' ? { repoPath: project.repoPath } : {}),
+  };
 }
 
 /** Build the `${projectId}/${worktreeId}` → display-name index the chat rows join against. */
@@ -79,8 +102,10 @@ export function buildWorktreeLabelIndex(
     { workspaceName: string; branchLabel: string; archived?: boolean }
   >();
   const byProject = new Map<string, string>();
+  const badges = new Map<string, PaletteProjectBadge>();
   for (const project of projects) {
     byProject.set(project.id, project.name);
+    badges.set(project.id, projectBadge(project));
     if (project.type === 'cowork') {
       continue;
     }
@@ -100,7 +125,7 @@ export function buildWorktreeLabelIndex(
       archived: true,
     });
   }
-  return { byKey, byProject };
+  return { byKey, byProject, badges };
 }
 
 function resolveChatSubtitle(
@@ -146,12 +171,18 @@ export function buildWorktreeItems(
         subtitle: summaryDescription
           ? `${project.name} • ${summaryDescription}`
           : project.name,
+        project: projectBadge(project),
+        ...(worktree.branchName && worktree.branchName !== label
+          ? { context: worktree.branchName }
+          : {}),
         // Generated summaries draw on chat and diff content.
         subtitleReplayBlocked: Boolean(summaryDescription),
         titleReplayMasked: true,
         subtitleReplayMasked: true,
         keywords: [
           project.name,
+          // The worktree's name, shown under its title in the sidebar.
+          worktreeId,
           worktree.branchName,
           worktree.label ?? '',
           summary?.title ?? '',
@@ -208,6 +239,7 @@ export function buildArchivedContainerItems(
         subtitle: entry.description
           ? `${workspaceName} • ${entry.description}`
           : workspaceName,
+        project: index.badges.get(entry.projectId),
         subtitleReplayBlocked: Boolean(entry.description),
         titleReplayMasked: true,
         subtitleReplayMasked: true,
@@ -271,6 +303,8 @@ function buildLiveChatItem(
       worktreeId,
       tab.description,
     ),
+    project: index.badges.get(projectId),
+    context: index.byKey.get(`${projectId}/${worktreeId}`)?.branchLabel,
     titleReplayMasked: true,
     subtitleReplayMasked: true,
     keywords: [
@@ -393,6 +427,9 @@ function buildCatalogChatItem(
       entry.worktreeId,
       entry.description,
     ),
+    project: index.badges.get(entry.projectId),
+    context: index.byKey.get(`${entry.projectId}/${entry.worktreeId}`)
+      ?.branchLabel,
     keywords: [entry.description ?? '', entry.providerType ?? ''],
     timestamp: entry.updatedAt,
     providerType: entry.providerType,

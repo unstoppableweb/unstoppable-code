@@ -4,7 +4,7 @@ import type {
   SharedPipelineSummary,
 } from '@canopy/protocol/pipelines';
 import type { PipelineDefinitionSource } from '@canopy/protocol/canopy-core';
-import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutionOptions } from '@canopy/execution-engine/node/pipelines/executor';
 import type {
   PipelineData,
   PipelineInfo,

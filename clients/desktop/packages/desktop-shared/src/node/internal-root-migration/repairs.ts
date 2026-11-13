@@ -1,4 +1,11 @@
 import { execFile } from 'node:child_process';
+import { constants, lstatSync, rmSync } from 'node:fs';
+import { isUtf8 } from 'node:buffer';
+import {
+  internalRootMigrationAbortSignal,
+  internalRootMigrationProgress,
+  runInternalRootMigrationPhase,
+} from './progress';
 import { coordinateInternalRootMigration } from './index';
 import {
   collectInternalRootCleanupCandidates,
@@ -8,17 +15,21 @@ import {
 import { promisify, isDeepStrictEqual } from 'node:util';
 import {
   chmod,
+  copyFile,
   open,
-  rm,
   lstat,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   readlink,
   realpath,
+  rm,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { observeStoragePathSync } from '@canopy/core-platform/storage-path-observation';
 import {
@@ -36,6 +47,7 @@ import {
   projectInternalRootMetadata,
   type InternalRootRepairWorker,
   type InternalRootRepairPlan,
+  type InternalRootLifecycleJournalEvidence,
 } from '@canopy/core-runtime/node/internal-root-repairs';
 import {
   InternalRootMigrationRefused,
@@ -65,11 +77,16 @@ import {
 import {
   W5CommitLog,
   applyW5Commit,
+  w5CommitLogLocation,
 } from '@canopy/core-runtime/node/w5/commit-log';
 import { assertRelocationW5Settled } from '@canopy/core-runtime/node/relocation';
 import { fingerprintW5File } from '@canopy/core-runtime/node/w5/commit-log/fingerprint';
 import type { W5DurabilityPort } from '@canopy/core-runtime/node/w5/commit-log';
-import { abandonedArchivePaths } from './abandoned-paths';
+import {
+  abandonedArchivePaths,
+  selectedAbandonedArchivePaths,
+  assertAbandonedCheckouts,
+} from './abandoned-paths';
 import {
   freezeInternalRootJournals,
   internalRootJournalOwnedPaths,
@@ -77,7 +94,10 @@ import {
 } from './lifecycle-journals';
 import {
   durableJson,
+  isPrunedInternalRootCheckout,
   privateDirectory,
+  readInternalRootJournal,
+  readInternalRootAbandonmentPlan,
   statIfPresent,
   validateExternalRootFiles,
 } from './filesystem';
@@ -95,15 +115,49 @@ function unlinkedStoragePath(path: string): boolean {
     (hostOperatingSystem() === 'win32' || observation.canonicalPath === path)
   );
 }
-const git: RelocationGit = async (cwd, args) =>
-  (
-    await execute('git', ['--no-optional-locks', ...args], {
+const git: RelocationGit = async (cwd, args) => {
+  const command = ['--no-optional-locks', ...args];
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    LC_ALL: 'C',
+  };
+  // Inherited Git overrides, including config, can redirect the checkout probe.
+  for (const key of Object.keys(env))
+    if (key.toUpperCase().startsWith('GIT_')) delete env[key];
+  env.GIT_OPTIONAL_LOCKS = '0';
+  try {
+    return await execute('git', command, {
       cwd,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-      timeout: 30_000,
+      env,
+      // Cloned indexes can need minutes to re-hash; the operator watchdog owns stalls.
+      timeout: args[0] === 'status' ? 0 : 30_000,
+      signal: internalRootMigrationAbortSignal(),
       maxBuffer: 64 * 1024 * 1024,
-    })
-  ).stdout;
+    }).then(({ stdout }) => {
+      internalRootMigrationProgress('Git probe completed');
+      return stdout;
+    });
+  } catch (error) {
+    const details = typeof error === 'object' && error !== null ? error : {};
+    const message =
+      'message' in details && typeof details.message === 'string'
+        ? details.message
+        : String(error);
+    const stderr =
+      'stderr' in details && typeof details.stderr === 'string'
+        ? details.stderr
+        : '';
+    throw Object.assign(
+      new Error(
+        `Git command failed at ${JSON.stringify(cwd)}: git ${command.join(' ')}\n${message}${stderr ? `\nGit stderr:\n${stderr}` : ''}`,
+      ),
+      {
+        code: 'code' in details ? details.code : undefined,
+        stderr: 'stderr' in details ? details.stderr : undefined,
+      },
+    );
+  }
+};
 
 /** Reuses the migration's read-only Git host, not a new execution surface. */
 export async function reportInternalRootCleanup(
@@ -112,15 +166,31 @@ export async function reportInternalRootCleanup(
   host: InternalRootFilesystemHost,
   sourceBytes?: number,
   abandonArchives: readonly string[] = [],
+  abandonCheckouts: readonly string[] = [],
 ): Promise<InternalRootCleanupReport> {
   // Only the exclusive holder can distinguish abandoned staging from a live writer.
   const release = await coordinateInternalRootMigration(identity, host);
   try {
+    if (abandonCheckouts.length) {
+      const frozen = (
+        await readInternalRootAbandonmentPlan(
+          identity,
+          await readInternalRootJournal(identity, host),
+          host,
+        )
+      )?.abandonedCheckouts;
+      await assertAbandonedCheckouts(
+        identity.source,
+        abandonCheckouts.filter((path) => !frozen?.includes(path)),
+        git,
+      );
+    }
     const report = await collectInternalRootCleanupCandidates(identity, {
       applied,
       git,
       sourceBytes,
       abandonArchives,
+      abandonCheckouts,
     });
     await saveInternalRootCleanupReport(report, host);
     return report;
@@ -128,10 +198,10 @@ export async function reportInternalRootCleanup(
     await release();
   }
 }
-function refuse(reason: string): never {
+function refuse(reason: string, path?: string): never {
   throw new InternalRootMigrationRefused(
     'repair-refused',
-    `${reason}. Preserve both roots and the journal; obtain offline relocation recovery.`,
+    `${reason}${path === undefined ? '' : `: ${JSON.stringify(path)}`}. Preserve both roots and the journal; obtain offline relocation recovery.`,
   );
 }
 const readonlyStore: W5FileStore = {
@@ -139,6 +209,342 @@ const readonlyStore: W5FileStore = {
   replace: () => Promise.reject(new Error('Read-only relocation inventory')),
   remove: () => Promise.reject(new Error('Read-only relocation inventory')),
 };
+
+async function relocationWorkspaceIds(source: string): Promise<string[]> {
+  const file = join(source, 'workspaces/index.json');
+  const index = createWorkspaceIndexRepository({
+    store: readonlyStore,
+    filePath: () => file,
+    onCommitted: () => {},
+    onRefused: () => {},
+    storage: { namespace: 'workspace_index', writer: 'electron_main' },
+    normalizeActivitySectionOrder: () => undefined,
+  });
+  const membership = await index.read();
+  if (membership.authority !== 'ok' && membership.authority !== 'absent')
+    refuse('Unreadable workspace membership', file);
+  const ids = membership.entries.map((entry) => entry.id);
+  if (
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !/^[A-Za-z0-9_-]+$/.test(id))
+  )
+    refuse('Ambiguous workspace membership', file);
+  return ids;
+}
+
+function relocationWorkspaceManifest(
+  source: string,
+): ReturnType<typeof createWorkspaceManifestRepository> {
+  return createWorkspaceManifestRepository({
+    store: readonlyStore,
+    filePath: (id) => join(source, 'workspaces', id, 'workspace.json'),
+    storage: { namespace: 'workspace_manifest', writer: 'electron_main' },
+    knownFields: new Set(),
+    knownRepoFields: new Set(),
+  });
+}
+
+function relocationRepositoryPaths(
+  document: Readonly<Record<string, unknown>>,
+  file: string,
+): string[] {
+  const paths: string[] = [];
+  for (const key of ['repoPath', 'sourceRepoPath'] as const) {
+    const path = document[key];
+    if (typeof path === 'string') paths.push(path);
+  }
+  if (Array.isArray(document.repos))
+    for (const entry of document.repos) {
+      const repo: unknown = entry;
+      if (
+        typeof repo !== 'object' ||
+        repo === null ||
+        !('repoPath' in repo) ||
+        typeof repo.repoPath !== 'string'
+      )
+        refuse('Unreadable repository owner evidence', file);
+      paths.push(repo.repoPath);
+    }
+  return paths;
+}
+
+async function relocationAbandonedPaths(
+  source: string,
+  lifecycleJournals: readonly InternalRootLifecycleJournalEvidence[],
+  abandonCheckouts: readonly string[],
+): Promise<string[]> {
+  return [
+    ...(await abandonedArchivePaths(source, lifecycleJournals)),
+    ...abandonCheckouts,
+  ];
+}
+
+/** Best-effort read scope; canonical preparation and cold proof remain the backstop. */
+async function coldGitScope(
+  source: string,
+  abandonArchives: readonly string[],
+  abandonedCheckouts: readonly string[],
+): Promise<readonly string[]> {
+  const roots = new Set<string>();
+  const gitDirectories = new Set<string>();
+  const repositories = new Set<string>();
+  let workspaceIds: readonly string[] = [];
+  let incomplete = false;
+  async function hint<T>(read: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await read();
+    } catch {
+      incomplete = true;
+      return undefined;
+    }
+  }
+  const abandonedPaths = await hint(async () =>
+    relocationAbandonedPaths(
+      source,
+      abandonArchives.length
+        ? await freezeInternalRootJournals(source, abandonArchives)
+        : [],
+      abandonedCheckouts,
+    ),
+  );
+  const ignored = (path: string): boolean =>
+    abandonedPaths?.some((root) => isWithin(root, path)) ?? true;
+  async function gitPath(file: string): Promise<string | undefined> {
+    return hint(async () => {
+      const before = await statIfPresent(file);
+      if (!before) return undefined;
+      if (!before.isFile()) {
+        incomplete = true;
+        return undefined;
+      }
+      const handle = await open(
+        file,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const opened = await handle.stat();
+        if (
+          !opened.isFile() ||
+          opened.dev !== before.dev ||
+          opened.ino !== before.ino
+        )
+          throw new Error(`Git census link changed: ${JSON.stringify(file)}`);
+        const bytes = Buffer.alloc(4097);
+        const read = await handle.read(bytes, 0, bytes.length, 0);
+        const contents = bytes.subarray(0, read.bytesRead);
+        if (read.bytesRead > 4096 || !isUtf8(contents) || contents.includes(0))
+          throw new Error(
+            `Unreadable Git census link: ${JSON.stringify(file)}`,
+          );
+        const value = contents.toString('utf8').replace(/\r?\n$/, '');
+        if (!value || /[\r\n]/.test(value)) {
+          incomplete = true;
+          return undefined;
+        }
+        return value;
+      } finally {
+        await hint(() => handle.close());
+      }
+    });
+  }
+  async function directory(root: string): Promise<void> {
+    if (gitDirectories.has(root)) return;
+    gitDirectories.add(root);
+    await hint(async () => {
+      const common = await gitPath(join(root, 'commondir'));
+      if (common) {
+        for (const name of ['gitdir', 'commondir']) {
+          const file = join(root, name);
+          if (!isWithin(source, file)) roots.add(file);
+        }
+        await directory(resolve(root, common));
+        return;
+      }
+      const admin = join(root, 'worktrees');
+      const state = await statIfPresent(admin);
+      if (!state) return;
+      if (!state.isDirectory()) {
+        incomplete = true;
+        return;
+      }
+      for (const name of await readdir(admin))
+        await hint(async () => {
+          const backlink = await gitPath(join(admin, name, 'gitdir'));
+          if (!backlink) return;
+          const target = resolve(admin, name, backlink);
+          if (ignored(dirname(target))) return;
+          if (!(await statIfPresent(target))?.isFile()) return;
+          // Mirror journaled sibling backlinks so apply-peak prediction is not low.
+          await checkout(target, join(admin, name));
+        });
+    });
+  }
+  async function checkout(file: string, expectedAdmin?: string): Promise<void> {
+    await hint(async () => {
+      if (ignored(file) || isWithin(join(source, 'w5'), file)) return;
+      const state = await statIfPresent(file);
+      if (state?.isDirectory()) {
+        // A checkout's .git directory is common, not a linked admin directory.
+        if (await statIfPresent(join(file, 'commondir'))) incomplete = true;
+        else await directory(file);
+      } else if (state?.isFile()) {
+        const link = await gitPath(file);
+        if (link?.startsWith('gitdir: ') && link.slice(8)) {
+          const admin = resolve(dirname(file), link.slice(8));
+          const common = await gitPath(join(admin, 'commondir'));
+          const backlink = await gitPath(join(admin, 'gitdir'));
+          if (
+            (expectedAdmin !== undefined && admin !== expectedAdmin) ||
+            !common ||
+            !backlink ||
+            resolve(admin, backlink) !== file ||
+            !(await statIfPresent(admin))?.isDirectory() ||
+            !(await statIfPresent(resolve(admin, common)))?.isDirectory()
+          ) {
+            incomplete = true;
+            return;
+          }
+          if (!isWithin(source, file)) roots.add(file);
+          await directory(admin);
+        } else incomplete = true;
+      } else if (state) incomplete = true;
+    });
+  }
+  let completed = 0;
+  async function visit(
+    file: string,
+    ancestors: ReadonlySet<string>,
+  ): Promise<void> {
+    await hint(async () => {
+      // Omit interpretation only; the independent metadata census excludes nothing.
+      if (
+        ignored(file) ||
+        isWithin(join(source, 'w5'), file) ||
+        basename(file) === '.git'
+      )
+        return;
+      const state = await lstat(file);
+      internalRootMigrationProgress(
+        `Linux Git census scope: ${++completed} entries completed`,
+      );
+      const local = relative(source, file);
+      if (
+        state.isDirectory() &&
+        dirname(local) === 'workspaces' &&
+        !workspaceIds.includes(basename(file))
+      )
+        return;
+      if (/^workspaces\/[^/]+\/(?:workspace|worktrees)\.json$/.test(local)) {
+        if (!state.isFile()) {
+          incomplete = true;
+          return;
+        }
+        if (state.size > 32 * 1024 * 1024)
+          throw new Error('Oversize owner image');
+        if (basename(file) === 'worktrees.json') {
+          // List paths alone do not grant external checkout interpretation.
+          const list = await createWorktreeListRepository({
+            store: readonlyStore,
+            filePath: () => file,
+            storage: { namespace: 'worktree_list', writer: 'electron_main' },
+            knownRowFields: new Set(),
+            readRow: (row) => row,
+          }).read(basename(dirname(file)));
+          if (list.authority !== 'ok' || !list.complete) incomplete = true;
+          return;
+        }
+        const document = await relocationWorkspaceManifest(source).read(
+          basename(dirname(file)),
+        );
+        if (document.authority !== 'ok') {
+          incomplete = true;
+          return;
+        }
+        for (const path of relocationRepositoryPaths(document.document, file))
+          if (
+            path.startsWith('/') &&
+            !path.includes('\0') &&
+            resolve(path) === path
+          )
+            repositories.add(path);
+          else incomplete = true;
+      }
+      if (!state.isDirectory()) return;
+      const key = `${state.dev}:${state.ino}`;
+      if (ancestors.has(key))
+        throw new Error(`Cyclic Git census scope: ${JSON.stringify(file)}`);
+      const nested = new Set([...ancestors, key]);
+      const names = await readdir(file);
+      // Canonical inventory stops at a checkout; nested repositories are opaque.
+      if (!isWithin(join(source, 'w5'), file) && names.includes('.git')) {
+        await checkout(join(file, '.git'));
+        return;
+      }
+      for (const name of names) await visit(join(file, name), nested);
+    });
+  }
+  const log = w5CommitLogLocation(source).dbPath;
+  let ownersSettled = false;
+  let temporary: string | undefined;
+  let db: DatabaseSync | undefined;
+  try {
+    const state = await statIfPresent(log);
+    if (state) {
+      if (!state.isFile() || !unlinkedStoragePath(log))
+        throw new Error('Unreadable W5 log');
+      // SQLite readOnly may write source WAL/SHM. Query a disposable copy, never the source.
+      temporary = await mkdtemp(join(tmpdir(), 'canopy-cold-scope-'));
+      for (const suffix of ['', '-wal', '-journal']) {
+        const file = `${log}${suffix}`;
+        const before = await statIfPresent(file);
+        if (!before) continue;
+        if (!before.isFile() || !unlinkedStoragePath(file))
+          throw new Error('Unreadable W5 sidecar');
+        await copyFile(
+          file,
+          join(temporary, `commit-log.sqlite${suffix}`),
+          constants.COPYFILE_EXCL,
+        );
+        const after = await lstat(file);
+        if (
+          before.dev !== after.dev ||
+          before.ino !== after.ino ||
+          before.size !== after.size ||
+          before.mtimeMs !== after.mtimeMs ||
+          before.ctimeMs !== after.ctimeMs
+        )
+          throw new Error('W5 log changed during scope discovery');
+      }
+      db = new DatabaseSync(join(temporary, 'commit-log.sqlite'), {
+        readOnly: true,
+      });
+      // Pending images may replace membership; only W5 settlement projects them.
+      ownersSettled =
+        db
+          .prepare("SELECT 1 FROM w5_commits WHERE state != 'applied' LIMIT 1")
+          .get() === undefined;
+    } else ownersSettled = true;
+  } catch {
+    incomplete = true;
+  } finally {
+    await hint(() => Promise.resolve(db?.close()));
+    if (temporary) {
+      const directory = temporary;
+      await hint(() => rm(directory, { recursive: true, force: true }));
+    }
+  }
+  if (ownersSettled)
+    workspaceIds = (await hint(() => relocationWorkspaceIds(source))) ?? [];
+  else incomplete = true;
+  await visit(source, new Set());
+  for (const repository of repositories)
+    await checkout(join(repository, '.git'));
+  if (incomplete)
+    process.stderr.write(
+      'Migration: Linux Git census scope skipped evidence (unreadable, malformed or unsettled); inventory capacity is a lower bound until canonical preparation.\n',
+    );
+  return [...roots];
+}
 
 /** Inventory links and Git roots; W5 supplies the other exact owned path fields. */
 async function inventoryTree(
@@ -155,6 +561,7 @@ async function inventoryTree(
     )
       return;
     const state = await lstat(path);
+    internalRootMigrationProgress('inventoried relocation path');
     if (state.isSymbolicLink()) {
       paths.push(path);
       return;
@@ -179,6 +586,7 @@ async function freeze(
   observation: LocalAuthorityObservation,
   diagnostics?: string[],
   abandonArchives: readonly string[] = [],
+  abandonCheckouts: readonly string[] = [],
 ): Promise<InternalRootRepairPlan> {
   const { identity } = context;
   const transition = await observeLocalAuthorityRelocation(
@@ -191,25 +599,9 @@ async function freeze(
     observation,
   );
   const workspaceRoot = join(identity.source, 'workspaces');
-  const index = createWorkspaceIndexRepository({
-    store: readonlyStore,
-    filePath: () => join(workspaceRoot, 'index.json'),
-    onCommitted: () => {},
-    onRefused: () => {},
-    storage: { namespace: 'workspace_index', writer: 'electron_main' },
-    normalizeActivitySectionOrder: () => undefined,
-  });
-  const membership = await index.read();
-  if (membership.authority !== 'ok' && membership.authority !== 'absent')
-    refuse('Unreadable workspace membership');
+  const ids = await relocationWorkspaceIds(identity.source);
   const workspaces: RelocationWorkspaceEvidence[] = [];
-  const manifest = createWorkspaceManifestRepository({
-    store: readonlyStore,
-    filePath: (id) => join(workspaceRoot, id, 'workspace.json'),
-    storage: { namespace: 'workspace_manifest', writer: 'electron_main' },
-    knownFields: new Set(),
-    knownRepoFields: new Set(),
-  });
+  const manifest = relocationWorkspaceManifest(identity.source);
   const list = createWorktreeListRepository({
     store: readonlyStore,
     filePath: (id) => join(workspaceRoot, id, 'worktrees.json'),
@@ -217,12 +609,6 @@ async function freeze(
     knownRowFields: new Set(),
     readRow: (row) => row,
   });
-  const ids = membership.entries.map((entry) => entry.id);
-  if (
-    new Set(ids).size !== ids.length ||
-    ids.some((id) => !/^[A-Za-z0-9_-]+$/.test(id))
-  )
-    refuse('Ambiguous workspace membership');
   // Unindexed sidecars carry no Git/owned-path discovery grant. Lifecycle and
   // indexed records still supply their explicit owner paths below.
   const opaqueDirectories = new Set<string>();
@@ -244,9 +630,11 @@ async function freeze(
     );
     return [];
   });
-  const abandonedPaths = await abandonedArchivePaths(
+  await assertAbandonedCheckouts(identity.source, abandonCheckouts, git);
+  const abandonedPaths = await relocationAbandonedPaths(
     identity.source,
     lifecycleJournals,
+    abandonCheckouts,
   );
   const ignored = (path: string): boolean =>
     abandonedPaths.some((root) => isWithin(root, path));
@@ -260,6 +648,11 @@ async function freeze(
   );
   for (const workspaceId of ids) {
     try {
+      if (ignored(join(workspaceRoot, workspaceId)))
+        refuse(
+          'Abandoned checkout omission overlaps workspace metadata',
+          join(workspaceRoot, workspaceId),
+        );
       const document = await manifest.read(workspaceId);
       const trees = await list.read(workspaceId);
       if (
@@ -267,36 +660,27 @@ async function freeze(
         trees.authority === 'unreadable' ||
         (trees.authority === 'ok' && !trees.complete)
       )
-        refuse('Unreadable workspace owner evidence');
-      const repoPaths: string[] = [];
+        refuse(
+          'Unreadable workspace owner evidence',
+          join(workspaceRoot, workspaceId),
+        );
       const ownerDirectories: string[] = [];
       for (const key of ['folderPath', 'externalPath'] as const) {
         const path = document.document[key];
         if (typeof path === 'string' && isWithin(identity.source, path)) {
           const state = await statIfPresent(path);
           if (!state?.isDirectory() || !unlinkedStoragePath(path))
-            refuse('Unproven managed folder');
+            refuse('Unproven managed folder', path);
+          if (ignored(path))
+            refuse('Abandoned checkout omission overlaps managed folder', path);
           ownerDirectories.push(path);
           inventory.paths.push(path);
         }
       }
-      for (const key of ['repoPath', 'sourceRepoPath'] as const) {
-        const path = document.document[key];
-        if (typeof path === 'string') repoPaths.push(path);
-      }
-      const repos: unknown = document.document.repos;
-      if (Array.isArray(repos))
-        for (const entry of repos) {
-          const repo: unknown = entry;
-          if (
-            typeof repo !== 'object' ||
-            repo === null ||
-            !('repoPath' in repo) ||
-            typeof repo.repoPath !== 'string'
-          )
-            refuse('Unreadable repository owner evidence');
-          repoPaths.push(repo.repoPath);
-        }
+      const repoPaths = relocationRepositoryPaths(
+        document.document,
+        join(workspaceRoot, workspaceId, 'workspace.json'),
+      );
       if (trees.authority === 'ok') {
         const abandonedIds = lifecycleJournals.flatMap((entry) =>
           entry.abandoned?.workspaceId === workspaceId
@@ -310,13 +694,11 @@ async function freeze(
             JSON.stringify({ version: 1, worktrees: [row] }),
           ))
             if (ignored(path))
-              refuse(
-                `Abandoned archive ${workspaceId}/${abandonedIds.join(',')} overlaps live checkout ${path}`,
-              );
+              refuse(`Abandoned omission overlaps live checkout ${path}`);
       }
       for (const path of repoPaths) {
         if (ignored(path))
-          refuse(`Abandoned archive omission overlaps repository ${path}`);
+          refuse(`Abandoned omission overlaps repository ${path}`);
         // External owner references are read only, never a recursive walk grant.
         if (
           (await statIfPresent(path)) &&
@@ -328,9 +710,11 @@ async function freeze(
         trees.authority === 'ok' ? trees.raw : null,
       );
       for (const path of worktreePaths) {
-        if (resolve(path) !== path) refuse('Noncanonical owner path');
+        if (resolve(path) !== path) refuse('Noncanonical owner path', path);
         inventory.paths.push(path);
         const stat = await statIfPresent(path);
+        if (stat?.isDirectory() && (await isPrunedInternalRootCheckout(path)))
+          inventory.checkouts.push(path);
         if (stat?.isSymbolicLink())
           inventory.paths.push(resolve(dirname(path), await readlink(path)));
       }
@@ -355,13 +739,25 @@ async function freeze(
   );
   const reportedMissingPrunable = new Set<string>();
   for (const path of checkouts) {
+    if (await isPrunedInternalRootCheckout(path)) {
+      process.stderr.write(
+        `Migration: pruned Git admin directory for checkout ${JSON.stringify(path)}. Files are retained at ${JSON.stringify(movedOwnedPath(transition, path))}, but Git requires recovery; see docs/internal-root-migration-troubleshooting.md#pruned-git-worktree-records.\n`,
+      );
+      checkouts.delete(path);
+      continue;
+    }
     let listed: string;
     try {
       listed = await git(path, ['worktree', 'list', '--porcelain', '-z']);
     } catch (error) {
-      if (!diagnostics) throw error;
+      const failure = isWithin(identity.source, path)
+        ? new Error(
+            `${error instanceof Error ? error.message : String(error)}\nIf this folder is an unneeded broken checkout, opt in with --abandon-checkout ${JSON.stringify(path)}; the folder stays in the old root.`,
+          )
+        : error;
+      if (!diagnostics) throw failure;
       diagnostics.push(
-        `Git ${path}: ${error instanceof Error ? error.message : 'unreadable checkout'}`,
+        `Git ${path}: ${failure instanceof Error ? failure.message : 'unreadable checkout'}`,
       );
       checkouts.delete(path);
       continue;
@@ -451,6 +847,9 @@ async function freeze(
   return {
     transition,
     lifecycleJournals,
+    ...(abandonCheckouts.length
+      ? { abandonedCheckouts: abandonCheckouts }
+      : {}),
     ...(abandonedPaths.length ? { abandonedPaths } : {}),
     gitPlan,
     ownedPaths: [...new Set(inventory.paths)],
@@ -504,6 +903,7 @@ function checkedPlan(
 /** Live B/C composition. It has no dependency on ordinary routing or destination startup. */
 export function createInternalRootRelocationRepairs(options: {
   readonly abandonArchives?: readonly string[];
+  readonly abandonCheckouts?: readonly string[];
   readonly durability: W5DurabilityPort;
   /** Host-selected TokenUser observer; Windows refuses when it is absent. */
   readonly windowsPrincipal?: () => Promise<string>;
@@ -515,6 +915,7 @@ export function createInternalRootRelocationRepairs(options: {
     options.filesystemHost ??
     internalRootFilesystemHost(options.ownedChildPath);
   const worker: InternalRootRepairWorker = {
+    onProgress: internalRootMigrationProgress,
     ownedPathsForProof,
     ...(host.windows
       ? {
@@ -529,14 +930,26 @@ export function createInternalRootRelocationRepairs(options: {
               dirname(image.path),
               `.${basename(image.path)}.relocation-${randomUUID()}.tmp`,
             );
-            let owned = false;
+            windows.copy(image.path, temp);
+            const identity = lstatSync(temp, { bigint: true });
+            const cleanupOnExit = (): void => {
+              const current = lstatSync(temp, {
+                bigint: true,
+                throwIfNoEntry: false,
+              });
+              // A published backlink no longer owns a reused temporary path.
+              if (current?.dev === identity.dev && current.ino === identity.ino)
+                rmSync(temp, { force: true });
+            };
+            process.once('exit', cleanupOnExit);
             try {
-              windows.copy(image.path, temp);
-              owned = true;
               // Only the private copy becomes writable; the preimage stays untouched.
               await chmod(temp, 0o600);
               const handle = await open(temp, 'r+');
               try {
+                const opened = await handle.stat({ bigint: true });
+                if (opened.dev !== identity.dev || opened.ino !== identity.ino)
+                  refuse('Git backlink temporary changed', temp);
                 await handle.writeFile(image.contents);
                 await handle.truncate(Buffer.byteLength(image.contents));
                 await handle.sync();
@@ -546,9 +959,11 @@ export function createInternalRootRelocationRepairs(options: {
               windows.finish(image.path, temp);
               const current = windows.inspect(image.path);
               if (!isDeepStrictEqual(current, before))
-                refuse('Git backlink changed during private replacement');
+                refuse(
+                  'Git backlink changed during private replacement',
+                  image.path,
+                );
               windows.replace(temp, image.path);
-              owned = false;
               const after = windows.inspect(image.path);
               if (
                 after.attributes !== before.attributes ||
@@ -557,15 +972,26 @@ export function createInternalRootRelocationRepairs(options: {
               )
                 refuse(
                   'Git backlink attributes or contents changed during replacement',
+                  image.path,
                 );
             } finally {
-              if (owned) await rm(temp, { force: true });
+              try {
+                cleanupOnExit();
+              } finally {
+                process.removeListener('exit', cleanupOnExit);
+              }
             }
           },
         }
       : {}),
     freeze: (context) =>
-      freeze(context, observation, undefined, options.abandonArchives),
+      freeze(
+        context,
+        observation,
+        undefined,
+        options.abandonArchives,
+        options.abandonCheckouts,
+      ),
     admit: async (context, plan) => {
       checkedPlan(context, plan);
       const observed = await observeLocalAuthorityRelocation(
@@ -605,7 +1031,7 @@ export function createInternalRootRelocationRepairs(options: {
               !oid ||
               !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid)
             )
-              refuse('Unreadable abandoned archive ref');
+              refuse('Unreadable abandoned archive ref', common);
             const retained = `refs/canopy-migration-abandoned/${ref.slice('refs/app/'.length)}/${oid}`;
             const existing = (
               await git(common, [
@@ -615,7 +1041,7 @@ export function createInternalRootRelocationRepairs(options: {
               ])
             ).trim();
             if (existing && existing !== oid)
-              refuse(`Conflicting abandoned archive ref: ${retained}`);
+              refuse(`Conflicting abandoned archive ref: ${retained}`, common);
             if (!existing) await git(common, ['update-ref', retained, oid, '']);
           }
         }
@@ -630,7 +1056,7 @@ export function createInternalRootRelocationRepairs(options: {
             plan.transition,
           )
         )
-          refuse('Conflicting recorded authority');
+          refuse('Conflicting recorded authority', path);
       } else await durableJson(path, plan.transition, host);
     },
     repairMetadata: async (context, plan, images) => {
@@ -651,7 +1077,11 @@ export function createInternalRootRelocationRepairs(options: {
           const original = plan.workspaces.find(
             (row) => row.workspaceId === image.workspaceId,
           );
-          if (!original) refuse('Missing frozen workspace evidence');
+          if (!original)
+            refuse(
+              'Missing frozen workspace evidence',
+              join(root, 'workspaces', image.workspaceId),
+            );
           for (const [name, contents, previous] of [
             ['workspace.json', image.manifestRaw, original.manifestRaw],
             ['worktrees.json', image.listRaw, original.listRaw],
@@ -666,7 +1096,7 @@ export function createInternalRootRelocationRepairs(options: {
             const path = join(root, 'workspaces', image.workspaceId, name);
             const current = await readNodeW5File(path);
             if ((current.state === 'present' ? current.raw : null) !== previous)
-              refuse('Staging owner image differs from frozen evidence');
+              refuse('Staging owner image differs from frozen evidence', path);
             files.push({
               path: finalPath,
               contents,
@@ -726,7 +1156,7 @@ export function createInternalRootRelocationRepairs(options: {
           observation,
         );
         if (!isDeepStrictEqual(observed, plan.transition.to))
-          refuse('Published authority differs from frozen mapping');
+          refuse('Published authority differs from frozen mapping', root);
       } else await worker.admit(context, plan);
       if (
         !isDeepStrictEqual(
@@ -736,7 +1166,10 @@ export function createInternalRootRelocationRepairs(options: {
           plan.transition,
         )
       )
-        refuse('Recorded authority differs');
+        refuse(
+          'Recorded authority differs',
+          join(root, 'internal-root-authority.json'),
+        );
       await assertRelocationOwnedPathsSafe(
         plan.transition,
         [
@@ -753,6 +1186,7 @@ export function createInternalRootRelocationRepairs(options: {
             movedOwnedPath(plan.transition, row.path),
           ),
         },
+        internalRootMigrationProgress,
       );
       for (const image of await projectRelocationBacklinks(
         plan.transition,
@@ -765,7 +1199,7 @@ export function createInternalRootRelocationRepairs(options: {
           !unlinkedStoragePath(path) ||
           (await readFile(path, 'utf8')) !== image.contents
         )
-          refuse('Git backlink verification failed');
+          refuse('Git backlink verification failed', path);
       }
       for (const image of images) {
         for (const [name, expected] of [
@@ -776,7 +1210,10 @@ export function createInternalRootRelocationRepairs(options: {
             join(root, 'workspaces', image.workspaceId, name),
           );
           if ((current.state === 'present' ? current.raw : null) !== expected)
-            refuse('Owner projection verification failed');
+            refuse(
+              'Owner projection verification failed',
+              join(root, 'workspaces', image.workspaceId, name),
+            );
         }
       }
       await relocateInternalRootJournals(
@@ -799,6 +1236,25 @@ export function createInternalRootRelocationRepairs(options: {
   };
   return {
     ...createInternalRootRepairs(worker),
+    // Git admin omissions are discovered later by freeze(); project operator selections only.
+    preflightOmissions: async (identity) => [
+      ...(await selectedAbandonedArchivePaths(
+        identity.source,
+        options.abandonArchives ?? [],
+      )),
+      ...(options.abandonCheckouts ?? []),
+    ],
+    coldExternalFiles: (context) =>
+      runInternalRootMigrationPhase(
+        'Linux Git census scope',
+        () =>
+          coldGitScope(
+            context.identity.source,
+            options.abandonArchives ?? [],
+            options.abandonCheckouts ?? [],
+          ),
+        { announce: false },
+      ),
     inspect: async (
       context: InternalRootRepairContext,
     ): Promise<readonly string[]> => {
@@ -809,6 +1265,7 @@ export function createInternalRootRelocationRepairs(options: {
           observation,
           diagnostics,
           options.abandonArchives,
+          options.abandonCheckouts,
         );
         await assertRelocationOwnedPathsSafe(
           plan.transition,
@@ -822,6 +1279,7 @@ export function createInternalRootRelocationRepairs(options: {
           context.identity.source,
           false,
           { source: true },
+          internalRootMigrationProgress,
         );
         await projectInternalRootMetadata(plan);
       } catch (error) {

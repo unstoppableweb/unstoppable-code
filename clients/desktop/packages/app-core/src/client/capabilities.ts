@@ -24,7 +24,11 @@ export type RoutingMode = 'in-memory' | 'url';
 export type WorkspaceCreationCapability = false | 'remote-clone' | 'full';
 
 /** Workspace settings support exposed by a host. Unset is default-deny. */
-export type WorkspaceSettingsCapability = false | 'full';
+/**
+ * `'details'`: the host edits only the name and colour and removes the
+ * project; the settings dialog shows just those tabs.
+ */
+export type WorkspaceSettingsCapability = false | 'details' | 'full';
 
 /** Host-correct worktree removal behavior. Unset is default-deny. */
 export type WorktreeRemovalCapability = false | 'archive' | 'delete';
@@ -35,6 +39,8 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
+  /** Locked Work Entry archive. Unconfigured or unavailable hosts default-deny. */
+  readonly standaloneChatArchive?: boolean;
   /** Host can disarm agent-armed work entry removal and answer branch questions. Default-deny. */
   readonly workEntryAutoDelete?: 'manage';
   /** Error reports; absent means false. Enable only with a complete adapter. */
@@ -55,11 +61,23 @@ export interface CanopyCapabilities {
   /** Source plugin installation is wired. Optional, default-deny; web denies. */
   readonly marketplaceSourcePluginInstall?: boolean;
   /**
+   * Host holds its own skills, plugins and MCP servers and can set them beside
+   * a cloud chat's catalog with their cloud links (CAN-6176). Default-deny;
+   * web denies.
+   */
+  readonly cloudCapabilityLinks?: boolean;
+  /**
    * Host can embed account OAuth in its local browser pane. Default-deny for
    * both unconfigured and configured-but-unavailable hosts. Remote Control
    * uses external authorization even when its desktop target supports a pane.
    */
   readonly embeddedOAuthBrowser?: boolean;
+  /**
+   * Host can open in-app browser panels in this scope. Desktop main keeps
+   * their sessions and state under the scope's local project and worktree,
+   * so a cloud chat scope has none yet (CAN-6175). Default-deny.
+   */
+  readonly inAppBrowserPanel?: boolean;
   /** Host publishes current provider account quotas and accepts refresh. Default-deny. */
   readonly providerQuotas?: boolean;
   /** Local Cursor rule review and workspace opt-in. Unset is default-deny. */
@@ -111,6 +129,104 @@ export interface CanopyCapabilities {
   readonly sidebarActivityMode?: boolean;
   /** Host can read unsent composer drafts. Optional, default-deny; desktop only. */
   readonly chatDrafts?: boolean;
+  /**
+   * The chat's access (tool approval) mode can be changed from the composer
+   * (`chat.set_approval_mode`). Optional and default-deny: unset is the
+   * confirmed default for unconfigured and configured-but-unavailable hosts,
+   * and the composer then hides the access mode control. Desktop reports
+   * `true` for local chats; a cloud chat scope reports `false` because its
+   * core runs cloud turns under its own policy (CAN-6175).
+   */
+  readonly chatApprovalMode?: boolean;
+  /**
+   * The chat's thinking level (effort) can be changed from the composer.
+   * Optional and default-deny; desktop reports `true` for local chats. A
+   * cloud chat scope reports it once its backend sends the level
+   * (`modelConfig` on `core.chat.message.send`, CAN-6175 R5).
+   */
+  readonly chatThinkingLevel?: boolean;
+  /**
+   * The chat's fast mode (speed) can be toggled from the composer. Optional
+   * and default-deny; desktop reports `true` for local chats. A cloud chat
+   * scope reports it with the thinking level (CAN-6175 R5).
+   */
+  readonly chatFastMode?: boolean;
+  /**
+   * A chat can be forked into a new tab of the same scope from a turn.
+   * Optional and default-deny; desktop reports `true` for local chats. A
+   * cloud fork starts a new task, so a cloud chat scope reports it once the
+   * web core forks within a task (CAN-6106).
+   */
+  readonly chatTabFork?: boolean;
+  /**
+   * The scope's first chat can be closed or archived like any other tab,
+   * and every archived tab can be restored. Optional and default-deny;
+   * desktop reports `true` for local chats. A cloud task's first chat is the
+   * task itself: closing it would archive the whole task, and the web core
+   * restores only that chat (CAN-6175 R3).
+   */
+  readonly chatRootTabLifecycle?: boolean;
+  /**
+   * The chat's plugin, skill and MCP selections can be changed from the
+   * composer. Optional and default-deny; desktop reports `true` for local
+   * chats. A cloud chat scope reports it once its backend writes
+   * `pluginSelections` (CAN-6175 R5, CAN-6176).
+   */
+  readonly chatPluginSelections?: boolean;
+  /**
+   * Queued messages can be edited or sent now. Optional and default-deny;
+   * desktop reports `true` for local chats. A cloud chat scope reports it
+   * once the web core serves queued text and edit holds (CAN-6106).
+   */
+  readonly chatQueueEdits?: boolean;
+  /**
+   * The chat can be reset to an earlier point. Optional and default-deny;
+   * desktop reports `true` for local chats. The web core has no rewind, so a
+   * cloud chat scope leaves it unset.
+   */
+  readonly chatResetToPoint?: boolean;
+  /**
+   * The composer's @ typeahead can mention the scope's files. Optional and
+   * default-deny; desktop reports `true` for local chats. A cloud chat scope
+   * reports it once the typeahead searches the scope's own file source
+   * rather than this computer's disk (CAN-6175 R7).
+   */
+  readonly chatFileMentions?: boolean;
+  /**
+   * The chat can switch interface modes (the Claude Code terminal view) and
+   * use the controls that need the local runtime or local files: the
+   * directory picker, Linear ticket attach and editor selection chips.
+   * Optional and default-deny; desktop reports `true` for local chats.
+   */
+  readonly chatInterfaceModes?: boolean;
+  /** The chat reports context window usage for the composer indicator. Optional and default-deny. */
+  readonly chatContextUsage?: boolean;
+  /**
+   * The chat's session can be shared to, or exported for, the cloud.
+   * Optional and default-deny. Desktop reports `true` for local chats; a
+   * cloud chat is already in the cloud and reports `false`.
+   */
+  readonly chatSessionTransfer?: boolean;
+  /**
+   * Find in chat can search pages that aren't loaded
+   * (`core.chat.transcript.search`). Optional and default-deny: without it,
+   * find searches only the loaded transcript.
+   */
+  readonly chatTranscriptSearch?: boolean;
+  /**
+   * The chat keeps unread and attention state that the user can change
+   * (`chat.mark_read`, `chat.mark_unread`, `chat.dismiss_attention`).
+   * Optional and default-deny: without it, the mark read and unread actions
+   * are hidden.
+   */
+  readonly chatReadState?: boolean;
+  /**
+   * The chat scope keeps archived chats the user can list, open and restore.
+   * Optional and default-deny: without it, the archived chats control is
+   * hidden. Desktop reports `true` for local chats; a cloud chat scope reports
+   * it once its backend serves `core.chat.archive` (CAN-6175 R3).
+   */
+  readonly chatArchives?: boolean;
   /** Host can run interactive GitHub sign-in locally. Missing means unavailable. */
   readonly githubConnection?: boolean;
   /** Browser checkout only; absent is default-deny. Desktop never embeds Stripe. */
@@ -148,9 +264,10 @@ export interface CanopyCapabilities {
    * Cloud" (CAN-6085). A host sets it only from its web core manifest, with
    * `pipelineCloudRunsFromManifest`, never from its runtime kind.
    * Optional and default-deny: unset is the confirmed default for
-   * unconfigured and configured-but-unavailable hosts. No host sets it yet:
-   * desktop alone and canopy-server have no web core reporting the cloud run
-   * operations, and the browser has no web core connection (CAN-4095).
+   * unconfigured and configured-but-unavailable hosts. The desktop Run
+   * dialog derives it from the signed-in account's web core manifest through
+   * main (CAN-6187) instead of this fixed set; canopy-server reports no cloud
+   * run operations, and the browser has no web core connection (CAN-4094).
    */
   readonly pipelineCloudRuns?: boolean;
   /** Navigation model the host's `NavigationController` adapter implements. */
@@ -166,7 +283,13 @@ export interface CanopyCapabilities {
    * a real desktop panel-layout toggle (P2) flips desktop on.
    */
   readonly panelLayoutControls?: boolean;
-  /** Cloud chat composer can upload per-turn attachments. Default-deny. */
+  /**
+   * The chat composer can attach files to a send: the + menu's Files and
+   * folders row, pasting files and dropping them on the chat. Default-deny.
+   * Desktop reports `true` for local chats; a desktop cloud chat scope
+   * reports it once its sends carry attachments through
+   * `core.chat.attachment.upload` (CAN-6175 R6).
+   */
   readonly chatAttachments?: boolean;
   /**
    * The client serves the paired computer's Orchestrator itself
@@ -360,6 +483,11 @@ export interface CanopyCapabilities {
   /** Sidebar group mutations. Optional and default-deny until the host is wired. */
   readonly itemGrouping?: boolean;
   /**
+   * `false` when the host lists the project but can't open its contents yet,
+   * so its row says so instead of reading as empty. Unset means available.
+   */
+  readonly workspaceContents?: false;
+  /**
    * Workspace settings support available on this host. Optional and
    * default-deny: unset means settings are unavailable.
    */
@@ -530,6 +658,8 @@ export interface CanopyCapabilities {
    * only its message.
    */
   readonly worktreeDiscard?: boolean;
+  /** Incarnation-bound, settled recovery actions; description support alone is insufficient. */
+  readonly worktreeRecovery?: boolean;
   /**
    * Host can list what keeps a project's deletion from finishing that a
    * person can discard, and supersede an interrupted deletion on request

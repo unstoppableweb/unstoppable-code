@@ -677,7 +677,13 @@ function classifySignals(
       diagnostic,
     );
   }
-  if (canopyProxyFailureCode === 'no_billing_source') {
+  if (
+    canopyProxyFailureCode === 'no_billing_source' ||
+    // A session's credit ceiling, such as a cloud workflow run's spend cap
+    // (CP-68): the same terminal-until-topped-up limit, so a workflow step
+    // pauses for it instead of failing.
+    canopyProxyFailureCode === 'session_budget_exhausted'
+  ) {
     // Credit exhaustion is terminal until the user adds a billing source. It
     // deliberately maps to usage-limit handling, never the transient kind
     // that the main-process retry service automatically re-dispatches.

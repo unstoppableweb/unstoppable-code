@@ -4,9 +4,11 @@ import { CanopyJsonValueSchema } from '../../errors';
 /*
  * Workspace commit events (W5e, CAN-5497), served on `core.events.subscribe`
  * in the `core.workspace` family. Host-neutral: the desktop daemon emits
- * `files` and `publishedBy`; a core that has neither (the web core) emits the
- * same events from `changes` alone. Payloads may gain optional fields;
- * subscribers ignore fields and event names they do not understand.
+ * `files` and `publishedBy`; a core that has neither emits the same events
+ * from `changes` alone. The web core emits no commit events, only the
+ * refetch signal `core.workspace.changed` (CAN-6111). Payloads may gain
+ * optional fields; subscribers ignore fields and event names they do not
+ * understand.
  */
 
 /** The event family a workspace commit subscriber names. */
@@ -15,10 +17,16 @@ export const CORE_WORKSPACE_EVENT_FAMILY = 'core.workspace';
 export const CORE_WORKSPACE_COMMITTED_EVENT = 'core.workspace.committed';
 /** Never a success: an uncertain outcome or a recovery that may have applied commits. */
 export const CORE_WORKSPACE_INVALIDATED_EVENT = 'core.workspace.invalidated';
+/**
+ * Refetch only: a cloud project the caller can see changed, such as a chat
+ * now existing in it, whoever made it (web core, CAN-6111).
+ */
+export const CORE_WORKSPACE_CHANGED_EVENT = 'core.workspace.changed';
 
 export const CORE_WORKSPACE_EVENT_NAMES = [
   CORE_WORKSPACE_COMMITTED_EVENT,
   CORE_WORKSPACE_INVALIDATED_EVENT,
+  CORE_WORKSPACE_CHANGED_EVENT,
 ] as const;
 
 const id = z.string().min(1).max(512);
@@ -84,4 +92,15 @@ export const CoreWorkspaceInvalidatedPayloadSchema = z
   .catchall(CanopyJsonValueSchema);
 export type CoreWorkspaceInvalidatedPayload = z.output<
   typeof CoreWorkspaceInvalidatedPayloadSchema
+>;
+
+/** Scoped `{ workspaceId }`; the client re-reads the project's listing. */
+export const CoreWorkspaceChangedPayloadSchema = z
+  .object({
+    /** The chat that now exists in the project, when that is the change. */
+    chatId: id.optional(),
+  })
+  .catchall(CanopyJsonValueSchema);
+export type CoreWorkspaceChangedPayload = z.output<
+  typeof CoreWorkspaceChangedPayloadSchema
 >;

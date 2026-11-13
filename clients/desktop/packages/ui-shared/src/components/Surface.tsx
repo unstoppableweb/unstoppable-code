@@ -72,10 +72,12 @@ const SURFACE_BOUNDARY_CLASS: Readonly<Record<SurfaceBoundary, string>> = {
 
 /**
  * The corner size. `small` gives every variant 8px corners, for a compact box
- * such as one row of a file list; `default` is the variant's own corner.
+ * such as one row of a file list; `drawer` gives the composer drawer's corner
+ * (`--radius-drawer`), for a box that holds drawer rows over a 4px inset, so
+ * its corners nest around theirs; `default` is the variant's own corner.
  * Flat pane regions always retain square corners.
  */
-export type SurfaceSize = 'default' | 'small';
+export type SurfaceSize = 'default' | 'small' | 'drawer';
 
 /** A pane's height comes from its parent or the viewport, never a caller override. */
 export type SurfaceExtent = 'content' | 'parent' | 'viewport';
@@ -137,6 +139,9 @@ export const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
 
 /** The corners of a {@link SurfaceSize} `small` box. */
 export const SURFACE_SMALL_RADIUS_CLASS = 'rounded-md';
+
+/** The corners of a {@link SurfaceSize} `drawer` box. */
+export const SURFACE_DRAWER_RADIUS_CLASS = 'rounded-drawer';
 
 /** The hover of a clickable box: the fill darkens, as a list row's does. */
 export const SURFACE_INTERACTIVE_CLASS = 'hover:bg-subtle';
@@ -217,7 +222,9 @@ export function surfaceClassName({
     gap ? `flex flex-col ${SPACE_ROLE_GAP_CLASS[gap]}` : '',
     size === 'small' && SURFACE_RADIUS_CLASS[variant]
       ? SURFACE_SMALL_RADIUS_CLASS
-      : SURFACE_RADIUS_CLASS[variant],
+      : size === 'drawer' && SURFACE_RADIUS_CLASS[variant]
+        ? SURFACE_DRAWER_RADIUS_CLASS
+        : SURFACE_RADIUS_CLASS[variant],
     selected ? SURFACE_SELECTED_CLASS : SURFACE_VARIANT_CLASS[variant],
     (variant === 'pane' ||
       variant === 'panel' ||

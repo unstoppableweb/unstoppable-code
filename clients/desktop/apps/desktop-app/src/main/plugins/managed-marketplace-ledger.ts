@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { BRAND } from '@canopy/brand/current';
-import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,

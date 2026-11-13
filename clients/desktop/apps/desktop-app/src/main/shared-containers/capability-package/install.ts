@@ -1,3 +1,4 @@
+import { toAppError } from '@canopy/protocol/app-errors';
 /**
  * Install a fork's capability package (CAN-4655, plan §6 "Fork installation
  * and its disclosure").
@@ -80,6 +81,12 @@ import type {
 } from '../../skills/skill-package-install';
 import { CanopyCloudClientError } from '../../canopy-cloud/client';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
+import { findInstalledAutomationAgent } from '@canopy/desktop-shared/lib/automation-agent';
+import {
+  automationAgentPluginsMatch,
+  automationAgentPackageMatches,
+  getSharedAgent,
+} from '../../agents/canopy-server-client';
 import {
   deleteForkCapabilityInstallJournal,
   FORK_CAPABILITY_INSTALL_RESIDUAL_RETENTION_MS,
@@ -143,6 +150,8 @@ export function residualWarning(residual: readonly string[]): string {
 }
 
 function automationSkippedWarning(name: string, reason: string): string {
+  if (reason === 'hosted-agent-unavailable')
+    return `Couldn't add automation "${name}". Install or refresh its shared Agent from Agents, then try again.`;
   const because =
     reason === 'incompatible-target'
       ? "it runs somewhere this copy doesn't include"
@@ -1286,7 +1295,8 @@ async function installDefinitions(
       input.warnings.push(
         automationSkippedWarning(
           planned.document.automation.name,
-          isSkipReason(built.error) ? built.error : MAPPING_FAILED_REASON,
+          built.skipReason ??
+            (isSkipReason(built.error) ? built.error : MAPPING_FAILED_REASON),
         ),
       );
       continue;
@@ -1400,7 +1410,12 @@ async function buildAutomationRequest(input: {
   skillRenamesFor: (ids: readonly string[]) => ReadonlyMap<string, string>;
   unmatchedRefs: Set<string>;
 }): Promise<
-  { ok: true; request: AutomationCreateRequest } | { ok: false; error: string }
+  | { ok: true; request: AutomationCreateRequest }
+  | {
+      ok: false;
+      error: string;
+      skipReason?: 'hosted-agent-unavailable';
+    }
 > {
   const { planned, response } = input;
   const document = planned.document;
@@ -1451,6 +1466,41 @@ async function buildAutomationRequest(input: {
     }
   }
 
+  const config = 'modelConfig' in action ? action.modelConfig : undefined;
+  let installedAgent:
+    | { remoteId: string; contentHash: string; localAgentId: string }
+    | undefined;
+  if (config?.agent && config.model) {
+    try {
+      const detail = await getSharedAgent(config.agent.remoteId);
+      const { listAgentModels } =
+        await import('../../agents/agent-model-store');
+      installedAgent = await findInstalledAutomationAgent(
+        config.model,
+        config.agent,
+        detail,
+        await listAgentModels(),
+        automationAgentPluginsMatch,
+        automationAgentPackageMatches,
+      );
+    } catch (error: unknown) {
+      const failure = toAppError(error);
+      if (failure?.kind === 'defect')
+        logMainProcessWarn(
+          'Could not resolve an automation Agent dependency',
+          failure,
+        );
+      // A missing reviewed dependency skips this automation, not the whole fork.
+      return {
+        ok: false,
+        skipReason: 'hosted-agent-unavailable',
+        error:
+          error instanceof Error
+            ? error.message
+            : 'The shared Agent could not be checked. Install it from Agents first.',
+      };
+    }
+  }
   const built = buildInstallAutomationRequest(
     {
       id: input.containerId,
@@ -1459,6 +1509,7 @@ async function buildAutomationRequest(input: {
     },
     {
       targetKind: isCode ? 'single-repo' : 'cowork',
+      ...(installedAgent ? { agent: installedAgent } : {}),
       ...(pipelineResolution ? { pipelineResolution } : {}),
       ...(isCode
         ? {
@@ -1495,7 +1546,7 @@ async function buildAutomationRequest(input: {
       )
         return { ok: false, error: 'agent-unavailable' };
       actionWithModel = { ...retargeted, model: localId };
-    } else if (modelAgentId !== undefined) {
+    } else if (modelAgentId !== undefined && !installedAgent) {
       // Never keep a source-machine Agent id or guess a local one.
       return { ok: false, error: 'agent-unavailable' };
     }

@@ -32,8 +32,14 @@ import type { CodeGraphSnapshotEnvelope } from '../types/code-graph-tools';
 import { getDiffRanges } from '../git/diff';
 import { mapRangesToSymbols } from '../impact/changed-symbols';
 import { assembleChangeImpact } from '../impact/change-impact';
+import {
+  customLanguagesConfigPath,
+  resolveCustomLanguages,
+} from '../languages/custom-config';
+import { CodeGraphParserRuntime } from '../parser/runtime';
 import type {
   CodeGraphBaseIdentityReadResult,
+  CodeGraphLanguagesValidation,
   CodeGraphReadCall,
   CodeGraphWorkerReadRequest,
   CodeGraphWorkerReadResponse,
@@ -343,6 +349,49 @@ async function importCodeGraphSnapshot(
   );
 }
 
+/**
+ * Loads each custom grammar and compiles its tags queries, as a build would.
+ * The grammars stay loaded until this worker exits, which it does after
+ * answering.
+ */
+async function validateLanguagesWithGrammars(
+  worktreeRoot: string,
+  resourcesDir: string,
+): Promise<CodeGraphLanguagesValidation> {
+  const runtime = await CodeGraphParserRuntime.create(resourcesDir);
+  try {
+    const outcome = await resolveCustomLanguages({
+      configPath: customLanguagesConfigPath(worktreeRoot),
+      runtime,
+    });
+    if (outcome.kind === 'absent')
+      return { config: 'absent', languages: [], diagnostics: [] };
+    if (outcome.kind === 'config-error')
+      return {
+        config: 'invalid',
+        languages: [],
+        diagnostics: [{ entryId: null, index: -1, message: outcome.error }],
+      };
+    const { loaded, diagnostics } = outcome.report;
+    return {
+      config: 'present',
+      languages: loaded.map(({ id, extensions, index, abiVersion }) => ({
+        id,
+        extensions,
+        index,
+        abiVersion,
+      })),
+      diagnostics: diagnostics.map(({ entryId, index, message }) => ({
+        entryId,
+        index,
+        message,
+      })),
+    };
+  } finally {
+    runtime.dispose();
+  }
+}
+
 interface ReadConnection {
   db: CodeGraphDatabase;
   store: CodeGraphStore;
@@ -527,6 +576,18 @@ export async function executeCodeGraphRead(
         },
       };
     }
+    if (request.task.kind === 'languages-validate') {
+      return {
+        ok: true,
+        result: {
+          kind: 'languages-validate',
+          value: await validateLanguagesWithGrammars(
+            request.task.worktreeRoot,
+            request.task.resourcesDir,
+          ),
+        },
+      };
+    }
     if (request.task.kind === 'validate-base') {
       return {
         ok: true,
@@ -598,6 +659,11 @@ export async function executeCodeGraphRead(
       };
     }
     if (request.task.kind === 'snapshot-export') {
+      const { repoId } = request.task;
+      // A graph built under other repository ids, such as an older CLI's
+      // root id, has nothing to export for this one.
+      if (!store.listRepositories().some((row) => row.repoId === repoId))
+        return { ok: true, result: { kind: 'snapshot-export', value: null } };
       const { envelope } = await buildCodeGraphSnapshot({
         store,
         repoId: request.task.repoId,

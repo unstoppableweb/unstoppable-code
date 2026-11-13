@@ -79,7 +79,8 @@ export interface CodeGraphReadServiceWorker {
     signal: AbortSignal,
   ): Promise<CodeGraphReadWorkerOutcome<CodeGraphSnapshotImportCounts>>;
   validateLanguages(
-    scope: CodeGraphWorktreeScope,
+    params: { scope: CodeGraphWorktreeScope; check?: 'static' | 'load' },
+    signal: AbortSignal,
   ): Promise<CodeGraphReadWorkerOutcome<CodeGraphLanguagesValidation>>;
 }
 
@@ -148,7 +149,12 @@ export function createCodeGraphReadServiceWorker(
           signal,
         }),
       ),
-    validateLanguages: (scope) =>
-      outcomeOf(() => service.validateLanguages(scope)),
+    validateLanguages: ({ scope, check }, signal) =>
+      outcomeOf(() =>
+        service.validateLanguages(scope, {
+          ...(check === undefined ? {} : { check }),
+          signal,
+        }),
+      ),
   };
 }

@@ -3,6 +3,8 @@ import {
   Button,
   KbdChip,
   Markdown,
+  MarkdownImage,
+  MarkdownImageUnavailable,
   MarkdownTableBlock,
   TRANSCRIPT_MARKDOWN_OPTIONS,
   TranscriptMarkdownAnchor,
@@ -15,9 +17,19 @@ import {
 
 const noop = (): void => undefined;
 
+// Inline sources keep the lab off the network: one that renders, and one that
+// is not a decodable image, so the browser fires `error` and the fallback shows.
+const LOADED_IMAGE_SRC =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="48"><rect width="96" height="48" rx="6" fill="#8884"/></svg>',
+  );
+const BROKEN_IMAGE_SRC = 'data:image/png;base64,AAAA';
+
 /**
  * A button's own shortcut chip and the transcript markdown pieces: links that
- * navigate or stay inert, and the scrolling table frame.
+ * navigate or stay inert, images and their unavailable fallback, and the
+ * scrolling table frame.
  */
 export function KeysAndMarkdownSpecimen(): JSX.Element {
   return (
@@ -84,6 +96,33 @@ export function KeysAndMarkdownSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="No target">
             <TranscriptMarkdownAnchor>Just text</TranscriptMarkdownAnchor>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+
+      <SpecimenPanel title="MarkdownImage">
+        <SpecimenGrid min={240}>
+          <SpecimenCell label="Loads">
+            <MarkdownImage src={LOADED_IMAGE_SRC} alt="Build chart" />
+          </SpecimenCell>
+          <SpecimenCell label="Fails to load: the alt text stands in">
+            <MarkdownImage src={BROKEN_IMAGE_SRC} alt="Build chart" />
+          </SpecimenCell>
+          <SpecimenCell label="Fails to load, no alt text">
+            <MarkdownImage src={BROKEN_IMAGE_SRC} />
+          </SpecimenCell>
+          <SpecimenCell label="MarkdownImageUnavailable with alt text">
+            <MarkdownImageUnavailable alt="Deploy diagram" />
+          </SpecimenCell>
+          <SpecimenCell label="MarkdownImageUnavailable, blank alt text">
+            <MarkdownImageUnavailable alt="   " />
+          </SpecimenCell>
+          <SpecimenCell label="Through the transcript renderer" wide>
+            <div className="w-full">
+              <Markdown options={TRANSCRIPT_MARKDOWN_OPTIONS}>
+                {`Before ![Build chart](${LOADED_IMAGE_SRC}) and after ![Missing chart](${BROKEN_IMAGE_SRC}).`}
+              </Markdown>
+            </div>
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

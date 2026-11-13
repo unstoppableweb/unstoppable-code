@@ -5,6 +5,13 @@ export type InAppNotificationPlacement =
   | 'top-left'
   | 'bottom-left';
 
+/**
+ * The corner used when no placement is chosen. Bottom-right keeps default
+ * toasts clear of the header's controls.
+ */
+export const DEFAULT_IN_APP_NOTIFICATION_PLACEMENT: InAppNotificationPlacement =
+  'bottom-right';
+
 export interface InAppNotificationContainerOptions {
   /**
    * Start a top corner below the app header (48px plus an 8px gap), so the

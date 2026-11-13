@@ -31,6 +31,8 @@ import type { McpQuestionAnswer } from '@canopy/desktop-shared/types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatQuestionsSlice } from '../state';
 import type { PendingQuestion } from '../types';
+import { localChatBackend } from '../backend';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 interface WorktreeTarget {
   projectId: string;
@@ -105,6 +107,20 @@ function settleQuestionRaisedUnread(
   };
 }
 
+/**
+ * Whether a question's answer is a chat command rather than the local
+ * provider's waiter: an async question, or any question a web core chat
+ * raised, which its own authority settles (CAN-6175).
+ */
+function answersByCommand(
+  pending: PendingQuestion | undefined,
+): pending is PendingQuestion {
+  return (
+    pending !== undefined &&
+    (pending.delivery === 'async' || isWebCoreScope(pending.projectId))
+  );
+}
+
 export const createQuestionsSlice: StateCreator<
   ChatState,
   [],
@@ -123,22 +139,27 @@ export const createQuestionsSlice: StateCreator<
     answers: McpQuestionAnswer[],
   ): Promise<WorktreeTarget | undefined> => {
     const pending = get().pendingQuestions[requestId];
-    if (pending?.delivery === 'async') {
+    if (answersByCommand(pending)) {
       const target = {
         projectId: pending.projectId,
         worktreeId: pending.worktreeId,
       };
-      const result = await get().dispatchChatCommand(target, {
-        type: 'chat.answer_question',
-        chatId: pending.chatId,
-        questionId: requestId,
-        answers,
-      });
+      const result = await get().dispatchChatCommand(
+        target,
+        {
+          type: 'chat.answer_question',
+          chatId: pending.chatId,
+          questionId: requestId,
+          answers,
+        },
+        // The question card says the answer wasn't sent and keeps it.
+        { callerReportsFailure: true },
+      );
       if (result !== 'accepted')
         throw new Error('Question answer was not accepted');
       return target;
     }
-    const response = await window.api.chat.answerMcpQuestion({
+    const response = await localChatBackend().chat.answerMcpQuestion({
       requestId,
       answers,
     });
@@ -306,7 +327,7 @@ export const createQuestionsSlice: StateCreator<
     requestId: string,
   ): Promise<WorktreeTarget | undefined> => {
     const pending = get().pendingQuestions[requestId];
-    if (pending?.delivery === 'async') {
+    if (answersByCommand(pending)) {
       const target = {
         projectId: pending.projectId,
         worktreeId: pending.worktreeId,
@@ -320,7 +341,7 @@ export const createQuestionsSlice: StateCreator<
         throw new Error('Question dismissal was not accepted');
       return target;
     }
-    await window.api.chat.dismissMcpQuestion({ requestId });
+    await localChatBackend().chat.dismissMcpQuestion({ requestId });
     let target: WorktreeTarget | undefined;
     set((state) => {
       const pq = state.pendingQuestions[requestId];

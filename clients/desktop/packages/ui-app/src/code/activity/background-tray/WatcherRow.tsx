@@ -104,7 +104,7 @@ export function WatcherRow({
                     event.currentTarget
                       .closest('[data-testid="composer-work-drawer"]')
                       ?.querySelector<HTMLButtonElement>(
-                        '[data-testid="composer-work-drawer-toggle"]',
+                        '[data-testid="composer-work-pill"][aria-expanded="true"]',
                       ) ?? null;
                   setNotifySubscriber(false);
                   setError(null);

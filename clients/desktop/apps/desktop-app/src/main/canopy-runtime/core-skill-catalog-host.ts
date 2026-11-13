@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { SaveCustomSkillRequest } from '@canopy/desktop-shared/types/skills';
 import {
   getCustomSkillNameValidationError,
@@ -15,8 +16,10 @@ import {
   CatalogSkillFrontmatterSchema,
   skillEntryId,
   type CanopyJsonValue,
+  type CatalogSkillCloudShare,
   type CatalogSkillRow,
 } from '@canopy/protocol/canopy-core';
+import type { InstalledSkillInfo } from '@canopy/protocol/skills';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import { sanitizeName } from '../skills/installer';
 import type * as SkillContext from '../skills/skill-install-context';
@@ -51,6 +54,7 @@ export interface DesktopSkillCatalogDeps {
   service: Pick<
     typeof SkillService,
     | 'loadSkills'
+    | 'readRawSkill'
     | 'readSkillContent'
     | 'listSkillFiles'
     | 'readSkillFile'
@@ -63,7 +67,9 @@ export interface DesktopSkillCatalogDeps {
   >;
   context: Pick<
     typeof SkillContext,
-    'assertStoredSkillContext' | 'filterStoredSkillContexts'
+    | 'assertStoredSkillContext'
+    | 'filterStoredSkillContexts'
+    | 'annotateSharedSkillInstalls'
   >;
   refreshInventory: (reason: string) => void;
   readLockSnapshot: () => Promise<SkillLockSnapshot>;
@@ -164,6 +170,48 @@ function wireFrontmatter(frontmatter: Record<string, CanopyJsonValue>): {
   return { frontmatter: kept, dropped };
 }
 
+const SKILL_CONTENT_HASH = /^[a-f0-9]{64}$/;
+
+/** The row's link to a cloud custom skill, preferring the author's own share. */
+async function cloudShareOf(
+  row: InstalledSkillInfo,
+  readRawSkill: DesktopSkillCatalogDeps['service']['readRawSkill'],
+): Promise<CatalogSkillCloudShare | undefined> {
+  const link = row.remote
+    ? {
+        role: 'author' as const,
+        remoteId: row.remote.remoteId,
+        contentHash: row.remote.contentHash,
+      }
+    : row.installedFromShare
+      ? {
+          role: 'recipient' as const,
+          remoteId: row.installedFromShare.remoteId,
+          contentHash: row.installedFromShare.contentHash,
+        }
+      : undefined;
+  if (link === undefined || link.remoteId === '' || link.remoteId.length > 512)
+    return undefined;
+  let localContentHash: string | null;
+  try {
+    localContentHash = createHash('sha256')
+      .update(await readRawSkill(`${row.sourceId}/${row.name}`), 'utf8')
+      .digest('hex');
+  } catch {
+    localContentHash = null;
+  }
+  return {
+    role: link.role,
+    remoteId: link.remoteId,
+    linkedContentHash:
+      link.contentHash !== undefined &&
+      SKILL_CONTENT_HASH.test(link.contentHash)
+        ? link.contentHash
+        : null,
+    localContentHash,
+  };
+}
+
 async function loadDeps(
   overrides: Partial<DesktopSkillCatalogDeps>,
 ): Promise<DesktopSkillCatalogDeps> {
@@ -260,44 +308,54 @@ export function createDesktopSkillCatalogHost(
       } catch (error) {
         throw refused('skills-unavailable', error);
       }
+      try {
+        rows = await context.annotateSharedSkillInstalls(rows);
+      } catch {
+        // Without the receipts a received skill has no cloud link, so it reads
+        // as not uploaded, never as ready; the list itself still answers.
+      }
       const lock = await readLockSnapshot();
-      return rows.slice(0, 10_000).map((row): CatalogSkillRow => {
-        const origin = row.builtIn
-          ? 'builtin'
-          : row.custom
-            ? 'custom'
-            : 'installed';
-        const entry =
-          origin === 'installed' && lock.state === 'ok'
-            ? lock.entries.get(getLockKey(row.sourceId, row.name))
-            : undefined;
-        const hash = skillLockEntryString(entry, 'skillFolderHash');
-        return {
-          entryId: skillEntryId({
+      return Promise.all(
+        rows.slice(0, 10_000).map(async (row): Promise<CatalogSkillRow> => {
+          const origin = row.builtIn
+            ? 'builtin'
+            : row.custom
+              ? 'custom'
+              : 'installed';
+          const entry =
+            origin === 'installed' && lock.state === 'ok'
+              ? lock.entries.get(getLockKey(row.sourceId, row.name))
+              : undefined;
+          const hash = skillLockEntryString(entry, 'skillFolderHash');
+          const cloudShare = await cloudShareOf(row, service.readRawSkill);
+          return {
+            entryId: skillEntryId({
+              sourceId: row.sourceId,
+              skillName: row.name,
+            }),
             sourceId: row.sourceId,
             skillName: row.name,
-          }),
-          sourceId: row.sourceId,
-          skillName: row.name,
-          description: clip(row.description, 4096),
-          source: clip(row.source, 1024),
-          origin,
-          installedAt: clip(row.installedAt, 64),
-          updatedAt: clip(row.updatedAt, 64),
-          updateAvailable: row.updateAvailable,
-          version:
-            entry === undefined
-              ? null
-              : {
-                  skillFolderHash:
-                    hash !== null && hash !== '' ? hash.slice(0, 128) : null,
-                  skillPath: clip(
-                    skillLockEntryString(entry, 'skillPath') ?? '',
-                    4096,
-                  ),
-                },
-        };
-      });
+            description: clip(row.description, 4096),
+            source: clip(row.source, 1024),
+            origin,
+            installedAt: clip(row.installedAt, 64),
+            updatedAt: clip(row.updatedAt, 64),
+            updateAvailable: row.updateAvailable,
+            version:
+              entry === undefined
+                ? null
+                : {
+                    skillFolderHash:
+                      hash !== null && hash !== '' ? hash.slice(0, 128) : null,
+                    skillPath: clip(
+                      skillLockEntryString(entry, 'skillPath') ?? '',
+                      4096,
+                    ),
+                  },
+            ...(cloudShare === undefined ? {} : { cloudShare }),
+          };
+        }),
+      );
     },
 
     async read(ref) {

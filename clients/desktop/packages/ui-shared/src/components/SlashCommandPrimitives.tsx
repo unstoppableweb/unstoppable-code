@@ -15,11 +15,7 @@ export function SlashCommandAvailabilityTag(): JSX.Element {
   );
 }
 
-/**
- * The pending spinner on a slash-command row while its command enables.
- * Shared so every slash-row surface (the rich editor's menu, the Commands
- * popup) draws the same pending treatment.
- */
+/** Pending spinner while a slash command enables. */
 export function SlashCommandPendingSpinner(): JSX.Element {
   return <LoadingSpinner decorative sizePx={14} />;
 }
@@ -30,9 +26,8 @@ export interface SlashCommandAvailableDividerProps {
 
 /**
  * The "Available to enable" section divider rendered once before the first
- * `section: 'available'` row. Shared so host menus that render slash rows
- * outside the rich editor's `SlashCommandMenu` cannot let the divider markup
- * drift.
+ * `section: 'available'` row, so slash-row surfaces cannot let the divider
+ * markup drift.
  */
 export function SlashCommandAvailableDivider({
   testId = 'slash-command-available-divider',

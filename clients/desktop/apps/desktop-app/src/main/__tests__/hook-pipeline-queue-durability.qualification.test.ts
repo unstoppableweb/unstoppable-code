@@ -126,9 +126,9 @@ jest.mock('../pipelines/execution-runtime', () => ({
     executionsDir: '/unused/executions',
   }),
 }));
-jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
+jest.mock('@canopy/execution-engine/node/pipelines/executor', () => ({
   ...jest.requireActual<object>(
-    '@canopy/desktop-shared/node/pipelines/executor',
+    '@canopy/execution-engine/node/pipelines/executor',
   ),
   loadExecutionState: (): Promise<unknown> =>
     Promise.resolve(mockExecutionState ? { execution_id: 'saved' } : null),

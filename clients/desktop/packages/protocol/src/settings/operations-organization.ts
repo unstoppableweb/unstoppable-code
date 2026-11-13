@@ -833,17 +833,23 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
         }),
       ),
   }),
-  /**
-   * The viewer's pending invites across organizations. The route is not
-   * organization-scoped; the Members tab filters by `organizationId`.
-   */
+  /** Outgoing invites in the selected organization, authorized by the server. */
   'organization.invitations.list': defineSettingsRead({
     transport: 'backend',
-    input: organizationInputSchema,
+    input: z.strictObject({
+      ...organizationIdField,
+      cursor: settingsRouteIdSchema.optional(),
+    }),
     result: settingsDtoSchema<OrganizationInviteListResponse>(
       organizationInviteListShape,
     ),
-    request: () => get(INVITES_PATH),
+    request: (input) =>
+      get(
+        settingsPathWithQuery(
+          `${organizationPath(input.organizationId)}/invites`,
+          { cursor: input.cursor },
+        ),
+      ),
   }),
   'organization.invitations.revoke': defineSettingsWrite({
     transport: 'backend',
@@ -854,7 +860,7 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
     result: settingsAcknowledgementSchema,
     request: (input) => ({
       method: 'DELETE',
-      path: `${INVITES_PATH}/${settingsPathSegment(input.inviteId)}`,
+      path: `${organizationPath(input.organizationId)}/invites/${settingsPathSegment(input.inviteId)}`,
     }),
   }),
   /** Invitations addressed to the viewer (Organizations list). */

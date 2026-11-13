@@ -26,7 +26,7 @@ import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
   PipelineHostActionResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   PipelineHostRefusal,
   type PipelineHostFailureReason,

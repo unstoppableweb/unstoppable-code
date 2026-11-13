@@ -1,3 +1,6 @@
+import { assertWorkingDirectoryAvailable } from '@canopy/desktop-shared/node/lib/working-directory';
+import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
+import { subscribeWorkspaceTargetRemoval } from '../lib/workspace-target-exclusion';
 import { basename } from 'node:path';
 import {
   IPC_CHANNELS,
@@ -164,6 +167,23 @@ export async function handleHomeDiscoverEnvironment(
   if (!cwd) {
     return { discovery: null };
   }
+  const target = request.target;
+  const canDiscover = async (): Promise<boolean> => {
+    if (target.kind === 'worktree')
+      return isWorktreeReadAvailable(
+        request.workspaceId,
+        target.worktreeId,
+        cwd,
+      );
+    try {
+      await assertWorkingDirectoryAvailable(cwd);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // Refusals must neither read nor populate the discovery cache.
+  if (!(await canDiscover())) return { discovery: null };
   const providerType = request.providerType ?? 'claude';
   // The result depends on the inherited default-plugin layers (global and
   // this workspace's defaults), so the cache key includes their revision — a
@@ -186,6 +206,16 @@ export async function handleHomeDiscoverEnvironment(
     }
   }
   const ac = new AbortController();
+  const unsubscribe =
+    target.kind === 'worktree'
+      ? subscribeWorkspaceTargetRemoval((projectId, worktreeId) => {
+          if (
+            projectId === request.workspaceId &&
+            worktreeId === target.worktreeId
+          )
+            ac.abort();
+        })
+      : (): void => {};
   const discovery = await runProviderDiscovery({
     cwd,
     providerType,
@@ -205,7 +235,10 @@ export async function handleHomeDiscoverEnvironment(
     strictEmptyMcpConfig: request.target.kind === 'baseline',
     safeProjectDiscovery: request.target.kind === 'baseline',
     signal: ac.signal,
-  });
+    canDiscover,
+  }).finally(unsubscribe);
+  if (!discovery || ac.signal.aborted || !(await canDiscover()))
+    return { discovery: null };
   const discoveredAt = Date.now();
   // Revisioned keys prevent stale reads after a global-defaults edit. Sweep
   // expired generations on every write so those revisions cannot turn this

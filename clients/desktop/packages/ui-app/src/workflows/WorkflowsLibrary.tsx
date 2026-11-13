@@ -276,11 +276,15 @@ function WorkflowsLibraryTableHead({
 }): JSX.Element {
   return (
     <DataTableHead>
+      {/* A phone keeps the workflow and its actions; the Workflow cell
+          names the trigger. */}
       <DataTableHeaderCell>Workflow</DataTableHeaderCell>
-      <DataTableHeaderCell width={compact ? '11rem' : '13rem'}>
+      <DataTableHeaderCell width={compact ? '11rem' : '13rem'} showFrom="sm">
         Trigger
       </DataTableHeaderCell>
-      <DataTableHeaderCell width="12rem">Last run</DataTableHeaderCell>
+      <DataTableHeaderCell width="12rem" showFrom="md">
+        Last run
+      </DataTableHeaderCell>
       {compact ? null : (
         <DataTableHeaderCell width="11rem">Next run</DataTableHeaderCell>
       )}
@@ -491,6 +495,12 @@ export function WorkflowsLibraryTableRow({
               ) : null}
             </span>
           </span>
+          <span
+            className="truncate text-xs fg-tertiary sm:hidden"
+            data-testid="workflows-library-trigger-folded"
+          >
+            {row.triggerText}
+          </span>
           {row.attention ? (
             <span
               className="inline-flex min-w-0 items-center gap-1 text-xs fg-warning"
@@ -502,7 +512,7 @@ export function WorkflowsLibraryTableRow({
           ) : null}
         </div>
       </DataTableCell>
-      <DataTableCell>
+      <DataTableCell showFrom="sm">
         <div className="flex min-w-0 flex-col gap-1">
           <span
             className="truncate fg-secondary"
@@ -517,7 +527,7 @@ export function WorkflowsLibraryTableRow({
           ) : null}
         </div>
       </DataTableCell>
-      <DataTableCell data-testid="workflows-library-last-run">
+      <DataTableCell data-testid="workflows-library-last-run" showFrom="md">
         <WorkflowLastRunText lastRun={row.lastRun} />
       </DataTableCell>
       {compact ? null : (

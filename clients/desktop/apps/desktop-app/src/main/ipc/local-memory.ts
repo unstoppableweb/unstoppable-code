@@ -46,6 +46,38 @@ function field(request: Record<string, unknown>, key: string): string {
   return request[key];
 }
 
+/**
+ * A consolidation the person asked for. The trigger enforces the single-run
+ * guard and records the outcome; the answer is the fresh status with the run
+ * that just finished layered on top, so a failed state write can never answer
+ * with the pre-run outcome. Settings and App Advisor (CAN-6005) both use it.
+ */
+export async function consolidateLocalMemoryNow(
+  scope: LocalMemoryScopeRequest,
+): Promise<LocalMemoryConsolidationStatus> {
+  const run = await localMemoryStore.consolidateNow(scope);
+  const status = await localMemoryStore.consolidationStatus(scope);
+  if (!run.recorded) return status;
+  const succeeded = run.outcome.result === 'success';
+  return {
+    ...status,
+    lastRunAt: run.finishedAt,
+    lastResult: run.outcome.result,
+    lastReason: run.outcome.reason ?? null,
+    ...(succeeded ? { lastConsolidatedAt: run.finishedAt } : {}),
+  };
+}
+
+/** Rebuilds a scope's memory from its notes, with the status after. */
+export async function rebuildLocalMemory(
+  scope: LocalMemoryScopeRequest,
+  precondition?: () => Promise<void>,
+): Promise<LocalMemoryRebuildResponse> {
+  const rebuild = await localMemoryStore.rebuild(scope, precondition);
+  const status = await localMemoryStore.consolidationStatus(scope);
+  return { rebuild, status };
+}
+
 export function registerLocalMemoryHandlers(): void {
   registerIpcHandler<[unknown], LocalMemoryFileSummary[]>(
     IPC_CHANNELS.localMemoryList,
@@ -116,33 +148,11 @@ export function registerLocalMemoryHandlers(): void {
   );
   registerIpcHandler<[unknown], LocalMemoryConsolidationStatus>(
     IPC_CHANNELS.localMemoryConsolidate,
-    async (_event, value) => {
-      const scope = scopeRequest(value);
-      // The trigger enforces the single-run guard and records the outcome.
-      // The response is the fresh status with the run that just finished
-      // layered on top, so a failed state write can never answer with the
-      // pre-run outcome.
-      const run = await localMemoryStore.consolidateNow(scope);
-      const status = await localMemoryStore.consolidationStatus(scope);
-      if (!run.recorded) return status;
-      const succeeded = run.outcome.result === 'success';
-      return {
-        ...status,
-        lastRunAt: run.finishedAt,
-        lastResult: run.outcome.result,
-        lastReason: run.outcome.reason ?? null,
-        ...(succeeded ? { lastConsolidatedAt: run.finishedAt } : {}),
-      };
-    },
+    async (_event, value) => consolidateLocalMemoryNow(scopeRequest(value)),
   );
   registerIpcHandler<[unknown], LocalMemoryRebuildResponse>(
     IPC_CHANNELS.localMemoryRebuild,
-    async (_event, value) => {
-      const scope = scopeRequest(value);
-      const rebuild = await localMemoryStore.rebuild(scope);
-      const status = await localMemoryStore.consolidationStatus(scope);
-      return { rebuild, status };
-    },
+    async (_event, value) => rebuildLocalMemory(scopeRequest(value)),
   );
   registerIpcHandler<[unknown], LocalMemorySnapshotSummary[]>(
     IPC_CHANNELS.localMemoryListSnapshots,

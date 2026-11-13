@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { hostOperatingSystem } from '../../../packages/core-platform/src/host-platform';
 import { windowsPrincipalObserver } from '../../../packages/core-platform/src';
 import { internalRootFilesystemHost } from '../../../packages/desktop-shared/src/node/internal-root-migration/filesystem-host';
+import { readInternalRootAbandonmentPlan } from '../../../packages/desktop-shared/src/node/internal-root-migration/filesystem';
 import { createFreshInternalRoot } from '../../../packages/desktop-shared/src/node/internal-root-migration/fresh-start';
 import { canonicalStoragePath } from '../../../packages/core-platform/src/build-storage-startup';
 import {
@@ -33,15 +34,17 @@ import {
 import { assertAbandonedArchivesMatch } from '../../../packages/desktop-shared/src/node/internal-root-migration/lifecycle-policy';
 import { inspectDestructiveJournals } from '../../../packages/desktop-shared/src/node/w5-destructive-journal';
 import { desktopW5Durability } from '../../../packages/desktop-shared/src/node/w5-commit-log/durability';
+import {
+  monitorInternalRootMigrationWorker,
+  runInternalRootMigrationPhase,
+} from '../../../packages/desktop-shared/src/node/internal-root-migration/progress';
 
 function phase<Args extends unknown[], Result>(
   name: string,
-  operation: (...args: Args) => Result,
-): (...args: Args) => Result {
-  return (...args: Args): Result => {
-    process.stderr.write(`Migration: ${name}\n`);
-    return operation(...args);
-  };
+  operation: (...args: Args) => Promise<Result>,
+): (...args: Args) => Promise<Result> {
+  return (...args: Args): Promise<Result> =>
+    runInternalRootMigrationPhase(name, () => operation(...args));
 }
 
 async function main(): Promise<void> {
@@ -69,18 +72,23 @@ async function main(): Promise<void> {
   const windowsPrincipal =
     os === 'win32' ? windowsPrincipalObserver(windowsProcessPath) : undefined;
   const filesystemHost = internalRootFilesystemHost(ownedChildPath);
-  const worker = createInternalRootMigrationWorker({
+  const baseWorker = createInternalRootMigrationWorker({
     filesystemHost,
     ownedChildPath,
     ...(os === 'win32' || os === 'linux'
-      ? { nativeColdHost: { kind: 'repository', root: resolve('.') } as const }
+      ? {
+          nativeColdHost: { kind: 'repository', root: resolve('.') } as const,
+        }
       : {}),
     executableBrands: [canopy, unstoppableCode],
     diagnose: async (source): Promise<readonly string[]> => {
-      process.stderr.write('Migration: W5 diagnosis\n');
       const { diagnoseInternalRootW5 } =
         await import('../src/main/lib/internal-root-migration-inventory');
-      return diagnoseInternalRootW5(source, abandonArchives);
+      return diagnoseInternalRootW5(
+        source,
+        abandonArchives,
+        options.abandonCommits,
+      );
     },
     recoverW5: async (source, qualification): Promise<void> => {
       const { settleInternalRootW5 } =
@@ -89,14 +97,19 @@ async function main(): Promise<void> {
         source,
         resolve('dist/core-daemon/w5-commit-log-worker.js'),
         qualification,
-        { ownedChildPath, windowsProcessPath, abandonArchives },
+        {
+          ownedChildPath,
+          windowsProcessPath,
+          abandonArchives,
+          abandonCommits: options.abandonCommits,
+        },
       );
     },
   });
   if (options.skipMigration) {
     await createFreshInternalRoot({
       identity,
-      worker,
+      worker: baseWorker,
       ownedChildPath,
       windowsPrincipal,
     });
@@ -105,13 +118,18 @@ async function main(): Promise<void> {
     );
     return;
   }
+  const worker = monitorInternalRootMigrationWorker(baseWorker);
   const disposition = join(
     identity.destination,
     '..',
     `.${identity.brandId}-internal-startup.json`,
   );
   try {
-    await lstat(disposition);
+    await runInternalRootMigrationPhase(
+      'Checking startup choice',
+      () => lstat(disposition),
+      { announce: false },
+    );
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'An explicit fresh-start choice exists. Retain it and the internal folder; do not migrate over this installation.',
@@ -121,9 +139,14 @@ async function main(): Promise<void> {
       throw error;
   }
   const prior = await worker.readJournal(identity);
+  const abandonmentPlan = await readInternalRootAbandonmentPlan(
+    identity,
+    prior,
+    filesystemHost,
+  );
   const frozenAbandonments = [
     ...new Set(
-      prior?.repairPlan?.lifecycleJournals?.flatMap((entry) =>
+      abandonmentPlan?.lifecycleJournals?.flatMap((entry) =>
         entry.abandoned
           ? [`${entry.abandoned.workspaceId}/${entry.abandoned.worktreeId}`]
           : [],
@@ -132,14 +155,37 @@ async function main(): Promise<void> {
   ];
   abandonArchives = selectInternalRootArchiveAbandonments(
     options.abandonArchives,
-    prior?.repairPlan ? frozenAbandonments : undefined,
+    abandonmentPlan ? frozenAbandonments : undefined,
   );
   if (options.abandonArchives.length)
     assertAbandonedArchivesMatch(
-      (await inspectDestructiveJournals(identity.source)).records,
+      (
+        await runInternalRootMigrationPhase(
+          'Checking archive selections',
+          () => inspectDestructiveJournals(identity.source),
+          { announce: false },
+        )
+      ).records,
       options.abandonArchives,
     );
+  // Commit opt-ins consume pending rows before construction; never freeze/replay them.
+  if (options.abandonCommits.length) {
+    const { diagnoseW5State } =
+      await import('../src/main/lib/w5-maintenance-diagnosis');
+    const { internalRootCommitAbandonments } =
+      await import('../src/main/lib/internal-root-migration-commits');
+    internalRootCommitAbandonments(
+      await diagnoseW5State(identity.source, 'w5-owned', true),
+      options.abandonCommits,
+    );
+  }
+  const abandonCheckouts = selectInternalRootArchiveAbandonments(
+    options.abandonCheckouts,
+    abandonmentPlan ? (abandonmentPlan.abandonedCheckouts ?? []) : undefined,
+    'Checkout',
+  );
   const repairs = createInternalRootRelocationRepairs({
+    abandonCheckouts,
     abandonArchives,
     durability: desktopW5Durability,
     windowsPrincipal,
@@ -147,25 +193,23 @@ async function main(): Promise<void> {
     filesystemHost,
   });
   const result = await migrateInternalRoot(
-    {
-      ...worker,
-      inventory: phase('Walking source', worker.inventory),
-      proveCold: phase('Cold proof', worker.proveCold),
-      recoverW5: phase('W5 recovery', worker.recoverW5),
-      build: phase('Building destination', worker.build),
-      seal: phase('Sealing destination', worker.seal),
-      publish: phase('Publishing destination', worker.publish),
-      relocateSecure: phase('Secure relocation', worker.relocateSecure),
-    },
+    worker,
     identity,
     {
       apply: options.apply,
       declareInternal: options.declareInternal,
       rebuild: options.rebuild,
+      restart: options.restart,
     },
     {
       ...repairs,
       prepare: phase('Git checks', repairs.prepare),
+      repair: phase('Repairing destination', repairs.repair),
+      verify: phase('Verifying destination', repairs.verify),
+      qualifyPublished: phase(
+        'publishing: Git qualification',
+        repairs.qualifyPublished,
+      ),
       ...(repairs.inspect
         ? { inspect: phase('Git checks', repairs.inspect) }
         : {}),
@@ -174,15 +218,19 @@ async function main(): Promise<void> {
   let cleanupCandidates: InternalRootCleanupReport | null = null;
   let cleanupReportError: string | undefined;
   try {
-    process.stderr.write('Migration: Cleanup report\n');
-    cleanupCandidates = await reportInternalRootCleanup(
-      identity,
-      result.kind === 'complete' || result.journal?.phase === 'complete',
-      filesystemHost,
-      result.kind === 'inventory'
-        ? result.inventory.bytes
-        : result.journal.inventory.bytes,
-      abandonArchives,
+    cleanupCandidates = await runInternalRootMigrationPhase(
+      'Cleanup report',
+      () =>
+        reportInternalRootCleanup(
+          identity,
+          result.kind === 'complete' || result.journal?.phase === 'complete',
+          filesystemHost,
+          result.kind === 'inventory'
+            ? result.inventory.bytes
+            : result.journal.inventory.bytes,
+          abandonArchives,
+          abandonCheckouts,
+        ),
     );
     process.stderr.write(formatInternalRootCleanupReport(cleanupCandidates));
   } catch (error: unknown) {

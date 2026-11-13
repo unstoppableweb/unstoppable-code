@@ -270,6 +270,55 @@ export function expireSendingLease(
  * cannot drift — a field mirrored in only one of them either never reaches a
  * freshly hydrated scope or never leaves a refreshed one.
  */
+/**
+ * Whether a runtime status ends a tab's pending turn. A turn that ended with
+ * its prompt committed needs no provisional timer, even when no committed
+ * timer row follows (cloud chats). The optimistic prompt sits in `messages`
+ * from the send, so only its canonical echo (which leaves
+ * `pendingUserMessages`) commits it; a stale idle before that keeps the
+ * pending turn. A snapshot and a runtime patch apply the same rule.
+ */
+function pendingTurnStopped(
+  tab: ChatTab,
+  status: ReturnType<typeof chatRuntimeStatusToTabStatus>,
+): boolean {
+  const promptId = tab.pendingTurn?.userMessageId;
+  if (promptId === undefined) return false;
+  const promptCommitted =
+    tab.messages.some((message) => message.id === promptId) &&
+    !tab.pendingUserMessages?.some((message) => message.id === promptId);
+  return (
+    status === 'error' ||
+    (status === 'idle' &&
+      (tab.cancelRequestedByUser === true || promptCommitted))
+  );
+}
+
+/** The tab without its pending turn and that turn's provisional timer. */
+function withoutPendingTurn(tab: ChatTab): ChatTab {
+  const timerId = tab.pendingTurn?.timerMessage.id;
+  return {
+    ...tab,
+    pendingTurn: undefined,
+    messages: tab.messages.filter((message) => message.id !== timerId),
+  };
+}
+
+/**
+ * The tab with its pending turn retired when its committed runtime has
+ * ended it. Every path that can commit the prompt applies it: a runtime
+ * patch, a snapshot, and a transcript page that carries the prompt's echo.
+ */
+export function retireFinishedPendingTurn(
+  tab: ChatTab,
+  runtime: ChatRuntimeState | undefined,
+): ChatTab {
+  return runtime !== undefined &&
+    pendingTurnStopped(tab, chatRuntimeStatusToTabStatus(runtime))
+    ? withoutPendingTurn(tab)
+    : tab;
+}
+
 export function applyRuntimeStatusesToTabs(
   tabs: ChatTab[],
   runtimeByChatId: Record<string, ChatRuntimeState>,
@@ -277,8 +326,11 @@ export function applyRuntimeStatusesToTabs(
   return tabs.map((current) => {
     const runtime = runtimeByChatId[current.id];
     if (!runtime) return current;
-    const tab = settleSendingLease(current, runtime);
     const status = chatRuntimeStatusToTabStatus(runtime);
+    const tab = retireFinishedPendingTurn(
+      settleSendingLease(current, runtime),
+      runtime,
+    );
     const error = status === 'error' ? (runtime.error?.message ?? null) : null;
     const lastEventAt = latestChatActivityAt(
       tab.lastEventAt,
@@ -440,6 +492,10 @@ export function preserveRendererOnlyTabFields(
       : {}),
     ...(previous.stoppedTurnResume !== undefined
       ? { stoppedTurnResume: previous.stoppedTurnResume }
+      : {}),
+    // Renderer-only: a refused cloud send never reaches canonical state.
+    ...(previous.sendRefusal !== undefined
+      ? { sendRefusal: previous.sendRefusal }
       : {}),
     // Renderer-only optimistic send state; canonical runtime settles it.
     ...(previous.sendingLease !== undefined
@@ -987,15 +1043,12 @@ function applyOneChange(
           tab.lastEventAt,
           change.runtime.lastActivityAt,
         );
-        const pendingTurnStopped =
-          tab.pendingTurn &&
-          (status === 'error' ||
-            (status === 'idle' && tab.cancelRequestedByUser));
+        const stopped = pendingTurnStopped(tab, status);
         const emptyCompletionRecovery = emptyCompletionRecoveryForRuntime(
           change.runtime,
         );
         if (
-          pendingTurnStopped ||
+          stopped ||
           tab !== currentTab ||
           tab.status !== status ||
           tab.error !== error ||
@@ -1005,19 +1058,10 @@ function applyOneChange(
         ) {
           const tabs = chatState.tabs.slice();
           const nextTab: ChatTab = {
-            ...tab,
+            ...(stopped ? withoutPendingTurn(tab) : tab),
             status,
             error,
             lastEventAt,
-            ...(pendingTurnStopped
-              ? {
-                  pendingTurn: undefined,
-                  messages: tab.messages.filter(
-                    (message) =>
-                      message.id !== tab.pendingTurn?.timerMessage.id,
-                  ),
-                }
-              : {}),
             ...(emptyCompletionRecovery ? { emptyCompletionRecovery } : {}),
           };
           if (!emptyCompletionRecovery) delete nextTab.emptyCompletionRecovery;

@@ -15,7 +15,10 @@ import {
 } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { drawerReducedMotion } from '../../ComposerWorkDrawer';
-import { DrawerRowPresentationContext } from './drawer-presentation';
+import {
+  DRAWER_ROW_LIST_CLASS,
+  DrawerRowPresentationContext,
+} from './drawer-presentation';
 
 export function CompletedWorkTrigger({
   count,
@@ -35,7 +38,7 @@ export function CompletedWorkTrigger({
           event.currentTarget
             .closest('[data-testid="composer-work-drawer"]')
             ?.querySelector<HTMLButtonElement>(
-              '[data-testid="composer-work-drawer-toggle"]',
+              '[data-testid="composer-work-pill"][aria-expanded="true"]',
             ) ?? null;
         onOpen();
       }}
@@ -128,7 +131,7 @@ export function CompletedWorkDialog({
               className="p-2"
             >
               <DrawerRowPresentationContext.Provider value="modal">
-                <ul className="flex flex-col gap-px">{children}</ul>
+                <ul className={DRAWER_ROW_LIST_CLASS}>{children}</ul>
               </DrawerRowPresentationContext.Provider>
             </div>
           </OverlayScrollArea>

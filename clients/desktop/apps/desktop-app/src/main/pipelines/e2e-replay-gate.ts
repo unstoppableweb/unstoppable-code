@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { RecordStoreFactory } from '@canopy/desktop-shared/node/pipelines/executor/spawned-process';
+import type { RecordStoreFactory } from '@canopy/execution-engine/node/pipelines/executor/spawned-process';
 import {
   SpillingRecordStore,
   type RecordStore,

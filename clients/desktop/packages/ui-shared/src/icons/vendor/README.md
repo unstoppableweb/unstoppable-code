@@ -70,6 +70,8 @@ license at commit `8a1b2821bb768c484fe8da20c5e1838b6bf551a9` of
 | `simple-icons/git.svg`      | Git (`GitIcon`), see attribution below           |
 | `simple-icons/kimi.svg`     | Kimi / Moonshot AI (`MoonshotIcon`)              |
 | `simple-icons/minimax.svg`  | MiniMax (`MiniMaxIcon`)                          |
+| `simple-icons/vercel.svg`   | Vercel AI Gateway (`VercelIcon`)                 |
+| `lobehub/openrouter.svg`    | OpenRouter (`OpenRouterIcon`)                    |
 | `lobehub/zai.svg`           | Z.ai (`ZaiIcon`)                                 |
 | `lobehub/microsoft.svg`     | Windows four-square mark (`WindowsPlatformIcon`) |
 
@@ -96,7 +98,7 @@ Source: [git-scm.com/downloads/logos](https://git-scm.com/downloads/logos).
 
 ## Trademarks
 
-Apple, DeepSeek, Git, Kimi, MiniMax, Z.ai, and Windows marks are trademarks of
+Apple, DeepSeek, Git, Kimi, MiniMax, OpenRouter, Vercel, Z.ai, and Windows marks are trademarks of
 their respective owners. Canopy uses them only to refer to those products and
 platforms; their use does not imply endorsement.
 

@@ -18,11 +18,22 @@ import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
  * Aux (popped-out) panel windows stay owned by the always-mounted
  * WorktreePart, so this grid passes `includeAuxWindowContent={false}`.
  */
-import { useCallback, useEffect, useMemo, useRef, type JSX } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type JSX,
+} from 'react';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { useChatStore, useWorktreeChatRenderState } from '@/stores/chatStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import {
+  isMainContentCoveredByAppAdvisorDock,
+  subscribeAppAdvisorDockCover,
+} from '@/stores/appAdvisorDockCover';
 import { placeActiveStandaloneChatInGroup } from '@/lib/panels/startChatInGroup';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
@@ -47,7 +58,14 @@ import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpin
 import { isCoworkChatTarget } from '@/lib/cowork';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
-import { NoticeButton } from '@canopy/ui-shared/components';
+import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  CHAT_STATE_LOAD_ERROR_HEADING,
+  CHAT_STATE_REFRESH_RETRY_LABEL,
+} from '@/stores/chat/revisioned-copy';
+import { ensureCloudScopeLifecycle } from '@/cloud-chats/cloud-scope-lifecycle';
+import { useReportOpenCloudTask } from '@/cloud-chats/cloud-chat-ui-state';
+import { useCoworkProjectReachable } from '@/lib/cowork-directory';
 import { draftHasContent } from '@/lib/chat-draft-content';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,6 +87,7 @@ export function StandaloneChatPage(): JSX.Element {
     (s) => s.activeChatProjectId,
   );
   const activeWorkEntryId = useStandaloneChatStore((s) => s.activeWorkEntryId);
+  useReportOpenCloudTask(activeChatProjectId, activeWorkEntryId);
   const orgDefaultChatsError = useStandaloneChatStore(
     (s) => s.orgDefaultChatsError,
   );
@@ -92,6 +111,44 @@ export function StandaloneChatPage(): JSX.Element {
   const refreshWorkEntries = useStandaloneChatStore(
     (s) => s.refreshWorkEntries,
   );
+  // A cloud task's project, while the cloud is online; a local one always.
+  const activeProjectReachable = useCoworkProjectReachable(activeChatProjectId);
+  // A task whose first read failed has no chats to show, so its reason and
+  // Retry take the grid's place instead of an empty panel group.
+  const activeScopeKey =
+    activeWorkEntryId === null
+      ? null
+      : `${activeChatProjectId}/${activeWorkEntryId}`;
+  const activeLoadFailure = useChatStore((s) => {
+    if (activeScopeKey === null) return null;
+    const sync = s.chatStateSync[activeScopeKey];
+    if (sync?.phase !== 'refresh_error') return null;
+    if ((s.worktreeChats[activeScopeKey]?.tabs.length ?? 0) > 0) return null;
+    return sync.reason ?? '';
+  });
+  const retryChatStateRefresh = useChatStore((s) => s.retryChatStateRefresh);
+  useEffect(() => {
+    ensureCloudScopeLifecycle();
+  }, []);
+  // Going offline drops a cloud task's chats and selection; when its project
+  // is reachable again, select the entry this page still shows so its chats
+  // load again.
+  const wasReachableRef = useRef(activeProjectReachable);
+  useEffect(() => {
+    const reconnected = activeProjectReachable && !wasReachableRef.current;
+    wasReachableRef.current = activeProjectReachable;
+    if (
+      reconnected &&
+      activeWorkEntryId !== null &&
+      shouldReassertRetainedCoworkEntryOnPageMount(
+        useChatStore.getState().selectedWorktree,
+      )
+    ) {
+      useChatStore
+        .getState()
+        .selectWorktree(activeChatProjectId, activeWorkEntryId);
+    }
+  }, [activeProjectReachable, activeChatProjectId, activeWorkEntryId]);
 
   // Viewing the active chat counts as reading it. The Code page clears
   // unread inside `selectWorktree`/`acknowledgeSelectedWorktreeAttention`,
@@ -99,7 +156,12 @@ export function StandaloneChatPage(): JSX.Element {
   // acknowledges here — otherwise the sidebar work-entry unread badge would
   // linger after the chat is already on screen. Keyed on the active tab so
   // entry opens, in-entry tab switches, and page returns (this page
-  // unmounts while inactive) each mark exactly the visible tab read.
+  // unmounts while inactive) each mark exactly the visible tab read. Docking
+  // keeps this page mounted, so uncovering it must also acknowledge that tab.
+  const coveredByAppAdvisorDock = useSyncExternalStore(
+    subscribeAppAdvisorDockCover,
+    isMainContentCoveredByAppAdvisorDock,
+  );
   const activeEntryActiveTabId = useWorktreeChatRenderState(
     activeWorkEntryId ? `${activeChatProjectId}/${activeWorkEntryId}` : null,
     (chatState) => (activeWorkEntryId ? chatState?.activeTabId : undefined),
@@ -111,6 +173,7 @@ export function StandaloneChatPage(): JSX.Element {
   );
   const markTargetRead = useChatStore((s) => s.markTargetRead);
   useEffect(() => {
+    if (coveredByAppAdvisorDock) return;
     const target = {
       projectId: activeChatProjectId,
       workEntryId: activeWorkEntryId,
@@ -130,6 +193,7 @@ export function StandaloneChatPage(): JSX.Element {
     activeEntryActiveTabId,
     activeEntryActiveTabHidden,
     archiveOverlayChatId,
+    coveredByAppAdvisorDock,
     markTargetRead,
   ]);
 
@@ -145,6 +209,11 @@ export function StandaloneChatPage(): JSX.Element {
     (s) => s.chatProjectsLoaded,
   );
   const chatProjectCount = useStandaloneChatStore((s) => s.chatProjects.length);
+  // Cold start is about this window's own workspaces: a cloud project is
+  // never in the list, and opening one is never a first run.
+  const activeProjectListed = useStandaloneChatStore((s) =>
+    s.chatProjects.some((project) => project.id === s.activeChatProjectId),
+  );
   const workEntries = useStandaloneChatStore((s) => s.workEntries);
   const legacyArchivedChats = useStandaloneChatStore(
     (s) => s.legacyArchivedByProject[s.activeChatProjectId],
@@ -220,6 +289,7 @@ export function StandaloneChatPage(): JSX.Element {
     initialized &&
     chatProjectsLoaded &&
     archiveActivityLoaded &&
+    activeProjectListed &&
     chatProjectCount <= 1 &&
     !hasChatActivity;
 
@@ -398,7 +468,8 @@ export function StandaloneChatPage(): JSX.Element {
     initialized &&
     chatProjectsLoaded &&
     activeChatProjectId !== '' &&
-    activeWorkEntryId !== null;
+    activeWorkEntryId !== null &&
+    activeProjectReachable;
 
   return (
     <section className="flex h-full flex-col" data-testid="page-chat">
@@ -442,7 +513,34 @@ export function StandaloneChatPage(): JSX.Element {
             />
           </div>
         )}
-        {ready ? (
+        {!activeProjectReachable ? (
+          <div className="p-4" data-testid="standalone-chat-offline">
+            <Notice intent="neutral">Cloud chats are offline.</Notice>
+          </div>
+        ) : activeLoadFailure !== null && activeWorkEntryId !== null ? (
+          <div className="p-4" data-testid="standalone-chat-load-error">
+            <Notice
+              intent="destructive"
+              title={CHAT_STATE_LOAD_ERROR_HEADING}
+              actions={
+                <NoticeButton
+                  variant="primary"
+                  data-testid="standalone-chat-load-retry"
+                  onClick={(): void => {
+                    retryChatStateRefresh(
+                      activeChatProjectId,
+                      activeWorkEntryId,
+                    );
+                  }}
+                >
+                  {CHAT_STATE_REFRESH_RETRY_LABEL}
+                </NoticeButton>
+              }
+            >
+              {activeLoadFailure}
+            </Notice>
+          </div>
+        ) : ready ? (
           <PanelGridSurface
             projectId={activeChatProjectId}
             worktreeId={activeWorkEntryId}

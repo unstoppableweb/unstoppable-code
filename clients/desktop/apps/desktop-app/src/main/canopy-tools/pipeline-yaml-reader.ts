@@ -4,6 +4,7 @@ import {
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { withAgentPlace } from '../canopy-runtime/agent-place';
 import { activeAgentCoreOperations } from './active-agent-core-operations';
 
 export interface PipelineYamlLineRange {
@@ -197,19 +198,24 @@ async function loadPipelineYaml(
   request: PipelineYamlReadRequest,
 ): Promise<LoadedPipelineYaml | null> {
   try {
-    const { definition } = await activeAgentCoreOperations(
-      'pipelineYaml',
-    ).query(
-      'core.pipeline.definition.get',
-      {
-        definitionId: request.pipelineId,
-        scope: {
-          workspaceId: request.projectId,
-          worktreeId: request.worktreeId,
-          ...(request.repoId ? { repoId: request.repoId } : {}),
-        },
-      },
-      { caller: AGENT_PIPELINE_YAML_CALLER },
+    // The session's place reaches core's owned-workflow rule host-locally,
+    // never from the read's scope (CAN-6032).
+    const { definition } = await withAgentPlace(
+      AGENT_PIPELINE_YAML_CALLER,
+      { workspaceId: request.projectId, worktreeId: request.worktreeId },
+      () =>
+        activeAgentCoreOperations('pipelineYaml').query(
+          'core.pipeline.definition.get',
+          {
+            definitionId: request.pipelineId,
+            scope: {
+              workspaceId: request.projectId,
+              worktreeId: request.worktreeId,
+              ...(request.repoId ? { repoId: request.repoId } : {}),
+            },
+          },
+          { caller: AGENT_PIPELINE_YAML_CALLER },
+        ),
     );
     return {
       info: {

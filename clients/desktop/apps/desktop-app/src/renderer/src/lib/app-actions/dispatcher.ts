@@ -9,7 +9,6 @@ import { scriptPreferencesActionSchema } from '@canopy/agent-actions/families/se
 import { requestScriptActionsReview } from '@canopy/ui-app/script-actions';
 import { isReplayableAppAdvisorResponse } from '@canopy/desktop-shared/lib/app-advisor-replay';
 import { pipelineAutomationTargetSummary } from '@canopy/desktop-shared/lib/automation-pipeline-target';
-import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { classifyShareFailure } from '@canopy/ui-app/sharing';
 import {
@@ -21,7 +20,6 @@ import { sidebarGroupStackUnits } from '@canopy/desktop-shared/lib/worktree-grou
 import type { SidebarItemGroupScope } from '@canopy/protocol/sidebar';
 import { getCursorSettingsSection } from '@/lib/cursor-settings';
 import { extractCreateFromReferences } from '@canopy/desktop-shared/lib/create-from-reference';
-import { extractPipelineReferenceTokens } from '@canopy/desktop-shared/lib/invocation-tokens';
 import {
   materializeHomeLinkPlan,
   resolveHomeLink,
@@ -74,9 +72,6 @@ import type {
   CreateOrgCoworkProjectResult,
   CreateOrgMemberCodeProjectResult,
   CreateOrgMemberMultiRepoProjectResult,
-  LaunchAtLoginSetResult,
-  LocalMemoryConsolidationStatus,
-  LocalMemoryScopeRequest,
   OrgMemberFolderInspection,
 } from '@canopy/desktop-shared/types';
 import { orgCreateFolderRefusalText } from '@/lib/orgCreateProject';
@@ -125,22 +120,7 @@ import {
   resolveArchiveRetentionDays,
 } from '@canopy/desktop-shared/lib/archive-retention';
 import { isLocalMemoryWorkspaceId } from '@canopy/desktop-shared/lib/local-memory-scope';
-import {
-  AUTOMATION_SHARE_BLOCK_MESSAGES,
-  AUTOMATION_SHARE_NOTICE_MESSAGES,
-  buildSharedAutomationDocument,
-  type BuildSharedAutomationDocumentOptions,
-} from '@canopy/desktop-shared/lib/automation-sharing';
-import {
-  hashPipelineDocumentYaml,
-  loadAutomationPipelineDocument,
-  loadPipelineShareTargetDocument,
-  serializePipelineDocument,
-} from '@/lib/pipelineDocument';
-import {
-  resolveAutomationPipelineScopes,
-  resolveSessionTargetKind,
-} from '@/lib/automationTargets';
+import { loadPipelineShareTargetDocument } from '@/lib/pipelineDocument';
 import {
   assertNever,
   type AppAdvisorAction,
@@ -151,21 +131,10 @@ import {
 } from './types';
 import type { RemoteControlState } from '@canopy/desktop-shared/types/remote-control';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
-import { emitPreferencesUpdated } from '@/lib/preferences-events';
-import {
-  getModelPreferenceThinkingLevels,
-  isNativeModelPreferenceOption,
-  thinkingLevelForChosenModel,
-} from '@/components/settings/model-thinking-preference';
 import {
   CLAUDE_MAX_TURNS_MIN,
   CLAUDE_MAX_TURNS_MAX,
 } from '@canopy/desktop-shared/constants/preferences';
-import { useNavigationModeStore } from '@/stores/navigationModeStore';
-import {
-  launchAtLoginSatisfies,
-  useLaunchAtLoginStore,
-} from '@/stores/launchAtLoginStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import {
@@ -200,7 +169,6 @@ import {
   FILE_PREVIEW_SEARCH_EVENT,
   type FilePreviewSearchEventDetail,
 } from '@/lib/filePreviewSearchEvents';
-import { APP_ADVISOR_SETTINGS_SAVED_EVENT } from '@/lib/appAdvisorSettingsEvents';
 import { requestPipelineAssistantOpen } from '@/lib/pipelineAssistantEvents';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSkillSuggestionStore } from '@/stores/skillSuggestionStore';
@@ -236,7 +204,6 @@ import { openMoveToOrganizationModal } from '@/stores/moveToOrganizationModalSto
 import { isConnectedNonGuest } from '@/stores/cloudConnectGateStore';
 import { createDiffStatsKey } from '@/stores/projectsStore.diffStats';
 import { launchWorkspaceReadinessFix } from '@/lib/workspaceReadinessLauncher';
-import { emitManagedDelegationPreferenceUpdated } from '@/lib/managedDelegationPreferenceEvents';
 import { useSplitPrPreferencesStore } from '@/hooks/useSplitPrPreferences';
 import {
   gatherSplitPrEligibilityInputs,
@@ -295,10 +262,6 @@ import {
   PANEL_KINDS,
 } from '@canopy/protocol';
 import {
-  SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
-  SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
-} from '@canopy/protocol/automations';
-import {
   openContentPanel,
   type ContentPanelSeed,
 } from '@/lib/panels/chat-panel-sync';
@@ -347,7 +310,6 @@ import {
   getProviderForModel,
   getChatHarnessOptions,
   isThinkingLevel,
-  resolveModelAlias,
   type AdhocJoinedWorktreeMigration,
   type AdhocMultiRepoRepoMapping,
   type AutomationMutationResponse,
@@ -363,8 +325,6 @@ import {
   type ScheduledActivityRun,
   type SidebarItem,
   type SingleRepoSidebarItem,
-  type PreferencesData,
-  type ThinkingLevel,
   type UpdateChatProjectRequest,
   type WorktreeCompatibilitySymlink,
   type WorktreeData,
@@ -392,11 +352,13 @@ import {
   validateAgentAutomationRunPolicy,
 } from '@canopy/desktop-shared/lib/agent-automation-policy';
 import { validateAgentPipelineMutationPolicy } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { cloudChatActionSchema } from '@canopy/agent-actions/families/cloud-chats/actions';
 import {
-  MAX_MANAGED_DELEGATION_DEPTH,
-  normalizeManagedDelegationMaxDepth,
-} from '@canopy/protocol/delegation/discovery';
+  listCloudChatsForAdvisor,
+  openCloudChatForAdvisor,
+} from '@/cloud-chats/cloud-chat-advisor-actions';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { MAX_MANAGED_DELEGATION_DEPTH } from '@canopy/protocol/delegation/discovery';
 import { isClaudeSettingsAvailable } from '@/lib/claude-settings-availability';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { isClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
@@ -458,18 +420,7 @@ import type {
   SharedSkillDetail,
   SkillContentResponse,
 } from '@canopy/desktop-shared/types/skills';
-import type {
-  CollectionConfig,
-  SharedCollectionDetail,
-} from '@canopy/desktop-shared/types/collections';
-import {
-  buildSharedCollectionPayload,
-  convertLocalCollectionToEditable,
-  type EditableSharedCollection,
-  type SharedCollectionConversionResult,
-} from '@/lib/sharedCollections';
 import { importSharedSkill } from '@/lib/sharedSkillImport';
-import { resolveSharedCollectionImport } from '@/lib/sharedCollectionImport';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 import { requestBrowserPanel } from '@/lib/browserPanelActivation';
 import { requestWorktreeArchiveConfirmation } from '@/lib/worktreeArchiveConfirmationEvents';
@@ -502,6 +453,16 @@ import {
   useSpaceNotificationStore,
 } from '@/stores/spaceNotificationStore';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
+import {
+  CLOUD_RUN_RETRY_UNSUPPORTED,
+  cancelCloudRun,
+  getCloudRun,
+  listCloudRuns,
+  readCloudRun,
+  resumeCloudRun,
+} from '@canopy/agent-actions/families/pipeline-executions/cloud-runs';
+import { AgentPortError } from '@canopy/agent-actions/port/environment-port';
+import { cloudExecutionAnswer, withCloudRuns } from './cloud-run-actions';
 
 /**
  * A worktree failure as an agent reads it: the reason behind our sentence,
@@ -1479,25 +1440,6 @@ async function ensureProjectsHydrated(): Promise<void> {
  * The memory scope an action names explicitly. A project scope must name a
  * project that still exists; it never falls back to the selected project.
  */
-async function resolveExplicitLocalMemoryScope(
-  action: { scope: 'user' | 'workspace'; workspaceId?: string },
-  missingProjectMessage: string,
-): Promise<
-  { request: LocalMemoryScopeRequest } | { error: AppAdvisorActionError }
-> {
-  if (action.scope === 'user') return { request: { scope: 'user' } };
-  const workspaceId = action.workspaceId;
-  if (!isLocalMemoryWorkspaceId(workspaceId)) {
-    return {
-      error: { code: 'invalid_target', message: missingProjectMessage },
-    };
-  }
-  await ensureProjectsHydrated();
-  const workspace = getWorkspaceOrError(workspaceId);
-  if ('error' in workspace) return { error: workspace.error };
-  return { request: { scope: 'workspace', workspaceId } };
-}
-
 /**
  * Dispatch a single {@link AppAdvisorAction} against the renderer. Used by
  * both the renderer-side App Advisor tool bridge (for assistant tool
@@ -1876,6 +1818,11 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
         readString(action, 'workspaceId')
         ? valid()
         : invalid('workspaceId');
+    case 'cloud_chats.list':
+    case 'cloud_chats.open':
+      return cloudChatActionSchema.safeParse(action).success
+        ? valid()
+        : invalid('cloud chat');
     case 'memory.rebuild':
     case 'memory.list_snapshots':
     case 'memory.restore_snapshot':
@@ -3308,6 +3255,11 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
       return (
         validateOptionalWorktreeScope(action) ??
         optionalStrings(action, ['query', 'pipelineId']) ??
+        (action.runOn === undefined ||
+        action.runOn === 'local' ||
+        action.runOn === 'cloud'
+          ? null
+          : invalid('runOn')) ??
         validateOptionalExecutionStatus(action, 'status') ??
         validateOptionalLimit(
           action,
@@ -3698,6 +3650,10 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
         (isSelectableShareScope(action.shareScope)
           ? valid()
           : invalid('shareScope'))
+      );
+    case 'plan.unshare':
+      return (
+        requireStrings(action, ['projectId', 'worktreeId', 'planId']) ?? valid()
       );
     case 'runs.share':
       return (
@@ -7634,6 +7590,27 @@ async function listPipelineExecutionsResult(
   result?: AppAdvisorJson;
   error?: AppAdvisorActionError;
 }> {
+  if (action.type === 'pipeline.execution_list' && action.runOn === 'cloud') {
+    if (action.projectId !== undefined || action.worktreeId !== undefined)
+      return {
+        ok: false,
+        error: {
+          code: 'invalid_payload',
+          message:
+            'Cloud runs have no project here: omit projectId and worktreeId with runOn "cloud".',
+        },
+      };
+    return withCloudRuns((access) =>
+      listCloudRuns(access, {
+        ...(action.query === undefined ? {} : { query: action.query }),
+        ...(action.pipelineId === undefined
+          ? {}
+          : { pipelineId: action.pipelineId }),
+        ...(action.status === undefined ? {} : { status: action.status }),
+        ...(action.limit === undefined ? {} : { limit: action.limit }),
+      }),
+    );
+  }
   const result = await window.pipelines.listExecutions();
   if (!result.success || !result.data) {
     return {
@@ -7795,7 +7772,13 @@ async function executionGetResult(
 }> {
   const state = await loadExecutionStateForAction(action.executionId);
   if (!state.ok) {
-    return { ok: false, error: state.error };
+    const cloud =
+      state.error.code === 'not_found'
+        ? await cloudExecutionAnswer(action.executionId, (access) =>
+            getCloudRun(access, action.executionId),
+          )
+        : null;
+    return cloud ?? { ok: false, error: state.error };
   }
   const [report, plan] = await Promise.all([
     action.includeReport
@@ -7971,90 +7954,6 @@ async function importSharedSkillIntoLocal(detail: SharedSkillDetail): Promise<{
   packageInstall?: InstallSkillCapabilityPackageResult;
 }> {
   return importSharedSkill(detail);
-}
-
-async function convertLocalCollectionToEditableForDispatcher(
-  config: CollectionConfig,
-): Promise<{ editable: EditableSharedCollection }> {
-  const [skillsResult, marketplacesResult] = await Promise.all([
-    window.skills.loadSkills(),
-    window.plugins.loadMarketplaces(),
-  ]);
-  if (!skillsResult.success || !skillsResult.data) {
-    throw new Error(skillsResult.error ?? 'Failed to load installed skills.');
-  }
-  if (!marketplacesResult.success || !marketplacesResult.data) {
-    throw new Error(
-      marketplacesResult.error ?? 'Failed to load plugin marketplaces.',
-    );
-  }
-
-  return convertLocalCollectionToEditable({
-    config,
-    installedSkills: skillsResult.data,
-    marketplaces: marketplacesResult.data.marketplaces.map((marketplace) => ({
-      id: marketplace.id,
-      sourceUrl: marketplace.sourceUrl,
-    })),
-  });
-}
-
-function preserveSharedCollectionLinkedCustomSkills(
-  editable: EditableSharedCollection,
-  currentDetail: SharedCollectionDetail,
-): EditableSharedCollection {
-  const linkedByName = new Map<
-    string,
-    {
-      skillId: string;
-      skillName: string;
-      contentHash: string;
-      required?: boolean;
-    }
-  >();
-
-  for (const item of currentDetail.collection.items) {
-    if (item.type !== 'custom_skill') continue;
-    linkedByName.set(item.skill_name, {
-      skillId: item.skillId,
-      skillName: item.skill_name,
-      contentHash: item.contentHash,
-      ...(item.required !== undefined ? { required: item.required } : {}),
-    });
-  }
-
-  return {
-    ...editable,
-    remoteId: currentDetail.id,
-    items: editable.items.map((item) => {
-      if (item.kind !== 'draft_custom_skill') return item;
-      const existing = linkedByName.get(item.skillName);
-      if (!existing) return item;
-      return {
-        kind: 'linked_custom_skill',
-        skillId: existing.skillId,
-        skillName: existing.skillName,
-        contentHash: existing.contentHash,
-        ...(item.required !== undefined
-          ? { required: item.required }
-          : existing.required !== undefined
-            ? { required: existing.required }
-            : {}),
-      };
-    }),
-  };
-}
-
-async function buildSharedCollectionPayloadForDispatcher(
-  editable: EditableSharedCollection,
-): Promise<SharedCollectionConversionResult> {
-  return buildSharedCollectionPayload({
-    name: editable.name,
-    description: editable.description,
-    items: editable.items,
-    customSkillReader: (localSkillId) =>
-      window.skills.readRawSkill(localSkillId),
-  });
 }
 
 const ORGANIZATION_SHARE_TARGET_MESSAGE =
@@ -8397,221 +8296,6 @@ async function deleteSharedSkillResult(
 // Local + shared Collection action handlers.
 // ---------------------------------------------------------------------------
 
-async function shareLocalCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.share' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const resolved = resolveActionShareOrganization(action);
-  if (!resolved.ok) return resolved;
-  try {
-    const collection = await window.collections.loadCollection(action.id);
-    if (!collection) {
-      return {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Local collection ${action.id} was not found.`,
-        },
-      };
-    }
-    if (collection.mcpServers && collection.mcpServers.length > 0) {
-      return {
-        ok: false,
-        error: {
-          code: 'invalid_target',
-          message:
-            'Collections with MCP server configs cannot be shared. Remove MCP servers before sharing.',
-        },
-      };
-    }
-
-    const { editable } =
-      await convertLocalCollectionToEditableForDispatcher(collection);
-    const payload = await buildSharedCollectionPayloadForDispatcher(editable);
-
-    const detail = unwrapShareOperationResult(
-      await window.collections.createShared({
-        sourceCollectionId: collection.id,
-        rawCollection: payload.rawCollection,
-        ...(payload.customSkills.length > 0
-          ? { customSkills: payload.customSkills }
-          : {}),
-        shareScope: resolved.action.shareScope,
-        ...(resolved.action.teamId ? { teamId: resolved.action.teamId } : {}),
-        ...(resolved.action.organizationId
-          ? { organizationId: resolved.action.organizationId }
-          : {}),
-      }),
-    );
-
-    return {
-      ok: true,
-      result: {
-        sharedCollection: detail as unknown as AppAdvisorJson,
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'collections' });
-  }
-}
-
-async function listSharedCollectionsResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.list_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const response = await window.collections.listShared({
-      ...(action.query ? { query: action.query } : {}),
-    });
-    return {
-      ok: true,
-      result: {
-        collections: response.collections as unknown as AppAdvisorJson,
-        ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'collections' });
-  }
-}
-
-async function importSharedCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.import_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const detail = await window.collections.getShared(action.collectionId);
-    const resolved = await resolveSharedCollectionImport(detail);
-    let savedConfig = await window.collections.saveCollection({
-      name: detail.collection.name,
-      description: detail.collection.description,
-      skills: resolved.skills,
-      plugins: resolved.plugins,
-      mcpServers: [],
-    });
-    if (detail.package) {
-      try {
-        const packaged = await window.collections.installCapabilityPackage({
-          collectionId: detail.id,
-          localCollectionId: savedConfig.id,
-          packageRef: {
-            version: detail.package.version,
-            digest: detail.package.digest,
-          },
-        });
-        savedConfig = packaged.collection;
-        for (const requirement of packaged.unmetRequirements) {
-          resolved.failures.push({
-            label: requirement.displayName,
-            required: requirement.required,
-            message: requirement.setupHint,
-          });
-        }
-      } catch (error) {
-        resolved.failures.push({
-          label: 'Packaged files',
-          required: false,
-          message: resolveSharedResourceErrorMessage(error),
-        });
-      }
-    }
-    return {
-      ok: true,
-      result: {
-        ...savedConfig,
-        memberFailures: resolved.failures,
-      } as unknown as AppAdvisorJson,
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'collections' });
-  }
-}
-
-async function updateSharedCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.update_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const collection = await window.collections.loadCollection(action.id);
-    if (!collection) {
-      return {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Local collection ${action.id} was not found.`,
-        },
-      };
-    }
-    if (collection.mcpServers && collection.mcpServers.length > 0) {
-      return {
-        ok: false,
-        error: {
-          code: 'invalid_target',
-          message:
-            'Collections with MCP server configs cannot be shared. Remove MCP servers before sharing.',
-        },
-      };
-    }
-    const currentDetail = await window.collections.getShared(
-      action.collectionId,
-    );
-    const { editable: replacementEditable } =
-      await convertLocalCollectionToEditableForDispatcher(collection);
-    const editable = preserveSharedCollectionLinkedCustomSkills(
-      replacementEditable,
-      currentDetail,
-    );
-    const payload = await buildSharedCollectionPayloadForDispatcher(editable);
-    const detail = unwrapShareOperationResult(
-      await window.collections.updateShared({
-        collectionId: action.collectionId,
-        rawCollection: payload.rawCollection,
-        expectedContentHash: currentDetail.contentHash,
-        ...(payload.customSkills.length > 0
-          ? { customSkills: payload.customSkills }
-          : {}),
-      }),
-    );
-    return { ok: true, result: detail as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'collections' });
-  }
-}
-
-async function deleteSharedCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.delete_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    await window.collections.deleteShared({
-      collectionId: action.collectionId,
-    });
-    return {
-      ok: true,
-      result: {
-        collectionId: action.collectionId,
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'collections' });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Local + shared Agent action handlers.
 // ---------------------------------------------------------------------------
@@ -8645,373 +8329,6 @@ async function listSharedAgentsResult(
 // ---------------------------------------------------------------------------
 // Automations helpers (App Advisor → window.api.automations bridge)
 // ---------------------------------------------------------------------------
-
-/**
- * Whether sharing may need to package local pipelines, which only the Share
- * dialog's dependency review can do. Deliberately cheap: stored
- * dependencies, a user or project pipeline action, or any pipeline-ID-shaped
- * token in the prompt, with no store lookup or analysis.
- */
-function automationMayUsePipelines(activity: ScheduledActivity): boolean {
-  if ((activity.dependencies?.pipelines.length ?? 0) > 0) return true;
-  const { action } = activity;
-  if (action.type === 'worktree_pipeline') {
-    return (
-      action.pipelineSource === 'user' || action.pipelineSource === 'project'
-    );
-  }
-  return (
-    'prompt' in action &&
-    extractPipelineReferenceTokens(action.prompt, []).length > 0
-  );
-}
-
-async function shareAutomationResult(
-  action: Extract<AppAdvisorAction, { type: 'automation.share' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const resolved = resolveActionShareOrganization(action);
-  if (!resolved.ok) return resolved;
-  const organizationId = resolved.action.organizationId;
-  try {
-    const snapshot = await window.api.automations.list();
-    const listed = snapshot.activities.find((entry) => entry.id === action.id);
-    // A converted chat automation shares the workflow it runs (CAN-4551).
-    const activity = listed ? storedAutomationActivity(listed) : undefined;
-    if (!activity) {
-      return {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Triggered activity ${action.id} was not found.`,
-        },
-      };
-    }
-    if (activity.installedFrom?.capabilityPackage) {
-      return {
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message:
-            'This automation includes packaged capabilities. Open Workflows → Automations and use Share so its dependencies can be verified and included.',
-          retryable: false,
-        },
-      };
-    }
-    if (automationMayUsePipelines(activity)) {
-      return {
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message:
-            'This automation may run local pipelines. Open Workflows → Automations and use Share so its pipelines can be included.',
-          retryable: false,
-        },
-      };
-    }
-    // Ownership must never be silently downgraded: a target id without a
-    // scope infers the matching scope, and contradictory combinations fail
-    // loudly instead of dropping the target.
-    if (action.teamId && organizationId) {
-      return {
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message: 'Provide either teamId or organizationId, not both.',
-          retryable: false,
-        },
-      };
-    }
-    const inferredScope =
-      resolved.action.shareScope ??
-      (action.teamId
-        ? ('team' as const)
-        : organizationId
-          ? ('organization' as const)
-          : undefined);
-    if (
-      (inferredScope === 'team' && !action.teamId) ||
-      (inferredScope === 'organization' && !organizationId) ||
-      (inferredScope === 'team' && organizationId !== undefined) ||
-      (inferredScope === 'organization' && action.teamId !== undefined)
-    ) {
-      return {
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message:
-            'shareScope and the provided target id do not match. Use shareScope team with teamId or organization with organizationId.',
-          retryable: false,
-        },
-      };
-    }
-    if (!activity.remote && inferredScope === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message:
-            'A first automation share requires shareScope team with teamId or organization with organizationId.',
-          retryable: false,
-        },
-      };
-    }
-    // Re-shares fetch the canonical shared detail so the update carries the
-    // server's current contentHash (the locally persisted hash goes stale the
-    // moment another client updates the share) and preserves the existing
-    // description when the action does not supply one.
-    let description = action.description ?? '';
-    let expectedContentHash = activity.remote?.contentHash;
-    let declaredTargetContexts = activity.targetRequirement?.contexts;
-    if (activity.remote) {
-      const existing = await window.api.automations.getShared(
-        activity.remote.remoteId,
-      );
-      // A legacy private-only share (no public link) is hidden from everyone
-      // else, so it is treated like a first share: keeping its owner would
-      // re-upload a copy nobody can see and still report success.
-      if (
-        inferredScope === undefined &&
-        existing.shareScope === 'private' &&
-        !existing.publicShare
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              'This automation is not shared with anyone yet. Provide shareScope team with teamId or organization with organizationId.',
-            retryable: false,
-          },
-        };
-      }
-      expectedContentHash = existing.contentHash;
-      if (!activity.targetRequirementCleared)
-        declaredTargetContexts ??=
-          existing.automation.targetRequirement?.contexts;
-      if (action.description === undefined) {
-        description = existing.automation.description;
-      }
-    }
-    // No plugin resolution and no capability packaging on this path: only the
-    // Automations page share modal has the plugin catalog to resolve portable
-    // refs against, and only it can build a capability package. The builder
-    // therefore strips the local selections and reports it as a notice, which
-    // this result forwards so the assistant can say what stayed behind.
-    const buildOptions: BuildSharedAutomationDocumentOptions = {
-      description,
-      ...(declaredTargetContexts ? { declaredTargetContexts } : {}),
-    };
-    // CAN-3734: a session prompt shares into the destination its bound
-    // project implies; an unresolvable project blocks instead of guessing.
-    if (activity.action.type === 'worktree_session_prompt') {
-      const sessionTargetKind = await resolveSessionTargetKind(activity.action);
-      if (sessionTargetKind) buildOptions.sessionTargetKind = sessionTargetKind;
-    }
-    if (activity.action.type === 'worktree_pipeline') {
-      const pipelineAction = activity.action;
-      if (pipelineAction.sharedPipeline?.installPin) {
-        buildOptions.sharedPipelineInstallPin =
-          pipelineAction.sharedPipeline.installPin;
-      }
-      try {
-        if (
-          pipelineAction.pipelineSource === 'shared' &&
-          pipelineAction.sharedPipeline?.remoteId
-        ) {
-          const resolved =
-            await window.api.automations.resolveSharedPipelineInstallPin({
-              remoteId: pipelineAction.sharedPipeline.remoteId,
-            });
-          buildOptions.sharedPipelineInstallPin = resolved.installPin;
-          const contentHash = await hashPipelineDocumentYaml(
-            resolved.rawPipeline,
-          );
-          if (contentHash !== null) {
-            buildOptions.pipelineRawContent = resolved.rawPipeline;
-            buildOptions.pipelineContentHash = contentHash;
-          }
-        } else if (
-          pipelineAction.pipelineSource === 'user' ||
-          pipelineAction.pipelineSource === 'project'
-        ) {
-          const loaded = await loadAutomationPipelineDocument(pipelineAction);
-          if (loaded.data) {
-            const rawPipeline = serializePipelineDocument(loaded.data.content);
-            const contentHash = await hashPipelineDocumentYaml(rawPipeline);
-            if (contentHash !== null) {
-              buildOptions.pipelineRawContent = rawPipeline;
-              buildOptions.pipelineContentHash = contentHash;
-            }
-          }
-        }
-      } catch {
-        // Reading pipeline bytes is best effort. The builder deliberately
-        // falls back to the legacy shared/unresolved ref so this action keeps
-        // its pre-bundling behavior when the source cannot be read.
-      }
-      // Publication still needs verified scopes; unreadable definitions are
-      // reported by the builder as `pipeline_target_unresolved`.
-      if (buildOptions.pipelineRawContent === undefined) {
-        buildOptions.pipelineResolution =
-          await resolveAutomationPipelineScopes(pipelineAction);
-      }
-    }
-    const built = buildSharedAutomationDocument(activity, buildOptions);
-    if (!built.ok) {
-      return {
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message: [
-            ...built.reasons.map(
-              (reason) => AUTOMATION_SHARE_BLOCK_MESSAGES[reason],
-            ),
-            ...(built.detail ? [built.detail] : []),
-          ].join(' '),
-        },
-      };
-    }
-    // For an existing share with no explicit ownership in the action, omit
-    // the ownership fields entirely so the server preserves the current
-    // owner. Explicit (or target-inferred) ownership is forwarded as given.
-    if (
-      built.document.version === SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
-    ) {
-      const account = await window.api.loadCanopyCloudAccount();
-      if (
-        !account.capabilities?.includes(
-          SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
-        )
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              'Update the sharing server to share this workflow destination.',
-            retryable: false,
-          },
-        };
-      }
-    }
-    if (built.document.version === 3) {
-      const account = await window.api.loadCanopyCloudAccount();
-      if (
-        !account.capabilities?.includes('automations-target-requirements-v3')
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              'The sharing server must be updated before publishing narrowed automation requirements.',
-            retryable: false,
-          },
-        };
-      }
-    }
-    const ownerFields =
-      activity.remote && inferredScope === undefined
-        ? {}
-        : {
-            shareScope: inferredScope,
-            ...(action.teamId ? { teamId: action.teamId } : {}),
-            ...(organizationId ? { organizationId } : {}),
-          };
-    const detail = activity.remote
-      ? unwrapShareOperationResult(
-          await window.api.automations.updateShared({
-            activityId: activity.id,
-            automationId: activity.remote.remoteId,
-            automation: built.document,
-            ...(expectedContentHash ? { expectedContentHash } : {}),
-            ...ownerFields,
-          }),
-        )
-      : unwrapShareOperationResult(
-          await window.api.automations.createShared({
-            activityId: activity.id,
-            automation: built.document,
-            ...ownerFields,
-          }),
-        );
-    return {
-      ok: true,
-      result: {
-        id: detail.id,
-        contentHash: detail.contentHash,
-        shareScope: detail.shareScope,
-        notices: built.notices.map(
-          (notice) => AUTOMATION_SHARE_NOTICE_MESSAGES[notice],
-        ),
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'automations' });
-  }
-}
-
-async function listSharedAutomationsResult(
-  action: Extract<AppAdvisorAction, { type: 'automation.list_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const response = await window.api.automations.listShared({
-      ...(action.query ? { query: action.query } : {}),
-      ...(action.limit ? { limit: action.limit } : {}),
-      ...(action.cursor ? { cursor: action.cursor } : {}),
-      ...(action.createdBy ? { createdBy: action.createdBy } : {}),
-    });
-    return {
-      ok: true,
-      result: {
-        automations: response.automations as unknown as AppAdvisorJson,
-        ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'automations' });
-  }
-}
-
-async function readSharedAutomationResult(
-  action: Extract<AppAdvisorAction, { type: 'automation.read_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const detail = await window.api.automations.getShared(action.automationId);
-    return { ok: true, result: detail as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'automations' });
-  }
-}
-
-async function unshareAutomationResult(
-  action: Extract<AppAdvisorAction, { type: 'automation.unshare' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    await window.api.automations.deleteShared({
-      automationId: action.automationId,
-    });
-    return { ok: true, result: { automationId: action.automationId } };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'automations' });
-  }
-}
 
 /**
  * Coerce an {@link AutomationMutationResponse} into the dispatcher's
@@ -10466,87 +9783,6 @@ async function codeSidebarGroupIdsForListing(
   );
 }
 
-function localMemoryModelResult(preferences: PreferencesData): {
-  localMemoryModel: string;
-  localMemoryThinkingLevel: ThinkingLevel;
-  localMemoryModelSetByUser: boolean;
-} {
-  return {
-    localMemoryModel: preferences.localMemoryModel,
-    localMemoryThinkingLevel: preferences.localMemoryThinkingLevel,
-    localMemoryModelSetByUser: preferences.localMemoryModelSetByUser === true,
-  };
-}
-
-/**
- * Save the local memory model through the same preferences write as the Memory
- * model row, accepting only the models and thinking levels that row offers.
- */
-async function setLocalMemoryModel(
-  action: Extract<
-    AppAdvisorAction,
-    { type: 'settings.set_local_memory_model' }
-  >,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const model = resolveModelAlias(action.model);
-  // The Memory model row offers Claude, Codex, and Ollama models, never
-  // Cursor or custom Agent models.
-  if (!isNativeModelPreferenceOption(model, true)) {
-    return {
-      ok: false,
-      error: {
-        code: 'invalid_payload',
-        message: `Couldn't change the memory model. ${action.model} isn't an available Claude, Codex, or Ollama model.`,
-      },
-    };
-  }
-  let thinkingLevel: ThinkingLevel;
-  if (action.thinkingLevel === undefined) {
-    const current = await window.api.loadPreferences();
-    thinkingLevel = thinkingLevelForChosenModel(
-      model,
-      current.localMemoryThinkingLevel,
-    );
-  } else {
-    const supported = getModelPreferenceThinkingLevels(model);
-    if (!supported.includes(action.thinkingLevel)) {
-      return {
-        ok: false,
-        error: {
-          code: 'invalid_payload',
-          message:
-            supported.length === 0
-              ? `Couldn't change the memory model. ${action.model} has no thinking levels, so leave thinkingLevel out.`
-              : `Couldn't change the memory model. ${action.model} supports these thinking levels: ${supported.join(', ')}.`,
-        },
-      };
-    }
-    thinkingLevel = action.thinkingLevel;
-  }
-  let preferences: PreferencesData;
-  try {
-    preferences = await window.api.savePreferences({
-      localMemoryModel: model,
-      localMemoryModelSetByUser: true,
-      localMemoryThinkingLevel: thinkingLevel,
-    });
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: "Couldn't save the memory model. Try again.",
-      },
-    };
-  }
-  emitPreferencesUpdated(preferences);
-  return { ok: true, result: localMemoryModelResult(preferences) };
-}
-
 type RemoteControlAction = Extract<
   AppAdvisorAction,
   { type: 'remote_control.open_computer' }
@@ -10829,62 +10065,6 @@ async function routeAction(
             },
           };
     }
-    case 'account_proxy.set_routing': {
-      if (!window.api.accountProxy) {
-        return {
-          ok: false,
-          error: {
-            code: 'surface_unavailable',
-            message: 'The account proxy is unavailable on this surface.',
-          },
-        };
-      }
-      const changes = {
-        ...(action.claude !== undefined
-          ? { accountProxyRouteClaude: action.claude }
-          : {}),
-        ...(action.codex !== undefined
-          ? { accountProxyRouteCodex: action.codex }
-          : {}),
-        ...(action.keepChatOnOneAccount !== undefined
-          ? { accountProxyKeepChatOnOneAccount: action.keepChatOnOneAccount }
-          : {}),
-      };
-      try {
-        await window.api.savePreferences(changes);
-        return { ok: true, result: changes };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the account proxy routing.',
-          },
-        };
-      }
-    }
-    case 'account_proxy.status': {
-      const accountProxy = window.api.accountProxy;
-      if (!accountProxy) {
-        return {
-          ok: false,
-          error: {
-            code: 'surface_unavailable',
-            message: 'The account proxy is unavailable on this surface.',
-          },
-        };
-      }
-      const status = await accountProxy.status({
-        refresh: action.refresh === true,
-      });
-      return {
-        ok: true,
-        result: { value: sanitizeAppAdvisorJsonValue(status) ?? null },
-      };
-    }
     case 'workspace_context.switch': {
       if (
         !useFeatureFlagsStore
@@ -11001,311 +10181,32 @@ async function routeAction(
         };
       }
     }
-    case 'settings.get_claude_max_turns': {
-      const preferences = await window.api.loadPreferences();
-      return {
-        ok: true,
-        result: { claudeMaxTurns: preferences.claudeMaxTurns },
-      };
-    }
-    case 'settings.set_claude_max_turns': {
-      const preferences = await window.api.savePreferences({
-        claudeMaxTurns: action.maxTurns,
-      });
-      emitPreferencesUpdated(preferences);
-      useAppAdvisorStore.getState().applyPreferences(preferences);
-      return {
-        ok: true,
-        result: { claudeMaxTurns: preferences.claudeMaxTurns },
-      };
-    }
-    case 'settings.get_local_memory_model': {
-      const preferences = await window.api.loadPreferences();
-      return { ok: true, result: localMemoryModelResult(preferences) };
-    }
-    case 'settings.get_handoff_model': {
-      const preferences = await window.api.loadPreferences();
-      return {
-        ok: true,
-        result: {
-          handoffSummaryModel: preferences.handoffSummaryModel,
-          handoffSummaryThinkingLevel: preferences.handoffSummaryThinkingLevel,
-        },
-      };
-    }
-    case 'settings.set_handoff_model': {
-      const model = resolveModelAlias(action.model);
-      if (!isNativeModelPreferenceOption(model, true)) {
-        return {
-          ok: false,
-          error: {
-            code: 'invalid_payload',
-            message:
-              'Choose an available conversation handoff model in Settings.',
-          },
-        };
-      }
-      const current = await window.api.loadPreferences();
-      const preferences = await window.api.savePreferences({
-        handoffSummaryModel: model,
-        handoffSummaryThinkingLevel:
-          action.thinkingLevel ?? current.handoffSummaryThinkingLevel,
-      });
-      emitPreferencesUpdated(preferences);
-      return {
-        ok: true,
-        result: {
-          handoffSummaryModel: preferences.handoffSummaryModel,
-          handoffSummaryThinkingLevel: preferences.handoffSummaryThinkingLevel,
-        },
-      };
-    }
+    case 'account_proxy.set_routing':
+    case 'account_proxy.status':
+    case 'app_advisor.update_settings':
+    case 'settings.get_claude_max_turns':
+    case 'settings.get_handoff_model':
+    case 'settings.get_local_memory_model':
+    case 'settings.set_claude_max_turns':
+    case 'settings.set_handoff_model':
+    case 'settings.set_launch_at_login':
+    case 'settings.set_ledger_agent_recording_enabled':
+    case 'settings.set_local_memory_enabled':
     case 'settings.set_local_memory_model':
-      return setLocalMemoryModel(action);
-    case 'settings.set_local_memory_enabled': {
-      try {
-        await window.api.savePreferences({
-          localMemoryEnabled: action.enabled,
-          localMemoryEnabledSetByUser: true,
-        });
-        return { ok: true, result: { localMemoryEnabled: action.enabled } };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the local memory preference.',
-          },
-        };
-      }
-    }
-    case 'settings.set_ledger_agent_recording_enabled': {
-      try {
-        const saved = await window.api.savePreferences({
-          ledgerAgentRecordingEnabled: action.enabled,
-        });
-        return {
-          ok: true,
-          result: {
-            ledgerAgentRecordingEnabled:
-              saved.ledgerAgentRecordingEnabled !== false,
-          },
-        };
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message: "Couldn't save this setting. Try again.",
-          },
-        };
-      }
-    }
-    case 'settings.set_skill_suggestions_enabled': {
-      if (!skillSuggestionsAvailable()) return skillSuggestionsUnavailable();
-      try {
-        const saved = await window.api.savePreferences({
-          skillSuggestionsEnabled: action.enabled,
-        });
-        return {
-          ok: true,
-          result: {
-            skillSuggestionsEnabled: saved.skillSuggestionsEnabled !== false,
-          },
-        };
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message: "Couldn't save this setting. Try again.",
-          },
-        };
-      }
-    }
-    case 'settings.set_launch_at_login': {
-      // Through the renderer mirror so an open Settings window and the
-      // checklist follow the same OS read-back.
-      let result: LaunchAtLoginSetResult | null;
-      try {
-        result = await useLaunchAtLoginStore
-          .getState()
-          .setEnabled(action.enabled);
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to change launch at sign-in.',
-          },
-        };
-      }
-      if (result === null || (!result.ok && result.reason === 'unsupported')) {
-        return {
-          ok: false,
-          error: {
-            code: 'missing_capability',
-            message:
-              'Launch at sign-in is only available in the installed app on macOS and Windows.',
-          },
-        };
-      }
-      if (!result.ok) {
-        // A registration waiting for approval counts as on, as it does for the
-        // Settings toggle; only a refused turn-off can leave one behind.
-        const { status } = result;
-        const kept = launchAtLoginSatisfies(status, true) ? 'on' : 'off';
-        let message = `The system kept launch at sign-in ${kept}.`;
-        if (status.pendingApproval) {
-          message = `The system kept launch at sign-in ${kept} while it waits for approval in System Settings.`;
-        } else if (status.platform === 'win32' && action.enabled) {
-          message = `${message} It may be turned off in Startup apps.`;
-        }
-        return {
-          ok: false,
-          error: { code: 'execution_failed', message },
-        };
-      }
+    case 'settings.set_managed_delegation_max_depth':
+    case 'settings.set_managed_delegation_mode':
+    case 'settings.set_navigation_mode':
+    case 'settings.set_profile_role':
+    case 'settings.set_skill_suggestions_enabled':
+      // CAN-6004: the App Advisor runtime runs settings actions in main
+      // through core.config.*; these never reach the renderer dispatcher.
       return {
-        ok: true,
-        result: {
-          launchAtLogin: {
-            enabled: result.status.enabled,
-            pendingApproval: result.status.pendingApproval,
-          },
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Settings actions run in the main process.',
         },
       };
-    }
-    case 'settings.set_managed_delegation_mode': {
-      try {
-        const saved = await window.api.savePreferences({
-          managedDelegationMode: action.mode,
-        });
-        const update = {
-          mode: saved.managedDelegationMode ?? 'off',
-          revocationIncomplete:
-            saved.__managedDelegationRevocationIncomplete === true,
-        };
-        emitManagedDelegationPreferenceUpdated(update);
-        return {
-          ok: true,
-          result: {
-            managedDelegationMode: update.mode,
-            revocationIncomplete: update.revocationIncomplete,
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the managed delegation preference.',
-          },
-        };
-      }
-    }
-    case 'settings.set_managed_delegation_max_depth': {
-      try {
-        const saved = await window.api.savePreferences({
-          managedDelegationMaxDepth: action.maxDepth,
-        });
-        const maxDepth = normalizeManagedDelegationMaxDepth(
-          saved.managedDelegationMaxDepth,
-        );
-        emitManagedDelegationPreferenceUpdated({
-          mode: saved.managedDelegationMode ?? 'off',
-          maxDepth,
-          revocationIncomplete:
-            saved.__managedDelegationRevocationIncomplete === true,
-        });
-        return {
-          ok: true,
-          result: { managedDelegationMaxDepth: maxDepth },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the managed delegation depth.',
-          },
-        };
-      }
-    }
-    case 'settings.set_navigation_mode': {
-      try {
-        // Route through the renderer mirror so every mode-aware surface
-        // updates immediately, exactly as the Settings section does.
-        await useNavigationModeStore.getState().setMode(action.mode);
-        return {
-          ok: true,
-          result: { navigationMode: useNavigationModeStore.getState().mode },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the navigation mode preference.',
-          },
-        };
-      }
-    }
-    case 'settings.set_profile_role': {
-      try {
-        // The detail only belongs to 'other'. Any other role clears it, the
-        // same as the settings section and the onboarding wizard. For 'other',
-        // an omitted roleDetail leaves the stored description alone — "set my
-        // role to other" must not silently wipe text the user wrote — while an
-        // explicit empty string clears it.
-        const detailPatch: Partial<PreferencesData> =
-          action.role !== 'other'
-            ? { profileRoleDetail: '' }
-            : action.roleDetail === undefined
-              ? {}
-              : { profileRoleDetail: action.roleDetail };
-        const saved = await window.api.savePreferences({
-          profileRole: action.role,
-          profileRoles: [action.role],
-          ...detailPatch,
-        });
-        // Report what was persisted, not what was requested: the normalizer
-        // trims, length-clamps, and drops the detail for non-'other' roles.
-        return {
-          ok: true,
-          result: {
-            profileRole: saved.profileRole ?? null,
-            profileRoleDetail: saved.profileRoleDetail ?? null,
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the profile role preference.',
-          },
-        };
-      }
-    }
     case 'settings.open_memory_folder': {
       try {
         await window.api.openMemoryDir();
@@ -11323,195 +10224,21 @@ async function routeAction(
         };
       }
     }
-    case 'memory.import_external': {
-      try {
-        const workspaceId = useChatStore.getState().selectedWorktree?.projectId;
-        const result = await window.api.importClaudeMemory({
-          ...(workspaceId ? { workspaceId } : {}),
-        });
-        return {
-          ok: true,
-          result: {
-            disabled: result.disabled,
-            staged: result.staged,
-            skipped: result.skipped,
-            deferred: result.deferred,
-            errors: result.errors,
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to import external memory.',
-          },
-        };
-      }
-    }
-    case 'memory.consolidate_now': {
-      try {
-        // Chat sentinels (standalone, plan-explore, code-review) have no
-        // workspace memory; the IPC rejects them, so fall back to user scope.
-        const selectedProjectId =
-          useChatStore.getState().selectedWorktree?.projectId;
-        const workspaceId = isLocalMemoryWorkspaceId(selectedProjectId)
-          ? selectedProjectId
-          : undefined;
-        const user = await window.api.consolidateLocalMemory({
-          scope: 'user',
-        });
-        const workspace = workspaceId
-          ? await window.api.consolidateLocalMemory({
-              scope: 'workspace',
-              workspaceId,
-            })
-          : null;
-        const statusJson = (
-          status: LocalMemoryConsolidationStatus,
-        ): Record<string, string | number | boolean | null> => ({
-          pendingNotes: status.pendingNotes,
-          running: status.running,
-          lastRunAt: status.lastRunAt,
-          lastResult: status.lastResult,
-          lastReason: status.lastReason,
-          lastConsolidatedAt: status.lastConsolidatedAt,
-        });
-        return {
-          ok: true,
-          result: {
-            user: statusJson(user),
-            workspace: workspace ? statusJson(workspace) : null,
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to consolidate local memory.',
-          },
-        };
-      }
-    }
-    case 'memory.rebuild': {
-      // Destructive: refuse a snapshot older than the current UI so a
-      // rebuild never lands on a target the user has since moved away from.
-      const stale = enforceExpectedRevision(request, true);
-      if (stale) return stale;
-      const target = await resolveExplicitLocalMemoryScope(
-        action,
-        'Name the project whose memory to rebuild.',
-      );
-      if ('error' in target) return { ok: false, error: target.error };
-      try {
-        const { rebuild, status } = await window.api.rebuildLocalMemory(
-          target.request,
-        );
-        return {
-          ok: true,
-          result: {
-            status: rebuild.status,
-            reason: rebuild.reason ?? null,
-            snapshotId: rebuild.snapshotId,
-            restoredInboxNotes: rebuild.restoredInboxNotes,
-            restoredImports: rebuild.restoredImports,
-            runs: rebuild.runs,
-            pendingNotes: status.pendingNotes,
-            lastResult: status.lastResult,
-            lastReason: status.lastReason,
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to rebuild local memory.',
-          },
-        };
-      }
-    }
-    case 'memory.list_snapshots': {
-      // Read-only, so no revision is required, but the target is still
-      // explicit and must exist.
-      const target = await resolveExplicitLocalMemoryScope(
-        action,
-        'Name the project whose memory snapshots to list.',
-      );
-      if ('error' in target) return { ok: false, error: target.error };
-      try {
-        const snapshots = await window.api.listLocalMemorySnapshots(
-          target.request,
-        );
-        return {
-          ok: true,
-          result: {
-            snapshots: snapshots.map((snapshot) => ({
-              id: snapshot.id,
-              createdAt: snapshot.createdAt,
-              reason: snapshot.reason,
-              topicCount: snapshot.topicCount,
-            })),
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to list local memory snapshots.',
-          },
-        };
-      }
-    }
-    case 'memory.restore_snapshot': {
-      // Destructive: same stale-target guard as memory.rebuild.
-      const stale = enforceExpectedRevision(request, true);
-      if (stale) return stale;
-      const target = await resolveExplicitLocalMemoryScope(
-        action,
-        'Name the project whose memory to restore.',
-      );
-      if ('error' in target) return { ok: false, error: target.error };
-      try {
-        const restore = await window.api.restoreLocalMemorySnapshot({
-          ...target.request,
-          snapshotId: action.snapshotId,
-        });
-        return {
-          ok: true,
-          result: {
-            status: restore.status,
-            reason: restore.reason ?? null,
-            previousSnapshotId: restore.previousSnapshotId,
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to restore the local memory snapshot.',
-          },
-        };
-      }
-    }
+    case 'memory.consolidate_now':
+    case 'memory.import_external':
+    case 'memory.list_snapshots':
+    case 'memory.rebuild':
+    case 'memory.restore_snapshot':
+      // CAN-6005: the App Advisor runtime runs these in main through the
+      // core.memory maintenance operations, a rebuild, restore or import only
+      // after a person confirms; they never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Memory actions run in the main process.',
+        },
+      };
     case 'navigation.open_import_projects':
       openImportProjectsModal({ source: 'app-advisor' });
       return { ok: true };
@@ -11542,6 +10269,10 @@ async function routeAction(
           message: `Script preferences must use the ${ORCHESTRATOR_LABEL} host port.`,
         },
       };
+    case 'cloud_chats.list':
+      return listCloudChatsForAdvisor();
+    case 'cloud_chats.open':
+      return openCloudChatForAdvisor(action.chatId);
     case 'navigation.open_editor_setup': {
       // Without a project the review asks the member to choose one rather
       // than picking one from collection order.
@@ -11706,15 +10437,19 @@ async function routeAction(
       return { ok: true };
     }
     case 'collections.share':
-      return shareLocalCollectionResult(action);
     case 'collections.list_shared':
-      return listSharedCollectionsResult(action);
     case 'collections.import_shared':
-      return importSharedCollectionResult(action);
     case 'collections.update_shared':
-      return updateSharedCollectionResult(action);
     case 'collections.delete_shared':
-      return deleteSharedCollectionResult(action);
+      // CAN-6003 part B: the App Advisor runtime runs collection sharing in
+      // main; these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Collection sharing actions run in the main process.',
+        },
+      };
     case 'agents.open_manager': {
       const unavailable = agentsMarketplaceUnavailable();
       if (unavailable) return { ok: false, error: unavailable };
@@ -15134,6 +13869,14 @@ async function routeAction(
     case 'pipeline.execution_get':
       return executionGetResult(action);
     case 'pipeline.execution_cancel': {
+      const cloud = await cloudExecutionAnswer(action.executionId, (access) =>
+        cancelCloudRun(
+          access,
+          action.executionId,
+          `app-advisor:${request.requestId}`,
+        ),
+      );
+      if (cloud) return cloud;
       const result = await window.pipelines.cancelExecution(action.executionId);
       if (!result.success) {
         return {
@@ -15192,6 +13935,22 @@ async function routeAction(
       }
     }
     case 'pipeline.execution_resume': {
+      const cloud = await cloudExecutionAnswer(action.executionId, (access) =>
+        resumeCloudRun(
+          access,
+          action.executionId,
+          {
+            ...(action.statusReasonIds
+              ? { statusReasonIds: action.statusReasonIds }
+              : {}),
+            ...(action.pauseResponses
+              ? { pauseResponses: action.pauseResponses }
+              : {}),
+          },
+          `app-advisor:${request.requestId}`,
+        ),
+      );
+      if (cloud) return cloud;
       const result = await window.pipelines.resumeAutomation(
         action.executionId,
         {
@@ -15230,6 +13989,18 @@ async function routeAction(
         : { ok: true, result: executionDetails(result.data) };
     }
     case 'pipeline.execution_retry': {
+      // A cloud run has no retry yet, as on cloud chats.
+      const cloud = await cloudExecutionAnswer(
+        action.executionId,
+        async (access) => {
+          await readCloudRun(access, action.executionId);
+          throw new AgentPortError(
+            'unsupported_action',
+            CLOUD_RUN_RETRY_UNSUPPORTED,
+          );
+        },
+      );
+      if (cloud) return cloud;
       const result = await window.pipelines.retryExecution(action.executionId);
       if (!result.success || !result.data) {
         return {
@@ -15923,40 +14694,6 @@ async function routeAction(
       useAppAdvisorStore.getState().syncWindowState(state);
       return { ok: true };
     }
-    case 'app_advisor.update_settings': {
-      const current = await window.api.appAdvisor.settingsLoad();
-      const settings = await window.api.appAdvisor.settingsSave({
-        ...(current.description !== undefined
-          ? { description: current.description }
-          : {}),
-        archiveRetentionDays:
-          action.archiveRetentionDays !== undefined
-            ? action.archiveRetentionDays
-            : (current.archiveRetentionDays ?? null),
-        autoArchiveDays:
-          action.autoArchiveDays !== undefined
-            ? action.autoArchiveDays
-            : (current.autoArchiveDays ?? null),
-      });
-      window.dispatchEvent(
-        new CustomEvent(APP_ADVISOR_SETTINGS_SAVED_EVENT, {
-          detail: settings,
-        }),
-      );
-      return {
-        ok: true,
-        result: {
-          settings: {
-            version: settings.version,
-            ...(settings.description !== undefined
-              ? { description: settings.description }
-              : {}),
-            archiveRetentionDays: settings.archiveRetentionDays ?? null,
-            autoArchiveDays: settings.autoArchiveDays ?? null,
-          },
-        },
-      };
-    }
     case 'app_advisor.close': {
       // Hide-only: pending questions, sessions, and transcripts survive in
       // the App Advisor renderer's in-memory state because the
@@ -16511,6 +15248,7 @@ async function routeAction(
     case 'agents.publish_public_share':
     case 'agents.revoke_public_share':
     case 'plan.share':
+    case 'plan.unshare':
     case 'runs.share':
     case 'runs.unshare':
       // CAN-6003: the App Advisor runtime shares in main; these never reach
@@ -16746,13 +15484,18 @@ async function routeAction(
       });
       return { ok: true, result: { skillId: action.skillId } };
     case 'automation.share':
-      return shareAutomationResult(action);
     case 'automation.list_shared':
-      return listSharedAutomationsResult(action);
     case 'automation.read_shared':
-      return readSharedAutomationResult(action);
     case 'automation.unshare':
-      return unshareAutomationResult(action);
+      // CAN-6003 part B: the App Advisor runtime runs automation sharing in
+      // main; these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Automation sharing actions run in the main process.',
+        },
+      };
     case 'automation.open_editor':
       useNavigationStore.getState().openAutomationEdit({
         activityId: action.id,

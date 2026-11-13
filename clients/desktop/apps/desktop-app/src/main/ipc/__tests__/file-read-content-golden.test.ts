@@ -447,6 +447,27 @@ describe('single-repository worktree', () => {
     expect(mockedGetFileBrowserRoots).not.toHaveBeenCalled();
   });
 
+  // CAN-6175 D3: a cloud file's path is no host path, so it fails closed here.
+  it('refuses a cloud file path and a cloud scope', async () => {
+    const cloudPath = 'web-core:chat-1/workspace/src/index.ts';
+    await expect(
+      readContent({ absolutePath: cloudPath, workspaceTarget }),
+    ).rejects.toThrow('Invalid absolutePath: must be an absolute path');
+    await expect(readContent({ absolutePath: cloudPath })).rejects.toThrow(
+      'Invalid absolutePath: must be an absolute path',
+    );
+    await expect(
+      readContent({
+        absolutePath: join(repo, 'a.txt'),
+        workspaceTarget: {
+          projectId: 'project-1',
+          worktreeId: 'web-core:chat-1',
+        },
+      }),
+    ).rejects.toThrow('Invalid worktreeId');
+    expect(mockedGetFileBrowserRoots).not.toHaveBeenCalled();
+  });
+
   it('propagates a roots failure unchanged', async () => {
     mockedGetFileBrowserRoots.mockRejectedValue(
       new Error('Project project-1 not found'),

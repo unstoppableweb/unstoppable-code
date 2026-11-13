@@ -2,6 +2,7 @@ import { Stack, type SpaceRole } from './Stack';
 import { Children, type JSX, type ReactNode } from 'react';
 import type { ShareAudience } from '@canopy/protocol/sharing';
 import { CheckIcon } from '../icons/CheckIcon';
+import { Lock } from '../icons/AppIcons';
 import {
   type SelectableShareAudience,
   shareAudienceLabel,
@@ -64,6 +65,8 @@ export interface ShareScopeOptionProps<T extends string> {
    * tooltip.
    */
   unavailable?: ShareScopeUnavailableReason;
+  /** The option is fixed, e.g. an existing share's audience: a lock leads its label. */
+  locked?: boolean;
 }
 
 /** Tooltip content for an option the account can't use yet. */
@@ -87,6 +90,7 @@ export function ShareScopeOption<T extends string>({
   dataTestId,
   describedBy,
   unavailable,
+  locked = false,
 }: ShareScopeOptionProps<T>): JSX.Element {
   const active = value === current;
   // `aria-disabled` rather than `disabled` when there is a reason to show: a
@@ -112,12 +116,21 @@ export function ShareScopeOption<T extends string>({
         if (action !== undefined && 'onClick' in action) action.onClick();
       }}
       data-testid={dataTestId}
-      className={`focus-ring rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${
+      className={`focus-ring rounded-md px-3 py-1.5 text-xs${locked ? ' inline-flex items-center gap-1' : ''} font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${
         active
-          ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
+          ? 'bg-accent-subtle fg-accent-strong ring-1 ring-line-accent/40'
           : `fg-secondary ${explained ? '' : 'hover:bg-fg-primary/[0.06] hover:fg-primary'}`
       }`}
     >
+      {locked && (
+        <Lock
+          aria-hidden
+          className="size-3 shrink-0"
+          data-testid={
+            dataTestId === undefined ? undefined : `${dataTestId}-lock`
+          }
+        />
+      )}
       {label}
     </button>
   );
@@ -146,6 +159,8 @@ export interface ShareScopeSelectorOption<T extends string> {
    * option then stays focusable so the reason is reachable by keyboard.
    */
   readonly unavailable?: ShareScopeUnavailableReason;
+  /** The option is fixed: a lock icon leads its label. */
+  readonly locked?: boolean;
 }
 
 export interface ShareScopeSelectorProps<T extends string> {
@@ -201,6 +216,7 @@ export function ShareScopeSelector<T extends string>({
           {...(option.describedBy !== undefined
             ? { describedBy: option.describedBy }
             : {})}
+          {...(option.locked === true ? { locked: true } : {})}
           {...(option.disabled === true && option.unavailable !== undefined
             ? { unavailable: option.unavailable }
             : {})}
@@ -281,6 +297,11 @@ export interface ShareAudienceSelectorProps {
   unavailableReasons?: Partial<
     Record<ShareAudience, Omit<ShareScopeUnavailableReason, 'testId'>>
   >;
+  /**
+   * The selected audience can't change (an existing share's audience): its
+   * pill shows a lock icon. The other audiences carry their own reasons.
+   */
+  locked?: boolean;
 }
 
 /**
@@ -308,6 +329,7 @@ export function ShareAudienceSelector({
   keepDisabledVisible = false,
   optionDescribedBy,
   unavailableReasons,
+  locked = false,
 }: ShareAudienceSelectorProps): JSX.Element | null {
   const options = SHARE_AUDIENCE_ORDER.filter((audience) =>
     offered.includes(audience),
@@ -339,6 +361,7 @@ export function ShareAudienceSelector({
         value: audience,
         label: labelForAudience(audience),
         disabled: availability[audience] === false,
+        ...(locked && audience === value ? { locked: true } : {}),
         ...(optionDescribedBy?.[audience] !== undefined
           ? { describedBy: optionDescribedBy[audience] }
           : {}),

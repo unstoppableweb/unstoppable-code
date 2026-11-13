@@ -117,7 +117,7 @@ export interface SettingsStoreState {
   ): void;
   /** Forget an organization's invite seat-charge check. */
   forgetSeatCharge(organizationId: string): void;
-  /** Remember an organization's latest detail (a rename, a member change). */
+  /** Remember changed detail in the header and any cached Members page. */
   rememberOrganizationDetail(
     organizationId: string,
     detail: OrganizationDetail,
@@ -536,12 +536,33 @@ export function createSettingsStore(
       rememberOrganizationDetail(organizationId, detail): void {
         if (disposed || get().organizationDetails[organizationId] === detail)
           return;
-        set((state) => ({
-          organizationDetails: {
-            ...state.organizationDetails,
-            [organizationId]: detail,
-          },
-        }));
+        set((state) => {
+          const pages = { ...state.pages };
+          for (const [key, page] of Object.entries(pages)) {
+            if (
+              page.data?.kind !== 'organization.members' ||
+              page.data.data.detail.id !== organizationId
+            )
+              continue;
+            // A confirmed mutation supersedes this cached Members projection
+            // and any older page read still in flight.
+            pageTokens.set(key, ++nextToken);
+            pages[key] = {
+              ...page,
+              status: 'ready',
+              error: null,
+              data: { ...page.data, data: { ...page.data.data, detail } },
+              revision: page.revision + 1,
+            };
+          }
+          return {
+            pages,
+            organizationDetails: {
+              ...state.organizationDetails,
+              [organizationId]: detail,
+            },
+          };
+        });
       },
       selectOrganization(organizationId): void {
         if (disposed) return;

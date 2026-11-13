@@ -432,6 +432,131 @@ describe('chat message command adapter', () => {
     }
   });
 
+  it('refuses message settings and workspace files it cannot honor, naming them, before any effect', async () => {
+    const { port, command } = createPort(receipt);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    try {
+      await expect(
+        runtime.instruction(
+          'core.chat.message.send',
+          {
+            scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+            commandId: 'settings',
+            chatId: 'chat-1',
+            messageId: 'message-1',
+            text: 'Use these settings.',
+            model: 'claude-sonnet',
+            modelConfig: { thinkingLevel: 'high', fastMode: true },
+            fileReferences: [
+              { kind: 'workspace-file', workspaceFileId: 'file-1' },
+            ],
+            _meta: { idempotencyKey: 'settings' },
+          },
+          { caller, metadata: { idempotencyKey: 'settings' } },
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { unsupported: ['model', 'modelConfig', 'fileReferences'] },
+        },
+      });
+      expect(command).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("refuses a cloud send's revision 2 as unserved before any effect (CAN-6092)", async () => {
+    const { port, command } = createPort(receipt);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    try {
+      await expect(
+        runtime.instruction(
+          'core.chat.message.send',
+          {
+            scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+            commandId: 'revision-2',
+            chatId: 'chat-1',
+            messageId: 'message-1',
+            text: 'Answer the accepted turn.',
+            revision: 2,
+            _meta: { idempotencyKey: 'revision-2' },
+          },
+          { caller, metadata: { idempotencyKey: 'revision-2' } },
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { unsupported: ['revision'], reason: 'unserved' },
+        },
+      });
+      expect(command).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("refuses a cloud hold's acquisitionId on an edit before any effect, and keeps its own lock (CAN-6106)", async () => {
+    const { port, command } = createPort(receipt);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    const update = (
+      key: string,
+      mutation:
+        | { kind: 'edit'; text: string; acquisitionId?: string }
+        | { kind: 'lock'; locked: boolean; acquisitionId?: string },
+    ): Promise<unknown> =>
+      runtime.instruction(
+        'core.chat.queue.entry.update',
+        {
+          scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+          commandId: key,
+          chatId: 'chat-1',
+          entryId: 'queue-1',
+          mutation,
+          _meta: { idempotencyKey: key },
+        },
+        { caller, metadata: { idempotencyKey: key } },
+      );
+    try {
+      await expect(
+        update('held-edit', {
+          kind: 'edit',
+          text: 'Edited',
+          acquisitionId: 'hold-1',
+        }),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: {
+            reason: 'unserved',
+            unsupported: ['mutation.acquisitionId'],
+          },
+        },
+      });
+      expect(command).not.toHaveBeenCalled();
+      await update('lock', {
+        kind: 'lock',
+        locked: true,
+        acquisitionId: 'acquisition-1',
+      });
+      expect(command).toHaveBeenCalledWith({
+        schemaVersion: 1,
+        commandId: 'lock',
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        command: {
+          type: 'chat.set_queued_message_edit_lock',
+          chatId: 'chat-1',
+          queuedMessageId: 'queue-1',
+          locked: true,
+          acquisitionId: 'acquisition-1',
+        },
+      });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it('preserves an absent revision and a replayed receipt', async () => {
     const replay = { ...receipt, outcome: 'already_applied' as const };
     const { port, command } = createPort(replay);

@@ -1,3 +1,14 @@
+import {
+  withArchiveFailureTelemetry,
+  setArchiveFailurePhase,
+  type ArchiveTrigger,
+  type ArchiveFailureTelemetryOptions,
+} from './archive-failure-telemetry';
+import {
+  isWorktreeReadAvailable,
+  isWorktreeObservationTarget,
+  withWorktreeGitRead,
+} from './worktree-read-availability';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { worktreeSourceFailure } from '@canopy/core-runtime/node/git';
 import { isNativeError } from 'node:util/types';
@@ -47,7 +58,6 @@ import {
 import { isFilesOnlyRestoreGitless } from './files-only-restore-git';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { captureDesktopInstrumentationError } from '@canopy/desktop-instrumentation/electron/main';
 import { listUnmanagedWorktreeRepositories } from './unmanaged-worktree-repository';
 import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -220,11 +230,11 @@ import {
 import { cleanupPersistedWorktreeData } from './worktree-data-cleanup';
 import { cleanupWorktreePipelines } from '../pipelines/worktree-cleanup';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
-import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { listExecutionSummaries } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import type {
   ExecutionRuntime,
   ExecutionSummary,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { createCliExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/cli-runtime';
 import { readPreferencesFile } from './preferences-store';
 import { panelLayoutModePersistenceStore } from '../panels/layout-mode-persistence';
@@ -451,6 +461,7 @@ export interface WorktreeArchiveLiveServices {
 
 type ArchivePhase =
   | 'admission'
+  | 'teardown-script'
   | 'resource-drain'
   | 'git-capture'
   | 'file-recovery'
@@ -469,6 +480,7 @@ interface ArchiveDiagnosticContext {
 const archiveDiagnosticContext =
   new AsyncLocalStorage<ArchiveDiagnosticContext>();
 function setArchivePhase(phase: ArchivePhase): void {
+  setArchiveFailurePhase(phase);
   const context = archiveDiagnosticContext.getStore();
   if (context) context.phase = phase;
 }
@@ -588,38 +600,6 @@ async function retireDeferredArchiveBrowserProfile(
       'Browser data for this worktree will be cleared the next time the app starts.',
     ];
   }
-}
-
-function reportArchiveFailure(
-  error: unknown,
-  context: { operationId: string; phase: ArchivePhase },
-): void {
-  const rawCode = isErrnoException(error) ? error.code : undefined;
-  const code =
-    typeof rawCode === 'string' &&
-    [
-      'EBUSY',
-      'EPERM',
-      'EACCES',
-      'ENOENT',
-      'ENOSPC',
-      'ETIMEDOUT',
-      'EIO',
-    ].includes(rawCode)
-      ? rawCode
-      : 'other';
-  // Never send the original error: Git errors contain commands and local paths.
-  const diagnostic = {
-    operation: 'worktree_archive',
-    operationId: context.operationId,
-    phase: context.phase,
-    code,
-    platform: process.platform,
-  };
-  logMainProcessWarn('Worktree archive failed', diagnostic);
-  captureDesktopInstrumentationError(new Error('Worktree archive failed'), {
-    context: diagnostic,
-  });
 }
 
 interface MultiRepoDiffResult {
@@ -5397,10 +5377,12 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
   }
 
   try {
-    if (options.runAutoArchiveTeardown)
+    if (options.runAutoArchiveTeardown) {
+      setArchivePhase('teardown-script');
       await destructiveStep('teardown-script', options.runAutoArchiveTeardown, {
         stepFreeAsFirstChildStep: true,
       });
+    }
     setArchivePhase('resource-drain');
     await destructiveCall(
       'live-state-teardown',
@@ -5908,10 +5890,21 @@ async function finishInterruptedArchiveCleanup(
     canResumeInterruptedArchive(record)
   )
     return null;
+  let manifestCheck = 'manifest-absent';
   const manifest = await readArchivedContainerManifestIncludingExpired(
     options.workspaceId,
     options.worktreeId,
-  ).catch(() => null);
+  ).catch((error: unknown) => {
+    manifestCheck =
+      isErrnoException(error) && error.code === 'ENOENT'
+        ? 'manifest-absent'
+        : 'manifest-unreadable';
+    return null;
+  });
+  const archiveManifestVersion =
+    manifest?.version === 2 || manifest?.version === 3
+      ? manifest.version
+      : undefined;
   const readTarget = async (): Promise<WorktreeData | null> => {
     const list = await readWorkspaceWorktreesDetailed(options.workspaceId, {
       persistRemovalCleanup: false,
@@ -5929,10 +5922,10 @@ async function finishInterruptedArchiveCleanup(
   const target = await readTarget();
   const failedCheck = (
     [
-      ['manifest-unreadable', !manifest],
+      [manifestCheck, !manifest],
       [
         'manifest-kind',
-        manifest?.version !== 2 || manifest.kind !== 'worktree',
+        archiveManifestVersion === undefined || manifest?.kind !== 'worktree',
       ],
       [
         'manifest-created-at-mismatch',
@@ -5955,7 +5948,7 @@ async function finishInterruptedArchiveCleanup(
       ],
     ] as const
   ).find(([, failed]) => failed)?.[0];
-  if (!manifest || failedCheck) {
+  if (!manifest || archiveManifestVersion === undefined || failedCheck) {
     await refuseInterruptedArchiveJournal(
       options.workspaceId,
       options.worktreeId,
@@ -5971,6 +5964,7 @@ async function finishInterruptedArchiveCleanup(
       createdAt: manifest.createdAt,
       allowMissingRow: !target,
       resumeArchiveCleanup: true,
+      archiveManifestVersion,
       readCreatedAt: async () => (await readTarget())?.createdAt ?? null,
       beforeEffects: options.w5Commit?.beforeDecision,
     },
@@ -6169,34 +6163,48 @@ async function admitWorktreeArchiveSource(
   }
 }
 
-export async function archiveSingleRepoWorktree(options: {
-  /** Canonical row-removal decision only; never holds locks across teardown. */
-  w5Commit?: W5CommitOptions;
-  /** Required by ordinary removal; internal recovery callers retain compatibility behavior. */
-  sourceAdmission?: 'required';
-  workspaceId: string;
-  worktreeId: string;
-  expectedCreatedAt?: string;
-  /** Internal needs-repair rollback only; never set from a request. */
-  allowMissingRow?: boolean;
-  expectedLastTouchedAt?: string;
-  runAutoArchiveTeardown?: () => Promise<void>;
-  revalidateAutoArchivePolicy?: () => Promise<{
+export async function archiveSingleRepoWorktree(
+  options: {
+    /** Canonical row-removal decision only; never holds locks across teardown. */
+    w5Commit?: W5CommitOptions;
+    /** Required by ordinary removal; internal recovery callers retain compatibility behavior. */
+    sourceAdmission?: 'required';
+    archiveTrigger?: ArchiveTrigger;
+    workspaceId: string;
+    worktreeId: string;
+    expectedCreatedAt?: string;
+    /** Internal needs-repair rollback only; never set from a request. */
+    allowMissingRow?: boolean;
+    expectedLastTouchedAt?: string;
+    runAutoArchiveTeardown?: () => Promise<void>;
+    revalidateAutoArchivePolicy?: () => Promise<{
+      deleteBranch?: boolean;
+    }>;
+    expectedBranchName?: string;
     deleteBranch?: boolean;
-  }>;
-  expectedBranchName?: string;
-  deleteBranch?: boolean;
-  remainingWorktreeOrder?: readonly string[];
-  expectedRemainingWorktreeOrder?: readonly string[];
-  repoPath?: string;
-  observabilityMode?: 'persisted-only' | 'live-service';
-  liveServices?: WorktreeArchiveLiveServices;
-  retainAsArchivedContainer?: boolean;
-  deleteWithoutRetentionIfMissing?: boolean;
-  /** Fail before teardown when retention was requested but cannot be prepared. */
-  requireArchivedContainer?: boolean;
-  lockAfterArchive?: boolean;
-}): Promise<ArchiveWorktreeResponse> {
+    remainingWorktreeOrder?: readonly string[];
+    expectedRemainingWorktreeOrder?: readonly string[];
+    repoPath?: string;
+    observabilityMode?: 'persisted-only' | 'live-service';
+    liveServices?: WorktreeArchiveLiveServices;
+    retainAsArchivedContainer?: boolean;
+    deleteWithoutRetentionIfMissing?: boolean;
+    /** Fail before teardown when retention was requested but cannot be prepared. */
+    requireArchivedContainer?: boolean;
+    lockAfterArchive?: boolean;
+  },
+  telemetry?: ArchiveFailureTelemetryOptions,
+): Promise<ArchiveWorktreeResponse> {
+  return withArchiveFailureTelemetry(
+    options,
+    () => archiveSingleRepoWorktreeAdmitted(options),
+    telemetry,
+  );
+}
+
+async function archiveSingleRepoWorktreeAdmitted(
+  options: Parameters<typeof archiveSingleRepoWorktree>[0],
+): Promise<ArchiveWorktreeResponse> {
   // Internal recovery must still enter the removal-pending lifecycle synchronously.
   if (options.sourceAdmission === 'required')
     await admitWorktreeArchiveSource(options, 'single-repo');
@@ -6230,6 +6238,7 @@ export async function archiveSingleRepoWorktree(options: {
               options.retainAsArchivedContainer === false
                 ? 'worktree-delete'
                 : 'worktree-archive',
+            trigger: options.archiveTrigger ?? 'manual',
             workspaceId: options.workspaceId,
             worktreeId: options.worktreeId,
             createdAt: target?.createdAt ?? options.expectedCreatedAt,
@@ -6262,6 +6271,7 @@ export async function archiveSingleRepoWorktree(options: {
           },
         );
       }),
+    { telemetryParent: 'inherit' },
   );
 }
 
@@ -6277,17 +6287,23 @@ export function runWithWorktreeArchiveDeletionLifecycle<T>(
     onLiveSessionsDestroyed: () => void,
     onArchiveDeletionCommitted: () => void,
   ) => Promise<T>,
+  telemetry?: ArchiveFailureTelemetryOptions,
 ): Promise<T> {
   // Admitted before teardown: archive ends by publishing the worktree list.
   // Admission starts the lifecycle synchronously unless ownership is changing.
-  return withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
-    runAsLocalFenceHolder(() =>
-      runAdmittedArchiveDeletionLifecycle(
-        workspaceId,
-        worktreeId,
-        archiveOperation,
+  return withArchiveFailureTelemetry(
+    { workspaceId, worktreeId },
+    () =>
+      withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
+        runAsLocalFenceHolder(() =>
+          runAdmittedArchiveDeletionLifecycle(
+            workspaceId,
+            worktreeId,
+            archiveOperation,
+          ),
+        ),
       ),
-    ),
+    telemetry,
   );
 }
 
@@ -6324,6 +6340,11 @@ async function runAdmittedArchiveDeletionLifecycle<T>(
     releaseRemovalPending();
     schedulePortalStructuralSync();
     publishWorktreeLifecycleChange('worktree-removal-settled');
+    trackDetachedWork(async () => {
+      const { queueTrackedGitHubWorktreeSync } =
+        await import('./post-archive-sync');
+      queueTrackedGitHubWorktreeSync();
+    });
   }
 }
 
@@ -6340,110 +6361,101 @@ async function runMarkedWorktreeArchiveDeletionLifecycle<T>(
     phase: 'admission',
   };
   return archiveDiagnosticContext.run(diagnostic, async () => {
-    try {
-      return await runWithBrowserRetirementDeadlineScope(() =>
-        getChatStateService().runWithScopeDeletionLifecycle(
-          { projectId: workspaceId, worktreeId },
-          () =>
-            runWithWorkspaceTargetActivityDeletion(
-              workspaceId,
-              worktreeId,
-              async () => {
-                const queueDeletion =
-                  getChatQueueService().beginWorktreeDeletion(
-                    workspaceId,
-                    worktreeId,
-                  );
-                let queueDeletionCommitted = false;
-                let sessionsDestroyed = false;
-                const commitQueueDeletion = (): void => {
-                  if (queueDeletionCommitted) return;
-                  queueDeletion.commit();
-                  queueDeletionCommitted = true;
-                };
-                // Defer browser lifecycle/session loading until the fenced deletion
-                // transaction starts; ordinary worktree-service startup must not initialize it.
-                const {
-                  prepareTaskBrowserRetirement,
-                  settleFailedTaskBrowserRetirement,
-                } = await import('../browser/browser-profile-lifecycle');
-                let browserRetirement: string | null = null;
+    return runWithBrowserRetirementDeadlineScope(() =>
+      getChatStateService().runWithScopeDeletionLifecycle(
+        { projectId: workspaceId, worktreeId },
+        () =>
+          runWithWorkspaceTargetActivityDeletion(
+            workspaceId,
+            worktreeId,
+            async () => {
+              const queueDeletion = getChatQueueService().beginWorktreeDeletion(
+                workspaceId,
+                worktreeId,
+              );
+              let queueDeletionCommitted = false;
+              let sessionsDestroyed = false;
+              const commitQueueDeletion = (): void => {
+                if (queueDeletionCommitted) return;
+                queueDeletion.commit();
+                queueDeletionCommitted = true;
+              };
+              // Defer browser lifecycle/session loading until the fenced deletion
+              // transaction starts; ordinary worktree-service startup must not initialize it.
+              const {
+                prepareTaskBrowserRetirement,
+                settleFailedTaskBrowserRetirement,
+              } = await import('../browser/browser-profile-lifecycle');
+              let browserRetirement: string | null = null;
+              try {
                 try {
-                  try {
-                    browserRetirement = await withBrowserRetirementDeadline(
-                      () =>
-                        prepareTaskBrowserRetirement(workspaceId, worktreeId),
-                      // This archive stopped waiting, so it will not commit or
-                      // abort a fence prepared after the deadline.
-                      (operationId) =>
-                        settleLatePreparedBrowserRetirement(
-                          workspaceId,
-                          worktreeId,
-                          operationId,
-                        ),
-                    );
-                  } catch (error) {
-                    // Profile metadata must never hold a worktree archive, by
-                    // failing or by not answering. Without a fence the profile
-                    // stays usable until the archive removes its owner, then it
-                    // is retired as an owner-removed task.
-                    deferArchiveBrowserRetirement(error, 'prepare');
-                  }
-                  const result = await withWorkspaceTargetArchiveDrain(
-                    workspaceId,
-                    worktreeId,
-                    () =>
-                      archiveOperation(() => {
-                        sessionsDestroyed = true;
-                      }, commitQueueDeletion),
-                  );
-                  commitQueueDeletion();
-                  return result;
-                } catch (error) {
-                  // Report the archive failure, not a secondary settle failure;
-                  // an unsettled fence stays for this owner's next archive.
-                  if (hasBrowserRetirementDeadlineExpired()) {
-                    // This archive skips its remaining profile calls, but a
-                    // fence prepared in time still sits on a worktree that is
-                    // staying. Settle it once the archive has ended, as for a
-                    // late prepare: its own lock is often what expired.
-                    deferArchiveBrowserRetirement(
-                      new BrowserRetirementTimeoutError(),
-                      'settle',
-                    );
-                    // Settles after the archive, outside its admission.
-                    detachedWorkCallback(() =>
+                  browserRetirement = await withBrowserRetirementDeadline(
+                    () => prepareTaskBrowserRetirement(workspaceId, worktreeId),
+                    // This archive stopped waiting, so it will not commit or
+                    // abort a fence prepared after the deadline.
+                    (operationId) =>
                       settleLatePreparedBrowserRetirement(
                         workspaceId,
                         worktreeId,
-                        browserRetirement,
-                      ).catch((settleError: unknown) => {
-                        deferArchiveBrowserRetirement(settleError, 'settle');
-                      }),
-                    )();
-                  } else {
-                    await withBrowserRetirementDeadline(() =>
-                      settleFailedTaskBrowserRetirement(browserRetirement),
+                        operationId,
+                      ),
+                  );
+                } catch (error) {
+                  // Profile metadata must never hold a worktree archive, by
+                  // failing or by not answering. Without a fence the profile
+                  // stays usable until the archive removes its owner, then it
+                  // is retired as an owner-removed task.
+                  deferArchiveBrowserRetirement(error, 'prepare');
+                }
+                const result = await withWorkspaceTargetArchiveDrain(
+                  workspaceId,
+                  worktreeId,
+                  () =>
+                    archiveOperation(() => {
+                      sessionsDestroyed = true;
+                    }, commitQueueDeletion),
+                );
+                commitQueueDeletion();
+                return result;
+              } catch (error) {
+                // Report the archive failure, not a secondary settle failure;
+                // an unsettled fence stays for this owner's next archive.
+                if (hasBrowserRetirementDeadlineExpired()) {
+                  // This archive skips its remaining profile calls, but a
+                  // fence prepared in time still sits on a worktree that is
+                  // staying. Settle it once the archive has ended, as for a
+                  // late prepare: its own lock is often what expired.
+                  deferArchiveBrowserRetirement(
+                    new BrowserRetirementTimeoutError(),
+                    'settle',
+                  );
+                  // Settles after the archive, outside its admission.
+                  detachedWorkCallback(() =>
+                    settleLatePreparedBrowserRetirement(
+                      workspaceId,
+                      worktreeId,
+                      browserRetirement,
                     ).catch((settleError: unknown) => {
                       deferArchiveBrowserRetirement(settleError, 'settle');
-                    });
-                  }
-                  throw error;
-                } finally {
-                  if (!queueDeletionCommitted) {
-                    queueDeletion.rollback({ sessionsDestroyed });
-                  }
+                    }),
+                  )();
+                } else {
+                  await withBrowserRetirementDeadline(() =>
+                    settleFailedTaskBrowserRetirement(browserRetirement),
+                  ).catch((settleError: unknown) => {
+                    deferArchiveBrowserRetirement(settleError, 'settle');
+                  });
                 }
-              },
-            ),
-        ),
-      );
-    } catch (error) {
-      if (!(error instanceof WorkspaceTargetAutoArchiveExcludedError)) {
-        reportArchiveFailure(error, diagnostic);
-      }
-      throw error;
-    }
+                throw error;
+              } finally {
+                if (!queueDeletionCommitted) {
+                  queueDeletion.rollback({ sessionsDestroyed });
+                }
+              }
+            },
+          ),
+      ),
+    );
   });
 }
 
@@ -6535,10 +6547,12 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
   let localWatcherFenceHeld = false;
 
   try {
-    if (options.runAutoArchiveTeardown)
+    if (options.runAutoArchiveTeardown) {
+      setArchivePhase('teardown-script');
       await destructiveStep('teardown-script', options.runAutoArchiveTeardown, {
         stepFreeAsFirstChildStep: true,
       });
+    }
     setArchivePhase('resource-drain');
     await destructiveCall(
       'live-state-teardown',
@@ -7264,37 +7278,51 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
   return { success: true, ...cleanup };
 }
 
-export async function archiveMultiRepoWorktree(options: {
-  /** Canonical row-removal decision only; never holds locks across teardown. */
-  w5Commit?: W5CommitOptions;
-  /** Required by ordinary removal; internal recovery callers retain compatibility behavior. */
-  sourceAdmission?: 'required';
-  workspaceId: string;
-  worktreeId: string;
-  expectedCreatedAt?: string;
-  /** Internal needs-repair rollback only; never set from a request. */
-  allowMissingRow?: boolean;
-  expectedLastTouchedAt?: string;
-  runAutoArchiveTeardown?: () => Promise<void>;
-  revalidateAutoArchivePolicy?: () => Promise<{
+export async function archiveMultiRepoWorktree(
+  options: {
+    /** Canonical row-removal decision only; never holds locks across teardown. */
+    w5Commit?: W5CommitOptions;
+    /** Required by ordinary removal; internal recovery callers retain compatibility behavior. */
+    sourceAdmission?: 'required';
+    archiveTrigger?: ArchiveTrigger;
+    workspaceId: string;
+    worktreeId: string;
+    expectedCreatedAt?: string;
+    /** Internal needs-repair rollback only; never set from a request. */
+    allowMissingRow?: boolean;
+    expectedLastTouchedAt?: string;
+    runAutoArchiveTeardown?: () => Promise<void>;
+    revalidateAutoArchivePolicy?: () => Promise<{
+      deleteBranch?: boolean;
+    }>;
+    expectedBranchName?: string;
     deleteBranch?: boolean;
-  }>;
-  expectedBranchName?: string;
-  deleteBranch?: boolean;
-  remainingWorktreeOrder?: readonly string[];
-  expectedRemainingWorktreeOrder?: readonly string[];
-  observabilityMode?: 'persisted-only' | 'live-service';
-  liveServices?: WorktreeArchiveLiveServices;
-  retainAsArchivedContainer?: boolean;
-  deleteWithoutRetentionIfMissing?: boolean;
-  /** Fail before teardown when retention was requested but cannot be prepared. */
-  requireArchivedContainer?: boolean;
-  lockAfterArchive?: boolean;
-  /** Preserve physical root files outside the managed child checkouts. */
-  captureWorkspaceRootFiles?: boolean;
-  /** Limit a retained container to restoring the workspace root only. */
-  restoreScope?: 'workspace-root-only';
-}): Promise<ArchiveWorktreeResponse> {
+    remainingWorktreeOrder?: readonly string[];
+    expectedRemainingWorktreeOrder?: readonly string[];
+    observabilityMode?: 'persisted-only' | 'live-service';
+    liveServices?: WorktreeArchiveLiveServices;
+    retainAsArchivedContainer?: boolean;
+    deleteWithoutRetentionIfMissing?: boolean;
+    /** Fail before teardown when retention was requested but cannot be prepared. */
+    requireArchivedContainer?: boolean;
+    lockAfterArchive?: boolean;
+    /** Preserve physical root files outside the managed child checkouts. */
+    captureWorkspaceRootFiles?: boolean;
+    /** Limit a retained container to restoring the workspace root only. */
+    restoreScope?: 'workspace-root-only';
+  },
+  telemetry?: ArchiveFailureTelemetryOptions,
+): Promise<ArchiveWorktreeResponse> {
+  return withArchiveFailureTelemetry(
+    options,
+    () => archiveMultiRepoWorktreeAdmitted(options),
+    telemetry,
+  );
+}
+
+async function archiveMultiRepoWorktreeAdmitted(
+  options: Parameters<typeof archiveMultiRepoWorktree>[0],
+): Promise<ArchiveWorktreeResponse> {
   if (options.sourceAdmission === 'required')
     await admitWorktreeArchiveSource(options, 'multi-repo');
   return runWithWorktreeArchiveDeletionLifecycle(
@@ -7327,6 +7355,7 @@ export async function archiveMultiRepoWorktree(options: {
               options.retainAsArchivedContainer === false
                 ? 'worktree-delete'
                 : 'worktree-archive',
+            trigger: options.archiveTrigger ?? 'manual',
             workspaceId: options.workspaceId,
             worktreeId: options.worktreeId,
             createdAt: target?.createdAt ?? options.expectedCreatedAt,
@@ -7359,6 +7388,7 @@ export async function archiveMultiRepoWorktree(options: {
           },
         );
       }),
+    { telemetryParent: 'inherit' },
   );
 }
 
@@ -7556,6 +7586,14 @@ async function computeWorktreeStats(
   const workspace = await getStatsWorkspaceById(workspaceId);
   const worktree = workspace.worktrees.find((entry) => entry.id === worktreeId);
 
+  if (!(await isWorktreeObservationTarget(workspaceId, worktreeId)))
+    return {
+      projectId: workspaceId,
+      worktreeId,
+      insertions: 0,
+      deletions: 0,
+    };
+
   // A deferred creation reservation is persisted and selectable before its
   // checkout exists. Treat that state as pending rather than allowing any
   // caller to persist the expected missing path as a broken health result.
@@ -7600,161 +7638,174 @@ async function computeWorktreeStats(
     };
   }
 
-  const worktreePath =
-    workspace.type === 'multi-repo'
-      ? getWorkspaceWorktreeDir(workspaceId, worktreeId)
-      : getWorktreeDir(workspaceId, worktreeId);
-
-  if (workspace.type === 'multi-repo') {
-    const result = await aggregateMultiRepoDiffStats(
-      workspaceId,
-      worktreeId,
-      worktreePath,
-      options,
-    );
-    const canopyHash = await getCanopyJsonHash(worktreePath).catch(() => null);
-    return {
-      projectId: workspaceId,
-      worktreeId,
-      insertions: result.stats.insertions,
-      deletions: result.stats.deletions,
-      baseBranch: result.baseBranch,
-      baseBranchExistsLocally: result.baseBranchExistsLocally,
-      baseBranchExistsInRemote: result.baseBranchExistsInRemote,
-      hasOriginRemote: result.hasOriginRemote,
-      hasCommitsAhead: result.hasCommitsAhead,
-      hasUncommittedChanges: result.hasUncommittedChanges,
-      hasRemoteTrackingBranch: result.hasRemoteTrackingBranch,
-      hasUnpushedCommits: result.hasUnpushedCommits,
-      hasUnpulledCommits: result.hasUnpulledCommits,
-      hasBranchBeenPushed: result.hasBranchBeenPushed,
-      repoBranches: result.repoBranches,
-      canopyJsonHash: canopyHash ?? undefined,
-      healthIssue: healthIssue ?? undefined,
-    };
-  }
-
-  const hasOriginRemote = Boolean(await getRemoteUrl(worktreePath));
-  if (hasOriginRemote && !shouldSkipAutomaticFetch(options)) {
-    await fetchOrigin(worktreePath, {
-      prune: true,
-      ttlMs: AUTOMATIC_FETCH_TTL_MS,
-    });
-  }
-  const effectiveBaseBranch = await resolveEffectiveBaseBranchForStats({
-    projectId: workspaceId,
+  // Health reporting must still run when the checkout is missing. Admit the
+  // observation's Git work only after that result has been recorded.
+  return withWorktreeGitRead<DiffStatsBatchResponseItem>(
+    workspaceId,
     worktreeId,
-    repoPath: worktreePath,
-    allowRemoteLookup: !shouldSkipAutomaticFetch(options),
-  });
-  const resolved: {
-    stats: DiffStats;
-    branchName: string | undefined;
-    commitsAhead: boolean;
-    uncommitted: boolean;
-    remoteTracking: boolean;
-    unpushed: boolean;
-    unpulled: boolean;
-    pushed: boolean;
-    canopyHash: string | null;
-    defaultBranch: string | null;
-  } = {
-    stats: { insertions: 0, deletions: 0 },
-    branchName: undefined,
-    commitsAhead: false,
-    uncommitted: false,
-    remoteTracking: false,
-    unpushed: false,
-    unpulled: false,
-    pushed: false,
-    canopyHash: null,
-    defaultBranch: null,
-  };
-  const gitStatTasks: Array<() => Promise<void>> = [
-    async (): Promise<void> => {
-      const diffStatsStartedAt = performance.now();
-      resolved.stats = await (options?.readDiffStats ?? readDiffStatsDirectly)(
-        { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: worktreePath },
-        effectiveBaseBranch.branch ?? undefined,
-      );
-      if (diagnostics) {
-        diagnostics.diffStatsElapsedMs =
-          elapsedMilliseconds(diffStatsStartedAt);
+    { projectId: workspaceId, worktreeId, insertions: 0, deletions: 0 },
+    async () => {
+      const worktreePath =
+        workspace.type === 'multi-repo'
+          ? getWorkspaceWorktreeDir(workspaceId, worktreeId)
+          : getWorktreeDir(workspaceId, worktreeId);
+
+      if (workspace.type === 'multi-repo') {
+        const result = await aggregateMultiRepoDiffStats(
+          workspaceId,
+          worktreeId,
+          worktreePath,
+          options,
+        );
+        const canopyHash = await getCanopyJsonHash(worktreePath).catch(
+          () => null,
+        );
+        return {
+          projectId: workspaceId,
+          worktreeId,
+          insertions: result.stats.insertions,
+          deletions: result.stats.deletions,
+          baseBranch: result.baseBranch,
+          baseBranchExistsLocally: result.baseBranchExistsLocally,
+          baseBranchExistsInRemote: result.baseBranchExistsInRemote,
+          hasOriginRemote: result.hasOriginRemote,
+          hasCommitsAhead: result.hasCommitsAhead,
+          hasUncommittedChanges: result.hasUncommittedChanges,
+          hasRemoteTrackingBranch: result.hasRemoteTrackingBranch,
+          hasUnpushedCommits: result.hasUnpushedCommits,
+          hasUnpulledCommits: result.hasUnpulledCommits,
+          hasBranchBeenPushed: result.hasBranchBeenPushed,
+          repoBranches: result.repoBranches,
+          canopyJsonHash: canopyHash ?? undefined,
+          healthIssue: healthIssue ?? undefined,
+        };
       }
-    },
-    async (): Promise<void> => {
-      resolved.branchName = await getCurrentBranchDisplayName(
-        worktreePath,
-      ).catch(() => undefined);
-    },
-    async (): Promise<void> => {
-      resolved.commitsAhead = await hasCommitsAhead(
-        worktreePath,
-        effectiveBaseBranch.branch ?? undefined,
-      ).catch(() => false);
-    },
-    async (): Promise<void> => {
-      resolved.uncommitted = await hasUncommittedChanges(worktreePath).catch(
-        () => false,
+
+      const hasOriginRemote = Boolean(await getRemoteUrl(worktreePath));
+      if (hasOriginRemote && !shouldSkipAutomaticFetch(options)) {
+        await fetchOrigin(worktreePath, {
+          prune: true,
+          ttlMs: AUTOMATIC_FETCH_TTL_MS,
+        });
+      }
+      const effectiveBaseBranch = await resolveEffectiveBaseBranchForStats({
+        projectId: workspaceId,
+        worktreeId,
+        repoPath: worktreePath,
+        allowRemoteLookup: !shouldSkipAutomaticFetch(options),
+      });
+      const resolved: {
+        stats: DiffStats;
+        branchName: string | undefined;
+        commitsAhead: boolean;
+        uncommitted: boolean;
+        remoteTracking: boolean;
+        unpushed: boolean;
+        unpulled: boolean;
+        pushed: boolean;
+        canopyHash: string | null;
+        defaultBranch: string | null;
+      } = {
+        stats: { insertions: 0, deletions: 0 },
+        branchName: undefined,
+        commitsAhead: false,
+        uncommitted: false,
+        remoteTracking: false,
+        unpushed: false,
+        unpulled: false,
+        pushed: false,
+        canopyHash: null,
+        defaultBranch: null,
+      };
+      const gitStatTasks: Array<() => Promise<void>> = [
+        async (): Promise<void> => {
+          const diffStatsStartedAt = performance.now();
+          resolved.stats = await (
+            options?.readDiffStats ?? readDiffStatsDirectly
+          )(
+            { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: worktreePath },
+            effectiveBaseBranch.branch ?? undefined,
+          );
+          if (diagnostics) {
+            diagnostics.diffStatsElapsedMs =
+              elapsedMilliseconds(diffStatsStartedAt);
+          }
+        },
+        async (): Promise<void> => {
+          resolved.branchName = await getCurrentBranchDisplayName(
+            worktreePath,
+          ).catch(() => undefined);
+        },
+        async (): Promise<void> => {
+          resolved.commitsAhead = await hasCommitsAhead(
+            worktreePath,
+            effectiveBaseBranch.branch ?? undefined,
+          ).catch(() => false);
+        },
+        async (): Promise<void> => {
+          resolved.uncommitted = await hasUncommittedChanges(
+            worktreePath,
+          ).catch(() => false);
+        },
+        async (): Promise<void> => {
+          resolved.remoteTracking = await hasRemoteTrackingBranch(
+            worktreePath,
+          ).catch(() => false);
+        },
+        async (): Promise<void> => {
+          resolved.unpushed = await hasUnpushedCommits(worktreePath).catch(
+            () => false,
+          );
+        },
+        async (): Promise<void> => {
+          resolved.unpulled = await hasUnpulledCommits(worktreePath).catch(
+            () => false,
+          );
+        },
+        async (): Promise<void> => {
+          resolved.pushed = await hasBranchBeenPushedToRemote(
+            worktreePath,
+          ).catch(() => false);
+        },
+        async (): Promise<void> => {
+          resolved.canopyHash = await getCanopyJsonHash(worktreePath).catch(
+            () => null,
+          );
+        },
+        async (): Promise<void> => {
+          resolved.defaultBranch = worktree?.trackedBaseBranch
+            ? await resolveRepoDefaultBranch(worktreePath, {
+                allowRemoteLookup: !shouldSkipAutomaticFetch(options),
+              })
+            : effectiveBaseBranch.branch;
+        },
+      ];
+      await mapWithConcurrency(
+        gitStatTasks,
+        WORKTREE_STATS_GIT_CONCURRENCY,
+        (task) => task(),
       );
+      return {
+        projectId: workspaceId,
+        worktreeId,
+        insertions: resolved.stats.insertions,
+        deletions: resolved.stats.deletions,
+        hasOriginRemote,
+        hasCommitsAhead: resolved.commitsAhead,
+        hasUncommittedChanges: resolved.uncommitted,
+        hasRemoteTrackingBranch: resolved.remoteTracking,
+        hasUnpushedCommits: resolved.unpushed,
+        hasUnpulledCommits: resolved.unpulled,
+        hasBranchBeenPushed: resolved.pushed,
+        branchName: resolved.branchName,
+        baseBranch: effectiveBaseBranch.branch,
+        baseBranchExistsLocally: effectiveBaseBranch.existsLocally,
+        baseBranchExistsInRemote: effectiveBaseBranch.existsInRemote,
+        defaultBranch: resolved.defaultBranch,
+        canopyJsonHash: resolved.canopyHash ?? undefined,
+      };
     },
-    async (): Promise<void> => {
-      resolved.remoteTracking = await hasRemoteTrackingBranch(
-        worktreePath,
-      ).catch(() => false);
-    },
-    async (): Promise<void> => {
-      resolved.unpushed = await hasUnpushedCommits(worktreePath).catch(
-        () => false,
-      );
-    },
-    async (): Promise<void> => {
-      resolved.unpulled = await hasUnpulledCommits(worktreePath).catch(
-        () => false,
-      );
-    },
-    async (): Promise<void> => {
-      resolved.pushed = await hasBranchBeenPushedToRemote(worktreePath).catch(
-        () => false,
-      );
-    },
-    async (): Promise<void> => {
-      resolved.canopyHash = await getCanopyJsonHash(worktreePath).catch(
-        () => null,
-      );
-    },
-    async (): Promise<void> => {
-      resolved.defaultBranch = worktree?.trackedBaseBranch
-        ? await resolveRepoDefaultBranch(worktreePath, {
-            allowRemoteLookup: !shouldSkipAutomaticFetch(options),
-          })
-        : effectiveBaseBranch.branch;
-    },
-  ];
-  await mapWithConcurrency(
-    gitStatTasks,
-    WORKTREE_STATS_GIT_CONCURRENCY,
-    (task) => task(),
   );
-  return {
-    projectId: workspaceId,
-    worktreeId,
-    insertions: resolved.stats.insertions,
-    deletions: resolved.stats.deletions,
-    hasOriginRemote,
-    hasCommitsAhead: resolved.commitsAhead,
-    hasUncommittedChanges: resolved.uncommitted,
-    hasRemoteTrackingBranch: resolved.remoteTracking,
-    hasUnpushedCommits: resolved.unpushed,
-    hasUnpulledCommits: resolved.unpulled,
-    hasBranchBeenPushed: resolved.pushed,
-    branchName: resolved.branchName,
-    baseBranch: effectiveBaseBranch.branch,
-    baseBranchExistsLocally: effectiveBaseBranch.existsLocally,
-    baseBranchExistsInRemote: effectiveBaseBranch.existsInRemote,
-    defaultBranch: resolved.defaultBranch,
-    canopyJsonHash: resolved.canopyHash ?? undefined,
-  };
 }
 
 async function computeAndCacheWorktreeStats(
@@ -7968,6 +8019,20 @@ export async function getWorktreeDiffStatsOnly(
   worktreeId: string,
   readDiffStats: WorktreeRepoDiffStatsReader = readDiffStatsDirectly,
 ): Promise<DiffStats> {
+  // Verification callers rely on rejection to distinguish unavailable from
+  // a successful clean source. Never turn failed admission into zero stats.
+  return getAvailableWorktreeDiffStatsOnly(
+    workspaceId,
+    worktreeId,
+    readDiffStats,
+  );
+}
+
+async function getAvailableWorktreeDiffStatsOnly(
+  workspaceId: string,
+  worktreeId: string,
+  readDiffStats: WorktreeRepoDiffStatsReader = readDiffStatsDirectly,
+): Promise<DiffStats> {
   const startedAt = performance.now();
   let outcome: 'success' | 'failure' = 'failure';
   try {
@@ -7975,7 +8040,10 @@ export async function getWorktreeDiffStatsOnly(
     const worktree = workspace.worktrees.find(
       (entry) => entry.id === worktreeId,
     );
-    if (!worktree || worktree.setupPhase === 'git-pending') {
+    if (
+      !worktree ||
+      !(await isWorktreeReadAvailable(workspaceId, worktreeId))
+    ) {
       throw new Error(`Worktree ${worktreeId} is not ready`);
     }
 

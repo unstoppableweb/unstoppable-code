@@ -21,7 +21,7 @@ import {
   startObservedHelperTask,
 } from '../lib/helper-observed-task';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import {
   codexStructuredHelperRunner,

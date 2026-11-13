@@ -7,7 +7,7 @@ import * as childProcess from 'node:child_process';
 import {
   CodexAppServerConnection,
   type CodexAppServerConnectionOwner,
-} from '@canopy/desktop-shared/node/codex-runtime/connection';
+} from '@canopy/execution-engine/node/codex-runtime/connection';
 import { bounded, errorDetails, nativePipeChild } from './native-pipe-fixture';
 
 jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({

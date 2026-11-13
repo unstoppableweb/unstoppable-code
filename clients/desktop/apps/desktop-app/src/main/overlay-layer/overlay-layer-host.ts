@@ -26,7 +26,10 @@ export interface OverlayLayerHostOptions {
 }
 
 interface LayerRecord {
+  /** The window the layer is attached to, above its Browser views. */
   readonly window: BrowserWindow;
+  /** The trusted renderer that opened the layer and draws into it. */
+  readonly opener: WebContents;
   readonly slot: OverlayLayerSlot;
   readonly view: WebContentsView;
   readonly contents: WebContents;
@@ -76,16 +79,18 @@ function routeExternalIfSafe(
 
 /**
  * Returns the overlay slot for a narrowly recognized same-origin popup.
- * The opener identity is mandatory: only the main renderer may create layers.
+ * The opener identity is mandatory: only a trusted renderer that hosts
+ * Browser views (the main renderer, the full Orchestrator page) may create
+ * layers, and it must be the popup's actual source.
  */
 export function decideOverlayLayerWindowOpen(
   details: Pick<HandlerDetails, 'url' | 'frameName'>,
   sourceWebContentsId: number,
-  mainWindowWebContentsId: number,
+  openerWebContentsId: number,
 ): OverlayLayerSlot | null {
   if (
     details.url !== 'about:blank' ||
-    sourceWebContentsId !== mainWindowWebContentsId
+    sourceWebContentsId !== openerWebContentsId
   ) {
     return null;
   }
@@ -94,55 +99,71 @@ export function decideOverlayLayerWindowOpen(
 
 /**
  * Owns adopted same-origin popup pages as transparent, per-slot native views
- * above the main window's Browser views.
+ * above a window's Browser views. Layers belong to the renderer that opened
+ * them, so two renderers in one window (the main renderer and a hosted
+ * Orchestrator page) each keep their own.
  */
 export class OverlayLayerHost {
-  private readonly layersByWindow = new WeakMap<
-    BrowserWindow,
+  private readonly layersByOpener = new WeakMap<
+    WebContents,
     Map<OverlayLayerSlot, LayerRecord>
   >();
+  private readonly records = new Set<LayerRecord>();
   private readonly observedWindows = new WeakSet<BrowserWindow>();
+  private readonly observedOpeners = new WeakSet<WebContents>();
 
   constructor(private readonly options: OverlayLayerHostOptions) {}
 
-  /** Installs lifecycle cleanup once for the lifetime of a main window. */
+  /** Installs lifecycle cleanup once for the lifetime of a host window. */
   observeWindow(window: BrowserWindow): void {
     if (window.isDestroyed() || this.observedWindows.has(window)) return;
-    // Captured now: a destroyed window throws on `webContents` inside `closed`.
-    const contents = window.webContents;
-
-    const onNavigation = (
-      details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
-    ): void => {
-      if (details.isMainFrame && !details.isSameDocument) {
-        this.disposeWindowLayers(window);
-      }
-    };
-    const onRenderProcessGone = (): void => {
-      this.disposeWindowLayers(window);
-    };
     const onClosed = (): void => {
-      this.disposeWindowLayers(window);
-      contents.off('did-start-navigation', onNavigation);
-      contents.off('render-process-gone', onRenderProcessGone);
+      this.disposeWhere((record) => record.window === window);
       window.removeListener('closed', onClosed);
       this.observedWindows.delete(window);
     };
-
     this.observedWindows.add(window);
-    contents.on('did-start-navigation', onNavigation);
-    contents.on('render-process-gone', onRenderProcessGone);
     window.on('closed', onClosed);
   }
 
   /**
-   * Creates a narrowly allowed popup response. Electron supplies the real
-   * guest WebContents in `options`; validating it via Electron's registry
-   * keeps untrusted callback data from being adopted as a view.
+   * Installs lifecycle cleanup once for an opener renderer: its layers go
+   * when it navigates away, crashes or is destroyed.
+   */
+  observeOpener(opener: WebContents): void {
+    if (opener.isDestroyed() || this.observedOpeners.has(opener)) return;
+    const disposeOpenerLayers = (): void => {
+      this.disposeWhere((record) => record.opener === opener);
+    };
+    const onNavigation = (
+      details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+    ): void => {
+      if (details.isMainFrame && !details.isSameDocument) {
+        disposeOpenerLayers();
+      }
+    };
+    const onDestroyed = (): void => {
+      disposeOpenerLayers();
+      opener.off('did-start-navigation', onNavigation);
+      opener.off('render-process-gone', disposeOpenerLayers);
+      this.observedOpeners.delete(opener);
+    };
+    this.observedOpeners.add(opener);
+    opener.on('did-start-navigation', onNavigation);
+    opener.on('render-process-gone', disposeOpenerLayers);
+    opener.once('destroyed', onDestroyed);
+  }
+
+  /**
+   * Creates a narrowly allowed popup response for `opener`, whose layer is
+   * attached to `window`. Electron supplies the real guest WebContents in
+   * `options`; validating it via Electron's registry keeps untrusted
+   * callback data from being adopted as a view.
    */
   createWindowOpenResponse(
     window: BrowserWindow,
     slot: OverlayLayerSlot,
+    opener: WebContents = window.webContents,
   ): Electron.WindowOpenHandlerResponse {
     return {
       action: 'allow',
@@ -161,18 +182,15 @@ export class OverlayLayerHost {
         if (!isElectronWebContents(candidate)) {
           throw new Error('Overlay layer popup did not provide a WebContents.');
         }
-        this.adoptGuest(window, slot, candidate);
+        this.adoptGuest(window, opener, slot, candidate);
         return candidate;
       },
     };
   }
 
-  /** Applies a main-renderer CSS rectangle or hides the requested slot. */
-  setBounds(
-    window: BrowserWindow,
-    request: OverlayLayerSetBoundsRequest,
-  ): void {
-    const record = this.layersByWindow.get(window)?.get(request.slot);
+  /** Applies an opener's CSS rectangle or hides the requested slot. */
+  setBounds(opener: WebContents, request: OverlayLayerSetBoundsRequest): void {
+    const record = this.layersByOpener.get(opener)?.get(request.slot);
     if (!record || record.disposed) return;
 
     record.bounds = request.bounds;
@@ -180,37 +198,36 @@ export class OverlayLayerHost {
       record.view.setVisible(false);
       return;
     }
-    record.zoomFactor = window.webContents.getZoomFactor();
+    record.zoomFactor = opener.getZoomFactor();
     this.fitRecord(record);
     record.view.setVisible(true);
   }
 
-  /** Moves keyboard focus into the layer or back to the main renderer. */
-  focus(window: BrowserWindow, request: OverlayLayerFocusRequest): void {
-    const record = this.layersByWindow.get(window)?.get(request.slot);
+  /** Moves keyboard focus into the layer or back to its opener. */
+  focus(opener: WebContents, request: OverlayLayerFocusRequest): void {
+    const record = this.layersByOpener.get(opener)?.get(request.slot);
     if (!record || record.disposed) return;
 
     if (request.target === 'layer') {
       if (!record.contents.isDestroyed()) record.contents.focus();
       return;
     }
-    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-      window.webContents.focus();
-    }
+    if (!opener.isDestroyed()) opener.focus();
   }
 
   /** Re-adds each slot to place it above Browser views attached later. */
   raise(window: BrowserWindow): void {
     if (window.isDestroyed()) return;
-    const layers = this.layersByWindow.get(window);
-    if (!layers) return;
-    for (const record of Array.from(layers.values())) {
-      if (!record.disposed) window.contentView.addChildView(record.view);
+    for (const record of Array.from(this.records)) {
+      if (!record.disposed && record.window === window) {
+        window.contentView.addChildView(record.view);
+      }
     }
   }
 
   private adoptGuest(
     window: BrowserWindow,
+    opener: WebContents,
     slot: OverlayLayerSlot,
     contents: WebContents,
   ): void {
@@ -239,12 +256,13 @@ export class OverlayLayerHost {
     attachInputGuardsToContents(contents);
     registerIpcSurface(contents, 'aux');
 
-    const oldRecord = this.layersByWindow.get(window)?.get(slot);
+    const oldRecord = this.layersByOpener.get(opener)?.get(slot);
     if (oldRecord) this.disposeRecord(oldRecord, true);
-    const layers = this.layersForWindow(window);
+    const layers = this.layersForOpener(opener);
 
     const record: LayerRecord = {
       window,
+      opener,
       slot,
       view,
       contents,
@@ -256,25 +274,26 @@ export class OverlayLayerHost {
         setImmediate((): void => {
           if (
             record.disposed ||
-            this.layersByWindow.get(window)?.get(slot) !== record ||
+            this.layersByOpener.get(opener)?.get(slot) !== record ||
             window.isDestroyed() ||
-            window.webContents.isDestroyed() ||
+            opener.isDestroyed() ||
             contents.isDestroyed()
           ) {
             return;
           }
-          window.webContents.focus();
+          opener.focus();
         });
       },
       unregisterZoom: (): void => undefined,
       bounds: null,
-      zoomFactor: window.webContents.getZoomFactor(),
+      zoomFactor: opener.getZoomFactor(),
       disposed: false,
     };
 
     contents.setZoomFactor(record.zoomFactor);
     window.contentView.addChildView(view);
     layers.set(slot, record);
+    this.records.add(record);
     contents.on('destroyed', record.onDestroyed);
     contents.on('before-mouse-event', record.onBeforeMouseEvent);
     record.unregisterZoom = registerUiZoomContents(contents, (zoomFactor) => {
@@ -292,33 +311,32 @@ export class OverlayLayerHost {
     );
   }
 
-  private layersForWindow(
-    window: BrowserWindow,
+  private layersForOpener(
+    opener: WebContents,
   ): Map<OverlayLayerSlot, LayerRecord> {
-    let layers = this.layersByWindow.get(window);
+    let layers = this.layersByOpener.get(opener);
     if (!layers) {
       layers = new Map<OverlayLayerSlot, LayerRecord>();
-      this.layersByWindow.set(window, layers);
+      this.layersByOpener.set(opener, layers);
     }
     return layers;
   }
 
-  private disposeWindowLayers(window: BrowserWindow): void {
-    const layers = this.layersByWindow.get(window);
-    if (!layers) return;
-    for (const record of Array.from(layers.values())) {
-      this.disposeRecord(record, true);
+  private disposeWhere(matches: (record: LayerRecord) => boolean): void {
+    for (const record of Array.from(this.records)) {
+      if (matches(record)) this.disposeRecord(record, true);
     }
   }
 
   private disposeRecord(record: LayerRecord, closeContents: boolean): void {
     if (record.disposed) return;
     record.disposed = true;
+    this.records.delete(record);
 
-    const layers = this.layersByWindow.get(record.window);
+    const layers = this.layersByOpener.get(record.opener);
     if (layers?.get(record.slot) === record) {
       layers.delete(record.slot);
-      if (layers.size === 0) this.layersByWindow.delete(record.window);
+      if (layers.size === 0) this.layersByOpener.delete(record.opener);
     }
 
     record.contents.off('destroyed', record.onDestroyed);

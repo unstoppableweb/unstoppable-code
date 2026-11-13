@@ -5,6 +5,8 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  lstatSync,
+  unlinkSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -17,7 +19,8 @@ import {
   acquireW5MaintenanceExclusion,
   ensureW5HostMembership,
   registerW5Host,
-} from '@canopy/desktop-shared/node/w5-host-cohort';
+  leaveW5HostCohortSync,
+} from '@canopy/execution-engine/node/w5-host-cohort';
 import { internalRootFilesystemHost } from '@canopy/desktop-shared/node/internal-root-migration/filesystem-host';
 import type * as Storage from '@canopy/core-runtime/storage';
 import * as electron from 'electron';
@@ -25,6 +28,8 @@ import * as maintenanceModule from '../w5-maintenance';
 import type * as Workers from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 import { startedWorkers } from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 import { W5CommitLog } from '@canopy/core-runtime/node/w5/commit-log';
+import { createCanopyStartupClaimPort } from '@canopy/core-transport/node';
+import { CanopyRuntimeDescriptorSchema } from '@canopy/protocol/canopy-core';
 import { internalRootIdentity } from '@canopy/desktop-shared/node/internal-root-migration';
 import canopy from '../../../../../../brands/canopy/brand.json';
 import { settleInternalRootW5 } from '../internal-root-migration-maintenance';
@@ -824,7 +829,12 @@ test('lost offline qualification releases the startup claim before worker admiss
 
 // Qualifies native W5 custody/recovery/release even when ambient cold inspection
 // refuses. Only the cold callback is synthetic; this is not composed evidence.
-test.each(['settled', 'commit', 'reservation'] as const)(
+test.each([
+  'settled',
+  'commit',
+  'reservation',
+  ...(process.platform === 'win32' ? [] : ['orphan']),
+])(
   'offline migration W5 %s runs the writer and releases both records',
   async (state) => {
     mkdirSync(join(data, 'w5'), { mode: 0o700 });
@@ -856,6 +866,7 @@ test.each(['settled', 'commit', 'reservation'] as const)(
       log.close();
     }
     if (state === 'commit') writeFileSync(path, conflict);
+    const descriptor = state === 'orphan' ? await orphanEndpoint() : undefined;
     const firstWorker = startedWorkers.length;
     const qualification = {
       identity: { ...internalRootIdentity(temporary, canopy), source: data },
@@ -875,7 +886,8 @@ test.each(['settled', 'commit', 'reservation'] as const)(
           }
         : {}),
     });
-    if (state === 'settled') await expect(recovery).resolves.toBe('settled');
+    if (state === 'settled' || state === 'orphan')
+      await expect(recovery).resolves.toBe('settled');
     else
       await expect(recovery).rejects.toMatchObject({
         reason: 'recovery-required',
@@ -886,7 +898,337 @@ test.each(['settled', 'commit', 'reservation'] as const)(
     expect(readFileSync(path, 'utf8')).toBe(
       state === 'commit' ? conflict : after,
     );
+    if (descriptor) {
+      expect(existsSync(join(data, 'runtime/core.sock'))).toBe(false);
+      expect(readFileSync(join(data, 'runtime/core.json'))).toEqual(descriptor);
+    }
     expect(existsSync(join(data, 'runtime/startup-claim.json'))).toBe(false);
     expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(false);
   },
 );
+
+async function endpointOwner(): Promise<ReturnType<typeof spawn>> {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `require('net').createServer().listen(process.argv[1], () => process.stdout.write('ready'));`,
+      join(data, 'runtime/core.sock'),
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', () =>
+        reject(new Error('Socket owner exited before binding')),
+      );
+      child.stdout?.once('data', () => resolve());
+    });
+    return child;
+  } catch (error) {
+    await killEndpointOwner(child);
+    throw error;
+  }
+}
+async function killEndpointOwner(
+  child: ReturnType<typeof spawn>,
+): Promise<void> {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null)
+    return;
+  const exited = new Promise<void>((resolve) =>
+    child.once('exit', () => resolve()),
+  );
+  child.kill('SIGKILL');
+  await exited;
+}
+async function publishEndpointOwner(
+  child: ReturnType<typeof spawn>,
+): Promise<void> {
+  if (!child.pid) throw new Error('Missing owner PID');
+  const context = createW5RecoveryMaintenanceContext(data);
+  const owner = await context.platform.supervision.inspectProcess({
+    pid: child.pid,
+  });
+  if (owner.state !== 'running')
+    throw new Error('Native owner identity required');
+  const socket = lstatSync(join(data, 'runtime/core.sock'), { bigint: true });
+  writeFileSync(
+    join(data, 'runtime/core.json'),
+    JSON.stringify({
+      version: 1,
+      pid: child.pid,
+      startIdentity: owner.startIdentity,
+      endpoint: { kind: 'socket', path: join(data, 'runtime/core.sock') },
+      socketIdentity: { device: String(socket.dev), inode: String(socket.ino) },
+      tokenRef: join(data, 'runtime/core-test.token'),
+      protocolRange: { min: 1, max: 1 },
+      buildVersion: 'test',
+    }),
+    { mode: 0o600 },
+  );
+}
+async function retainEndpointBind(
+  child: ReturnType<typeof spawn>,
+): Promise<void> {
+  if (!child.pid) throw new Error('Missing owner PID');
+  const { supervision } = createW5RecoveryMaintenanceContext(data).platform;
+  const owner = await supervision.inspectProcess({ pid: child.pid });
+  if (owner.state !== 'running')
+    throw new Error('Native owner identity required');
+  const departed = createCanopyStartupClaimPort({
+    dataRoot: data,
+    owner: { pid: child.pid, startIdentity: owner.startIdentity },
+    inspectProcess: async (pid, signal) => {
+      const found = await supervision.inspectProcess({ pid, signal });
+      return found.state === 'running'
+        ? { kind: 'alive', startIdentity: found.startIdentity }
+        : { kind: found.state === 'absent' ? 'dead' : 'unknown' };
+    },
+  });
+  const acquired = await departed.tryAcquire();
+  if (acquired.kind !== 'acquired') throw new Error('Claim required');
+  expect(await departed.markEndpointBind(acquired.handle)).toBe(true);
+}
+async function orphanEndpoint(retainBind = false): Promise<Buffer> {
+  const child = await endpointOwner();
+  try {
+    await publishEndpointOwner(child);
+    if (retainBind) await retainEndpointBind(child);
+    return readFileSync(join(data, 'runtime/core.json'));
+  } finally {
+    await killEndpointOwner(child);
+  }
+}
+function initializeW5Log(): void {
+  mkdirSync(join(data, 'w5'), { mode: 0o700 });
+  W5CommitLog.open(join(data, 'w5/commit-log.sqlite')).close();
+}
+
+generalPosixMaintenance.each(['diagnose', 'reopen'] as const)(
+  'a killed daemon endpoint permits %s; only a mutating run unlinks the socket',
+  async (mode) => {
+    const descriptor = await orphanEndpoint();
+    if (mode === 'reopen') initializeW5Log();
+    await expect(
+      maintenance({ source: 'offline_maintenance', mode }),
+    ).resolves.toMatchObject({ mode });
+    expect(existsSync(join(data, 'runtime/core.sock'))).toBe(
+      mode === 'diagnose',
+    );
+    expect(readFileSync(join(data, 'runtime/core.json'))).toEqual(descriptor);
+    expect(existsSync(join(data, 'runtime/startup-claim.json'))).toBe(false);
+    expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(false);
+    if (mode === 'reopen') await expectDaemonWriteResumes();
+  },
+);
+
+generalPosixMaintenance.each(['diagnose', 'reopen'] as const)(
+  'an unpublished inherited bind marker is retained by %s until the socket is unlinked',
+  async (mode) => {
+    const child = await endpointOwner();
+    try {
+      const context = createW5RecoveryMaintenanceContext(data, { workerEntry });
+      await retainEndpointBind(child);
+      await killEndpointOwner(child);
+      initializeW5Log();
+      const result = runW5Maintenance(context, {
+        source: 'offline_maintenance',
+        mode,
+      });
+      if (mode === 'diagnose') {
+        await expect(result).rejects.toMatchObject({
+          reason: 'release-uncertain',
+        });
+        expect(
+          JSON.parse(
+            readFileSync(join(data, 'runtime/startup-claim.json'), 'utf8'),
+          ),
+        ).toMatchObject({ endpointBound: true, owner: { pid: process.pid } });
+        expect(context.host.workersStarted).toBe(0);
+      } else {
+        await expect(result).resolves.toMatchObject({ mode });
+        expect(existsSync(join(data, 'runtime/startup-claim.json'))).toBe(
+          false,
+        );
+        await expectDaemonWriteResumes();
+      }
+      expect(existsSync(join(data, 'runtime/core.sock'))).toBe(
+        mode === 'diagnose',
+      );
+      expect(existsSync(join(data, 'runtime/core.json'))).toBe(false);
+      expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(false);
+    } finally {
+      await killEndpointOwner(child);
+    }
+  },
+);
+
+generalPosixMaintenance.each([
+  'listener',
+  'refused-live-owner',
+  'unverifiable',
+  'foreign-endpoint',
+  'foreign-inode',
+  'missing',
+  'malformed',
+])('%s cannot authorize offline socket cleanup', async (scenario) => {
+  const child = await endpointOwner();
+  try {
+    await publishEndpointOwner(child);
+    if (scenario !== 'listener' && scenario !== 'refused-live-owner')
+      await killEndpointOwner(child);
+    const context = createW5RecoveryMaintenanceContext(data, { workerEntry });
+    const endpoints = context.platform.endpoints;
+    if (endpoints.semantics !== 'filesystem-socket')
+      throw new Error('POSIX required');
+    const socket = lstatSync(join(data, 'runtime/core.sock'), { bigint: true });
+    const descriptorPath = join(data, 'runtime/core.json');
+    if (scenario === 'missing') unlinkSync(descriptorPath);
+    else if (scenario === 'malformed') writeFileSync(descriptorPath, '{');
+    else if (scenario.startsWith('foreign-')) {
+      const descriptor = CanopyRuntimeDescriptorSchema.parse(
+        JSON.parse(readFileSync(descriptorPath, 'utf8')),
+      );
+      if (scenario === 'foreign-endpoint')
+        descriptor.endpoint.path += '.foreign';
+      else {
+        if (!descriptor.socketIdentity)
+          throw new Error('Socket identity required');
+        descriptor.socketIdentity.inode = String(socket.ino + 1n);
+      }
+      writeFileSync(descriptorPath, JSON.stringify(descriptor));
+    }
+    const unlink = jest.fn(
+      (request: Parameters<typeof endpoints.unlinkStale>[0]) =>
+        endpoints.unlinkStale(request),
+    );
+    const probe: typeof endpoints.probe =
+      scenario === 'refused-live-owner'
+        ? () =>
+            Promise.resolve({
+              state: 'refused',
+              identity: { device: socket.dev, inode: socket.ino },
+            })
+        : (address) => endpoints.probe(address);
+    await expect(
+      runW5Maintenance(
+        {
+          ...context,
+          platform: {
+            ...context.platform,
+            supervision: {
+              ...context.platform.supervision,
+              inspectProcess: (request) =>
+                scenario === 'unverifiable' && request.pid === child.pid
+                  ? Promise.resolve({ state: 'unverifiable', reason: 'test' })
+                  : context.platform.supervision.inspectProcess(request),
+            },
+            endpoints: { ...endpoints, unlinkStale: unlink, probe },
+          },
+        },
+        { source: 'offline_maintenance', mode: 'reopen' },
+      ),
+    ).rejects.toMatchObject({ reason: 'endpoint-unavailable' });
+    expect(unlink).not.toHaveBeenCalled();
+    expect(
+      lstatSync(join(data, 'runtime/core.sock'), { bigint: true }).ino,
+    ).toBe(socket.ino);
+    expect(context.host.workersStarted).toBe(0);
+  } finally {
+    await killEndpointOwner(child);
+  }
+});
+
+generalPosixMaintenance.each([
+  'host-active',
+  'replaced-at-probe',
+  'descriptor-replaced-at-probe',
+  'inherited-descriptor-replaced-at-probe',
+  'replaced-at-unlink',
+  'claim-lost-at-unlink',
+])('%s refuses before removing any foreign endpoint', async (scenario) => {
+  await orphanEndpoint(scenario === 'inherited-descriptor-replaced-at-probe');
+  const context = createW5RecoveryMaintenanceContext(data, { workerEntry });
+  const endpoints = context.platform.endpoints;
+  if (endpoints.semantics !== 'filesystem-socket')
+    throw new Error('POSIX required');
+  const registration =
+    scenario === 'host-active'
+      ? await registerW5Host({ dataRoot: data, hostKind: 'cli' })
+      : undefined;
+  let probes = 0;
+  const replace = (): void => {
+    unlinkSync(join(data, 'runtime/core.sock'));
+    writeFileSync(join(data, 'runtime/core.sock'), 'replacement');
+  };
+  const unlink = jest.fn(
+    async (request: Parameters<typeof endpoints.unlinkStale>[0]) => {
+      expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(true);
+      if (scenario === 'replaced-at-unlink') replace();
+      if (scenario === 'claim-lost-at-unlink')
+        unlinkSync(join(data, 'runtime/startup-claim.json'));
+      return endpoints.unlinkStale(request);
+    },
+  );
+  const probe: typeof endpoints.probe = async (address) => {
+    if (++probes === 2) {
+      if (scenario === 'replaced-at-probe') replace();
+      if (
+        scenario === 'descriptor-replaced-at-probe' ||
+        scenario === 'inherited-descriptor-replaced-at-probe'
+      ) {
+        const path = join(data, 'runtime/core.json');
+        const descriptor = CanopyRuntimeDescriptorSchema.parse(
+          JSON.parse(readFileSync(path, 'utf8')),
+        );
+        descriptor.endpoint.path += '.foreign';
+        writeFileSync(path, JSON.stringify(descriptor));
+      }
+    }
+    return endpoints.probe(address);
+  };
+  try {
+    const result = runW5Maintenance(
+      {
+        ...context,
+        platform: {
+          ...context.platform,
+          endpoints: { ...endpoints, probe, unlinkStale: unlink },
+        },
+      },
+      { source: 'offline_maintenance', mode: 'reopen' },
+    );
+    if (scenario === 'host-active')
+      await expect(result).rejects.toHaveProperty(
+        'reason',
+        expect.stringMatching(/host-active|cohort-ambiguous/),
+      );
+    else
+      await expect(result).rejects.toMatchObject({
+        reason:
+          scenario === 'claim-lost-at-unlink' ||
+          scenario === 'inherited-descriptor-replaced-at-probe'
+            ? 'release-uncertain'
+            : 'endpoint-unavailable',
+        ...((scenario === 'claim-lost-at-unlink' ||
+          scenario === 'inherited-descriptor-replaced-at-probe') && {
+          operationError: { reason: 'endpoint-unavailable' },
+        }),
+      });
+    if (
+      scenario !== 'replaced-at-unlink' &&
+      scenario !== 'claim-lost-at-unlink'
+    )
+      expect(unlink).not.toHaveBeenCalled();
+    if (scenario === 'replaced-at-probe' || scenario === 'replaced-at-unlink')
+      expect(readFileSync(join(data, 'runtime/core.sock'), 'utf8')).toBe(
+        'replacement',
+      );
+    else
+      expect(lstatSync(join(data, 'runtime/core.sock')).isSocket()).toBe(true);
+    expect(context.host.workersStarted).toBe(0);
+  } finally {
+    if (registration) leaveW5HostCohortSync();
+  }
+});

@@ -1,4 +1,4 @@
-import type { PermissionPreset } from '../../builtin-actions/agent-prompt/logic';
+import type { PermissionPreset } from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import type {
   CopilotPreToolInput,
   CopilotToolDecision,

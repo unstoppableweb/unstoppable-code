@@ -387,6 +387,7 @@ async function createDestinationWorktree(
         )
       : null;
     await archiveMultiRepoWorktree({
+      archiveTrigger: 'internal-rollback',
       workspaceId: destination.workspace.id,
       worktreeId: response.id,
       expectedCreatedAt: response.createdAt,
@@ -615,12 +616,14 @@ export async function forkSharedCodeContainer(options: {
           rollback.defer(() =>
             destination.workspace.type === 'single-repo'
               ? archiveSingleRepoWorktree({
+                  archiveTrigger: 'internal-rollback',
                   workspaceId: destination.workspace.id,
                   worktreeId: worktree.id,
                   retainAsArchivedContainer: false,
                   deleteBranch: true,
                 })
               : archiveMultiRepoWorktree({
+                  archiveTrigger: 'internal-rollback',
                   workspaceId: destination.workspace.id,
                   worktreeId: worktree.id,
                   retainAsArchivedContainer: false,

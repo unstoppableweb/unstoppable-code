@@ -6,7 +6,7 @@ import {
   pipelineDataKey,
   resolvePipelineAssets,
 } from '@canopy/desktop-shared/node/pipelines/pipeline-assets';
-import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutionOptions } from '@canopy/execution-engine/node/pipelines/executor';
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import { getPipelineDataRoot } from '../lib/paths';
 

@@ -5,8 +5,11 @@ export interface DrawerInspectorActionProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
   'className' | 'style'
 > {
-  /** Align the label with the inspector's text or its trailing time column. */
-  alignment?: 'leading' | 'trailing';
+  /**
+   * Align the label with the inspector's text or its trailing time column,
+   * or `inline` among a row's controls, with no offset.
+   */
+  alignment?: 'leading' | 'trailing' | 'inline';
 }
 
 /** The drawer's single footer action treatment, including watcher management. */
@@ -22,8 +25,16 @@ export const DrawerInspectorAction = forwardRef<
       {...props}
       ref={ref}
       variant="ghost-overlay"
-      size="sm"
-      className={alignment === 'trailing' ? '-mr-2.5' : '-ml-2.5'}
+      // A chat action: the compact 13px label, on the rows' 13px detail line.
+      // The offset cancels its 12px inset, so the label lines up.
+      size="compact"
+      className={
+        alignment === 'trailing'
+          ? '-mr-3'
+          : alignment === 'leading'
+            ? '-ml-3'
+            : undefined
+      }
     />
   );
 });

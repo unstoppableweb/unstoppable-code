@@ -208,6 +208,7 @@ it.each([
   'remote-control',
   'remote-control/channels',
   'device-relay',
+  'pipeline-relay',
 ])('bundles %s using only protocol and Zod', async (subpath) => {
   const result = await build({
     absWorkingDir: REPO_ROOT,

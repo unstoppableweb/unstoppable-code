@@ -30,7 +30,7 @@ import {
   CONSOLIDATION_SYSTEM_PROMPT,
 } from './prompt';
 import { shouldPruneMemoryFile, stripPrunedIndexLines } from './pruning';
-import { topicIdentity } from './topic-identity';
+import { topicIdentity, type ScopeTopicInventory } from './topic-identity';
 
 export const INDEX_CLIPPED_NOTICE = 'index-clipped';
 
@@ -100,10 +100,12 @@ export interface MemoryConsolidationPorts {
     request: MemoryConsolidationModelRequest,
   ) => Promise<MemoryConsolidationModelResponse>;
   shouldContinue?: () => boolean | Promise<boolean>;
-  /** Identities of every non-directory entry in `topics/`. */
-  listTopicIdentities: () => Promise<ReadonlySet<string>>;
-  /** The `topics/` filenames the store lists. */
-  listTopicNames: () => Promise<string[]>;
+  /**
+   * Every topic the scope holds now, read from the scope itself. One port for
+   * the names and the identities, so the write policy and the index links of
+   * a run can never be built from different views of the scope.
+   */
+  listScopeTopics: () => Promise<ScopeTopicInventory>;
   /** The prune candidates still unused and unchanged now. */
   confirmPrunable: (
     candidates: ConsolidationInputFile[],
@@ -177,12 +179,9 @@ async function fitIndexToLimits(
 ): Promise<{ output: ConsolidationOutput; clipped: boolean } | null> {
   let candidate = output;
   try {
-    const prompt = buildCompactionPrompt(output, await ports.listTopicNames());
-    const policy = compactionWritePolicy(
-      runPolicy,
-      output,
-      await ports.listTopicIdentities(),
-    );
+    const scope = await ports.listScopeTopics();
+    const prompt = buildCompactionPrompt(output, [...scope.names]);
+    const policy = compactionWritePolicy(runPolicy, output, scope);
     const compaction = await callModel(ports, 'compaction', input, prompt);
     const validation = normalizeAndValidateOutput(compaction.output, policy);
     if (validation.output && validation.diagnostics.length === 0) {
@@ -322,7 +321,7 @@ export async function runMemoryConsolidation(
   try {
     writePolicy = consolidationWritePolicy(
       input,
-      await ports.listTopicIdentities(),
+      await ports.listScopeTopics(),
     );
   } catch (error) {
     settle('failure', errorMessage(error));
@@ -368,7 +367,7 @@ export async function runMemoryConsolidation(
 
   let partial = diagnostics.length > 0;
   try {
-    const existingNames = await ports.listTopicNames();
+    const existingNames = (await ports.listScopeTopics()).names;
     output.memoryMd = resolveOutputIndexReferences(
       output,
       existingNames,

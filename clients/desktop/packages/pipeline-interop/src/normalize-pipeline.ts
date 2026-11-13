@@ -1,3 +1,7 @@
+import {
+  normalizeAgentAliasBase,
+  resolvePipelineAgentAliasRoute,
+} from './agent-alias-model';
 import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 import {
   getJobOrder,
@@ -23,6 +27,7 @@ import {
   getPipelinePluginDefaultRef,
 } from './plugin-defaults';
 import { normalizePipelineAssets, normalizePipelineLocalState } from './assets';
+import { validatePipelineSandboxHint } from './sandbox-size';
 import { normalizePipelineScopes } from './scope';
 import { normalizePipelineRunTarget } from './target';
 import {
@@ -1079,9 +1084,6 @@ function normalizeModelAliasDefaults(
     rawDefaults,
     'agent_id',
   );
-  if (hasBase && hasAgentId) {
-    throw new Error(`${context} cannot specify both base and agent_id`);
-  }
   if (!hasBase && !hasAgentId) {
     throw new Error(`${context} must specify base or agent_id`);
   }
@@ -1096,7 +1098,12 @@ function normalizeModelAliasDefaults(
         `${context} agent_id must be a non-empty agent_model_* string`,
       );
     }
-    return { agent_id: agentId };
+    const defaults = {
+      agent_id: agentId,
+      ...normalizeAgentAliasBase(rawDefaults.base),
+    };
+    resolvePipelineAgentAliasRoute(defaults);
+    return defaults;
   }
 
   const base =
@@ -1575,6 +1582,9 @@ export function normalizePipeline(
   );
   const assets = normalizePipelineAssets(pipeline.assets);
   const localState = normalizePipelineLocalState(pipeline.local_state);
+  // Only a cloud run reads the sandbox hint; every host refuses a bad one.
+  const sandboxProblem = validatePipelineSandboxHint(pipeline.sandbox);
+  if (sandboxProblem !== null) throw new Error(sandboxProblem);
 
   return {
     name: pipeline.name,

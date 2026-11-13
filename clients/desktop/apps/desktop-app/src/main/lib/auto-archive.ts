@@ -440,6 +440,7 @@ export interface WorkspaceTargetRemovalPolicy {
 export async function removeWorkspaceTarget(
   candidate: AutoArchiveCandidate,
   policy: WorkspaceTargetRemovalPolicy,
+  archiveTrigger: 'auto-delete' | 'agent',
   revalidateAutoArchivePolicy?: () => Promise<CurrentAutoArchivePolicy>,
 ): Promise<{ warnings?: string[] }> {
   // Only an inactivity removal depends on the last-touched watermark. Deletion
@@ -475,6 +476,7 @@ export async function removeWorkspaceTarget(
       : archiveMultiRepoWorktree;
   const warnings: string[] = [];
   const result = await archive({
+    archiveTrigger,
     sourceAdmission: 'required',
     workspaceId: candidate.workspaceId,
     worktreeId: candidate.targetId,
@@ -548,6 +550,7 @@ const defaultDependencies: AutoArchiveDependencies = {
         teardown: 'error',
         branch: { kind: 'preference' },
       },
+      'auto-delete',
       () =>
         resolveCurrentAutoArchivePolicy(
           candidate,

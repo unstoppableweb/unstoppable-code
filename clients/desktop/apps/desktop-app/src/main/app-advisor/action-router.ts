@@ -8,6 +8,7 @@ import type { CanopyJsonValue } from '@canopy/protocol/canopy-core';
 import type { AppAdvisorActionResponse } from '@canopy/desktop-shared/types';
 import { executeDesktopAgentActionTool } from '../agent-actions/desktop-surface';
 import { dispatchDesktopEditorSetupReview } from '../agent-actions/desktop-editor-setup-port';
+import { dispatchDesktopCloudChats } from '../agent-actions/desktop-cloud-chats-port';
 import { dispatchDesktopScriptPreferences } from '../agent-actions/desktop-script-preferences-port';
 import { getActiveDesktopRuntimeIfAccepting } from '../canopy-runtime/desktop-runtime';
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
@@ -297,6 +298,22 @@ export async function routeAppAdvisorAction(
   }
 
   const execute = async (): Promise<CanopyInjectedToolTextResult> => {
+    if (
+      action.type === 'cloud_chats.list' ||
+      action.type === 'cloud_chats.open'
+    ) {
+      const response = await dispatchDesktopCloudChats(action, runtime, {
+        requestId,
+        ...(call.expectedUiRevision !== undefined
+          ? { expectedUiRevision: call.expectedUiRevision }
+          : {}),
+        ...(call.context?.interfaceTools
+          ? { boundTools: call.context.interfaceTools }
+          : {}),
+        ...(signal ? { signal } : {}),
+      });
+      return { text: jsonText(response), isError: response.ok !== true };
+    }
     if (presentation) {
       const presented = appAdvisorActionSchema.safeParse(action);
       if (!presented.success)

@@ -38,7 +38,7 @@ import type {
   PipelineData,
   PipelineInfo,
 } from '@canopy/execution-engine/types/pipeline';
-import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutionOptions } from '@canopy/execution-engine/node/pipelines/executor';
 import type {
   ImportCuratedPipelineRequest,
   ListCuratedPipelinesRequest,

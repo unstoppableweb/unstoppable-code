@@ -18,7 +18,7 @@ import {
   parsePermissionPreset,
   redactNormalizedText,
   redactedFiniteNumber,
-} from '../agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 
 async function resolveText(
   text: string | undefined,

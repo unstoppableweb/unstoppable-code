@@ -15,6 +15,7 @@ import {
   MemoryScopeIdSchema,
   MemorySha256Schema,
   MemoryTimestampSchema,
+  isMemoryDocumentPath,
   isMemoryNoteFileKey,
   memoryDocumentIdentity,
 } from './identifiers';
@@ -218,12 +219,43 @@ export const MemoryNoteRecordSchema = z
   });
 export type MemoryNoteRecord = z.output<typeof MemoryNoteRecordSchema>;
 
+/**
+ * Why a document is outside the contract: a path no document has, bytes that
+ * are not normalized text, or content past `documentMaxBytes`.
+ */
+export type MemoryDocumentRefusal = 'name' | 'not_text' | 'too_large';
+
+/** Why {@link DocumentContentSchema} would refuse `content`, if it would. */
+export function memoryDocumentContentRefusal(
+  content: string,
+): Exclude<MemoryDocumentRefusal, 'name'> | null {
+  if (!isNormalizedText(content)) return 'not_text';
+  if (utf8Length(content) > MEMORY_SYNC_LIMITS.documentMaxBytes) {
+    return 'too_large';
+  }
+  return null;
+}
+
+/**
+ * Why a document put is outside the contract, or null when it is within it:
+ * the one reading of {@link MemoryDocumentChangeSchema}'s own limits, as a
+ * reason a caller can report. A caller that builds a commit asks this first,
+ * so a change the schema would refuse never reaches a request, and nothing
+ * it has already shown a person is refused when it is sent.
+ */
+export function memoryDocumentRefusal(
+  path: string,
+  content: string,
+): MemoryDocumentRefusal | null {
+  return isMemoryDocumentPath(path)
+    ? memoryDocumentContentRefusal(content)
+    : 'name';
+}
+
 const DocumentContentSchema = z
   .string()
   .refine(
-    (value: string): boolean =>
-      isNormalizedText(value) &&
-      utf8Length(value) <= MEMORY_SYNC_LIMITS.documentMaxBytes,
+    (value: string): boolean => memoryDocumentContentRefusal(value) === null,
     'Expected normalized document content within the size limit',
   );
 

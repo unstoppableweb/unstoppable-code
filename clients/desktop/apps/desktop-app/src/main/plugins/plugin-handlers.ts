@@ -135,6 +135,63 @@ export function reportCuratedPluginInstallBestEffort(
   }
 }
 
+type MarketplaceProgress = (progress: MarketplaceOperationProgress) => void;
+
+/*
+ * The window's marketplace and install calls as owners, so App Advisor's
+ * shared imports in Electron main make the same ones (CAN-6003). The window's
+ * handlers pass the progress callback and whether the sender is a remote
+ * bridge; a main caller passes neither, as the window's own sender would.
+ */
+
+export function addMarketplaceForCaller(
+  repo: string,
+  progress?: MarketplaceProgress,
+): Promise<Awaited<ReturnType<typeof service.addMarketplace>>> {
+  return refreshAfterSuccess('plugins:addMarketplace', () =>
+    service.addMarketplace(repo, progress),
+  );
+}
+
+export async function installBuiltInPluginForCaller(
+  request: InstallBuiltInPluginRequest,
+  progress?: MarketplaceProgress,
+): Promise<Awaited<ReturnType<typeof service.installBuiltInPlugin>>> {
+  const result = await refreshAfterSuccess(
+    'plugins:install-built-in-plugin',
+    () => service.installBuiltInPlugin(request, progress),
+  );
+  if (result.success) {
+    reportCuratedPluginInstallBestEffort(
+      request.marketplaceId,
+      request.pluginName,
+    );
+  }
+  return result;
+}
+
+export function installPluginForCaller(request: {
+  marketplaceId: string;
+  pluginName: string;
+  sourceUrl: string;
+  remote: boolean;
+}): Promise<Awaited<ReturnType<typeof service.installPlugin>>> {
+  return refreshAfterSuccess('plugins:install-plugin', () =>
+    installPluginForPrincipal(request, service.installPlugin),
+  );
+}
+
+export function refreshMarketplacesForCaller(
+  providerUpdates: 'always' | 'if-stale' | undefined,
+  progress?: MarketplaceProgress,
+): Promise<Awaited<ReturnType<typeof service.refreshMarketplaces>>> {
+  return refreshAfterSuccess('plugins:refreshMarketplaces', () =>
+    service.refreshMarketplaces(progress, {
+      providerUpdates: providerUpdates === 'always' ? 'always' : 'if-stale',
+    }),
+  );
+}
+
 export function registerPluginHandlers(): void {
   registerIpcHandler(
     PLUGINS_CHANNELS.SHARED_REFERENCE_ANALYZE,
@@ -309,16 +366,10 @@ export function registerPluginHandlers(): void {
   registerIpcHandler(
     PLUGINS_CHANNELS.REFRESH,
     (event, providerUpdates?: 'always' | 'if-stale') =>
-      refreshAfterSuccess('plugins:refreshMarketplaces', () =>
-        service.refreshMarketplaces(progressFor(event), {
-          providerUpdates: providerUpdates === 'always' ? 'always' : 'if-stale',
-        }),
-      ),
+      refreshMarketplacesForCaller(providerUpdates, progressFor(event)),
   );
   registerIpcHandler(PLUGINS_CHANNELS.ADD, (event, repo: string) =>
-    refreshAfterSuccess('plugins:addMarketplace', () =>
-      service.addMarketplace(repo, progressFor(event)),
-    ),
+    addMarketplaceForCaller(repo, progressFor(event)),
   );
   registerIpcHandler(PLUGINS_CHANNELS.UPDATE, (event, id: string) =>
     refreshAfterSuccess('plugins:updateMarketplace', () =>
@@ -355,17 +406,12 @@ export function registerPluginHandlers(): void {
   registerIpcHandler(
     PLUGINS_CHANNELS.INSTALL_PLUGIN,
     (event, marketplaceId: string, pluginName: string, sourceUrl: string) =>
-      refreshAfterSuccess('plugins:install-plugin', () =>
-        installPluginForPrincipal(
-          {
-            remote: resolveRemoteBridgeSender(event.sender) !== null,
-            marketplaceId,
-            pluginName,
-            sourceUrl,
-          },
-          service.installPlugin,
-        ),
-      ),
+      installPluginForCaller({
+        remote: resolveRemoteBridgeSender(event.sender) !== null,
+        marketplaceId,
+        pluginName,
+        sourceUrl,
+      }),
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.PREPARE_CODEX_COMPATIBILITY,
@@ -383,19 +429,8 @@ export function registerPluginHandlers(): void {
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
-    async (event, request: InstallBuiltInPluginRequest) => {
-      const result = await refreshAfterSuccess(
-        'plugins:install-built-in-plugin',
-        () => service.installBuiltInPlugin(request, progressFor(event)),
-      );
-      if (result.success) {
-        reportCuratedPluginInstallBestEffort(
-          request.marketplaceId,
-          request.pluginName,
-        );
-      }
-      return result;
-    },
+    (event, request: InstallBuiltInPluginRequest) =>
+      installBuiltInPluginForCaller(request, progressFor(event)),
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.SHARED_LIST,

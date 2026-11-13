@@ -18,6 +18,7 @@
  * the user never opened before they read the close-blocking selectors.
  */
 import { create } from 'zustand';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import type { ChildToolLiveness } from '@canopy/agent-transcript';
 import { isCloseBlockingTaskType } from '@canopy/desktop-shared/lib/background-work';
 import type {
@@ -253,6 +254,9 @@ export const useLiveBackgroundTaskStore = create<LiveBackgroundTaskState>(
       projectId,
       worktreeId,
     ): Promise<ActivityLiveBgTasksResponse | null> => {
+      // main tracks only local chats' background work; a web core chat's
+      // agent tasks come from its own snapshot (CAN-5976).
+      if (isWebCoreScope(projectId)) return null;
       const activityApi =
         typeof window === 'undefined' ? undefined : window.api?.activity;
       if (typeof activityApi?.listLiveBgTasks !== 'function') return null;

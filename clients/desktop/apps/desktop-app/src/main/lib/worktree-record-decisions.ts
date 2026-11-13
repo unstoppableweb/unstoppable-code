@@ -23,6 +23,7 @@ import type {
   WorkspaceConfigFile,
   WorkspaceIndexEntry,
   WorkspaceOwnerBinding,
+  WorkspaceDetachedOwner,
   WorkspaceOwnershipTransfer,
   WorkspaceRepoData,
   WorktreeChatBadgesSummary,
@@ -715,6 +716,7 @@ export type WorkspaceOwnershipRecordStatus =
 
 /** The authoritative ownership read in the manifest queue. */
 export interface WorkspaceOwnershipSnapshot {
+  detachedOwner?: WorkspaceDetachedOwner;
   authority: 'ok';
   type: WorkspaceConfigFile['type'];
   owner?: WorkspaceOwnerBinding;
@@ -724,6 +726,7 @@ export interface WorkspaceOwnershipSnapshot {
 /** Replaces the owner binding and ownership transfer; every other field is kept. */
 export interface WorkspaceOwnerDecision {
   kind: 'ownership.owner';
+  detachedOwner?: WorkspaceDetachedOwner;
   owner?: WorkspaceOwnerBinding;
   ownershipTransfer?: WorkspaceOwnershipTransfer;
 }

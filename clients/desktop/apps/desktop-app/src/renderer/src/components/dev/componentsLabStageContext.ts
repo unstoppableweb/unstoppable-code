@@ -11,3 +11,6 @@ export const LabColorModeContext = createContext<LabColorMode>('light');
  * fills the card edge to edge.
  */
 export const LabOverviewContext = createContext(false);
+
+/** Brand display name supplied by the catalog host. */
+export const LabBrandDisplayNameContext = createContext('');

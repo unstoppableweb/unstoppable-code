@@ -22,6 +22,11 @@ import {
 } from '../approval-defaults';
 import { pendingTabCreation } from '../pending-tab-creation';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  chatBackendFor,
+  isCapabilityUnavailable,
+  type ChatBackendScope,
+} from '../backend';
 
 /**
  * Keeps a still-live card at its current revision after a refused answer,
@@ -44,10 +49,11 @@ function refreshedApproval(
 }
 
 async function liveApprovalEvent(
+  scope: ChatBackendScope,
   requestId: string,
 ): Promise<ApprovalRequestEvent | undefined> {
   try {
-    return (await window.api.approvals.pendingRequests()).find(
+    return (await chatBackendFor(scope).approvals.pendingRequests()).find(
       (event) => event.requestId === requestId,
     );
   } catch {
@@ -160,8 +166,8 @@ export const createApprovalsSlice: StateCreator<
     if (event.surface === 'non-chat') return;
     const key = `${event.projectId}/${event.worktreeId}`;
     if (!canReceiveWorktreeChatActivity(event.projectId, event.worktreeId)) {
-      void window.api.approvals
-        .dismiss({
+      void chatBackendFor(event)
+        .approvals.dismiss({
           requestId: event.requestId,
           projectId: event.projectId,
           worktreeId: event.worktreeId,
@@ -285,7 +291,7 @@ export const createApprovalsSlice: StateCreator<
     }
     let resolved: boolean;
     try {
-      resolved = await window.api.approvals.respond({
+      resolved = await chatBackendFor(pending).approvals.respond({
         requestId,
         projectId: pending.projectId,
         worktreeId: pending.worktreeId,
@@ -299,7 +305,7 @@ export const createApprovalsSlice: StateCreator<
       return;
     }
     if (!resolved) {
-      const live = await liveApprovalEvent(requestId);
+      const live = await liveApprovalEvent(pending, requestId);
       if (live) {
         set((state) => refreshedApproval(state, live));
         return;
@@ -326,7 +332,7 @@ export const createApprovalsSlice: StateCreator<
     if (!pending || pending.secretInput?.bindingId !== bindingId) return;
     let resolved: boolean;
     try {
-      resolved = await window.api.approvals.respondSecretInput({
+      resolved = await chatBackendFor(pending).approvals.respondSecretInput({
         requestId,
         projectId: pending.projectId,
         worktreeId: pending.worktreeId,
@@ -361,7 +367,7 @@ export const createApprovalsSlice: StateCreator<
     }
     let resolved: boolean;
     try {
-      resolved = await window.api.approvals.dismiss({
+      resolved = await chatBackendFor(pending).approvals.dismiss({
         requestId,
         projectId: pending.projectId,
         worktreeId: pending.worktreeId,
@@ -371,7 +377,7 @@ export const createApprovalsSlice: StateCreator<
       return;
     }
     if (!resolved) {
-      const live = await liveApprovalEvent(requestId);
+      const live = await liveApprovalEvent(pending, requestId);
       if (live) {
         set((state) => refreshedApproval(state, live));
         return;
@@ -487,13 +493,19 @@ export const createApprovalsSlice: StateCreator<
           });
         };
 
-        await window.api.approvals.setMode({
-          projectId: sel.projectId,
-          worktreeId: sel.worktreeId,
-          chatId,
-          mode,
-          ...(previousMode ? { previousMode } : {}),
-        });
+        try {
+          await chatBackendFor(sel).approvals.setMode({
+            projectId: sel.projectId,
+            worktreeId: sel.worktreeId,
+            chatId,
+            mode,
+            ...(previousMode ? { previousMode } : {}),
+          });
+        } catch (error: unknown) {
+          // An authority that serves no approval mode keeps the tab's mode.
+          if (isCapabilityUnavailable(error)) return;
+          throw error;
+        }
         applyRendererMode(mode);
       });
     approvalModeTransitions.set(transitionKey, transition);
@@ -533,7 +545,9 @@ export const createApprovalsSlice: StateCreator<
 
     const fetchPromise = (async (): Promise<ApprovalMode> => {
       try {
-        const mode = await window.api.approvals.getResolvedDefault({
+        const mode = await chatBackendFor({
+          projectId,
+        }).approvals.getResolvedDefault({
           projectId,
           ...(worktreeId ? { worktreeId } : {}),
         });

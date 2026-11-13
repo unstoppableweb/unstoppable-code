@@ -12,8 +12,13 @@ import {
   gatewayBaseUrlSchema,
   gatewayDisplayNameSchema,
 } from '@canopy/protocol/model-gateway';
+import { AI_GATEWAY_PRESETS } from '@canopy/protocol/model-gateway/presets';
 import type { AgentActionCatalogEntry } from '../../catalog/types';
 import type { AgentActionFamilyJsonSchema } from '../../surface/family';
+
+const KNOWN_GATEWAYS = AI_GATEWAY_PRESETS.flatMap((preset) =>
+  preset.baseUrl === null ? [] : [`${preset.name} ${preset.baseUrl}`],
+).join(', ');
 
 export const AI_GATEWAY_ACTION_TYPES = [
   'settings.ai_gateway.get',
@@ -88,8 +93,7 @@ export const aiGatewayActionCatalog: readonly AgentActionCatalogEntry[] =
               name: 'baseUrl',
               type: 'string',
               required: true,
-              description:
-                'HTTPS gateway endpoint. Never supply an API key in tool arguments.',
+              description: `HTTPS gateway endpoint. Known gateways: ${KNOWN_GATEWAYS}. Never supply an API key in tool arguments.`,
             },
           ]
         : []),
@@ -141,7 +145,8 @@ export const aiGatewayActionCatalog: readonly AgentActionCatalogEntry[] =
           },
     keywords: ['AI gateway', 'models', 'connect', 'personal', 'settings'],
     notes: [
-      'Desktop only. API keys are collected through the secure approval prompt, never chat or action payloads.',
+      'API keys are collected through the secure approval prompt, never chat or action payloads.',
+      'Cloud chats read gateways but cannot connect or update one: a change needs a confirmation in the Settings UI, so it is refused with missing_capability. Give the user the settings.open link to the AI gateway page instead.',
     ],
   }));
 export const aiGatewayDispatchJsonSchema: AgentActionFamilyJsonSchema = {

@@ -1,8 +1,10 @@
-import { filterStoredSkillContexts } from '../skills/skill-install-context';
-import { readInstalledItemPolicy } from '../installed-items/installed-item-policy';
-import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import {
+  CORE_AGENT_DEFERRED_TOOLS_GRANTS,
+  type CanopyCallerDescriptor,
+  type CatalogEntry,
+  type CatalogPluginHarness,
+} from '@canopy/protocol/canopy-core';
 import type {
   ChatTabPluginSelections,
   DeferredResourceKind,
@@ -13,30 +15,20 @@ import type {
   LoadDeferredToolRejection,
 } from '@canopy/desktop-shared/types';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
-import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
-import type {
-  MarketplaceInfo,
-  PluginInfo,
-} from '@canopy/execution-engine/types/plugins';
-import {
-  cursorPluginFacetProvider,
-  cursorPluginFacetSupport,
-  cursorLoadsPluginMemberKind,
-} from '@canopy/plugin-interop/cursor-support';
-import type {
-  McpServerConfigSummary,
-  McpServerIndexEntry,
-  McpServersIndexFile,
-} from '@canopy/execution-engine/types/mcp-servers';
-import { loadSkills } from '../skills/skill-service';
-import { loadMarketplacesCacheOnly } from '../plugins/plugin-service';
-import {
-  resolveEffectivePluginSelectionRefs,
-  resolvePluginInfoPath,
-  discoverCursorPluginMembers,
-  readPluginMcpAuthEntries,
-} from '../plugins/plugin-resolver';
-import { getMcpServersIndexFilePath } from '../lib/paths';
+import { resolveEffectivePluginSelectionRefs } from '../plugins/plugin-resolver';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+
+/**
+ * Search reads the catalog as the deferred tools' own principal, with only
+ * the catalog read grant (CAN-6034).
+ */
+const DEFERRED_TOOLS_CATALOG_CALLER: CanopyCallerDescriptor = {
+  principalId: 'desktop-agent-deferred-tools',
+  clientInstanceId: 'desktop-main',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'mcp',
+  grants: [CORE_AGENT_DEFERRED_TOOLS_GRANTS.search],
+};
 
 export type DeferredCatalogItemStatus =
   | 'available'
@@ -82,6 +74,8 @@ export interface LoadClassification {
 export interface BuildDeferredToolsCatalogOptions {
   provider: DeferredToolProvider;
   pluginSelections?: ChatTabPluginSelections;
+  /** The catalog snapshot's entries; the desktop dispatcher's by default. */
+  readSnapshot?: () => Promise<readonly CatalogEntry[]>;
 }
 
 export function encodeDeferredCatalogRef(identityRef: string): string {
@@ -120,98 +114,6 @@ function mcpKey(ref: { serverId: string; configId: string }): string {
   return `${ref.serverId}\u0000${ref.configId}`;
 }
 
-function providerAllowsPluginSupport(
-  plugin: PluginInfo,
-  provider: DeferredToolProvider,
-): boolean {
-  // OpenCode uses the same projected facet/member contract as Cursor.
-  if (provider === 'opencode') {
-    return cursorPluginFacetSupport(plugin.facets).supported;
-  }
-  if (provider === 'codex') {
-    return plugin.providerSupport.codex !== 'none';
-  }
-  return plugin.providerSupport.claude === 'native';
-}
-
-function providerHasInstalledPluginFacet(
-  plugin: PluginInfo,
-  provider: DeferredToolProvider,
-): boolean {
-  if (
-    provider !== 'opencode' &&
-    plugin.cachePath &&
-    existsSync(plugin.cachePath)
-  ) {
-    return true;
-  }
-  const facets =
-    provider === 'opencode'
-      ? [plugin.facets[cursorPluginFacetProvider(plugin.facets)]]
-      : provider === 'codex'
-        ? plugin.providerSupport.codex === 'native'
-          ? [plugin.facets.codex]
-          : [plugin.facets.codexCompatibility, plugin.facets.claude]
-        : [plugin.facets.claude];
-  return facets.some(
-    (facet) =>
-      facet !== undefined &&
-      ((facet.cachePath !== undefined && existsSync(facet.cachePath)) ||
-        (facet.installLocation.length > 0 &&
-          existsSync(facet.installLocation))),
-  );
-}
-
-async function loadMcpIndex(): Promise<McpServersIndexFile> {
-  try {
-    const raw = await readFile(getMcpServersIndexFilePath(), 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    if (isMcpServersIndexFile(parsed)) {
-      return parsed;
-    }
-  } catch {
-    // Missing or malformed local MCP state is equivalent to an empty index.
-  }
-  return { version: 1, servers: [] };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isMcpServerConfigSummary(
-  value: unknown,
-): value is McpServerConfigSummary {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.name === 'string' &&
-    typeof value.enabled === 'boolean'
-  );
-}
-
-function isMcpServerIndexEntry(value: unknown): value is McpServerIndexEntry {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.name === 'string' &&
-    typeof value.description === 'string' &&
-    (value.type === 'command' || value.type === 'http') &&
-    Array.isArray(value.configs) &&
-    value.configs.every(isMcpServerConfigSummary) &&
-    typeof value.updatedAt === 'string'
-  );
-}
-
-function isMcpServersIndexFile(value: unknown): value is McpServersIndexFile {
-  return (
-    isRecord(value) &&
-    value.version === 1 &&
-    Array.isArray(value.servers) &&
-    value.servers.every(isMcpServerIndexEntry)
-  );
-}
-
 function itemSummary(item: DeferredCatalogItem): DeferredResourceSummary {
   return {
     ref: item.ref,
@@ -221,58 +123,60 @@ function itemSummary(item: DeferredCatalogItem): DeferredResourceSummary {
   };
 }
 
+/** The entry fields every item reads; content is passed narrowed. */
+type EntryLabels = Pick<CatalogEntry, 'name' | 'description' | 'sourceLabel'>;
+
 function skillItem(
-  skill: InstalledSkillInfo,
+  entry: EntryLabels,
+  ref: { sourceId: string; skillName: string },
   enabledKeys: ReadonlySet<string>,
 ): DeferredCatalogItem {
-  const identityRef = encodeSkillRef(skill.sourceId, skill.name);
-  const ref = encodeDeferredCatalogRef(identityRef);
-  const enabled = enabledKeys.has(
-    skillKey({ sourceId: skill.sourceId, skillName: skill.name }),
-  );
+  const identityRef = encodeSkillRef(ref.sourceId, ref.skillName);
+  const deferredRef = encodeDeferredCatalogRef(identityRef);
+  const enabled = enabledKeys.has(skillKey(ref));
+  const sourceLabel = entry.sourceLabel ?? '';
   return {
     identityRef,
-    ref,
+    ref: deferredRef,
     kind: 'skill',
-    name: skill.name,
-    description: skill.description,
-    sourceLabel: skill.source,
+    name: entry.name,
+    description: entry.description,
+    sourceLabel,
     status: enabled ? 'already_enabled' : 'available',
     ...(enabled ? { reason: 'Already enabled in this chat.' } : {}),
     selection: {
-      ref,
+      ref: deferredRef,
       kind: 'skill',
-      name: skill.name,
-      sourceLabel: skill.source,
+      name: entry.name,
+      sourceLabel,
     },
   };
 }
 
 function pluginItem(
-  marketplace: MarketplaceInfo,
-  plugin: PluginInfo,
+  entry: EntryLabels,
+  ref: { marketplaceId: string; pluginName: string },
+  harness: CatalogPluginHarness,
   provider: DeferredToolProvider,
   enabledKeys: ReadonlySet<string>,
 ): DeferredCatalogItem {
-  const identityRef = encodePluginRef(marketplace.id, plugin.name);
-  const ref = encodeDeferredCatalogRef(identityRef);
+  const identityRef = encodePluginRef(ref.marketplaceId, ref.pluginName);
+  const deferredRef = encodeDeferredCatalogRef(identityRef);
+  const enabled = enabledKeys.has(pluginKey(ref));
+  const sourceLabel = entry.sourceLabel ?? '';
+  // Copilot projects installed content; native hooks/agents/apps are not capabilities.
   const supported =
-    providerAllowsPluginSupport(plugin, provider) &&
-    !(
-      provider === 'codex' &&
-      plugin.providerSupport.codex === 'compat' &&
-      plugin.codexCompatDisabled === true
-    );
-  const enabled = enabledKeys.has(
-    pluginKey({ marketplaceId: marketplace.id, pluginName: plugin.name }),
-  );
-  const sourceLabel = marketplace.name;
+    harness.supported && (provider === 'copilot' || harness.enabled);
+  const unsupportedReason =
+    provider === 'copilot'
+      ? 'This plugin has no installed skills, commands, or MCP servers supported by Copilot.'
+      : `Plugin is not supported by ${provider}.`;
   return {
     identityRef,
-    ref,
+    ref: deferredRef,
     kind: 'plugin',
-    name: plugin.name,
-    description: plugin.description ?? marketplace.description ?? '',
+    name: entry.name,
+    description: entry.description,
     sourceLabel,
     status: !supported
       ? 'unsupported'
@@ -280,148 +184,76 @@ function pluginItem(
         ? 'already_enabled'
         : 'available',
     ...(!supported
-      ? { reason: `Plugin is not supported by ${provider}.` }
+      ? { reason: unsupportedReason }
       : enabled
         ? { reason: 'Already enabled in this chat.' }
         : {}),
-    selection: { ref, kind: 'plugin', name: plugin.name, sourceLabel },
-    pluginMembers: pluginMembersForProvider(plugin, provider),
+    selection: {
+      ref: deferredRef,
+      kind: 'plugin',
+      name: entry.name,
+      sourceLabel,
+    },
+    pluginMembers: harness.members,
   };
 }
 
-/** Copilot projects installed content; native hooks/agents/apps are not capabilities. */
-async function copilotPluginItem(
-  marketplace: MarketplaceInfo,
-  plugin: PluginInfo,
-  enabledKeys: ReadonlySet<string>,
-): Promise<DeferredCatalogItem | undefined> {
-  // Match non-Codex execution's Claude-first facet precedence. Never install
-  // while searching, and never fall back to another facet if this one vanished.
-  const provider = plugin.facets.claude ? 'claude' : 'codex';
-  const root = await resolvePluginInfoPath(
-    plugin,
-    marketplace,
-    [],
-    false,
-    provider,
-  );
-  if (!root) return undefined;
-  const members = discoverCursorPluginMembers(root, provider);
-  const mcp = await readPluginMcpAuthEntries(
-    root,
-    marketplace.id,
-    plugin.name,
-    provider,
-  );
-  const supported = members.length > 0 || mcp.length > 0;
-  const item = pluginItem(marketplace, plugin, 'copilot', enabledKeys);
-  const enabled = enabledKeys.has(
-    pluginKey({ marketplaceId: marketplace.id, pluginName: plugin.name }),
-  );
-  return {
-    ...item,
-    status: !supported
-      ? 'unsupported'
-      : enabled
-        ? 'already_enabled'
-        : 'available',
-    reason: !supported
-      ? 'This plugin has no installed skills, commands, or MCP servers supported by Copilot.'
-      : enabled
-        ? 'Already enabled in this chat.'
-        : undefined,
-    pluginMembers: members.map((member) => ({
-      kind: member.kind === 'plugin_skill' ? 'skill' : 'command',
-      name: member.name,
-      description:
-        member.kind === 'plugin_skill'
-          ? member.skill.description
-          : member.command.description,
-    })),
-  };
-}
-
-function pluginMembersForProvider(
-  plugin: PluginInfo,
+/** Whether search lists the plugin for this provider at all. */
+function pluginListed(
+  harness: CatalogPluginHarness,
   provider: DeferredToolProvider,
-): DeferredPluginMember[] {
-  const details =
-    provider === 'opencode'
-      ? plugin.facets[cursorPluginFacetProvider(plugin.facets)]?.details
-      : provider === 'codex'
-        ? (plugin.facets.codex?.details ??
-          plugin.facets.codexCompatibility?.details ??
-          plugin.details)
-        : (plugin.facets.claude?.details ?? plugin.details);
-  if (!details) return [];
-
-  const members: DeferredPluginMember[] = [];
-  const seen = new Set<string>();
-  for (const member of details.skills) {
-    const key = `skill\0${member.name.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    members.push({
-      kind: 'skill',
-      name: member.name,
-      description: member.description,
-    });
-  }
-  const commands =
-    provider === 'opencode' &&
-    !cursorLoadsPluginMemberKind(
-      cursorPluginFacetProvider(plugin.facets),
-      'commands',
-    )
-      ? []
-      : details.commands;
-  for (const member of commands) {
-    const key = `command\0${member.name.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    members.push({
-      kind: 'command',
-      name: member.name,
-      description: member.description,
-    });
-  }
-  return members;
+): boolean {
+  // Copilot lists only installed content; the others leave out a plugin
+  // they support but have no installed facet for.
+  return provider === 'copilot'
+    ? harness.installed
+    : !harness.supported || harness.installed;
 }
 
 function mcpItem(
-  server: { id: string; name: string; description: string },
-  config: McpServerConfigSummary,
+  entry: EntryLabels,
+  configName: string | undefined,
+  ref: { serverId: string; configId: string },
   enabledKeys: ReadonlySet<string>,
 ): DeferredCatalogItem {
-  const identityRef = encodeMcpRef(server.id, config.id);
-  const ref = encodeDeferredCatalogRef(identityRef);
-  const selected = enabledKeys.has(
-    mcpKey({ serverId: server.id, configId: config.id }),
-  );
-  const sourceLabel = server.name;
+  const identityRef = encodeMcpRef(ref.serverId, ref.configId);
+  const deferredRef = encodeDeferredCatalogRef(identityRef);
+  const selected = enabledKeys.has(mcpKey(ref));
+  const serverName = entry.name;
   const name =
-    config.name && config.name !== server.name
-      ? `${server.name} / ${config.name}`
-      : server.name;
+    configName && configName !== serverName
+      ? `${serverName} / ${configName}`
+      : serverName;
   return {
     identityRef,
-    ref,
+    ref: deferredRef,
     kind: 'mcp',
     name,
-    description: server.description,
-    sourceLabel,
-    status: !config.enabled
-      ? 'disabled'
-      : selected
-        ? 'already_enabled'
-        : 'available',
-    ...(!config.enabled
-      ? { reason: 'MCP server config is disabled.' }
-      : selected
-        ? { reason: 'Already enabled in this chat.' }
-        : {}),
-    selection: { ref, kind: 'mcp', name, sourceLabel },
+    description: entry.description,
+    sourceLabel: serverName,
+    status: selected ? 'already_enabled' : 'available',
+    ...(selected ? { reason: 'Already enabled in this chat.' } : {}),
+    selection: { ref: deferredRef, kind: 'mcp', name, sourceLabel: serverName },
   };
+}
+
+/**
+ * The skills, plugins and MCP servers of `core.catalog.snapshot.get`, read
+ * through the desktop dispatcher with only the catalog read grant.
+ */
+async function readCatalogSnapshotEntries(): Promise<readonly CatalogEntry[]> {
+  const { getActiveDesktopRuntime } =
+    await import('../canopy-runtime/desktop-runtime');
+  const { entries } = await getActiveDesktopRuntime().query(
+    'core.catalog.snapshot.get',
+    {
+      scope: {},
+      kinds: ['skill', 'plugin', 'mcp_server'],
+      includeUnavailable: true,
+    },
+    { caller: DEFERRED_TOOLS_CATALOG_CALLER },
+  );
+  return entries;
 }
 
 export async function buildDeferredToolsCatalog(
@@ -437,65 +269,44 @@ export async function buildDeferredToolsCatalog(
   const enabledMcpKeys = new Set(effective.mcpServerRefs.map(mcpKey));
 
   const items: DeferredCatalogItem[] = [];
-  const policy = await readInstalledItemPolicy();
-
-  const skillsResult = loadSkills();
-  if (skillsResult.success && skillsResult.data)
-    skillsResult.data = await filterStoredSkillContexts(skillsResult.data);
-  if (skillsResult.success && skillsResult.data) {
-    for (const skill of skillsResult.data) {
+  for (const entry of await (
+    options.readSnapshot ?? readCatalogSnapshotEntries
+  )()) {
+    const content = entry.content;
+    if (content.kind === 'skill') {
+      // A skill or plugin the installed-item policy turned off is left out.
+      if (entry.availability === 'disabled' || !content.selectionRef) continue;
+      items.push(skillItem(entry, content.selectionRef, enabledSkillKeys));
+    } else if (content.kind === 'plugin') {
+      const harness = content.harnesses?.[options.provider];
       if (
-        policy.isDisabled({
-          kind: 'skill',
-          sourceId: skill.sourceId,
-          skillName: skill.name,
-        })
+        entry.availability === 'disabled' ||
+        !content.selectionRef ||
+        !harness ||
+        !pluginListed(harness, options.provider)
       )
         continue;
-      items.push(skillItem(skill, enabledSkillKeys));
-    }
-  }
-
-  const marketplacesResult = await loadMarketplacesCacheOnly();
-  if (marketplacesResult.success && marketplacesResult.data) {
-    for (const marketplace of marketplacesResult.data.marketplaces) {
-      for (const plugin of marketplace.plugins) {
-        if (
-          policy.isDisabled({
-            kind: 'plugin',
-            marketplaceId: marketplace.id,
-            pluginName: plugin.name,
-          })
-        )
-          continue;
-        if (options.provider === 'copilot') {
-          const item = await copilotPluginItem(
-            marketplace,
-            plugin,
-            enabledPluginKeys,
-          );
-          if (item) items.push(item);
-          continue;
-        }
-        if (
-          providerAllowsPluginSupport(plugin, options.provider) &&
-          !providerHasInstalledPluginFacet(plugin, options.provider)
-        ) {
-          continue;
-        }
-        items.push(
-          pluginItem(marketplace, plugin, options.provider, enabledPluginKeys),
-        );
-      }
-    }
-  }
-
-  const mcpIndex = await loadMcpIndex();
-  for (const server of mcpIndex.servers) {
-    for (const config of server.configs) {
-      if (config.enabled) {
-        items.push(mcpItem(server, config, enabledMcpKeys));
-      }
+      items.push(
+        pluginItem(
+          entry,
+          content.selectionRef,
+          harness,
+          options.provider,
+          enabledPluginKeys,
+        ),
+      );
+    } else if (content.kind === 'mcp_server') {
+      // The snapshot lists enabled configurations only; search has never
+      // applied the installed-item policy or the account connection to them.
+      if (!content.selectionRef) continue;
+      items.push(
+        mcpItem(
+          entry,
+          content.configName,
+          content.selectionRef,
+          enabledMcpKeys,
+        ),
+      );
     }
   }
 

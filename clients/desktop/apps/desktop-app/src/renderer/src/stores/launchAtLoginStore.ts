@@ -8,6 +8,7 @@
 
 import { useEffect } from 'react';
 import { create } from 'zustand';
+import { launchAtLoginSatisfies } from '@canopy/desktop-shared/lib/launch-at-login';
 import type {
   LaunchAtLoginApi,
   LaunchAtLoginSetResult,
@@ -63,16 +64,6 @@ function sameStatus(
     left.enabled === right.enabled &&
     left.pendingApproval === right.pendingApproval
   );
-}
-
-/** Whether `status` is what the user asked for. */
-export function launchAtLoginSatisfies(
-  status: LaunchAtLoginStatus,
-  requested: boolean,
-): boolean {
-  return requested
-    ? status.enabled || status.pendingApproval
-    : !status.enabled && !status.pendingApproval;
 }
 
 export const useLaunchAtLoginStore = create<LaunchAtLoginStore>((set, get) => {

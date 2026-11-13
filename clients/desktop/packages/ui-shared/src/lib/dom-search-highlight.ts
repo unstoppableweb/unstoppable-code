@@ -124,7 +124,10 @@ export function createDomSearchExecutor(
     while (traversedTextParts < maxTextParts && (node = walker.nextNode())) {
       traversedTextParts += 1;
       const parent = node.parentElement;
-      if (parent?.closest('[data-markdown-generated]')) continue;
+      // Generated text the reader does not see as content: Mermaid's labels,
+      // and the hidden copies that draw a shimmering step's words.
+      if (parent?.closest('[data-markdown-generated], [data-search-skip]'))
+        continue;
       if (
         options.visibleOnly &&
         (!parent ||

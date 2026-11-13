@@ -9,6 +9,9 @@ import {
   CoreEventsSubscribeItemSchema,
   CoreEventsSubscribeOpenResultSchema,
   CoreEventsSubscribeParamsSchema,
+  CoreEventsUnsubscribeErrorSchema,
+  CoreEventsUnsubscribeParamsSchema,
+  CoreEventsUnsubscribeResultSchema,
 } from './events';
 
 export const CORE_EVENTS_INSTRUCTIONS = {
@@ -22,6 +25,19 @@ export const CORE_EVENTS_INSTRUCTIONS = {
     params: CoreEventsAckParamsSchema,
     result: CoreEventsAckResultSchema,
     error: CoreEventsAckErrorSchema,
+  }),
+  // Drops one of the connection's stream subscriptions with its undelivered
+  // items, sending no end frame (CAN-5970).
+  'core.events.unsubscribe': defineCanopyInstruction({
+    plane: 'core',
+    domain: 'events',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.events.read'],
+    params: CoreEventsUnsubscribeParamsSchema,
+    result: CoreEventsUnsubscribeResultSchema,
+    error: CoreEventsUnsubscribeErrorSchema,
   }),
 };
 

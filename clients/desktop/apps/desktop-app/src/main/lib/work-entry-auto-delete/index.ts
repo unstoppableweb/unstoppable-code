@@ -31,7 +31,7 @@ import {
 } from '../../services/split-lock-service';
 import { getChatStateService } from '../../services/chat-state-service';
 import { getResumeQueue } from '../../services/resume-queue-host';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
 import { createElectronExecutionRuntime } from '../../pipelines/execution-runtime';
 import { getAppAdvisorWatcherService } from '../../app-advisor/watchers';
 import { readAllSidebarItems } from '../sidebar-items';
@@ -617,11 +617,15 @@ async function evaluate(
         let result: Awaited<ReturnType<typeof removeWorkspaceTarget>>;
         try {
           await broadcast(workspaceId);
-          result = await removeWorkspaceTarget(current, {
-            mode: arm.mode,
-            teardown: arm.teardown,
-            branch,
-          });
+          result = await removeWorkspaceTarget(
+            current,
+            {
+              mode: arm.mode,
+              teardown: arm.teardown,
+              branch,
+            },
+            'agent',
+          );
         } finally {
           removingKeys.delete(key);
         }

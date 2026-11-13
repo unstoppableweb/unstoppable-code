@@ -1,5 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import {
   WORKSPACE_ROOT_REPO_ID,
   type LocalMemoryImportResult,
@@ -203,9 +203,14 @@ async function targetDueSourcePaths(
   return dueSourcePaths;
 }
 
+/**
+ * `confirmedSourcePaths`, when given, are the only files the job may read: a
+ * file discovered since a person confirmed the list is left alone.
+ */
 async function runLocalMemoryImportJob(
   target: LocalMemoryImportTarget,
   force: boolean,
+  confirmedSourcePaths?: ReadonlySet<string>,
 ): Promise<ClaudeMemoryImportJobResult> {
   if (!(await readLocalMemoryEnabledPreference())) {
     return emptyJobResult('disabled');
@@ -225,13 +230,19 @@ async function runLocalMemoryImportJob(
   if (dueSourcePaths?.length === 0) {
     return emptyJobResult('min-interval');
   }
+  const sourcePaths =
+    confirmedSourcePaths === undefined
+      ? dueSourcePaths
+      : (dueSourcePaths ?? [...confirmedSourcePaths]).filter((sourcePath) =>
+          confirmedSourcePaths.has(sourcePath),
+        );
 
   const result =
     target.sourceTool === 'codex'
       ? await runCodexMemoryImport({
           userScope: true,
           checkedAt,
-          ...(dueSourcePaths ? { sourcePaths: dueSourcePaths } : {}),
+          ...(sourcePaths ? { sourcePaths } : {}),
         })
       : await runClaudeMemoryImport(
           target.scope === 'user'
@@ -244,7 +255,7 @@ async function runLocalMemoryImportJob(
                 ...(target.repoId ? { repoId: target.repoId } : {}),
                 scopeFilter: 'user',
                 checkedAt,
-                ...(dueSourcePaths ? { sourcePaths: dueSourcePaths } : {}),
+                ...(sourcePaths ? { sourcePaths } : {}),
               }
             : {
                 workspaceId: target.workspaceId,
@@ -252,7 +263,7 @@ async function runLocalMemoryImportJob(
                 ...(target.repoId ? { repoId: target.repoId } : {}),
                 scopeFilter: 'workspace',
                 checkedAt,
-                ...(dueSourcePaths ? { sourcePaths: dueSourcePaths } : {}),
+                ...(sourcePaths ? { sourcePaths } : {}),
               },
         );
   if (result.staged > 0) {
@@ -268,11 +279,12 @@ async function runLocalMemoryImportJob(
 function enqueueLocalMemoryImport(
   target: LocalMemoryImportTarget,
   force: boolean,
+  confirmedSourcePaths?: ReadonlySet<string>,
 ): Promise<ClaudeMemoryImportJobResult> {
   return enqueueBackgroundHelperTask({
     priority: BACKGROUND_HELPER_PRIORITIES.memoryImport,
     task: (): Promise<ClaudeMemoryImportJobResult> =>
-      runLocalMemoryImportJob(target, force),
+      runLocalMemoryImportJob(target, force, confirmedSourcePaths),
   });
 }
 
@@ -361,9 +373,12 @@ function sidebarTargets(
 async function enqueueLocalMemoryImportBatch(
   targets: LocalMemoryImportTarget[],
   force = false,
+  confirmedSourcePaths?: ReadonlySet<string>,
 ): Promise<LocalMemoryImportResult> {
   const results = await Promise.all(
-    targets.map((target) => enqueueLocalMemoryImport(target, force)),
+    targets.map((target) =>
+      enqueueLocalMemoryImport(target, force, confirmedSourcePaths),
+    ),
   );
   const skippedOversize = new Set(
     results.flatMap((result) => result.oversizePaths),
@@ -446,25 +461,73 @@ export async function enqueueWorkspaceLocalMemoryImportBatch(
   );
 }
 
-export async function enqueueManualLocalMemoryImportBatch(
+/** What a manual import reads: every project's user memory, or one project's. */
+async function manualImportTargets(
   workspaceId?: string,
-): Promise<LocalMemoryImportResult> {
+): Promise<LocalMemoryImportTarget[]> {
   if (workspaceId === undefined) {
     const sidebar = await readAllSidebarItems();
-    return enqueueLocalMemoryImportBatch(
-      [
-        ...sidebar.items.flatMap((item) => sidebarTargets(item, ['user'])),
-        { sourceTool: 'codex', scope: 'user' },
-      ],
-      true,
-    );
+    return [
+      ...sidebar.items.flatMap((item) => sidebarTargets(item, ['user'])),
+      { sourceTool: 'codex', scope: 'user' },
+    ];
   }
   const workspace = await readWorkspaceConfig(workspaceId);
+  return [
+    ...repositoryTargets(workspaceId, workspace, ['user', 'workspace']),
+    { sourceTool: 'codex', scope: 'user' },
+  ];
+}
+
+/**
+ * Settings' manual import, or, with `confirmedSourcePaths`, one that reads
+ * only the files a person confirmed (CAN-6005).
+ */
+export async function enqueueManualLocalMemoryImportBatch(
+  workspaceId?: string,
+  confirmedSourcePaths?: ReadonlySet<string>,
+): Promise<LocalMemoryImportResult> {
   return enqueueLocalMemoryImportBatch(
-    [
-      ...repositoryTargets(workspaceId, workspace, ['user', 'workspace']),
-      { sourceTool: 'codex', scope: 'user' },
-    ],
+    await manualImportTargets(workspaceId),
     true,
+    confirmedSourcePaths,
+  );
+}
+
+/** A file a manual import reads, and how a person is shown it. */
+export interface LocalMemoryImportSource {
+  tool: 'claude-code' | 'codex';
+  /** The folder's name and the file within its tool's memory folder. */
+  label: string;
+  sourcePath: string;
+}
+
+/**
+ * The files a manual import of the same scope reads, for a person to confirm
+ * before it runs (CAN-6005). Each folder is listed once.
+ */
+export async function listManualLocalMemoryImportSources(
+  workspaceId?: string,
+): Promise<LocalMemoryImportSource[]> {
+  const sources = new Map<string, LocalMemoryImportSource>();
+  for (const target of await manualImportTargets(workspaceId)) {
+    const discovery =
+      target.sourceTool === 'codex'
+        ? await discoverCodexMemoryFiles()
+        : await discoverClaudeMemoryFiles(target.repoPath);
+    if (discovery.sourceDir === null) continue;
+    const folder =
+      target.sourceTool === 'codex' ? 'Codex' : basename(target.repoPath);
+    for (const file of discovery.files) {
+      if (sources.has(file.sourcePath)) continue;
+      sources.set(file.sourcePath, {
+        tool: target.sourceTool,
+        label: `${folder}: ${relative(discovery.sourceDir, file.sourcePath)}`,
+        sourcePath: file.sourcePath,
+      });
+    }
+  }
+  return [...sources.values()].sort((left, right) =>
+    left.label.localeCompare(right.label),
   );
 }

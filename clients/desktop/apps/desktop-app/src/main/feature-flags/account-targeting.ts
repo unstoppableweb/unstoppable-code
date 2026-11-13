@@ -8,7 +8,7 @@ import type {
   CanopyOrganizationSummary,
   CanopyTeamSummary,
 } from '@canopy/protocol/pipelines';
-import type { GetAccountResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountResponse';
+import type { GetAccountResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/GetAccountResponse';
 
 const PROBE_TIMEOUT_MS = 3_000;
 

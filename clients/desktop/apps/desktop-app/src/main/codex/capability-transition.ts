@@ -19,9 +19,9 @@ import {
   createCodexCapabilitySnapshotId,
   loadCodexThreadSeedItemsWithLoadCount,
   type CodexThreadHandle,
-} from '@canopy/desktop-shared/node/codex-runtime';
-import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '@canopy/desktop-shared/node/codex-runtime/thread-config';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+} from '@canopy/execution-engine/node/codex-runtime';
+import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '@canopy/execution-engine/node/codex-runtime/thread-config';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { resolvePlugins } from '../plugins/plugin-resolver';
 import { resolveEffectiveChatPluginContext } from '../plugins/global-plugin-overlay';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';

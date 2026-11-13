@@ -695,6 +695,17 @@ export interface SharedPlanDetail extends SharedPlanSummary {
   commentThreads: WirePlanCommentThread[];
 }
 
+/**
+ * Answer of `DELETE .../plans/{planId}` (CAN-5904), where `planId` is the
+ * shared plan's `id` (the desktop's stored `remoteId`). The web route
+ * hard-deletes the shared plan, with its revisions and comment threads, and
+ * answers a uniform 404 for missing and unauthorized plans; the desktop
+ * client maps that 404 to `{ unshared: false }` (already gone).
+ */
+export interface SharedPlanUnshareResult {
+  unshared: boolean;
+}
+
 // ===========================================================================
 // Approved (telemetry) plan read shapes.
 //

@@ -9,7 +9,7 @@ import { classifyError } from './app-errors/classification';
 export class FileSaveConflictError extends Error {
   override readonly name = 'FileSaveConflictError';
 
-  constructor(message = 'File changed on disk since it was loaded.') {
+  constructor(message = 'The document changed after you started editing.') {
     super(message);
     classifyError(this, 'external.state_changed');
   }

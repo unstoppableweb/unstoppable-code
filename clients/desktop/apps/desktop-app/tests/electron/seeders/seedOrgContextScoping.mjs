@@ -41,7 +41,7 @@ export const ORG_CONTEXT_ENV = {
  * @param {{
  *   personalWorktreeIds?: string[],
  *   extraPersonalWorkspaces?: { id: string, name: string }[],
- *   extraOrganizationWorkspaces?: { id: string, name: string, projectId: string, instanceId: string, remoteUrl?: string, worktreeIds?: string[] }[],
+ *   extraOrganizationWorkspaces?: { id: string, name: string, projectId: string, instanceId: string, organizationId?: string, remoteUrl?: string, worktreeIds?: string[] }[],
  *   personalRemoteUrl?: string,
  *   organizationB?: boolean,
  *   organizationWorktreeIds?: string[],
@@ -153,7 +153,8 @@ export function seedOrgContextScoping(
             ? {
                 owner: {
                   type: 'organization',
-                  organizationId: ORG_CONTEXT_A,
+                  organizationId:
+                    extraOrganization.organizationId ?? ORG_CONTEXT_A,
                   projectId: extraOrganization.projectId,
                   instanceId: extraOrganization.instanceId,
                   bindingGeneration: 0,

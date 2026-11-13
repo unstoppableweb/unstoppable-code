@@ -12,8 +12,17 @@ import {
   type AttachmentMeta,
   type ClipboardAttachmentData,
 } from '@canopy/desktop-shared/types';
+import { CLOUD_ATTACHMENTS_MAX_PER_MESSAGE } from '@canopy/protocol/cloud-attachments';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  CLOUD_ATTACHMENT_ACCEPT,
+  CLOUD_ATTACHMENT_LIMIT_MESSAGE,
+  cloudAttachmentMediaType,
+  cloudAttachmentRefusal,
+} from '@/cloud-chats/cloud-chat-attachments';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useChatStore } from '@/stores/chatStore';
+import { uploadWebCoreChatAttachment } from '@/stores/chat/web-core';
 import { useFileListStore } from '@/stores/fileListStore';
 import { useWorkspaceItemsStore } from '@/stores/workspaceItemsStore';
 
@@ -150,6 +159,130 @@ export async function importChatAttachments(
     .loadAttachments(target.projectId, target.worktreeId, isCurrent);
   if (isCurrent?.() === false) return [];
   return result.attachments;
+}
+
+const UPLOAD_FAILURE: Readonly<Record<string, string>> = {
+  too_large: 'Attachment is too large',
+  offline: "Couldn't upload it. Check your connection and try again",
+  unauthenticated: 'Sign in again to attach files to cloud chats',
+  disabled: "Attachments aren't available in this cloud chat",
+  rejected: "Couldn't upload it",
+};
+
+/** A picked file that moved or could no longer be read before it uploaded. */
+const UNREADABLE_FILE = "Couldn't read it. It may have moved";
+
+/** Files the person picks for a cloud chat, from the renderer's own picker. */
+function pickCloudAttachmentFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = CLOUD_ATTACHMENT_ACCEPT;
+    input.addEventListener(
+      'change',
+      () => resolve(Array.from(input.files ?? [])),
+      { once: true },
+    );
+    input.addEventListener('cancel', () => resolve([]), { once: true });
+    input.click();
+  });
+}
+
+/**
+ * Uploads in flight per cloud chat: they count toward the message's limit
+ * before they join its pending attachments.
+ */
+const uploadingByChat = new Map<string, number>();
+
+/** What attaching files to a cloud chat attached, and why the rest were not. */
+export interface WebCoreChatFilesResult {
+  readonly attachments: AttachmentMeta[];
+  /** One line per file left out, for the composer to show beside it. */
+  readonly problems: string[];
+}
+
+/**
+ * Attaches files to a cloud chat (CAN-6175 R6): each one the web core would
+ * take uploads to that chat as it is attached, and comes back as a pending
+ * attachment naming the upload. A file it would refuse, or one past the
+ * message's limit, is left out with the web's words, before its bytes are
+ * read. No files opens the picker. Nothing goes through main but the upload.
+ */
+export async function importWebCoreChatFiles(
+  target: ActiveChatAttachmentTarget,
+  files: readonly File[] | null,
+  isCurrent?: () => boolean,
+): Promise<WebCoreChatFilesResult> {
+  const chosen = files ?? (await pickCloudAttachmentFiles());
+  if (chosen.length === 0 || isCurrent?.() === false)
+    return { attachments: [], problems: [] };
+  const problems: string[] = [];
+  const accepted = chosen.flatMap((file) => {
+    const refusal = cloudAttachmentRefusal(file);
+    const mediaType = cloudAttachmentMediaType(file);
+    if (refusal === null && mediaType !== null) return [{ file, mediaType }];
+    problems.push(
+      `${file.name}: ${refusal ?? 'Attachment type is not supported'}`,
+    );
+    return [];
+  });
+  const key = `${target.projectId}/${target.worktreeId}`;
+  const chatKey = `${key}/${target.chatId}`;
+  const pending =
+    useChatStore
+      .getState()
+      .worktreeChats[key]?.tabs.find((tab) => tab.id === target.chatId)
+      ?.pendingAttachments?.length ?? 0;
+  const room = Math.max(
+    0,
+    CLOUD_ATTACHMENTS_MAX_PER_MESSAGE -
+      pending -
+      (uploadingByChat.get(chatKey) ?? 0),
+  );
+  if (accepted.length > room) problems.push(CLOUD_ATTACHMENT_LIMIT_MESSAGE);
+  const taken = accepted.slice(0, room);
+  if (taken.length === 0) return { attachments: [], problems };
+  uploadingByChat.set(
+    chatKey,
+    (uploadingByChat.get(chatKey) ?? 0) + taken.length,
+  );
+  // Each file settles on its own: one that can't be read or sent leaves the
+  // rest attached.
+  const uploads = taken.map(async ({ file, mediaType }) => {
+    try {
+      const result = await uploadWebCoreChatAttachment(target, {
+        name: file.name,
+        mediaType,
+        bytes: new Uint8Array(await file.arrayBuffer()),
+      });
+      if (result.ok) return result.attachment;
+      problems.push(
+        `${file.name}: ${result.message ?? UPLOAD_FAILURE[result.reason] ?? UPLOAD_FAILURE.rejected}`,
+      );
+      return null;
+    } catch (error) {
+      reportClientAppError(error);
+      problems.push(`${file.name}: ${UNREADABLE_FILE}`);
+      return null;
+    }
+  });
+  let settled: (AttachmentMeta | null)[];
+  try {
+    settled = await Promise.all(uploads);
+  } finally {
+    // Released together, as the composer then adds the batch to the chat's
+    // pending attachments before any other attach can run.
+    const left = (uploadingByChat.get(chatKey) ?? 0) - taken.length;
+    if (left > 0) uploadingByChat.set(chatKey, left);
+    else uploadingByChat.delete(chatKey);
+  }
+  const attachments = settled.filter(
+    (attachment): attachment is AttachmentMeta => attachment !== null,
+  );
+  return isCurrent?.() === false
+    ? { attachments: [], problems: [] }
+    : { attachments, problems };
 }
 
 export function addPendingAttachmentsAndRefreshIndex(

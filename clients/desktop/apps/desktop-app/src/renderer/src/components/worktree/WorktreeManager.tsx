@@ -2370,8 +2370,8 @@ export function WorktreeManager(): JSX.Element {
       {/* Archived-worktree viewer: absolute z-30 overlay above WorktreePart
           (grid content stays mounted behind it, mirroring the cowork archive
           overlay), below app modals at z-modal. `electron-no-drag` is
-          load-bearing: WorktreePart paints an `electron-drag` rect over the
-          top 40px of this same area, and app-region hit testing ignores
+          load-bearing: on Windows WorktreePart paints an `electron-drag` rect
+          over the top 40px of this same area, and app-region hit testing ignores
           z-order — without the hole, the viewer's header buttons receive
           window-drag instead of clicks (real mice only; Playwright's
           synthetic clicks bypass app-region, so E2E cannot catch it). */}

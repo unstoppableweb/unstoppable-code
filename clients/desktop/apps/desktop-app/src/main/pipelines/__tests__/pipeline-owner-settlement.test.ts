@@ -1,3 +1,4 @@
+import { resolvePipelineAgentAliasRoute } from '@canopy/pipeline-interop';
 // CAN-5095: Electron main settles pipeline owner requests for a daemon run it
 // follows, with its in-process functions and the run's own stored scope.
 import {
@@ -6,26 +7,35 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  WorkerPipelineHostRequest,
-  WorkerPipelineOwnerResult,
+import {
+  WorkerPipelineHostRequestSchema,
+  type WorkerPipelineHostRequest,
+  type WorkerPipelineOwnerResult,
 } from '@canopy/protocol/canopy-core';
+import { McpCredentialBroker } from '@canopy/core-runtime/node/mcp-auth';
+import { pluginMcpServerContentHash } from '@canopy/execution-engine/node/plugins/plugin-mcp-content-hash';
 import type { PipelineOwnerSettlement } from '@canopy/core-runtime/node/pipeline';
 import {
   initClaudeModels,
   initCodexModels,
   initOllamaModels,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   PipelineOwnerRunContext,
   type PipelineOwnerRun,
 } from '../pipeline-owner-requests';
 import { createElectronExecutionRuntime } from '../execution-runtime';
 import { resolveClaudeModConfigDirectory } from '../../agents/claude-mod-admission-launch';
+import type { McpOAuthSubject } from '../../mcp/oauth-credentials';
+import {
+  resolvePluginMcpOAuthRoute,
+  type PluginMcpOAuthRoute,
+} from '../../plugins/plugin-resolver';
 
 const ROUTE_CANARY = 'http://127.0.0.1:9/codex-gateway/route-canary';
 const KEY_CANARY = 'sk-account-proxy-client-key-canary';
@@ -143,6 +153,42 @@ jest.mock('../../ollama/codex-compatible', () => ({
       },
     }),
 }));
+// CAN-6327: a run's plan writes become tracked plans of its worktree.
+const mockCreateTrackedPlan = jest.fn<Promise<{ id: string }>, unknown[]>(() =>
+  Promise.resolve({ id: 'tracked-plan-1' }),
+);
+const mockUpdateTrackedPlan = jest.fn<Promise<unknown>, unknown[]>(() =>
+  Promise.resolve(null),
+);
+jest.mock('../../lib/plan-persistence', () => ({
+  createTrackedPlan: (...args: unknown[]): Promise<unknown> =>
+    mockCreateTrackedPlan(...args),
+  updateTrackedPlan: (...args: unknown[]): Promise<unknown> =>
+    mockUpdateTrackedPlan(...args),
+}));
+// CAN-6168: the installed plugins this app reads, and the reads around them.
+const mockMarketplaces: { current: unknown[] } = { current: [] };
+jest.mock('../../plugins/plugin-service', () => ({
+  ...jest.requireActual<object>('../../plugins/plugin-service'),
+  loadMarketplaces: (): Promise<unknown> =>
+    Promise.resolve({
+      success: true,
+      data: { marketplaces: mockMarketplaces.current },
+    }),
+}));
+jest.mock('../../lib/preferences-store', () => ({
+  ...jest.requireActual<object>('../../lib/preferences-store'),
+  readPreferencesFile: (): Promise<unknown> => Promise.resolve({}),
+}));
+jest.mock('../../mcp/oauth-token-store', () => ({
+  ...jest.requireActual<object>('../../mcp/oauth-token-store'),
+  migratePluginMcpOAuthToken: (): Promise<void> => Promise.resolve(),
+}));
+jest.mock('../../mcp/oauth-probe', () => ({
+  probeMcpHttpOAuthRequirement: (): Promise<unknown> =>
+    Promise.resolve({ requiresOAuth: false, requirement: 'none' }),
+}));
+
 jest.mock('../../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: (): unknown => ({
     registerCanopyWorktreeSessionRoute: (): Promise<void> => Promise.resolve(),
@@ -454,11 +500,24 @@ describe('PipelineOwnerRunContext', () => {
     });
     const runtime = createElectronExecutionRuntime();
     const context = new PipelineOwnerRunContext(run());
-    for (const agentId of ['agent_model_reviewer', 'agent_model_inherit']) {
+    for (const agentId of [
+      'agent_model_reviewer',
+      'agent_model_inherit',
+      resolvePipelineAgentAliasRoute({
+        agent_id: 'agent_model_reviewer',
+        base: CLAUDE,
+      }),
+    ]) {
       const inProcess = await runtime.resolvePipelineAgentModelAlias?.(
         agentId,
         { projectId: 'workspace-1' },
       );
+      if (agentId.includes('@'))
+        expect(inProcess).toMatchObject({
+          agentId: 'agent_model_reviewer',
+          base: CLAUDE,
+          instructions: 'Review carefully.',
+        });
       // The request names another workspace; the run's own decides.
       const settlement = await context.apply(
         ownerRequest(
@@ -785,5 +844,357 @@ describe('PipelineOwnerRunContext', () => {
     await context.close(state());
     expect(mockUnregisterRoutes).toHaveBeenCalledTimes(1);
     expect(mockUnregisterRoutes).toHaveBeenCalledWith(session);
+  });
+
+  it("keeps a run's plan writes as tracked plans of its own worktree, and only its own (CAN-6327)", async () => {
+    const context = new PipelineOwnerRunContext(run());
+    const created = await context.apply(
+      ownerRequest({ action: 'owner.plan.create', content: '# Plan\n' }),
+      signal,
+    );
+    expect(ownerValue(created)).toEqual({
+      kind: 'plan.create',
+      planId: 'tracked-plan-1',
+    });
+    expect(mockCreateTrackedPlan).toHaveBeenCalledWith({
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      source: 'pipeline',
+      content: '# Plan\n',
+      reviewStatus: 'approved',
+      linkedExecutionId: 'execution-1',
+    });
+    const updated = await context.apply(
+      ownerRequest({
+        action: 'owner.plan.update',
+        planId: 'tracked-plan-1',
+        content: '# Plan\n\nRefined.\n',
+        approve: true,
+      }),
+      signal,
+    );
+    expect(ownerValue(updated)).toEqual({ kind: 'plan.update' });
+    expect(mockUpdateTrackedPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        planId: 'tracked-plan-1',
+        content: '# Plan\n\nRefined.\n',
+        reviewStatus: 'approved',
+        linkedExecutionId: 'execution-1',
+      }),
+    );
+    // A plan the run neither started from nor kept is never written.
+    const foreign = await context.apply(
+      ownerRequest({
+        action: 'owner.plan.update',
+        planId: 'tracked-plan-of-another-run',
+        content: 'overwritten',
+        approve: true,
+      }),
+      signal,
+    );
+    expect(foreign.result).toMatchObject({
+      status: 'failure',
+      message: 'This plan belongs to another workflow run.',
+    });
+    expect(mockUpdateTrackedPlan).toHaveBeenCalledTimes(1);
+    // A start-time create that lands after the run kept its plan keeps nothing.
+    const late = await context.apply(
+      ownerRequest({
+        action: 'owner.plan.create',
+        content: '# Plan\n',
+        initial: true,
+      }),
+      signal,
+    );
+    expect(ownerValue(late)).toEqual({
+      kind: 'plan.create',
+      planId: 'tracked-plan-1',
+    });
+    expect(mockCreateTrackedPlan).toHaveBeenCalledTimes(1);
+    await context.close(state());
+  });
+});
+
+describe('owner MCP credentials (CAN-6168)', () => {
+  const TOKEN = 'mcp-oauth-access-token-canary';
+  const UPSTREAM = 'https://mcp.example.test/docs';
+  const SERVER = {
+    type: 'http',
+    url: UPSTREAM,
+    oauth: { clientId: 'client-1', scopes: ['read'] },
+  };
+
+  function broker(resolve: () => Promise<string | null>): {
+    broker: McpCredentialBroker<McpOAuthSubject>;
+    resolve: jest.Mock<
+      Promise<string | null>,
+      [McpOAuthSubject, AbortSignal | undefined]
+    >;
+    invalidate: jest.Mock<Promise<void>, [McpOAuthSubject, string, string]>;
+  } {
+    const owner = {
+      scopeOf: (): string => 'scope',
+      resolve: jest.fn<
+        Promise<string | null>,
+        [McpOAuthSubject, AbortSignal | undefined]
+      >(resolve),
+      invalidate: jest.fn<Promise<void>, [McpOAuthSubject, string, string]>(
+        () => Promise.resolve(),
+      ),
+    };
+    return {
+      broker: new McpCredentialBroker<McpOAuthSubject>({ owner }),
+      resolve: owner.resolve,
+      invalidate: owner.invalidate,
+    };
+  }
+
+  function bindRequest(
+    overrides: { serverName?: string; contentHash?: string } = {},
+  ): WorkerPipelineHostRequest {
+    return ownerRequest({
+      action: 'owner.mcp.bind',
+      marketplaceId: 'market',
+      pluginName: 'notes',
+      serverName: overrides.serverName ?? 'docs',
+      contentHash: overrides.contentHash ?? pluginMcpServerContentHash(SERVER),
+    });
+  }
+
+  beforeEach(() => {
+    const market = join(worktree, 'market');
+    mkdirSync(join(market, 'notes'), { recursive: true });
+    writeFileSync(
+      join(market, 'notes', '.mcp.json'),
+      JSON.stringify({ mcpServers: { docs: SERVER } }),
+    );
+    mockMarketplaces.current = [
+      {
+        id: 'market',
+        name: 'market',
+        installLocation: market,
+        plugins: [{ name: 'notes', sourcePath: 'notes' }],
+      },
+    ];
+  });
+
+  it("binds a plugin server from this app's own read and presents one header per authorization, host-locally", async () => {
+    const {
+      broker: credentials,
+      resolve,
+      invalidate,
+    } = broker(() => Promise.resolve(TOKEN));
+    const context = new PipelineOwnerRunContext(run(), {
+      broker: (): McpCredentialBroker<McpOAuthSubject> => credentials,
+      generation: (): number => 1,
+      resolve: resolvePluginMcpOAuthRoute,
+    });
+    const bound = ownerValue(await context.apply(bindRequest(), signal));
+    if (bound?.kind !== 'mcp.bind' || bound.routeRef === null)
+      throw new Error('No route.');
+    expect(bound.routeRef).toMatch(/^mcpr1_/);
+    expect(resolve).not.toHaveBeenCalled();
+
+    const request = ownerRequest({
+      action: 'owner.mcp.authorize',
+      routeRef: bound.routeRef,
+    });
+    const settlement = await context.apply(request, signal);
+    const granted = ownerValue(settlement);
+    if (granted?.kind !== 'mcp.authorize' || granted.grantId === null)
+      throw new Error('No grant.');
+    expect(granted.grantId).toMatch(/^mcpg1_/);
+    // The header returns host-locally, never in the result.
+    expect(settlement.values).toEqual({
+      requestId: request.requestId,
+      mcpAuthorization: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(JSON.stringify(settlement.result)).not.toContain(TOKEN);
+    // The credential is the one this app read for the plugin's server.
+    expect(resolve.mock.calls[0]?.[0]).toMatchObject({
+      kind: 'declared',
+      definition: { url: UPSTREAM },
+    });
+
+    const rejected = ownerRequest({
+      action: 'owner.mcp.rejected',
+      grantId: granted.grantId,
+    });
+    expect(ownerValue(await context.apply(rejected, signal))).toEqual({
+      kind: 'mcp.rejected',
+    });
+    expect(invalidate).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'declared' }),
+      TOKEN,
+      UPSTREAM,
+    );
+    // A grant invalidates its token once.
+    await context.apply({ ...rejected, requestId: 'again' }, signal);
+    expect(invalidate).toHaveBeenCalledTimes(1);
+
+    await context.close(null);
+    expect(credentials.size).toBe(0);
+    expect(
+      (await context.apply({ ...request, requestId: 'late' }, signal)).result,
+    ).toMatchObject({ status: 'failure' });
+  });
+
+  it('refuses a bind whose declaration differs or that names an unknown server, and never reads OAuth fields from the request', async () => {
+    const { broker: credentials } = broker(() => Promise.resolve(TOKEN));
+    const context = new PipelineOwnerRunContext(run(), {
+      broker: (): McpCredentialBroker<McpOAuthSubject> => credentials,
+      generation: (): number => 1,
+      resolve: resolvePluginMcpOAuthRoute,
+    });
+    const changed = pluginMcpServerContentHash({
+      ...SERVER,
+      url: 'https://elsewhere.example.test/',
+    });
+    for (const request of [
+      bindRequest({ contentHash: changed }),
+      bindRequest({ serverName: 'other' }),
+    ])
+      expect(ownerValue(await context.apply(request, signal))).toEqual({
+        kind: 'mcp.bind',
+        routeRef: null,
+      });
+    expect(credentials.size).toBe(0);
+    // OAuth fields the worker adds are refused by the request schema itself.
+    const smuggled: unknown = JSON.parse(
+      JSON.stringify({
+        ...bindRequest(),
+        request: {
+          ...bindRequest().request,
+          url: 'https://evil.example.test/',
+          oauth: { clientId: 'evil' },
+        },
+      }),
+    );
+    expect(WorkerPipelineHostRequestSchema.safeParse(smuggled).success).toBe(
+      false,
+    );
+    // A route this run never bound presents nothing.
+    const foreign = await context.apply(
+      ownerRequest({
+        action: 'owner.mcp.authorize',
+        routeRef: 'mcpr1_AAAAAAAAAAAAAAAAAAAAAA',
+      }),
+      signal,
+    );
+    expect(ownerValue(foreign)).toEqual({
+      kind: 'mcp.authorize',
+      grantId: null,
+    });
+    expect(foreign.values).toBeUndefined();
+  });
+
+  it('fails closed when the credential owner cannot decide', async () => {
+    const { broker: credentials } = broker(() =>
+      Promise.reject(new Error('refresh failed')),
+    );
+    const context = new PipelineOwnerRunContext(run(), {
+      broker: (): McpCredentialBroker<McpOAuthSubject> => credentials,
+      generation: (): number => 1,
+      resolve: resolvePluginMcpOAuthRoute,
+    });
+    const bound = ownerValue(await context.apply(bindRequest(), signal));
+    if (bound?.kind !== 'mcp.bind' || bound.routeRef === null)
+      throw new Error('No route.');
+    const settlement = await context.apply(
+      ownerRequest({ action: 'owner.mcp.authorize', routeRef: bound.routeRef }),
+      signal,
+    );
+    expect(settlement.result).toMatchObject({ status: 'failure' });
+    expect(settlement.values).toBeUndefined();
+  });
+
+  it('a route ends with the owner subscription that bound it', async () => {
+    const { broker: credentials, resolve } = broker(() =>
+      Promise.resolve(TOKEN),
+    );
+    let generation = 1;
+    const context = new PipelineOwnerRunContext(run(), {
+      broker: (): McpCredentialBroker<McpOAuthSubject> => credentials,
+      generation: (): number => generation,
+      resolve: resolvePluginMcpOAuthRoute,
+    });
+    const bound = ownerValue(await context.apply(bindRequest(), signal));
+    if (bound?.kind !== 'mcp.bind' || bound.routeRef === null)
+      throw new Error('No route.');
+    expect(credentials.size).toBe(1);
+    // The owner session reconnected: a new subscription.
+    generation = 2;
+    const settlement = await context.apply(
+      ownerRequest({ action: 'owner.mcp.authorize', routeRef: bound.routeRef }),
+      signal,
+    );
+    expect(ownerValue(settlement)).toEqual({
+      kind: 'mcp.authorize',
+      grantId: null,
+    });
+    expect(settlement.values).toBeUndefined();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(credentials.size).toBe(0);
+  });
+
+  it('holds at most its route cap however many binds arrive at once', async () => {
+    const { broker: credentials } = broker(() => Promise.resolve(TOKEN));
+    const context = new PipelineOwnerRunContext(run(), {
+      broker: (): McpCredentialBroker<McpOAuthSubject> => credentials,
+      generation: (): number => 1,
+      resolve: (): Promise<PluginMcpOAuthRoute | null> =>
+        new Promise((resolve) =>
+          setTimeout(() =>
+            resolve({
+              subject: { kind: 'device', serverId: 'server', configId: 'c' },
+              upstreamUrl: UPSTREAM,
+            }),
+          ),
+        ),
+    });
+    const answers = await Promise.all(
+      Array.from({ length: 70 }, () => context.apply(bindRequest(), signal)),
+    );
+    const bound = answers.filter((answer) => {
+      const value = ownerValue(answer);
+      return value?.kind === 'mcp.bind' && value.routeRef !== null;
+    });
+    expect(bound).toHaveLength(64);
+    expect(credentials.size).toBe(64);
+  });
+
+  it('presents nothing when the owner subscription ends while the broker resolves', async () => {
+    let release: (token: string) => void = () => undefined;
+    const { broker: credentials } = broker(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+    let generation = 1;
+    const context = new PipelineOwnerRunContext(run(), {
+      broker: (): McpCredentialBroker<McpOAuthSubject> => credentials,
+      generation: (): number => generation,
+      resolve: resolvePluginMcpOAuthRoute,
+    });
+    const bound = ownerValue(await context.apply(bindRequest(), signal));
+    if (bound?.kind !== 'mcp.bind' || bound.routeRef === null)
+      throw new Error('No route.');
+    const pending = context.apply(
+      ownerRequest({ action: 'owner.mcp.authorize', routeRef: bound.routeRef }),
+      signal,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    generation = 2;
+    release(TOKEN);
+    const settlement = await pending;
+    expect(ownerValue(settlement)).toEqual({
+      kind: 'mcp.authorize',
+      grantId: null,
+    });
+    expect(settlement.values).toBeUndefined();
+    expect(credentials.size).toBe(0);
   });
 });

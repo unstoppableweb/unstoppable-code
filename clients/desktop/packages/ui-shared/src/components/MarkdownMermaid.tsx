@@ -745,12 +745,12 @@ function MarkdownMermaidComponent({
                 {errorToggle}
               </Button>
             )}
-            <Tooltip label="Copy diagram text">
+            <Tooltip label="Copy">
               <Button
                 variant="ghost"
                 size="sm"
                 iconOnly
-                aria-label="Copy diagram text"
+                aria-label="Copy"
                 data-testid="mermaid-copy-source"
                 disabled={pending !== null}
                 onClick={copyText}

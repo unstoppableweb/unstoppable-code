@@ -77,17 +77,6 @@ export const USER_BUBBLE_STATES: MessageGalleryState[] = [
     ),
   },
   {
-    id: 'voice',
-    title: 'Voice-dictated',
-    description:
-      'Dictated message — mic badge anchored to the top-left corner of the bubble.',
-    message: userMessage(
-      'demo-user-voice',
-      'Add a loading spinner to the settings page while preferences load.',
-      { inputMode: 'voice' },
-    ),
-  },
-  {
     id: 'with-revert',
     title: 'Revertible turn',
     description:

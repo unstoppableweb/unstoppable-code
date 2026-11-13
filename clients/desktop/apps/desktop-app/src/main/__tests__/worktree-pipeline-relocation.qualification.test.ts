@@ -5,8 +5,8 @@ import {
   createInitialState,
   normalizePipeline,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
-import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor';
+import type { ExecutionRuntime } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { cleanupWorktreePipelines } from '../pipelines/worktree-cleanup';
 
 it('installs the archived copy durably before deleting the live execution', async () => {

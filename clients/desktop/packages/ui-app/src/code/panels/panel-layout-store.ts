@@ -108,6 +108,17 @@ import {
   type SerializedPoppedPanelWindow,
 } from '@canopy/protocol';
 
+import {
+  applyChatScopeToGroups,
+  collectChatTabIds,
+  groupHiddenTabPredicate,
+  isChatScopedPanelKind,
+  resolveChatScope,
+  shownIndexToTabIndex,
+  type PanelChatScope,
+  type PanelChatScopeMemory,
+} from './panel-chat-scope';
+
 // Pre-migration raw plan sanitization lives in the protocol package so the
 // main-process default-layout loader and the renderer share it.
 export { sanitizeRawPlanPanelBindings } from '@canopy/protocol';
@@ -139,6 +150,12 @@ export interface PanelTabDescriptor {
    * mutation keeps this prefix invariant intact.
    */
   readonly pinned?: boolean;
+  /**
+   * The chat tab this content tab belongs to; hidden while another chat is
+   * selected. Persisted through `ISerializedPanelEntry.chatScope`. See
+   * `panel-chat-scope.ts`.
+   */
+  readonly chatScope?: string;
 }
 
 export interface AdoptLayoutTabsOptions {
@@ -177,6 +194,12 @@ export interface SplitGroupSeed {
   readonly title?: string;
   /** Optional per-instance entity binding for the seeded tab. */
   readonly instance?: Readonly<Record<string, string>>;
+  /**
+   * The chat a seeded content tab belongs to. Omitted, it follows the source
+   * group's tab for the same entity (a plan's diagram follows its plan),
+   * else that group's active tab, else the selected chat.
+   */
+  readonly chatScope?: string;
 }
 
 /** One group seed of a {@link DefaultLayoutDescriptor}. */
@@ -232,6 +255,13 @@ export interface WorktreePanelLayout {
   /** Eagerly derived render projection — subscribe to this, not the grid. */
   readonly viewModel: PanelLayoutViewModel;
   readonly controller: PanelGridController;
+  /**
+   * The selected chat and the chats of the layout family; `null` for an
+   * auxiliary layout or one without chats, where every tab shows.
+   */
+  readonly chatScope: PanelChatScope | null;
+  /** Each group's last active tab per chat (in memory only). */
+  readonly chatScopeMemory: PanelChatScopeMemory;
 }
 
 export interface PanelLayoutState {
@@ -283,6 +313,12 @@ export interface PanelLayoutState {
       readonly instance?: Readonly<Record<string, string>>;
       /** Set to `false` to add without selecting, focusing, or revealing. */
       readonly activate?: boolean;
+      /**
+       * The chat this content tab opens for (an agent's own chat). Omitted,
+       * a chat-scoped kind belongs to the layout's selected chat; `null`
+       * gives it no owner, so it shows for every chat.
+       */
+      readonly chatScope?: string | null;
     },
   ): string | null;
   /**
@@ -297,6 +333,7 @@ export interface PanelLayoutState {
   ): void;
   /**
    * Closes a group and its tabs. Returns false when the mutation is rejected.
+   * Other chats' hidden tabs move to a remaining group with their owners kept.
    * Tabs the host's {@link PanelTabCloseGuard} protects stay open: the other
    * tabs close, the group remains, and the call returns false.
    */
@@ -315,8 +352,10 @@ export interface PanelLayoutState {
   ): void;
   /**
    * Reorders a tab within its group. `toIndex` is the tab's final index in
-   * the group's tab array (i.e. after removal from its current position),
-   * clamped to the valid range. Pure tab-metadata mutation like `addTab`:
+   * the group's FULL tab array (i.e. after removal from its current
+   * position), clamped to the valid range. It counts tabs hidden for another
+   * chat too; a tab strip, which shows only the selected chat's tabs,
+   * converts its drop index with {@link panelTabIndexForShownIndex}. Pure tab-metadata mutation like `addTab`:
    * no topology change, so `revision` (and the controller) stay put while
    * the view-model updates. Also focuses the group (a drop is interaction).
    */
@@ -515,8 +554,10 @@ export interface PanelLayoutState {
    * `session-breakdown` tabs
    * are the exceptions to rejection: an unbound tab, or a run/subagent already
    * bound earlier in the file or in another live layout of the worktree's
-   * family, is dropped and the rest of the file restores. Accepts `unknown` because
-   * Phase 5 reads this straight from disk.
+   * family, is dropped and the rest of the file restores. A tab whose kind the
+   * layout's scope can't serve ({@link setPanelLayoutScopeExcludedKinds}) is
+   * dropped too. Accepts `unknown` because Phase 5 reads this straight from
+   * disk.
    */
   restoreLayout(
     worktreeKey: string,
@@ -670,13 +711,31 @@ export function setPanelLayoutExcludedKinds(
   excludedKindsExempt = exempt ?? null;
 }
 
+let scopeExcludedKinds:
+  | ((worktreeKey: string) => ReadonlySet<PanelKind>)
+  | null = null;
+
+/**
+ * Host policy seam: panel kinds one layout may not hold because its scope
+ * can't serve them (a cloud chat scope has no local terminal, for one).
+ * Enforced like {@link setPanelLayoutExcludedKinds}, per layout, and
+ * `restoreLayout` also drops those tabs. `null` lifts it.
+ */
+export function setPanelLayoutScopeExcludedKinds(
+  resolve: ((worktreeKey: string) => ReadonlySet<PanelKind>) | null,
+): void {
+  scopeExcludedKinds = resolve;
+}
+
 /** Whether `worktreeKey`'s layout may not hold `kind`. */
 export function isPanelKindExcluded(
   worktreeKey: string,
   kind: PanelKind,
 ): boolean {
   return (
-    excludedPanelKinds.has(kind) && excludedKindsExempt?.(worktreeKey) !== true
+    (excludedPanelKinds.has(kind) &&
+      excludedKindsExempt?.(worktreeKey) !== true) ||
+    scopeExcludedKinds?.(worktreeKey).has(kind) === true
   );
 }
 
@@ -1262,6 +1321,7 @@ function deriveViewModel(
   groups: Record<string, PanelGroupState>,
   activeGroupId: string | null,
   maximizedGroupId: string | null,
+  chatScope: PanelChatScope | null,
 ): PanelLayoutViewModel {
   // Affordances are meaningless (and geometry degenerate) while maximized —
   // only one leaf is visible/sized, so skip the snapshot entirely.
@@ -1274,19 +1334,28 @@ function deriveViewModel(
   const groupModels: PanelGroupModel[] = collectLeafOrder(grid).map(
     (groupId) => {
       const groupState = groups[groupId];
-      const tabs: PanelTabModel[] = (groupState?.tabs ?? []).map((tab) => ({
-        panelId: tab.panelId,
-        kind: tab.kind,
-        title: tab.title ?? tab.kind,
-        ...(tab.instance !== undefined ? { instance: tab.instance } : {}),
-        ...(tab.pinned === true ? { pinned: true } : {}),
-      }));
+      const tabs: PanelTabModel[] = [];
+      const hiddenTabs: PanelTabModel[] = [];
+      const isHidden =
+        groupState === undefined
+          ? (): boolean => false
+          : groupHiddenTabPredicate(groupState, chatScope);
+      for (const tab of groupState?.tabs ?? []) {
+        (isHidden(tab) ? hiddenTabs : tabs).push({
+          panelId: tab.panelId,
+          kind: tab.kind,
+          title: tab.title ?? tab.kind,
+          ...(tab.instance !== undefined ? { instance: tab.instance } : {}),
+          ...(tab.pinned === true ? { pinned: true } : {}),
+        });
+      }
       const collapsed = groupState?.collapsed;
       const collapseAffordance: PanelCollapseAffordance =
         collapseAffordances?.get(groupId) ?? { state: 'none' };
       return {
         groupId,
         tabs,
+        ...(hiddenTabs.length > 0 ? { hiddenTabs } : {}),
         // A collapsed group shows no "active" state — the remembered active
         // panel is kept in the raw store state (and restored on expand) but
         // the view model reports null so no tab reads as active/selected
@@ -1714,6 +1783,7 @@ function workDetachTab(
   groupId: string,
   panelId: string,
   keepEmptyGroup = false,
+  preferredChatTabId?: string,
 ): boolean {
   const group = work.groups[groupId];
   if (!group) {
@@ -1740,7 +1810,16 @@ function workDetachTab(
   let activePanelId = group.activePanelId;
   if (activePanelId === panelId) {
     const index = group.tabs.findIndex((tab) => tab.panelId === panelId);
-    const neighbor = group.tabs[index + 1] ?? group.tabs[index - 1];
+    // A move of the active content tab must not incidentally switch chats.
+    // Closing a tab still uses its neighboring tab, as before.
+    const selectedChat = remaining.find(
+      (tab) =>
+        preferredChatTabId !== undefined &&
+        tab.kind === 'chat' &&
+        tab.instance?.chatTabId === preferredChatTabId,
+    );
+    const neighbor =
+      selectedChat ?? group.tabs[index + 1] ?? group.tabs[index - 1];
     activePanelId = neighbor ? neighbor.panelId : null;
   }
   work.groups[groupId] = { ...group, tabs: remaining, activePanelId };
@@ -1854,9 +1933,82 @@ function workTakeTabs(
   return taken;
 }
 
+/**
+ * A content tab another chat owns, moved to the selected chat. Ownership
+ * decides, not visibility: a tab can show beside the chats yet still belong
+ * to another chat, and would hide once it leaves their group.
+ */
+function adoptTabIntoSelectedChat(
+  tab: PanelTabDescriptor,
+  scope: PanelChatScope | null,
+): PanelTabDescriptor {
+  return scope !== null &&
+    isChatScopedPanelKind(tab.kind) &&
+    tab.chatScope !== undefined &&
+    tab.chatScope !== scope.activeChatTabId
+    ? { ...tab, chatScope: scope.activeChatTabId }
+    : tab;
+}
+
+/**
+ * Selecting a tab that belongs to another chat (a reveal of an already open
+ * file or browser) moves it to the selected chat, so the selection shows.
+ */
+function adoptIntoSelectedChat(
+  layout: WorktreePanelLayout,
+  group: PanelGroupState,
+  panelId: string,
+): PanelGroupState {
+  const tab = group.tabs.find((candidate) => candidate.panelId === panelId);
+  if (tab === undefined) return group;
+  const adopted = adoptTabIntoSelectedChat(tab, layout.chatScope);
+  if (adopted === tab) return group;
+  return {
+    ...group,
+    tabs: group.tabs.map((candidate) =>
+      candidate === tab ? adopted : candidate,
+    ),
+  };
+}
+
+/**
+ * The chat a split's seeded content tab belongs to: the seed's own, else the
+ * source group's tab for the same entity (a plan's diagram follows its
+ * plan), else the source group's active content tab, else the selected chat.
+ */
+function splitSeedChatScope(
+  layout: WorktreePanelLayout,
+  layoutKey: string,
+  sourceGroup: PanelGroupState,
+  seed: SplitGroupSeed,
+): string | undefined {
+  if (!isChatScopedPanelKind(seed.kind)) return undefined;
+  if (seed.chatScope !== undefined) return seed.chatScope;
+  const seedInstance = Object.entries(seed.instance ?? {});
+  const scoped = (tab: PanelTabDescriptor | undefined): string | undefined =>
+    tab !== undefined && isChatScopedPanelKind(tab.kind)
+      ? tab.chatScope
+      : undefined;
+  const sameEntity = sourceGroup.tabs.find((tab) =>
+    seedInstance.some(([key, value]) => tab.instance?.[key] === value),
+  );
+  const active = sourceGroup.tabs.find(
+    (tab) => tab.panelId === sourceGroup.activePanelId,
+  );
+  return (
+    scoped(sameEntity) ??
+    scoped(active) ??
+    (isAuxPanelLayoutKey(layoutKey)
+      ? undefined
+      : layout.chatScope?.activeChatTabId)
+  );
+}
+
 function buildLayoutRecord(
   work: LayoutWork,
-  previousController?: PanelGridController,
+  previousController: PanelGridController | undefined,
+  chatScope: PanelChatScope | null,
+  chatScopeMemory: PanelChatScopeMemory,
 ): WorktreePanelLayout {
   // The engine can exit maximize as a side effect of add/remove/resize;
   // always reconcile the tracked id against the grid's own state.
@@ -1883,8 +2035,11 @@ function buildLayoutRecord(
       work.groups,
       work.activeGroupId,
       maximizedGroupId,
+      chatScope,
     ),
     controller,
+    chatScope,
+    chatScopeMemory,
   };
 }
 
@@ -1929,6 +2084,7 @@ function engineNodeToProtocolNode(
         ...(tab.instance !== undefined ? { instance: tab.instance } : {}),
         // Pinned state persists only when true (additive optional field).
         ...(tab.pinned === true ? { pinned: true } : {}),
+        ...(tab.chatScope !== undefined ? { chatScope: tab.chatScope } : {}),
       })),
       activePanelId: group.activePanelId,
       ...(group.collapsed !== undefined ? { collapsed: group.collapsed } : {}),
@@ -2307,11 +2463,65 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
     gridSashChangeSubscriptions.delete(layoutKey);
   };
 
-  const commitWork = (worktreeKey: string, work: LayoutWork): void => {
+  /**
+   * Resolves the selected chat for a main layout and settles each group's
+   * active tab for it (see `panel-chat-scope.ts`). Auxiliary layouts are
+   * windows of their own and show every tab.
+   */
+  const settleChatScope = (
+    worktreeKey: string,
+    work: LayoutWork,
+    previous: WorktreePanelLayout | undefined,
+    pendingAuxGroups?: Readonly<Record<string, PanelGroupState>>,
+  ): { scope: PanelChatScope | null; memory: PanelChatScopeMemory } => {
+    if (isAuxPanelLayoutKey(worktreeKey)) return { scope: null, memory: {} };
+    // Only chats selectable in this window may hide its content. Keep each
+    // tab's owner: tabs of a popped-out chat show here while it is away and
+    // become scoped again when that chat returns.
+    const present = collectChatTabIds([work.groups]);
+    // A chat in another window cannot hide content here, but still owns its
+    // remembered selection for when it returns.
+    const layouts = get().layouts;
+    const liveChats = collectChatTabIds([
+      work.groups,
+      ...(pendingAuxGroups === undefined ? [] : [pendingAuxGroups]),
+      ...collectFamilyLayoutKeys(layouts, worktreeKey)
+        .filter((key) => key !== worktreeKey)
+        .map((key) => layouts[key].groups),
+    ]);
+    const previousActive = previous?.chatScope?.activeChatTabId ?? null;
+    const scope = resolveChatScope(
+      work.groups,
+      work.mruGroupIds,
+      present,
+      previousActive,
+    );
+    const settled = applyChatScopeToGroups(
+      work.groups,
+      scope,
+      previousActive,
+      previous?.chatScopeMemory ?? {},
+      liveChats,
+    );
+    work.groups = { ...settled.groups };
+    return { scope, memory: settled.memory };
+  };
+
+  const commitWork = (
+    worktreeKey: string,
+    work: LayoutWork,
+    pendingAuxGroups?: Readonly<Record<string, PanelGroupState>>,
+  ): void => {
     const previous = get().layouts[worktreeKey];
+    const { scope, memory } = settleChatScope(
+      worktreeKey,
+      work,
+      previous,
+      pendingAuxGroups,
+    );
     if (!hasFixedTopology(worktreeKey) && !work.grid.hasMaximizedView())
       syncCollapsedBranches(work.grid, work.groups, work.leafViews);
-    const record = buildLayoutRecord(work, previous?.controller);
+    const record = buildLayoutRecord(work, previous?.controller, scope, memory);
     ensureGridSashChangeSubscription(worktreeKey, work.grid);
     set((state) => ({
       layouts: { ...state.layouts, [worktreeKey]: record },
@@ -2417,6 +2627,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       ) {
         return null; // A restricted chat never seeds a split.
       }
+      if (seed !== undefined && isPanelKindExcluded(worktreeKey, seed.kind)) {
+        return null;
+      }
 
       const activate = options?.activate !== false;
       const work = startWork(layout);
@@ -2444,6 +2657,10 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       // NOT enforce family instance-key uniqueness — deterministic builders
       // (default layout) own their seeds; interactive creation goes through
       // `addTab`, which does enforce it.
+      const seedChatScope =
+        seed === undefined
+          ? undefined
+          : splitSeedChatScope(layout, worktreeKey, sourceGroup, seed);
       const tabs: PanelTabDescriptor[] = seed
         ? [
             {
@@ -2452,6 +2669,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
               ...(seed.title !== undefined ? { title: seed.title } : {}),
               ...(seed.instance !== undefined
                 ? { instance: seed.instance }
+                : {}),
+              ...(seedChatScope !== undefined
+                ? { chatScope: seedChatScope }
                 : {}),
             },
           ]
@@ -2505,11 +2725,16 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         return null; // Seeded panel ids must be unique within the family.
       }
 
+      const chatScope =
+        !isChatScopedPanelKind(kind) || opts?.chatScope === null
+          ? undefined
+          : (opts?.chatScope ?? layout.chatScope?.activeChatTabId);
       const newTab: PanelTabDescriptor = {
         panelId,
         kind,
         ...(opts?.title !== undefined ? { title: opts.title } : {}),
         ...(opts?.instance !== undefined ? { instance: opts.instance } : {}),
+        ...(chatScope !== undefined ? { chatScope } : {}),
       };
       // Per-entity uniqueness: a tab bound to the same entity (or a second
       // singleton of the same kind) must not open twice anywhere in the
@@ -2589,15 +2814,19 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         return false;
       }
       const group = layout.groups[groupId];
+      const isHidden =
+        group === undefined
+          ? (): boolean => false
+          : groupHiddenTabPredicate(group, layout.chatScope);
       const protectedTabs =
         group?.tabs.filter((tab) => isCloseProtectedTab(worktreeKey, tab)) ??
         [];
       if (group && protectedTabs.length > 0) {
-        // A protected tab (a busy chat) keeps its group: close the rest and
-        // report that the group itself stayed.
+        // A busy chat keeps its group. Other chats' hidden content stays too;
+        // close only the unprotected, shown tabs.
         const protectedIds = new Set(protectedTabs.map((tab) => tab.panelId));
         const closeIds = group.tabs
-          .filter((tab) => !protectedIds.has(tab.panelId))
+          .filter((tab) => !protectedIds.has(tab.panelId) && !isHidden(tab))
           .map((tab) => tab.panelId);
         if (closeIds.length > 0) {
           const work = startWork(layout);
@@ -2614,6 +2843,24 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         return false;
       }
       const work = startWork(layout);
+      const hiddenTabs = group?.tabs.filter(isHidden) ?? [];
+      const remainingGroupIds = collectLeafOrder(work.grid).filter(
+        (id) => id !== groupId,
+      );
+      const receivingGroupId =
+        remainingGroupIds.find(
+          (id) => !work.groups[id].tabs.some((tab) => tab.kind === 'chat'),
+        ) ?? remainingGroupIds[0];
+      if (hiddenTabs.length > 0 && receivingGroupId !== undefined) {
+        // Closing a group closes this chat's tabs, not another chat's work.
+        // Prefer a content group so the retained tabs stay hidden; keep their
+        // ownership and the receiving group's selection unchanged.
+        const receiving = work.groups[receivingGroupId];
+        work.groups[receivingGroupId] = {
+          ...receiving,
+          tabs: partitionTabsByPinned([...receiving.tabs, ...hiddenTabs]),
+        };
+      }
       if (!workRemoveGroup(work, groupId)) {
         return false;
       }
@@ -2633,7 +2880,10 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       }
 
       const work = startWork(layout);
-      work.groups[groupId] = { ...group, activePanelId: panelId };
+      work.groups[groupId] = {
+        ...adoptIntoSelectedChat(layout, group, panelId),
+        activePanelId: panelId,
+      };
       if (options?.focus !== false) {
         workFocusGroup(work, groupId);
       }
@@ -2721,9 +2971,14 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
 
       const previous = group.tabs[tabIndex];
       const tabs = [...group.tabs];
+      // A replacement opens for the same chat as the tab it replaces.
+      const chatScope = isChatScopedPanelKind(replacement.kind)
+        ? (replacement.chatScope ?? previous.chatScope)
+        : undefined;
       tabs[tabIndex] = {
         ...replacement,
         ...(previous.pinned === true ? { pinned: true } : {}),
+        ...(chatScope !== undefined ? { chatScope } : {}),
       };
       const work = startWork(layout);
       work.groups[groupId] = {
@@ -2841,6 +3096,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
             ...(current.instance !== undefined
               ? { instance: current.instance }
               : {}),
+            ...(current.chatScope !== undefined
+              ? { chatScope: current.chatScope }
+              : {}),
           };
       const remaining = group.tabs.filter((tab) => tab.panelId !== panelId);
       // Boundary between the pinned prefix and unpinned suffix. Pinning lands
@@ -2872,8 +3130,12 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       if (plan === null) {
         return false;
       }
-      const { sourceGroupId, movedTab, targetGroup, targetView } = plan;
+      const { sourceGroupId, targetGroup, targetView } = plan;
       const activate = options?.activate !== false;
+      // A drop the user sees lands in the selected chat, so it stays shown.
+      const movedTab = activate
+        ? adoptTabIntoSelectedChat(plan.movedTab, layout.chatScope)
+        : plan.movedTab;
       if (
         !activate &&
         (edge !== 'center' ||
@@ -2892,7 +3154,11 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         if (sourceGroupId === targetGroupId) {
           // Dropping onto its own group just activates the tab.
           work.groups[targetGroupId] = {
-            ...work.groups[targetGroupId],
+            ...adoptIntoSelectedChat(
+              layout,
+              work.groups[targetGroupId],
+              panelId,
+            ),
             activePanelId: panelId,
           };
           workFocusGroup(work, targetGroupId);
@@ -2924,6 +3190,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
               sourceGroupId,
               panelId,
               keepsEmptyGroups(worktreeKey),
+              layout.chatScope?.activeChatTabId,
             )
           ) {
             expandStaleCollapsesInWork(work);
@@ -2956,6 +3223,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
           sourceGroupId,
           panelId,
           keepsEmptyGroups(worktreeKey),
+          layout.chatScope?.activeChatTabId,
         )
       ) {
         expandStaleCollapsesInWork(work);
@@ -2977,7 +3245,6 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       }
       const {
         sourceGroupId,
-        movedTab,
         probe,
         requiredOrientation,
         insertAtStart,
@@ -2985,6 +3252,11 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         axisTotal,
         newSize,
       } = plan;
+      // The new edge group shows the moved tab, so it joins the selected chat.
+      const movedTab = adoptTabIntoSelectedChat(
+        plan.movedTab,
+        layout.chatScope,
+      );
 
       // Mirror movePanel/addView semantics: topology mutations exit any
       // maximized state — and the rebuild must serialize WITHOUT hidden/
@@ -3096,6 +3368,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         sourceGroupId,
         panelId,
         keepsEmptyGroups(worktreeKey),
+        layout.chatScope?.activeChatTabId,
       );
       // The grid was rebuilt (a root-edge insertion can shift adjacency for
       // OTHER already-collapsed leaves, not just the source group), so the
@@ -3349,7 +3622,10 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       if (activatePanelId !== undefined) {
         const group = work.groups[groupId];
         if (group.tabs.some((tab) => tab.panelId === activatePanelId)) {
-          work.groups[groupId] = { ...group, activePanelId: activatePanelId };
+          work.groups[groupId] = {
+            ...adoptIntoSelectedChat(layout, group, activatePanelId),
+            activePanelId: activatePanelId,
+          };
         }
       }
       work.revision += 1;
@@ -3554,12 +3830,18 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         get().layouts,
         worktreeKey,
       );
+      // Kinds this layout's scope can't serve are dropped, so no restore,
+      // default or layout conversion brings one back.
+      const scopeExcluded = scopeExcludedKinds?.(worktreeKey);
       for (const leaf of leaves) {
         if (groups[leaf.groupId] !== undefined) {
           return false;
         }
         const tabs: PanelTabDescriptor[] = [];
         for (const panel of leaf.panels) {
+          if (scopeExcluded?.has(panel.kind) === true) {
+            continue;
+          }
           if (DROPPABLE_BOUND_PANEL_KINDS.has(panel.kind)) {
             const boundKey = getPanelInstanceKey(panel);
             if (
@@ -3591,6 +3873,11 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
               : {}),
             ...(instance !== undefined ? { instance } : {}),
             ...(panel.pinned === true ? { pinned: true } : {}),
+            ...(panel.chatScope !== undefined &&
+            panel.chatScope.length > 0 &&
+            isChatScopedPanelKind(panel.kind)
+              ? { chatScope: panel.chatScope }
+              : {}),
           };
           const instanceKey = getPanelInstanceKey(descriptor);
           if (seenInstanceKeys.has(instanceKey)) {
@@ -3817,7 +4104,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       });
       targetGrid.layout(DEFAULT_CONTAINER_WIDTH, DEFAULT_CONTAINER_HEIGHT);
 
-      commitWork(worktreeKey, sourceWork);
+      // The auxiliary record is committed next; include its chats now so
+      // extracting them never drops their remembered content selection.
+      commitWork(worktreeKey, sourceWork, { [groupId]: group });
       commitWork(targetLayoutKey, {
         grid: targetGrid,
         leafViews: targetLeafViews,
@@ -3877,7 +4166,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       });
       targetGrid.layout(DEFAULT_CONTAINER_WIDTH, DEFAULT_CONTAINER_HEIGHT);
 
-      commitWork(worktreeKey, sourceWork);
+      commitWork(worktreeKey, sourceWork, {
+        [auxGroupId]: { tabs: [tab], activePanelId: panelId },
+      });
       commitWork(targetLayoutKey, {
         grid: targetGrid,
         leafViews: new Map([[auxGroupId, targetView]]),
@@ -4048,7 +4339,10 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
 
     removeExcludedKindTabs: (worktreeKey): boolean => {
       const layout = get().layouts[worktreeKey];
-      if (!layout || excludedPanelKinds.size === 0) {
+      if (
+        !layout ||
+        (excludedPanelKinds.size === 0 && scopeExcludedKinds === null)
+      ) {
         return false;
       }
       const work = startWork(layout);
@@ -4147,6 +4441,28 @@ export function makeWorktreePanelKey(
  * `/^[a-z0-9][a-z0-9-]*$/`), so aux keys are unambiguous.
  */
 const AUX_LAYOUT_KEY_SEPARATOR = '#aux:';
+
+/**
+ * Converts a tab strip's drop index, which counts only the tabs shown for
+ * the selected chat, to the full-array index `reorderTab` and `movePanel`
+ * take. `panelId` is the dragged tab; it is left out of the count, as both
+ * take the index after its removal.
+ */
+export function panelTabIndexForShownIndex(
+  layoutKey: string,
+  groupId: string,
+  panelId: string,
+  shownIndex: number,
+): number {
+  const layout = usePanelLayoutStore.getState().layouts[layoutKey];
+  const group = layout?.groups[groupId];
+  if (layout === undefined || group === undefined) return shownIndex;
+  return shownIndexToTabIndex(
+    group.tabs.filter((tab) => tab.panelId !== panelId),
+    Math.trunc(shownIndex),
+    groupHiddenTabPredicate(group, layout.chatScope),
+  );
+}
 
 /**
  * Builds the layout key for a pulled-out (auxiliary window) layout of a

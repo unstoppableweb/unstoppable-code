@@ -1,5 +1,9 @@
 import { SettingsChartLoading } from '@canopy/ui-app/settings/pages';
-import { Heading, Surface } from '@canopy/ui-shared/components';
+import {
+  AskUserQuestionPreparingRow,
+  Heading,
+  Surface,
+} from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import {
   BusyLabel,
@@ -39,7 +43,7 @@ function SampleAgentCard(): JSX.Element {
       </Heading>
       {['Release notes writer', 'Support triage'].map((name) => (
         <div key={name} className="flex items-center gap-3">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-xs fg-accent">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-xs fg-accent-strong">
             {name.slice(0, 1)}
           </span>
           <div className="flex min-w-0 flex-1 flex-col">
@@ -67,6 +71,16 @@ export function LoadingSpecimen(): JSX.Element {
             Last synced <InlineTextSkeleton active className="w-16" /> by the
             daemon.
           </p>
+        </SpecimenCell>
+      </SpecimenPanel>
+      <SpecimenPanel title="Waiting on the agent's question">
+        <SpecimenCell
+          label="AskUserQuestionPreparingRow: one line, as wide as its text, in a shrink-to-fit message column"
+          wide
+        >
+          <div className="flex min-w-0 max-w-full flex-col items-start">
+            <AskUserQuestionPreparingRow />
+          </div>
         </SpecimenCell>
       </SpecimenPanel>
       <SpecimenPanel title="Skeleton: measured by skullet from the content's own layout">

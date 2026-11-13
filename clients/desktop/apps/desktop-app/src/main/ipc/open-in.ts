@@ -92,6 +92,27 @@ function launchVisibleApp(
   });
 }
 
+/*
+ * The window's calls as owners, so App Advisor's actions in Electron main
+ * make the same ones (CAN-6003).
+ */
+
+export function getWorktreePathForCaller(
+  request: GetWorktreePathRequest,
+): ReturnType<typeof resolveWorktreeCwd> {
+  validateId(request.projectId, 'projectId');
+  validateId(request.worktreeId, 'worktreeId');
+  if (request.repoId && request.repoId !== WORKSPACE_ROOT_REPO_ID) {
+    validateId(request.repoId, 'repoId');
+    return getWorkspaceWorktreeRepoDir(
+      request.projectId,
+      request.worktreeId,
+      request.repoId,
+    );
+  }
+  return resolveWorktreeCwd(request.projectId, request.worktreeId);
+}
+
 export function registerOpenInHandlers(): void {
   registerIpcHandler(IPC_CHANNELS.worktreeDetectApps, async () => {
     return detectInstalledApps();
@@ -135,19 +156,8 @@ export function registerOpenInHandlers(): void {
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeGetPath,
-    (_event, request: GetWorktreePathRequest) => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      if (request.repoId && request.repoId !== WORKSPACE_ROOT_REPO_ID) {
-        validateId(request.repoId, 'repoId');
-        return getWorkspaceWorktreeRepoDir(
-          request.projectId,
-          request.worktreeId,
-          request.repoId,
-        );
-      }
-      return resolveWorktreeCwd(request.projectId, request.worktreeId);
-    },
+    (_event, request: GetWorktreePathRequest) =>
+      getWorktreePathForCaller(request),
   );
 
   registerIpcHandler(

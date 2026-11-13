@@ -1,9 +1,10 @@
-import { useMemo, type JSX } from 'react';
+import { useMemo, useState, type JSX } from 'react';
 import { isLocalMemoryWorkspaceId } from '@canopy/desktop-shared/lib/local-memory-scope';
 import { CognitionIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   MemoryPanel,
   type MemoryPanelScope,
+  type MemorySyncPanelUiState,
 } from '@canopy/ui-app/local-memory';
 import {
   USER_MEMORY_SCOPE,
@@ -13,7 +14,12 @@ import {
   PanelSection,
   useActivitySectionChrome,
 } from '@/components/shared/panel-section';
+import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useDesktopLocalMemoryClient } from '@/hooks/useDesktopLocalMemoryClient';
+import {
+  MEMORY_SYNC_VIEW_UI_STATE_KEYS,
+  memorySyncViewSlice,
+} from '@/lib/current-ui-state/memory-sync-ui-state';
 import { useProjectsStore } from '@/stores/projectsStore';
 import type { ActivitySectionRenderProps } from './activity-sections';
 
@@ -25,6 +31,11 @@ export function MemorySection({
 }): JSX.Element {
   const chrome = useActivitySectionChrome();
   const client = useDesktopLocalMemoryClient();
+  const [syncView, setSyncView] = useState<MemorySyncPanelUiState | null>(null);
+  useCurrentUiStateReporter(
+    MEMORY_SYNC_VIEW_UI_STATE_KEYS['project-panel'],
+    memorySyncViewSlice(syncView),
+  );
   const project = useProjectsStore((state) =>
     state.projects.find((candidate) => candidate.id === projectId),
   );
@@ -60,6 +71,7 @@ export function MemorySection({
           showSettingsLink
           hideWhenEmpty={onEmptyChange !== undefined}
           onEmptyChange={onEmptyChange}
+          onSyncViewChange={setSyncView}
         />
       </div>
     </PanelSection>

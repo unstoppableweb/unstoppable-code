@@ -18,10 +18,13 @@ import {
   type CodeGraphSnapshotImportResult,
 } from '../snapshot/import';
 import type {
+  CodeGraphLanguagesValidation,
   CodeGraphReadCall,
   CodeGraphWorkerReadResult,
   CodeGraphWorkerReadTask,
 } from './read-protocol';
+
+export type { CodeGraphLanguagesValidation } from './read-protocol';
 import {
   CodeGraphReadFailureError,
   codeGraphReadFailure,
@@ -144,16 +147,6 @@ export interface CodeGraphServiceQueryResult extends CodeGraphGraphState {
     | { kind: 'workspace-base-summary'; value: CodeGraphWorkspaceBaseSummary };
 }
 
-export interface CodeGraphLanguagesValidation {
-  config: 'absent' | 'invalid' | 'present';
-  languages: Array<{ id: string; extensions: string[] }>;
-  diagnostics: Array<{
-    entryId: string | null;
-    index: number;
-    message: string;
-  }>;
-}
-
 export type CodeGraphReadServiceErrorReason =
   | 'invalid-argument'
   | 'not-found'
@@ -190,8 +183,13 @@ export interface CodeGraphReadService {
     snapshot: unknown;
     signal?: AbortSignal;
   }): Promise<CodeGraphSnapshotImportResult>;
+  /**
+   * `static` (the default) reads the config without loading anything; `load`
+   * also loads each grammar and compiles its tags queries in a read host.
+   */
   validateLanguages(
     scope: CodeGraphWorktreeScope,
+    options?: { check?: 'static' | 'load'; signal?: AbortSignal },
   ): Promise<CodeGraphLanguagesValidation>;
 }
 
@@ -448,6 +446,11 @@ export function createCodeGraphReadService(
       );
       if (result.kind !== 'snapshot-export')
         throw new CodeGraphReadFailureError('invalid-response');
+      if (result.value === null)
+        throw new CodeGraphReadServiceError(
+          'failed-precondition',
+          'This repository has no code graph yet.',
+        );
       return result.value;
     },
     async importSnapshot({ scope, repoId, snapshot, signal }) {
@@ -484,7 +487,7 @@ export function createCodeGraphReadService(
         throw new CodeGraphReadFailureError('invalid-response');
       return result.value;
     },
-    async validateLanguages(scope) {
+    async validateLanguages(scope, options) {
       assertScope(scope);
       let worktreeRoot: string;
       try {
@@ -493,7 +496,21 @@ export function createCodeGraphReadService(
         // A scope with no checkout configures no custom languages.
         return { config: 'absent', languages: [], diagnostics: [] };
       }
-      return validateCodeGraphCustomLanguages(worktreeRoot);
+      if (options?.check !== 'load')
+        return validateCodeGraphCustomLanguages(worktreeRoot);
+      const result = await runTask(
+        scope,
+        'languages-validate',
+        {
+          kind: 'languages-validate',
+          worktreeRoot,
+          resourcesDir: host.resourcesDir(),
+        },
+        options.signal,
+      );
+      if (result.kind !== 'languages-validate')
+        throw new CodeGraphReadFailureError('invalid-response');
+      return result.value;
     },
   };
 }

@@ -20,8 +20,8 @@ import {
   formatClaudeStreamError,
   StructuredHelperQueryError,
 } from '@canopy/desktop-shared/lib/structured-helper-query';
-import type { CodexThreadHandle } from '@canopy/desktop-shared/node/codex-runtime';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { CodexThreadHandle } from '@canopy/execution-engine/node/codex-runtime';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
 import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   claudeNativeMemoryOptions,

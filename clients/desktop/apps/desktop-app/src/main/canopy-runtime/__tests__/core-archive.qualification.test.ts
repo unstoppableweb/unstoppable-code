@@ -11,6 +11,9 @@ import type {
   PersistedChatMessage,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
+import type { CoreWorkspaceGuardedHost } from '@canopy/core-runtime/node/workspace/guarded-commands';
+import type { CoreWorkspaceLifecycleHost } from '@canopy/core-runtime/node/workspace/lifecycle-commands';
+import type { CoreWorkspaceMetadataHost } from '@canopy/core-runtime/node/workspace/metadata-commands';
 import type { CoreArchiveHost } from '../core-archive-adapter';
 import { createCoreOperationAdapter } from '../core-operation-adapter';
 import {
@@ -96,6 +99,8 @@ function fakeHost(): { host: CoreArchiveHost; calls: Calls } {
         workspaceId === 'ws' ? [...containers.values()] : [],
       );
     },
+    workspaceName: (workspaceId) =>
+      Promise.resolve(workspaceId === 'ws' ? 'Website' : null),
     readChat: (_workspaceId, archiveId, chatId) => {
       calls.reads.push(`${archiveId}/${chatId}`);
       return Promise.resolve(chats[`${archiveId}/${chatId}`] ?? null);
@@ -118,12 +123,21 @@ function fakeHost(): { host: CoreArchiveHost; calls: Calls } {
 
 let root: string;
 const runtimes: DesktopCanopyDispatcher[] = [];
-function runtimeWith(host: CoreArchiveHost): DesktopCanopyDispatcher {
+function runtimeWith(
+  host: CoreArchiveHost,
+  workspaceLifecycleHost?: CoreWorkspaceLifecycleHost,
+  hosts: {
+    workspaceMetadataHost?: CoreWorkspaceMetadataHost;
+    workspaceGuardedHost?: CoreWorkspaceGuardedHost;
+  } = {},
+): DesktopCanopyDispatcher {
   const runtime = createDesktopRuntime({
     operationAdapter: createCoreOperationAdapter({
       ledgerPath: () => join(root, `ledger-${runtimes.length}.sqlite`),
     }),
     archiveHost: host,
+    ...(workspaceLifecycleHost && { workspaceLifecycleHost }),
+    ...hosts,
     shutdownTimeoutMs: 25,
   });
   runtimes.push(runtime);
@@ -153,6 +167,9 @@ describe('core.archive on the desktop dispatcher (CAN-6007)', () => {
         {
           archiveId: 'a1',
           kind: 'worktree',
+          workspaceId: 'ws',
+          workspaceName: 'Website',
+          revision: null,
           name: 'Archive a1',
           branchName: 'feature/x',
           archivedAt: '2026-11-02T00:00:00.000Z',
@@ -183,6 +200,265 @@ describe('core.archive on the desktop dispatcher (CAN-6007)', () => {
         code: 'core.archive.workspace.invalid',
       },
     });
+  });
+
+  it('refuses what only the web core serves, before any read or lock (CAN-6109)', async () => {
+    const { host, calls } = fakeHost();
+    const runtime = runtimeWith(host);
+    const unavailable = (field: string): object => ({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { unsupported: [field] },
+      },
+    });
+    // An account-wide list is the web core's; this desktop lists one project.
+    await expect(
+      runtime.query('core.archive.container.list', {}, { caller: READ }),
+    ).rejects.toMatchObject(unavailable('workspaceId'));
+    // A per-container revision is the web core's; this desktop keeps none.
+    await expect(
+      runtime.instruction(
+        'core.archive.container.update',
+        {
+          workspaceId: 'ws',
+          archiveId: 'a1',
+          locked: true,
+          expectedRevision: 0,
+          _meta: meta('cas'),
+        },
+        { caller: WRITE, metadata: meta('cas') },
+      ),
+    ).rejects.toMatchObject(unavailable('expectedRevision'));
+    expect(calls).toEqual({ lists: [], reads: [], locks: [] });
+  });
+
+  it('refuses to keep a whole project archived, before the lifecycle host runs (CAN-6109)', async () => {
+    const touched: string[] = [];
+    const refuse = (name: string) => (): Promise<never> => {
+      touched.push(name);
+      return Promise.reject(new Error(`${name} must not run`));
+    };
+    const lifecycle: CoreWorkspaceLifecycleHost = {
+      createWorkspace: refuse('createWorkspace'),
+      importWorkspace: refuse('importWorkspace'),
+      createWorktree: refuse('createWorktree'),
+      archiveWorktree: refuse('archiveWorktree'),
+      deleteWorkspace: refuse('deleteWorkspace'),
+      deleteWorktree: refuse('deleteWorktree'),
+      restoreArchive: refuse('restoreArchive'),
+    };
+    const runtime = runtimeWith(fakeHost().host, lifecycle);
+    const desktopUser: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'desktop-ipc',
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'desktop',
+      grants: ['core.workspace.write'],
+    };
+    await expect(
+      runtime.instruction(
+        'core.workspace.delete',
+        {
+          workspaceId: 'ws',
+          expectedRevision: 0,
+          mode: 'archive',
+          _meta: meta('keep'),
+        },
+        { caller: desktopUser, metadata: meta('keep') },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { reason: 'archive-mode-unavailable' },
+      },
+    });
+    expect(touched).toEqual([]);
+  });
+
+  it("refuses the web core's cloud archive lifecycle params, before the lifecycle host runs (CAN-6110)", async () => {
+    const touched: string[] = [];
+    const refuse = (name: string) => (): Promise<never> => {
+      touched.push(name);
+      return Promise.reject(new Error(`${name} must not run`));
+    };
+    const lifecycle: CoreWorkspaceLifecycleHost = {
+      createWorkspace: refuse('createWorkspace'),
+      importWorkspace: refuse('importWorkspace'),
+      createWorktree: refuse('createWorktree'),
+      archiveWorktree: refuse('archiveWorktree'),
+      deleteWorkspace: refuse('deleteWorkspace'),
+      deleteWorktree: refuse('deleteWorktree'),
+      restoreArchive: refuse('restoreArchive'),
+    };
+    const runtime = runtimeWith(fakeHost().host, lifecycle);
+    const desktopUser: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'desktop-ipc',
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'desktop',
+      grants: ['core.worktree.write'],
+    };
+    for (const params of [
+      { wake: true },
+      { wake: false },
+      { cancelProvisioning: true },
+      { choice: 'retry' as const, expectedArchiveAttempt: 1 },
+      { continueArchive: true as const, expectedArchiveAttempt: 1 },
+    ])
+      await expect(
+        runtime.instruction(
+          'core.worktree.archive',
+          { worktreeId: 'wt', expectedRevision: 0, archived: true, ...params },
+          { caller: desktopUser },
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { reason: 'cloud-lifecycle-unavailable' },
+        },
+      });
+    expect(touched).toEqual([]);
+  });
+
+  it("refuses the web core's owner, first-project, project template and project id claim create fields, before the lifecycle host runs (CAN-6114, CAN-6111, CAN-6093)", async () => {
+    const touched: string[] = [];
+    const refuse = (name: string) => (): Promise<never> => {
+      touched.push(name);
+      return Promise.reject(new Error(`${name} must not run`));
+    };
+    const lifecycle: CoreWorkspaceLifecycleHost = {
+      // As the desktop host does: a request it does not serve answers its
+      // refusal before any effect.
+      createWorkspace: (request) =>
+        request.kind === 'unserved'
+          ? Promise.reject(request.refusal)
+          : refuse('createWorkspace')(),
+      importWorkspace: refuse('importWorkspace'),
+      createWorktree: refuse('createWorktree'),
+      archiveWorktree: refuse('archiveWorktree'),
+      deleteWorkspace: refuse('deleteWorkspace'),
+      deleteWorktree: refuse('deleteWorktree'),
+      restoreArchive: refuse('restoreArchive'),
+    };
+    const runtime = runtimeWith(fakeHost().host, lifecycle);
+    const desktopUser: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'desktop-ipc',
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'desktop',
+      grants: ['core.workspace.write'],
+    };
+    const create = (extra: object, key: string): Promise<unknown> =>
+      runtime.instruction(
+        'core.workspace.create',
+        {
+          name: 'Website',
+          source: { kind: 'empty', workspaceKind: 'single_repo' },
+          temporary: false,
+          ...extra,
+          _meta: meta(key),
+        },
+        { caller: desktopUser, metadata: meta(key) },
+      );
+    for (const [field, extra] of [
+      [
+        'ownerOrganizationId',
+        { ownerOrganizationId: '0a000000-0000-4000-8000-0000000000aa' },
+      ],
+      ['firstWorkspaceOnly', { firstWorkspaceOnly: true }],
+      ['blueprintSeed', { blueprintSeed: 'shared' }],
+    ] as const)
+      await expect(create(extra, field)).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { reason: 'unserved', fields: [field] },
+        },
+      });
+    await expect(
+      create(
+        { blueprintExternalId: 'blueprint-1', blueprintContentHash: 'hash' },
+        'blueprint',
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: {
+          reason: 'unserved',
+          fields: ['blueprintExternalId', 'blueprintContentHash'],
+        },
+      },
+    });
+    // Revision 2's project id claim (CAN-6093): a desktop create derives its
+    // id, so the revision and the claim are both unserved.
+    const CLAIM = '0c000000-0000-4000-8000-0000000000cc';
+    for (const [extra, fields] of [
+      [{ revision: 2 }, ['revision']],
+      [{ workspaceId: CLAIM }, ['workspaceId']],
+      [{ revision: 2, workspaceId: CLAIM }, ['workspaceId', 'revision']],
+    ] as const)
+      await expect(create(extra, fields.join('+'))).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { reason: 'unserved', fields },
+        },
+      });
+    expect(touched).toEqual([]);
+  });
+
+  it("refuses the web core's worktree id, first chat and first message, before the lifecycle host runs (CAN-6114)", async () => {
+    const touched: string[] = [];
+    const refuse = (name: string) => (): Promise<never> => {
+      touched.push(name);
+      return Promise.reject(new Error(`${name} must not run`));
+    };
+    const lifecycle: CoreWorkspaceLifecycleHost = {
+      createWorkspace: refuse('createWorkspace'),
+      importWorkspace: refuse('importWorkspace'),
+      // As the desktop host does: a request it does not serve answers its
+      // refusal before any effect.
+      createWorktree: (request) =>
+        request.kind === 'unserved'
+          ? Promise.reject(request.refusal)
+          : refuse('createWorktree')(),
+      archiveWorktree: refuse('archiveWorktree'),
+      deleteWorkspace: refuse('deleteWorkspace'),
+      deleteWorktree: refuse('deleteWorktree'),
+      restoreArchive: refuse('restoreArchive'),
+    };
+    const runtime = runtimeWith(fakeHost().host, lifecycle);
+    const desktopUser: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'desktop-ipc',
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'desktop',
+      grants: ['core.worktree.write'],
+    };
+    for (const [field, extra] of [
+      ['worktreeId', { worktreeId: '0c000000-0000-4000-8000-0000000000cc' }],
+      ['firstChat', { firstChat: { model: 'model-1' } }],
+      [
+        'firstMessage',
+        {
+          firstMessage: {
+            text: 'Fix the bug',
+            clientRequestId: '0e000000-0000-4000-8000-0000000000ee',
+          },
+        },
+      ],
+    ] as const)
+      await expect(
+        runtime.instruction(
+          'core.worktree.create',
+          { workspaceId: 'ws', ...extra, _meta: meta(field) },
+          { caller: desktopUser, metadata: meta(field) },
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { reason: 'unserved', fields: [field] },
+        },
+      });
+    expect(touched).toEqual([]);
   });
 
   it('reads the end of a chat only inside its own container and project', async () => {
@@ -388,4 +664,200 @@ describe('core.archive on the desktop dispatcher (CAN-6007)', () => {
     });
     expect(calls.locks).toHaveLength(1);
   });
+  it("refuses the web core's cloud project settings, before the workspace hosts run (CAN-6114)", async () => {
+    const touched: string[] = [];
+    // Every host method records itself and fails: none may run.
+    const untouchable = <Host extends object>(): Host =>
+      new Proxy({} as Host, {
+        get: (_target, name) => () => {
+          touched.push(String(name));
+          return Promise.reject(new Error(`${String(name)} must not run`));
+        },
+      });
+    const runtime = runtimeWith(fakeHost().host, undefined, {
+      workspaceMetadataHost: untouchable(),
+      workspaceGuardedHost: untouchable(),
+    });
+    const desktopUser: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'desktop-ipc',
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'desktop',
+      grants: ['core.workspace.write'],
+    };
+    const unserved = (fields: readonly string[]): object => ({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { reason: 'unserved', fields },
+      },
+    });
+    for (const [field, value] of [
+      ['hostModeEnabled', true],
+      ['hostPorts', [3000]],
+      ['egressAllowedHosts', ['api.example.com']],
+    ] as const)
+      await expect(
+        runtime.instruction(
+          'core.workspace.update',
+          { workspaceId: 'ws', patch: { [field]: value }, _meta: meta(field) },
+          { caller: desktopUser, metadata: meta(field) },
+        ),
+      ).rejects.toMatchObject(unserved([field]));
+    // A desktop Cowork project has no cleared default model to store.
+    await expect(
+      runtime.instruction(
+        'core.workspace.cowork.update',
+        {
+          workspaceId: 'ws',
+          settings: { defaultModel: null },
+          _meta: meta('model'),
+        },
+        { caller: desktopUser, metadata: meta('model') },
+      ),
+    ).rejects.toMatchObject(unserved(['defaultModel']));
+    // Desktop defaults have no cleared state and no revision of their own.
+    const selections = { collectionIds: [], skillRefs: [], pluginRefs: [] };
+    for (const [fields, change] of [
+      [
+        ['defaultPluginSelections'],
+        { kind: 'setDefaults', defaultPluginSelections: null },
+      ],
+      [
+        ['expectedDefaultPluginSelectionsRevision'],
+        {
+          kind: 'setDefaults',
+          defaultPluginSelections: selections,
+          expectedDefaultPluginSelectionsRevision: 2,
+        },
+      ],
+    ] as const)
+      await expect(
+        runtime.instruction(
+          'core.workspace.plugins.update',
+          { workspaceId: 'ws', change, _meta: meta(fields[0]) },
+          { caller: desktopUser, metadata: meta(fields[0]) },
+        ),
+      ).rejects.toMatchObject(unserved(fields));
+    expect(touched).toEqual([]);
+  });
+});
+
+it('enumerates exact raw archive recovery operations through core without canonical rows', async () => {
+  const previousData = process.env.CANOPY_DATA_DIR;
+  process.env.CANOPY_DATA_DIR = join(root, 'recovery-data');
+  try {
+    const { mkdir, writeFile, readFile } = await import('node:fs/promises');
+    const { createHash, randomUUID } = await import('node:crypto');
+    const directory = join(
+      process.env.CANOPY_DATA_DIR,
+      'w5',
+      'destructive-lifecycles',
+    );
+    await mkdir(directory, { recursive: true });
+    const operationId = randomUUID();
+    const journal = {
+      version: 1,
+      operationId,
+      operation: 'worktree-archive',
+      workspaceId: 'ws',
+      worktreeId: 'missing-row',
+      createdAt: '2026-11-01T00:00:00.000Z',
+      directoryIdentity: null,
+      state: 'active',
+      steps: [],
+      ownedPaths: [],
+    };
+    const history = join(directory, `${operationId}.json`);
+    await writeFile(history, JSON.stringify(journal));
+    const runtime = runtimeWith(fakeHost().host);
+    const reader = caller(['core.worktree.read']);
+    const result = await runtime.query(
+      'core.worktree.recovery.list',
+      {
+        workspaceId: 'ws',
+        operationId,
+      },
+      { caller: reader },
+    );
+    expect(result.check).toBe('ok');
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.diagnosis).toMatchObject({
+      operationId,
+      rawState: 'active',
+      copies: 1,
+      slot: 'absent',
+      verdict: 'refused',
+      check: 'raw-active',
+    });
+    expect(JSON.parse(await readFile(history, 'utf8'))).toEqual(journal);
+    const slot = join(
+      directory,
+      `${createHash('sha256')
+        .update(JSON.stringify(['ws', 'missing-row']))
+        .digest('hex')}.json`,
+    );
+    await writeFile(
+      slot,
+      JSON.stringify({ ...journal, state: 'recovery-required' }),
+    );
+    const conflict = await runtime.query(
+      'core.worktree.recovery.list',
+      { workspaceId: 'ws' },
+      { caller: reader },
+    );
+    expect(conflict.entries[0]?.diagnosis).toMatchObject({
+      copies: 2,
+      verdict: 'refused',
+      check: 'conflicting-journal-copies',
+    });
+    // Copy relevance is not decided by whichever filename sorts first.
+    const firstCopy = history < slot ? history : slot;
+    const secondCopy = history < slot ? slot : history;
+    for (const hidden of [
+      { ...journal, state: 'completed' },
+      { ...journal, operation: 'worktree-delete' },
+    ]) {
+      await writeFile(firstCopy, JSON.stringify(hidden));
+      await writeFile(secondCopy, JSON.stringify(journal));
+      const listed = await runtime.query(
+        'core.worktree.recovery.list',
+        { workspaceId: 'ws', operationId },
+        { caller: reader },
+      );
+      expect(listed.entries).toHaveLength(1);
+      expect(listed.entries[0]?.diagnosis).toMatchObject({
+        copies: 2,
+        verdict: 'refused',
+        check: 'conflicting-journal-copies',
+      });
+      expect(JSON.parse(await readFile(firstCopy, 'utf8'))).toEqual(hidden);
+      expect(JSON.parse(await readFile(secondCopy, 'utf8'))).toEqual(journal);
+    }
+    expect(
+      (
+        await runtime.query(
+          'core.worktree.recovery.list',
+          { workspaceId: 'ws', operationId: randomUUID() },
+          { caller: reader },
+        )
+      ).entries,
+    ).toEqual([]);
+    await expect(
+      runtime.query(
+        'core.worktree.recovery.list',
+        { workspaceId: 'ws' },
+        { caller: caller([]) },
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    await expect(
+      runtime.query(
+        'core.worktree.recovery.list',
+        { workspaceId: 'ws' },
+        { caller: caller(['core.worktree.read'], 'foreign') },
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+  } finally {
+    if (previousData === undefined) delete process.env.CANOPY_DATA_DIR;
+    else process.env.CANOPY_DATA_DIR = previousData;
+  }
 });

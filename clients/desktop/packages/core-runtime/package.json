@@ -13,6 +13,7 @@
     "./vault/testing": "./src/vault/testing/index.ts",
     "./storage": "./src/storage/index.ts",
     "./observability": "./src/observability/index.ts",
+    "./update": "./src/update/index.ts",
     "./platform/testing": "./src/platform/testing/index.ts",
     "./node": "./src/node/index.ts",
     "./node/relocation": "./src/node/relocation/index.ts",

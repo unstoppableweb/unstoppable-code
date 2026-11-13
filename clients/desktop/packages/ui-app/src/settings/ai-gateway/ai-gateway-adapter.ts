@@ -78,6 +78,18 @@ export async function keepKeyForCloudChats(
   }
 }
 
+/**
+ * Removes the gateway: no endpoint, no models, switches off. The name goes
+ * too, or setup would offer the removed gateway again.
+ */
+export const CLEARED_GATEWAY_PATCH: AiGatewayEditorPatch = {
+  enabled: false,
+  onlyThisGateway: false,
+  baseUrl: null,
+  models: [],
+  displayName: null,
+};
+
 /** The revision a scope without a stored gateway reports. */
 export const ABSENT_GATEWAY_REVISION = 'absent';
 

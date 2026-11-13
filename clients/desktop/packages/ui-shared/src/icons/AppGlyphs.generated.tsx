@@ -12,11 +12,13 @@
 //   hermesAgent → HermesLogo
 //   linear → LinearLogo
 //   linkedin → LinkedInLogo
+//   litellm → LiteLLMLogo
 //   metaMuse → MuseLogo
 //   ollama → OllamaLogo
 //   openai → CodexLogo
 //   openclaw → OpenClawLogo
 //   opencode → OpenCodeLogo
+//   requesty → RequestyLogo
 import React, { type JSX } from 'react';
 import { AppIconBase, type AppIconBaseProps } from './AppIconBase';
 import { IconMergeQueue, IconShimmer } from './CanopyGlyphs';
@@ -41,6 +43,21 @@ const LobehubMicrosoft = /* @__PURE__ */ React.memo(function LobehubMicrosoft(
     </AppIconBase>
   );
 });
+
+const LobehubOpenrouterInset2 = /* @__PURE__ */ React.memo(
+  function LobehubOpenrouterInset2(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="-2 -2 28 28"
+        fillRule="evenodd"
+        data-glyph="openrouter"
+      >
+        <path d="M18.65 3.87a5.09 5.09 0 1 1 0 10.17l5.05 5.05c.64.64.19 1.74-.72 1.74H8.48a8.48 8.48 0 0 1 0-16.96h10.18zM8.48 7.26a5.09 5.09 0 1 0 0 10.18 5.09 5.09 0 0 0 0-10.18z" />
+      </AppIconBase>
+    );
+  },
+);
 
 const LobehubZaiInset2 = /* @__PURE__ */ React.memo(function LobehubZaiInset2(
   props: AppIconBaseProps,
@@ -4485,6 +4502,16 @@ const SimpleIconsRedditInset2 = /* @__PURE__ */ React.memo(
   },
 );
 
+const SimpleIconsVercelInset2 = /* @__PURE__ */ React.memo(
+  function SimpleIconsVercelInset2(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase {...props} viewBox="-2 -2 28 28" data-glyph="vercel">
+        <path d="M12 1.61l12 20.78H0z" />
+      </AppIconBase>
+    );
+  },
+);
+
 const SimpleIconsXInset2 = /* @__PURE__ */ React.memo(
   function SimpleIconsXInset2(props: AppIconBaseProps): JSX.Element {
     return (
@@ -4663,6 +4690,7 @@ export const IconMinusSmall: AppGlyph = LucideMinus;
 export const IconMonitorDown: AppGlyph = LucideMonitorDown;
 export const IconMoon: AppGlyph = LucideMoon;
 export const IconNoteText: AppGlyph = LucideStickyNote;
+export const IconOpenrouter: AppGlyph = LobehubOpenrouterInset2;
 export const IconOrbit: AppGlyph = LucideOrbit;
 export const IconPackage: AppGlyph = LucidePackage;
 export const IconPageAttachment: AppGlyph = LucidePaperclip;
@@ -4743,6 +4771,7 @@ export const IconUntrash: AppGlyph = LucideArchiveRestore;
 export const IconUser: AppGlyph = LucideUserRound;
 export const IconUserAdd: AppGlyph = LucideUserRoundPlus;
 export const IconUserGroup: AppGlyph = LucideUsers;
+export const IconVercel: AppGlyph = SimpleIconsVercelInset2;
 export const IconVibeCoding: AppGlyph = LucideWandSparkles;
 export const IconWarningSign: AppGlyph = LucideTriangleAlert;
 export const IconWatching: AppGlyph = LucideRadio;

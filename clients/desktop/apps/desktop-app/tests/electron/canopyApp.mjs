@@ -689,11 +689,12 @@ export class CanopyAppDriver {
   }
 
   /**
-   * Opens App Advisor and expands its floating native view into the full
-   * workspace window. Clicks the sidebar App Advisor nav button and returns its
-   * page once the cowork-style workspace surface has finished its scoped
-   * bootstrap (`app-advisor-workspace-surface` visible with the loading gate
-   * gone). Requires the `electronApp` handle.
+   * Opens App Advisor in its full workspace window. The sidebar row opens it
+   * as the docked page in the main window; this moves the same page into the
+   * separate full window, whose nav callers exercise, and returns that page
+   * once the cowork-style workspace surface has finished its scoped bootstrap
+   * (`app-advisor-workspace-surface` visible with the loading gate gone).
+   * Requires the `electronApp` handle.
    */
   async openAppAdvisorWindow(electronApp) {
     await this.window.getByTestId('sidebar-nav-app-advisor').click();
@@ -718,11 +719,9 @@ export class CanopyAppDriver {
     await expect(
       advisor.getByTestId('app-advisor-workspace-loading'),
     ).toHaveCount(0, { timeout: 30_000 });
-    // The standard entry point is a floating native view. Callers of this
-    // helper exercise the full workspace, so expand that same page first.
-    const floating = advisor.getByTestId('app-advisor-floating');
-    await expect(floating).toBeVisible();
-    await floating.getByRole('button', { name: 'Open full window' }).click();
+    await advisor.evaluate(() =>
+      window.api.appAdvisor.openWindow({ layout: 'full', focus: true }),
+    );
     // Full layout mounts navigation even when its saved state is collapsed.
     await expect(advisor.getByTestId('app-advisor-nav')).toBeAttached();
     return advisor;

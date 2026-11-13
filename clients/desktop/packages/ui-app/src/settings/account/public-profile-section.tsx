@@ -207,7 +207,7 @@ export function PublicProfileSection({
               disc it has always had, and omits `mt-0.5`/`shrink-0`, which are
               written for a horizontal `items-start` row and would push the
               glyph off centre here. */}
-                  <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent">
+                  <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent-strong">
                     <Globe size={22} aria-hidden="true" />
                   </span>
                   <Heading level={2} variant="section">

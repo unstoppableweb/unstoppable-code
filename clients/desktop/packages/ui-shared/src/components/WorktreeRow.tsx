@@ -26,6 +26,7 @@ import {
   useState,
 } from 'react';
 import { LoadingSpinner } from './LoadingSpinner';
+import { Button } from './Button';
 import { GroupedDiffStats } from './GroupedDiffStats';
 import {
   ITEM_PREVIEW_OPEN_DELAY_MS,
@@ -143,7 +144,20 @@ export type WorktreeSetupPhase =
    * A server-run archive (cloud repository worktrees): shown like teardown,
    * worded as archiving. The desktop's teardown keeps its own copy.
    */
-  | 'running-archive';
+  | 'running-archive'
+  /**
+   * A cloud task this window opened before the web core created it
+   * (CAN-6098): shown like setup, worded as creating the task.
+   */
+  | 'creating';
+
+/** A cloud task the web core refused to create, and how to try again. */
+export interface WorktreeCreationFailure {
+  /** Why the task does not exist, as the web core said. */
+  readonly reason: string;
+  /** Creates the task again under the same id; absent offers no retry. */
+  readonly onRetry?: () => void;
+}
 
 export type WorktreeRowRuntimeState = 'fresh' | 'done' | 'archived';
 
@@ -305,6 +319,11 @@ export interface WorktreeRowProps {
   hasMismatch?: boolean;
   /** Coarse-grained setup phase. */
   setupPhase?: WorktreeSetupPhase;
+  /**
+   * A cloud task the web core refused to create (CAN-6098): the status line
+   * reads why, with Try again when the host offers it.
+   */
+  creationFailure?: WorktreeCreationFailure;
   /**
    * The row waits in a bulk removal queue for this removal. A host setup
    * phase (teardown included) takes precedence once its own removal starts.
@@ -719,7 +738,8 @@ export function WorktreeRowPrimaryIndicator({
   layout?: 'classic' | 'compact';
   testIdSuffix?: string;
 }): JSX.Element {
-  const isRunningSetup = setupPhase === 'running-setup';
+  const isCreating = setupPhase === 'creating';
+  const isRunningSetup = setupPhase === 'running-setup' || isCreating;
   const isArchiving = setupPhase === 'running-archive';
   const isTearingDown = setupPhase === 'running-teardown' || isArchiving;
   const isPendingGitSetup = setupPhase === 'git-pending';
@@ -728,7 +748,9 @@ export function WorktreeRowPrimaryIndicator({
       ? 'Archiving worktree…'
       : 'Deleting worktree…'
     : isRunningSetup
-      ? 'Running setup…'
+      ? isCreating
+        ? 'Creating task…'
+        : 'Running setup…'
       : isPendingGitSetup
         ? 'Setting up worktree (git operations in progress)'
         : null;
@@ -1765,6 +1787,7 @@ function WorktreeRowImpl(
     healthIssue,
     hasMismatch = false,
     setupPhase,
+    creationFailure,
     queuedRemoval,
     lastKnownPrStatus,
     sharedWithTeammates = false,
@@ -1906,7 +1929,10 @@ function WorktreeRowImpl(
   const hasIdleWatcherChats = focusedStatus ? false : hasIdleWatcherChatsProp;
   const hasScheduledMessages = focusedStatus ? false : hasScheduledMessagesProp;
   const isPendingGitSetup = setupPhase === 'git-pending';
-  const isRunningSetup = setupPhase === 'running-setup';
+  // A task still being created reads as setup, in its own words (CAN-6098).
+  const isCreating = setupPhase === 'creating';
+  const isRunningSetup = setupPhase === 'running-setup' || isCreating;
+  const setupLabel = isCreating ? 'Creating task' : 'Running setup';
   const isArchiving = setupPhase === 'running-archive';
   const isTearingDown = setupPhase === 'running-teardown' || isArchiving;
   // Waiting, not working: read still, with no loader.
@@ -2328,7 +2354,7 @@ function WorktreeRowImpl(
   const specialStatusLabel = (
     [
       [isTearingDown, isArchiving ? 'Archiving' : 'Running teardown'],
-      [isRunningSetup, 'Running setup'],
+      [isRunningSetup, setupLabel],
       [isPendingGitSetup, 'Setting up'],
       [hasPendingQuestion && !isDone, 'Question waiting'],
       [hasPendingToolApproval && !isDone, 'Approval needed'],
@@ -2776,7 +2802,7 @@ function WorktreeRowImpl(
         ? 'Archiving worktree…'
         : 'Deleting worktree…'
       : isRunningSetup
-        ? 'Running setup…'
+        ? `${setupLabel}…`
         : isPendingGitSetup
           ? 'Setting up worktree (git operations in progress)'
           : null;
@@ -3066,6 +3092,7 @@ function WorktreeRowImpl(
       isTearingDown ||
       isRunningSetup ||
       isPendingGitSetup ||
+      creationFailure !== undefined ||
       queuedRemovalLabel !== null ||
       (!focusedStatus &&
         (isDone || classicPrMetadata || isCreatingPr || trailingDiffMetadata)),
@@ -3128,7 +3155,7 @@ function WorktreeRowImpl(
               shimmer: true,
             }
           : isRunningSetup
-            ? { text: 'Running setup…', shimmer: true }
+            ? { text: `${setupLabel}…`, shimmer: true }
             : isPendingGitSetup
               ? { text: 'Setting up…', shimmer: true }
               : queuedRemovalLabel
@@ -3789,7 +3816,38 @@ function WorktreeRowImpl(
                   </span>,
                 )}
               <span className="block min-w-0 flex-1 truncate whitespace-nowrap">
-                {focusedSubtitleStatus ? (
+                {creationFailure ? (
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+                    <span
+                      role="status"
+                      className="min-w-0 truncate fg-secondary"
+                      title={creationFailure.reason}
+                      data-testid={withTestIdSuffix(
+                        'worktree-row-creation-failure',
+                        testIdSuffix,
+                      )}
+                    >
+                      {creationFailure.reason}
+                    </span>
+                    {creationFailure.onRetry && (
+                      <Button
+                        variant="link"
+                        className="shrink-0"
+                        data-testid={withTestIdSuffix(
+                          'worktree-row-creation-retry',
+                          testIdSuffix,
+                        )}
+                        onClick={(event): void => {
+                          // The row opens the task; this only retries it.
+                          event.stopPropagation();
+                          creationFailure.onRetry?.();
+                        }}
+                      >
+                        Try again
+                      </Button>
+                    )}
+                  </span>
+                ) : focusedSubtitleStatus ? (
                   <span
                     className={
                       focusedSubtitleStatus.shimmer
@@ -3857,10 +3915,16 @@ function WorktreeRowImpl(
                     )}
                     {!isTearingDown && isRunningSetup && (
                       <>
-                        <span className="mx-1" aria-hidden="true">
-                          ·
-                        </span>
-                        <span>Running setup…</span>
+                        {/* A cloud task being created has no branch before it. */}
+                        {((worktreeIdentity !== null &&
+                          worktreeIdentity !== undefined) ||
+                          splitStatusMessage ||
+                          focusedDiffMetadata) && (
+                          <span className="mx-1" aria-hidden="true">
+                            ·
+                          </span>
+                        )}
+                        <span>{setupLabel}…</span>
                       </>
                     )}
                     {queuedRemovalLabel && (
@@ -4271,6 +4335,7 @@ function WorktreeRowPreviewIndicators({
       'running-setup': 'Running setup',
       'running-teardown': 'Running teardown',
       'running-archive': 'Archiving',
+      creating: 'Creating task',
     };
     add('setup', labels[row.setupPhase], <TimeFliesIcon size={14} />);
   } else if (row.hasMismatch || row.healthIssue) {

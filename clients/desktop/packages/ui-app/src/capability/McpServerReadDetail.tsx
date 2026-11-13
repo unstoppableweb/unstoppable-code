@@ -7,6 +7,7 @@ import {
   Fact,
   FactList,
   Heading,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
 import {
@@ -188,14 +189,13 @@ export function McpServerReadDetail({
               <>
                 <Fact label="Author">
                   {server.curated.authorUrl !== undefined ? (
-                    <a
+                    <TextLink
                       href={server.curated.authorUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="fg-accent hover:underline"
                     >
                       {server.curated.authorName}
-                    </a>
+                    </TextLink>
                   ) : (
                     server.curated.authorName
                   )}
@@ -210,14 +210,9 @@ export function McpServerReadDetail({
               href === undefined ? null : (
                 <Fragment key={label}>
                   <Fact label={label}>
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="fg-accent hover:underline"
-                    >
+                    <TextLink href={href} target="_blank" rel="noreferrer">
                       {href}
-                    </a>
+                    </TextLink>
                   </Fact>
                 </Fragment>
               ),

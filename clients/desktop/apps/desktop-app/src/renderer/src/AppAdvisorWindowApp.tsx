@@ -28,6 +28,8 @@ import { ResumeQueueModal } from '@/components/usage-limit/ResumeQueueModal';
 import { AppAdvisorWindowRuntimeBridge } from '@/components/app-advisor/AppAdvisorRuntimeBridge';
 import { AppAdvisorSettingsModal } from '@/components/app-advisor/AppAdvisorSettingsModal';
 import { AppAdvisorWorkspaceSurface } from '@/components/app-advisor/AppAdvisorWorkspaceSurface';
+import { startAppAdvisorNewEntry } from '@/components/app-advisor/appAdvisorNewEntry';
+import { OverlayLayerSlot } from '@/components/overlay-layer/OverlayLayerSlot';
 import { ToastContainer } from '@/components/shared/ToastContainer';
 import {
   selectArchivedOverviewWorkspaceForSurface,
@@ -74,6 +76,8 @@ import { useRendererDiagnostics } from '@/lib/renderer-diagnostics';
 import { applyDisplayPreferences } from '@/lib/theme';
 import { useInAppNotificationPlacement } from '@/lib/useInAppNotificationPlacement';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
+import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
+import { ORCHESTRATOR_PAGE_EXPERIMENT_ID } from '@/lib/orchestratorPageExperiment';
 import {
   ensureArchivedContainersSubscription,
   useArchivedContainersStore,
@@ -147,10 +151,17 @@ export function AppAdvisorWindowApp(): JSX.Element {
   // Floating (early access), the page sits in a transparent view and the
   // panel rounds its own corners, so nothing behind it may paint.
   const floating = useAppAdvisorStore((s) => s.layout === 'floating');
+  // Docked in the main window's content area, the page draws only its panel
+  // cards; the window material around them is the main window's.
+  const docked = useAppAdvisorStore((s) => s.layout === 'docked');
+  // Subscribes this window to main's Labs snapshot early, so the floating
+  // panel's Open full window knows whether the Orchestrator page is on.
+  useLabsExperimentEnabled(ORCHESTRATOR_PAGE_EXPERIMENT_ID);
   // Before paint, so no frame shows the body's background behind the panel.
   useLayoutEffect(() => {
     document.body.toggleAttribute('data-app-advisor-floating', floating);
-  }, [floating]);
+    document.body.toggleAttribute('data-app-advisor-docked', docked);
+  }, [floating, docked]);
   const notificationPlacement = useInAppNotificationPlacement();
 
   // Keep the App Advisor renderer's chat-store slices updated from the same
@@ -591,6 +602,14 @@ export function AppAdvisorWindowApp(): JSX.Element {
             }
             return;
           }
+          if (command.type === 'new_entry') {
+            await startAppAdvisorNewEntry();
+            return;
+          }
+          if (command.type === 'open_settings') {
+            setSettingsOpen(true);
+            return;
+          }
           if (command.type === 'focus_composer') {
             requestAnimationFrame(() => {
               document.dispatchEvent(
@@ -651,12 +670,12 @@ export function AppAdvisorWindowApp(): JSX.Element {
 
   return (
     <div
-      className={`flex h-screen w-screen flex-col overflow-hidden fg-primary ${floating ? 'bg-transparent' : 'bg-base'}`}
+      className={`flex h-screen w-screen flex-col overflow-hidden fg-primary ${floating || docked ? 'bg-transparent' : 'bg-base'}`}
     >
       <AppAdvisorWindowRuntimeBridge />
-      {/* Early access: App Advisor's chat sits on its own raised panel, so
-          its user bubbles are flat and muted. */}
-      <MutedUserBubblesContext.Provider value={true}>
+      {/* App Advisor's chat sits on its own raised panel, so its user
+          bubbles are flat and muted; docked, it is a normal chat page. */}
+      <MutedUserBubblesContext.Provider value={!docked}>
         <AgentSentSenderOpenerProvider opener={appAdvisorWindowSenderOpener}>
           <AppAdvisorWorkspaceSurface
             settingsModalOpen={settingsOpen}
@@ -666,14 +685,28 @@ export function AppAdvisorWindowApp(): JSX.Element {
       </MutedUserBubblesContext.Provider>
       <UsageLimitResumeModal />
       <SurfaceFindHost />
+      {/* No-drag like the main window's corner (CAN-5711): a drag region
+          under a notification would take its clicks. */}
       <div
-        className={getInAppNotificationContainerClasses(notificationPlacement, {
-          // The notification stack starts top corners below the header.
-          clearHeader: true,
-        })}
-        data-canopy-browser-native-overlay="true"
+        className={`electron-no-drag ${getInAppNotificationContainerClasses(
+          notificationPlacement,
+          {
+            // The notification stack starts top corners below the header.
+            clearHeader: true,
+          },
+        )}`}
+        // The corner's own `z-toast` class must not freeze a Browser page
+        // under it: the slot below decides for its toasts.
+        data-canopy-browser-native-overlay="false"
       >
-        <ToastContainer placement={notificationPlacement} />
+        {/* Over a live Browser page the toasts move into a native overlay
+            layer above it, so the page keeps running under them. */}
+        <OverlayLayerSlot
+          slot="notifications"
+          placement={notificationPlacement}
+        >
+          <ToastContainer placement={notificationPlacement} />
+        </OverlayLayerSlot>
       </div>
       <ResumeQueueModal />
       {settingsOpen && (

@@ -1,3 +1,12 @@
+import {
+  isWorkspaceTargetRemovalPending,
+  subscribeWorkspaceTargetRemoval,
+} from './workspace-target-exclusion';
+import {
+  isWorktreeReadAvailable,
+  withWorktreeGitRead,
+} from './worktree-read-availability';
+import { registerWorktreeGitReadyHook } from './worktree-git-ready-hooks';
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { BrowserWindow } from 'electron';
@@ -94,6 +103,7 @@ import { resolveWorktreeCwd } from './resolve-worktree';
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
+  readWorkspaceWorktreesUnlocked,
 } from './workspace-persistence';
 import {
   areEquivalentPrStatuses,
@@ -106,6 +116,7 @@ import { isMultiRepoWorkspace } from './workspace-registry';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
 import {
   readGitHubRefreshLedgerEntry,
+  removeGitHubRefreshLedgerEntry,
   recordGitHubRefreshAttempt,
   recordGitHubRefreshFailure,
   recordGitHubRefreshSuccess,
@@ -253,6 +264,7 @@ const sweptTargets = new Map<string, SweptTarget>();
 let pollTimeout: ReturnType<typeof setTimeout> | null = null;
 let getWindowFn: (() => BrowserWindow | null) | null = null;
 let running = true;
+let gitReadySubscription: (() => void) | undefined;
 let ticking = false;
 let lastPollAt = 0;
 let lastSweepAt = 0;
@@ -266,6 +278,11 @@ function worktreeKey(projectId: string, worktreeId: string): string {
 }
 
 function sendPrStatusEvent(event: PrStatusEvent): void {
+  if (
+    isWorkspaceTargetRemovalPending(event.projectId, event.worktreeId) ||
+    !tracked.has(worktreeKey(event.projectId, event.worktreeId))
+  )
+    return;
   if (
     __CANOPY_E2E__ &&
     e2eSuspendedKeys.has(worktreeKey(event.projectId, event.worktreeId))
@@ -367,11 +384,13 @@ function ensureTracked(
   projectId: string,
   worktreeId: string,
   createdAt?: string,
-): TrackedWorktree {
+): TrackedWorktree | undefined {
+  if (isWorkspaceTargetRemovalPending(projectId, worktreeId)) return undefined;
   const key = worktreeKey(projectId, worktreeId);
   let entry = tracked.get(key);
 
   if (!entry) {
+    if (!createdAt) return undefined;
     entry = {
       projectId,
       worktreeId,
@@ -403,6 +422,7 @@ async function resolveRefreshTargets(
   projectId: string,
   worktreeId: string,
 ): Promise<RepoRefreshTarget[]> {
+  if (!(await isWorktreeReadAvailable(projectId, worktreeId))) return [];
   const cwd = resolveWorktreeCwd(projectId, worktreeId);
   if (!isMultiRepoWorkspace(projectId)) {
     return [
@@ -875,49 +895,58 @@ async function prepareRepoRefreshes(
   worktreeId: string,
   targets: RepoRefreshTarget[],
 ): Promise<PreparedRepoRefresh[]> {
-  const prepared: PreparedRepoRefresh[] = [];
-  for (const target of targets) {
-    const branchName = await getCurrentBranch(target.repoPath).catch(() => '');
-    if (!branchName) {
-      prepared.push({
-        ...unavailableSnapshotReadIdentity(),
-        remote: null,
-        target,
-        branchName,
-        hookActionsByTrigger: null,
-        includeCommentCollections: false,
-      });
-      continue;
-    }
+  return withWorktreeGitRead<PreparedRepoRefresh[]>(
+    projectId,
+    worktreeId,
+    [],
+    async () => {
+      const prepared: PreparedRepoRefresh[] = [];
+      for (const target of targets) {
+        const branchName = await getCurrentBranch(target.repoPath).catch(
+          () => '',
+        );
+        if (!branchName) {
+          prepared.push({
+            ...unavailableSnapshotReadIdentity(),
+            remote: null,
+            target,
+            branchName,
+            hookActionsByTrigger: null,
+            includeCommentCollections: false,
+          });
+          continue;
+        }
 
-    const hookActionsByTrigger = await resolveEffectiveHookActions({
-      projectId,
-      worktreeId,
-      target,
-    }).catch(() => null);
-    const includeCommentCollectionsForHooks =
-      hookActionsByTrigger !== null &&
-      Array.from(COMMENT_COLLECTION_HOOK_TRIGGERS).some((triggerName) =>
-        Array.isArray(hookActionsByTrigger[triggerName]),
-      );
-    const includeCommentCollectionsForWatchers =
-      await hasActiveCommentCollectionHookWatcher({
-        projectId,
-        worktreeId,
-        target,
-      }).catch(() => false);
-    prepared.push({
-      ...unavailableSnapshotReadIdentity(),
-      remote: await resolveGitHubRemoteForRepo(target.repoPath),
-      target,
-      branchName,
-      hookActionsByTrigger,
-      includeCommentCollections:
-        includeCommentCollectionsForHooks ||
-        includeCommentCollectionsForWatchers,
-    });
-  }
-  return prepared;
+        const hookActionsByTrigger = await resolveEffectiveHookActions({
+          projectId,
+          worktreeId,
+          target,
+        }).catch(() => null);
+        const includeCommentCollectionsForHooks =
+          hookActionsByTrigger !== null &&
+          Array.from(COMMENT_COLLECTION_HOOK_TRIGGERS).some((triggerName) =>
+            Array.isArray(hookActionsByTrigger[triggerName]),
+          );
+        const includeCommentCollectionsForWatchers =
+          await hasActiveCommentCollectionHookWatcher({
+            projectId,
+            worktreeId,
+            target,
+          }).catch(() => false);
+        prepared.push({
+          ...unavailableSnapshotReadIdentity(),
+          remote: await resolveGitHubRemoteForRepo(target.repoPath),
+          target,
+          branchName,
+          hookActionsByTrigger,
+          includeCommentCollections:
+            includeCommentCollectionsForHooks ||
+            includeCommentCollectionsForWatchers,
+        });
+      }
+      return prepared;
+    },
+  );
 }
 
 async function applyEmptyRefresh(
@@ -926,6 +955,7 @@ async function applyEmptyRefresh(
 ): Promise<null> {
   const emptyStatus = null;
   const entry = ensureTracked(projectId, worktreeId);
+  if (!entry) return null;
   const previousPersistedStatus = entry.lastPersistedStatus;
   entry.lastStatus = emptyStatus;
   entry.lastCheckedAt = Date.now();
@@ -958,7 +988,12 @@ async function applyRepoRefreshes(
   worktreeId: string,
   reads: RepoRefreshRead[],
   scriptTimeoutMinutes: number,
-): Promise<WorktreePrStatus> {
+): Promise<WorktreePrStatus | null> {
+  if (
+    !ensureTracked(projectId, worktreeId) ||
+    !(await isWorktreeReadAvailable(projectId, worktreeId))
+  )
+    return null;
   const repos: RepoPrStatus[] = [];
   const mergedBranchUpdates: Array<Promise<DependentBaseBranchUpdate[]>> = [];
   const pendingHookDispatches: Array<
@@ -1113,6 +1148,7 @@ async function applyRepoRefreshes(
     lastCheckedAt: new Date().toISOString(),
   };
   const entry = ensureTracked(projectId, worktreeId);
+  if (!entry) return null;
   const previousPersistedStatus = entry.lastPersistedStatus;
   entry.lastStatus = status;
   entry.lastCheckedAt = Date.now();
@@ -1278,6 +1314,14 @@ async function recordedRefresh(
   refresh: () => Promise<WorktreePrStatus | null>,
 ): Promise<WorktreePrStatus | null> {
   const entry = ensureTracked(projectId, worktreeId);
+  if (!entry) return null;
+  if (!(await isWorktreeReadAvailable(projectId, worktreeId))) {
+    // Missing folders, pending setup and unreadable lists skip this observation.
+    // Keep membership so a later authoritative removal still runs cleanup.
+    if (isWorkspaceTargetRemovalPending(projectId, worktreeId))
+      stopTracking(projectId, worktreeId);
+    return null;
+  }
   const previousStatus = entry.lastStatus;
   const attemptedAt = Date.now();
   await recordGitHubRefreshAttempt({
@@ -1289,6 +1333,11 @@ async function recordedRefresh(
 
   try {
     const status = await refresh();
+    if (
+      tracked.get(worktreeKey(projectId, worktreeId)) !== entry ||
+      isWorkspaceTargetRemovalPending(projectId, worktreeId)
+    )
+      return null;
     const succeededAt = Date.now();
     const nextDueAt = succeededAt + getSteadyRefreshInterval(status);
     await recordGitHubRefreshSuccess({
@@ -1305,6 +1354,11 @@ async function recordedRefresh(
     entry.steadyDueAt = nextDueAt;
     return status;
   } catch (error) {
+    if (
+      tracked.get(worktreeKey(projectId, worktreeId)) !== entry ||
+      isWorkspaceTargetRemovalPending(projectId, worktreeId)
+    )
+      return null;
     const failedAt = Date.now();
     const failureEntry = await recordGitHubRefreshFailure({
       projectId,
@@ -1785,6 +1839,7 @@ export function enqueueFastRefresh(
   skipIfFresh = false,
 ): void {
   const entry = ensureTracked(projectId, worktreeId);
+  if (!entry) return;
   const key = worktreeKey(projectId, worktreeId);
 
   if (skipIfFresh) {
@@ -1848,6 +1903,7 @@ export async function enqueueKnownPrFastRefresh(
   }
 
   const entry = ensureTracked(projectId, worktreeId);
+  if (!entry) return false;
   entry.lastStatus = status;
   entry.lastPersistedStatus = status;
   entry.lastCheckedAt = getStatusCheckedAt(status);
@@ -1860,7 +1916,7 @@ export function requestRefresh(
   worktreeId: string,
   force = false,
 ): void {
-  ensureTracked(projectId, worktreeId);
+  if (!ensureTracked(projectId, worktreeId)) return;
 
   if (force) {
     enqueueFastRefresh(projectId, worktreeId);
@@ -1891,7 +1947,10 @@ export function setForegroundWorktree(
     return;
   }
 
-  ensureTracked(projectId, worktreeId);
+  if (!ensureTracked(projectId, worktreeId)) {
+    scheduleNext();
+    return;
+  }
   foregroundKey = worktreeKey(projectId, worktreeId);
   scheduleNext();
 }
@@ -1909,9 +1968,9 @@ export function syncTrackedWorktrees(
 
     for (const worktree of item.worktrees) {
       const key = worktreeKey(item.id, worktree.id);
-      nextKeys.add(key);
-
       const entry = ensureTracked(item.id, worktree.id, worktree.createdAt);
+      if (!entry) continue;
+      nextKeys.add(key);
       entry.steadyHydrationGeneration += 1;
       const hydrationGeneration = entry.steadyHydrationGeneration;
       entry.steadyHydrationPending = true;
@@ -1972,6 +2031,11 @@ export function syncTrackedWorktrees(
 }
 
 function removeTrackedKey(key: string): void {
+  const previous = tracked.get(key);
+  if (previous)
+    trackDetachedWork(() =>
+      removeGitHubRefreshLedgerEntry(previous.projectId, previous.worktreeId),
+    );
   tracked.delete(key);
   removeFromQueue(immediateQueue, key);
   for (const stateKey of Array.from(sweptTargets.keys())) {
@@ -1998,6 +2062,7 @@ export function reconcileTrackedWorkspaceWorktrees(
     const key = worktreeKey(workspaceId, worktree.id);
     const isNew = !tracked.has(key);
     const entry = ensureTracked(workspaceId, worktree.id, worktree.createdAt);
+    if (!entry) continue;
     // Reconciliation snapshots carry identity only (id/branch/createdAt), so
     // status may only be seeded for NEW entries — overwriting an existing
     // entry would null-clobber live PR status and demote its polling queue.
@@ -2022,6 +2087,17 @@ export function reconcileTrackedWorkspaceWorktrees(
 
 export function startPolling(getWindow: () => BrowserWindow | null): void {
   getWindowFn = getWindow;
+  // Enroll ready checkouts even before the next sidebar sync, but only install
+  // this subscriber in hosts that actually initialize PR polling.
+  gitReadySubscription ??= registerWorktreeGitReadyHook(
+    async ({ projectId, worktreeId }) => {
+      if (isWorkspaceTargetRemovalPending(projectId, worktreeId)) return;
+      const list = await readWorkspaceWorktreesUnlocked(projectId);
+      const row = list.worktrees.find((worktree) => worktree.id === worktreeId);
+      if (!row || !ensureTracked(projectId, worktreeId, row.createdAt)) return;
+      enqueueFastRefresh(projectId, worktreeId);
+    },
+  );
   startHookRecovery({
     getWindow,
     events: automaticHookRunEvents,
@@ -2056,3 +2132,10 @@ export function suspendTrackingForE2e(
   stopTracking(projectId, worktreeId);
   return true;
 }
+
+subscribeWorkspaceTargetRemoval((projectId, worktreeId) => {
+  stopTracking(projectId, worktreeId);
+  trackDetachedWork(() =>
+    removeGitHubRefreshLedgerEntry(projectId, worktreeId),
+  );
+});

@@ -50,8 +50,8 @@ import type {
   ScheduledActivity,
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
-import { writeFileAtomically } from '@canopy/desktop-shared/node/lib/atomic-file';
-import { readStoredPipelinePresence } from '@canopy/desktop-shared/pipelines/store';
+import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
+import { readStoredPipelinePresence } from '@canopy/execution-engine/pipelines/store';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   pipelineAutomationTaskId,
@@ -459,12 +459,12 @@ const DEFAULT_DEPENDENCIES: SharedContainerCapabilityUsageDependencies = {
   getAgentModel: readSharedContainerAgentModel,
   listExecutionSummaries: async () => {
     const { listExecutionSummaries } =
-      await import('@canopy/desktop-shared/node/pipelines/executor/execution-state');
+      await import('@canopy/execution-engine/node/pipelines/executor/execution-state');
     return listExecutionSummaries(join(getDataDir(), 'pipeline-executions'));
   },
   loadExecutionState: async (executionId) => {
     const { loadExecutionState } =
-      await import('@canopy/desktop-shared/node/pipelines/executor/execution-state');
+      await import('@canopy/execution-engine/node/pipelines/executor/execution-state');
     return loadExecutionState(
       executionId,
       join(getDataDir(), 'pipeline-executions'),

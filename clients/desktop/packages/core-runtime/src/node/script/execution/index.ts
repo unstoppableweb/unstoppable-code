@@ -47,6 +47,8 @@ export {
   type ScriptRunLogRef,
   type ScriptRunLogSnapshotResult,
   type ScriptRunWriter,
+  type ScriptRunChild,
+  type ScriptRunChildReap,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,
 } from './script-run-log';

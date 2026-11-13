@@ -10,6 +10,7 @@ import type {
   PipelineExecutionScope,
   PipelineTriggerType,
 } from '@canopy/protocol/pipelines';
+import type { PipelineSandboxHint } from './sandbox-size';
 import type {
   ShareableClaudePluginRef,
   ShareableCodexPluginRef,
@@ -395,6 +396,11 @@ export interface Pipeline {
    * travel with a share. Asset paths may not overlap them.
    */
   local_state?: string[];
+  /**
+   * The cloud run sandbox this pipeline asks for (CAN-6325): `vcpus` raises
+   * the run's default size. Desktop runs ignore it.
+   */
+  sandbox?: PipelineSandboxHint;
 }
 
 /** How an installed asset treats files that already exist on the recipient. */
@@ -467,6 +473,7 @@ export interface PipelineInlineModelAliasDefaults {
  */
 export interface PipelineAgentModelAliasDefaults {
   agent_id: string;
+  base?: string;
 }
 
 /**

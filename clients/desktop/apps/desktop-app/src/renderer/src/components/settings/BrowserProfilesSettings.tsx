@@ -438,6 +438,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                       value={selected.color}
                       disabled={busy}
                       testId="browser-profile-color-swatches"
+                      label="Profile color"
                       onChange={(color) => update({ color })}
                     />
                   }

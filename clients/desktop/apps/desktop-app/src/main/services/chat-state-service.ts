@@ -117,6 +117,8 @@ import type {
 import type { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { createHash, randomUUID } from 'node:crypto';
 import { isE2eBuild } from '../lib/e2e-gate';
+import { isChatFormat4PromotionEnabled } from './chat-format4-promotion-flag';
+import { recordChatFormat4Outcome } from './chat-format4-telemetry';
 import { installChatScopeResidencyE2eHook } from './chat-scope-residency-e2e';
 import { BACKGROUND_WORK_CHAT_REFUSAL } from '../agents/delegation/activity';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -201,6 +203,7 @@ import type {
   ChatTabsFile,
   ChangedFileInfo,
   McpQuestionAnswer,
+  ModelHarness,
   PersistedChatMessage,
   PersistedCommandReceipt,
   PortalChatSendIdentity,
@@ -587,7 +590,7 @@ export interface ChatStateServiceOptions {
    * `resolveSendModelPin`.
    */
   resolveSendModel?: (
-    target: ChatScopeKey,
+    target: ChatScopeKey & { chatId?: string; executionHarness?: ModelHarness },
     stored: string | undefined,
     requested: string | undefined,
   ) => Promise<string | undefined>;
@@ -2590,6 +2593,11 @@ function runtimeForEvent(
     if (!effectiveTurnUserMessageId || turnHasVisibleOutput !== false) {
       return null;
     }
+    // The Claude CLI ran this command itself and never called the model, so
+    // no output is missing: `/clear` prints nothing (CAN-6416).
+    if (data.type === 'result' && typeof data.local_command === 'string') {
+      return null;
+    }
     const sessionId =
       typeof data.session_id === 'string'
         ? data.session_id
@@ -3575,15 +3583,22 @@ export class ChatStateService implements ChatStateCommandPort {
     this.repository =
       options.repository ??
       new ChatStateV2Repository({
-        // Test-only opt-in for retained stream fixtures; normal builds never write format 4.
+        // Normal builds handle format 4 scopes and promote only while the
+        // promotion flag is on; a promoted scope stays format 4 when it goes
+        // off. E2E builds keep CANOPY_E2E_CHAT_FORMAT4 as their opt-in.
         enableFormat4:
-          isE2eBuild() && process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
-        // Reader-first: production may write incremental stream metadata
-        // only once a stable release carries the relaxed readers, so this
-        // follows E2E format 4 only, not the production promotion switch.
+          !isE2eBuild() || process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
+        ...(isE2eBuild()
+          ? {}
+          : {
+              format4Promotion: (): boolean => isChatFormat4PromotionEnabled(),
+            }),
+        // v1.18.0, the rollback floor, reads stream metadata a checkpoint
+        // left unchanged, so format 4 scopes restage only changed streams.
         deltaJournalIncrementalStreamMetadata:
-          isE2eBuild() && process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
+          !isE2eBuild() || process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
         delegationReadMetadata: readMetadataOfRecord,
+        format4Telemetry: recordChatFormat4Outcome,
         hasLiveDependency: async (scope): Promise<boolean> => {
           // Lazy by design: these local services import the chat-state singleton,
           // so static imports here would reintroduce an initialization cycle.
@@ -3696,7 +3711,7 @@ export class ChatStateService implements ChatStateCommandPort {
         // import the chat-state singleton.
         const { resolveSendModelPin } =
           await import('../agents/agent-default-model');
-        return resolveSendModelPin(target.projectId, stored, requested);
+        return resolveSendModelPin(target.projectId, stored, requested, target);
       });
     this.withPlanReviewRevision =
       options.withPlanReviewRevision ??
@@ -5173,7 +5188,11 @@ export class ChatStateService implements ChatStateCommandPort {
     scope: ChatScopeKey,
   ): ReturnType<ChatStateV2Repository['generationStoreReadiness']> {
     if (!(this.repository instanceof ChatStateV2Repository))
-      return Promise.resolve({ formatVersion: 2, enableFormat4: false });
+      return Promise.resolve({
+        formatVersion: 2,
+        enableFormat4: false,
+        promotes: false,
+      });
     return this.repository.generationStoreReadiness(scope);
   }
 
@@ -7924,6 +7943,18 @@ export class ChatStateService implements ChatStateCommandPort {
     const createdAt = new Date(this.now()).toISOString();
     const explicitTitle = explicitChatTitle(request.title);
     const title = explicitTitle ?? initialChatTitle(request.text);
+    // An agent action may pin the fresh chat to one of its model's chat
+    // harness options, as the pickers do for an empty tab; the send that
+    // follows then captures that harness. Every other trusted sender echoes
+    // the harness main already resolved for the chat (the advisor, the
+    // renderer, the Portal), which is no choice and pins nothing. The choice
+    // is checked only when the tab is created below: a send to an existing
+    // chat keeps whatever harness that chat captured, whatever the current
+    // catalog says.
+    const explicitHarness =
+      request.executionHarnessChoice === true
+        ? request.executionHarness
+        : undefined;
     const tab: PersistedChatTab = {
       ...createPersistedChatTab({
         id: request.chatId,
@@ -7947,6 +7978,12 @@ export class ChatStateService implements ChatStateCommandPort {
           : {}),
       }),
       ...(explicitTitle ? { customTitle: explicitTitle } : {}),
+      ...(explicitHarness !== undefined
+        ? {
+            executionHarness: explicitHarness,
+            executionHarnessExplicitlyChosen: true,
+          }
+        : {}),
       ...(request.approvalMode ? { approvalMode: request.approvalMode } : {}),
       ...trustedSendDenyRulesField(request.sessionApprovalRules),
       ...(request.pluginSelections
@@ -7980,6 +8017,16 @@ export class ChatStateService implements ChatStateCommandPort {
               `Trusted send targets removed chat ${request.chatId}`,
             );
           }
+          // An explicit harness on a fresh tab must be one its model offers
+          // a chat; anything else fails closed before the tab exists.
+          if (
+            explicitHarness !== undefined &&
+            (request.model === undefined ||
+              !supportsChatHarnessChoice(request.model, explicitHarness))
+          )
+            throw new Error(
+              `Model "${request.model ?? ''}" does not run on the "${explicitHarness}" execution harness.`,
+            );
           // Chats nobody asked for open behind the tab the user is on:
           // hook-started chats and sends that ask to stay behind (scheduled
           // and catch-up automation runs). Everything the user set in motion
@@ -8832,7 +8879,7 @@ export class ChatStateService implements ChatStateCommandPort {
         refusal,
       );
       const reason = isAgentSenderContextError(error)
-        ? `agent_send:${error.code === 'authorization_conflict' ? 'owner_boundary' : error.code}`
+        ? `agent_send:${error.code}`
         : 'agent_send:owner_context_unavailable';
       let endedTurn = false;
       try {
@@ -12100,19 +12147,42 @@ export class ChatStateService implements ChatStateCommandPort {
       tabBeforeAuthorization?.kind === 'file'
         ? undefined
         : tabBeforeAuthorization?.model;
+    const admissionTab =
+      tabBeforeAuthorization && tabBeforeAuthorization.kind !== 'file'
+        ? tabWithSendModel(tabBeforeAuthorization, command)
+        : undefined;
     const sendModel =
       command.turnOverride?.model === undefined &&
       (command.modelSelectionMode ??
         tabBeforeAuthorization?.modelSelectionMode) === 'auto'
         ? undefined
-        : await this.resolveSendModel(scope, storedModel, command.model);
+        : await this.resolveSendModel(
+            {
+              ...scope,
+              chatId: command.chatId,
+              executionHarness:
+                command.turnOverride?.executionHarness ??
+                (command.turnOverride?.model
+                  ? getExecutionHarnessForModel(command.turnOverride.model)
+                  : admissionTab?.executionHarness),
+            },
+            storedModel,
+            command.turnOverride?.model ?? command.model,
+          );
     const requestedCommand = command;
     if (sendModel !== undefined) {
-      command = {
-        ...command,
-        model: sendModel,
-        providerType: getProviderForModel(sendModel) ?? command.providerType,
-      };
+      command =
+        command.turnOverride?.model !== undefined
+          ? {
+              ...command,
+              turnOverride: { ...command.turnOverride, model: sendModel },
+            }
+          : {
+              ...command,
+              model: sendModel,
+              providerType:
+                getProviderForModel(sendModel) ?? command.providerType,
+            };
     }
     if (
       tabBeforeAuthorization &&

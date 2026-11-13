@@ -1,3 +1,4 @@
+import { withGitReadPath } from './worktree-read-availability';
 import {
   GIT_DEFAULT_BRANCH_HINT_TTL_MS,
   selectGitDefaultBranch,
@@ -107,7 +108,14 @@ export async function applyDefaultBranchEffects(
  * Selection is the portable `worker.git.branch.list` precedence; this
  * in-process form also applies its effects before returning.
  */
-export async function resolveFreshDefaultBranch(
+export function resolveFreshDefaultBranch(
+  repoPath: string,
+  options: { allowRemoteLookup?: boolean } = {},
+): Promise<string | null> {
+  return resolveAvailableDefaultBranch(repoPath, options);
+}
+
+async function resolveAvailableDefaultBranch(
   repoPath: string,
   options: { allowRemoteLookup?: boolean } = {},
 ): Promise<string | null> {
@@ -136,7 +144,9 @@ export function revalidateDefaultBranchInBackground(repoPath: string): void {
   if (backgroundRevalidations.has(repoPath)) {
     return;
   }
-  const revalidation = resolveFreshDefaultBranch(repoPath)
+  const revalidation = withGitReadPath(repoPath, null, () =>
+    resolveFreshDefaultBranch(repoPath),
+  )
     .then(
       () => undefined,
       () => undefined,

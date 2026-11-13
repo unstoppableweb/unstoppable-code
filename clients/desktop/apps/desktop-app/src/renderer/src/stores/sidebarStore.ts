@@ -117,6 +117,11 @@ interface SidebarStore {
    * `sidebarCoworkSectionCollapsed`.
    */
   chatsSectionCollapsed: boolean;
+  /**
+   * Whether the Orchestrator's chat list under its row is collapsed.
+   * Persisted as `sidebarOrchestratorCollapsed`.
+   */
+  orchestratorCollapsed: boolean;
   /** Ordered nav layout + main-nav/More split. */
   sidebarNavLayout: SidebarNavLayout;
   /**
@@ -165,6 +170,8 @@ interface SidebarStore {
   setCodeSectionCollapsed: (collapsed: boolean) => void;
   /** Sets the Chats section collapsed flag and fire-and-forget persists it. */
   setChatsSectionCollapsed: (collapsed: boolean) => void;
+  /** Sets the Orchestrator chat list's collapsed flag and persists it. */
+  setOrchestratorCollapsed: (collapsed: boolean) => void;
   /** Sets the nav layout and fire-and-forget persists it. */
   setSidebarNavLayout: (layout: SidebarNavLayout) => void;
   /** Persist the top-level Projects section's ordering mode. */
@@ -193,6 +200,7 @@ export const useSidebarStore = create<SidebarStore>((set, get) => ({
   hydrated: false,
   codeSectionCollapsed: false,
   chatsSectionCollapsed: false,
+  orchestratorCollapsed: false,
   sidebarNavLayout: createDefaultSidebarNavLayout(),
   projectSortMode: DEFAULT_SIDEBAR_SORT_MODE,
   titlebarHostCount: 0,
@@ -205,6 +213,7 @@ export const useSidebarStore = create<SidebarStore>((set, get) => ({
       width: clampWidth(prefs.sidebarWidth),
       codeSectionCollapsed: prefs.sidebarCodeSectionCollapsed,
       chatsSectionCollapsed: prefs.sidebarCoworkSectionCollapsed,
+      orchestratorCollapsed: prefs.sidebarOrchestratorCollapsed,
       sidebarNavLayout: reconcileSidebarNavLayout(prefs.sidebarNavLayout),
       projectSortMode: resolveSidebarSortMode(prefs.sidebarProjectSortMode),
       hydrated: true,
@@ -227,6 +236,7 @@ export const useSidebarStore = create<SidebarStore>((set, get) => ({
       width: clampWidth(prefs.sidebarWidth),
       codeSectionCollapsed: prefs.sidebarCodeSectionCollapsed,
       chatsSectionCollapsed: prefs.sidebarCoworkSectionCollapsed,
+      orchestratorCollapsed: prefs.sidebarOrchestratorCollapsed,
       sidebarNavLayout: reconcileSidebarNavLayout(prefs.sidebarNavLayout),
       projectSortMode: resolveSidebarSortMode(prefs.sidebarProjectSortMode),
     });
@@ -280,6 +290,10 @@ export const useSidebarStore = create<SidebarStore>((set, get) => ({
   setChatsSectionCollapsed: (collapsed): void => {
     set({ chatsSectionCollapsed: collapsed });
     persistPreferences({ sidebarCoworkSectionCollapsed: collapsed });
+  },
+  setOrchestratorCollapsed: (collapsed): void => {
+    set({ orchestratorCollapsed: collapsed });
+    persistPreferences({ sidebarOrchestratorCollapsed: collapsed });
   },
 
   setSidebarNavLayout: (layout): void => {

@@ -13,16 +13,20 @@ import {
   parseAgentTaskRows,
   type AgentTaskRow,
 } from '@canopy/protocol/cloud-session';
-import type {
-  PortalAskUserQuestion,
-  PortalAskUserQuestionAnswer,
-  PortalAskUserQuestionState,
-  PortalChatMessage,
-  PortalQueuedMessage,
+import {
+  readPortalChatMessageAttachments,
+  type PortalAskUserQuestion,
+  type PortalAskUserQuestionAnswer,
+  type PortalAskUserQuestionState,
+  type PortalChatMessage,
+  type PortalChatPart,
+  type PortalQueuedMessage,
+  type PortalTurnTimerAutoRoutedModel,
 } from '@canopy/protocol/portal';
-import type {
-  ChatHydrationOptions,
-  ChatStoreState,
+import {
+  messageRevision,
+  type ChatHydrationOptions,
+  type ChatStoreState,
 } from '../chat/create-chat-store';
 import { hasAuthoritativeMatch, isOptimisticMessage } from '../chat/optimistic';
 import {
@@ -71,6 +75,9 @@ export interface CloudChatThread {
   /** The chat's agent tasks (subagents and background work), as they stand. */
   getAgentTasks(): readonly AgentTaskRow[];
   subscribeAgentTasks(listener: () => void): () => void;
+  /** The ids of the messages its transcript holds; the host retires accepted sends by them. */
+  getMessageIds(): ReadonlySet<string>;
+  subscribeMessageIds(listener: () => void): () => void;
   answerQuestion(
     requestId: string,
     answers: readonly PortalAskUserQuestionAnswer[],
@@ -78,6 +85,14 @@ export interface CloudChatThread {
   dismissQuestion(requestId: string): Promise<void>;
   /** Stops the running turn the web core reports, or else the one this client started; rejects when none is known. */
   stop(): Promise<void>;
+  /**
+   * The model Auto picked for a prompt this client sent, which its turn's
+   * timer names. Kept in memory only, as REST's binding keeps it (CAN-6092).
+   */
+  noteAutoRouting(
+    promptMessageId: string,
+    routing: PortalTurnTimerAutoRoutedModel,
+  ): void;
   /**
    * Follows the running turn's reply as it is written, while the chat is on
    * screen; a hidden thread catches up from the transcript instead.
@@ -102,7 +117,18 @@ export interface BindCloudChatThreadOptions {
    * committed message to reach the transcript.
    */
   readonly liveHoldMs?: number;
+  /**
+   * The host publishes the chat's status, queue and settings; the thread
+   * publishes only its messages and its own read-failure notice, and closing
+   * clears only those. The web, until the web core serves queued text
+   * (CAN-6106). This is the capability seam, not a host check: it names what
+   * the host's transport still owns, and goes away with CAN-6106.
+   */
+  readonly hostOwnsRuntime?: boolean;
 }
+
+/** The longest a re-read waits while reads keep changing nothing. */
+const REOPEN_MAX_MS = 30_000;
 
 /** Statuses during which a turn runs and Stop applies. */
 const ACTIVE_STATUSES: ReadonlySet<string> = new Set([
@@ -131,6 +157,10 @@ interface LiveReply {
   messageId: string | null;
   text: string;
   reasoning: string;
+  /** The turn's own tool calls by id, in the order they came (revision 2). */
+  readonly tools: Map<string, LiveTool>;
+  /** When the turn started, for its running timer (revision 2). */
+  readonly startedAtMs: number | null;
   finished: boolean;
   readonly createdAtMs: number;
   updatedAtMs: number;
@@ -138,6 +168,102 @@ interface LiveReply {
   stoppedAt: number | null;
   /** The transcript reads done by then. */
   readsAtStop: number;
+}
+
+/** One of a running turn's tool calls, as a `tool` item has it. */
+interface LiveTool {
+  readonly toolName: string;
+  readonly input: string;
+  readonly textOffset: number;
+  readonly result?: { readonly output: string; readonly isError: boolean };
+}
+
+/** One step of a live reply: text, or the tool calls between two texts. */
+type LiveStep =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'tools'; readonly blocks: Record<string, unknown>[] };
+
+/**
+ * A live reply as REST's live view shows it: a message for each step, its
+ * text and its tool calls in turn, each card after the text before it.
+ */
+function liveSteps(reply: {
+  readonly text: string;
+  readonly tools: ReadonlyMap<string, LiveTool>;
+}): LiveStep[] {
+  const steps: LiveStep[] = [];
+  let at = 0;
+  for (const [toolUseId, tool] of reply.tools) {
+    const cut = Math.min(Math.max(tool.textOffset, at), reply.text.length);
+    if (cut > at) steps.push({ kind: 'text', text: reply.text.slice(at, cut) });
+    at = cut;
+    const last = steps[steps.length - 1];
+    const run: LiveStep =
+      last?.kind === 'tools' ? last : { kind: 'tools', blocks: [] };
+    if (run !== last) steps.push(run);
+    const { toolName, input, result } = tool;
+    if (run.kind === 'tools') {
+      run.blocks.push({ type: 'tool_use', toolUseId, toolName, input });
+      if (result !== undefined)
+        run.blocks.push({
+          type: 'tool_result',
+          toolUseId,
+          toolName,
+          ...result,
+        });
+    }
+  }
+  if (reply.text.length > at)
+    steps.push({ kind: 'text', text: reply.text.slice(at) });
+  return steps;
+}
+
+/**
+ * A committed reply as REST's transcript shows it (CAN-6116): a message per
+ * step, a new one where text follows a tool call or a tool call follows
+ * text, so a finished turn folds as REST's does. The first step keeps the
+ * row's id; the others take `<id>:step-<n>`, which desktop's projection
+ * does not merge back into the row as it does `<id>:<n>` (CAN-2608).
+ */
+function replySteps(message: unknown): unknown[] {
+  const id = messageId(message);
+  if (!isRecord(message) || message.role !== 'assistant' || id === null)
+    return [message];
+  const blocks: readonly unknown[] = Array.isArray(message.blocks)
+    ? message.blocks
+    : [];
+  const steps: unknown[][] = [[]];
+  let text = false;
+  let tools = false;
+  for (const block of blocks) {
+    const type = isRecord(block) ? block.type : undefined;
+    const tool = type === 'tool_use' || type === 'tool_result';
+    if ((type === 'text' && tools) || (tool && text)) {
+      steps.push([]);
+      text = false;
+      tools = false;
+    }
+    steps[steps.length - 1]?.push(block);
+    text ||= type === 'text';
+    tools ||= tool;
+  }
+  if (steps.length === 1) return [message];
+  return steps.map((step, index) => ({
+    ...message,
+    id: index === 0 ? id : `${id}:step-${index}`,
+    blocks: step,
+  }));
+}
+
+/** A reply's artifact parts as the web core serves them (CAN-6116). */
+function servedArtifactParts(value: unknown): PortalChatPart[] {
+  return Array.isArray(value)
+    ? value.flatMap((part: unknown) =>
+        isRecord(part) && part.kind === 'attachment' && isRecord(part.data)
+          ? [{ kind: 'attachment' as const, data: part.data }]
+          : [],
+      )
+    : [];
 }
 
 export class CloudChatSendRejectedError extends Error {
@@ -156,6 +282,24 @@ export class CloudChatStopUnavailableError extends Error {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * A cloud turn's abnormal end as the timer's `endReason`, which the renderer
+ * reads; the web core's transcript names it `outcome`, as canonical desktop
+ * timers do (CAN-6116).
+ */
+function withTimerEndReason(message: PortalChatMessage): PortalChatMessage {
+  let ended = false;
+  const parts = message.parts?.map((part) => {
+    const data =
+      part.kind === 'turn_timer' && isRecord(part.data) ? part.data : undefined;
+    if (data?.outcome !== 'failed' && data?.outcome !== 'cancelled')
+      return part;
+    ended = true;
+    return { ...part, data: { ...data, endReason: data.outcome } };
+  });
+  return ended ? { ...message, parts } : message;
+}
 
 function isAskUserQuestion(value: unknown): value is PortalAskUserQuestion {
   return (
@@ -216,7 +360,23 @@ export function bindCloudChatThread(
   let pendingTurnId: string | null = null;
   /** Counts runtime reports, so a send can tell whether one arrived since. */
   let runtimeReports = 0;
+  /**
+   * Host-owned runtime: the web core reported on the host's current raise (a
+   * whole read, or a turn it saw run), so its idle may lower that raise.
+   */
+  let turnNews = false;
+  /** The turn state this thread's own raise replaced, until it settles. */
+  let raisedFrom: Pick<ChatHydrationOptions, 'status' | 'turnActive'> | null =
+    null;
   let reopenTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The next re-read's delay: doubles while reads change nothing, to 30 s. */
+  let reopenBackoffMs = reopenDelayMs;
+  /** Whole reads so far; every one after the first is a re-read. */
+  let wholeReads = 0;
+  /** A re-read found no running turn: it lowers the host's raise (A). */
+  let rereadIdle = false;
+  /** The live reply said no turn runs: it stays shut until a runtime report. */
+  let liveSaidIdle = false;
   /** Turns this client started, newest last; Stop cancels the newest. */
   const startedTurnIds: string[] = [];
   /** The next older transcript page's position, while one is left. */
@@ -229,6 +389,22 @@ export function bindCloudChatThread(
   const revisions = new Map<string, number>();
   /** Each row's subagent cards as last published, to see them change. */
   const agentCards = new Map<string, string>();
+  /** The model Auto picked, by the id of the timer its prompt's turn shows. */
+  const autoRouting = new Map<string, PortalTurnTimerAutoRoutedModel>();
+  /** A timer row with the model Auto picked for its turn, as REST's shows it. */
+  const withAutoRouting = (message: PortalChatMessage): PortalChatMessage => {
+    const routed = autoRouting.get(message.messageId);
+    return routed === undefined
+      ? message
+      : {
+          ...message,
+          parts: message.parts?.map((part) =>
+            part.kind === 'turn_timer' && isRecord(part.data)
+              ? { ...part, data: { ...part.data, ...routed } }
+              : part,
+          ),
+        };
+  };
   /** Prompts this client sent, by canonical message id, for queued rows. */
   const sentPrompts = new Map<string, { text: string; at: number }>();
   let queuedMessageIds: readonly string[] = [];
@@ -236,6 +412,9 @@ export function bindCloudChatThread(
   const questionListeners = new Set<() => void>();
   let agentTasks: readonly AgentTaskRow[] = [];
   const agentTaskListeners = new Set<() => void>();
+  /** The transcript's message ids, for the host's outbox (CAN-6509). */
+  let messageIds: ReadonlySet<string> = new Set();
+  const messageIdListeners = new Set<() => void>();
   /** Provisional replies by turn id, oldest first (CAN-5984). */
   const liveReplies = new Map<string, LiveReply>();
   let live: CoreCoworkStream | null = null;
@@ -252,6 +431,20 @@ export function bindCloudChatThread(
   let publishedLive: ReadonlySet<string> = new Set();
   /** The thread shows a read failure: live replies must not publish over it. */
   let failed = false;
+  /** A read-failure notice is in the store (host-owned runtime only). */
+  let noticeShown = false;
+  /** With host-owned runtime, the thread alone writes the chat's messages. */
+  const claim = options.hostOwnsRuntime === true ? {} : undefined;
+  /**
+   * Claimed at the first publish: until then the host's rows stay shown, so
+   * a slow first read never empties the chat.
+   */
+  let claimed = false;
+  /**
+   * Host sends echoed before the first claim that the transcript does not
+   * show yet: kept, and holding the turn, until it does.
+   */
+  let heldSends: PortalChatMessage[] = [];
 
   const scope = {
     workspaceId: target.workspaceId,
@@ -342,7 +535,10 @@ export function bindCloudChatThread(
    * until its message commits, a whole transcript read shows it never came
    * (a failed turn may have no reply), or liveHoldMs passes.
    */
-  function liveMessages(after: number): PortalChatMessage[] {
+  function liveMessages(
+    after: number,
+    shown: ReadonlySet<string>,
+  ): PortalChatMessage[] {
     const now = Date.now();
     for (const [turnId, reply] of liveReplies) {
       if (committed(turnId, reply)) {
@@ -373,51 +569,224 @@ export function bindCloudChatThread(
         },
         Math.max(0, Math.min(...held) - now),
       );
-    return [...liveReplies]
-      .filter(
-        ([, reply]) => reply.text.length > 0 || reply.reasoning.length > 0,
+    let order = after;
+    return [...liveReplies].flatMap(([turnId, reply]) => {
+      const messageId = `${target.key}:live:${turnId}`;
+      const status: PortalChatMessage['status'] = reply.finished
+        ? 'complete'
+        : 'streaming';
+      const steps: LiveStep[] =
+        reply.tools.size > 0
+          ? liveSteps(reply)
+          : reply.text.length > 0 || reply.reasoning.length > 0
+            ? [{ kind: 'text', text: reply.text }]
+            : [];
+      const messages = steps.flatMap((step, index): PortalChatMessage[] => {
+        const id = index === 0 ? messageId : `${messageId}:${index}`;
+        // A tool step's cards as the host projects a committed reply's,
+        // with the subagent rows its spawn calls nest.
+        const tools =
+          step.kind === 'tools'
+            ? project({
+                chatKey: target.key,
+                messages: [
+                  ...raw.filter(
+                    (each) =>
+                      isRecord(each) &&
+                      typeof each.parentToolUseId === 'string',
+                  ),
+                  {
+                    id,
+                    role: 'assistant',
+                    blocks: step.blocks,
+                    timestamp: reply.createdAtMs,
+                  },
+                ],
+                tasks: agentTasks,
+              }).find((each) => each.messageId === id)
+            : undefined;
+        if (step.kind === 'tools' && tools === undefined) return [];
+        const thinking: PortalChatPart[] =
+          index === 0 && reply.reasoning.length > 0
+            ? [{ kind: 'thinking', data: { text: reply.reasoning } }]
+            : [];
+        const parts = [...thinking, ...(tools?.parts ?? [])];
+        return [
+          {
+            ...(tools ?? {}),
+            messageId: id,
+            chatId: target.key,
+            role: 'assistant',
+            // As REST's: the steps before the newest are done.
+            status: index === steps.length - 1 ? status : 'complete',
+            text: step.kind === 'text' ? step.text : '',
+            ...(parts.length > 0 ? { parts } : {}),
+            createdAtMs: reply.createdAtMs,
+            updatedAtMs: reply.updatedAtMs,
+            presentationOrder: order++,
+          },
+        ];
+      });
+      // The running timer, as REST's presentation shows it, under the id of
+      // the timer its committed turn shows, which replaces it in place.
+      const timerId =
+        reply.promptMessageId === null
+          ? null
+          : `${reply.promptMessageId}:turn-timer`;
+      if (
+        timerId !== null &&
+        reply.startedAtMs !== null &&
+        !shown.has(timerId) &&
+        // Only while it runs: a held reply never brings back an ended turn.
+        !reply.finished &&
+        turnStillRuns(turnId)
       )
-      .map(([turnId, reply], index) => ({
-        messageId: `${target.key}:live:${turnId}`,
-        chatId: target.key,
-        role: 'assistant',
-        status: reply.finished ? 'complete' : 'streaming',
-        text: reply.text,
-        ...(reply.reasoning.length > 0
-          ? { parts: [{ kind: 'thinking', data: { text: reply.reasoning } }] }
-          : {}),
-        createdAtMs: reply.createdAtMs,
-        updatedAtMs: reply.updatedAtMs,
-        presentationOrder: after + index,
-      }));
+        messages.push({
+          messageId: timerId,
+          chatId: target.key,
+          role: 'system',
+          status: 'streaming',
+          text: '',
+          parts: [
+            {
+              kind: 'turn_timer',
+              data: {
+                startedAt: reply.startedAtMs,
+                pausedAt: null,
+                resumedAt: null,
+                accumulatedPausedDurationMs: 0,
+                completedAt: null,
+              },
+            },
+          ],
+          createdAtMs: reply.startedAtMs,
+          updatedAtMs: reply.updatedAtMs,
+          presentationOrder: order++,
+        });
+      return messages;
+    });
   }
 
   /**
    * A subagent card changes with its own rows and its task, not its spawn
    * row: move the row's revision when the card does, so the store takes it.
+   * A reply step moves its row's revision, which `upsert` moves too.
    */
-  function noteAgentCards(message: PortalChatMessage): void {
+  function noteAgentCards(
+    message: PortalChatMessage,
+    revisionKey = message.messageId,
+  ): void {
     const cards = message.parts?.filter((part) => part.kind === 'agent') ?? [];
     const fingerprint = cards.length === 0 ? '' : JSON.stringify(cards);
     const known = agentCards.get(message.messageId);
     agentCards.set(message.messageId, fingerprint);
     if (known === undefined || known === fingerprint) return;
     revisions.set(
-      message.messageId,
-      Math.max((revisions.get(message.messageId) ?? 0) + 1, Date.now()),
+      revisionKey,
+      Math.max((revisions.get(revisionKey) ?? 0) + 1, Date.now()),
     );
   }
 
   function publish(replaceMessages: boolean): void {
     if (closed) return;
+    const ids = new Set(raw.flatMap((each) => messageId(each) ?? []));
+    if (
+      ids.size !== messageIds.size ||
+      [...ids].some((id) => !messageIds.has(id))
+    ) {
+      messageIds = ids;
+      for (const listener of messageIdListeners) listener();
+    }
+    // A prompt's attachments, as the web core serves them (CAN-6116).
+    const attachments = new Map(
+      raw.flatMap((each) => {
+        const id = messageId(each);
+        const read = isRecord(each)
+          ? readPortalChatMessageAttachments(each.attachments)
+          : undefined;
+        return id === null || read === undefined ? [] : [[id, read] as const];
+      }),
+    );
+    // A prompt the web core marks cancelled reads as REST's does (CAN-6092).
+    const cancelled = new Set(
+      raw.flatMap((each) =>
+        isRecord(each) && each.cancelled === true
+          ? (messageId(each) ?? [])
+          : [],
+      ),
+    );
+    // A reply step shares its row's revision, so every change moves it on.
+    const stepRows = new Map<string, string>();
+    const rowOf = (id: string): string => stepRows.get(id) ?? id;
+    // A reply's artifacts sit where REST puts them: a deliverable's card on
+    // its last step, the others before its first step's parts.
+    const artifacts = new Map<
+      string,
+      { before: PortalChatPart[]; after: PortalChatPart[] }
+    >();
+    const place = (
+      id: string | null,
+      key: 'before' | 'after',
+      parts: PortalChatPart[],
+    ): void => {
+      if (id === null || parts.length === 0) return;
+      const entry = artifacts.get(id) ?? { before: [], after: [] };
+      entry[key].push(...parts);
+      artifacts.set(id, entry);
+    };
     // The web core's transcript order is authoritative; keep it in the store.
     const projected = project({
       chatKey: target.key,
-      messages: raw,
+      messages: raw.flatMap((each) => {
+        const steps = replySteps(each);
+        const row = messageId(each);
+        for (const step of steps.slice(1)) {
+          const id = messageId(step);
+          if (row !== null && id !== null) stepRows.set(id, row);
+        }
+        const served = isRecord(each) ? servedArtifactParts(each.parts) : [];
+        const isDeliverable = (part: PortalChatPart): boolean =>
+          isRecord(part.data) && 'deliverable' in part.data;
+        place(
+          row,
+          'before',
+          served.filter((part) => !isDeliverable(part)),
+        );
+        place(
+          messageId(steps[steps.length - 1]),
+          'after',
+          served.filter(isDeliverable),
+        );
+        return steps;
+      }),
       tasks: agentTasks,
-    }).map((message, presentationOrder) => {
-      noteAgentCards(message);
-      const revision = revisions.get(message.messageId);
+    }).map((projected, presentationOrder) => {
+      const shown = withAutoRouting(withTimerEndReason(projected));
+      const served = artifacts.get(shown.messageId);
+      const ended =
+        served === undefined
+          ? shown
+          : {
+              ...shown,
+              parts: [
+                ...served.before,
+                ...(shown.parts ?? []),
+                ...served.after,
+              ],
+            };
+      const files = attachments.get(ended.messageId);
+      const message =
+        files === undefined && !cancelled.has(ended.messageId)
+          ? ended
+          : {
+              ...ended,
+              ...(cancelled.has(ended.messageId)
+                ? { status: 'cancelled' as const }
+                : {}),
+              ...(files === undefined ? {} : { attachments: files }),
+            };
+      noteAgentCards(message, rowOf(message.messageId));
+      const revision = revisions.get(rowOf(message.messageId));
       return revision === undefined
         ? { ...message, presentationOrder }
         : {
@@ -429,28 +798,85 @@ export function bindCloudChatThread(
             ),
           };
     });
-    const provisional = liveMessages(projected.length);
+    // A live row's subagent card changes with its task too, as a committed
+    // row's does (noteAgentCards), so its revision moves with the card.
+    const provisional = liveMessages(
+      projected.length,
+      new Set(projected.map((each) => each.messageId)),
+    ).map((live) => {
+      const message = withAutoRouting(live);
+      noteAgentCards(message);
+      const revision = revisions.get(message.messageId);
+      return revision === undefined
+        ? message
+        : {
+            ...message,
+            updatedAtMs: Math.max(
+              message.updatedAtMs ?? message.createdAtMs,
+              revision,
+            ),
+          };
+    });
     const shown = new Set(provisional.map((each) => each.messageId));
     // The store keeps rows a merge omits: a provisional row that went away
     // needs the list replaced, or it would sit beside its committed reply.
     const dropped = [...publishedLive].some((id) => !shown.has(id));
     publishedLive = shown;
-    // A replace drops what it omits: keep the sends still in flight.
-    const pending =
-      dropped && !replaceMessages
-        ? (chatStore.getState().threads[target.key]?.messages ?? []).filter(
-            (message) =>
-              isOptimisticMessage(message) &&
-              !hasAuthoritativeMatch(projected, message),
-          )
-        : [];
+    // A held send leaves once the transcript shows it: under its id, or by
+    // role, text and time, as the store reconciles a send's echo.
+    const shownIn = (message: PortalChatMessage): boolean =>
+      projected.some((each) => each.messageId === message.messageId) ||
+      hasAuthoritativeMatch(projected, message);
+    const heldBefore = heldSends.length;
+    if (claim !== undefined && !claimed) {
+      claimed = true;
+      const newest = Math.max(0, ...projected.map((each) => each.createdAtMs));
+      heldSends = (
+        chatStore.getState().threads[target.key]?.messages ?? []
+      ).filter(
+        (message) =>
+          message.role === 'user' &&
+          !isOptimisticMessage(message) &&
+          !shownIn(message) &&
+          message.createdAtMs > newest,
+      );
+      chatStore.getState().claimTranscript(target.key, claim);
+    } else heldSends = heldSends.filter((message) => !shownIn(message));
+    // A held send the store still lists goes only with a replace.
+    const heldDropped = heldSends.length < heldBefore;
+    // A replace drops what it omits: keep the sends still in flight. A
+    // host-owned thread keeps them through every replace, its first read too,
+    // since the host's composer sends whenever.
+    const keepSends =
+      claim === undefined
+        ? dropped && !replaceMessages
+        : dropped || heldDropped || replaceMessages;
+    const pending = keepSends
+      ? (chatStore.getState().threads[target.key]?.messages ?? []).filter(
+          (message) =>
+            isOptimisticMessage(message) &&
+            !hasAuthoritativeMatch(projected, message),
+        )
+      : [];
     chatStore
       .getState()
-      .hydrate(target.key, [...projected, ...provisional, ...pending], {
-        replaceMessages: replaceMessages || dropped,
-        queuedMessages: queuedMessages(),
-        ...statusOptions(),
-      });
+      .hydrate(
+        target.key,
+        [...projected, ...provisional, ...pending, ...heldSends],
+        {
+          replaceMessages: replaceMessages || dropped || heldDropped,
+          ...(claim === undefined
+            ? { queuedMessages: queuedMessages(), ...statusOptions() }
+            : { transcriptOwner: claim }),
+        },
+      );
+    // After the messages, so a send they reconciled no longer holds the turn.
+    if (claim !== undefined) {
+      const turn = hostRuntime();
+      const runtime = { ...turn, ...clearNotice(turn) };
+      if (Object.keys(runtime).length > 0)
+        chatStore.getState().hydrate(target.key, [], runtime);
+    }
     ensureLive();
   }
 
@@ -473,12 +899,34 @@ export function bindCloudChatThread(
     }
     const held = liveReplies.get(event.turnId);
     const updatedAtMs = Math.max((held?.updatedAtMs ?? 0) + 1, Date.now());
+    if (event.kind === 'tool') {
+      if (held === undefined) return true;
+      const { toolName, input, textOffset, result } = event;
+      held.tools.set(event.toolUseId, {
+        toolName,
+        input,
+        textOffset,
+        ...(result === undefined ? {} : { result }),
+      });
+      held.updatedAtMs = updatedAtMs;
+      return true;
+    }
     if (event.kind === 'turn') {
+      const startedAtMs =
+        event.startedAt === undefined ? NaN : Date.parse(event.startedAt);
       liveReplies.set(event.turnId, {
         promptMessageId: event.promptMessageId,
         messageId: event.messageId ?? null,
         text: event.text,
         reasoning: event.reasoning,
+        // Every attach sends its tools again after its opening item.
+        tools:
+          event.state === 'streaming' || held === undefined
+            ? new Map<string, LiveTool>()
+            : held.tools,
+        startedAtMs: Number.isFinite(startedAtMs)
+          ? startedAtMs
+          : (held?.startedAtMs ?? null),
         finished: event.state === 'finished',
         createdAtMs: held?.createdAtMs ?? Date.now(),
         updatedAtMs,
@@ -516,6 +964,7 @@ export function bindCloudChatThread(
   async function pumpLive(opened: CoreCoworkStream): Promise<void> {
     let reopen = true;
     let gap = false;
+    let idle = false;
     try {
       for (;;) {
         const next = await opened.next();
@@ -527,6 +976,8 @@ export function bindCloudChatThread(
             gap = true;
             break;
           }
+          idle = isRecord(frame.item) && frame.item.kind === 'idle';
+          if (!idle) reopenBackoffMs = reopenDelayMs;
           publishLive();
           continue;
         }
@@ -544,8 +995,15 @@ export function bindCloudChatThread(
       if (live === opened) live = null;
       if (reopen && !closed) {
         // A finished reply whose turn ended may go now; publish reattaches
-        // after a gap, and a completed stream reopens after the delay.
-        if (!gap && turnRuns()) scheduleLive();
+        // after a gap, and a completed stream reopens after the delay. When
+        // the live reply says no turn runs but the held state says one does,
+        // read again (backing off) rather than wait on the feed or reopen.
+        if (!gap && turnRuns()) {
+          if (idle) {
+            liveSaidIdle = true;
+            scheduleReopen(epoch);
+          } else scheduleLive();
+        }
         publishLive();
       }
     }
@@ -562,6 +1020,7 @@ export function bindCloudChatThread(
       // Waiting out the reopen delay: a turn the web core has not started yet
       // must not reopen at once.
       liveTimer !== null ||
+      liveSaidIdle ||
       !turnRuns()
     )
       return;
@@ -673,19 +1132,88 @@ export function bindCloudChatThread(
     reopenTimer = setTimeout(() => {
       reopenTimer = null;
       if (!closed && current === epoch) void open();
-    }, reopenDelayMs);
+    }, reopenBackoffMs);
+    reopenBackoffMs = Math.min(reopenBackoffMs * 2, REOPEN_MAX_MS);
   }
 
   function fail(error: unknown): void {
     if (closed) return;
     failed = true;
+    noticeShown = options.hostOwnsRuntime === true;
     const message =
       error instanceof Error ? error.message : 'Cloud chat unavailable.';
     chatStore.getState().hydrate(target.key, [], {
       status: 'error',
       error: message,
-      turnActive: false,
+      // A host that owns the turn keeps saying whether it runs.
+      ...(options.hostOwnsRuntime === true ? {} : { turnActive: false }),
     });
+  }
+
+  /**
+   * Host-owned runtime: the claim drops the REST turn frames that used to
+   * raise and lower `streaming`, so the web core's turn does both. Once it
+   * stops running and no send is pending, the host's raise (a composer send)
+   * is lowered, but only once it reported on that raise, so a send whose turn
+   * it hasn't reported yet stays raised. A late reply settles to idle instead
+   * of reviving `streaming` from its messages.
+   */
+  function hostRuntime(): Pick<
+    ChatHydrationOptions,
+    'status' | 'error' | 'turnActive'
+  > {
+    const entry = chatStore.getState().threads[target.key];
+    if (turnRuns()) {
+      turnNews = true;
+      if (entry?.status === 'streaming' && entry.turnActive) return {};
+      raisedFrom ??= {
+        status: entry?.status ?? 'idle',
+        turnActive: entry?.turnActive ?? false,
+      };
+      return {
+        status: 'streaming',
+        turnActive: true,
+        error: entry?.error ?? null,
+      };
+    }
+    raisedFrom = null;
+    if (entry === undefined) return {};
+    if (rereadIdle) {
+      rereadIdle = false;
+      turnNews = false;
+      if (entry.turnActive)
+        return { status: 'idle', turnActive: false, error: entry.error };
+    }
+    const sending =
+      heldSends.length > 0 || entry.messages.some(isOptimisticMessage);
+    if (!entry.turnActive || sending) {
+      // Reports so far predate the next raise, or this send's turn.
+      turnNews = false;
+      return entry.turnActive || sending
+        ? {}
+        : { status: 'idle', error: entry.error };
+    }
+    if (!turnNews) return {};
+    turnNews = false;
+    return { status: 'idle', turnActive: false, error: entry.error };
+  }
+
+  /**
+   * Clears this thread's failure notice, back to the turn state: `turn`'s,
+   * when this publish changes it, else the host's.
+   */
+  function clearNotice(
+    turn: Pick<ChatHydrationOptions, 'turnActive'> = {},
+  ): Pick<ChatHydrationOptions, 'status' | 'error'> {
+    if (!noticeShown) return {};
+    noticeShown = false;
+    const turnActive =
+      turn.turnActive ??
+      chatStore.getState().threads[target.key]?.turnActive === true;
+    return {
+      status: turnActive || turnRuns() ? 'streaming' : 'idle',
+      error: null,
+    };
   }
 
   async function apply(item: unknown, current: number): Promise<boolean> {
@@ -747,11 +1275,13 @@ export function bindCloudChatThread(
           runtimeStatus = change.runtime.status;
           pendingTurnId = null;
           runtimeReports += 1;
+          liveSaidIdle = false;
           queuedMessageIds = [...change.runtime.queuedMessageIds];
           activeTurnId =
             typeof change.runtime.activeTurnId === 'string'
               ? change.runtime.activeTurnId
               : null;
+          if (turnRuns()) turnNews = true;
           break;
         default:
           break;
@@ -773,10 +1303,13 @@ export function bindCloudChatThread(
       if (next.done) break;
       const frame = next.value;
       if (isRecord(frame) && frame.kind === 'item') {
+        const before = appliedRevision;
         if (!(await apply(frame.item, current))) {
           // A batch that does not follow the held revision: read again.
           break;
         }
+        // Only a new batch is progress: a reopen replays the one held.
+        if (appliedRevision > before) reopenBackoffMs = reopenDelayMs;
         continue;
       }
       if (isRecord(frame) && frame.kind === 'end') {
@@ -796,6 +1329,8 @@ export function bindCloudChatThread(
   async function open(): Promise<void> {
     epoch += 1;
     const current = epoch;
+    // A send after this read began is newer than what the read can report.
+    const readStart = Date.now();
     const previous = stream;
     stream = null;
     if (previous !== null) void previous.close();
@@ -818,6 +1353,16 @@ export function bindCloudChatThread(
       activeTurnId = runtime?.activeTurnId ?? null;
       pendingTurnId = null;
       runtimeReports += 1;
+      turnNews = true;
+      wholeReads += 1;
+      rereadIdle =
+        wholeReads > 1 &&
+        !turnRuns() &&
+        !(chatStore.getState().threads[target.key]?.messages ?? []).some(
+          (message) =>
+            message.role === 'user' && message.createdAtMs >= readStart,
+        );
+      liveSaidIdle = false;
       queuedMessageIds = runtime?.queuedMessageIds ?? [];
       setQuestions(
         (snapshot.data.pendingQuestions ?? [])
@@ -1042,6 +1587,31 @@ export function bindCloudChatThread(
     return respond(requestId, { answers: keyed });
   }
 
+  function noteAutoRouting(
+    promptMessageId: string,
+    routing: PortalTurnTimerAutoRoutedModel,
+  ): void {
+    if (closed) return;
+    const timerId = `${promptMessageId}:turn-timer`;
+    autoRouting.set(timerId, routing);
+    // A timer already shown takes the chip only when its revision passes the
+    // store's, whose completion time is the server's clock, not this one.
+    const shown = chatStore
+      .getState()
+      .threads[target.key]?.messages.find((each) => each.messageId === timerId);
+    revisions.set(
+      timerId,
+      Math.max(
+        (revisions.get(timerId) ?? 0) + 1,
+        Date.now(),
+        shown === undefined ? 0 : messageRevision(shown) + 1,
+      ),
+    );
+    // Before the first read, or after a failure, the next read's publish
+    // carries it; publishing now would clear a failed thread's error.
+    if (wholeReads > 0 && !failed) publish(false);
+  }
+
   function setLive(on: boolean): void {
     if (closed || on === liveWanted) return;
     liveWanted = on;
@@ -1079,7 +1649,34 @@ export function bindCloudChatThread(
     liveReplies.clear();
     setAgentTasks([]);
     agentTaskListeners.clear();
-    chatStore.getState().reset(target.key);
+    messageIdListeners.clear();
+    const store = chatStore.getState();
+    const entry = store.threads[target.key];
+    if (claim === undefined) {
+      store.reset(target.key);
+      return;
+    }
+    // Drop what the thread wrote, then hand the transcript back to the host;
+    // the host's settings and sends stay. A turn only this thread raised goes
+    // back to the host's state, which REST lowers without touching status.
+    const sends = entry?.messages.filter(isOptimisticMessage) ?? [];
+    const unraise =
+      raisedFrom !== null &&
+      sends.length === 0 &&
+      entry?.status === 'streaming' &&
+      entry.turnActive
+        ? raisedFrom
+        : {};
+    const handBack = {
+      // Unclaimed, the thread wrote no messages: the host's stay.
+      ...(claimed ? { replaceMessages: true, transcriptOwner: claim } : {}),
+      ...clearNotice(),
+      ...unraise,
+    };
+    // Released first, so host echoes the store held go with the thread's rows.
+    store.releaseTranscript(target.key, claim);
+    if (entry !== undefined && Object.keys(handBack).length > 0)
+      store.hydrate(target.key, claimed ? sends : [], handBack);
   }
 
   void open();
@@ -1087,6 +1684,7 @@ export function bindCloudChatThread(
     target,
     send,
     stop,
+    noteAutoRouting,
     loadOlder,
     getQuestions: () => questions,
     subscribeQuestions: (listener) => {
@@ -1100,6 +1698,13 @@ export function bindCloudChatThread(
       agentTaskListeners.add(listener);
       return () => {
         agentTaskListeners.delete(listener);
+      };
+    },
+    getMessageIds: () => messageIds,
+    subscribeMessageIds: (listener) => {
+      messageIdListeners.add(listener);
+      return () => {
+        messageIdListeners.delete(listener);
       };
     },
     answerQuestion,

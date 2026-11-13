@@ -33,7 +33,7 @@ import {
 import { TaskIcon as AppCatalogTaskIcon } from '../../icons/AppIcons';
 import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
 import { capitalizeFirstLetter } from '../../lib/text-format';
-import { useCleanChatLook, useStepBadges } from '../chat-look';
+import { useCleanChatLook, useStepBadges, useStepTense } from '../chat-look';
 import { StepBadge } from './StepBadge';
 import type { PortalChatToolFamily } from './tool-display-info';
 import type { AnsweredQuestionDisplay } from './AskUserQuestionCard';
@@ -296,6 +296,14 @@ const APP_ACTION_TOOL_ALIASES: ReadonlySet<string> = new Set([
   'SearchMemory',
   legacyMcpToolName('ReadMemory'),
   legacyCodexToolName('read_memory'),
+  legacyMcpToolName('SearchChats'),
+  legacyCodexToolName('search_chats'),
+  legacyCursorToolTitle('SearchChats'),
+  'SearchChats',
+  legacyMcpToolName('ReadChatExcerpt'),
+  legacyCodexToolName('read_chat_excerpt'),
+  legacyCursorToolTitle('ReadChatExcerpt'),
+  'ReadChatExcerpt',
   'ReadMemory',
   legacyMcpToolName('ReadPipelineYaml'),
   legacyCodexToolName('read_pipeline_yaml'),
@@ -416,6 +424,8 @@ const APP_MCP_DISPLAY_TO_CAPABILITY: ReadonlyMap<
   ['GetGitPreferences', 'get_git_preferences'],
   ['SaveMemory', 'save_memory'],
   ['SearchMemory', 'search_memory'],
+  ['SearchChats', 'search_chats'],
+  ['ReadChatExcerpt', 'read_chat_excerpt'],
   ['ReadMemory', 'read_memory'],
   ['ReadPipelineYaml', 'read_pipeline_yaml'],
   ['SearchWatchers', 'search_watchers'],
@@ -480,6 +490,8 @@ const APP_CODEX_SUFFIX_TO_CAPABILITY: ReadonlyMap<
   ['get_git_preferences', 'get_git_preferences'],
   ['save_memory', 'save_memory'],
   ['search_memory', 'search_memory'],
+  ['search_chats', 'search_chats'],
+  ['read_chat_excerpt', 'read_chat_excerpt'],
   ['read_memory', 'read_memory'],
   ['read_pipeline_yaml', 'read_pipeline_yaml'],
   ['search_watchers', 'search_watchers'],
@@ -598,7 +610,7 @@ function getBrandedAppCapability(
   }
 
   const codexMatch = toolName.match(
-    /^(.+?)_(ask_user_question|get_script_output|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate|set_chat_auto_archive|set_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|search_deferred_tools|load_deferred_tools|immediate_turn_restart|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry)$/,
+    /^(.+?)_(ask_user_question|get_script_output|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate|set_chat_auto_archive|set_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|get_git_preferences|save_memory|search_memory|search_chats|read_chat_excerpt|read_memory|read_pipeline_yaml|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|search_deferred_tools|load_deferred_tools|immediate_turn_restart|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry)$/,
   );
   if (codexMatch) {
     const namespace = codexMatch[1];
@@ -620,6 +632,14 @@ function getBrandedAppCapability(
     }
   }
 
+  const namespace = scope?.trustedMcpNamespace;
+  if (namespace && toolName.startsWith(`${namespace}: `)) {
+    const capability = APP_MCP_DISPLAY_TO_CAPABILITY.get(
+      toolName.slice(namespace.length + 2),
+    );
+    if (capability === 'search_chats' || capability === 'read_chat_excerpt')
+      return capability;
+  }
   return getTrustedCursorTitleLedgerCapability(toolName, scope);
 }
 
@@ -809,6 +829,8 @@ type CanopyActionCapability =
   | 'get_git_preferences'
   | 'save_memory'
   | 'search_memory'
+  | 'search_chats'
+  | 'read_chat_excerpt'
   | 'read_memory'
   | 'read_pipeline_yaml'
   | 'search_watchers'
@@ -1076,6 +1098,14 @@ const APP_ACTION_TOOL_NAME_TO_CAPABILITY: ReadonlyMap<
   ['SearchMemory', 'search_memory'],
   [legacyMcpToolName('ReadMemory'), 'read_memory'],
   [legacyCodexToolName('read_memory'), 'read_memory'],
+  [legacyMcpToolName('SearchChats'), 'search_chats'],
+  [legacyCodexToolName('search_chats'), 'search_chats'],
+  [legacyCursorToolTitle('SearchChats'), 'search_chats'],
+  ['SearchChats', 'search_chats'],
+  [legacyMcpToolName('ReadChatExcerpt'), 'read_chat_excerpt'],
+  [legacyCodexToolName('read_chat_excerpt'), 'read_chat_excerpt'],
+  [legacyCursorToolTitle('ReadChatExcerpt'), 'read_chat_excerpt'],
+  ['ReadChatExcerpt', 'read_chat_excerpt'],
   ['ReadMemory', 'read_memory'],
   [legacyMcpToolName('ReadPipelineYaml'), 'read_pipeline_yaml'],
   [legacyCodexToolName('read_pipeline_yaml'), 'read_pipeline_yaml'],
@@ -1306,32 +1336,27 @@ function ShellLabel({
   description?: string;
 }): JSX.Element {
   const clean = useCleanChatLook();
-  const badges = useStepBadges();
+  const tense = useStepTense();
   if (clean) {
-    if (description)
-      return (
-        <>
-          {badges ? (
-            <span className="max-w-full shrink-0 truncate">{description}</span>
-          ) : (
-            description
-          )}
-          {command && (
-            <>
-              {' '}
-              {badges ? (
-                <StepBadge>{command}</StepBadge>
-              ) : (
-                <MonoSnippet>{command}</MonoSnippet>
-              )}
-            </>
-          )}
-        </>
-      );
+    // What it did, then the command as the row's lighter detail: the
+    // agent's own description when it gave one, else "Ran a command" in the
+    // step's tense. A blocked or interrupted command, or one outside a step,
+    // never claims it ran.
+    const words =
+      description ??
+      (tense === 'running'
+        ? 'Running a command'
+        : tense === 'done' || tense === 'failed'
+          ? 'Ran a command'
+          : 'Run a command');
+    if (!command) return <>{words}</>;
     return (
       <>
-        <ToolVerb classic={heading} clean="Run" />{' '}
-        {badges ? <StepBadge>{command}</StepBadge> : command}
+        {words}
+        <span className={CLEAN_DETAIL_CLASS}>
+          <span aria-hidden="true">{' · '}</span>
+          {command}
+        </span>
       </>
     );
   }
@@ -2620,6 +2645,24 @@ const APP_ACTION_RENDERERS: Record<
   get_git_preferences: renderGetGitPreferences,
   save_memory: renderSaveMemory,
   search_memory: renderSearchMemory,
+  search_chats: (parsed) => ({
+    icon: <WrenchIcon />,
+    label: (
+      <span>
+        Search chats
+        {asString(parsed.query) ? (
+          <>
+            {' '}
+            <CodeChunk>{asString(parsed.query)}</CodeChunk>
+          </>
+        ) : null}
+      </span>
+    ),
+  }),
+  read_chat_excerpt: () => ({
+    icon: <WrenchIcon />,
+    label: 'Read chat excerpt',
+  }),
   read_memory: renderReadMemory,
   read_pipeline_yaml: renderAppAdvisorReadPipelineYaml,
   search_watchers: renderAppSearchWatchers,

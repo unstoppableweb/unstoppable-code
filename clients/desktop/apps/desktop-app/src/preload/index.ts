@@ -36,6 +36,7 @@ import type {
 } from '@canopy/protocol/foreign-activity';
 import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 import { isCloudProjectSetupProgress } from '@canopy/desktop-shared/lib/cloud-project-setup';
+import { isWebCoreTarget } from '../shared/web-core-scope';
 import {
   isOrgProjectSetupProgress,
   type OrgProjectDeepLinkOpenEvent,
@@ -46,6 +47,7 @@ import type {
   CodexLoginState,
   CursorConnectionStatus,
   LocalMemoryScopeRequest,
+  MemorySyncState,
   ManagedDelegationMessageRequest,
   ManagedDelegationMessageResult,
   ManagedDelegationTreeRequest,
@@ -321,7 +323,9 @@ import { isResourceMonitorSnapshot } from './resource-monitor-validation';
 import { createClaudeTerminalBridge } from './claude-terminal-bridge';
 import { isChatSessionImportedEvent } from './session-transfer-validation';
 import {
+  isDismissSharedContainerOwnerDepartureResult,
   isListDismissedSharedContainersResult,
+  isListSharedContainerOwnerDeparturesResult,
   isRestoreSharedContainerResult,
   isSharedContainerInboxChangedEvent,
   isSharedContainerPublicationState,
@@ -622,6 +626,8 @@ function isApprovalRequestDetails(value: unknown): boolean {
     case 'tool':
       return (
         typeof value.toolName === 'string' &&
+        isOptionalString(value.path) &&
+        isOptionalString(value.displayPath) &&
         isOptionalString(value.inputSummary) &&
         isOptionalString(value.reason)
       );
@@ -1384,35 +1390,62 @@ function isGatewayRouteEntry(value: unknown): boolean {
   );
 }
 
+/** One rule for both: the snapshot is valid when nothing in it is refused. */
 function isModelRegistrySnapshot(
   value: unknown,
 ): value is ModelRegistrySnapshot {
+  return describeModelRegistrySnapshotRejection(value) === null;
+}
+
+/** The first entry of `entries` that `isValid` refuses, as `section[index] (id)`. */
+function describeRejectedEntry(
+  section: string,
+  entries: unknown,
+  isValid: (entry: unknown) => boolean,
+): string | null {
+  if (!Array.isArray(entries)) return `${section}: not an array`;
+  const index = entries.findIndex((entry) => !isValid(entry));
+  if (index === -1) return null;
+  const entry: unknown = entries[index];
+  const id = isRecord(entry) && typeof entry.id === 'string' ? entry.id : null;
+  return `${section}[${index}]${id === null ? '' : ` (${id})`}`;
+}
+
+/**
+ * Why `value` is not a valid registry snapshot: the first failing section,
+ * with the entry's index and id, or `null` when it is valid. Never the payload
+ * itself, which is large and names every configured model. `agents` and the
+ * gateway sections are optional for backward compatibility: a missing field
+ * means none, and a present one must be a valid entry array.
+ */
+function describeModelRegistrySnapshotRejection(value: unknown): string | null {
+  if (!isRecord(value)) return 'snapshot: not an object';
+  const optional = (
+    section: string,
+    entries: unknown,
+    isValid: (entry: unknown) => boolean,
+  ): string | null =>
+    entries === undefined
+      ? null
+      : describeRejectedEntry(section, entries, isValid);
   return (
-    isRecord(value) &&
-    Array.isArray(value.claude) &&
-    value.claude.every((entry) => isClaudeModelEntry(entry)) &&
-    Array.isArray(value.codex) &&
-    value.codex.every((entry) => isCodexModelEntry(entry)) &&
-    Array.isArray(value.ollama) &&
-    value.ollama.every((entry) => isOllamaModelEntry(entry)) &&
-    // `agents` is optional for backward compatibility: a missing field means
-    // no Agent overlay ([]). An present field must be a valid entry array.
-    (value.agents === undefined ||
-      (Array.isArray(value.agents) &&
-        value.agents.every((entry) => isAgentModelRegistryEntry(entry)))) &&
-    (value.aiGatewayModels === undefined ||
-      (Array.isArray(value.aiGatewayModels) &&
-        value.aiGatewayModels.every(isAiGatewayModelEntry))) &&
-    (value.gatewayRoutes === undefined ||
-      (Array.isArray(value.gatewayRoutes) &&
-        value.gatewayRoutes.every(isGatewayRouteEntry))) &&
+    describeRejectedEntry('claude', value.claude, isClaudeModelEntry) ??
+    describeRejectedEntry('codex', value.codex, isCodexModelEntry) ??
+    describeRejectedEntry('ollama', value.ollama, isOllamaModelEntry) ??
+    optional('agents', value.agents, isAgentModelRegistryEntry) ??
+    optional('aiGatewayModels', value.aiGatewayModels, isAiGatewayModelEntry) ??
+    optional('gatewayRoutes', value.gatewayRoutes, isGatewayRouteEntry) ??
     (value.harnessAssignments === undefined ||
-      isModelHarnessAssignmentSnapshot(value.harnessAssignments)) &&
+    isModelHarnessAssignmentSnapshot(value.harnessAssignments)
+      ? null
+      : 'harnessAssignments') ??
     (value.aiGatewayCatalogStatus === undefined ||
-      AI_GATEWAY_CATALOG_STATUSES.some(
-        (status) => status === value.aiGatewayCatalogStatus,
-      )) &&
-    isStringRecord(value.aliases)
+    AI_GATEWAY_CATALOG_STATUSES.some(
+      (status) => status === value.aiGatewayCatalogStatus,
+    )
+      ? null
+      : 'aiGatewayCatalogStatus') ??
+    (isStringRecord(value.aliases) ? null : 'aliases')
   );
 }
 
@@ -2223,6 +2256,8 @@ function organizationReply<T>(
 const canopyApi: CanopyApi = {
   reloadWindow: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowReload),
   restartApp: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowRestart),
+  lookUpSelection: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.appWindowLookUpSelection),
   notifyStartupUnlocked: () =>
     ipcRenderer.invoke(IPC_CHANNELS.appStartupUnlocked),
   loadProjects: () => ipcRenderer.invoke(IPC_CHANNELS.projectsLoad),
@@ -2446,10 +2481,16 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.fileTreeDirectory, request),
   mutateFileTree: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.fileTreeMutate, request),
+  // A cloud task's files live in its sandbox, which main never watches: its
+  // explorer reads them again itself (CAN-6395).
   startFileTreeWatch: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStart, request),
+    isWebCoreTarget(request)
+      ? Promise.resolve()
+      : ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStart, request),
   stopFileTreeWatch: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStop, request),
+    isWebCoreTarget(request)
+      ? Promise.resolve()
+      : ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStop, request),
   onFileTreeChanged: (callback) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -2519,6 +2560,8 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.worktreeArchive, request),
   checkWorktreeRemovalAdmission: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, request),
+  listWorktreeRecovery: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryList, request),
   describeWorktreeDiscard: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeDiscardDescribe, request),
   discardWorktree: (request) =>
@@ -3026,7 +3069,24 @@ const canopyApi: CanopyApi = {
         input,
       ),
   },
-  getModelRegistry: () => ipcRenderer.invoke(IPC_CHANNELS.modelRegistryGet),
+  getModelRegistry: () => {
+    const request = ipcRenderer.invoke(IPC_CHANNELS.modelRegistryGet);
+    // Log-only here: the live update path rejects, but refusing the startup
+    // read too would hide every model if the validator, not the data, is
+    // wrong.
+    void request.then(
+      (snapshot: unknown) => {
+        if (isModelRegistrySnapshot(snapshot)) return;
+        // eslint-disable-next-line no-console
+        console.error(
+          `[preload] Model registry snapshot failed validation at ${describeModelRegistrySnapshotRejection(snapshot) ?? 'unknown'}; using it anyway.`,
+        );
+      },
+      // The caller gets the same rejection from `request`.
+      () => undefined,
+    );
+    return request;
+  },
   retryAiGatewayModelCatalog: async () => {
     await ipcRenderer.invoke(IPC_CHANNELS.aiGatewayModelCatalogRetry);
   },
@@ -3041,8 +3101,7 @@ const canopyApi: CanopyApi = {
       }
       // eslint-disable-next-line no-console
       console.error(
-        '[preload] Rejected model registry snapshot; check featureFlag keys and payload shape.',
-        data,
+        `[preload] Rejected model registry snapshot at ${describeModelRegistrySnapshotRejection(data) ?? 'unknown'}; check featureFlag keys and payload shape.`,
       );
     };
     ipcRenderer.on(IPC_CHANNELS.modelRegistryUpdated, handler);
@@ -3188,6 +3247,33 @@ const canopyApi: CanopyApi = {
         handler,
       );
     };
+  },
+  localModelGateway: {
+    read: () => ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayRead),
+    update: (input) =>
+      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayUpdate, input),
+    connect: (input) =>
+      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayConnect, input),
+    onChanged: (callback) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(IPC_CHANNELS.localModelGatewayChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.localModelGatewayChanged,
+          handler,
+        );
+      };
+    },
+    onMigrationConflict: (callback) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(IPC_CHANNELS.localModelGatewayMigrationConflict, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.localModelGatewayMigrationConflict,
+          handler,
+        );
+      };
+    },
   },
   loadCanopyCloudAccount: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAccount),
@@ -3346,6 +3432,34 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.localMemoryListSnapshots, request),
   restoreLocalMemorySnapshot: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.localMemoryRestoreSnapshot, request),
+  getMemorySyncState: () => ipcRenderer.invoke(IPC_CHANNELS.memorySyncGetState),
+  onMemorySyncChanged: (callback) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      state: MemorySyncState,
+    ): void => callback(state);
+    ipcRenderer.on(IPC_CHANNELS.memorySyncChanged, handler);
+    return () =>
+      ipcRenderer.removeListener(IPC_CHANNELS.memorySyncChanged, handler);
+  },
+  updateMemorySyncSettings: (patch) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncUpdateSettings, patch),
+  previewMemorySyncMerge: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncPreviewMerge, request),
+  applyMemorySyncMerge: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncApplyMerge, request),
+  readMemorySyncConflict: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncReadConflict, request),
+  resolveMemorySyncConflict: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncResolveConflict, request),
+  listMemorySyncHistory: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncListHistory, request),
+  restoreMemorySyncRevision: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncRestore, request),
+  deleteMemorySyncFromCloud: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncDeleteFromCloud, request),
+  setMemorySyncProjectMemory: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.memorySyncSetProjectMemory, request),
   submitOrgMemoryFeedback: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.orgMemoryFeedbackSubmit, request),
   getOrgMemoryFeedback: (request) =>
@@ -3379,8 +3493,14 @@ const canopyApi: CanopyApi = {
       : files
           .map((file) => webUtils.getPathForFile(file))
           .filter((path) => path.length > 0),
+  // A cloud task has no folder on this computer: main can't resolve its ids,
+  // and every caller already treats a refused read as no path (CAN-6395).
   getWorktreePath: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
+    isWebCoreTarget(request)
+      ? Promise.reject(
+          new Error('A cloud task has no folder on this computer.'),
+        )
+      : ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
   listWorktreeRepoEntries: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeListRepoEntries, request),
   showInFinder: (request) =>
@@ -3427,6 +3547,8 @@ const canopyApi: CanopyApi = {
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansGenerateDiagrams, request),
       share: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansShare, request),
+      unshare: (request) =>
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansUnshare, request),
       import: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansImport, request),
       refreshComments: (request) =>
@@ -3434,8 +3556,14 @@ const canopyApi: CanopyApi = {
       setFileVisibility: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansFileVisibility, request),
     },
+    // A cloud task is not this computer's: main can't resolve its ids
+    // (CAN-6395).
     stopBgProcess: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
+      isWebCoreTarget(request)
+        ? Promise.reject(
+            new Error('A cloud task has no Stop on this computer.'),
+          )
+        : ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
     startOutputPolling: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityStartOutputPolling, request),
     stopOutputPolling: (request) =>
@@ -4726,6 +4854,25 @@ const canopyApi: CanopyApi = {
       }
       return response;
     },
+    listOwnerDepartures: async () => {
+      const response: unknown = await ipcRenderer.invoke(
+        IPC_CHANNELS.sharedContainersListOwnerDepartures,
+      );
+      if (!isListSharedContainerOwnerDeparturesResult(response)) {
+        throw new Error('Main returned an invalid owner departure listing');
+      }
+      return response;
+    },
+    dismissOwnerDeparture: async (request) => {
+      const response: unknown = await ipcRenderer.invoke(
+        IPC_CHANNELS.sharedContainersDismissOwnerDeparture,
+        request,
+      );
+      if (!isDismissSharedContainerOwnerDepartureResult(response)) {
+        throw new Error('Main returned an invalid owner departure dismissal');
+      }
+      return response;
+    },
     restore: async (request) => {
       const response: unknown = await ipcRenderer.invoke(
         IPC_CHANNELS.sharedContainersRestore,
@@ -5353,6 +5500,8 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.appAdvisorWindowRendererReady),
     setFloatingSize: (size) =>
       ipcRenderer.invoke(IPC_CHANNELS.appAdvisorWindowSetFloatingSize, size),
+    setDock: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.appAdvisorWindowSetDock, request),
     onWindowStateChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -6240,6 +6389,8 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesApply, request),
     status: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesStatus, request),
+    check: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.repoRulesCheck, request),
     preview: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesPreview, request),
   },

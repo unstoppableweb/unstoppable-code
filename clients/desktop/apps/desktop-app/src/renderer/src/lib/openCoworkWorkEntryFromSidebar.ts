@@ -1,5 +1,7 @@
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { useGitHubStore } from '@/stores/githubStore';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 
 /**
@@ -15,11 +17,19 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
  * well as toasted — the toast is all the user needs, but without the log the
  * failure never reaches `agent-observability/diagnostics/app-events` and a
  * report of "the row does nothing" has nothing behind it to triage.
+ *
+ * Cloud rows call it too, with web-core qualified ids (CAN-6099), and open
+ * on the cowork page like local tasks (CAN-6175).
  */
 export function openCoworkWorkEntryFromSidebar(
   projectId: string,
   entryId: string,
 ): void {
+  if (isWebCoreScope(projectId)) {
+    // A cloud row is a worktree row, whose selection leaves navigation to
+    // whoever opens it; local cowork rows navigate in the sidebar.
+    useNavigationStore.getState().navigate('chat');
+  }
   void useStandaloneChatStore
     .getState()
     .openWorkEntryFromSidebar(projectId, entryId)

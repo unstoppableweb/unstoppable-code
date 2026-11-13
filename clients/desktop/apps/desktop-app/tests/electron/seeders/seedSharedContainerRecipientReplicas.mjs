@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { writeJson } from './fsHelpers.mjs';
+import { DEFAULT_MOCK_BASE_URL } from './registerScenario.mjs';
 
 export const SHARED_CONTAINER_RECIPIENT_ORGANIZATION_ID =
   '77777777-7777-4777-8777-777777777777';
@@ -9,11 +10,14 @@ export const SHARED_CONTAINER_RECIPIENT_CODE_ID =
   '55555555-5555-4555-8555-555555555551';
 export const SHARED_CONTAINER_RECIPIENT_COWORK_ID =
   '55555555-5555-4555-8555-555555555552';
-export const SHARED_CONTAINER_TRACKING_IMAGE_URL =
-  'https://attacker.invalid/shared-container-open-token';
-export const SHARED_CONTAINER_BACKSLASH_TRACKING_IMAGE_URL =
+// A neutral image the e2e mock server serves, so the read-only share view
+// shows a remote image loading as in any chat.
+export const SHARED_CONTAINER_REMOTE_IMAGE_URL = `${DEFAULT_MOCK_BASE_URL}/org-logo/shared-chat-image.svg`;
+// Chromium normalizes the backslashes to `https://attacker.invalid/...`, which
+// never resolves, so the same view also shows the failed-image fallback.
+export const SHARED_CONTAINER_UNREACHABLE_IMAGE_URL =
   'https://attacker.invalid/shared-container-backslash-token';
-const SHARED_CONTAINER_BACKSLASH_TRACKING_IMAGE_SOURCE =
+const SHARED_CONTAINER_UNREACHABLE_IMAGE_SOURCE =
   'https:\\\\attacker.invalid\\shared-container-backslash-token';
 
 const OWNER_USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -113,13 +117,13 @@ function message(chatId, text, extraText) {
       ...(chatId === 'code-chat'
         ? [
             {
-              messageId: `${chatId}-tracking-image`,
+              messageId: `${chatId}-remote-images`,
               chatId,
               role: 'assistant',
               status: 'complete',
               text: [
-                `![Shared tracking image](${SHARED_CONTAINER_TRACKING_IMAGE_URL})`,
-                `![Shared backslash tracking image](${SHARED_CONTAINER_BACKSLASH_TRACKING_IMAGE_SOURCE})`,
+                `![Checkout dashboard](${SHARED_CONTAINER_REMOTE_IMAGE_URL})`,
+                `![Unreachable image](${SHARED_CONTAINER_UNREACHABLE_IMAGE_SOURCE})`,
               ].join('\n\n'),
               createdAtMs: Date.parse(NOW) + 1,
             },

@@ -1,4 +1,5 @@
 import {
+  CHAT_HISTORY_ACTION_TYPES,
   EXPERIMENT_ACTION_TYPES,
   INSTALLED_ITEM_ACTION_TYPES,
   PIPELINES_ACTION_TYPES,
@@ -19,6 +20,7 @@ const DISPATCH_ACTION_TYPES = [
   ...new Set([
     ...APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
     ...TRANSCRIPT_READ_ACTION_TYPES,
+    ...CHAT_HISTORY_ACTION_TYPES,
     ...INSTALLED_ITEM_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES,
@@ -60,12 +62,12 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       legacyWrites: count((d) => d.kind === 'legacy' && d.access === 'write'),
       legacyReads: count((d) => d.kind === 'legacy' && d.access === 'read'),
     }).toEqual({
-      coreWrites: 156,
-      coreReads: 107,
+      coreWrites: 180,
+      coreReads: 117,
       hostPresentation: 3,
-      presentation: 89,
-      legacyWrites: 60,
-      legacyReads: 17,
+      presentation: 91,
+      legacyWrites: 37,
+      legacyReads: 9,
     });
   });
 

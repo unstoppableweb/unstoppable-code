@@ -1,4 +1,5 @@
 import type { z } from 'zod/v4';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import type { previewVisualSchema } from './definitions';
 import type { VisualPreparationHost } from './prepare-visual-html';
 import {
@@ -7,6 +8,11 @@ import {
   type VisualPreviewResult,
 } from '../browser/visual-preview-types';
 import { inlineVisualImages, validateVisualHtml } from './prepare-visual-html';
+import { previewVisualThroughCore } from './visual-core-client';
+
+/** Shown when the host has no render engine, as a daemon-hosted chat's (CAN-6216). */
+export const PREVIEW_VISUAL_UNAVAILABLE_TEXT =
+  "Preview isn't available in this chat: its host has no render engine for visuals. ShowVisual still shows a visual, without measured heights.";
 
 export type PreviewVisualInput = z.infer<typeof previewVisualSchema>;
 
@@ -59,15 +65,25 @@ export async function executePreviewVisual(
     unresolved: 'report',
   });
   if (!inlined.ok) return { text: inlined.error, isError: true };
-  const { getVisualPreviewService } =
-    await import('../browser/visual-preview-service');
-  const result = await getVisualPreviewService().preview({
-    prepared: inlined.value,
-    width: input.width ?? VISUAL_PREVIEW_LIMITS.defaultWidth,
-    ...(input.appearance ? { appearance: input.appearance } : {}),
-    imageBudgetBytes: options.imageBudgetBytes,
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+  let result: VisualPreviewResult;
+  try {
+    result = await previewVisualThroughCore(
+      {
+        prepared: { html: inlined.value.html },
+        width: input.width ?? VISUAL_PREVIEW_LIMITS.defaultWidth,
+        ...(input.appearance ? { appearance: input.appearance } : {}),
+        imageBudgetBytes: options.imageBudgetBytes,
+      },
+      options.signal,
+    );
+  } catch (error) {
+    if (!(error instanceof CanopyOperationError)) throw error;
+    if (error.payload.kind === 'capability_unavailable')
+      return { text: PREVIEW_VISUAL_UNAVAILABLE_TEXT, isError: true };
+    if (error.payload.kind === 'cancelled')
+      return { text: 'Preview was stopped.', isError: true };
+    throw error;
+  }
   const lines = [
     result.status === 'ok'
       ? `Preview rendered at ${input.width ?? VISUAL_PREVIEW_LIMITS.defaultWidth}px. Content height: ${result.contentHeight}px; captured height: ${result.capturedHeight}px.`

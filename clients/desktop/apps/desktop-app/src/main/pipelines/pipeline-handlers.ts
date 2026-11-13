@@ -1,3 +1,6 @@
+import { resolveReplayLocation } from '@canopy/execution-engine/node/pipelines/executor/replay-location';
+import type { PipelineReadPort } from '@canopy/desktop-shared/lib/automation-share/port';
+import type { PipelineRunLocationRequest } from '@canopy/desktop-shared/types/pipeline-cloud-runs';
 import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
 import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import type { ShareFailure } from '@canopy/protocol/sharing';
@@ -75,7 +78,7 @@ import {
 } from '../lib/main-process-logging';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import * as service from './pipeline-service';
-import { getStoredPipelineIndexEntry } from '@canopy/desktop-shared/pipelines/store';
+import { getStoredPipelineIndexEntry } from '@canopy/execution-engine/pipelines/store';
 import {
   createSharedPipeline,
   deleteSharedPipeline,
@@ -182,7 +185,7 @@ import {
   type SharedPipelineExecutionSource,
   type StepLogLocator,
   type StepLogReadOptions,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { readStepLogFile } from '@canopy/execution-engine/node/pipelines/executor/step-log-positions';
 import { createElectronExecutionRuntime } from './execution-runtime';
 import {
@@ -211,7 +214,7 @@ import {
   normalizePipelinePluginCollectionPreferences,
   savePipelineModelAliasPreferences,
   savePipelinePluginCollectionPreferences,
-} from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+} from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import {
   isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
@@ -1102,8 +1105,14 @@ export async function saveEditorPipeline(
   if (result.success && result.data) {
     recordUserSave(result.data.id);
     // Decision 6 (CAN-5782): a workflow page's schedules take its name.
-    if (existingUserPipelineId !== undefined)
+    if (existingUserPipelineId !== undefined) {
       await copyWorkflowNameToSchedules(result.data.id, input.name);
+      // P7 (CAN-6183): its cloud schedules run the workflow as saved.
+      const { getAutomationsService } = await import('../automations/service');
+      await getAutomationsService()
+        .syncCloudSchedulesAfterPipelineSave(result.data.id, input.name)
+        .catch(() => undefined);
+    }
   }
   return result;
 }
@@ -1195,135 +1204,176 @@ function worktreePipelineScope(
   return { projectId: value.projectId, worktreeId };
 }
 
+/*
+ * The window's calls as owners, so App Advisor's actions in Electron main
+ * make the same ones (CAN-6003).
+ */
+
+export function listPipelinesForCaller(): ReturnType<
+  PipelineReadPort['pipelines']['list']
+> {
+  return withPipelineCrudTelemetry(
+    { action: 'list', source: 'unknown' },
+    async (): Promise<IPCResult<PipelineInfo[]>> => {
+      startManagedCuratedPipelineSync();
+      // Core lists the stored and catalog definitions, in its order. An
+      // unavailable account or catalog never hides local pipelines.
+      let rows: PipelineInfo[];
+      try {
+        rows = (
+          await listDesktopPipelines(
+            { sources: ['bundled', 'user', 'curated'] },
+            PIPELINE_DEFINITION_DESKTOP_CALLER,
+          )
+        ).rows;
+      } catch (error) {
+        return { success: false, error: pipelineWriteErrorMessage(error) };
+      }
+      // CAN-5782: the Workflow page reads a pipeline's schedule facts
+      // from the list, so they exist with zero schedules.
+      rows = await withWorkflowPageInfo(rows);
+      if (!pipelineResourceContextEnabled())
+        return { success: true, data: rows };
+      return {
+        success: true,
+        data: await filterStoredPipelineContexts(rows),
+      };
+    },
+  );
+}
+
+export async function getPipelineForCaller(
+  request: PipelineLookupRequest,
+): Promise<Awaited<ReturnType<PipelineReadPort['pipelines']['get']>>> {
+  return withPipelineCrudTelemetry(
+    {
+      action: 'get',
+      source: getPipelineLookupTelemetrySource(request),
+      hasPipelineId:
+        typeof request === 'string' ||
+        (typeof request === 'object' && request !== null && 'id' in request),
+    },
+    async () => {
+      if (pipelineResourceContextEnabled()) {
+        const localId =
+          typeof request === 'string'
+            ? request
+            : 'id' in request
+              ? request.id
+              : undefined;
+        if (localId) {
+          try {
+            if (isProjectPipelineRequest(request))
+              await authorizeProjectPipelineRequest(request);
+            else await assertStoredPipelineContext(localId);
+          } catch (error) {
+            return { success: false, error: toErrorMessage(error) };
+          }
+        }
+      }
+
+      // A project file named by host path is read where it was found;
+      // core reads project definitions by worktree scope.
+      if (isProjectPipelineRequest(request))
+        return loadProjectPipelineData(request);
+      const lookup = pipelineLookupDefinition(request);
+      if (!lookup)
+        return { success: false, error: 'Invalid pipeline lookup request' };
+      // Store lookups never resolve a share or a project file.
+      if (lookup.stored && !isStoredDefinitionId(lookup.definitionId))
+        return {
+          success: false,
+          error: `Workflow not found: ${lookup.definitionId}`,
+        };
+      // Core's get takes no source, so a bundled definition a user one
+      // shadows is read from the bundled store directly, without
+      // touching the shadow.
+      if (
+        lookup.source === 'bundled' &&
+        getStoredPipelineIndexEntry(lookup.definitionId, 'user')
+      )
+        return withLocalRunOwner(
+          service.getStoredPipelineBySource('bundled', lookup.definitionId),
+        );
+      let data: PipelineData;
+      try {
+        data = await readDesktopPipeline(
+          lookup.definitionId,
+          {},
+          PIPELINE_DEFINITION_DESKTOP_CALLER,
+        );
+      } catch (error) {
+        return { success: false, error: pipelineWriteErrorMessage(error) };
+      }
+      if (lookup.source !== undefined && data.info.source !== lookup.source)
+        return {
+          success: false,
+          error: `Workflow not found: ${lookup.definitionId}`,
+        };
+      return withLocalRunOwner({ success: true, data });
+    },
+  );
+}
+
+export async function getSharedPipelineForCaller(
+  request: SharedPipelineGetRequest,
+): Promise<Awaited<ReturnType<PipelineReadPort['pipelines']['getShared']>>> {
+  return withPipelineCrudTelemetry(
+    { action: 'shared_get', source: 'shared', hasPipelineId: true },
+    async () => {
+      try {
+        return {
+          success: true,
+          data: hydrateSharedPipelineDetailScopes(
+            await getSharedPipeline(request.remoteId),
+          ),
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: toErrorMessage(error),
+        };
+      }
+    },
+  );
+}
+
+export function discoverProjectPipelinesForCaller(
+  cwd: string,
+): ReturnType<PipelineReadPort['pipelines']['discoverProject']> {
+  return withPipelineCrudTelemetry(
+    { action: 'discover', source: 'project', hasProjectContext: true },
+    async () => {
+      if (!path.isAbsolute(cwd)) {
+        return {
+          success: false,
+          error: 'cwd must be an absolute path',
+        };
+      }
+      return discoverProjectPipelines(cwd)
+        .then(async (data) => ({
+          success: true,
+          data: await filterProjectPipelineContexts(data, cwd),
+        }))
+        .catch((error) => ({
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+    },
+  );
+}
+
 export function registerPipelineHandlers(): void {
   registerCuratedPipelineHandlers();
   app.once('will-quit', stopManagedCuratedPipelineSync);
-  registerIpcHandler(PIPELINE_CHANNELS.LIST, () =>
-    withPipelineCrudTelemetry(
-      { action: 'list', source: 'unknown' },
-      async (): Promise<IPCResult<PipelineInfo[]>> => {
-        startManagedCuratedPipelineSync();
-        // Core lists the stored and catalog definitions, in its order. An
-        // unavailable account or catalog never hides local pipelines.
-        let rows: PipelineInfo[];
-        try {
-          rows = (
-            await listDesktopPipelines(
-              { sources: ['bundled', 'user', 'curated'] },
-              PIPELINE_DEFINITION_DESKTOP_CALLER,
-            )
-          ).rows;
-        } catch (error) {
-          return { success: false, error: pipelineWriteErrorMessage(error) };
-        }
-        // CAN-5782: the Workflow page reads a pipeline's schedule facts
-        // from the list, so they exist with zero schedules.
-        rows = await withWorkflowPageInfo(rows);
-        if (!pipelineResourceContextEnabled())
-          return { success: true, data: rows };
-        return {
-          success: true,
-          data: await filterStoredPipelineContexts(rows),
-        };
-      },
-    ),
+  registerIpcHandler(PIPELINE_CHANNELS.LIST, () => listPipelinesForCaller());
+  registerIpcHandler(
+    PIPELINE_CHANNELS.DISCOVER_PROJECT,
+    (_event, cwd: string) => discoverProjectPipelinesForCaller(cwd),
   );
-  registerIpcHandler(PIPELINE_CHANNELS.DISCOVER_PROJECT, (_, cwd: string) => {
-    return withPipelineCrudTelemetry(
-      { action: 'discover', source: 'project', hasProjectContext: true },
-      async () => {
-        if (!path.isAbsolute(cwd)) {
-          return {
-            success: false,
-            error: 'cwd must be an absolute path',
-          };
-        }
-        return discoverProjectPipelines(cwd)
-          .then(async (data) => ({
-            success: true,
-            data: await filterProjectPipelineContexts(data, cwd),
-          }))
-          .catch((error) => ({
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          }));
-      },
-    );
-  });
   registerIpcHandler(
     PIPELINE_CHANNELS.GET,
-    async (_event, request: PipelineLookupRequest) => {
-      return withPipelineCrudTelemetry(
-        {
-          action: 'get',
-          source: getPipelineLookupTelemetrySource(request),
-          hasPipelineId:
-            typeof request === 'string' ||
-            (typeof request === 'object' &&
-              request !== null &&
-              'id' in request),
-        },
-        async () => {
-          if (pipelineResourceContextEnabled()) {
-            const localId =
-              typeof request === 'string'
-                ? request
-                : 'id' in request
-                  ? request.id
-                  : undefined;
-            if (localId) {
-              try {
-                if (isProjectPipelineRequest(request))
-                  await authorizeProjectPipelineRequest(request);
-                else await assertStoredPipelineContext(localId);
-              } catch (error) {
-                return { success: false, error: toErrorMessage(error) };
-              }
-            }
-          }
-
-          // A project file named by host path is read where it was found;
-          // core reads project definitions by worktree scope.
-          if (isProjectPipelineRequest(request))
-            return loadProjectPipelineData(request);
-          const lookup = pipelineLookupDefinition(request);
-          if (!lookup)
-            return { success: false, error: 'Invalid pipeline lookup request' };
-          // Store lookups never resolve a share or a project file.
-          if (lookup.stored && !isStoredDefinitionId(lookup.definitionId))
-            return {
-              success: false,
-              error: `Workflow not found: ${lookup.definitionId}`,
-            };
-          // Core's get takes no source, so a bundled definition a user one
-          // shadows is read from the bundled store directly, without
-          // touching the shadow.
-          if (
-            lookup.source === 'bundled' &&
-            getStoredPipelineIndexEntry(lookup.definitionId, 'user')
-          )
-            return withLocalRunOwner(
-              service.getStoredPipelineBySource('bundled', lookup.definitionId),
-            );
-          let data: PipelineData;
-          try {
-            data = await readDesktopPipeline(
-              lookup.definitionId,
-              {},
-              PIPELINE_DEFINITION_DESKTOP_CALLER,
-            );
-          } catch (error) {
-            return { success: false, error: pipelineWriteErrorMessage(error) };
-          }
-          if (lookup.source !== undefined && data.info.source !== lookup.source)
-            return {
-              success: false,
-              error: `Workflow not found: ${lookup.definitionId}`,
-            };
-          return withLocalRunOwner({ success: true, data });
-        },
-      );
-    },
+    (_event, request: PipelineLookupRequest) => getPipelineForCaller(request),
   );
   registerIpcHandler(PIPELINE_CHANNELS.SAVE, (_, input: PipelineSaveInput) =>
     saveEditorPipeline(input),
@@ -1466,32 +1516,8 @@ export function registerPipelineHandlers(): void {
   );
   registerIpcHandler(
     PIPELINE_CHANNELS.SHARED_GET,
-    async (
-      _event,
-      request: SharedPipelineGetRequest,
-    ): Promise<
-      | { success: true; data: SharedPipelineDetail }
-      | { success: false; error: string }
-    > => {
-      return withPipelineCrudTelemetry(
-        { action: 'shared_get', source: 'shared', hasPipelineId: true },
-        async () => {
-          try {
-            return {
-              success: true,
-              data: hydrateSharedPipelineDetailScopes(
-                await getSharedPipeline(request.remoteId),
-              ),
-            };
-          } catch (error) {
-            return {
-              success: false,
-              error: toErrorMessage(error),
-            };
-          }
-        },
-      );
-    },
+    (_event, request: SharedPipelineGetRequest) =>
+      getSharedPipelineForCaller(request),
   );
   registerIpcHandler(
     PIPELINE_CHANNELS.SHARED_CREATE,
@@ -2149,7 +2175,13 @@ async function loadExecutionForReplay(
   runtime: ExecutionOptions['runtime'];
   state: ExecutionState;
 }> {
-  const state = await loadExecutionState(executionId, runtime.executionsDir);
+  const storedState = await loadExecutionState(
+    executionId,
+    runtime.executionsDir,
+  );
+  const state = storedState
+    ? await resolveReplayLocation(storedState, runtime)
+    : null;
   if (!state) {
     throw new Error(`Execution "${executionId}" not found`);
   }
@@ -3879,8 +3911,14 @@ export function registerExecutionHandlers(
     async (
       event: Pick<IpcMainInvokeEvent, 'sender'> | null | undefined,
       pipeline: Pipeline,
-      options: ExecutePipelineRequestOptions,
+      options: ExecutePipelineRequestOptions & PipelineRunLocationRequest,
     ) => {
+      // CAN-6187: a run with an execution target starts in the cloud, or is
+      // refused; it never falls back to running on this computer.
+      if (options.targetId !== undefined) {
+        const { startCloudPipelineRun } = await import('./cloud-pipeline-runs');
+        return startCloudPipelineRun(options);
+      }
       // CAN-5086: only this app's own windows may run workflows in the
       // daemon; the remote-control bridge keeps them in process.
       const context: DaemonPipelineRouteContext = {
@@ -3904,6 +3942,12 @@ export function registerExecutionHandlers(
       );
     },
   );
+
+  registerIpcHandler(PIPELINE_CHANNELS.CLOUD_RUNS_AVAILABILITY, async () => {
+    const { readPipelineCloudRunsAvailability } =
+      await import('./cloud-pipeline-runs');
+    return readPipelineCloudRunsAvailability();
+  });
 
   const resumeHandler =
     (

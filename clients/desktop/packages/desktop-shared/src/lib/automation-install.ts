@@ -7,6 +7,11 @@ import type {
   SharedAutomationTrigger,
 } from '@canopy/protocol/automations';
 import {
+  formatAgentRouteModelId,
+  isValidSharedAgentModelId,
+  parseAgentRouteModelId,
+} from '@canopy/protocol/agents';
+import {
   SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
   SHARED_AUTOMATION_API_VERSION,
   SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
@@ -83,6 +88,8 @@ const PIPELINES_NOT_INSTALLED_MESSAGE =
   'Install the pipelines this automation uses before installing it.';
 
 export interface InstallSharedAutomationBindings {
+  /** Result of importing the exact hosted Agent snapshot, including collision remapping. */
+  agent?: { remoteId: string; contentHash: string; localAgentId: string };
   /** Advisory facts; main independently resolves the selected IDs. */
   targetKind?: AutomationSessionTargetKind;
   pipelineResolution?: AutomationPipelineResolution;
@@ -458,11 +465,19 @@ function mapTrigger(trigger: SharedAutomationTrigger): AutomationTrigger {
  * lives beside the action, while thinking level and fast mode form the local
  * {@link AgentModelConfig}.
  */
-function splitModelConfig(config: SharedAutomationModelConfig | undefined): {
+function splitModelConfig(
+  config: SharedAutomationModelConfig | undefined,
+  bindings: InstallSharedAutomationBindings,
+): {
   model?: string;
   modelConfig?: AgentModelConfig;
 } {
   if (!config) return {};
+  const route = config.model ? parseAgentRouteModelId(config.model) : null;
+  const model =
+    route && config.agent && bindings.agent
+      ? formatAgentRouteModelId(bindings.agent.localAgentId, route.baseModel)
+      : config.model;
   const modelConfig: AgentModelConfig = {
     ...(config.thinkingLevel !== undefined
       ? { thinkingLevel: config.thinkingLevel }
@@ -475,7 +490,7 @@ function splitModelConfig(config: SharedAutomationModelConfig | undefined): {
         : {}),
   };
   return {
-    ...(config.model !== undefined ? { model: config.model } : {}),
+    ...(model !== undefined ? { model } : {}),
     ...(Object.keys(modelConfig).length > 0 ? { modelConfig } : {}),
   };
 }
@@ -515,6 +530,21 @@ function mapAction(
   bindings: InstallSharedAutomationBindings,
   localPipelineIds: ReadonlyMap<string, string>,
 ): { ok: true; action: AutomationAction } | { ok: false; error: string } {
+  if ('modelConfig' in action && action.modelConfig?.agent) {
+    const reference = action.modelConfig.agent;
+    if (
+      !bindings.agent ||
+      bindings.agent.remoteId !== reference.remoteId ||
+      bindings.agent.contentHash !== reference.contentHash ||
+      !isValidSharedAgentModelId(bindings.agent.localAgentId)
+    ) {
+      return {
+        ok: false,
+        error:
+          'Install the shared Agent this automation uses before installing the automation.',
+      };
+    }
+  }
   if (
     'promptReferences' in action &&
     action.promptReferences?.some(
@@ -541,7 +571,7 @@ function mapAction(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
-        ...splitModelConfig(action.modelConfig),
+        ...splitModelConfig(action.modelConfig, bindings),
         ...(bindings.pluginSelections
           ? { pluginSelections: bindings.pluginSelections }
           : {}),
@@ -567,7 +597,7 @@ function mapAction(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
-        ...splitModelConfig(action.modelConfig),
+        ...splitModelConfig(action.modelConfig, bindings),
         ...(bindings.pluginSelections
           ? { pluginSelections: bindings.pluginSelections }
           : {}),
@@ -599,7 +629,7 @@ function mapAction(
       ...(action.promptReferences
         ? { promptReferences: action.promptReferences }
         : {}),
-      ...splitModelConfig(action.modelConfig),
+      ...splitModelConfig(action.modelConfig, bindings),
       ...(action.planMode !== undefined ? { planMode: action.planMode } : {}),
       ...(action.interfaceMode !== undefined
         ? { interfaceMode: action.interfaceMode }

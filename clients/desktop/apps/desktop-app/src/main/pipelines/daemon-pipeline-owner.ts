@@ -10,8 +10,8 @@ import {
   applyPortableHostRequest,
   type PortableHostRunContext,
 } from '@canopy/desktop-shared/node/pipelines/host-request-apply';
-import type { PipelineHostActions } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import { portableOwner } from '@canopy/desktop-shared/node/pipelines/host-request-portable';
+import type { PipelineHostActions } from '@canopy/execution-engine/node/pipelines/executor/types';
+import { portableOwner } from '@canopy/execution-engine/node/pipelines/host-request-portable';
 import {
   disposeDaemonPipelineOwner,
   getDaemonPipelineOwnerClient,
@@ -98,6 +98,8 @@ const unsent = new Map<
 >();
 let ownerRequestHandler: OwnerRequestHandler | null = null;
 let subscription: OwnerSubscription | null = null;
+/** Counts the owner subscriptions opened; a capability bound under one ends with it (CAN-6168). */
+let generation = 0;
 let opening: Promise<void> | undefined;
 let retries = 0;
 let disposed = false;
@@ -107,6 +109,11 @@ let disposed = false;
  * module; `null` clears it. Without one, an owner request is answered
  * `{ status: 'failure', failureReason: null, message: 'This workflow step cannot run in the background service.', outputs: {} }`.
  */
+/** The current owner subscription's generation (CAN-6168). */
+export function daemonPipelineOwnerGeneration(): number {
+  return generation;
+}
+
 export function setDaemonPipelineOwnerRequestHandler(
   handler: OwnerRequestHandler | null,
 ): void {
@@ -131,6 +138,7 @@ async function open(): Promise<void> {
   const opened: OwnerSubscription = { client };
   // Set before the stream opens: its first frames can precede the open result.
   subscription = opened;
+  generation += 1;
   try {
     opened.stream = await client.openStream(
       'worker.pipeline.hostRequests',
@@ -241,6 +249,25 @@ function isRedactedFailure(result: WorkerPipelineHostResult): boolean {
   );
 }
 
+/**
+ * What may be sent again for `answer` on another session or a replay. An MCP
+ * authorization header goes only to the session it was issued for
+ * (CAN-6168): a resend carries no header, so the step authorizes again
+ * under the current owner subscription.
+ */
+function resendableAnswer(
+  answer: DaemonPipelineOwnerAnswer,
+): DaemonPipelineOwnerAnswer {
+  if (answer.execution?.pipelineOwnerValues?.mcpAuthorization === undefined)
+    return answer;
+  return {
+    result: {
+      status: 'owner',
+      value: { kind: 'mcp.authorize', grantId: null },
+    },
+  };
+}
+
 async function respond(
   client: ElectronDaemonOwnerClient,
   request: WorkerPipelineHostRequest,
@@ -271,11 +298,12 @@ async function respond(
   } catch (error) {
     let refusedBy = client;
     if (daemonUnreachableReason(error) !== null || client.signal.aborted) {
-      // The session dropped: the identical answer, once, on a new client.
+      // The session dropped: the same answer, once, on a new client.
+      const resend = resendableAnswer(answer);
       let next: ElectronDaemonOwnerClient | undefined;
       try {
         next = await getDaemonPipelineOwnerClient();
-        await send(next, answer.result, answer.execution);
+        await send(next, resend.result, resend.execution);
         unsent.delete(requestId);
         return;
       } catch (resendError) {
@@ -285,7 +313,7 @@ async function respond(
           next.signal.aborted
         ) {
           // Held for the daemon's replay of this request.
-          unsent.set(requestId, { request, answer });
+          unsent.set(requestId, { request, answer: resend });
           return;
         }
         refusedBy = next;

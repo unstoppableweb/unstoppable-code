@@ -59,6 +59,11 @@ export class MemoryReplicaRegistry {
     }
   }
 
+  /** Stops resolving to the replica at `dir`, when one is registered. */
+  unregisterDir(dir: string): void {
+    if (this.byDir.delete(resolve(dir))) this.onChange();
+  }
+
   unregisterAccount(accountId: string): void {
     let removed = false;
     for (const [dir, entry] of this.byDir) {
@@ -89,19 +94,27 @@ export class MemoryReplicaRegistry {
 }
 
 /**
- * The scope resolver's view of the registry. Project scopes resolve to their
- * device-local folder until a workspace is bound to a cloud project
- * (CAN-5191), so only the user scope is answered here.
+ * The scope resolver's view of the registry. A workspace resolves to the
+ * replica of the project scope `projectFor` maps it to for the account
+ * (design §22), so a workspace bound to no project, or to another account's,
+ * keeps its device-local folder.
  */
 export function createMemoryReplicaLocator(
   registry: MemoryReplicaRegistry,
   signedInAccountId: () => string | null,
+  projectFor: (
+    accountId: string,
+    workspaceId: string,
+  ) => MemoryScopeRef | null = (): null => null,
 ): LocalMemoryReplicaLocator {
   return {
     signedInAccountId,
-    replicaDir: (accountId: string, scope: LocalMemoryScopeRequest) =>
-      scope.scope === 'user'
-        ? registry.dirFor(accountId, { kind: 'user' })
-        : null,
+    replicaDir: (accountId: string, scope: LocalMemoryScopeRequest) => {
+      if (scope.scope === 'user') {
+        return registry.dirFor(accountId, { kind: 'user' });
+      }
+      const project = projectFor(accountId, scope.workspaceId);
+      return project === null ? null : registry.dirFor(accountId, project);
+    },
   };
 }

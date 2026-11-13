@@ -5,12 +5,9 @@ import {
   type CorePipelineDefinitionHost,
   type PipelineDefinitionService,
 } from '@canopy/core-runtime/node/pipeline';
-import type {
-  CanopyCallerDescriptor,
-  CanopyWorkspaceScope,
-} from '@canopy/protocol/canopy-core';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { createPipelineDefinitionReplayStore } from '../pipelines/pipeline-definition-replay-store';
-import { consumeSelfFilteringAgentRead } from './self-filtering-agent-reads';
+import { consumeAgentPlace, type AgentPlace } from './agent-place';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 
 let desktopService: Promise<PipelineDefinitionService> | undefined;
@@ -29,22 +26,25 @@ export const desktopPipelineDefinitionHost: CorePipelineDefinitionHost = {
   },
 };
 
-/** Which of `definitionIds` an agent calling from `scope` may not see (CAN-4551). */
+/**
+ * Which of `definitionIds` an agent calling from `place` may not see
+ * (CAN-4551); without a place, every owned workflow.
+ */
 export type AgentHiddenPipelines = (
   definitionIds: readonly string[],
-  scope: CanopyWorkspaceScope,
+  place: AgentPlace | undefined,
 ) => Promise<ReadonlySet<string>>;
 
 const desktopAgentHiddenPipelines: AgentHiddenPipelines = async (
   definitionIds,
-  scope,
+  place,
 ) => {
   const { agentHiddenOwnedPipelineIds } =
     await import('../automations/owned-pipeline');
   // Without the calling chat's place, no project grants access.
   return agentHiddenOwnedPipelineIds(definitionIds, {
-    projectId: scope.workspaceId ?? '',
-    worktreeId: scope.worktreeId ?? '',
+    projectId: place?.workspaceId ?? '',
+    worktreeId: place?.worktreeId ?? '',
   });
 };
 
@@ -53,26 +53,18 @@ const isAgentCaller = (caller: CanopyCallerDescriptor): boolean =>
   caller.interfaceKind === 'mcp';
 
 /**
- * Which ids an agent caller may not see: checked against the place the call
- * names; a call that names no full place (a workspace and a worktree) sees
- * no owned workflow, unless main marked it as one of its self-filtering
- * reads.
+ * Which ids an agent caller may not see, checked against the place main set
+ * for the dispatch (CAN-6032). The call's `scope` names the sources to read,
+ * never the agent's place; an agent read without a place sees no owned
+ * workflow.
  */
 async function hiddenForCaller(
   hiddenFromAgents: AgentHiddenPipelines,
   caller: CanopyCallerDescriptor,
   definitionIds: readonly string[],
-  scope: CanopyWorkspaceScope,
 ): Promise<ReadonlySet<string>> {
   if (!isAgentCaller(caller)) return new Set();
-  // Main's shared agent resource-action reads (App Advisor and the worktree
-  // pipeline actions) apply the rule with their own runtime's place.
-  if (
-    (scope.workspaceId === undefined || scope.worktreeId === undefined) &&
-    consumeSelfFilteringAgentRead(caller)
-  )
-    return new Set();
-  return hiddenFromAgents(definitionIds, scope);
+  return hiddenFromAgents(definitionIds, consumeAgentPlace(caller));
 }
 
 /**
@@ -95,12 +87,9 @@ export function createCorePipelineDefinitionAdapter(
       'core.pipeline.definition.get': async (params, context) => {
         if (
           (
-            await hiddenForCaller(
-              hiddenFromAgents,
-              context.caller,
-              [params.definitionId],
-              params.scope ?? {},
-            )
+            await hiddenForCaller(hiddenFromAgents, context.caller, [
+              params.definitionId,
+            ])
           ).has(params.definitionId)
         )
           throw pipelineDefinitionError(
@@ -115,7 +104,6 @@ export function createCorePipelineDefinitionAdapter(
           hiddenFromAgents,
           context.caller,
           result.items.map((item) => item.definitionId),
-          params.scope ?? {},
         );
         return hidden.size === 0
           ? result

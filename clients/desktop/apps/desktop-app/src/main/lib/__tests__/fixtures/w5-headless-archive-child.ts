@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { registerW5Host } from '@canopy/desktop-shared/node/w5-host-cohort';
+import { registerW5Host } from '@canopy/execution-engine/node/w5-host-cohort';
 import {
   withW5ProcessFileLocks,
   W5ProcessFileLockTimeoutError,

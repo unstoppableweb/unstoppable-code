@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { parseMcpExtraHeaders } from '@canopy/protocol/mcp-servers';
+import {
+  isMcpServerCommandAllowed,
+  mcpServerCommandRefusal,
+  parseMcpExtraHeaders,
+} from '@canopy/protocol/mcp-servers';
 import {
   accountMcpConnectionsEnabled,
   mergeAccountMcpInventory,
@@ -373,16 +377,6 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
 // Security — command allowlist and dangerous flag detection
 // ---------------------------------------------------------------------------
 
-const SAFE_COMMANDS = new Set([
-  'npx',
-  'npm',
-  'node',
-  'python',
-  'python3',
-  'uv',
-  'uvx',
-]);
-
 const DANGEROUS_FLAGS = new Set([
   '--eval',
   '-e',
@@ -416,9 +410,12 @@ const SHELL_METACHARACTERS = [
  * Rejects commands containing path separators.
  */
 export function isCommandSafe(command: string | undefined): boolean {
-  if (!command) return false;
-  if (command.includes('/') || command.includes('\\')) return false;
-  return SAFE_COMMANDS.has(command);
+  return isMcpServerCommandAllowed(command);
+}
+
+/** The refusal for a command `isCommandSafe` rejects, for the person adding it. */
+function commandRefusal(command: string): string {
+  return mcpServerCommandRefusal(command) ?? `${command} can't start a server.`;
 }
 
 /**
@@ -695,9 +692,7 @@ function validateCommandDefinition(
     throw new Error('Command server command is required');
   }
   if (!isCommandSafe(definition.command)) {
-    throw new Error(
-      `Invalid command '${definition.command}' - not in allowlist`,
-    );
+    throw new Error(commandRefusal(definition.command));
   }
   if (!areArgsSafe(definition.args)) {
     throw new Error(
@@ -1027,7 +1022,7 @@ async function checkCommandHealth(
       serverId,
       configId,
       status: 'unhealthy',
-      message: `Invalid command '${def.command}' - not in allowlist`,
+      message: commandRefusal(def.command),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -1256,7 +1251,7 @@ async function testCommandConnection(
       serverId,
       configId,
       success: false,
-      message: `Invalid command '${def.command}' - not in allowlist`,
+      message: commandRefusal(def.command),
     };
   }
 

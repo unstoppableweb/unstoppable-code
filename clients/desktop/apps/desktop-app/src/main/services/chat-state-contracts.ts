@@ -158,7 +158,13 @@ export interface ChatStateStorageDiagnostic {
      * Demotion failed; the scope stays version 3, readable and writable
      * through its journal, and a later sweep or load retries.
      */
-    | 'delta_journal_demotion_failed';
+    | 'delta_journal_demotion_failed'
+    /** The scope moved from format 3 to storage format 4 (manifest version 4). */
+    | 'format4_promoted'
+    /** A format 4 promotion attempt failed; the scope stays format 3. */
+    | 'format4_promotion_failed'
+    /** Every format 4 promotion retry is spent until the next process. */
+    | 'format4_promotion_exhausted';
   occurredAt: string;
   /** The rollback-safe initial release remains entirely v1-authoritative. */
   storageAuthority: 'v1' | 'v2';

@@ -6,6 +6,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 /**
  * Owner scoping for AI Credits reads (CAN-3463).
@@ -66,6 +67,10 @@ export function chatAiCreditsScope(
   chatId?: string | null,
 ): AiCreditsScopeRequest | undefined {
   if (!projectId) return undefined;
+  // main resolves a work scope's owner from its local project; a cloud
+  // project is placed in its owner's context, so the navigation scope names
+  // the same owner without sending main a web core id (CAN-6175 D1).
+  if (isWebCoreScope(projectId)) return undefined;
   return {
     kind: 'work',
     projectId,

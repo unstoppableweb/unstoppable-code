@@ -4461,11 +4461,12 @@ export function WorkspaceSettingsModal({
               description="This will remove the project and all its worktrees. Repository source code is not affected."
               warnings={[
                 removalDisabledReason ? (
-                  <p className="text-xs fg-destructive/80">
-                    {removalDisabledReason}
-                  </p>
+                  // Why delete is unavailable: a blocking condition in the
+                  // same attention ink as the convert block's warnings, not
+                  // an error line.
+                  <p className="text-xs fg-warning">{removalDisabledReason}</p>
                 ) : hasActiveWorktrees ? (
-                  <p className="text-xs fg-destructive/80">
+                  <p className="text-xs fg-warning">
                     Cannot delete while worktrees have active sessions.
                   </p>
                 ) : undefined,

@@ -19,6 +19,9 @@ import {
   isPostHogErrorEvent,
 } from './posthog-runtime';
 import { buildPostHogSessionRecordingOptions } from './posthog-replay-options';
+
+/** The session recording options the desktop starts PostHog with. */
+export { buildPostHogSessionRecordingOptions } from './posthog-replay-options';
 import { POSTHOG_CLICK_INIT_OPTIONS } from './posthog-autocapture-options';
 import { createPostHogScreenTracker } from './posthog-screen-tracking';
 import { flushPostHogHeatmaps } from './posthog-heatmaps';

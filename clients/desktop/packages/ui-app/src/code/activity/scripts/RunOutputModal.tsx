@@ -151,13 +151,7 @@ export function RunOutputModal({
             </Button>
           )}
           {headerActions}
-          {copyText !== '' && (
-            <CopyButton
-              value={copyText}
-              ariaLabel="Copy output"
-              title="Copy output"
-            />
-          )}
+          {copyText !== '' && <CopyButton value={copyText} />}
         </>
       }
     >

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type JSX } from 'react';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { SkillSuggestionBanner } from '@canopy/ui-app';
 import { useSuggestionClaim } from '@canopy/ui-app/suggestions';
 import type {
@@ -44,7 +45,10 @@ export function SkillSuggestionBannerHost({
   streaming,
   isComposerVisible,
 }: SkillSuggestionBannerHostProps): JSX.Element | null {
-  const flagEnabled = useSkillSuggestionsFlagEnabled();
+  // Suggestions come from the local runtime's skill scans.
+  const { localExecution } = useScopeCapabilities({ projectId });
+  const flagEnabled =
+    useSkillSuggestionsFlagEnabled() && localExecution === true;
   const originKey = JSON.stringify([projectId, worktreeId, chatId]);
   const [snapshot, setSnapshot] = useState<{
     originKey: string;

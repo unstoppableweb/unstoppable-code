@@ -6,8 +6,14 @@ import {
   extractWorkflowNameFromScript,
 } from '@/components/chat/workflow-receipt';
 import { useProjectsStore } from './projectsStore';
-import { registerLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
-import { WORKTREE_SUMMARY_BATCH_SIZE_LIMIT } from '@canopy/desktop-shared/types';
+import {
+  registerLoadedChangedFilesRefresh,
+  registerWorktreeActivityCleanup,
+} from './changedFilesRefreshRuntime';
+import {
+  SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  WORKTREE_SUMMARY_BATCH_SIZE_LIMIT,
+} from '@canopy/desktop-shared/types';
 import {
   backgroundProcessKindForTaskType,
   backgroundProcessKindForTool,
@@ -38,6 +44,7 @@ import {
   useLiveBackgroundTaskStore,
 } from './liveBackgroundTaskStore';
 import type { LiveBackgroundTaskChatEntry } from './liveBackgroundTaskStore';
+import { isWebCoreTaskProcess } from './chat/web-core/agent-task-processes';
 
 const MAX_OUTPUT_LINES = 200;
 const TERMINAL_OUTPUT_STOP_DELAY_MS = 2000;
@@ -171,6 +178,16 @@ interface ActivityState {
     worktreeId: string,
     files: ActivityChangedFilesResponse,
   ) => void;
+  /**
+   * Replace one chat's background processes in its scope: a cloud chat's,
+   * which the web core reports as agent task rows rather than main.
+   */
+  setChatBackgroundProcesses: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    processes: readonly BackgroundProcess[],
+  ) => void;
   setWorktreeSummary: (key: string, data: WorktreeSummaryData) => void;
   setTrackedPlans: (key: string, plans: TrackedPlanData[]) => void;
   upsertTrackedPlan: (plan: TrackedPlanData) => void;
@@ -250,6 +267,16 @@ interface ActivityState {
       teamId?: string;
       organizationId?: string;
     },
+  ) => Promise<TrackedPlanData | null>;
+  /**
+   * Stop sharing a tracked plan (CAN-5904): main deletes the cloud copy and
+   * clears the local `share`. Rejects with the server's message when the
+   * delete fails, leaving the share intact.
+   */
+  unshareTrackedPlan: (
+    projectId: string,
+    worktreeId: string,
+    planId: string,
   ) => Promise<TrackedPlanData | null>;
   /**
    * Explicitly share a finished agent session as a run to Canopy Cloud
@@ -2312,6 +2339,23 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     set((state) => ({ panelExpanded: !state.panelExpanded }));
   },
 
+  setChatBackgroundProcesses: (
+    projectId,
+    worktreeId,
+    chatId,
+    processes,
+  ): void => {
+    const key = worktreeKey(projectId, worktreeId);
+    set((state) => {
+      const current = state.bgProcesses[key] ?? [];
+      const others = current.filter((process) => process.chatId !== chatId);
+      if (others.length === current.length && processes.length === 0)
+        return state;
+      return {
+        bgProcesses: { ...state.bgProcesses, [key]: [...others, ...processes] },
+      };
+    });
+  },
   setChangedFiles: (projectId, worktreeId, files): void => {
     const key = worktreeKey(projectId, worktreeId);
     const prev = get().changedFiles[key];
@@ -2737,6 +2781,26 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     return plan;
   },
 
+  unshareTrackedPlan: async (
+    projectId,
+    worktreeId,
+    planId,
+  ): Promise<TrackedPlanData | null> => {
+    // Thin client: main deletes the cloud copy and answers the local plan with
+    // `share` cleared. Upsert it so the header and card read "Share" at once.
+    const plan = unwrapShareOperationResult(
+      await window.api.activity.plans.unshare({
+        projectId,
+        worktreeId,
+        planId,
+      }),
+    );
+    if (plan) {
+      get().upsertTrackedPlan(plan);
+    }
+    return plan;
+  },
+
   shareRun: async (
     projectId,
     worktreeId,
@@ -3055,12 +3119,24 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       }
     }
 
-    nextData.bgProcesses = withEndedAt(
-      previousProcesses,
-      nextData.bgProcesses.map((process) =>
-        mergePreviousProcessState(previousProcesses, process),
-      ),
-    );
+    // A cloud chat's agent tasks come from the web core, not its transcript
+    // (CAN-6452): the rebuild keeps each one, with its id and no local Stop,
+    // in place of any launch it rebuilt for the same task.
+    const published = (previousProcesses ?? []).filter(isWebCoreTaskProcess);
+    const rebuilt = nextData.bgProcesses
+      .map((process) => mergePreviousProcessState(previousProcesses, process))
+      .filter(
+        (process) =>
+          findProcessIndex(published, {
+            chatId: process.chatId,
+            taskId: process.taskId,
+            toolUseId: process.toolUseId,
+          }) < 0,
+      );
+    nextData.bgProcesses = withEndedAt(previousProcesses, [
+      ...rebuilt,
+      ...published,
+    ]);
 
     set((state) => {
       if (
@@ -3525,8 +3601,24 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   },
 }));
 
+registerWorktreeActivityCleanup((projectId, worktreeId) => {
+  useActivityStore.getState().cleanupWorktree(projectId, worktreeId);
+});
+
 registerLoadedChangedFilesRefresh(async (projectId, worktreeId, options) => {
   const key = worktreeKey(projectId, worktreeId);
+  const listed = (): boolean => {
+    if (projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) return true;
+    const state = useProjectsStore.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    return (
+      !!project &&
+      project.type !== 'cowork' &&
+      project.worktrees.some((row) => row.id === worktreeId) &&
+      !state.archivingWorktrees.has(key)
+    );
+  };
+  if (!listed()) return undefined;
   if (
     options.onlyIfLoaded &&
     useActivityStore.getState().changedFiles[key] === undefined
@@ -3539,6 +3631,7 @@ registerLoadedChangedFilesRefresh(async (projectId, worktreeId, options) => {
       projectId,
       worktreeId,
     });
+    if (!listed()) return undefined;
     useActivityStore
       .getState()
       .setChangedFiles(projectId, worktreeId, changedFiles);

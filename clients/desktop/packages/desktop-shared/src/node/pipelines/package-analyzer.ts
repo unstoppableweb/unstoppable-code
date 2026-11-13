@@ -59,7 +59,7 @@ import {
   isPathShapedInvocationToken,
   type InvocationTokenContext,
 } from '../../lib/invocation-tokens';
-import { interpolateKnownInputs } from './executor/expression-evaluator';
+import { interpolateKnownInputs } from '@canopy/execution-engine/node/pipelines/executor/expression-evaluator';
 import {
   AUTOMATION_ACTION_PIPELINE_KEY,
   automationPipelineResourceId,
@@ -718,7 +718,7 @@ function stepPromptText(
     typeof step.with?.system_prompt === 'string'
       ? step.with.system_prompt
       : undefined,
-    aliasInstructions && 'base' in aliasInstructions
+    aliasInstructions && !('agent_id' in aliasInstructions)
       ? aliasInstructions.instructions
       : undefined,
   ]
@@ -775,7 +775,7 @@ function affectedStepsForCollection(
       .filter(
         (alias) =>
           alias.defaults &&
-          'base' in alias.defaults &&
+          !('agent_id' in alias.defaults) &&
           alias.defaults.plugin_collection_id === collectionId,
       )
       .map((alias) => alias.id),
@@ -912,7 +912,9 @@ function declaredEnvironmentRequirements(
     );
     if (affectedSteps.length === 0) continue;
     const model =
-      alias.defaults && 'base' in alias.defaults
+      alias.defaults &&
+      'base' in alias.defaults &&
+      alias.defaults.base !== undefined
         ? alias.defaults.base
         : alias.name;
     requirements.push({

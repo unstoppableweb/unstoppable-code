@@ -37,17 +37,10 @@ import {
 // legacy two-lobe glyph that transcript thinking blocks still use.
 import { ThinkingIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  FileTypeaheadMenu,
-  SlashCommandMenu,
   SlateEditor,
   createChatEditor,
   createEmptyValue,
   serializeEditorValue,
-  useFileTypeahead,
-  useSlashCommands,
-  type FileMentionOption,
-  type SlashCommandOption,
-  type SlashCommandTriggerCharacter,
 } from '@canopy/ui-rich';
 
 /** The Slate editor value shape (avoids a direct `slate` import). */
@@ -57,15 +50,14 @@ type EditorValue = ReturnType<typeof createEmptyValue>;
  * The chat composer: the shared `@canopy/ui-rich` Slate editor plus the
  * send/stop control and the plan-mode / thinking-level chips. Using the shared
  * rich editor (instead of a plain textarea) closes the biggest desktop/web
- * parity gap for the shared ChatPanel — multiline rich input, plus the slash-
- * command and `@`-mention typeaheads when the host provides their data.
+ * parity gap for the shared ChatPanel: multiline rich input.
  *
  * It owns only its draft value; every action is an injected callback and every
  * setting is a prop, so it is host-agnostic. Send affordances are gated by
- * omission: a read-only host passes no `onSend`, disabling the control. The
- * typeaheads are likewise opt-in — the slash menu activates only when
- * `slashCommands` is passed, and the `@`-mention menu only when `fileSearch`
- * is passed, so a host that wires neither renders a plain rich editor.
+ * omission: a read-only host passes no `onSend`, disabling the control. Its
+ * hosts supply no command catalog or file search, so it has no `/` or `@`
+ * menu; the composers that do (desktop `ChatInput`, the web Portal) open the
+ * shared `ComposerMenu`.
  */
 export interface ChatComposerProps {
   /** Send the drafted text. Omit to disable sending (read-only host). */
@@ -91,26 +83,6 @@ export interface ChatComposerProps {
   readonly disabled?: boolean;
   /** Take typing that starts outside the composer; for a page's main chat. */
   readonly typeToFocus?: boolean;
-  /**
-   * Slash-command rows. Passing this (even empty) enables the slash menu; the
-   * host owns discovery. The menu filters/inserts against the trigger query.
-   */
-  readonly slashCommands?: SlashCommandOption[];
-  /** True while the host is still discovering slash commands. */
-  readonly slashDiscovering?: boolean;
-  /** Trigger characters for the slash menu; defaults to `['/']`. */
-  readonly slashTriggerCharacters?: readonly SlashCommandTriggerCharacter[];
-  /** Optional refresh action rendered in the slash-menu header. */
-  readonly onRefreshSlashCommands?: () => void;
-  /**
-   * Host file-search for the `@`-mention typeahead. Passing this enables the
-   * menu; the fn receives the query (without `@`) and returns ranked matches.
-   */
-  readonly fileSearch?: (query: string) => FileMentionOption[];
-  /** True when files span multiple repos (shows repo group headers). */
-  readonly fileTypeaheadMultiRepo?: boolean;
-  /** True while the host is still building the file index. */
-  readonly fileTypeaheadLoading?: boolean;
   /** Host content above the editor (pending attachments). */
   readonly aboveEditor?: ReactNode;
   /** Toolbar controls a host composer adds; see `ChatComposerToolbar`. */
@@ -137,11 +109,7 @@ export interface ChatComposerProps {
 // min-h-26 + px-4 would otherwise dominate the height and double the pad.
 const CONTAINER_CLASS = 'cursor-text';
 const EDITABLE_CLASS =
-  'min-h-11 max-h-64 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-s pointer-coarse:text-m leading-5 fg-primary outline-none placeholder:fg-secondary';
-// A single stable empty array so the slash hook's `commands` dep identity does
-// not churn every render when no host commands are supplied. The hook never
-// mutates it.
-const NO_COMMANDS: SlashCommandOption[] = [];
+  'min-h-11 max-h-64 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-s pointer-coarse:text-m leading-5 fg-primary outline-none placeholder:fg-secondary';
 
 // Active chip treatments mirror the semantic warning tokens used by the
 // portal composer, with the rainbow gradient reserved for `max`. The portal's
@@ -188,13 +156,6 @@ function ChatComposerContent({
   placeholder,
   disabled = false,
   typeToFocus = false,
-  slashCommands,
-  slashDiscovering = false,
-  slashTriggerCharacters,
-  onRefreshSlashCommands,
-  fileSearch,
-  fileTypeaheadMultiRepo = false,
-  fileTypeaheadLoading = false,
   aboveEditor,
   leadingSlot,
   modelSlot,
@@ -216,27 +177,13 @@ function ChatComposerContent({
   // on every keystroke).
   const valueRef = useRef<EditorValue>(value);
 
-  const slashEnabled = slashCommands !== undefined;
-  const slash = useSlashCommands(editor, {
-    commands: slashCommands ?? NO_COMMANDS,
-    isDiscovering: slashDiscovering,
-    triggerCharacters: slashTriggerCharacters,
-  });
-
-  const fileEnabled = fileSearch !== undefined;
-  const noFiles = useCallback((): FileMentionOption[] => [], []);
-  const fileTypeahead = useFileTypeahead(editor, {
-    enabled: fileEnabled,
-    search: fileSearch ?? noFiles,
-    includeRepoName: fileTypeaheadMultiRepo,
-  });
   // One placeholder table for every composer: this used to keep its own copy
   // whose bare fallback read `Send a message…` while both hosts said
   // `Send a message` (web chat parity, slice 3). The table's phone forms stay
   // unreached here on purpose — this composer has no width awareness, and a
   // host that needs them passes `placeholder` itself.
   const resolvedPlaceholder =
-    placeholder ?? defaultChatPlaceholder(slashEnabled, fileEnabled);
+    placeholder ?? defaultChatPlaceholder(false, false);
 
   const handleChange = useCallback((next: EditorValue): void => {
     valueRef.current = next;
@@ -283,33 +230,12 @@ function ChatComposerContent({
         }
         return;
       }
-      // Typeaheads consume navigation/selection keys first, so Enter picks a
-      // menu item (not send) while a menu is open. `useFileTypeahead` inserts
-      // the selection on Enter/Tab itself; `useSlashCommands` only consumes
-      // Enter/Tab (it does not insert), so the host must perform the slash
-      // selection here — mirrors the desktop-native ChatInput.
-      if (fileTypeahead.onKeyDown(event)) {
-        return;
-      }
-      // Show all is handled by the hook: Enter expands, Tab is consumed.
-      if (
-        slash.isOpen &&
-        slash.selectedCommand !== null &&
-        (event.key === 'Enter' || event.key === 'Tab')
-      ) {
-        event.preventDefault();
-        slash.selectCommand(slash.selectedCommand);
-        return;
-      }
-      if (slash.onKeyDown(event)) {
-        return;
-      }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         send();
       }
     },
-    [disabled, fileTypeahead, slash, send],
+    [disabled, send],
   );
 
   const draftText = useMemo(
@@ -414,33 +340,6 @@ function ChatComposerContent({
       {aboveEditor}
 
       <div className="relative">
-        {/* The menus self-position (absolute bottom-full … mb-1), so they are
-            rendered directly in this relative container — no wrapper — and are
-            mutually exclusive: the @-mention menu wins when both would open. */}
-        {fileEnabled && fileTypeahead.isOpen && (
-          <FileTypeaheadMenu
-            files={fileTypeahead.filteredFiles}
-            selectedIndex={fileTypeahead.selectedIndex}
-            isMultiRepo={fileTypeaheadMultiRepo}
-            isLoading={fileTypeaheadLoading}
-            onSelect={fileTypeahead.selectFile}
-          />
-        )}
-        {slashEnabled && slash.isOpen && !fileTypeahead.isOpen && (
-          <SlashCommandMenu
-            commands={slash.filteredCommands}
-            selectedIndex={slash.selectedIndex}
-            onHover={slash.setSelectedIndex}
-            isDiscovering={slash.isDiscovering}
-            itemLabel="command"
-            title="Commands"
-            onSelect={slash.selectCommand}
-            onRefresh={onRefreshSlashCommands}
-            hiddenCount={slash.hiddenCount}
-            totalCount={slash.totalCount}
-            onShowAll={slash.showAll}
-          />
-        )}
         <SlateEditor
           key={editorKey}
           editor={editor}

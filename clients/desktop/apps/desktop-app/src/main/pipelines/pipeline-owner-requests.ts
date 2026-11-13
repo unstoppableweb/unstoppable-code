@@ -1,3 +1,4 @@
+import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -16,26 +17,34 @@ import {
 import {
   parsePermissionPreset,
   type PermissionPreset,
-} from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import {
   isDynamicToolCallParams,
   type CodexHostToolPolicy,
-} from '@canopy/desktop-shared/node/codex-runtime/thread-handle';
+} from '@canopy/execution-engine/node/codex-runtime/thread-handle';
 import {
   pipelineLedgerAttemptOutcome,
   resolvePipelineLedgerTarget,
-} from '@canopy/desktop-shared/node/pipelines/executor/pipeline-ledger';
+} from '@canopy/execution-engine/node/pipelines/executor/pipeline-ledger';
 import type {
   ExecutionState,
   PipelineLedgerAttempt,
   PipelineLedgerAttemptOutcome,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
+import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
 import {
   resolveClaudeModAdmissionContext,
   resolveClaudeModConfigDirectory,
 } from '../agents/claude-mod-admission-launch';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { getMcpOAuthCredentials } from '../mcp/oauth-credentials';
+import { resolvePluginMcpOAuthRoute } from '../plugins/plugin-resolver';
+import {
+  PipelineOwnerMcpCredentials,
+  type PipelineOwnerMcpDeps,
+} from './pipeline-owner-mcp';
+import { daemonPipelineOwnerGeneration } from './daemon-pipeline-owner';
 import {
   createDesktopPipelineLedgerPort,
   openPipelineLedgerCodexTools,
@@ -66,6 +75,8 @@ export interface PipelineOwnerRunScope {
   readonly executionContext?: ExecutionState['execution_context'];
   /** The run's checkout root, or its working directory. */
   readonly folder: string;
+  /** The tracked plan the run started from, which its plan writes may revise (CAN-6327). */
+  readonly planId?: string;
 }
 
 /** A daemon run Electron main admitted and follows (CAN-5095 D14). */
@@ -88,6 +99,7 @@ const NOT_THIS_RUN = 'This app did not start this workflow run.';
 const RUN_ENDED = 'This workflow run has ended.';
 const UNANSWERED = 'The app could not answer this workflow step.';
 const FOREIGN_ROUTE = 'This route session belongs to another workflow run.';
+const FOREIGN_PLAN = 'This plan belongs to another workflow run.';
 
 const toolJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
@@ -221,16 +233,30 @@ async function canonicalPath(target: string): Promise<string> {
   }
 }
 
-/** One daemon run's owner-held resources: routes, Ledger attempts, Codex tool sessions. */
+const DESKTOP_MCP_DEPS: PipelineOwnerMcpDeps = {
+  broker: getMcpOAuthCredentials,
+  generation: daemonPipelineOwnerGeneration,
+  resolve: resolvePluginMcpOAuthRoute,
+};
+
+/** One daemon run's owner-held resources: routes, Ledger attempts, Codex tool sessions, MCP credentials. */
 export class PipelineOwnerRunContext {
   private readonly routes = new Set<string>();
+  private readonly mcp: PipelineOwnerMcpCredentials;
   private readonly attempts = new Map<string, OpenAttempt>();
   private readonly codexTools = new Map<string, OpenCodexTools>();
+  /** The tracked plans this run kept (CAN-6327), which its writes may revise. */
+  private readonly plans = new Set<string>();
   private readonly inFlight = new Set<Promise<PipelineOwnerSettlement>>();
   private readonly ended = new AbortController();
   private closed = false;
 
-  constructor(private readonly run: PipelineOwnerRun) {}
+  constructor(
+    private readonly run: PipelineOwnerRun,
+    mcpDeps: PipelineOwnerMcpDeps = DESKTOP_MCP_DEPS,
+  ) {
+    this.mcp = new PipelineOwnerMcpCredentials(mcpDeps);
+  }
 
   /** Settle one owner request for this run. Never throws: failures settle redacted. */
   async apply(
@@ -252,8 +278,10 @@ export class PipelineOwnerRunContext {
     try {
       const settlement = await settling;
       return this.closed ? failed(RUN_ENDED) : settlement;
-    } catch {
+    } catch (error) {
       if (this.closed) return failed(RUN_ENDED);
+      if (error instanceof AgentModelSelectionError)
+        return failed(error.message);
       logMainProcessWarn('Pipeline owner request failed', {
         action: request.request.action,
         executionId: request.executionId,
@@ -486,7 +514,11 @@ export class PipelineOwnerRunContext {
         const open = this.attempts.get(action.attemptKey);
         if (open === undefined)
           return failed('This Ledger attempt is not open.');
-        if (!(await insideRunFolder(action.cwd, state)))
+        // The app is a local owner: its host always sends the step's folder.
+        if (
+          action.cwd === undefined ||
+          !(await insideRunFolder(action.cwd, state))
+        )
           return failed('This step folder is outside the workflow run.');
         const tools = await open.attempt.openSubprocessTools(action.cwd);
         const mcpServers = toolJson.safeParse(tools.mcpServers).data;
@@ -515,7 +547,10 @@ export class PipelineOwnerRunContext {
       case 'owner.ledger.codexTools': {
         if (!this.attempts.has(action.attemptKey))
           return failed('This Ledger attempt is not open.');
-        if (!(await insideRunFolder(action.cwd, state)))
+        if (
+          action.cwd === undefined ||
+          !(await insideRunFolder(action.cwd, state))
+        )
           return failed('This step folder is outside the workflow run.');
         const tools = openPipelineLedgerCodexTools(
           action.attemptKey,
@@ -617,6 +652,74 @@ export class PipelineOwnerRunContext {
         );
         return answer.success ? settled(answer.data) : failed(UNANSWERED);
       }
+      case 'owner.plan.create': {
+        // A run outside a worktree keeps no tracked plan, as in process.
+        if (projectId === undefined || worktreeId === undefined)
+          return settled({ kind: 'plan.create', planId: null });
+        // A start-time create that lands after the run's end kept its plan.
+        const kept = this.plans.values().next();
+        if (action.initial === true && !kept.done)
+          return settled({ kind: 'plan.create', planId: kept.value });
+        const plan = await createTrackedPlan({
+          projectId,
+          worktreeId,
+          source: 'pipeline',
+          content: action.content,
+          reviewStatus: 'approved',
+          linkedExecutionId: this.run.executionId,
+        });
+        this.plans.add(plan.id);
+        return settled({ kind: 'plan.create', planId: plan.id });
+      }
+      case 'owner.plan.update': {
+        if (
+          projectId === undefined ||
+          worktreeId === undefined ||
+          (action.planId !== state.planId && !this.plans.has(action.planId))
+        )
+          return failed(FOREIGN_PLAN);
+        // As the in-process upsert writes it: a link while the run runs, an
+        // approval with any changed content once it ends.
+        await updateTrackedPlan({
+          projectId,
+          worktreeId,
+          planId: action.planId,
+          linkedExecutionId: this.run.executionId,
+          ...(action.content !== undefined && { content: action.content }),
+          ...(action.approve && {
+            source: 'pipeline',
+            reviewStatus: 'approved',
+            approvedAt: new Date().toISOString(),
+            dismissedAt: null,
+          }),
+        });
+        return settled({ kind: 'plan.update' });
+      }
+      case 'owner.mcp.bind': {
+        const routeRef = await this.mcp.bind({
+          marketplaceId: action.marketplaceId,
+          pluginName: action.pluginName,
+          serverName: action.serverName,
+          contentHash: action.contentHash,
+        });
+        return settled({ kind: 'mcp.bind', routeRef });
+      }
+      case 'owner.mcp.authorize': {
+        const granted = await this.mcp.authorize(action.routeRef, signal);
+        if (granted === null)
+          return settled({ kind: 'mcp.authorize', grantId: null });
+        return settled(
+          { kind: 'mcp.authorize', grantId: granted.grantId },
+          {
+            requestId: request.requestId,
+            mcpAuthorization: { authorization: granted.authorization },
+          },
+        );
+      }
+      case 'owner.mcp.rejected': {
+        await this.mcp.rejected(action.grantId);
+        return settled({ kind: 'mcp.rejected' });
+      }
       default:
         return failed(NOT_THIS_RUN);
     }
@@ -646,6 +749,7 @@ export class PipelineOwnerRunContext {
     this.closed = true;
     this.ended.abort();
     await Promise.allSettled([...this.inFlight]);
+    this.mcp.close();
     for (const routeSessionId of this.routes)
       getCodexGatewayProxyService().unregisterRoutesForSession(routeSessionId);
     this.routes.clear();

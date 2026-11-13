@@ -13,10 +13,12 @@
  * - under the Subagents view, the same "N running" control as the worktree
  *   header, for the active entry;
  * - pinned right: the archived-chats control for the active entry (where
- *   the worktree header keeps it), the "Open in" dropdown (resolves the
+ *   the worktree header keeps it; only where the scope reports
+ *   `chatArchives`), the "Open in" dropdown (resolves the
  *   cowork root, honoring an attached external folder — cwd resolution is
- *   entry-agnostic, so passing the entry id as worktreeId is fine) and the
- *   layout dropdown (saves the Cowork-surface default).
+ *   entry-agnostic, so passing the entry id as worktreeId is fine; only where
+ *   the scope reports `nativeWorktreeOpen`, since a cloud project has no
+ *   local folder) and the layout dropdown (saves the Cowork-surface default).
  *
  * New Chat lives in the chat tab strip's add-tab menu, matching the worktree
  * header. No PrStatusBar / WorktreeLaunchButton: cowork workspaces have no
@@ -34,6 +36,8 @@ import { ProjectIcon } from '@/components/shared/ProjectIcon';
 
 import { ChatProjectSettingsModal } from '@/components/standalone-chat/ChatProjectSettingsModal';
 import { useTopBarLeadingInsetClassName } from '@/components/panels/useTopBarLeadingInsetClassName';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import { useCoworkWorkspaceIdentity } from '@/lib/cowork-workspace-identity';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
 export interface CoworkTopBarProps {
@@ -58,6 +62,8 @@ export const CoworkTopBar = memo(function CoworkTopBar({
   const workspace = useProjectsStore(
     useShallow((s) => s.projects.find((project) => project.id === workspaceId)),
   );
+  // A cloud project's name and colour come from the cloud's own listing.
+  const identity = useCoworkWorkspaceIdentity(workspaceId);
   // The settings modal edits the standalone store's ChatProjectData record
   // (same modal + actions the sidebar cowork row uses).
   const chatProject = useStandaloneChatStore(
@@ -67,8 +73,11 @@ export const CoworkTopBar = memo(function CoworkTopBar({
   const deleteChatProject = useStandaloneChatStore((s) => s.deleteChatProject);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const leadingInsetClassName = useTopBarLeadingInsetClassName();
-  const workspaceName = workspace?.name ?? '';
-  const workspaceColor = workspace?.color;
+  const { nativeWorktreeOpen, chatArchives } = useScopeCapabilities({
+    projectId: workspaceId,
+  });
+  const workspaceName = identity?.name ?? '';
+  const workspaceColor = identity?.color;
   const externalPath =
     workspace?.type === 'cowork' ? workspace.externalPath : undefined;
 
@@ -123,6 +132,9 @@ export const CoworkTopBar = memo(function CoworkTopBar({
           type="button"
           data-testid="cowork-top-workspace-button"
           onClick={(): void => setSettingsOpen(true)}
+          // Only a project this window lists has settings to edit here; a
+          // cloud project's are in its sidebar row's menu.
+          disabled={workspace === undefined && chatProject === null}
           aria-label="Project settings"
           className="electron-no-drag focus-ring flex h-7 min-w-0 items-center gap-2.25 rounded-md pl-1 pr-2 text-s font-normal fg-primary transition-colors hover:bg-subtle"
         >
@@ -141,10 +153,17 @@ export const CoworkTopBar = memo(function CoworkTopBar({
       <div className="electron-drag flex shrink-0 items-center gap-2 pr-2.25">
         {/* Scoped, never primary: only the worktree header's instance owns
             the global open-archives events. */}
-        <ArchivedChatsControl
-          scope={{ projectId: workspaceId, worktreeId: activeWorkEntryId }}
-        />
-        <OpenDropdown projectId={workspaceId} worktreeId={activeWorkEntryId} />
+        {chatArchives === true && (
+          <ArchivedChatsControl
+            scope={{ projectId: workspaceId, worktreeId: activeWorkEntryId }}
+          />
+        )}
+        {nativeWorktreeOpen === true && (
+          <OpenDropdown
+            projectId={workspaceId}
+            worktreeId={activeWorkEntryId}
+          />
+        )}
         <WorkspaceLayoutControls
           projectId={workspaceId}
           worktreeId={activeWorkEntryId}

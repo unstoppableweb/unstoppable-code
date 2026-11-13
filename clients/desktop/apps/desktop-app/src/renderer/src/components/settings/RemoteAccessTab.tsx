@@ -16,6 +16,7 @@ import {
   type RemoteControlIncomingDevices,
 } from '@canopy/ui-app/remote-control';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
+import { ALLOW_INCOMING_LABEL } from '@/components/remote-access/remote-access-copy';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import {
@@ -38,8 +39,6 @@ import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations
  */
 const PAGE_DESCRIPTION =
   'Control this computer from your other devices, or control your other computers from here.';
-const ALLOW_INCOMING_LABEL =
-  'Allow your other devices to control this computer';
 const ALLOW_INCOMING_HELPER =
   'A paired device can see and change everything on this computer, including running commands. Pair using the QR code or link, or approve a matching code on this computer.';
 /** B3: turning Remote Control off keeps every pairing. */
@@ -57,6 +56,7 @@ export function RemoteAccessTab(): JSX.Element {
     hydrated,
     state,
     setAllowIncoming,
+    setAllowRemoteUpdates,
     openMachine,
     forgetDevice,
     openPairDialog,
@@ -65,6 +65,7 @@ export function RemoteAccessTab(): JSX.Element {
       hydrated: store.hydrated,
       state: store.state,
       setAllowIncoming: store.setAllowIncoming,
+      setAllowRemoteUpdates: store.setAllowRemoteUpdates,
       openMachine: store.openMachine,
       forgetDevice: store.forgetDevice,
       openPairDialog: store.openPairDialog,
@@ -74,6 +75,7 @@ export function RemoteAccessTab(): JSX.Element {
     (store) => store.openCanopyPortal,
   );
   const [savingAllow, setSavingAllow] = useState(false);
+  const [savingUpdates, setSavingUpdates] = useState(false);
   const [confirmingTurnOff, setConfirmingTurnOff] = useState(false);
   const [error, setError] = useState<InlineFailure | null>(null);
   const devicePorts = useMemo<RemoteControlDevicesPorts>(
@@ -161,6 +163,18 @@ export function RemoteAccessTab(): JSX.Element {
       .finally(() => setSavingAllow(false));
   };
 
+  const toggleRemoteUpdates = (next: boolean): void => {
+    setSavingUpdates(true);
+    setError(null);
+    void setAllowRemoteUpdates(next)
+      .catch((cause: unknown) => {
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't save the setting."));
+      })
+      .finally(() => setSavingUpdates(false));
+  };
+
   // Turning on takes effect at once; turning off disconnects paired devices,
   // so it asks first (B3).
   const toggleAllow = (next: boolean): void => {
@@ -204,6 +218,22 @@ export function RemoteAccessTab(): JSX.Element {
                 dataTestId="settings-remote-access-allow-incoming"
                 disabled={savingAllow}
                 onChange={toggleAllow}
+              />
+            }
+          />
+          <SettingsRow
+            label="Let computers that control this one update it"
+            description="A paired computer can install this computer's updates. It restarts once nothing is running, and you can cancel from the update prompt here."
+            htmlFor="settings-remote-access-allow-updates"
+            dataTestId="settings-remote-access-allow-updates-row"
+            control={
+              <ToggleSwitch
+                id="settings-remote-access-allow-updates"
+                checked={state.allowIncoming && state.allowRemoteUpdates}
+                label="Let computers that control this one update it"
+                dataTestId="settings-remote-access-allow-updates"
+                disabled={savingUpdates || !state.allowIncoming}
+                onChange={toggleRemoteUpdates}
               />
             }
           />

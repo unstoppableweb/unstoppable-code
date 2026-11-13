@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CatalogEntryPublishResultSchema,
   CatalogPluginInstallResultSchema,
   CatalogSkillCustomSaveResultSchema,
   CatalogSkillRemoveResultSchema,
@@ -330,6 +331,14 @@ describe('catalog mutation receipts (CAN-4123)', () => {
       'core.catalog.skill.custom.save': {
         schema: CatalogSkillCustomSaveResultSchema,
         result: { entryId: id, skillName: id },
+      },
+      'core.catalog.entry.publish': {
+        schema: CatalogEntryPublishResultSchema,
+        result: {
+          publicationId: id,
+          remoteEntryId: id,
+          revision: 'r'.repeat(256),
+        },
       },
       'core.catalog.skill.updates.check': {
         boundedBy:

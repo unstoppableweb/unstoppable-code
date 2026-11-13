@@ -1,7 +1,7 @@
 import { Dot } from '@canopy/ui-shared/components/Badge';
 import { SidebarTrialBadge } from '@canopy/ui-shared/components/SidebarTrialBadge';
 import {
-  AccountMenuComputersSection,
+  AccountMenuComputersItem,
   SidebarMachinePicker,
 } from '@/components/remote-access/SidebarMachinePicker';
 import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
@@ -111,7 +111,7 @@ export interface SidebarAccountMenuProps {
 /**
  * The personal account menu at the bottom of the sidebar (CAN-4055/4056): the
  * signed-in person whatever context is selected, with their plan or AI Credits
- * wallet, Usage, Remote Control, the computer picker, and Sign out.
+ * wallet, Usage, Remote Control, the Computers row, and Sign out.
  * Organization actions live on the top context switcher
  * (`DesktopSidebarContextSwitcher`). The row's second line is the Remote
  * Control status while it is on (CAN-3659); otherwise the row shows only the
@@ -525,7 +525,7 @@ export function SidebarAccountMenu({
               </>
             ) : null;
           // Sign out (or Sign in) closes the menu in its own last group: the
-          // computers section, when present, ends with its own divider.
+          // Computers row, when present, ends with its own divider.
           const signInOutRow = (
             <DropdownMenuItem
               onClick={handleSignInOutClick}
@@ -651,7 +651,7 @@ export function SidebarAccountMenu({
                 </>
               )}
               <DropdownMenuDivider />
-              <AccountMenuComputersSection onClose={close} />
+              <AccountMenuComputersItem onClose={close} />
               {signInOutRow}
             </ActionMenuRowStyle>
           );

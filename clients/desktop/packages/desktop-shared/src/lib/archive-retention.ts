@@ -11,6 +11,19 @@ export const DEFAULT_AUTO_ARCHIVE_DAYS = 7;
 export type ArchiveRetentionSurface = WorkspaceType | 'app-advisor';
 
 /**
+ * How many days App Advisor's archived chats are kept before its purge
+ * deletes them, or null when it keeps them forever: a missing, zero or
+ * negative setting turns the purge off.
+ */
+export function appAdvisorPurgeRetentionDays(
+  persistedValue: number | null | undefined,
+): number | null {
+  return typeof persistedValue === 'number' && persistedValue > 0
+    ? persistedValue
+    : null;
+}
+
+/**
  * The manifest fields retention expiry depends on. A locked container is an
  * "Archived" item and never expires; an unlocked container is a "Deleted"
  * item whose `expiresAt` the retention sweep honors. `expiresAt` only becomes

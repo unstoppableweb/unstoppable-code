@@ -15,8 +15,11 @@ import {
 import {
   aiGatewayConnectionResultSchema,
   suggestGatewayModel,
+  type AiGatewayConnectionResult,
   type DiscoveredGatewayModel,
 } from '@canopy/protocol/model-gateway/discovery';
+import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
+import { MODEL_GATEWAY_MAX_MODELS } from '@canopy/protocol/canopy-server';
 import { organizationConfigDetailSchema } from '@canopy/protocol/settings/organization';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
@@ -30,11 +33,20 @@ import {
 import {
   authorizeDesktopGatewayScope,
   connectDesktopGateway,
+  connectDeviceGateway,
 } from '../services/ai-gateway-settings';
 import { requestApprovalDecision } from '../approvals/prompt-bridge';
 import { requestSecretInputApproval } from '../approvals/secret-input';
 import { cancelApproval } from '../approvals/pending-approvals';
 import { isHostedSettingsEnabled } from '../services/hosted-settings-feature-flag';
+import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
+import type { CanopyCloudAccountEntry } from '../lib/canopy-cloud-account-store';
+import {
+  getLocalModelGatewayOrganizationId,
+  LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
+  readLocalModelGateway,
+  updateLocalModelGateway,
+} from '../lib/local-model-gateway-store';
 
 interface DiscoveryReceipt {
   accountId: string;
@@ -57,16 +69,41 @@ function json(value: unknown): AgentJson {
   return z.json().parse(JSON.parse(JSON.stringify(value)));
 }
 
-export async function executeDesktopAiGateway(
+type GatewayIntent = 'read' | 'connect' | 'update';
+type GatewayPatch = Extract<
+  AiGatewayAction,
+  { type: 'settings.ai_gateway.update' }
+>['patch'];
+
+/**
+ * Where one action's gateway lives. The approval flow is the same for both;
+ * only storage differs: the account's hosted gateway, or the device gateway
+ * while the account names no Personal organization.
+ */
+interface GatewayBackend {
+  readonly accountId: string;
+  readonly organizationId: string;
+  readonly scope: AiGatewayScope;
+  authorize(intent: GatewayIntent): Promise<void>;
+  /** Abort when the account, Personal organization or device scope changes. */
+  onScopeChange(abort: () => void): () => void;
+  readConfig(signal: AbortSignal): Promise<PersonalAiGatewayConfig | null>;
+  connect(
+    input: { baseUrl: string; apiKey?: string },
+    signal: AbortSignal,
+  ): Promise<AiGatewayConnectionResult>;
+  write(input: {
+    expectedRevision: string;
+    patch: Omit<GatewayPatch, 'addDiscovered'>;
+    models: PersonalAiGatewayConfig['models'];
+    replaceModels: boolean;
+  }): Promise<void>;
+}
+
+async function hostedGatewayBackend(
   action: AiGatewayAction,
-  call: AgentActionCall<CanopyInjectedToolRuntime>,
-): Promise<AgentJson> {
-  if (!desktopAiGatewayEnabled())
-    throw new Error('AI gateway setup unavailable');
-  const read = await readCanopyCloudAccountWithStatus();
-  if (read.status !== 'ok' || !read.entry?.account?.id)
-    throw new Error('Signed-in account required');
-  const account = read.entry;
+  account: CanopyCloudAccountEntry,
+): Promise<GatewayBackend> {
   const accountId = account.account?.id;
   if (!accountId) throw new Error('Signed-in account required');
   const organizationId =
@@ -82,28 +119,191 @@ export async function executeDesktopAiGateway(
       : { kind: 'organization', organizationId };
   const session = await acquireSettingsBridgeSession(accountId);
   await session.ensureReady({ userInitiated: true });
-  await authorizeDesktopGatewayScope(
-    session,
+  return {
+    accountId,
+    organizationId,
     scope,
-    action.type.endsWith('.get')
-      ? 'read'
-      : action.type.endsWith('.update')
-        ? 'update'
-        : 'connect',
-  );
+    authorize: async (intent) => {
+      await authorizeDesktopGatewayScope(session, scope, intent);
+    },
+    onScopeChange: (abort) =>
+      subscribeCanopyCloudAccountChanges((next) => {
+        if (
+          next?.account?.id !== accountId ||
+          (scope.kind === 'personal' &&
+            next.personalOrganizationId !== organizationId)
+        )
+          abort();
+      }),
+    readConfig: async (signal) => {
+      if (scope.kind === 'personal') {
+        const value = await executeSettingsOperation(
+          session,
+          'account.settings.ai-gateway.read',
+          {},
+          { signal },
+        );
+        return z
+          .object({ gateway: personalAiGatewayConfigSchema.nullable() })
+          .parse(value).gateway;
+      }
+      const value = organizationConfigDetailSchema.parse(
+        await executeSettingsOperation(
+          session,
+          'organization.settings.config',
+          { organizationId },
+          { signal },
+        ),
+      );
+      return {
+        organizationId,
+        displayName: value.modelGatewayDisplayName ?? null,
+        baseUrl: value.modelGatewayBaseUrl,
+        models: value.modelGatewayModels,
+        enabled: value.enforceMemberModelGateway,
+        onlyThisGateway: value.modelGatewayEnforced,
+        promptCachePassthrough: value.modelGatewayPromptCachePassthrough,
+        revision: value.modelGatewayRevision ?? 'absent',
+      };
+    },
+    connect: (input, signal) =>
+      scope.kind === 'personal'
+        ? connectDesktopGateway(
+            session,
+            'account.settings.ai-gateway.connect',
+            { expectedOrganizationId: organizationId, ...input },
+            signal,
+          )
+        : connectDesktopGateway(
+            session,
+            'organization.settings.ai-gateway.connect',
+            { organizationId, ...input },
+            signal,
+          ),
+    write: async ({ expectedRevision, patch, models, replaceModels }) => {
+      const service = (
+        await import('../services/account-organization-settings-host')
+      ).getAccountOrganizationSettingsService();
+      const result =
+        scope.kind === 'personal'
+          ? await service.write({
+              accountId,
+              operation: 'account.settings.ai-gateway.update',
+              input: {
+                expectedOrganizationId: organizationId,
+                expectedRevision,
+                ...patch,
+                ...(replaceModels ? { models } : {}),
+              },
+            })
+          : await service.write({
+              accountId,
+              operation: 'organization.settings.policies.update',
+              input: {
+                organizationId,
+                expectedModelGatewayRevision: expectedRevision,
+                ...(patch.displayName === undefined
+                  ? {}
+                  : { modelGatewayDisplayName: patch.displayName }),
+                ...(patch.baseUrl === undefined
+                  ? {}
+                  : { modelGatewayBaseUrl: patch.baseUrl }),
+                ...(patch.models === undefined && !replaceModels
+                  ? {}
+                  : { modelGatewayModels: models }),
+                ...(patch.enabled === undefined
+                  ? {}
+                  : { enforceMemberModelGateway: patch.enabled }),
+                ...(patch.onlyThisGateway === undefined
+                  ? {}
+                  : { modelGatewayEnforced: patch.onlyThisGateway }),
+                ...(patch.promptCachePassthrough === undefined
+                  ? {}
+                  : {
+                      modelGatewayPromptCachePassthrough:
+                        patch.promptCachePassthrough,
+                    }),
+              },
+            });
+      if (!result.ok) throw new Error('Gateway update failed');
+    },
+  };
+}
+
+/** The device gateway: Personal scope only, with nothing sent off the device. */
+async function deviceGatewayBackend(
+  action: AiGatewayAction,
+): Promise<GatewayBackend> {
+  if (action.scope.kind !== 'personal')
+    throw new Error('Signed-in account required');
+  const organizationId = await getLocalModelGatewayOrganizationId();
+  if (
+    'expectedOrganizationId' in action.scope &&
+    action.scope.expectedOrganizationId !== organizationId
+  )
+    throw new Error('Stale gateway scope');
+  const requireDeviceScope = async (): Promise<void> => {
+    const read = await readCanopyCloudAccountWithStatus();
+    if (read.status !== 'ok' || !accountUsesDeviceModelGateway(read.entry))
+      throw new Error('Stale gateway scope');
+  };
+  return {
+    accountId: LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
+    organizationId,
+    scope: { kind: 'personal', expectedOrganizationId: organizationId },
+    authorize: requireDeviceScope,
+    onScopeChange: (abort) =>
+      subscribeCanopyCloudAccountChanges((next) => {
+        if (!accountUsesDeviceModelGateway(next)) abort();
+      }),
+    readConfig: () => readLocalModelGateway(),
+    connect: (input, signal) =>
+      connectDeviceGateway(
+        { expectedOrganizationId: organizationId, ...input },
+        signal,
+      ),
+    write: async ({ expectedRevision, patch, models, replaceModels }) => {
+      await requireDeviceScope();
+      await updateLocalModelGateway({
+        expectedOrganizationId: organizationId,
+        expectedRevision,
+        ...patch,
+        ...(replaceModels ? { models } : {}),
+      });
+    },
+  };
+}
+
+export async function executeDesktopAiGateway(
+  action: AiGatewayAction,
+  call: AgentActionCall<CanopyInjectedToolRuntime>,
+): Promise<AgentJson> {
+  if (!desktopAiGatewayEnabled())
+    throw new Error('AI gateway setup unavailable');
+  const read = await readCanopyCloudAccountWithStatus();
+  if (read.status !== 'ok') throw new Error('Signed-in account required');
+  // Only the Personal scope can be the device gateway. An organization's
+  // gateway stays hosted, including before the Personal id arrives.
+  const useDevice =
+    action.scope.kind === 'personal' &&
+    accountUsesDeviceModelGateway(read.entry);
+  let backend: GatewayBackend;
+  if (useDevice) backend = await deviceGatewayBackend(action);
+  else if (read.entry) backend = await hostedGatewayBackend(action, read.entry);
+  else throw new Error('Signed-in account required');
+  const { accountId, organizationId, scope } = backend;
+  const intent: GatewayIntent = action.type.endsWith('.get')
+    ? 'read'
+    : action.type.endsWith('.update')
+      ? 'update'
+      : 'connect';
+  await backend.authorize(intent);
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   call.signal?.addEventListener('abort', abort, { once: true });
   if (call.signal?.aborted) abort();
   const expires = setTimeout(abort, 120_000);
-  const stopAccountWatch = subscribeCanopyCloudAccountChanges((next) => {
-    if (
-      next?.account?.id !== accountId ||
-      (scope.kind === 'personal' &&
-        next.personalOrganizationId !== organizationId)
-    )
-      abort();
-  });
+  const stopAccountWatch = backend.onScopeChange(abort);
   const signal = controller.signal;
   const identity = call.scope;
   const sessionKey = identity
@@ -113,42 +313,13 @@ export async function executeDesktopAiGateway(
     call.host.worktreeActionRuntime?.getWindow() ??
     call.host.settingsWindow?.() ??
     null;
-  const readConfig = async (): Promise<PersonalAiGatewayConfig | null> => {
-    if (scope.kind === 'personal') {
-      const value = await executeSettingsOperation(
-        session,
-        'account.settings.ai-gateway.read',
-        {},
-        { signal },
-      );
-      return z
-        .object({ gateway: personalAiGatewayConfigSchema.nullable() })
-        .parse(value).gateway;
-    }
-    const value = organizationConfigDetailSchema.parse(
-      await executeSettingsOperation(
-        session,
-        'organization.settings.config',
-        { organizationId },
-        { signal },
-      ),
-    );
-    return {
-      organizationId,
-      displayName: value.modelGatewayDisplayName ?? null,
-      baseUrl: value.modelGatewayBaseUrl,
-      models: value.modelGatewayModels,
-      enabled: value.enforceMemberModelGateway,
-      onlyThisGateway: value.modelGatewayEnforced,
-      promptCachePassthrough: value.modelGatewayPromptCachePassthrough,
-      revision: value.modelGatewayRevision ?? 'absent',
-    };
-  };
+  const readConfig = (): Promise<PersonalAiGatewayConfig | null> =>
+    backend.readConfig(signal);
   try {
     signal.throwIfAborted();
     if (action.type === 'settings.ai_gateway.get') {
       const gateway = await readConfig();
-      await authorizeDesktopGatewayScope(session, scope, 'read');
+      await backend.authorize('read');
       signal.throwIfAborted();
       return json({ scope, gateway });
     }
@@ -173,33 +344,15 @@ export async function executeDesktopAiGateway(
         },
         consume: async (secret) => {
           signal.throwIfAborted();
-          await authorizeDesktopGatewayScope(
-            session,
-            scope,
-            action.type.endsWith('.get')
-              ? 'read'
-              : action.type.endsWith('.update')
-                ? 'update'
-                : 'connect',
-          );
-          const name =
-            scope.kind === 'personal'
-              ? 'account.settings.ai-gateway.connect'
-              : 'organization.settings.ai-gateway.connect';
-          const input =
-            scope.kind === 'personal'
-              ? {
-                  expectedOrganizationId: organizationId,
-                  baseUrl: action.baseUrl,
-                  ...(secret ? { apiKey: secret } : {}),
-                }
-              : {
-                  organizationId,
-                  baseUrl: action.baseUrl,
-                  ...(secret ? { apiKey: secret } : {}),
-                };
+          await backend.authorize(intent);
           return aiGatewayConnectionResultSchema.parse(
-            await connectDesktopGateway(session, name, input, signal),
+            await backend.connect(
+              {
+                baseUrl: action.baseUrl,
+                ...(secret ? { apiKey: secret } : {}),
+              },
+              signal,
+            ),
           );
         },
       });
@@ -244,17 +397,39 @@ export async function executeDesktopAiGateway(
         throw new Error('Stale gateway discovery');
       reusedReceipt = receipt;
       models = [...models];
-      for (const discovered of receipt.models)
-        if (!models.some((model) => model.gatewayId === discovered.id))
-          models.push(suggestGatewayModel(discovered, models, organizationId));
+      let adding = receipt.models.filter(
+        (discovered) =>
+          !models.some((model) => model.gatewayId === discovered.id),
+      );
+      // Discovery lists whole catalogs, but a gateway saves at most
+      // MODEL_GATEWAY_MAX_MODELS: a preset falls back to its suggestions.
+      if (models.length + adding.length > MODEL_GATEWAY_MAX_MODELS) {
+        const room = Math.max(0, MODEL_GATEWAY_MAX_MODELS - models.length);
+        const pending = adding;
+        adding = (
+          matchAiGatewayPreset(receipt.baseUrl)?.suggestedModelIds ?? []
+        )
+          .flatMap((id) => pending.filter((discovered) => discovered.id === id))
+          .slice(0, room);
+        if (adding.length === 0)
+          throw new Error(
+            `Too many models to add: the gateway lists ${receipt.models.length} and a gateway can have up to ${MODEL_GATEWAY_MAX_MODELS}. Pass explicit models.`,
+          );
+      }
+      for (const discovered of adding)
+        models.push(suggestGatewayModel(discovered, models, organizationId));
     }
     models = gatewayModelsSchema.parse(models);
     const enabled = patch.enabled ?? current?.enabled ?? false;
     const only = patch.onlyThisGateway ?? current?.onlyThisGateway ?? false;
     if (enabled && (!baseUrl || models.length === 0))
       throw new Error('Select a model before enabling');
+    // Clearing the URL of a configured gateway removes it, so say so rather
+    // than "Save AI gateway with 0 models". Removal implies disabling, so
+    // that change isn't listed; any other policy change still shows.
+    const removing = baseUrl === null && Boolean(current?.baseUrl);
     const policyChanges = [
-      ...(patch.enabled === undefined
+      ...(patch.enabled === undefined || (removing && !enabled)
         ? []
         : [enabled ? 'enable AI gateway' : 'disable AI gateway']),
       ...(patch.onlyThisGateway === undefined
@@ -267,7 +442,10 @@ export async function executeDesktopAiGateway(
               : 'allow other providers',
           ]),
     ];
-    const title = `Save ${baseUrl ? new URL(baseUrl).hostname : 'AI gateway'} with ${models.length} models${policyChanges.length ? `; ${policyChanges.join('; ')}` : ''}?`;
+    const title =
+      removing && current?.baseUrl
+        ? `Remove AI gateway ${new URL(current.baseUrl).hostname}${policyChanges.length ? `; ${policyChanges.join('; ')}` : ''}?`
+        : `Save ${baseUrl ? new URL(baseUrl).hostname : 'AI gateway'} with ${models.length} models${policyChanges.length ? `; ${policyChanges.join('; ')}` : ''}?`;
     let approvalId: string | undefined;
     const cancel = (): void => {
       if (approvalId) cancelApproval(approvalId, 'gateway_update_cancelled');
@@ -303,63 +481,16 @@ export async function executeDesktopAiGateway(
     }
     if (!approved) return { status: 'denied' };
     signal.throwIfAborted();
-    await authorizeDesktopGatewayScope(
-      session,
-      scope,
-      action.type.endsWith('.get')
-        ? 'read'
-        : action.type.endsWith('.update')
-          ? 'update'
-          : 'connect',
-    );
+    await backend.authorize(intent);
     signal.throwIfAborted();
     if (reusedReceipt && reusedReceipt.expiresAt < Date.now())
       throw new Error('Stale gateway discovery');
-    const service = (
-      await import('../services/account-organization-settings-host')
-    ).getAccountOrganizationSettingsService();
-    const result =
-      scope.kind === 'personal'
-        ? await service.write({
-            accountId,
-            operation: 'account.settings.ai-gateway.update',
-            input: {
-              expectedOrganizationId: organizationId,
-              expectedRevision: action.expectedRevision,
-              ...patch,
-              ...(addDiscovered ? { models } : {}),
-            },
-          })
-        : await service.write({
-            accountId,
-            operation: 'organization.settings.policies.update',
-            input: {
-              organizationId,
-              expectedModelGatewayRevision: action.expectedRevision,
-              ...(patch.displayName === undefined
-                ? {}
-                : { modelGatewayDisplayName: patch.displayName }),
-              ...(patch.baseUrl === undefined
-                ? {}
-                : { modelGatewayBaseUrl: patch.baseUrl }),
-              ...(patch.models === undefined && !addDiscovered
-                ? {}
-                : { modelGatewayModels: models }),
-              ...(patch.enabled === undefined
-                ? {}
-                : { enforceMemberModelGateway: patch.enabled }),
-              ...(patch.onlyThisGateway === undefined
-                ? {}
-                : { modelGatewayEnforced: patch.onlyThisGateway }),
-              ...(patch.promptCachePassthrough === undefined
-                ? {}
-                : {
-                    modelGatewayPromptCachePassthrough:
-                      patch.promptCachePassthrough,
-                  }),
-            },
-          });
-    if (!result.ok) throw new Error('Gateway update failed');
+    await backend.write({
+      expectedRevision: action.expectedRevision,
+      patch,
+      models,
+      replaceModels: addDiscovered === true,
+    });
     if (action.discoveryId) discoveries.delete(action.discoveryId);
     return { status: 'updated', organizationId };
   } finally {

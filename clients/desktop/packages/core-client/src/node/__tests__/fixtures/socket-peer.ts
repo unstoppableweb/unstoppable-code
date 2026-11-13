@@ -29,7 +29,7 @@ export interface SocketPeer {
   readonly accepted: readonly Socket[];
   /** The next server connection to finish its handshake. */
   next(): Promise<CanopyFramedConnection>;
-  /** Whether the client released every accepted socket. */
+  /** Waits for every accepted socket to close; bounded by the test timeout. */
   allClosed(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -44,10 +44,13 @@ export async function listenSocketPeer(
   const path = dir ? join(dir, 's') : `\\\\.\\pipe\\ccn-${randomUUID()}`;
   const accepted: Socket[] = [];
   const ready: Promise<CanopyFramedConnection>[] = [];
+  const awaitingClose = new Set<Socket>();
   const server = createServer((socket) => {
     accepted.push(socket);
     socket.on('error', () => {});
     if (script === 'drop') socket.destroy();
+    // Drain writes so a silent peer can observe EOF without replying.
+    if (script === 'silent') socket.resume();
     if (script !== 'auth') return;
     const connection = createCanopyFramedConnection(socket, {
       role: 'server',
@@ -73,13 +76,34 @@ export async function listenSocketPeer(
       return connection;
     },
     async allClosed(): Promise<boolean> {
-      return (await within(Promise.all(accepted.map(closed)))) !== 'timeout';
+      await Promise.all(
+        accepted.map((socket) => {
+          awaitingClose.add(socket);
+          return closed(socket).finally(() => awaitingClose.delete(socket));
+        }),
+      );
+      return true;
     },
     async close(): Promise<void> {
+      // After a Jest timeout, report the sockets allClosed() was waiting for.
+      const leaked = [...awaitingClose]
+        .filter((socket) => !socket.closed)
+        .map((socket) => ({
+          destroyed: socket.destroyed,
+          readableEnded: socket.readableEnded,
+          writableEnded: socket.writableEnded,
+          bytesRead: socket.bytesRead,
+          bytesWritten: socket.bytesWritten,
+        }));
       accepted.forEach((socket) => socket.destroy());
       server.close();
       await Promise.all([once(server, 'close'), ...accepted.map(closed)]);
       if (dir) rmSync(dir, { recursive: true, force: true });
+      if (leaked.length > 0) {
+        throw new Error(
+          `Socket peer teardown while allClosed() was still waiting: ${JSON.stringify(leaked)}`,
+        );
+      }
     },
   };
 }

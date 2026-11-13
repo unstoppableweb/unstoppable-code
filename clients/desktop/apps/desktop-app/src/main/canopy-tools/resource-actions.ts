@@ -77,7 +77,10 @@ import {
   isOwnedPipelineHiddenFromAgent,
   ownsOrchestratorPromptPipeline,
 } from '../automations/owned-pipeline';
-import { targetsAgentHiddenPipeline } from '../automations/workflow-schedules';
+import {
+  scheduledUserPipelineId,
+  targetsAgentHiddenPipeline,
+} from '../automations/workflow-schedules';
 import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
 import {
   ADVISOR_ACCESS_DISABLED,
@@ -932,17 +935,14 @@ async function loadAgentPipelineSnapshot(
   // scope.
   if (!id.startsWith('project--')) {
     try {
+      // Core hides a workflow an Orchestrator automation owns from this
+      // runtime's place as not found (CAN-4551, CAN-6032).
       const snapshot = await readDesktopPipelineSnapshot(
         id,
         definitionScope(runtime),
         PIPELINE_DEFINITION_AGENT_CALLER,
+        { workspaceId: runtime.projectId, worktreeId: runtime.worktreeId },
       );
-      // Hidden like the Orchestrator automation that owns it (CAN-4551).
-      if (
-        snapshot.data.info.source === 'user' &&
-        (await isOwnedPipelineHiddenFromAgent(id, runtime))
-      )
-        return null;
       return { pipeline: snapshot.data, checksum: snapshot.checksum };
     } catch (error) {
       // A store id that names nothing is reported as not found.
@@ -1801,6 +1801,17 @@ async function automationAction(
     );
     return policyError ? failure('validation_failed', policyError) : null;
   };
+  // CAN-6065: an Orchestrator workflow takes any number of schedules, so an
+  // agent that can't see its pipeline can't add one to it either.
+  const hiddenPipelineTargetFailure = async (
+    target: ScheduledActivity['action'],
+  ): Promise<AppAdvisorActionResponse | null> => {
+    const pipelineId = scheduledUserPipelineId({ action: target });
+    return pipelineId !== undefined &&
+      (await isOwnedPipelineHiddenFromAgent(pipelineId, caller))
+      ? failure('not_found', `Pipeline ${pipelineId} was not found.`)
+      : null;
+  };
   const patchTargetFailure = async (
     current: ScheduledActivity,
     patch: Extract<AgentResourceAction, { type: 'automation.update' }>['patch'],
@@ -1811,6 +1822,8 @@ async function automationAction(
       const advisorFailure = await view.advisorFailure();
       if (advisorFailure) return advisorFailure;
     }
+    const hiddenFailure = await hiddenPipelineTargetFailure(patch.action);
+    if (hiddenFailure) return hiddenFailure;
     return automationOwnerDecisionFailure(
       await decideOwnerForAction(patch.action, view, globalOwnerOf(current)),
     );
@@ -1944,6 +1957,10 @@ async function automationAction(
         return deniedAdvisorAccess;
       }
       if (callerOwner.kind === 'unknown') return automationOwnerUnavailable();
+      const hiddenFailure = await hiddenPipelineTargetFailure(
+        action.input.action,
+      );
+      if (hiddenFailure) return hiddenFailure;
       // A pipeline with no project is owned by the caller's project (the
       // selected context for App Advisor), never by a caller-supplied value.
       let owner: string | undefined;
@@ -1976,6 +1993,10 @@ async function automationAction(
           guardRefusal = automationOwnerUnavailable();
           return false;
         }
+        // Again in the queue: the pipeline may have been hidden meanwhile.
+        guardRefusal =
+          (await hiddenPipelineTargetFailure(action.input.action)) ?? undefined;
+        if (guardRefusal) return false;
         guardRefusal =
           automationOwnerDecisionFailure(
             await decideOwnerForAction(action.input.action, view, owner),
@@ -2208,7 +2229,7 @@ async function automationAction(
           const { createElectronExecutionRuntime } =
             await import('../pipelines/execution-runtime');
           const { loadExecutionState } =
-            await import('@canopy/desktop-shared/node/pipelines/executor/execution-state');
+            await import('@canopy/execution-engine/node/pipelines/executor/execution-state');
           const execution = await loadExecutionState(
             executionId,
             createElectronExecutionRuntime().executionsDir,

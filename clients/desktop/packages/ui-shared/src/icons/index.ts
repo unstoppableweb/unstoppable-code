@@ -2,6 +2,7 @@
 // portal. Icons in this barrel must be free of window.api, Zustand stores,
 // Next router/server actions, Prisma, Electron, and Node-only imports.
 export * from './AgentAssistantIcon';
+export * from './FileTypeIcon';
 export * from './AppAdvisorIcon';
 export * from './AppAdvisorWatcherIcon';
 export * from './ApplePlatformIcon';
@@ -108,10 +109,12 @@ export * from './ClaudeLogo';
 export * from './CodexLogo';
 export * from './CursorLogo';
 export * from './HermesLogo';
+export * from './LiteLLMLogo';
 export * from './MuseLogo';
 export * from './OllamaLogo';
 export * from './OpenClawLogo';
 export * from './OpenCodeLogo';
+export * from './RequestyLogo';
 export * from './MentionIcon';
 export * from './GoogleIcon';
 export * from './SingleSignOnIcon';

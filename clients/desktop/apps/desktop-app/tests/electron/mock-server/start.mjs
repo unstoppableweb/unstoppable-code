@@ -23,6 +23,7 @@ import { handleSharedContainersRequest } from './routes/shared-containers.mjs';
 import { handleSharedPlansRequest } from './routes/shared-plans.mjs';
 import { handleCloudProjectsRequest } from './routes/cloud-projects.mjs';
 import { handleHostedSettingsRequest } from './routes/hosted-settings.mjs';
+import { handleMemorySyncRequest } from './routes/memory-sync.mjs';
 import { guardRequestHandler } from './request-guard.mjs';
 
 const HOST = '127.0.0.1';
@@ -165,6 +166,10 @@ async function handleRequest(request, response) {
   // Personal cloud project identity serves keys with a `cloudProjects` slice;
   // other keys, and organization claims, fall through to the cloud surface.
   if (await handleCloudProjectsRequest(request, response, url)) {
+    return;
+  }
+  // Memory sync owns `/api/v1/memory-sync/*` and `/__mock/memory-sync/*`.
+  if (await handleMemorySyncRequest(request, response, url)) {
     return;
   }
   if (await handleCloudRequest(request, response, url)) {

@@ -32,6 +32,14 @@ jest.mock('../ipc/register', () => ({
   },
 }));
 
+import { getWorktreeDiffStatsOnly } from '../lib/worktree-service';
+import { mainAdvisorWorktreeActionHost } from '../app-advisor/advisor-worktree-action-host';
+import { markWorkspaceTargetRemovalPending } from '../lib/workspace-target-exclusion';
+import {
+  getCachedWorktreeDiffStats,
+  refreshWorktreeDiffStats,
+  removeCachedWorktreeDiffStats,
+} from '../services/worktree-diff-stats-cache';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import {
@@ -239,4 +247,47 @@ describe('worktree:diff-stats under repository configuration', () => {
       }),
     ).toMatchSnapshot();
   });
+});
+
+describe('worktree stats availability and health', () => {
+  const projectId = 'quote-on-ws';
+  posixIt.each(['missing', 'retiring'] as const)(
+    'does not verify or cache stats for a %s source',
+    async (state) => {
+      const id = state === 'missing' ? projectId : 'quote-off-ws';
+      if (state === 'missing') {
+        const dataDir = process.env.CANOPY_DATA_DIR;
+        if (!dataDir) throw new Error('Missing test data root');
+        rmSync(join(dataDir, 'workspaces', id, 'worktrees', WORKTREE), {
+          recursive: true,
+          force: true,
+        });
+      }
+      const release =
+        state === 'retiring'
+          ? markWorkspaceTargetRemovalPending(id, WORKTREE)
+          : (): void => {};
+      const read = jest.fn(() =>
+        Promise.resolve({ insertions: 19, deletions: 3 }),
+      );
+      removeCachedWorktreeDiffStats(id, WORKTREE);
+      try {
+        await expect(
+          getWorktreeDiffStatsOnly(id, WORKTREE, read),
+        ).rejects.toThrow();
+        const host = mainAdvisorWorktreeActionHost({
+          getMainWindow: () => null,
+          selectWorktree: async () => {},
+          readSourceStatus: (project, worktree) =>
+            getWorktreeDiffStatsOnly(project, worktree, read),
+        });
+        expect(await host.verifySourceStatus(id, WORKTREE)).toBe(false);
+        await refreshWorktreeDiffStats(id, WORKTREE, read);
+        expect(getCachedWorktreeDiffStats(id, WORKTREE)).toBeUndefined();
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        release();
+      }
+    },
+  );
 });

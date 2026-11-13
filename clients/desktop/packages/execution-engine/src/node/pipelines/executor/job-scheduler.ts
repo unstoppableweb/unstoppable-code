@@ -280,6 +280,9 @@ function aggregateStatus(variants: readonly JobResult[]): JobResult['status'] {
   if (variants.some((variant) => variant.status === 'restarting')) {
     return 'restarting';
   }
+  if (variants.some((variant) => variant.status === 'waiting_for_capacity')) {
+    return 'waiting_for_capacity';
+  }
   if (variants.some((variant) => variant.status === 'queued')) return 'queued';
   if (variants.some((variant) => variant.status === 'paused')) return 'paused';
   return 'pending';

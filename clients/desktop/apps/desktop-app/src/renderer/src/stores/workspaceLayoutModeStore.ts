@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type { WorkspaceLayoutMode } from '@canopy/desktop-shared/types';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { webCorePanelLayouts } from '@/lib/panels/panel-layout-storage';
 import { setPanelLayoutFixedTopology } from '@/stores/panelLayoutStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { whenExperimentalFeaturesHydrated } from '@/stores/experimentalFeaturesStore';
@@ -44,9 +46,10 @@ function splitKey(worktreeKey: string): {
 export async function loadOwnWorktreeLayoutMode(
   worktreeKey: string,
 ): Promise<WorkspaceLayoutMode> {
-  const response = await window.api.panelLayout.loadWorktreeMode(
-    splitKey(worktreeKey),
-  );
+  const scope = splitKey(worktreeKey);
+  const response = isWebCoreScope(scope.projectId)
+    ? webCorePanelLayouts.loadMode(scope)
+    : await window.api.panelLayout.loadWorktreeMode(scope);
   return response.mode === 'minimal' ? 'minimal' : 'advanced';
 }
 
@@ -55,11 +58,9 @@ async function saveOwnWorktreeLayoutMode(
   mode: WorkspaceLayoutMode,
 ): Promise<void> {
   const { projectId, worktreeId } = splitKey(worktreeKey);
-  await window.api.panelLayout.saveWorktreeMode({
-    projectId,
-    worktreeId,
-    mode,
-  });
+  const request = { projectId, worktreeId, mode };
+  if (isWebCoreScope(projectId)) webCorePanelLayouts.saveMode(request);
+  else await window.api.panelLayout.saveWorktreeMode(request);
   useStandaloneChatStore
     .getState()
     .markWorkEntryCustomized(projectId, worktreeId);

@@ -4110,6 +4110,16 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     const unsubStatus = api.github.onPrStatusUpdate((event: PrStatusEvent) => {
       const key = worktreeKey(event.projectId, event.worktreeId);
       const projectsStore = useProjectsStore.getState();
+      const project = projectsStore.projects.find(
+        (item) => item.id === event.projectId,
+      );
+      if (
+        !project ||
+        project.type === 'cowork' ||
+        !project.worktrees.some((row) => row.id === event.worktreeId) ||
+        projectsStore.archivingWorktrees.has(key)
+      )
+        return;
       const currentPrStatuses = get().prStatuses;
       const previousStatus = Object.prototype.hasOwnProperty.call(
         currentPrStatuses,

@@ -3,6 +3,7 @@ import type {
   LocalMemoryClient,
   LocalMemoryNotice,
   LocalMemoryScope,
+  LocalMemorySyncClient,
 } from '@canopy/app-core/local-memory';
 import type { MemoryPanelScope } from '@canopy/ui-app/local-memory';
 import type {
@@ -73,6 +74,30 @@ async function catalogChats(
   return chats;
 }
 
+/** Memory sync's port over the desktop memory sync IPC. */
+export const desktopMemorySyncClient: LocalMemorySyncClient = {
+  state: () => window.api.getMemorySyncState(),
+  watch: (onChange) => window.api.onMemorySyncChanged(onChange),
+  updateSettings: (patch) => window.api.updateMemorySyncSettings(patch),
+  previewMerge: (workspaceId) =>
+    window.api.previewMemorySyncMerge(
+      workspaceId === undefined ? {} : { workspaceId },
+    ),
+  applyMerge: (previewId, workspaceId) =>
+    window.api.applyMemorySyncMerge(
+      workspaceId === undefined ? { previewId } : { previewId, workspaceId },
+    ),
+  setProjectMemory: (workspaceId, keepOnThisComputer) =>
+    window.api.setMemorySyncProjectMemory({ workspaceId, keepOnThisComputer }),
+  readConflict: (path) => window.api.readMemorySyncConflict({ path }),
+  settleConflict: (path, action) =>
+    window.api.resolveMemorySyncConflict({ path, action }),
+  history: (before) => window.api.listMemorySyncHistory({ before }),
+  restore: (revision) => window.api.restoreMemorySyncRevision({ revision }),
+  deleteFromCloud: () =>
+    window.api.deleteMemorySyncFromCloud({ confirmed: true }),
+};
+
 /**
  * The Memory panel's port over the desktop local memory IPC. Hosts pass the
  * selected context's linked personal checkouts so source chats there resolve.
@@ -141,6 +166,7 @@ export function createIpcLocalMemoryClient(
     openLink: (url): void => {
       void window.api.browser.openLink({ url });
     },
+    sync: desktopMemorySyncClient,
   };
 }
 

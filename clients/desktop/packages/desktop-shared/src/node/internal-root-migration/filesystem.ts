@@ -1,6 +1,16 @@
 import { observeStoragePathSync } from '@canopy/core-platform/storage-path-observation';
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, createReadStream, type Stats } from 'node:fs';
+import {
+  constants,
+  closeSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  type Stats,
+} from 'node:fs';
 import {
   lstat,
   mkdir,
@@ -10,15 +20,23 @@ import {
   open,
   readFile,
   readdir,
-  readlink,
   realpath,
   rename,
   statfs,
   rm,
+  rmdir,
 } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { flushDirectory } from '@canopy/core-platform/directory-flush';
-import { isWithin } from '@canopy/core-runtime/node/relocation/transition';
+import {
+  isWithin,
+  projectRelocationBacklinks,
+} from '@canopy/core-runtime/node/relocation';
+import {
+  internalRootMigrationAbortSignal,
+  internalRootMigrationProgress,
+} from './progress';
 import {
   DEFAULT_FILESYSTEM_HOST,
   copyInternalRootTree,
@@ -27,12 +45,13 @@ import {
   qualifyMigrationGroup,
   observeMigrationNode,
   migrationNodeIdentity,
+  internalRootCopySpace,
   ownedMigrationNode,
   windowsFilesystem,
   type InternalRootFilesystemHost,
 } from './filesystem-host';
-import { execFile } from 'node:child_process';
-import { isDeepStrictEqual, promisify } from 'node:util';
+import { spawn } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   createPlatformEndpointServices,
@@ -46,11 +65,14 @@ import {
 } from '@canopy/core-runtime/node/secure-data-dir';
 import {
   InternalRootMigrationRefused,
+  matchesInternalRootNodeIdentity,
   internalRootDestinationExistsRecovery,
   type InternalRootIdentity,
+  type InternalRootBuildResult,
   type InternalRootInventory,
   type InternalRootJournal,
   type InternalRootExternalSnapshot,
+  type InternalRootSpace,
 } from '@canopy/core-runtime/node/internal-root-migration';
 
 import { internalRootSourceIsSeparate } from '@canopy/core-runtime/node/internal-root-source';
@@ -59,8 +81,6 @@ import {
   isInternalRootCleanupReport,
   isInternalRootCleanupStagingName,
 } from '@canopy/core-runtime/node/internal-root-journal';
-
-const run = promisify(execFile);
 
 export function internalRootIdentity(
   home: string,
@@ -209,12 +229,9 @@ export async function durableJson(
   }
 }
 
-async function hashFile(path: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const bytes of createReadStream(path)) {
-    if (!Buffer.isBuffer(bytes)) throw new Error('Expected file bytes');
-    hash.update(bytes);
-  }
+function hashFile(path: string): string {
+  const hash = createHash('sha256').update(readFileSync(path));
+  internalRootMigrationProgress('hashing W5 file');
   return hash.digest('hex');
 }
 
@@ -222,56 +239,88 @@ interface TreeManifest {
   readonly fingerprint: string;
   readonly files: number;
   readonly bytes: number;
+  readonly projectedFingerprint: string;
+  readonly unfilteredError?: { readonly error: unknown };
+}
+interface ManifestProjection {
+  readonly omitted: (relative: string) => boolean;
+  readonly group: (relative: string, stat: Stats) => Promise<number>;
 }
 async function manifest(
   root: string,
   durable = false,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
-  omitted: (relative: string) => boolean = () => false,
+  projection?: ManifestProjection,
 ): Promise<TreeManifest> {
-  const rootDevice = (await lstat(root)).dev;
+  const rootDevice = lstatSync(root).dev;
   const hash = createHash('sha256');
-  const row = (value: unknown): void => {
-    hash.update(JSON.stringify(value));
-    hash.update('\n');
-  };
+  const projectedHash = projection ? createHash('sha256') : undefined;
   let files = 0;
   let bytes = 0;
-  async function visit(relative: string): Promise<void> {
-    if (omitted(relative)) return;
+  let entries = 0;
+  let inspected = 0;
+  let unfilteredError: TreeManifest['unfilteredError'];
+  async function flushEntry(path: string): Promise<void> {
+    if (hostOperatingSystem() === 'win32') return flush(path);
+    const descriptor = openSync(path, 'r');
+    try {
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  async function visit(relative: string, included: boolean): Promise<void> {
     const path = join(root, relative);
-    const stat = await lstat(path);
+    const stat = lstatSync(path);
     if (stat.dev !== rootDevice)
       refuseLayout(`Cross-filesystem tree entry: ${path}`);
     if (!ownedMigrationNode(stat))
       refuseLayout(`Foreign-owned tree entry: ${path}`);
     qualifyMigrationGroup(path, stat);
     const windows = await observeMigrationNode(path, stat, host);
+    internalRootMigrationProgress('inspected manifest entry');
+    // Sync filesystem calls avoid lost threadpool completions; yield for the watchdog.
+    inspected += 1;
+    if (inspected % 256 === 0) await setImmediate();
     const mode = stat.mode & 0o7777;
-    const metadata = [
+    const gid =
+      included && projection
+        ? await projection.group(relative, stat)
+        : stat.gid;
+    const row = (value: (gid: number) => unknown): void => {
+      hash.update(JSON.stringify(value(stat.gid)));
+      hash.update('\n');
+      if (included && projectedHash) {
+        projectedHash.update(JSON.stringify(value(gid)));
+        projectedHash.update('\n');
+      }
+    };
+    const metadata = (gid: number): readonly unknown[] => [
       relative,
       mode,
       stat.uid,
-      stat.gid,
+      gid,
       stat.size,
       Math.floor(stat.mtimeMs),
     ];
     if (windows)
-      row(['windows', relative, windows.attributes, windows.security]);
-    if (stat.isSymbolicLink()) row(['link', ...metadata, await readlink(path)]);
-    else if (stat.isDirectory()) {
+      row(() => ['windows', relative, windows.attributes, windows.security]);
+    if (stat.isSymbolicLink()) {
+      const target = readlinkSync(path);
+      row((gid) => ['link', ...metadata(gid), target]);
+    } else if (stat.isDirectory()) {
       // Directory sizes are filesystem-specific, unlike file and symlink sizes.
-      row([
+      row((gid) => [
         'directory',
         relative,
         mode,
         stat.uid,
-        stat.gid,
+        gid,
         Math.floor(stat.mtimeMs),
       ]);
-      for (const child of (await readdir(path)).sort())
-        await visit(join(relative, child));
-      if (durable) await flush(path);
+      for (const child of readdirSync(path).sort())
+        await visitProjected(join(relative, child), included);
+      if (durable) await flushEntry(path);
     } else if (stat.isFile()) {
       // Source hard links are copied as independent files; inode/link counts
       // intentionally do not participate in the source/copy fingerprint.
@@ -279,17 +328,14 @@ async function manifest(
       // contents or opaque credential payloads. Other changes are metadata-only.
       const critical =
         relative.startsWith(`w5${sep}`) && stat.size <= 16 * 1024 * 1024;
-      row([
-        'file',
-        ...metadata,
-        critical
-          ? hostOperatingSystem() === 'win32'
-            ? createHash('sha256')
-                .update(windowsFilesystem(host).read(path))
-                .digest('hex')
-            : await hashFile(path)
-          : null,
-      ]);
+      const content = critical
+        ? hostOperatingSystem() === 'win32'
+          ? createHash('sha256')
+              .update(windowsFilesystem(host).read(path))
+              .digest('hex')
+          : hashFile(path)
+        : null;
+      row((gid) => ['file', ...metadata(gid), content]);
       files += 1;
       bytes += stat.size;
       if (durable) {
@@ -299,15 +345,30 @@ async function manifest(
               'recovery-required',
               `Readonly construction file lacks a matching in-process copy-flush receipt: ${path}. Retain the journal and rerun to rebuild staging; never clear readonly to force a seal.`,
             );
-        } else await flush(path);
+        } else await flushEntry(path);
       }
     } else if (!(stat.isSocket() && relative.startsWith(`runtime${sep}`)))
       // Sockets carry no recoverable data; C must discard stale runtime state.
       refuseLayout(`Special file: ${path}`);
+    entries += 1;
+    internalRootMigrationProgress(
+      `${entries} entries; ${files} files; ${bytes} bytes`,
+    );
   }
-  await visit('');
+  function visitProjected(relative: string, included = true): Promise<void> {
+    included = included && !projection?.omitted(relative);
+    if (included) return visit(relative, true);
+    return visit(relative, false).catch((error: unknown): void => {
+      // Preserve projected-copy refusal precedence over omitted-source errors.
+      unfilteredError ??= { error };
+    });
+  }
+  await visitProjected('');
+  const fingerprint = hash.digest('hex');
   return {
-    fingerprint: hash.digest('hex'),
+    fingerprint,
+    projectedFingerprint: projectedHash?.digest('hex') ?? fingerprint,
+    unfilteredError,
     files,
     bytes,
   };
@@ -324,10 +385,85 @@ async function inodeAt(
   return stat ? migrationNodeIdentity(path, stat) : null;
 }
 
+async function preflightInternalRootPaths(
+  identity: InternalRootIdentity,
+  abandonedPaths: readonly string[],
+): Promise<void> {
+  const excluded = abandonedPaths.filter((path) =>
+    isWithin(identity.source, path),
+  );
+  const omitted = (relative: string): boolean =>
+    excluded.some((path) => isWithin(path, join(identity.source, relative)));
+  const os = hostOperatingSystem();
+  const rootDevice = lstatSync(identity.source).dev;
+  // Windows native custody deliberately refuses paths of 240 UTF-16 units.
+  const pathLimit = os === 'darwin' ? 1024 : os === 'win32' ? 240 : 4096;
+  const projectedRoots = [
+    join(identity.coordination, 'staging'),
+    internalRootStaging(identity),
+    identity.destination,
+  ];
+  const longPaths: string[] = [];
+  let inspected = 0;
+  async function visit(relative: string): Promise<void> {
+    const path = join(identity.source, relative);
+    const stat = lstatSync(path);
+    if (stat.dev !== rootDevice)
+      refuseLayout(`Cross-filesystem tree entry: ${path}`);
+    if (!ownedMigrationNode(stat))
+      refuseLayout(`Foreign-owned tree entry: ${path}`);
+    qualifyMigrationGroup(path, stat);
+    const overflows = projectedRoots.flatMap((root) => {
+      const path = join(root, relative);
+      const length = os === 'win32' ? path.length : Buffer.byteLength(path);
+      return length >= pathLimit
+        ? [
+            `${JSON.stringify(path)} (${length} ${os === 'win32' ? 'UTF-16 code units' : 'bytes'})`,
+          ]
+        : [];
+    });
+    if (!omitted(relative) && overflows.length)
+      longPaths.push(
+        `${JSON.stringify(join(identity.source, relative))} -> ${overflows.join(', ')}`,
+      );
+    inspected += 1;
+    internalRootMigrationProgress('Checking projected path lengths');
+    if (inspected % 256 === 0) await setImmediate();
+    if (stat.isDirectory())
+      for (const child of readdirSync(path).sort())
+        await visit(join(relative, child));
+  }
+  await visit('');
+  if (longPaths.length)
+    refuseLayout(
+      `Paths exceed the migration path limit (${pathLimit} ${os === 'win32' ? 'UTF-16 code units' : 'bytes'}, including the terminating NUL) under staging or destination roots. Move or shorten these source paths before starting; no data was deleted:\n${longPaths.join('\n')}`,
+    );
+}
+
 export async function inspectInternalRoot(
   identity: InternalRootIdentity,
   inspectDestination = false,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+  preflightPaths = true,
+  abandonedPaths: readonly string[] = [],
+): Promise<InternalRootInventory> {
+  return inspectRoot(
+    identity,
+    inspectDestination,
+    host,
+    undefined,
+    preflightPaths,
+    abandonedPaths,
+  );
+}
+
+async function inspectRoot(
+  identity: InternalRootIdentity,
+  inspectDestination: boolean,
+  host: InternalRootFilesystemHost,
+  verifiedTree?: TreeManifest,
+  preflightPaths = false,
+  abandonedPaths: readonly string[] = [],
 ): Promise<InternalRootInventory> {
   const home = dirname(identity.destination);
   const observedHome = observeStoragePathSync(home);
@@ -379,9 +515,13 @@ export async function inspectInternalRoot(
     await qualifyCopyVolume(identity.source, identity.destination);
   const live = inspectDestination ? identity.destination : identity.source;
   const exists = inspectDestination ? destination : source;
-  const tree = exists
-    ? await manifest(live, false, host)
-    : { fingerprint: '', files: 0, bytes: 0 };
+  // Native Windows custody refuses long entries before it can enumerate the rest.
+  if (preflightPaths && !inspectDestination && source)
+    await preflightInternalRootPaths(identity, abandonedPaths);
+  const tree: TreeManifest = exists
+    ? (verifiedTree ?? (await manifest(live, false, host)))
+    : { fingerprint: '', projectedFingerprint: '', files: 0, bytes: 0 };
+  if (tree.unfilteredError) throw tree.unfilteredError.error;
   const ownerPath = join(live, 'build-storage-owner.json');
   let stableOwned = false;
   if (exists && (await statIfPresent(ownerPath))) {
@@ -413,12 +553,16 @@ export async function inspectInternalRoot(
   return {
     sourceIdentity: await inodeAt(identity.source, source),
     destinationIdentity: await inodeAt(identity.destination, destination),
-    ...tree,
+    fingerprint: tree.fingerprint,
+    files: tree.files,
+    bytes: tree.bytes,
     historicalSecure:
       observeStoragePathSync(identity.historicalSecure).kind !== 'missing',
     nestedSecure:
       exists !== null &&
-      observeStoragePathSync(join(live, 'secure-storage')).kind !== 'missing',
+      observeStoragePathSync(join(live, 'secure-storage')).kind !== 'missing' &&
+      (identity.brandId !== 'canopy' ||
+        (await readdir(join(live, 'secure-storage'))).length > 0),
     stableOwned,
   };
 }
@@ -479,9 +623,13 @@ export async function saveInternalRootJournal(
       'Frozen repair evidence exceeds the journal limit. Preserve both roots and the existing journal for offline diagnosis.',
     );
   await privateDirectory(journal.identity.coordination, host);
-  const { lifecycleJournals, abandonedPaths, ...plan } =
+  const { lifecycleJournals, abandonedPaths, abandonedCheckouts, ...plan } =
     journal.repairPlan ?? {};
-  if (lifecycleJournals !== undefined || abandonedPaths !== undefined) {
+  if (
+    lifecycleJournals !== undefined ||
+    abandonedPaths !== undefined ||
+    abandonedCheckouts !== undefined
+  ) {
     const path = lifecycleEvidencePath(
       journal.identity,
       journal.transactionId,
@@ -493,6 +641,7 @@ export async function saveInternalRootJournal(
       planFingerprint: repairPlanFingerprint(plan),
       lifecycleJournals: lifecycleJournals ?? [],
       ...(abandonedPaths === undefined ? {} : { abandonedPaths }),
+      ...(abandonedCheckouts === undefined ? {} : { abandonedCheckouts }),
     };
     // Never replace evidence still referenced by the last durable journal.
     if (await statIfPresent(path)) {
@@ -522,6 +671,39 @@ export async function readInternalRootJournal(
   const stat = await statIfPresent(path);
   if (!stat) {
     const names = await readdir(identity.coordination);
+    const retained = names.filter((name) =>
+      /^restarted-[a-f0-9-]{36}$/i.test(name),
+    );
+    for (const name of retained) {
+      const directory = join(identity.coordination, name);
+      await privateDirectory(directory, host);
+      const old = validateInternalRootJournal(
+        await readPrivateMigrationJson(join(directory, 'journal.json'), host),
+        identity,
+      );
+      if (
+        name !== `restarted-${old.transactionId}` ||
+        (old.phase === 'complete' && old.secureRelocation === 'complete')
+      )
+        refuseLayout(
+          'Unrecognized retained transaction; preserve coordination for recovery.',
+        );
+    }
+    const evidence = names.filter(
+      (name) =>
+        /^abandoned-w5-commits-[a-f0-9-]{36}\.json$/.test(name) ||
+        (retained.length > 0 &&
+          (/^external-[a-f0-9]{64}\.preimage$/.test(name) ||
+            /^lifecycle-journals(?:-[a-f0-9-]{36}-[a-f0-9]{64})?\.json$/i.test(
+              name,
+            ))),
+    );
+    for (const name of evidence)
+      await assertPrivateMigrationFile(join(identity.coordination, name), host);
+    const isJournalStagingName = (name: string): boolean =>
+      /^journal\.json\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp(?![\s\S])/.test(
+        name,
+      );
     if (
       names.some(
         (name) =>
@@ -529,23 +711,34 @@ export async function readInternalRootJournal(
             'coordination.sqlite',
             'coordination.sqlite-journal',
             'cleanup-candidates.json',
-          ].includes(name) && !isInternalRootCleanupStagingName(name),
+            'restart.json',
+          ].includes(name) &&
+          !isInternalRootCleanupStagingName(name) &&
+          !retained.includes(name) &&
+          !evidence.includes(name) &&
+          !isJournalStagingName(name),
       )
     )
       throw new InternalRootMigrationRefused(
         'journal-unsupported',
         'Nonempty coordination directory without a recognized journal; retain it for recovery.',
       );
-    for (const name of names.filter(isInternalRootCleanupStagingName)) {
+    // A killed first save has no authoritative journal yet. Retain private
+    // staging files as inert bytes; this read may precede coordination.
+    for (const name of names.filter(
+      (name) =>
+        isInternalRootCleanupStagingName(name) || isJournalStagingName(name),
+    )) {
       try {
         await assertPrivateMigrationFile(
           join(identity.coordination, name),
           host,
         );
+        internalRootMigrationProgress('validated migration staging file');
       } catch {
         throw new InternalRootMigrationRefused(
           'journal-unsupported',
-          'Unsafe cleanup report staging file; retain it for recovery.',
+          'Unsafe migration staging file; retain it for recovery.',
         );
       }
     }
@@ -566,8 +759,17 @@ export async function readInternalRootJournal(
         );
       }
     }
+    await readInternalRootAbandonmentPlan(identity, null, host);
     return null;
   }
+  return readJournalFile(identity, path, host);
+}
+
+async function readJournalFile(
+  identity: InternalRootIdentity,
+  path: string,
+  host: InternalRootFilesystemHost,
+): Promise<InternalRootJournal> {
   try {
     let journal = validateInternalRootJournal(
       await readPrivateMigrationJson(path, host),
@@ -578,9 +780,21 @@ export async function readInternalRootJournal(
       journal.transactionId,
       journal.repairPlan ?? {},
     );
-    const evidencePath = (await statIfPresent(planEvidencePath))
-      ? planEvidencePath
-      : join(identity.coordination, 'lifecycle-journals.json');
+    const legacyPath = join(identity.coordination, 'lifecycle-journals.json');
+    const candidates = [
+      planEvidencePath,
+      legacyPath,
+      retainedEvidencePath(journal, planEvidencePath),
+      retainedEvidencePath(journal, legacyPath),
+    ];
+    let evidencePath = planEvidencePath;
+    for (const candidate of candidates)
+      if (await statIfPresent(candidate)) {
+        if (dirname(candidate) !== identity.coordination)
+          await privateDirectory(dirname(candidate), host);
+        evidencePath = candidate;
+        break;
+      }
     if (
       journal.repairPlan &&
       journal.repairPlan.lifecycleJournals === undefined &&
@@ -593,6 +807,7 @@ export async function readInternalRootJournal(
           planFingerprint: z.literal(repairPlanFingerprint(journal.repairPlan)),
           lifecycleJournals: z.array(z.unknown()),
           abandonedPaths: z.array(z.string()).optional(),
+          abandonedCheckouts: z.array(z.string()).optional(),
         })
         .strict()
         .parse(await readPrivateMigrationJson(evidencePath, host));
@@ -602,6 +817,9 @@ export async function readInternalRootJournal(
           repairPlan: {
             ...journal.repairPlan,
             lifecycleJournals: evidence.lifecycleJournals,
+            ...(evidence.abandonedCheckouts === undefined
+              ? {}
+              : { abandonedCheckouts: evidence.abandonedCheckouts }),
             ...(evidence.abandonedPaths === undefined
               ? {}
               : { abandonedPaths: evidence.abandonedPaths }),
@@ -610,7 +828,11 @@ export async function readInternalRootJournal(
         identity,
       );
     }
-    await validateExternalRootFiles(identity, journal.externalFiles, host);
+    await validateExternalRootFiles(
+      identity,
+      existingExternalFiles(journal),
+      host,
+    );
     return journal;
   } catch {
     throw new InternalRootMigrationRefused(
@@ -618,6 +840,213 @@ export async function readInternalRootJournal(
       'Unknown, older (including v4/v5), malformed or newer journal. Preserve both roots and request teammate-assisted recovery.',
     );
   }
+}
+
+/** Only selections survive restart; the old plan must never drive new repairs. */
+export async function readInternalRootAbandonmentPlan(
+  identity: InternalRootIdentity,
+  journal: InternalRootJournal | null,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+): Promise<InternalRootJournal['repairPlan']> {
+  if (journal?.repairPlan) return journal.repairPlan;
+  const path = join(identity.coordination, 'restart.json');
+  if (!(await statIfPresent(path))) return undefined;
+  try {
+    await privateDirectory(identity.coordination, host);
+    const marker = z
+      .object({ version: z.literal(1), transactionId: z.uuid() })
+      .strict()
+      .parse(await readPrivateMigrationJson(path, host));
+    const directory = join(
+      identity.coordination,
+      `restarted-${marker.transactionId}`,
+    );
+    await privateDirectory(directory, host);
+    const prior = await readJournalFile(
+      identity,
+      join(directory, 'journal.json'),
+      host,
+    );
+    if (prior.transactionId !== marker.transactionId || !prior.repairPlan)
+      throw new Error('Restart selection does not match retained journal');
+    return prior.repairPlan;
+  } catch {
+    throw new InternalRootMigrationRefused(
+      'journal-unsupported',
+      `Unrecognized restart selection at ${JSON.stringify(path)}; preserve coordination and both roots for recovery.`,
+    );
+  }
+}
+
+function retainedEvidencePath(
+  journal: InternalRootJournal,
+  path: string,
+): string {
+  return join(
+    journal.identity.coordination,
+    `restarted-${journal.transactionId}`,
+    basename(path),
+  );
+}
+
+/** Caller holds coordination and cold proof; checkOnly precedes external restoration. */
+export async function preserveUnpublishedInternalRoot(
+  journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+  checkOnly = false,
+): Promise<void> {
+  const { identity } = journal;
+  if (journal.phase === 'complete' && journal.secureRelocation === 'complete')
+    refuseLayout(
+      'Secure relocation is complete; restart cannot move credentials.',
+    );
+  const retained = join(
+    identity.coordination,
+    `restarted-${journal.transactionId}`,
+  );
+  const savedStaging = join(retained, 'staging');
+  const savedDiscarding = join(retained, 'discarding');
+  const paths = [
+    internalRootStaging(identity),
+    join(identity.coordination, 'staging'),
+    identity.destination,
+    join(identity.coordination, 'discarding'),
+    savedStaging,
+    savedDiscarding,
+  ];
+  const present: string[] = [];
+  for (const path of paths) {
+    const stat = await statIfPresent(path);
+    if (!stat) continue;
+    await privateDirectory(path, host);
+    const sealed = journal.publicationIdentity !== undefined;
+    const expected = sealed
+      ? journal.publicationIdentity
+      : journal.stagingIdentity;
+    // An interrupted re-clone can replace unsealed private staging's inode.
+    const unsealedPrivate =
+      !sealed &&
+      (path === join(identity.coordination, 'staging') ||
+        path === savedStaging);
+    if (
+      (!unsealedPrivate &&
+        expected &&
+        !matchesInternalRootNodeIdentity(
+          await migrationNodeIdentity(path, stat),
+          expected,
+          hostOperatingSystem(),
+        )) ||
+      (!expected &&
+        path !== join(identity.coordination, 'staging') &&
+        path !== savedStaging) ||
+      (!sealed &&
+        [
+          identity.destination,
+          join(identity.coordination, 'discarding'),
+        ].includes(path))
+    )
+      throw new InternalRootMigrationRefused(
+        'source-changed',
+        `Migration tree identity changed at ${JSON.stringify(path)}; never move an independent destination.`,
+      );
+    if (
+      [join(identity.coordination, 'discarding'), savedDiscarding].includes(
+        path,
+      ) &&
+      journal.phase !== 'rebuilding'
+    )
+      refuseLayout(
+        `Discarding tree ${JSON.stringify(path)} requires a recorded rebuilding intent; preserve it for recovery.`,
+      );
+    if (sealed) {
+      if (
+        path === identity.destination ||
+        path === internalRootStaging(identity)
+      )
+        await internalRootPublicationRoot(journal, host);
+      else if (
+        path !== join(identity.coordination, 'discarding') &&
+        path !== savedDiscarding &&
+        (await manifest(path, false, host)).fingerprint !==
+          journal.publicationFingerprint
+      )
+        throw new InternalRootMigrationRefused(
+          'source-changed',
+          `Retained sealed tree ${JSON.stringify(path)} changed; preserve it for recovery.`,
+        );
+    }
+    present.push(path);
+  }
+  if (present.length > 1)
+    refuseLayout(
+      `Multiple migration trees exist: ${present.map((path) => JSON.stringify(path)).join(', ')}; preserve all for recovery.`,
+    );
+  if (checkOnly) return;
+  if (!(await statIfPresent(retained))) {
+    await createPrivateMigrationDirectory(retained, host);
+    await flush(identity.coordination);
+  }
+  await privateDirectory(retained, host);
+  // Keep opt-ins durable until the new settled repair plan replaces them.
+  if (journal.repairPlan) {
+    const marker = join(retained, 'restart.json');
+    await durableJson(
+      marker,
+      {
+        version: 1,
+        transactionId: journal.transactionId,
+      },
+      host,
+    );
+    await replaceMigrationFile(
+      marker,
+      join(identity.coordination, 'restart.json'),
+      host,
+    );
+    await flush(identity.coordination);
+  }
+  const path = present[0];
+  if (path && path !== savedStaging && path !== savedDiscarding) {
+    await renameMigrationDirectory(
+      path,
+      path === join(identity.coordination, 'discarding')
+        ? savedDiscarding
+        : savedStaging,
+      await migrationNodeIdentity(path, await lstat(path)),
+      host,
+    );
+    await flush(dirname(path));
+    await flush(retained);
+  }
+  // Readers accept sidecars here if preservation stops before the journal move.
+  for (const name of await readdir(identity.coordination)) {
+    if (
+      !/^external-[a-f0-9]{64}\.preimage$/.test(name) &&
+      !/^lifecycle-journals(?:-[a-f0-9-]{36}-[a-f0-9]{64})?\.json$/i.test(name)
+    )
+      continue;
+    const from = join(identity.coordination, name);
+    await assertPrivateMigrationFile(from, host);
+    if (await statIfPresent(join(retained, name)))
+      refuseLayout(
+        `Retained evidence already exists at ${JSON.stringify(join(retained, name))}; preserve it and ${JSON.stringify(from)} for recovery.`,
+      );
+    await rename(from, join(retained, name));
+  }
+  await flush(retained);
+  if (await statIfPresent(join(retained, 'journal.json')))
+    refuseLayout(
+      `A retained journal already exists at ${JSON.stringify(join(retained, 'journal.json'))}; preserve both journals for recovery.`,
+    );
+  await rename(
+    join(identity.coordination, 'journal.json'),
+    join(retained, 'journal.json'),
+  );
+  await flush(retained);
+  await flush(identity.coordination);
+  process.stderr.write(
+    `Migration: previous journal, evidence and tree retained at ${JSON.stringify(retained)}. Existing refs/canopy-migration-abandoned/* refs remain in their repositories.\n`,
+  );
 }
 
 /** APFS-only primitive; portable construction is explicitly selected by build. */
@@ -639,9 +1068,48 @@ export async function cloneInternalRoot(
       'Destination staging requires macOS APFS on the source volume. No full-copy fallback is supported.',
     );
   try {
-    await run('/bin/cp', ['-c', '-R', '-p', source, destination], {
-      timeout: 3_600_000,
-      maxBuffer: 1024 * 1024,
+    // Verbose progress and the stall watchdog bound hangs, not total clone time.
+    const child = spawn(
+      '/bin/cp',
+      ['-c', '-R', '-p', '-v', source, destination],
+      {
+        signal: internalRootMigrationAbortSignal(),
+        killSignal: 'SIGKILL',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    // Verbose output proves the clone is advancing without retaining paths or
+    // buffering megabytes of file names in the operator process.
+    let outputBytes = 0;
+    child.stdout.on('data', (chunk: Buffer) => {
+      outputBytes += chunk.length;
+      internalRootMigrationProgress(
+        `clone progress: ${outputBytes} output bytes`,
+      );
+    });
+    let stderr = '';
+    let outputLimitExceeded = false;
+    await new Promise<void>((resolve, reject) => {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        if (
+          Buffer.byteLength(stderr) + Buffer.byteLength(chunk) >
+          1024 * 1024
+        ) {
+          outputLimitExceeded = true;
+          child.kill('SIGKILL');
+        } else stderr += chunk;
+      });
+      child.once('error', reject);
+      child.once('close', (code) => {
+        if (outputLimitExceeded)
+          reject(new Error('Clone diagnostics exceed the output limit'));
+        else if (code === 0) resolve();
+        else
+          reject(
+            Object.assign(new Error('APFS clone failed'), { code, stderr }),
+          );
+      });
     });
   } catch (error) {
     // BSD cp may report skipped Unix sockets with exit 1. They have no destination
@@ -693,7 +1161,11 @@ export async function validateInternalRootStaging(
   if (!stat) return;
   if (
     !journal ||
-    (await inodeAt(path, stat)) !== journal.stagingIdentity ||
+    !matchesInternalRootNodeIdentity(
+      await inodeAt(path, stat),
+      journal.stagingIdentity,
+      hostOperatingSystem(),
+    ) ||
     (journal.phase !== 'building' && journal.phase !== 'publishing')
   )
     throw new InternalRootMigrationRefused(
@@ -712,6 +1184,7 @@ export async function validateExternalRootFiles(
   files: readonly string[],
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
+  let checked = 0;
   for (const path of files) {
     if (
       resolve(path) !== path ||
@@ -741,6 +1214,9 @@ export async function validateExternalRootFiles(
       refuseLayout(
         'External metadata must be regular, owner-held, unaliased records no larger than 1 MiB.',
       );
+    internalRootMigrationProgress(
+      `${++checked}/${files.length} external files validated`,
+    );
   }
 }
 
@@ -769,6 +1245,9 @@ async function readExternalMetadata(
       before.ctimeMs !== after.ctimeMs
     )
       refuseExternalRecovery('External metadata changed while being read.');
+    internalRootMigrationProgress(
+      `${bytes.length} external metadata bytes read`,
+    );
     return { bytes, mode: before.mode & 0o777 };
   }
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -805,6 +1284,7 @@ async function readExternalMetadata(
       inode(await lstat(path)) !== inode(after)
     )
       refuseExternalRecovery('External metadata changed while being read.');
+    internalRootMigrationProgress(`${size} external metadata bytes read`);
     return { bytes: buffer.subarray(0, size), mode: after.mode & 0o777 };
   } finally {
     await handle.close();
@@ -843,7 +1323,10 @@ async function readPreimage(
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<Buffer> {
   await privateDirectory(journal.identity.coordination, host);
-  const path = preimagePath(journal, entry.path);
+  const original = preimagePath(journal, entry.path);
+  const path = (await statIfPresent(original))
+    ? original
+    : retainedEvidencePath(journal, original);
   const stat = await statIfPresent(path);
   if (
     !stat ||
@@ -854,6 +1337,7 @@ async function readPreimage(
     stat.size > 1024 * 1024
   )
     refuseExternalRecovery('Missing or unsafe external preimage.');
+  if (path !== original) await privateDirectory(dirname(path), host);
   await observeMigrationNode(path, stat, host);
   const { bytes } = await readExternalMetadata(path, host);
   if (externalFingerprint(bytes, entry.mode) !== entry.preimage)
@@ -936,6 +1420,123 @@ export async function sealInternalRootExternal(
   return entries;
 }
 
+/** Missing admin records are not evidence of a changed backlink after Git prunes them. */
+function existingExternalFiles(journal: InternalRootJournal): string[] {
+  const existing: string[] = [];
+  for (const path of journal.externalFiles) {
+    const observed = observeStoragePathSync(path);
+    if (observed.kind !== 'missing') {
+      existing.push(path);
+      continue;
+    }
+    if (
+      observed.canonicalPath !== path ||
+      observed.symbolicLinkComponents.length
+    )
+      refuseExternalRecovery(
+        `Aliased missing external metadata: ${JSON.stringify(path)}.`,
+      );
+    const plan = journal.repairPlan?.gitPlan;
+    const known = plan?.backlinks.find((image) => image.path === path);
+    const removedCheckout = plan?.checkouts.some(
+      (row) =>
+        join(row.path, '.git') === path &&
+        observeStoragePathSync(row.path).kind === 'missing',
+    );
+    const prunedAdmin =
+      ['gitdir', 'commondir'].includes(basename(path)) &&
+      observeStoragePathSync(dirname(path)).kind === 'missing' &&
+      plan?.checkouts.some((row) => {
+        const dotGit = plan.backlinks.find(
+          (image) => image.path === join(row.path, '.git'),
+        );
+        return (
+          dotGit?.contents.startsWith('gitdir: ') &&
+          resolve(
+            dirname(dotGit.path),
+            dotGit.contents.slice(8).replace(/\r?\n$/, ''),
+          ) === dirname(path) &&
+          dirname(dirname(path)) === join(row.commonDirectory, 'worktrees')
+        );
+      });
+    if (!known || (!removedCheckout && !prunedAdmin))
+      refuseExternalRecovery(
+        `Missing external metadata: ${JSON.stringify(path)}.`,
+      );
+  }
+  return existing;
+}
+
+/** Carry the files, but do not pretend a checkout whose Git index was pruned still works. */
+export async function isPrunedInternalRootCheckout(
+  path: string,
+): Promise<boolean> {
+  const dotGit = join(path, '.git');
+  const state = await statIfPresent(dotGit);
+  if (
+    !state?.isFile() ||
+    state.isSymbolicLink() ||
+    state.nlink !== 1 ||
+    state.size > 1024 * 1024
+  )
+    return false;
+  const contents = await readFile(dotGit, 'utf8');
+  if (!contents.startsWith('gitdir: ')) return false;
+  const admin = resolve(path, contents.slice(8).replace(/\r?\n$/, ''));
+  const observed = observeStoragePathSync(admin);
+  const common = dirname(dirname(admin));
+  return (
+    observed.kind === 'missing' &&
+    observed.canonicalPath === admin &&
+    !observed.symbolicLinkComponents.length &&
+    basename(dirname(admin)) === 'worktrees' &&
+    (await statIfPresent(join(common, 'HEAD')))?.isFile() === true
+  );
+}
+
+async function externalRestoreJournal(
+  journal: InternalRootJournal,
+): Promise<InternalRootJournal> {
+  const files = existingExternalFiles(journal);
+  const projected = journal.repairPlan
+    ? await projectRelocationBacklinks(
+        journal.repairPlan.transition,
+        {
+          ...journal.repairPlan.gitPlan,
+          backlinks: journal.repairPlan.gitPlan.backlinks.filter((image) =>
+            files.includes(image.path),
+          ),
+        },
+        true,
+      )
+    : [];
+  const snapshots: InternalRootExternalSnapshot[] = [];
+  for (const entry of journal.externalSnapshots ?? []) {
+    if (!files.includes(entry.path)) continue;
+    const image = projected.find((image) => image.path === entry.path);
+    let mode = entry.mode;
+    if (!entry.postimage && image && hostOperatingSystem() !== 'win32') {
+      // Older POSIX writers let umask strip bits from unsealed postimages.
+      const maskedMode = entry.mode & ~process.umask();
+      if ((await readExternalMetadata(entry.path)).mode === maskedMode)
+        mode = maskedMode;
+    }
+    snapshots.push({
+      ...entry,
+      postimage:
+        entry.postimage ??
+        (image
+          ? externalFingerprint(Buffer.from(image.contents), mode)
+          : undefined),
+    });
+  }
+  return {
+    ...journal,
+    externalFiles: files,
+    externalSnapshots: journal.externalSnapshots ? snapshots : undefined,
+  };
+}
+
 async function inspectExternalRestore(
   journal: InternalRootJournal,
   allowRestored: boolean,
@@ -948,19 +1549,17 @@ async function inspectExternalRestore(
   );
   if (!journal.externalSnapshots)
     refuseExternalRecovery('Missing external preimages.');
-  // Check the entire set before restoring any file; a changed later backlink
-  // must not leave an otherwise completed installation partially restored.
+  // Validate every file before writing any, including mixed unsealed repair images.
   for (const entry of journal.externalSnapshots) {
     await readPreimage(journal, entry, host);
     const { bytes, mode } = await readExternalMetadata(entry.path, host);
     const actual = externalFingerprint(bytes, mode);
     if (
-      !entry.postimage ||
-      (actual !== entry.postimage &&
-        !(allowRestored && actual === entry.preimage))
+      actual !== entry.postimage &&
+      !(allowRestored && actual === entry.preimage)
     )
       refuseExternalRecovery(
-        `External metadata changed since repair: ${entry.path}.`,
+        `External metadata changed since repair: ${JSON.stringify(entry.path)}.`,
       );
   }
 }
@@ -973,9 +1572,10 @@ export async function assertInternalRootExternalPostimages(
 }
 
 export async function assertInternalRootExternalPreimages(
-  journal: InternalRootJournal,
+  original: InternalRootJournal,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
+  const journal = await externalRestoreJournal(original);
   await validateExternalRootFiles(
     journal.identity,
     journal.externalFiles,
@@ -988,18 +1588,24 @@ export async function assertInternalRootExternalPreimages(
     const { bytes, mode } = await readExternalMetadata(entry.path, host);
     if (externalFingerprint(bytes, mode) !== entry.preimage)
       refuseExternalRecovery(
-        `External metadata changed after restore: ${entry.path}.`,
+        `External metadata changed after restore: ${JSON.stringify(entry.path)}.`,
       );
   }
 }
 
 export async function restoreInternalRootExternal(
-  journal: InternalRootJournal,
+  original: InternalRootJournal,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
+  const journal = await externalRestoreJournal(original);
   await inspectExternalRestore(journal, true, host);
+  for (const path of original.externalFiles.filter(
+    (path) => !journal.externalFiles.includes(path),
+  ))
+    process.stderr.write(
+      `Migration: missing removed/pruned Git metadata ${JSON.stringify(path)}; retained checkouts may need Git recovery. See docs/internal-root-migration-troubleshooting.md#pruned-git-worktree-records.\n`,
+    );
   for (const entry of journal.externalSnapshots ?? []) {
-    // Durable restore intent accepts mixed pre/postimages after interruption.
     const bytes = await readPreimage(journal, entry, host);
     await validateExternalRootFiles(journal.identity, [entry.path], host);
     const current = await readExternalMetadata(entry.path, host);
@@ -1011,17 +1617,87 @@ export async function restoreInternalRootExternal(
     }
     if (actual !== entry.postimage)
       refuseExternalRecovery(
-        `External metadata changed during restore: ${entry.path}.`,
+        `External metadata changed during restore: ${JSON.stringify(entry.path)}.`,
       );
     await writeDurableBytes(entry.path, bytes, entry.mode, host);
   }
+}
+
+/** Capacity estimate credits only recorded trees the next build will discard. */
+export async function internalRootBuildSpace(
+  identity: InternalRootIdentity,
+  bytes: number,
+  journal: InternalRootJournal | undefined,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+): Promise<InternalRootSpace> {
+  const space = await internalRootCopySpace(identity.destination, bytes);
+  // APFS payload blocks can be shared with the source; deletion need not free them.
+  if (
+    !journal ||
+    hostOperatingSystem() === 'darwin' ||
+    space.availableBytes >= space.requiredBytes
+  )
+    return space;
+  await validateInternalRootStaging(identity, journal, host);
+  const staging = join(identity.coordination, 'staging');
+  const privateStaging = await statIfPresent(staging);
+  if (privateStaging) {
+    await privateDirectory(staging, host);
+    if (
+      !journal.stagingIdentity ||
+      (await migrationNodeIdentity(staging, privateStaging)) !==
+        journal.stagingIdentity
+    )
+      refuseLayout('Private staging was replaced. Preserve it for recovery.');
+    if (await statIfPresent(internalRootStaging(identity)))
+      throw new InternalRootMigrationRefused(
+        'recovery-required',
+        'Both private clone and sibling staging exist. Preserve both for recovery.',
+      );
+  }
+  const roots = [staging, internalRootStaging(identity)];
+  if (
+    ['complete', 'restoring-external', 'rebuilding'].includes(journal.phase)
+  ) {
+    await discardInternalRootDestination(journal, true, host);
+    roots.push(identity.destination, join(identity.coordination, 'discarding'));
+  }
+  const device = (await lstat(dirname(identity.destination))).dev;
+  const allocated = async (path: string): Promise<number> => {
+    const stat = await statIfPresent(path);
+    internalRootMigrationProgress('inspected staging allocation');
+    if (!stat || stat.dev !== device || stat.isSymbolicLink()) return 0;
+    if (stat.isDirectory()) {
+      let total = 0;
+      for (const name of await readdir(path))
+        total += await allocated(join(path, name));
+      return total;
+    }
+    if (!stat.isFile() || stat.nlink !== 1) return 0;
+    // Windows construction refuses sparse/compressed files; POSIX reports allocated blocks.
+    return hostOperatingSystem() === 'win32' ? stat.size : stat.blocks * 512;
+  };
+  let reclaimed = 0;
+  for (const root of roots) reclaimed += await allocated(root);
+  return { ...space, availableBytes: space.availableBytes + reclaimed };
+}
+
+async function removeTreeWithProgress(path: string): Promise<void> {
+  const stat = await lstat(path);
+  internalRootMigrationProgress('inspected staging entry for removal');
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    for (const name of await readdir(path))
+      await removeTreeWithProgress(join(path, name));
+    await rmdir(path);
+  } else await rm(path);
+  internalRootMigrationProgress('removed staging entry');
 }
 
 export async function buildInternalRoot(
   journal: InternalRootJournal,
   cloneTree?: (source: string, destination: string) => Promise<void>,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
-): Promise<string> {
+): Promise<InternalRootBuildResult> {
   const { identity } = journal;
   const excluded = (journal.repairPlan?.abandonedPaths ?? []).filter((path) =>
     isWithin(identity.source, path),
@@ -1072,7 +1748,7 @@ export async function buildInternalRoot(
         staging,
         journal.stagingIdentity,
       );
-    } else await rm(staging, { recursive: true });
+    } else await removeTreeWithProgress(staging);
   }
   if (portableCopy) {
     await createPrivateMigrationDirectory(staging, host);
@@ -1100,9 +1776,17 @@ export async function buildInternalRoot(
       if (!stat.isDirectory() || stat.isSymbolicLink())
         refuseLayout(`Aliased omission parent: ${from}`);
       await mkdir(to, { mode: 0o700 });
+      internalRootMigrationProgress('created omission parent');
       for (const name of await readdir(from))
         await visit(join(from, name), join(to, name));
-      await chown(to, stat.uid, stat.gid);
+      const gid =
+        hostOperatingSystem() === 'darwin' &&
+        process.geteuid?.() !== 0 &&
+        stat.gid !== process.getegid?.() &&
+        !process.getgroups?.().includes(stat.gid)
+          ? -1
+          : stat.gid;
+      await chown(to, stat.uid, gid);
       await chmod(to, stat.mode & 0o7777);
       await utimes(
         to,
@@ -1121,17 +1805,38 @@ export async function buildInternalRoot(
       'Private staging was replaced during construction. Preserve it for recovery.',
     );
   await privateDirectory(staging, host);
+  const expected = await manifest(identity.source, false, host, {
+    omitted,
+    group: async (relative, stat) => {
+      if (
+        hostOperatingSystem() !== 'darwin' ||
+        process.geteuid?.() === 0 ||
+        stat.gid === process.getegid?.() ||
+        process.getgroups?.().includes(stat.gid) ||
+        stat.isSocket()
+      )
+        return stat.gid;
+      const copied = await statIfPresent(join(staging, relative));
+      if (!copied || copied.gid === stat.gid) return stat.gid;
+      process.stderr.write(
+        `Migration: ${JSON.stringify(join(identity.source, relative))}: source group ${stat.gid} cannot be assigned; copy received group ${copied.gid}.\n`,
+      );
+      return copied.gid;
+    },
+  });
   if (
     (await manifest(staging, false, host)).fingerprint !==
-      (excluded.length
-        ? (await manifest(identity.source, false, host, omitted)).fingerprint
-        : journal.settledFingerprint) ||
-    (await inspectInternalRoot(identity, false, host)).fingerprint !==
-      journal.settledFingerprint
+    expected.projectedFingerprint
   )
     throw new InternalRootMigrationRefused(
       'source-changed',
-      'Clone differs from settled source. Retain the original; retry migration after diagnosis.',
+      'Clone differs from settled source. Retain the original; after diagnosis, use --apply --restart to preserve this unpublished attempt and restart.',
+    );
+  const sourceInventory = await inspectRoot(identity, false, host, expected);
+  if (sourceInventory.fingerprint !== journal.settledFingerprint)
+    throw new InternalRootMigrationRefused(
+      'source-changed',
+      'Clone differs from settled source. Retain the original; after diagnosis, use --apply --restart to preserve this unpublished attempt and restart.',
     );
   const stat = await lstat(staging);
   if (
@@ -1143,7 +1848,10 @@ export async function buildInternalRoot(
     );
   await flush(staging);
   await flush(identity.coordination);
-  return migrationNodeIdentity(staging, stat);
+  return {
+    publicationIdentity: await migrationNodeIdentity(staging, stat),
+    sourceInventory,
+  };
 }
 
 /** Called only after the clone's inode is durable in the non-moving journal. */
@@ -1199,43 +1907,55 @@ export async function sealInternalRoot(
 export async function internalRootPublicationRoot(
   journal: InternalRootJournal,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+  verifiedFingerprint?: string,
 ): Promise<string> {
   const staging = internalRootStaging(journal.identity);
   const to = await statIfPresent(journal.identity.destination);
   const from = await statIfPresent(staging);
   const path =
-    !to && (await inodeAt(staging, from)) === journal.publicationIdentity
+    !to &&
+    matchesInternalRootNodeIdentity(
+      await inodeAt(staging, from),
+      journal.publicationIdentity,
+      hostOperatingSystem(),
+    )
       ? staging
       : !from &&
-          (await inodeAt(journal.identity.destination, to)) ===
-            journal.publicationIdentity
+          matchesInternalRootNodeIdentity(
+            await inodeAt(journal.identity.destination, to),
+            journal.publicationIdentity,
+            hostOperatingSystem(),
+          )
         ? journal.identity.destination
         : null;
   if (!path)
     throw new InternalRootMigrationRefused(
       'destination-exists',
-      'Destination or staging identity changed. Preserve the journal and request recovery.',
+      `Destination ${JSON.stringify(journal.identity.destination)} or staging ${JSON.stringify(staging)} identity changed. Preserve the journal and request recovery.`,
     );
   await privateDirectory(path, host);
   if (
-    (await manifest(path, false, host)).fingerprint !==
+    (verifiedFingerprint ?? (await manifest(path, false, host)).fingerprint) !==
     journal.publicationFingerprint
   )
     throw new InternalRootMigrationRefused(
       'source-changed',
-      'Sealed destination changed during publication. Preserve both roots and the journal for teammate-assisted recovery.',
+      `Sealed tree ${JSON.stringify(path)} changed during publication. Preserve both roots and the journal for teammate-assisted recovery.`,
     );
   // The recursive scan can be long; do not use its pre-scan path observations.
   if (
-    (await inodeAt(path, await statIfPresent(path))) !==
-      journal.publicationIdentity ||
+    !matchesInternalRootNodeIdentity(
+      await inodeAt(path, await statIfPresent(path)),
+      journal.publicationIdentity,
+      hostOperatingSystem(),
+    ) ||
     (await statIfPresent(
       path === staging ? journal.identity.destination : staging,
     ))
   )
     throw new InternalRootMigrationRefused(
       'destination-exists',
-      'Destination or staging changed during verification. Preserve both trees for recovery.',
+      `Destination ${JSON.stringify(journal.identity.destination)} or staging ${JSON.stringify(staging)} changed during verification. Preserve both trees for recovery.`,
     );
   return path;
 }
@@ -1243,8 +1963,13 @@ export async function internalRootPublicationRoot(
 export async function publishInternalRoot(
   journal: InternalRootJournal,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+  verifiedFingerprint?: string,
 ): Promise<void> {
-  const path = await internalRootPublicationRoot(journal, host);
+  const path = await internalRootPublicationRoot(
+    journal,
+    host,
+    verifiedFingerprint,
+  );
   if (path !== journal.identity.destination)
     await renameMigrationDirectory(
       path,
@@ -1274,7 +1999,13 @@ export async function discardInternalRootDestination(
   const path = to ? destination : discarded;
   const stat = to ?? old;
   if (!stat) return; // Interrupted deletion; rebuild intent is already durable.
-  if ((await migrationNodeIdentity(path, stat)) !== journal.publicationIdentity)
+  if (
+    !matchesInternalRootNodeIdentity(
+      await migrationNodeIdentity(path, stat),
+      journal.publicationIdentity,
+      hostOperatingSystem(),
+    )
+  )
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'Recorded destination was replaced. Never discard another installation.',
@@ -1306,7 +2037,7 @@ export async function discardInternalRootDestination(
       discarded,
       journal.publicationIdentity,
     );
-  } else await rm(discarded, { recursive: true });
+  } else await removeTreeWithProgress(discarded);
   await flush(journal.identity.coordination);
 }
 

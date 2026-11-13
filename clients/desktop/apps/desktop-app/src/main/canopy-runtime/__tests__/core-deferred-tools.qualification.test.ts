@@ -141,6 +141,7 @@ jest.mock('../../plugins/plugin-service', () => ({
             plugins: [
               {
                 name: 'superpowers',
+                marketplaceId: 'market',
                 description: 'Planning and review skills',
                 providerSupport: { claude: 'native', codex: 'native' },
                 cachePath: null,
@@ -152,6 +153,7 @@ jest.mock('../../plugins/plugin-service', () => ({
               },
               {
                 name: 'claude-only',
+                marketplaceId: 'market',
                 description: 'Only for Claude',
                 providerSupport: { claude: 'native', codex: 'none' },
                 cachePath: null,
@@ -160,6 +162,7 @@ jest.mock('../../plugins/plugin-service', () => ({
               },
               {
                 name: 'not-installed',
+                marketplaceId: 'market',
                 description: 'A plugin with no facet on disk',
                 providerSupport: { claude: 'native', codex: 'native' },
                 cachePath: null,
@@ -171,6 +174,7 @@ jest.mock('../../plugins/plugin-service', () => ({
               },
               {
                 name: 'compat-plugin',
+                marketplaceId: 'market',
                 description: 'Codex compatibility turned off',
                 providerSupport: { claude: 'native', codex: 'compat' },
                 codexCompatDisabled: true,
@@ -237,7 +241,8 @@ jest.mock('../../plugins/plugin-resolver', () => ({
       command: { description: 'plan command' },
     },
   ],
-  readPluginMcpAuthEntries: (): Promise<unknown[]> => Promise.resolve([]),
+  loadPluginManifest: (): null => null,
+  readPluginMcpConfigObjects: (): Record<string, unknown> => ({}),
 }));
 
 jest.mock('../../lib/paths', () => ({
@@ -619,6 +624,27 @@ describe('deferred tools through core.agent.deferredTools (CAN-5995)', () => {
     expect(loaded.result.status).toBe('success');
     expect(reloadSink.request).toHaveBeenCalledTimes(1);
     expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it('search reads the catalog snapshot through the dispatcher with only the catalog read grant (CAN-6034)', async () => {
+    const runtime = mockFixture.runtime;
+    if (!runtime) throw new Error('No runtime.');
+    const query = jest.spyOn(runtime, 'query');
+    await search(CHAT, 'brainstorm');
+    const reads = query.mock.calls.filter(
+      ([operation]) => operation === 'core.catalog.snapshot.get',
+    );
+    expect(reads).toHaveLength(1);
+    expect(reads[0]?.[1]).toEqual({
+      scope: {},
+      kinds: ['skill', 'plugin', 'mcp_server'],
+      includeUnavailable: true,
+    });
+    const options = reads[0]?.[2] as
+      | { caller: CanopyCallerDescriptor }
+      | undefined;
+    expect(options?.caller.principalId).toBe('desktop-agent-deferred-tools');
+    expect(options?.caller.grants).toEqual(['core.catalog.read']);
   });
 
   it('no renderer relay or Portal session reaches either operation', () => {

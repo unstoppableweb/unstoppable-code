@@ -191,6 +191,11 @@ class Endpoint implements RemoteRelay {
     return () => this.offline.delete(listener);
   }
 
+  // Presence never changes here, so nothing announces a peer online.
+  onPeerOnline(): () => void {
+    return () => undefined;
+  }
+
   onUndeliverable(listener: (peer: string) => void): () => void {
     this.undeliverable.add(listener);
     return () => this.undeliverable.delete(listener);

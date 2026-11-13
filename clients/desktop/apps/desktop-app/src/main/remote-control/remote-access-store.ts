@@ -44,6 +44,11 @@ export type PairedDevice = z.infer<typeof PairedDeviceSchema>;
 const RemoteControlFileSchema = z.object({
   version: z.literal(1),
   allowIncoming: z.boolean(),
+  /**
+   * Paired computers that control this one may install its updates. Absent
+   * until first set; the service supplies the platform's default.
+   */
+  allowRemoteUpdates: z.boolean().optional(),
   /** Computers this device may control. */
   pairedHosts: z.array(PairedDeviceSchema),
   /** Devices allowed to control this computer. */
@@ -129,6 +134,13 @@ function withoutNewGrants(
   return {
     ...next,
     allowIncoming: next.allowIncoming && previous.allowIncoming,
+    ...(next.allowRemoteUpdates === undefined
+      ? {}
+      : {
+          // Only a saved opt-in counts: a missing value means off on Linux.
+          allowRemoteUpdates:
+            next.allowRemoteUpdates && previous.allowRemoteUpdates === true,
+        }),
     pairedHosts: next.pairedHosts.filter((device) =>
       isKnownDevice(previous.pairedHosts, device),
     ),

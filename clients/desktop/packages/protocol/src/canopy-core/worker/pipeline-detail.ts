@@ -32,9 +32,15 @@ export const WORKER_PIPELINE_PAUSE_REQUESTS_MAX_BYTES = 256 * 1024;
 /** The serialized size one variant's matrix values may take; past it they are `null`. */
 export const WORKER_PIPELINE_MATRIX_VALUES_MAX_BYTES = 16 * 1024;
 
+/**
+ * A physical job's status. `waiting_for_capacity` marks one whose next step
+ * its host holds while memory is tight; it starts on its own once memory
+ * frees (CAN-6325).
+ */
 export const WORKER_PIPELINE_JOB_STATUSES = [
   'pending',
   'queued',
+  'waiting_for_capacity',
   'running',
   'restarting',
   'paused',
@@ -44,8 +50,10 @@ export const WORKER_PIPELINE_JOB_STATUSES = [
   'skipped',
 ] as const;
 
+/** A step's status; `waiting_for_capacity` holds it before it starts (CAN-6325). */
 export const WORKER_PIPELINE_STEP_STATUSES = [
   'pending',
+  'waiting_for_capacity',
   'running',
   'paused',
   'success',
@@ -65,12 +73,18 @@ export const WORKER_PIPELINE_STEP_CONCLUSIONS = [
  * Why a paused run stopped, as its status reasons name it; mirrors the
  * executor's `PipelineStatusReasonKind`. `owner_lost` marks a remote owner
  * that stayed away past its lease or stopped answering (CAN-6102);
- * `app_shutdown` marks a checkpoint or a local owner's loss.
+ * `host_rollover` marks a run checkpointed on request, after its running
+ * steps had until a deadline to finish, so its host can roll over
+ * (CAN-6199); `core_lost` marks a run whose daemon core was lost, after
+ * its host ended the steps (CAN-6481); `app_shutdown` marks a checkpoint or
+ * a local owner's loss.
  */
 export const WORKER_PIPELINE_STATUS_REASON_KINDS = [
   'provider_sign_in',
   'app_shutdown',
   'owner_lost',
+  'host_rollover',
+  'core_lost',
   'input_required',
   'action_paused',
   'provider_authentication_required',
@@ -83,6 +97,8 @@ export const WORKER_PIPELINE_STATUS_REASON_CODES = [
   'provider_sign_in',
   'app_shutdown',
   'owner_lost',
+  'host_rollover',
+  'core_lost',
   'input_requested',
   'action_requested_pause',
   'authentication_failed',

@@ -102,6 +102,7 @@ async function isCarriedLink(
   text: string,
   published: boolean,
   carried: CarriedLinks,
+  onProgress?: (detail: string) => void,
 ): Promise<boolean> {
   const root = transition.to.canonicalDataRoot;
   if (!isWithin(root, link)) return false;
@@ -166,6 +167,7 @@ async function isCarriedLink(
         return null;
       throw error;
     });
+    onProgress?.('checked carried link component');
     if (!state) {
       // Dangling links are payload, not repair targets. Still check lexical escapes.
       continue;
@@ -192,6 +194,7 @@ async function checkedLinkTarget(
   prefixes: ReadonlySet<string>,
   published: boolean,
   carried?: CarriedLinks,
+  onProgress?: (detail: string) => void,
 ): Promise<string | undefined> {
   if (
     carried &&
@@ -202,6 +205,7 @@ async function checkedLinkTarget(
       text,
       published,
       carried,
+      onProgress,
     ))
   )
     return undefined;
@@ -228,6 +232,7 @@ async function checkedLinkTarget(
         carried,
       );
       const state = await lstat(actual);
+      onProgress?.('checked owned link parent');
       if (state.isSymbolicLink())
         throw new RelocationRefusedError('symlink-owned-parent');
       if (!state.isDirectory())
@@ -248,6 +253,7 @@ async function inspectOwnedPaths(
   workingRoot: string,
   published = false,
   carried?: CarriedLinks,
+  onProgress?: (detail: string) => void,
 ): Promise<readonly CarriedLinkProjection[]> {
   const root = transition.to.canonicalDataRoot;
   if (carried?.source) {
@@ -268,6 +274,7 @@ async function inspectOwnedPaths(
   const paths = new Set(
     ownedPaths.map((path) => movedOwnedPath(transition, path)),
   );
+  let entries = 0;
   const visit = async (path: string): Promise<void> => {
     const actual = physicalPath(
       transition,
@@ -277,14 +284,17 @@ async function inspectOwnedPaths(
       carried,
     );
     const state = await lstat(actual);
+    onProgress?.(`scanned ${++entries} relocated entries`);
     if (state.isSymbolicLink()) {
       paths.add(path);
     } else if (state.isDirectory()) {
       if ((await realpath(actual)) !== actual)
         throw new RelocationRefusedError('noncanonical-owned-path');
-      for (const entry of await readdir(actual, { withFileTypes: true }))
+      for (const entry of await readdir(actual, { withFileTypes: true })) {
         if (entry.isDirectory() || entry.isSymbolicLink())
           await visit(join(path, entry.name));
+        else onProgress?.(`scanned ${++entries} relocated entries`);
+      }
     }
   };
   // Enumerate link payload only, including opaque folders and legacy frozen plans.
@@ -327,6 +337,7 @@ async function inspectOwnedPaths(
           return null;
         throw error;
       });
+      onProgress?.('checked relocated owner path');
       // Archived owner paths may already be absent.
       if (!state) {
         if ((await realpath(dirname(actual))) !== dirname(actual))
@@ -348,6 +359,7 @@ async function inspectOwnedPaths(
             prefixes,
             published,
             carried,
+            onProgress,
           );
           if (index !== parts.length - 1)
             throw new RelocationRefusedError('symlink-owned-parent');
@@ -405,6 +417,7 @@ export async function assertRelocationOwnedPathsSafe(
   workingRoot: string,
   published = false,
   carried?: CarriedLinks,
+  onProgress?: (detail: string) => void,
 ): Promise<void> {
   await inspectOwnedPaths(
     transition,
@@ -412,6 +425,7 @@ export async function assertRelocationOwnedPathsSafe(
     workingRoot,
     published,
     carried,
+    onProgress,
   );
 }
 
@@ -421,6 +435,7 @@ export async function repairRelocationCarriedLinks(
   ownedPaths: readonly string[],
   workingRoot: string,
   preserveSourceTargetsWithin: readonly string[] = [],
+  onProgress?: (detail: string) => void,
 ): Promise<void> {
   const projections = await inspectOwnedPaths(
     transition,
@@ -431,6 +446,7 @@ export async function repairRelocationCarriedLinks(
       projectSourceTargets: true,
       preserveSourceTargetsWithin,
     },
+    onProgress,
   );
   let preserved = 0;
   for (const image of projections) {
@@ -439,6 +455,7 @@ export async function repairRelocationCarriedLinks(
         'changed-owned-link',
         linkDetail(workingRoot, image.path, image.before),
       );
+    onProgress?.('revalidated carried link');
     if (image.preserve) {
       if (preserved++ < 20)
         process.stderr.write(
@@ -455,6 +472,7 @@ export async function repairRelocationCarriedLinks(
       await symlink(image.after, temporary);
       created = true;
       await rename(temporary, image.path);
+      onProgress?.('repaired carried link');
       created = false;
     } finally {
       if (created) await rm(temporary, { force: true });

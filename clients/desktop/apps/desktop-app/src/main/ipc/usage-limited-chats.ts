@@ -87,7 +87,7 @@ import { registerIpcHandler } from './register';
 import {
   listExecutionSummaries,
   loadExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
 import { isRealWorkspaceTarget } from '../lib/chat-targets';
@@ -497,7 +497,10 @@ async function listUsageLimitedIdleSessionsWithProviders(
         ? state.authentication_pause?.attempt_id ===
             req.authenticationAttemptId &&
           state.authentication_pause.reason_ids.includes(reason.id)
-        : reason.kind === 'app_shutdown' || reason.kind === 'provider_sign_in'
+        : // A lost daemon core's pause resumes as a shutdown's does (CAN-6481).
+          reason.kind === 'app_shutdown' ||
+            reason.kind === 'core_lost' ||
+            reason.kind === 'provider_sign_in'
           ? !req.provider || reason.provider === req.provider
           : !req.resumeReason &&
             (reason.kind === 'provider_usage_limit' ||
@@ -544,7 +547,7 @@ async function listUsageLimitedIdleSessionsWithProviders(
           ...matching.map((reason) =>
             reason.kind === 'provider_sign_in'
               ? ('provider_sign_in' as const)
-              : reason.kind === 'app_shutdown'
+              : reason.kind === 'app_shutdown' || reason.kind === 'core_lost'
                 ? ('app_shutdown' as const)
                 : reason.kind === 'provider_authentication_required'
                   ? ('authentication' as const)

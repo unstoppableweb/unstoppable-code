@@ -1,0 +1,25 @@
+[
+  {
+    "claims": {
+      "v": 1,
+      "role": "runner",
+      "delegationId": "11111111-2222-4333-8444-555555555555",
+      "leaseEpoch": 3,
+      "credentialId": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+      "expiresAt": 1700000000000
+    },
+    "secret": "pipeline-relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJyb2xlIjoicnVubmVyIiwiZGVsZWdhdGlvbklkIjoiMTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1IiwibGVhc2VFcG9jaCI6MywiY3JlZGVudGlhbElkIjoiNjY2NjY2NjYtNzc3Ny00ODg4LTg5OTktYWFhYWFhYWFhYWFhIiwiZXhwaXJlc0F0IjoxNzAwMDAwMDAwMDAwfQ.HnUkP6lkwapphl9tgu0-5mUuqOi4Dz-KVlPDR4bYNvQ"
+  },
+  {
+    "claims": {
+      "v": 1,
+      "role": "core",
+      "delegationId": "11111111-2222-4333-8444-555555555555",
+      "leaseEpoch": 3,
+      "expiresAt": 1700000060000
+    },
+    "secret": "pipeline-relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJyb2xlIjoiY29yZSIsImRlbGVnYXRpb25JZCI6IjExMTExMTExLTIyMjItNDMzMy04NDQ0LTU1NTU1NTU1NTU1NSIsImxlYXNlRXBvY2giOjMsImV4cGlyZXNBdCI6MTcwMDAwMDA2MDAwMH0.r1fPd1DG_S3zThunJRz7iADYLh5WC6cX8G7lKTxBJ0I"
+  }
+]

@@ -9,7 +9,7 @@ import * as scanner from '../plugin-scanner';
 import * as readHealth from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import type * as ConfigPaths from '../../pipelines/config-paths';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
-import { resolvePlugins } from '@canopy/desktop-shared/node/plugins/plugin-resolver';
+import { resolvePlugins } from '@canopy/execution-engine/node/plugins/plugin-resolver';
 import type {
   PluginsCache,
   PluginsCacheV1,

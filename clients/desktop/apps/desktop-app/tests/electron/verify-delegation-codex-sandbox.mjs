@@ -526,9 +526,9 @@ try {
   const ownedChildren = new Set();
   try {
     const hooksModule =
-      await import('../../../../packages/desktop-shared/src/node/codex-runtime/host-hooks.ts');
+      await import('../../../../packages/execution-engine/src/node/codex-runtime/host-hooks.ts');
     const runtimeModule =
-      await import('../../../../packages/desktop-shared/src/node/codex-runtime/runtime-service.ts');
+      await import('../../../../packages/execution-engine/src/node/codex-runtime/runtime-service.ts');
     const { configureCodexRuntimeHostHooks } =
       hooksModule.default ?? hooksModule;
     const { createCodexRuntimeService } =

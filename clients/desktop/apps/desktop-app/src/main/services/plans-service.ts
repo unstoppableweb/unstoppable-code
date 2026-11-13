@@ -6,6 +6,7 @@ import type {
   PortalPlanSummary,
   SaveTrackedPlanCommentsRequest,
   ShareTrackedPlanRequest,
+  UnshareTrackedPlanRequest,
   TrackedPlanData,
   TrackedPlanGetRequest,
   TrackedPlanListRequest,
@@ -31,7 +32,7 @@ import {
   emitPortalFeatureRemove,
   emitPortalFeatureUpsert,
 } from './portal-feature-event-service';
-import { shareTrackedPlan } from '../lib/shared-plan-sync';
+import { shareTrackedPlan, unshareTrackedPlan } from '../lib/shared-plan-sync';
 import { sendToWindow } from '../lib/window-send';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
@@ -457,6 +458,23 @@ export async function shareTrackedPlanData(
   assertWritableScope(request.projectId);
   validateId(request.planId, 'planId');
   const plan = await shareTrackedPlan(request);
+  if (plan) {
+    emitPortalFeatureUpsert({
+      type: 'portal.plan.event',
+      entity: planToPortalEntity(toPlanDetail(plan)),
+    });
+  }
+  return plan;
+}
+
+/** Stop sharing a tracked plan (CAN-5904); the answered plan has no `share`. */
+export async function unshareTrackedPlanData(
+  request: UnshareTrackedPlanRequest,
+): Promise<TrackedPlanData | null> {
+  validateWorktreeIds(request);
+  assertWritableScope(request.projectId);
+  validateId(request.planId, 'planId');
+  const plan = await unshareTrackedPlan(request);
   if (plan) {
     emitPortalFeatureUpsert({
       type: 'portal.plan.event',

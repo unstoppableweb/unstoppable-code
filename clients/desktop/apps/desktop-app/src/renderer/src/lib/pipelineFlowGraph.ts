@@ -184,6 +184,13 @@ export function buildMatrixFlowSummary(
   };
 }
 
+/** A job held for memory (CAN-6325) shows as queued in the flow. */
+function flowJobStatus(
+  status: Exclude<PipelineFlowStatus, 'none'> | 'waiting_for_capacity',
+): PipelineFlowStatus {
+  return status === 'waiting_for_capacity' ? 'queued' : status;
+}
+
 interface RawNodeEntry {
   id: string;
   height: number;
@@ -303,12 +310,13 @@ export function buildExecutionFlow(
       data: {
         jobId,
         label: job.name ?? jobId,
-        status:
+        status: flowJobStatus(
           group?.outcome ??
-          state.jobs[jobId]?.outcome ??
-          group?.status ??
-          state.jobs[jobId]?.status ??
-          'pending',
+            state.jobs[jobId]?.outcome ??
+            group?.status ??
+            state.jobs[jobId]?.status ??
+            'pending',
+        ),
         steps: [],
         ...(matrix !== undefined ? { matrix } : {}),
       },

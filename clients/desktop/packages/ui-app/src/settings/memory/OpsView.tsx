@@ -49,7 +49,7 @@ function statusClasses(status: ExplorerIngestJobStatus): string {
   if (status === 'FAILED' || status === 'DEAD') {
     return 'bg-destructive-subtle fg-destructive';
   }
-  if (status === 'RUNNING') return 'bg-accent-subtle fg-accent';
+  if (status === 'RUNNING') return 'bg-accent-subtle fg-accent-strong';
   return 'bg-base fg-secondary';
 }
 

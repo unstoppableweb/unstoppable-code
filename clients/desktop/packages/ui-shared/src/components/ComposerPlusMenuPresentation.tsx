@@ -11,6 +11,7 @@ import {
 } from 'react';
 import {
   ComposerActionList,
+  type ComposerActionListError,
   type ComposerShowAllControl,
   type ComposerActionRow,
 } from './ComposerActionList';
@@ -21,6 +22,8 @@ import { PlusLargeIcon } from '../icons/AppIcons';
 
 export interface ComposerPlusMenuPresentationProps {
   keyboardNavigation?: boolean;
+  /** Disable when the anchor contains an editor that owns its arrow keys. */
+  openOnArrowKeys?: boolean;
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
   rows: ComposerActionRow[];
@@ -54,13 +57,21 @@ export interface ComposerPlusMenuPresentationProps {
   flat?: boolean;
   /** Expands a capped result list; rendered after the groups. */
   showAll?: ComposerShowAllControl;
+  /** A pick that failed or only partly finished, above the rows. */
+  error?: ComposerActionListError | null;
   fullWidth?: boolean;
   tapTarget?: 'compact' | 'touch';
+  /**
+   * Renders the menu without its `+` trigger, for a composer that hides its
+   * toolbar but still opens the menu from `/` and `@` in the draft.
+   */
+  hideTrigger?: boolean;
 }
 
 /** Controlled presentation only. Hosts own discovery, policy and action execution. */
 export function ComposerPlusMenuPresentation({
   keyboardNavigation = false,
+  openOnArrowKeys = !keyboardNavigation,
   isOpen,
   setIsOpen,
   rows,
@@ -91,8 +102,10 @@ export function ComposerPlusMenuPresentation({
   groupRuns = false,
   flat = false,
   showAll,
+  error = null,
   fullWidth = false,
   tapTarget = 'compact',
+  hideTrigger = false,
 }: ComposerPlusMenuPresentationProps): JSX.Element {
   const localMenuRef = useRef<HTMLDivElement | null>(null);
   const listRef = menuRef ?? localMenuRef;
@@ -185,81 +198,83 @@ export function ComposerPlusMenuPresentation({
   }, [keyboardNavigation, isOpen, listRef, setIsOpen]);
   return (
     <>
-      <Tooltip
-        // Typing @ in the draft opens this same menu, so the tooltip teaches
-        // the shortcut beside what the button does.
-        label={tooltipLabel}
-        {...(shortcut ? { shortcut } : {})}
-        suppressed={isOpen}
-      >
-        {capsuleTrigger ? (
-          // The capsule trigger (the chat and Home composers): send-button
-          // geometry (32px circle, 16px glyph) on a flat subtle fill that
-          // steps up to muted on hover, written as one explicit class list
-          // so no variant background can override it.
-          <button
-            ref={triggerRef}
-            type="button"
-            onClick={() => setIsOpen(!isOpen)}
-            onKeyDown={(event): void => {
-              onTriggerKeyDown?.(event);
-              if (
-                keyboardNavigation &&
-                !isOpen &&
-                ['ArrowDown', 'ArrowUp'].includes(event.key)
-              ) {
-                event.preventDefault();
-                setIsOpen(true);
-              }
-            }}
-            disabled={disabled}
-            className={`focus-ring inline-flex ${tapTarget === 'touch' ? 'h-11 w-11 lg:h-8 lg:w-8' : 'h-8 w-8'} shrink-0 items-center justify-center rounded-full transition-transform enabled:active:scale-97 disabled:cursor-not-allowed disabled:fg-tertiary disabled:opacity-100 ${
-              active
-                ? 'bg-warning-subtle fg-warning enabled:hover:bg-warning-subtle'
-                : // A one-device-pixel inset rim in the quiet line role
-                  // keeps the + defined against the composer's surface.
-                  'bg-subtle fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-tertiary enabled:hover:bg-muted'
-            }`}
-            data-testid={`${dataTestIdPrefix}-plus-button`}
-            data-active={active ? 'true' : undefined}
-            aria-label={triggerAriaLabel}
-            aria-haspopup="dialog"
-            aria-expanded={isOpen}
-            aria-controls={isOpen ? menuId : undefined}
-          >
-            {/* The large plus: its ink matches the send arrow, the microphone
+      {hideTrigger ? null : (
+        <Tooltip
+          // Typing @ in the draft opens this same menu, so the tooltip teaches
+          // the shortcut beside what the button does.
+          label={tooltipLabel}
+          {...(shortcut ? { shortcut } : {})}
+          suppressed={isOpen}
+        >
+          {capsuleTrigger ? (
+            // The capsule trigger (the chat and Home composers): send-button
+            // geometry (32px circle, 16px glyph) on a flat subtle fill that
+            // steps up to muted on hover, written as one explicit class list
+            // so no variant background can override it.
+            <button
+              ref={triggerRef}
+              type="button"
+              onClick={() => setIsOpen(!isOpen)}
+              onKeyDown={(event): void => {
+                onTriggerKeyDown?.(event);
+                if (
+                  keyboardNavigation &&
+                  !isOpen &&
+                  ['ArrowDown', 'ArrowUp'].includes(event.key)
+                ) {
+                  event.preventDefault();
+                  setIsOpen(true);
+                }
+              }}
+              disabled={disabled}
+              className={`focus-ring inline-flex ${tapTarget === 'touch' ? 'h-11 w-11 lg:h-8 lg:w-8' : 'h-8 w-8'} shrink-0 items-center justify-center rounded-full transition-transform enabled:active:scale-97 disabled:cursor-not-allowed disabled:fg-tertiary disabled:opacity-100 ${
+                active
+                  ? 'bg-warning-subtle fg-warning enabled:hover:bg-warning-subtle'
+                  : // A one-device-pixel inset rim in the quiet line role
+                    // keeps the + defined against the composer's surface.
+                    'bg-subtle fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-tertiary enabled:hover:bg-muted'
+              }`}
+              data-testid={`${dataTestIdPrefix}-plus-button`}
+              data-active={active ? 'true' : undefined}
+              aria-label={triggerAriaLabel}
+              aria-haspopup="dialog"
+              aria-expanded={isOpen}
+              aria-controls={isOpen ? menuId : undefined}
+            >
+              {/* The large plus: its ink matches the send arrow, the microphone
               and stop beside it (the medium plus read a size smaller). */}
-            <PlusLargeIcon size={16} />
-          </button>
-        ) : (
-          <ComposerIconButton
-            ref={triggerRef}
-            onClick={() => setIsOpen(!isOpen)}
-            onKeyDown={(event): void => {
-              onTriggerKeyDown?.(event);
-              if (
-                keyboardNavigation &&
-                !isOpen &&
-                ['ArrowDown', 'ArrowUp'].includes(event.key)
-              ) {
-                event.preventDefault();
-                setIsOpen(true);
-              }
-            }}
-            disabled={disabled}
-            tone={active ? 'warning' : 'default'}
-            active={active}
-            data-testid={`${dataTestIdPrefix}-plus-button`}
-            data-active={active ? 'true' : undefined}
-            aria-label={triggerAriaLabel}
-            aria-haspopup="dialog"
-            aria-expanded={isOpen}
-            aria-controls={isOpen ? menuId : undefined}
-          >
-            <PlusLargeIcon size="sm" />
-          </ComposerIconButton>
-        )}
-      </Tooltip>
+              <PlusLargeIcon size={16} />
+            </button>
+          ) : (
+            <ComposerIconButton
+              ref={triggerRef}
+              onClick={() => setIsOpen(!isOpen)}
+              onKeyDown={(event): void => {
+                onTriggerKeyDown?.(event);
+                if (
+                  keyboardNavigation &&
+                  !isOpen &&
+                  ['ArrowDown', 'ArrowUp'].includes(event.key)
+                ) {
+                  event.preventDefault();
+                  setIsOpen(true);
+                }
+              }}
+              disabled={disabled}
+              tone={active ? 'warning' : 'default'}
+              active={active}
+              data-testid={`${dataTestIdPrefix}-plus-button`}
+              data-active={active ? 'true' : undefined}
+              aria-label={triggerAriaLabel}
+              aria-haspopup="dialog"
+              aria-expanded={isOpen}
+              aria-controls={isOpen ? menuId : undefined}
+            >
+              <PlusLargeIcon size="sm" />
+            </ComposerIconButton>
+          )}
+        </Tooltip>
+      )}
 
       <FloatingMenu
         id={menuId}
@@ -270,7 +285,7 @@ export function ComposerPlusMenuPresentation({
         placement={placement}
         allowFlip={allowFlip}
         interaction="manual"
-        openOnArrowKeys={!keyboardNavigation}
+        openOnArrowKeys={openOnArrowKeys}
         onKeyDown={onMenuKeyDown}
         outsidePressBoundaryRef={outsidePressBoundaryRef}
         returnFocusRef={returnFocusRef ?? anchorRef}
@@ -305,6 +320,7 @@ export function ComposerPlusMenuPresentation({
           groupRuns={groupRuns}
           flat={flat}
           showAll={showAll}
+          error={error}
           dataTestIdPrefix={dataTestIdPrefix}
           // Session replay records each group's rows as a placeholder: the
           // menu lists the whole skill/plugin/command catalog unwindowed, so

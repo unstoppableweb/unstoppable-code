@@ -1,3 +1,4 @@
+import { logMainProcessError } from '../lib/main-process-logging';
 import { saveGitHubPat } from '../lib/github-pat-save';
 import { probeModelGateway } from '../services/model-gateway-probe';
 import { createHash } from 'node:crypto';
@@ -148,6 +149,8 @@ import {
   toPublicCanopyCloudAccountState,
 } from '../lib/canopy-cloud-account-store';
 import { applyEnforcedSettings } from '../services/org-enforced-settings';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import { sendToAllWindows } from '../lib/window-send';
 import { rebindLedgerGuestScopes } from '../ledger/sync-host';
 import {
   readPreferencesFile,
@@ -204,11 +207,14 @@ import {
 } from '../lib/secure-storage-policy';
 import {
   authorizeModelGatewayCredential,
+  clearModelGatewayCredential,
   GatewayCredentialStorageUnavailableError,
   isModelGatewayCredentialStorageAvailable,
   loadModelGatewayCredential,
   saveModelGatewayCredential,
 } from '../lib/model-gateway-credential-store';
+import { refreshPersonalGatewayKey } from '../lib/model-gateway-state';
+import { broadcastModelRegistryUpdated } from '../models/model-registry';
 
 const REQUIRED_CANOPY_CLOUD_CAPABILITIES = [
   'pipelines-crud-v1',
@@ -577,12 +583,34 @@ async function validateCanopyCloudApiKey(request: {
   return probeCanopyCloud(apiKey);
 }
 
+/**
+ * Why an account refresh did or did not apply a fresh server snapshot.
+ * `billingStatesRefreshed` keeps the narrower boolean the telemetry sync reads.
+ */
+export interface CanopyCloudAccountRefreshResult {
+  outcome:
+    | 'applied'
+    | 'superseded'
+    | 'offline'
+    | 'unauthenticated'
+    | 'stale-probe'
+    | 'no-key';
+  billingStatesRefreshed: boolean;
+}
+
 interface PendingAccountRefresh {
-  promise: Promise<boolean>;
+  promise: Promise<CanopyCloudAccountRefreshResult>;
   waiting: boolean;
 }
 
 const accountRefreshes = new Map<string, PendingAccountRefresh>();
+
+function accountRefreshResult(
+  outcome: CanopyCloudAccountRefreshResult['outcome'],
+  billingStatesRefreshed = false,
+): CanopyCloudAccountRefreshResult {
+  return { outcome, billingStatesRefreshed };
+}
 
 /**
  * Re-probe the signed-in account to refresh `organizations` + `enforcedSettings`,
@@ -595,28 +623,138 @@ const accountRefreshes = new Map<string, PendingAccountRefresh>();
  * starts after the active save so a newer snapshot cannot lose its save fence.
  */
 export async function reprobeAndApplyCanopyCloudEnforcedSettings(): Promise<boolean> {
+  const result = await refreshCanopyCloudAccountWithOutcome();
+  return result.billingStatesRefreshed;
+}
+
+/**
+ * Same refresh and dedupe as {@link reprobeAndApplyCanopyCloudEnforcedSettings},
+ * reporting whether the fresh snapshot was applied and, if not, why.
+ */
+export async function refreshCanopyCloudAccountWithOutcome(): Promise<CanopyCloudAccountRefreshResult> {
   // Capture before any read/wait: clear + same-key replacement invalidates it.
   const sessionProbe = beginCanopyCloudSessionProbe();
   const expected = await loadCanopyCloudAccount();
-  if (!expected || expected.apiKey.trim().length === 0) return false;
+  if (!expected || expected.apiKey.trim().length === 0)
+    return accountRefreshResult('no-key');
   const previous = accountRefreshes.get(expected.apiKey);
   if (previous?.waiting) return previous.promise;
   const pending: PendingAccountRefresh = {
-    promise: Promise.resolve(false),
+    promise: Promise.resolve(accountRefreshResult('stale-probe')),
     waiting: previous !== undefined,
   };
-  const run = (): Promise<boolean> => {
+  const run = (): Promise<CanopyCloudAccountRefreshResult> => {
     pending.waiting = false;
     return reprobeAndApplyAccountSnapshot(expected, sessionProbe);
   };
   pending.promise = (
-    previous ? previous.promise.catch(() => false).then(run) : run()
-  ).finally(() => {
-    if (accountRefreshes.get(expected.apiKey) === pending)
-      accountRefreshes.delete(expected.apiKey);
-  });
+    previous ? previous.promise.catch(() => undefined).then(run) : run()
+  )
+    .then((result) => {
+      if (result.outcome === 'applied') accountRefreshAppliedGeneration += 1;
+      return result;
+    })
+    .finally(() => {
+      if (accountRefreshes.get(expected.apiKey) === pending)
+        accountRefreshes.delete(expected.apiKey);
+    });
   accountRefreshes.set(expected.apiKey, pending);
   return pending.promise;
+}
+
+/** Delays for the detached retries after a settings write's refresh misses. */
+const SETTINGS_WRITE_REFRESH_RETRY_DELAYS_MS = [1_000, 5_000, 15_000];
+
+/**
+ * Counts applied refreshes so a retry can tell a later refresh already won.
+ * Process-wide on purpose: after an account switch, the old account's retries
+ * have nothing left to apply.
+ */
+let accountRefreshAppliedGeneration = 0;
+let settingsWriteRefreshRetriesStopped = false;
+const settingsWriteRefreshRetryTimers = new Set<
+  ReturnType<typeof setTimeout>
+>();
+
+function isRetryableAccountRefreshOutcome(
+  outcome: CanopyCloudAccountRefreshResult['outcome'],
+): boolean {
+  // Unauthenticated, stale-probe and no-key need a sign-in or a newer probe;
+  // retrying them would only repeat the same request.
+  return outcome === 'superseded' || outcome === 'offline';
+}
+
+/**
+ * Refresh the account after a hosted settings write, so the write's effect
+ * (for example a new AI gateway) reaches enforcement without waiting for the
+ * periodic re-probe. The first attempt is awaited; a superseded or offline
+ * miss schedules detached retries that never block the write's response.
+ */
+export async function refreshAccountAfterSettingsWrite(
+  operationName: string,
+): Promise<void> {
+  const result = await refreshCanopyCloudAccountWithOutcome();
+  // Read after the attempt: a refresh already in flight when the write
+  // finished may apply a pre-write snapshot, and must not cancel the retries.
+  // Refreshes are serialized, so any later apply started after this attempt.
+  const generation = accountRefreshAppliedGeneration;
+  if (result.outcome === 'applied') return;
+  logMainProcessWarn('[settings] Post-write account refresh', {
+    operation: operationName,
+    attempt: 1,
+    outcome: result.outcome,
+  });
+  if (!isRetryableAccountRefreshOutcome(result.outcome)) return;
+  scheduleSettingsWriteRefreshRetry(operationName, generation, 0);
+}
+
+function scheduleSettingsWriteRefreshRetry(
+  operationName: string,
+  generation: number,
+  retryIndex: number,
+): void {
+  const delay = SETTINGS_WRITE_REFRESH_RETRY_DELAYS_MS[retryIndex];
+  if (delay === undefined || settingsWriteRefreshRetriesStopped) return;
+  const timer = setTimeout(() => {
+    settingsWriteRefreshRetryTimers.delete(timer);
+    if (
+      settingsWriteRefreshRetriesStopped ||
+      accountRefreshAppliedGeneration !== generation
+    )
+      return;
+    void refreshCanopyCloudAccountWithOutcome()
+      .then((result) => {
+        if (result.outcome === 'applied') return;
+        logMainProcessWarn('[settings] Post-write account refresh', {
+          operation: operationName,
+          attempt: retryIndex + 2,
+          outcome: result.outcome,
+        });
+        if (isRetryableAccountRefreshOutcome(result.outcome))
+          scheduleSettingsWriteRefreshRetry(
+            operationName,
+            generation,
+            retryIndex + 1,
+          );
+      })
+      .catch((error: unknown) => {
+        logMainProcessWarn('[settings] Post-write account refresh failed', {
+          operation: operationName,
+          attempt: retryIndex + 2,
+          errorName:
+            error instanceof Error ? error.constructor.name : typeof error,
+        });
+      });
+  }, delay);
+  timer.unref();
+  settingsWriteRefreshRetryTimers.add(timer);
+}
+
+/** Cancel pending post-write refresh retries; called when the app quits. */
+export function stopSettingsWriteRefreshRetries(): void {
+  settingsWriteRefreshRetriesStopped = true;
+  for (const timer of settingsWriteRefreshRetryTimers) clearTimeout(timer);
+  settingsWriteRefreshRetryTimers.clear();
 }
 
 async function applyCachedAccountEnforcementIfCurrent(
@@ -637,7 +775,7 @@ async function applyCachedAccountEnforcementIfCurrent(
 async function reprobeAndApplyAccountSnapshot(
   expected: CanopyCloudAccountEntry,
   sessionProbe: CanopyCloudSessionProbe,
-): Promise<boolean> {
+): Promise<CanopyCloudAccountRefreshResult> {
   // A waiting refresh reads the active refresh's saved version, while keeping
   // the caller's identity/credential fence across the wait.
   const entry = await loadCanopyCloudAccount();
@@ -647,14 +785,14 @@ async function reprobeAndApplyAccountSnapshot(
     entry.apiKey !== expected.apiKey ||
     hasCanopyCloudIdentityChanged(expected, entry)
   )
-    return false;
+    return accountRefreshResult('stale-probe');
 
   let status: DesktopCanopyServerStatus;
   try {
     status = await probeCanopyCloud(entry.apiKey);
   } catch {
     await applyCachedAccountEnforcementIfCurrent(entry);
-    return false;
+    return accountRefreshResult('offline');
   }
 
   if (status.credentialRejected || (status.authenticated && status.account)) {
@@ -668,7 +806,9 @@ async function reprobeAndApplyAccountSnapshot(
   if (!status.authenticated || !status.account) {
     // Offline / probe failure: apply from the cached snapshot, unchanged.
     await applyCachedAccountEnforcementIfCurrent(entry);
-    return false;
+    return accountRefreshResult(
+      status.credentialRejected ? 'unauthenticated' : 'offline',
+    );
   }
 
   // Memory-org eligibility is replaced, never merged: `...entry` would
@@ -745,11 +885,32 @@ async function reprobeAndApplyAccountSnapshot(
         )
       : undefined,
     sessionProbe,
+    status.organizationsRefreshed === true,
   );
   if (saveResult.status === 'superseded') {
-    return false;
+    return accountRefreshResult('superseded');
   }
   const saved = saveResult.entry;
+  // The store committed pending losses with this snapshot, before the only old
+  // membership diff disappeared. Authoritative refreshes (including startup)
+  // also retry those receipts. Manual API-key replacement never enters here.
+  if (
+    status.organizationsRefreshed &&
+    saved.organizationAccessLossState?.pending.length
+  ) {
+    void import('../services/organization-access-loss-service')
+      .then(({ getOrganizationAccessLossService }) =>
+        getOrganizationAccessLossService().process(
+          saved.organizationAccessLossState?.pending ?? [],
+        ),
+      )
+      .catch((error: unknown): void =>
+        logMainProcessError(
+          'Failed to process organization access loss:',
+          error,
+        ),
+      );
+  }
   await applyEnforcedSettings(toPublicCanopyCloudAccountState(saved));
   // Reports whether PER-ORG BILLING STATE was genuinely refreshed from the
   // server, which is narrower than "the probe ran". A caller that deletes data
@@ -763,7 +924,7 @@ async function reprobeAndApplyAccountSnapshot(
   // boolean keeps DELETION fail-safe (an omitted field must not authorize an
   // irreversible drop). Both directions are needed, and they disagree on this
   // exact input, so the write and the report are decided separately.
-  return status.orgBillingStates !== undefined;
+  return accountRefreshResult('applied', status.orgBillingStates !== undefined);
 }
 
 /**
@@ -1704,7 +1865,7 @@ export async function saveModelGatewayCredentialInOrder(
       normalizedInput.baseUrl,
       'in_app',
     );
-    await bestEffortInvalidateModelGatewayAuthSessions();
+    await afterModelGatewayCredentialChanged();
     return { valid: false, error: null };
   }
   const probe = await probeModelGatewayCredential(normalizedInput);
@@ -1749,11 +1910,17 @@ export async function saveModelGatewayCredentialInOrder(
       'api_key',
       probe.rejected ? 'authentication' : 'network',
     );
-  await bestEffortInvalidateModelGatewayAuthSessions();
+  await afterModelGatewayCredentialChanged();
   return { valid: probe.valid, error: probe.error };
 }
 
-async function bestEffortInvalidateModelGatewayAuthSessions(): Promise<void> {
+async function afterModelGatewayCredentialChanged(): Promise<void> {
+  try {
+    // A personal gateway's models show only once this computer has its key.
+    if (await refreshPersonalGatewayKey()) broadcastModelRegistryUpdated();
+  } catch {
+    // The registry catches up on the next account refresh.
+  }
   try {
     const { invalidateProviderAuthSessions } =
       await import('../agents/session-manager');
@@ -1771,6 +1938,49 @@ async function bestEffortInvalidateModelGatewayAuthSessions(): Promise<void> {
       `[settings] Failed to invalidate model gateway auth sessions after save: ${error instanceof Error ? error.name : 'unknown'}\n`,
     );
   }
+}
+
+/**
+ * Delete this device's stored key for an organization whose gateway a hosted
+ * settings write just removed, so a later connect to the same endpoint asks
+ * for the key again instead of silently reusing it. Serialized with connect
+ * and save for the organization; skipped when the account that authorized the
+ * write is no longer the signed-in account.
+ *
+ * Waiting behind an in-flight connect or save, key probe included, is the
+ * point: run beside it, that connect could store the removed gateway's key
+ * after this clear. The wait is bounded by the probe's own 10 second timeout,
+ * so at worst the removal's response, and the dialog's busy state, waits that
+ * long.
+ */
+export async function clearModelGatewayCredentialForRemovedGateway(
+  organizationId: string,
+  expectedAccountId: string,
+): Promise<boolean> {
+  return enqueueModelGatewayCredentialSave(organizationId, async () => {
+    const scope = await readGatewayConnectionScope(organizationId);
+    const result = await clearModelGatewayCredential(
+      organizationId,
+      expectedAccountId,
+    );
+    if (result === 'unauthorized') {
+      logMainProcessWarn(
+        '[settings] Skipped removed AI gateway key clear for an unauthorized account',
+        { organizationId },
+      );
+      return false;
+    }
+    // Fence a connect that started before the removal even when no key was
+    // stored; only a deleted key needs sessions and windows to re-read it.
+    advanceGatewayCredentialSaveGeneration(scope);
+    if (result === 'nothing-to-clear') return true;
+    await afterModelGatewayCredentialChanged();
+    sendToAllWindows(
+      IPC_CHANNELS.modelGatewayCredentialChanged,
+      organizationId,
+    );
+    return true;
+  });
 }
 
 async function searchLinearIssues(

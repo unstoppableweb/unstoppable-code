@@ -538,9 +538,15 @@ export interface OrganizationInvite {
   seatPaymentState: OrganizationInviteSeatPaymentState;
 }
 
-/** `GET /api/account/invites` body. */
+/** Safe outgoing invitation row; invite codes stay on the creation response. */
+export type OrganizationOpenInvite = Omit<OrganizationInvite, 'id' | 'code'> & {
+  externalId: string;
+};
+
+/** `GET /api/account/organizations/:orgId/invites` page. */
 export interface OrganizationInviteListResponse {
-  invites: OrganizationInvite[];
+  items: OrganizationOpenInvite[];
+  nextCursor: string | null;
   enabled: boolean;
 }
 
@@ -681,11 +687,16 @@ const inviteSeatPaymentStateSchema = z.enum(['READY', 'PROCESSING', 'FAILED']);
 
 export const organizationInviteListShape = z.looseObject({
   enabled: z.boolean(),
-  invites: z.array(
+  nextCursor: z.string().nullable(),
+  items: z.array(
     z.looseObject({
-      id: z.string(),
-      status: z.string(),
+      externalId: z.string(),
+      status: z.enum(['ACTIVE', 'REDEEMED', 'REVOKED', 'DECLINED', 'EXPIRED']),
       organizationId: z.string().nullable(),
+      organizationTeamName: z.string().nullable(),
+      role: organizationRoleSchema.nullable(),
+      invitedEmail: z.string().nullable(),
+      seatPaymentState: inviteSeatPaymentStateSchema,
     }),
   ),
 });

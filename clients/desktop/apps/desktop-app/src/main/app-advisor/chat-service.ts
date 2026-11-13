@@ -567,6 +567,7 @@ export async function dispatchAppAdvisorChatMessage(
       systemPromptAppend: APP_ADVISOR_SYSTEM_PROMPT,
       pluginSelections: selectedPluginSelections,
       providerType: selectedProviderType,
+      executionHarness: authoritativeExecutionHarness,
     });
     const model = runtime.runtimeModel;
     const providerType = runtime.providerType;

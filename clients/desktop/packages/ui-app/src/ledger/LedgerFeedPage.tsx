@@ -1,6 +1,6 @@
 'use client';
 
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import { PageColumn, PageHeader, Stack } from '@canopy/ui-shared/components';
 import { LedgerFeed, type LedgerFeedProps } from './LedgerFeed';
@@ -51,6 +51,8 @@ export interface LedgerFeedPageProps extends LedgerFeedProps {
    * the page scrolls as one.
    */
   readonly sections?: (heading: JSX.Element) => JSX.Element;
+  /** A notice between the heading and the Feed, such as a filter the host applied. */
+  readonly notice?: ReactNode;
 }
 
 /**
@@ -65,6 +67,7 @@ export function LedgerFeedPage({
   capabilities,
   headingInset,
   sections,
+  notice,
   local,
   ...feed
 }: LedgerFeedPageProps): JSX.Element | null {
@@ -87,6 +90,7 @@ export function LedgerFeedPage({
           apart, as before the column. */}
       <Stack gap="group" className="min-h-0 flex-1">
         <LedgerFeedHeading inset={headingInset} />
+        {notice}
         <div className="flex min-h-0 flex-1 flex-col">
           <LedgerFeed
             {...feed}

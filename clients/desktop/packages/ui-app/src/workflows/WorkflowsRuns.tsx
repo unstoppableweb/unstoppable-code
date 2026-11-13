@@ -46,12 +46,14 @@ import { WorkflowStepChain } from './WorkflowsLibrary';
 import {
   WORKFLOW_RUN_ACTION_LABELS,
   WORKFLOW_RUN_KIND_LABELS,
+  WORKFLOW_RUN_LOCATION_LABELS,
   WORKFLOW_RUN_STARTER_LABELS,
   WORKFLOW_RUN_STATUS_LABELS,
   menuWorkflowRunActions,
   primaryWorkflowRunAction,
   workflowRunDurationLabel,
   workflowRunStatusGlyphState,
+  workflowRunWhereLabel,
   type WorkflowRunAction,
   type WorkflowRunKind,
   type WorkflowRunRow,
@@ -249,6 +251,11 @@ export interface WorkflowsRunsTableProps {
   readonly onLoadMore?: () => void;
   /** A row to mark as selected, e.g. the run a chat linked to. */
   readonly highlightKey?: string | null;
+  /**
+   * Shows the Kind column. A host that lists one kind of run leaves it out,
+   * as the toolbar leaves out its Kind menu.
+   */
+  readonly showKind?: boolean;
 }
 
 /**
@@ -268,6 +275,7 @@ export function WorkflowsRunsTable({
   loadingMore = false,
   onLoadMore,
   highlightKey = null,
+  showKind = true,
 }: WorkflowsRunsTableProps): JSX.Element {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [renderLimit, setRenderLimit] = useState(WORKFLOWS_RUNS_RENDER_BATCH);
@@ -294,15 +302,25 @@ export function WorkflowsRunsTable({
       <DataTableFrame layout="fixed" caption="Workflow runs">
         <DataTableHead>
           <DataTableHeaderCell>Workflow</DataTableHeaderCell>
-          <DataTableHeaderCell width="6rem">Kind</DataTableHeaderCell>
+          {/* A phone keeps the workflow and its actions; the Workflow cell
+              says when it started. */}
+          {showKind && (
+            <DataTableHeaderCell width="6rem" showFrom="md">
+              Kind
+            </DataTableHeaderCell>
+          )}
           <DataTableHeaderCell width="7rem" showFrom="lg">
             Started by
           </DataTableHeaderCell>
           <DataTableHeaderCell width="12rem" showFrom="xl">
             Where
           </DataTableHeaderCell>
-          <DataTableHeaderCell width="9rem">Started</DataTableHeaderCell>
-          <DataTableHeaderCell width="6rem">Duration</DataTableHeaderCell>
+          <DataTableHeaderCell width="9rem" showFrom="sm">
+            Started
+          </DataTableHeaderCell>
+          <DataTableHeaderCell width="6rem" showFrom="sm">
+            Duration
+          </DataTableHeaderCell>
           <DataTableHeaderCell width="8rem" align="right" labelHidden>
             Actions
           </DataTableHeaderCell>
@@ -339,11 +357,23 @@ export function WorkflowsRunsTable({
                   <div className="flex min-w-0 gap-2">
                     <WorkflowRunStatusGlyph status={row.status} />
                     <div className="flex min-w-0 flex-col gap-1">
-                      <span
-                        className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}
-                        data-testid="workflows-run-name"
-                      >
-                        {row.name}
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span
+                          className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}
+                          data-testid="workflows-run-name"
+                        >
+                          {row.name}
+                        </span>
+                        {/* The Where column is hidden in narrow windows; a
+                            cloud run still says where it ran. */}
+                        {row.location === 'cloud' ? (
+                          <span
+                            className="shrink-0 text-xs fg-tertiary"
+                            data-testid="workflows-run-location-cloud"
+                          >
+                            {WORKFLOW_RUN_LOCATION_LABELS.cloud}
+                          </span>
+                        ) : null}
                       </span>
                       {detail ? (
                         <span
@@ -353,6 +383,19 @@ export function WorkflowsRunsTable({
                           {detail}
                         </span>
                       ) : null}
+                      <span
+                        className="truncate text-xs tabular-nums fg-tertiary sm:hidden"
+                        data-testid="workflows-run-when"
+                      >
+                        {[
+                          row.startedAt === undefined
+                            ? ''
+                            : formatRunStarted(row.startedAt, now, locale),
+                          workflowRunDurationLabel(row),
+                        ]
+                          .filter((part) => part !== '')
+                          .join(' · ')}
+                      </span>
                       {expanded && row.output !== undefined ? (
                         <Surface
                           variant="group"
@@ -370,21 +413,23 @@ export function WorkflowsRunsTable({
                     </div>
                   </div>
                 </DataTableCell>
-                <DataTableCell overflow="truncate">
-                  {WORKFLOW_RUN_KIND_LABELS[row.kind]}
-                </DataTableCell>
+                {showKind && (
+                  <DataTableCell overflow="truncate" showFrom="md">
+                    {WORKFLOW_RUN_KIND_LABELS[row.kind]}
+                  </DataTableCell>
+                )}
                 <DataTableCell overflow="truncate" showFrom="lg">
                   {row.starter ? WORKFLOW_RUN_STARTER_LABELS[row.starter] : ''}
                 </DataTableCell>
                 <DataTableCell overflow="truncate" showFrom="xl" replay="mask">
-                  {row.where ?? ''}
+                  {workflowRunWhereLabel(row)}
                 </DataTableCell>
-                <DataTableCell overflow="truncate">
+                <DataTableCell overflow="truncate" showFrom="sm">
                   {row.startedAt === undefined
                     ? ''
                     : formatRunStarted(row.startedAt, now, locale)}
                 </DataTableCell>
-                <DataTableCell overflow="truncate">
+                <DataTableCell overflow="truncate" showFrom="sm">
                   <span className="tabular-nums">
                     {workflowRunDurationLabel(row)}
                   </span>

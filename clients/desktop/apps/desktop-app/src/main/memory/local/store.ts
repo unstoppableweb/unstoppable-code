@@ -8,6 +8,15 @@ import {
 } from '@canopy/memory-consolidation/boundary-truncation';
 import { fitMemoryIndex } from '@canopy/memory-consolidation/memory-index';
 import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
+import {
+  clipMemoryReadContent,
+  MEMORY_SEARCH_MAX_ARCHIVED_HITS,
+  MEMORY_SEARCH_MAX_HITS,
+  memoryContentLines,
+  memorySearchHit,
+  type MemorySearchTerms,
+  memorySearchTerms,
+} from '@canopy/memory-consolidation/search';
 import { normalizeMemoryText as normalizeText } from '@canopy/memory-consolidation/text';
 import { normalizeTopicName } from '@canopy/memory-consolidation/topic-identity';
 import { withMemoryWriteLock } from './edit-coordination';
@@ -18,6 +27,7 @@ import {
   writeNewMemoryFile,
 } from './memory-files';
 import {
+  memoryNoteCreatedMs,
   memoryNoteFileName,
   memoryNoteIdAt,
   withMemoryNoteId,
@@ -33,23 +43,9 @@ import type { ResolvedLocalMemoryScope } from './scope-resolver';
 
 const DEFAULT_RECENT_MAX_NOTES = 5;
 const DEFAULT_RECENT_MAX_CHARS_PER_NOTE = 1_000;
-const MAX_SEARCH_HITS = 50;
-const MAX_SEARCH_SNIPPET_CHARS = 400;
-const MAX_READ_MEMORY_BYTES = 24 * 1024;
-const READ_MEMORY_TRUNCATION_NOTICE =
-  '\n\n[Memory content truncated at 24 KiB.]';
+const ARCHIVE_READ_BATCH_SIZE = 16;
 const MAX_SOURCE_FIELD_CHARS = 500;
 const MAX_NOTE_TEXT_CHARS = 2_000;
-
-function clipUtf8(text: string, maxBytes: number): string {
-  if (maxBytes <= 0) return '';
-  const encoded = Buffer.from(text, 'utf8');
-  if (encoded.byteLength <= maxBytes) return text;
-  return encoded
-    .subarray(0, maxBytes)
-    .toString('utf8')
-    .replace(/\uFFFD$/, '');
-}
 
 function clampInteger(
   value: number | undefined,
@@ -96,138 +92,21 @@ async function listMarkdownFiles(directory: string): Promise<string[]> {
   }
 }
 
-function contentLines(content: string): string[] {
-  const lines = content.split('\n');
-  if (lines[0] !== '---') return lines;
-  const end = lines.indexOf('---', 1);
-  return end >= 0 ? lines.slice(end + 1) : lines;
-}
-
-function bestMatchIndex(
-  text: string,
-  normalizedQuery: string,
-  tokens: string[],
-): number {
-  const normalizedText = text.toLowerCase();
-  const phraseIndex = normalizedText.indexOf(normalizedQuery);
-  if (phraseIndex >= 0) return phraseIndex;
-
-  let bestToken = '';
-  let bestIndex = -1;
-  for (const token of tokens) {
-    const tokenIndex = normalizedText.indexOf(token);
-    if (
-      tokenIndex >= 0 &&
-      (token.length > bestToken.length ||
-        (token.length === bestToken.length &&
-          (bestIndex < 0 || tokenIndex < bestIndex)))
-    ) {
-      bestToken = token;
-      bestIndex = tokenIndex;
-    }
-  }
-  return bestIndex;
-}
-
-function sliceWholeCodePoints(
-  text: string,
-  requestedStart: number,
-  requestedEnd: number,
-): string {
-  let start = requestedStart;
-  let end = requestedEnd;
-  if (
-    start > 0 &&
-    start < text.length &&
-    /[\uDC00-\uDFFF]/.test(text[start] ?? '') &&
-    /[\uD800-\uDBFF]/.test(text[start - 1] ?? '')
-  ) {
-    start += 1;
-  }
-  if (
-    end > 0 &&
-    end < text.length &&
-    /[\uD800-\uDBFF]/.test(text[end - 1] ?? '') &&
-    /[\uDC00-\uDFFF]/.test(text[end] ?? '')
-  ) {
-    end -= 1;
-  }
-  return text.slice(start, end);
-}
-
-function searchSnippetWindow(
-  text: string,
-  normalizedQuery: string,
-  tokens: string[],
-): string {
-  if (text.length <= MAX_SEARCH_SNIPPET_CHARS) return text;
-  const matchIndex = bestMatchIndex(text, normalizedQuery, tokens);
-  if (matchIndex < 0) {
-    return sliceWholeCodePoints(text, 0, MAX_SEARCH_SNIPPET_CHARS);
-  }
-  const halfWindow = Math.floor(MAX_SEARCH_SNIPPET_CHARS / 2);
-  let start = Math.max(0, matchIndex - halfWindow);
-  const end = Math.min(text.length, start + MAX_SEARCH_SNIPPET_CHARS);
-  if (end === text.length) {
-    start = Math.max(0, end - MAX_SEARCH_SNIPPET_CHARS);
-  }
-  return sliceWholeCodePoints(text, start, end);
-}
-
+/** A shared search hit for one file of a scope. */
 function searchHitForFile(options: {
   fileKey: string;
   scope: 'user' | 'workspace';
   content: string;
-  normalizedQuery: string;
-  tokens: string[];
+  terms: MemorySearchTerms;
 }): SearchHit | undefined {
-  const lines = contentLines(options.content);
-  const searchable = `${options.fileKey}\n${lines.join('\n')}`.toLowerCase();
-  const matchesPhrase = searchable.includes(options.normalizedQuery);
-  const matchesTokens =
-    options.tokens.length > 0 &&
-    options.tokens.every((token) => searchable.includes(token));
-  if (!matchesPhrase && !matchesTokens) return undefined;
-
-  let heading: string | undefined;
-  let matchedHeading: string | undefined;
-  let snippet = '';
-  let fallbackSnippet = '';
-  let fallbackHeading: string | undefined;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^#{1,6}\s+/.test(trimmed)) {
-      heading = trimmed.replace(/^#{1,6}\s+/, '').trim();
-    }
-    if (!fallbackSnippet && trimmed) {
-      fallbackSnippet = trimmed;
-      fallbackHeading = heading;
-    }
-    const normalizedLine = trimmed.toLowerCase();
-    if (
-      !snippet &&
-      trimmed &&
-      (normalizedLine.includes(options.normalizedQuery) ||
-        options.tokens.some((token) => normalizedLine.includes(token)))
-    ) {
-      snippet = trimmed;
-      matchedHeading = heading;
-    }
-  }
-  if (!snippet) {
-    snippet = fallbackSnippet;
-    matchedHeading = fallbackHeading;
-  }
-  const hit: SearchHit = {
-    fileKey: options.fileKey,
+  const hit = memorySearchHit(options);
+  if (!hit) return undefined;
+  const found: SearchHit = {
+    fileKey: hit.fileKey,
     scope: options.scope,
-    snippet: searchSnippetWindow(
-      snippet,
-      options.normalizedQuery,
-      options.tokens,
-    ),
+    snippet: hit.snippet,
   };
-  return matchedHeading ? { ...hit, heading: matchedHeading } : hit;
+  return hit.heading === undefined ? found : { ...found, heading: hit.heading };
 }
 
 /**
@@ -243,7 +122,15 @@ export async function readMemoryIndex(scopeDir: string): Promise<BoundaryClip> {
 function isAllowedMemoryFileKey(fileKey: string): boolean {
   if (fileKey === 'MEMORY.md') return true;
   if (fileKey.includes('..') || fileKey.includes('\\')) return false;
-  return /^(?:topics|inbox)\/[^/\\]+\.md$/.test(fileKey);
+  if (/^(?:topics|inbox)\/[^/\\]+\.md$/.test(fileKey)) return true;
+  const archive = /^(inbox|imported)\/\.consolidated\/([^/\\]+\.md)$/.exec(
+    fileKey,
+  );
+  return (
+    archive !== null &&
+    isMemoryMarkdownFileName(archive[2]) &&
+    !(archive[1] === 'inbox' && archive[2].toLowerCase().startsWith('topic-'))
+  );
 }
 
 function isInsideDirectory(directory: string, path: string): boolean {
@@ -256,16 +143,6 @@ function isInsideDirectory(directory: string, path: string): boolean {
   );
 }
 
-function clipReadMemoryContent(content: string): string {
-  if (Buffer.byteLength(content, 'utf8') <= MAX_READ_MEMORY_BYTES) {
-    return content;
-  }
-  const contentBudget =
-    MAX_READ_MEMORY_BYTES -
-    Buffer.byteLength(READ_MEMORY_TRUNCATION_NOTICE, 'utf8');
-  return `${clipUtf8(content, contentBudget)}${READ_MEMORY_TRUNCATION_NOTICE}`;
-}
-
 /**
  * Read one exact file key returned by searchMemory. Both lexical and real paths
  * must remain under the scope directory so direct calls cannot escape through
@@ -275,6 +152,16 @@ export async function readMemoryFile(
   scopeDir: string,
   fileKey: string,
 ): Promise<string | undefined> {
+  const content = await readContainedMemoryFile(scopeDir, fileKey);
+  return content === undefined ? undefined : clipMemoryReadContent(content);
+}
+
+/** The full file for search; tool reads apply their own output budget. */
+async function readContainedMemoryFile(
+  scopeDir: string,
+  fileKey: string,
+  canonicalScopePath?: string,
+): Promise<string | undefined> {
   if (!isAllowedMemoryFileKey(fileKey)) return undefined;
   const scopePath = resolve(scopeDir);
   const filePath = resolve(scopePath, fileKey);
@@ -282,12 +169,14 @@ export async function readMemoryFile(
 
   try {
     const [realScopePath, realFilePath] = await Promise.all([
-      realpath(scopePath),
+      canonicalScopePath === undefined
+        ? realpath(scopePath)
+        : Promise.resolve(canonicalScopePath),
       realpath(filePath),
     ]);
     if (!isInsideDirectory(realScopePath, realFilePath)) return undefined;
     const content = normalizeText(await readFile(realFilePath, 'utf8'));
-    return clipReadMemoryContent(content);
+    return content;
   } catch {
     return undefined;
   }
@@ -400,13 +289,14 @@ export type InboxNoteTarget = Pick<
 >;
 
 /**
- * Whether a save may follow its scope from `from` to `to`: only from a
- * device-local folder into the replica of the account it was saved for,
- * which that account's first registration moves it to.
+ * Whether a save may follow its scope from `from` to `to`: only into the
+ * replica of the account it was saved for, from that account's device-local
+ * folder (its first registration) or from the copy a re-enable served
+ * meanwhile (that first enable finishing). It never crosses accounts.
  */
 function followsScopeMove(from: InboxNoteTarget, to: InboxNoteTarget): boolean {
   return (
-    from.location === 'device-local' &&
+    (from.location === 'device-local' || from.location === 'account-replica') &&
     to.location === 'account-replica' &&
     from.signedInAccountId !== null &&
     to.signedInAccountId === from.signedInAccountId
@@ -420,10 +310,9 @@ const MAX_SCOPE_MOVES = 2;
  * {@link appendInboxNote} into the folder `resolveTarget()` names once that
  * folder's write lock is held. A save is bound to the folder and signed-in
  * account it started with: when the scope has moved meanwhile, it follows
- * only from the device-local folder into that same account's replica (the
- * account's first registration). Any other move, such as a switch to
- * another account, drops the note and resolves '', so a note never reaches
- * another account's replica or outbox.
+ * only into that same account's replica (see {@link followsScopeMove}). Any
+ * other move, such as a switch to another account, drops the note and
+ * resolves '', so a note never reaches another account's replica or outbox.
  */
 export async function saveInboxNote(
   resolveTarget: () => InboxNoteTarget,
@@ -586,7 +475,7 @@ export async function readRecentInboxNoteEntries(
   for (const filename of filenames) {
     const content = await readNormalizedFile(join(inboxDir, filename));
     if (!content) continue;
-    const body = contentLines(content).join('\n').trim();
+    const body = memoryContentLines(content).join('\n').trim();
     if (!body) continue;
     const clipped = clipAtBoundaries(
       body,
@@ -602,11 +491,8 @@ export async function searchMemory(
   scopeDirs: { scope: 'user' | 'workspace'; dir: string }[],
   query: string,
 ): Promise<SearchHit[]> {
-  const normalizedQuery = normalizeText(query).toLowerCase();
-  if (!normalizedQuery) return [];
-  const tokens = Array.from(
-    new Set(normalizedQuery.match(/[a-z0-9_-]+/g) ?? []),
-  ).filter((token) => token.length > 1);
+  const terms = memorySearchTerms(query);
+  if (terms === null) return [];
   const hits: SearchHit[] = [];
   for (const scopeDir of scopeDirs) {
     const index = (await readMemoryIndex(scopeDir.dir)).text;
@@ -628,11 +514,81 @@ export async function searchMemory(
         fileKey: candidate.fileKey,
         scope: scopeDir.scope,
         content: candidate.content,
-        normalizedQuery,
-        tokens,
+        terms,
       });
       if (hit) hits.push(hit);
-      if (hits.length >= MAX_SEARCH_HITS) return hits;
+      if (hits.length >= MEMORY_SEARCH_MAX_HITS) return hits;
+    }
+  }
+  // Visit every live scope first: an archive in user memory must never
+  // displace a live workspace match. Archives share the total result budget.
+  const archiveLimit = Math.min(
+    MEMORY_SEARCH_MAX_ARCHIVED_HITS,
+    MEMORY_SEARCH_MAX_HITS - hits.length,
+  );
+  let archivedCount = 0;
+  for (const scopeDir of scopeDirs) {
+    // Resolve the trusted scope root once for this call, while still resolving
+    // and checking every file. Never retain this across searches or accounts.
+    const canonicalScopePath = await realpath(scopeDir.dir).catch(
+      () => undefined,
+    );
+    if (canonicalScopePath === undefined) continue;
+    for (const folder of ['inbox', 'imported']) {
+      const archiveDir = join(scopeDir.dir, folder, '.consolidated');
+      const filenames = (await listMarkdownFiles(archiveDir)).filter(
+        (filename) =>
+          isAllowedMemoryFileKey(`${folder}/.consolidated/${filename}`),
+      );
+      // Bounded parallel I/O avoids thousands of open files or retained bodies.
+      // No content cache: edits, deletes and scope changes take effect next call.
+      for (
+        let start = 0;
+        start < filenames.length;
+        start += ARCHIVE_READ_BATCH_SIZE
+      ) {
+        const batch = await Promise.all(
+          filenames
+            .slice(start, start + ARCHIVE_READ_BATCH_SIZE)
+            .map(async (filename) => {
+              const fileKey = `${folder}/.consolidated/${filename}`;
+              const content = await readContainedMemoryFile(
+                scopeDir.dir,
+                fileKey,
+                canonicalScopePath,
+              );
+              if (!content) return undefined;
+              const hit = searchHitForFile({
+                fileKey,
+                scope: scopeDir.scope,
+                content,
+                terms,
+              });
+              if (!hit) return undefined;
+              try {
+                // Imports and legacy notes may have no created field. Archive
+                // moves preserve mtime, so it is a stable fallback, not prune time.
+                const savedMs =
+                  memoryNoteCreatedMs(content) ??
+                  (await stat(join(archiveDir, filename))).mtimeMs;
+                return {
+                  ...hit,
+                  archived: true,
+                  savedAt: new Date(savedMs).toISOString(),
+                };
+              } catch {
+                return undefined;
+              }
+            }),
+        );
+        for (const hit of batch) {
+          if (hit) {
+            hits.push(hit);
+            archivedCount += 1;
+            if (archivedCount >= archiveLimit) return hits;
+          }
+        }
+      }
     }
   }
   return hits;

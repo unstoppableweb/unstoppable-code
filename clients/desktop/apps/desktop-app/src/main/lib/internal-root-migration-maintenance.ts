@@ -33,6 +33,15 @@ import {
   type W5Diagnosis,
   type W5FileIssue,
 } from './w5-maintenance-diagnosis';
+import {
+  describeInternalRootCommit,
+  internalRootCommitAbandonments,
+  retainInternalRootCommits,
+} from './internal-root-migration-commits';
+import {
+  runW5MaintenanceDecisions,
+  refuseW5MaintenanceDecisions,
+} from './w5-maintenance-decisions';
 
 function warnUnindexedWorkspaceFolders(diagnosis: W5Diagnosis): void {
   for (const issue of diagnosis.files)
@@ -118,11 +127,18 @@ export async function settleInternalRootW5(
   qualification: InternalRootColdRecovery,
   options: {
     readonly abandonArchives?: readonly string[];
+    readonly abandonCommits?: readonly number[];
     readonly ownedChildPath?: string;
     readonly windowsProcessPath?: string;
   } = {},
 ): Promise<'settled' | 'nothing-to-settle'> {
   const abandonArchives = options.abandonArchives ?? [];
+  const abandonCommits = options.abandonCommits ?? [];
+  if (abandonCommits.length && hostOperatingSystem() === 'win32')
+    throw new InternalRootMigrationRefused(
+      'recovery-required',
+      '--abandon-commit is supported only on macOS/Linux; Windows offline W5 resolve is not qualified.',
+    );
   await qualification.assertHeld();
   assertAbandonedArchivesMatch(
     (await inspectDestructiveJournals(source)).records,
@@ -178,6 +194,7 @@ export async function settleInternalRootW5(
   }
   if (!(await statIfPresent(logPath))) {
     const diagnosis = await diagnoseW5State(source, 'w5-owned');
+    internalRootCommitAbandonments(diagnosis, abandonCommits);
     warnUnindexedWorkspaceFolders(diagnosis);
     const workspaceRootPresent = await statIfPresent(
       join(source, 'workspaces'),
@@ -276,6 +293,33 @@ export async function settleInternalRootW5(
           assertHeld,
         ): Promise<void> => {
           await qualification.assertHeld();
+          const decisions = internalRootCommitAbandonments(
+            diagnosis,
+            abandonCommits,
+          );
+          if (decisions.length) {
+            const refusal = refuseW5MaintenanceDecisions(diagnosis, decisions);
+            if (refusal)
+              throw new Error(
+                `W5 commit abandonment refused (${refusal.reason})`,
+              );
+            await retainInternalRootCommits(
+              qualification,
+              host,
+              abandonCommits,
+              assertHeld,
+            );
+            const { failure } = await runW5MaintenanceDecisions(
+              context.host,
+              decisions,
+              async () => {
+                await qualification.assertHeld();
+                await assertHeld();
+              },
+            );
+            if (failure) throw failure.error;
+            diagnosis = await diagnoseW5State(source, 'w5-owned');
+          }
           await adoptInternalRootW5Metadata(
             context.host,
             diagnosis,
@@ -327,7 +371,7 @@ export async function settleInternalRootW5(
     )
       throw new InternalRootMigrationRefused(
         'recovery-required',
-        `W5 remains unresolved: commits ${boundedDiagnostics(diagnosis.commits.map((row) => String(row.commitId)))}, reservations ${diagnosis.reservations.length}, file issues ${fileIssues.length} [${boundedDiagnostics(fileIssues.map((issue) => `${issue.reason}: ${issue.path}`))}], lifecycle journals ${unfinished.length} [${boundedDiagnostics(unfinished.map(({ record }) => `${record.operation} workspace=${field(record.workspaceId)} worktree=${field(record.worktreeId ?? '(workspace)')} state=${record.state}${abandonArchiveSuggestion(record)}`))}], log ${diagnosis.logIssue ?? 'readable'}. Use offline W5 recovery at the ORIGINAL root; never replay uncertain effects.`,
+        `W5 remains unresolved: commits ${diagnosis.commits.map((row) => describeInternalRootCommit(source, row)).join('; ') || 'none'}, reservations ${diagnosis.reservations.length}, file issues ${fileIssues.length} [${boundedDiagnostics(fileIssues.map((issue) => `${issue.reason}: ${issue.path}`))}], lifecycle journals ${unfinished.length} [${boundedDiagnostics(unfinished.map(({ record }) => `${record.operation} workspace=${field(record.workspaceId)} worktree=${field(record.worktreeId ?? '(workspace)')} state=${record.state}${abandonArchiveSuggestion(record)}`))}], log ${diagnosis.logIssue ?? 'readable'}. Use offline W5 recovery at the ORIGINAL root; never replay uncertain effects.`,
       );
     await qualification.assertHeld();
     return 'settled';

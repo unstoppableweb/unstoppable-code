@@ -3,8 +3,8 @@ import {
   configureCodexRuntimeHostHooks,
   GROUP_COMMIT_OWNER_ADMISSION_BUDGET,
   type CodexWorkerResourceRegistration,
-} from '@canopy/desktop-shared/node/codex-runtime';
-import type { ClientInfo } from '@canopy/desktop-shared/node/codex-runtime/generated/ClientInfo';
+} from '@canopy/execution-engine/node/codex-runtime';
+import type { ClientInfo } from '@canopy/execution-engine/node/codex-runtime/generated/ClientInfo';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getResourceMonitorService } from '../resource-monitor';
 import {

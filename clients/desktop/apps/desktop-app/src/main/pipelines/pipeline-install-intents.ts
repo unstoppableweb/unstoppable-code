@@ -47,7 +47,7 @@ import {
   removeUnlistedStoredPipelineDocument,
   removeStoredPipeline,
   writeStoredPipeline,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type {
   CapabilityPackageInstallRecordV1,

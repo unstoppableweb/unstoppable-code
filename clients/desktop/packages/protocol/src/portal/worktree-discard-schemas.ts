@@ -2,7 +2,132 @@ import { z } from 'zod';
 import type {
   WorktreeDiscardDescription,
   WorktreeDiscardResult,
+  WorktreeRemovalOutcome,
 } from './worktree-discard';
+
+import type {
+  WorktreeRecoveryDescription,
+  WorktreeRecoveryRequest,
+} from './worktree-recovery';
+
+export const WorktreeRecoveryRequestSchema: z.ZodType<WorktreeRecoveryRequest> =
+  z.object({
+    intent: z.enum(['archive', 'delete']),
+    expectedCreatedAt: z.string().min(1).nullable(),
+    operationId: z.string().uuid().optional(),
+  });
+const presence = z.enum(['unknown', 'absent', 'present']);
+const verification = z.enum(['unknown', 'unverified', 'verified']);
+const asset = z.object({
+  presence: z.enum(['unknown', 'absent', 'present', 'partial']),
+  verification,
+  repositories: z
+    .array(z.object({ repoId: z.string(), presence, verification }))
+    .optional(),
+});
+const action = z.discriminatedUnion('eligible', [
+  z.object({ eligible: z.literal(true) }),
+  z.object({
+    eligible: z.literal(false),
+    reason: z.enum([
+      'unavailable',
+      'not-admitted',
+      'other-incarnation',
+      'future-capability',
+    ]),
+  }),
+]);
+export const WorktreeRecoveryDescriptionSchema: z.ZodType<WorktreeRecoveryDescription> =
+  z
+    .object({
+      version: z.literal(1),
+      diagnosis: z
+        .object({
+          operationId: z.string().uuid(),
+          revision: z.string().regex(/^[a-f0-9]{64}$/),
+          copies: z.number().int().positive(),
+          slot: z.enum(['same-operation', 'other-operation', 'absent']),
+          rawState: z.enum(['active', 'recovery-required', 'completed']),
+          verdict: z.enum([
+            'keep-worktree',
+            'release',
+            'finish-tail',
+            'finish-journal',
+            'retry',
+            'cleanup-debt',
+            'refused',
+          ]),
+          check: z.string(),
+        })
+        .optional(),
+      code: z.enum([
+        'external.worktree_recovery_required',
+        'external.worktree_recovery_retryable',
+        'external.worktree_recovery_cleanup',
+        'external.worktree_recovery_unreadable',
+      ]),
+      intent: z.enum(['archive', 'delete']),
+      subject: z.object({
+        workspaceId: z.string(),
+        worktreeId: z.string(),
+        createdAt: z.string().nullable(),
+      }),
+      evidence: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('unknown') }),
+        z.object({
+          kind: z.literal('journal'),
+          operation: z.enum([
+            'workspace-delete',
+            'worktree-archive',
+            'worktree-delete',
+          ]),
+          operationId: z.string(),
+          attribution: z.enum(['subject', 'other', 'unknown']),
+        }),
+      ]),
+      stoppingPoint: z.object({
+        phase: z.string(),
+        state: z.enum(['pending', 'failed', 'between', 'unknown']),
+      }),
+      check: z.string(),
+      retained: z.object({
+        checkout: asset,
+        stagedCopy: asset,
+        gitSnapshot: asset,
+        committedArchive: asset,
+        chats: asset,
+      }),
+      actions: z.object({
+        retry: action,
+        finishArchive: action,
+        discard: action,
+        keepWorktree: action,
+      }),
+      destination: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('recovery') }),
+        z.object({
+          kind: z.literal('journal-review'),
+          reason: z.enum(['unreadable-entry', 'directory-unreadable']),
+        }),
+      ]),
+    })
+    .refine(
+      (description) =>
+        description.actions.retry.eligible ===
+        (description.code === 'external.worktree_recovery_retryable'),
+      {
+        message: 'Recovery code and retry eligibility must agree',
+      },
+    )
+    .refine(
+      (description) =>
+        description.destination.kind !== 'journal-review' ||
+        (description.code === 'external.worktree_recovery_unreadable' &&
+          !description.actions.retry.eligible &&
+          !description.actions.finishArchive.eligible &&
+          !description.actions.discard.eligible),
+      { message: 'Unreadable journal review cannot authorize removal actions' },
+    );
 
 /**
  * CAN-5336: parses the paired desktop's discard answers on the web. Loaded
@@ -50,6 +175,7 @@ const displayPathSchema = z.string().max(4096);
 export const WorktreeDiscardDescriptionSchema: z.ZodType<WorktreeDiscardDescription> =
   z.object({
     version: z.literal(1),
+    recovery: WorktreeRecoveryDescriptionSchema.optional(),
     workspaceId: z.string(),
     worktreeId: z.string(),
     createdAt: z.string(),
@@ -135,3 +261,37 @@ export const WorktreeDiscardResultSchema: z.ZodType<WorktreeDiscardResult> =
       description: WorktreeDiscardDescriptionSchema,
     }),
   ]);
+
+const archiveAnswer = z.union([
+  z.object({
+    success: z.literal(false),
+    refusal: z.object({
+      reason: z.string(),
+      message: z.string(),
+      discard: WorktreeDiscardDescriptionSchema,
+      recovery: WorktreeRecoveryDescriptionSchema.optional(),
+    }),
+  }),
+  z.object({
+    success: z.literal(true),
+    warnings: z.array(z.string()),
+    removedTemporaryWorkspaceId: z.string().optional(),
+    refusal: z.never().optional(),
+  }),
+]);
+
+export function worktreeRemovalOutcome(
+  answer: unknown,
+): WorktreeRemovalOutcome {
+  const parsed = archiveAnswer.safeParse(answer);
+  if (!parsed.success) return { status: 'unconfirmed' };
+  if (!parsed.data.success)
+    return { status: 'refused', refusal: parsed.data.refusal };
+  return {
+    status: 'completed',
+    warnings: parsed.data.warnings,
+    ...(parsed.data.removedTemporaryWorkspaceId
+      ? { removedTemporaryWorkspaceId: parsed.data.removedTemporaryWorkspaceId }
+      : {}),
+  };
+}

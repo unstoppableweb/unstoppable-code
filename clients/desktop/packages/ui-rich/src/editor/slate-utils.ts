@@ -32,8 +32,26 @@ export function createChatEditor(): ChatEditor {
   return withFileReferences(withHistory(withReact(createEditor())));
 }
 
+/**
+ * How many times each editor's whole document was replaced outside Slate's
+ * operations (`resetEditor`, `restoreEditorContent`). Those replacements do
+ * not move range refs, so a holder of one (the composer menu's held pick)
+ * compares generations before trusting its paths.
+ */
+const documentGenerations = new WeakMap<ChatEditor, number>();
+
+/** The editor's document generation; see `documentGenerations`. */
+export function editorDocumentGeneration(editor: ChatEditor): number {
+  return documentGenerations.get(editor) ?? 0;
+}
+
+function replaceDocument(editor: ChatEditor, children: Descendant[]): void {
+  documentGenerations.set(editor, editorDocumentGeneration(editor) + 1);
+  editor.children = children;
+}
+
 export function resetEditor(editor: ChatEditor): void {
-  editor.children = createEmptyValue();
+  replaceDocument(editor, createEmptyValue());
   editor.selection = {
     anchor: { path: [0, 0], offset: 0 },
     focus: { path: [0, 0], offset: 0 },
@@ -46,7 +64,7 @@ export function restoreEditorContent(
   editor: ChatEditor,
   content: Descendant[],
 ): void {
-  editor.children = structuredClone(content);
+  replaceDocument(editor, structuredClone(content));
   const point = Editor.end(editor, []);
   editor.selection = { anchor: point, focus: point };
   editor.history = { undos: [], redos: [] };

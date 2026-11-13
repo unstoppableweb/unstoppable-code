@@ -1,4 +1,7 @@
-import { inspectWorktreeCreationRecovery } from './worktree-create-recovery';
+import {
+  inspectWorktreeCreationRecovery,
+  repairOrphanedWorktreeRegistration,
+} from './worktree-create-recovery';
 import { readWorkspaceConfig } from './workspace-persistence';
 import { logMainProcessWarn } from './main-process-logging';
 import { reportDestructiveRecovery } from './w5-destructive-recovery';
@@ -340,6 +343,7 @@ async function reconcileMissingReadyWorktree(
   // so recovery archives them instead of silently hard-deleting.
   if (workspace.type === 'single-repo') {
     await archiveSingleRepoWorktree({
+      archiveTrigger: 'internal-rollback',
       workspaceId: workspace.id,
       worktreeId: worktree.id,
       repoPath: workspace.repoPath,
@@ -348,6 +352,7 @@ async function reconcileMissingReadyWorktree(
   }
 
   await archiveMultiRepoWorktree({
+    archiveTrigger: 'internal-rollback',
     workspaceId: workspace.id,
     worktreeId: worktree.id,
   });
@@ -423,11 +428,30 @@ export async function reconcileGitPendingWorktrees(
         workspace.id,
         await readWorkspaceConfig(workspace.id),
       );
-      for (const issue of issues)
+      for (const issue of issues) {
+        if (issue.recovery?.phase === 'orphan-checkout') {
+          try {
+            if (
+              await repairOrphanedWorktreeRegistration(
+                workspace.id,
+                await readWorkspaceConfig(workspace.id),
+                issue.recovery,
+              )
+            )
+              continue;
+          } catch (error) {
+            logReconcileError(
+              workspace.id,
+              'orphan-registration-repair',
+              error,
+            );
+          }
+        }
         logMainProcessWarn(
           'Worktree creation requires recovery',
           issue.recovery,
         );
+      }
     } catch (error) {
       logReconcileError(workspace.id, 'recovery-inspection', error);
     }

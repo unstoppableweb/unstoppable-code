@@ -26,6 +26,10 @@ import {
   PencilIcon,
   TrashIcon,
 } from '../../icons/AppIcons';
+import {
+  DRAWER_ITEM_ACTIONS_CLASS,
+  DRAWER_ITEM_GROUP_CLASS,
+} from '../../lib/drawer-reveal';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { ActionTooltip } from '../ActionTooltip';
 import { Button } from '../Button';
@@ -229,7 +233,16 @@ export interface QueuedMessageRowProps extends Omit<
 /** The row's own inset, hover and lifted fill, per surface. */
 const ROW_SURFACE_CLASS = {
   tray: 'px-3',
-  drawer: 'rounded-xl pl-2.75 pr-1 hover:bg-subtle data-[dragging]:bg-muted',
+  drawer: `${DRAWER_ITEM_GROUP_CLASS} rounded-drawer-row pl-2.75 pr-1 hover:bg-subtle data-[dragging]:bg-muted`,
+} as const;
+
+/**
+ * In the drawer, Steer and the menu show on hover, focus or touch, flush
+ * like every drawer row's ghost controls: their padding is their space.
+ */
+const ROW_ACTIONS_CLASS = {
+  tray: '',
+  drawer: DRAWER_ITEM_ACTIONS_CLASS,
 } as const;
 
 /** A 24px square with a compact 4px corner for queued media. */
@@ -300,7 +313,7 @@ export function QueuedMessageAttachments({
       )}
       {hidden > 0 ? (
         <span
-          className={`${THUMBNAIL_CLASS} inset-ring inset-ring-fg-primary/8 text-xs fg-tertiary`}
+          className={`${THUMBNAIL_CLASS} inset-ring inset-ring-fg-primary/8 text-s fg-tertiary`}
         >
           +{hidden}
         </span>
@@ -350,11 +363,9 @@ function QueuedMessageMoreMenu({
           data-testid="queued-message-more"
           onClick={(): void => setOpen((value) => !value)}
         >
-          <MoreHorizontalIcon
-            size="sm"
-            drawnStrokeWidth={ROW_ICON_STROKE_PX}
-            aria-hidden="true"
-          />
+          {/* The sidebar's More glyph (RailIconButton's 16, its own stroke),
+              so every ••• in the app reads the same. */}
+          <MoreHorizontalIcon size={16} aria-hidden="true" />
         </Button>
       </Tooltip>
       <FloatingMenu
@@ -373,7 +384,7 @@ function QueuedMessageMoreMenu({
           {unavailableReason ? (
             <p
               data-testid="queued-message-more-unavailable"
-              className="px-2 py-1.5 text-xs fg-tertiary"
+              className="px-2 py-1.5 text-s fg-tertiary"
             >
               {unavailableReason}
             </p>
@@ -548,7 +559,8 @@ export const QueuedMessageRow = forwardRef<
         variant={actionVariant(
           steerBlockedByCapabilityChange || steerReason !== undefined,
         )}
-        size="sm"
+        // In the drawer, the compact size of every drawer row action.
+        size={surface === 'drawer' ? 'compact' : 'sm'}
         aria-description={
           steerBlockedByCapabilityChange
             ? QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP
@@ -676,7 +688,9 @@ export const QueuedMessageRow = forwardRef<
           )}
         </span>
       ) : null}
-      <span className="flex shrink-0 items-center">
+      <span
+        className={`flex shrink-0 items-center ${ROW_ACTIONS_CLASS[surface]}`}
+      >
         {surface === 'drawer' ? null : settingsHeldWarning}
         {steerButton ? (
           steerBlockedByCapabilityChange ? (

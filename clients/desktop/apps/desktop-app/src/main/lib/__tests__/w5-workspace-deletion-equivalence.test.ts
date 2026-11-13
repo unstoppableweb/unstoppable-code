@@ -604,6 +604,7 @@ describe('GB14 code and Cowork record removal', () => {
       expect(interrupted?.steps.at(-1)).toEqual({
         phase: 'canonical-index-removal',
         state: 'pending',
+        code: 'W5CommitLogHostError',
       });
       const log = W5CommitLog.open(dbPath);
       let commitId: number;
@@ -932,7 +933,7 @@ describe('GB14 code and Cowork record removal', () => {
     const interrupted = await readDestructiveRecovery(workspaceId);
     if (!interrupted) throw new Error('Expected an interrupted deletion');
     expect(interrupted.steps).toEqual([
-      { phase: 'canonical-index-removal', state: 'pending' },
+      { phase: 'canonical-index-removal', state: 'pending', code: 'Error' },
     ]);
     await expect(isInterruptedIndexRemovalDeletion(interrupted)).resolves.toBe(
       true,
@@ -1771,7 +1772,11 @@ describe('W6c2 post-effect conflict', () => {
     expect(record?.steps).toEqual(
       expect.arrayContaining([
         { phase: 'session-teardown', state: 'done' },
-        { phase: 'cowork-deletion', state: 'pending' },
+        {
+          phase: 'cowork-deletion',
+          state: 'pending',
+          code: 'W5RevisionConflictError',
+        },
       ]),
     );
     expect(

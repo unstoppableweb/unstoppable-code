@@ -1,3 +1,4 @@
+import { app } from 'electron';
 import { publishAutoDeleteActivity } from '../lib/work-entry-auto-delete/activity';
 import { collectScheduledAutomationTargetKeys } from '../lib/auto-archive';
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
@@ -80,6 +81,8 @@ import {
   updateAutomationFromForm,
 } from '../automations/chat-automation-save';
 import { projectOwnedChatAutomations } from '../automations/owned-chat-projection';
+import { createWebCoreCloudScheduleRemote } from '../automations/cloud-schedule-remote';
+import { desktopWebCoreBindingOptions, signedInAccountId } from './cloud-chats';
 import { getAutomationsService } from '../automations/service';
 import { logMainProcessError } from '../lib/main-process-logging';
 import {
@@ -316,10 +319,124 @@ type AutomationsWindowAccessors = Pick<
   | 'sendAppAdvisorWindowCommand'
 >;
 
+/*
+ * The window's automation listing and sharing calls as owners, so App
+ * Advisor's automation sharing in Electron main makes the same ones
+ * (CAN-6003).
+ */
+
+async function writeRemoteMetadataFromDetail(
+  activityId: string,
+  detail: SharedAutomationDetail,
+): Promise<void> {
+  await getAutomationsService().setActivityRemoteMetadata(activityId, {
+    accountId: detail.createdBy.id,
+    remoteId: detail.id,
+    contentHash: detail.contentHash,
+    shareScope: detail.shareScope,
+    // Server-canonical share/update time — the local clock can drift from
+    // the timestamps the server reports in list/detail responses.
+    sharedAt: detail.updatedAt,
+  });
+}
+
+export async function listAutomationsForCaller(
+  request?: AutomationsListRequest,
+): Promise<AutomationsListResponse> {
+  const snapshot = projectOwnedChatAutomations(
+    await getAutomationsService().list(),
+    await getAutomationsService().allActivities(),
+  );
+  // App Advisor lists what the Automations page shows; everything else
+  // reads the full snapshot.
+  return isRecord(request) && request.scope === 'selected-context'
+    ? scopeAutomationsToSelectedContext(snapshot)
+    : snapshot;
+}
+
+export async function listSharedAutomationsForCaller(
+  request: ListSharedAutomationsIpcRequest,
+): Promise<ListSharedAutomationsResponse> {
+  await assertSharedAutomationsSupported();
+  return listSharedAutomations(request);
+}
+
+export async function getSharedAutomationForCaller(
+  automationId: string,
+): Promise<SharedAutomationDetail> {
+  validateId(automationId, 'shared automation id');
+  await assertSharedAutomationsSupported();
+  return getSharedAutomation(automationId);
+}
+
+export async function createSharedAutomationForCaller(
+  request: CreateSharedAutomationIpcRequest,
+): Promise<ShareOperationResult<SharedAutomationDetail>> {
+  const { activityId, ...createRequest } = request;
+  validateId(activityId, 'automation id');
+  return toShareOperationResult(async () => {
+    await withShareStage('access', async () => {
+      await assertSharedAutomationsSupported();
+      if (resourceContextEnabled()) {
+        await getAutomationsService().assertActivityResourceContext(activityId);
+        const destination = await assertResourceShareDestination(createRequest);
+        await assertInstalledResourceShare(
+          'automations',
+          activityId,
+          destination,
+          getSharedAutomation,
+        );
+      }
+    });
+    const detail = await createSharedAutomation(createRequest);
+    await writeRemoteMetadataFromDetail(activityId, detail);
+    return detail;
+  });
+}
+
+export async function updateSharedAutomationForCaller(
+  request: UpdateSharedAutomationIpcRequest,
+): Promise<ShareOperationResult<SharedAutomationDetail>> {
+  const { activityId, ...updateRequest } = request;
+  validateId(activityId, 'automation id');
+  validateId(updateRequest.automationId, 'shared automation id');
+  return toShareOperationResult(async () => {
+    await withShareStage('access', assertSharedAutomationsSupported);
+    const detail = await updateSharedAutomation(updateRequest);
+    await writeRemoteMetadataFromDetail(activityId, detail);
+    return detail;
+  });
+}
+
+export async function deleteSharedAutomationForCaller(
+  request: DeleteSharedAutomationIpcRequest,
+): Promise<void> {
+  validateId(request.automationId, 'shared automation id');
+  await assertSharedAutomationsSupported();
+  await deleteSharedAutomation(request);
+  await getAutomationsService().clearActivityRemoteMetadataByRemoteId(
+    request.automationId,
+  );
+}
+
+export async function resolveSharedPipelinePinForCaller(
+  request: ResolveAutomationSharedPipelinePinRequest,
+): Promise<ResolvedAutomationSharedPipelinePin> {
+  return getSharedPipelineAutomationInstallPin(request.remoteId);
+}
+
 export function registerAutomationsHandlers(
   accessors: AutomationsWindowAccessors,
 ): void {
   const service = getAutomationsService();
+  // CAN-6183: cloud schedules are stored through main's web core connection.
+  service.setCloudScheduleRemote(
+    createWebCoreCloudScheduleRemote(
+      desktopWebCoreBindingOptions(),
+      app.getVersion(),
+      signedInAccountId,
+    ),
+  );
   service.configure({
     getMainWindow: accessors.getMainWindow,
     getAppAdvisorWindow: accessors.getAppAdvisorWindow,
@@ -364,17 +481,9 @@ export function registerAutomationsHandlers(
   registerIpcHandler<
     [AutomationsListRequest | undefined],
     AutomationsListResponse
-  >(IPC_CHANNELS.automationsList, async (_event, request) => {
-    const snapshot = projectOwnedChatAutomations(
-      await service.list(),
-      await service.allActivities(),
-    );
-    // App Advisor lists what the Automations page shows; everything else
-    // reads the full snapshot.
-    return isRecord(request) && request.scope === 'selected-context'
-      ? scopeAutomationsToSelectedContext(snapshot)
-      : snapshot;
-  });
+  >(IPC_CHANNELS.automationsList, async (_event, request) =>
+    listAutomationsForCaller(request),
+  );
 
   registerIpcHandler<
     [AutomationRunHistoryRequest],
@@ -519,36 +628,17 @@ export function registerAutomationsHandlers(
   // Shared-Automation cloud CRUD (CAN-1581). These mirror the shared-Agent
   // handlers: they throw (rejecting the invoke) rather than returning the
   // local mutation envelope, and every one is gated on the server capability.
-  const writeRemoteMetadataFromDetail = async (
-    activityId: string,
-    detail: SharedAutomationDetail,
-  ): Promise<void> => {
-    await service.setActivityRemoteMetadata(activityId, {
-      accountId: detail.createdBy.id,
-      remoteId: detail.id,
-      contentHash: detail.contentHash,
-      shareScope: detail.shareScope,
-      // Server-canonical share/update time — the local clock can drift from
-      // the timestamps the server reports in list/detail responses.
-      sharedAt: detail.updatedAt,
-    });
-  };
 
   registerIpcHandler<
     [ListSharedAutomationsIpcRequest],
     ListSharedAutomationsResponse
-  >(IPC_CHANNELS.automationsSharedList, async (_event, request) => {
-    await assertSharedAutomationsSupported();
-    return listSharedAutomations(request);
-  });
+  >(IPC_CHANNELS.automationsSharedList, async (_event, request) =>
+    listSharedAutomationsForCaller(request),
+  );
 
   registerIpcHandler<[string], SharedAutomationDetail>(
     IPC_CHANNELS.automationsSharedGet,
-    async (_event, automationId) => {
-      validateId(automationId, 'shared automation id');
-      await assertSharedAutomationsSupported();
-      return getSharedAutomation(automationId);
-    },
+    async (_event, automationId) => getSharedAutomationForCaller(automationId),
   );
 
   registerIpcHandler<
@@ -573,53 +663,20 @@ export function registerAutomationsHandlers(
   registerIpcHandler<
     [CreateSharedAutomationIpcRequest],
     ShareOperationResult<SharedAutomationDetail>
-  >(IPC_CHANNELS.automationsSharedCreate, async (_event, request) => {
-    const { activityId, ...createRequest } = request;
-    validateId(activityId, 'automation id');
-    return toShareOperationResult(async () => {
-      await withShareStage('access', async () => {
-        await assertSharedAutomationsSupported();
-        if (resourceContextEnabled()) {
-          await service.assertActivityResourceContext(activityId);
-          const destination =
-            await assertResourceShareDestination(createRequest);
-          await assertInstalledResourceShare(
-            'automations',
-            activityId,
-            destination,
-            getSharedAutomation,
-          );
-        }
-      });
-      const detail = await createSharedAutomation(createRequest);
-      await writeRemoteMetadataFromDetail(activityId, detail);
-      return detail;
-    });
-  });
+  >(IPC_CHANNELS.automationsSharedCreate, async (_event, request) =>
+    createSharedAutomationForCaller(request),
+  );
 
   registerIpcHandler<
     [UpdateSharedAutomationIpcRequest],
     ShareOperationResult<SharedAutomationDetail>
-  >(IPC_CHANNELS.automationsSharedUpdate, async (_event, request) => {
-    const { activityId, ...updateRequest } = request;
-    validateId(activityId, 'automation id');
-    validateId(updateRequest.automationId, 'shared automation id');
-    return toShareOperationResult(async () => {
-      await withShareStage('access', assertSharedAutomationsSupported);
-      const detail = await updateSharedAutomation(updateRequest);
-      await writeRemoteMetadataFromDetail(activityId, detail);
-      return detail;
-    });
-  });
+  >(IPC_CHANNELS.automationsSharedUpdate, async (_event, request) =>
+    updateSharedAutomationForCaller(request),
+  );
 
   registerIpcHandler<[DeleteSharedAutomationIpcRequest], void>(
     IPC_CHANNELS.automationsSharedDelete,
-    async (_event, request) => {
-      validateId(request.automationId, 'shared automation id');
-      await assertSharedAutomationsSupported();
-      await deleteSharedAutomation(request);
-      await service.clearActivityRemoteMetadataByRemoteId(request.automationId);
-    },
+    async (_event, request) => deleteSharedAutomationForCaller(request),
   );
   registerIpcHandler<[string], SharedAutomationPublicShareInfo>(
     IPC_CHANNELS.automationsPublicSharePublish,
@@ -750,7 +807,7 @@ export function registerAutomationsHandlers(
     [ResolveAutomationSharedPipelinePinRequest],
     ResolvedAutomationSharedPipelinePin
   >(IPC_CHANNELS.automationsSharedPipelinePinResolve, async (_event, request) =>
-    getSharedPipelineAutomationInstallPin(request.remoteId),
+    resolveSharedPipelinePinForCaller(request),
   );
   registerIpcHandler<
     [ApproveAutomationSharedPipelineReviewRequest],

@@ -41,7 +41,7 @@ import type {
   PipelineHostActionRequest,
   PipelineHostActionResult,
   PipelineHostActions,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { logMainProcessError } from '../lib/main-process-logging';
 import {
   sidebarItemGroupsService,

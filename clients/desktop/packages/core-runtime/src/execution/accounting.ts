@@ -20,6 +20,7 @@ import {
   type ExecutionFamily,
   type ExecutionFamilyStatus,
   type ExecutionLease,
+  type ExecutionMemoryHeadroom,
   type ExecutionRegistration,
   type ExecutionRegistrationHandle,
   type ExecutionReservation,
@@ -127,6 +128,29 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   /** Whether critical memory refuses memory-guarded work now. */
   isMemoryGuardBlocked(): boolean {
     return this.memoryGuardBlocked(this.options.limits());
+  }
+
+  /**
+   * The memory guard's headroom in the newest sample that read the process
+   * table (CAN-6325): what memory-guarded work may still take before
+   * critical pressure refuses it. Undefined while the guard is off or before
+   * such a sample, when nothing measures it.
+   */
+  memoryHeadroom(): ExecutionMemoryHeadroom | undefined {
+    const limits = this.options.limits();
+    if (
+      !limits.memoryGuardEnabled ||
+      this.snapshot.pressure.level === 'unknown'
+    )
+      return undefined;
+    const sampledAt = Date.parse(this.snapshot.sampledAt);
+    if (!Number.isFinite(sampledAt)) return undefined;
+    const criticalMemoryBytes = this.snapshot.pressure.criticalMemoryBytes;
+    return {
+      availableBytes: criticalMemoryBytes - this.guardMemory(),
+      totalBytes: criticalMemoryBytes,
+      sampledAt,
+    };
   }
 
   /**
@@ -348,10 +372,15 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
 
   private memoryGuardBlocked(limits: ExecutionAccountingLimits): boolean {
     if (!limits.memoryGuardEnabled) return false;
-    const memoryRssBytes =
+    return this.guardMemory() >= this.snapshot.pressure.criticalMemoryBytes;
+  }
+
+  /** The resident memory the guard compares with the critical threshold. */
+  private guardMemory(): number {
+    return (
       this.options.guardMemoryBytes?.(this.snapshot) ??
-      this.snapshot.memoryRssBytes;
-    return memoryRssBytes >= this.snapshot.pressure.criticalMemoryBytes;
+      this.snapshot.memoryRssBytes
+    );
   }
 
   private async sampleOnce(): Promise<ExecutionAccountingSnapshot<TMetadata>> {

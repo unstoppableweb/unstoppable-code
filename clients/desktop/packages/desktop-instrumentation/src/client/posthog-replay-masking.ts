@@ -2,6 +2,18 @@ import { POSTHOG_REPLAY_MASK_CLASS } from '../posthog-replay-privacy';
 
 const MAX_MASKED_ATTRIBUTE_LENGTH = 256;
 const MASKED_TITLE_SELECTOR = `.${POSTHOG_REPLAY_MASK_CLASS}`;
+/** Attributes that can carry what a masked element shows. */
+const MASKED_CONTENT_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'alt',
+  'aria-description',
+  'aria-label',
+  'aria-placeholder',
+  'aria-roledescription',
+  'aria-valuetext',
+  'data-value',
+  'placeholder',
+  'title',
+]);
 const LOCAL_FILE_URL = /file:\/\//i;
 const CSS_URL = /url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)/gi;
 
@@ -102,8 +114,11 @@ function stripLocalFileUrls(value: string): string {
 
 /**
  * rrweb calls this for both snapshot and attribute mutations. Every attribute
- * is recorded except `value`, which carries form and input values. Local file
- * URLs are dropped and credentials redacted from every other attribute.
+ * is recorded except `value`, which carries form and input values, and, on
+ * or inside a {@link POSTHOG_REPLAY_MASK_CLASS} element, the attributes that
+ * can carry its content (`placeholder`, `title`, `aria-label`, `data-value`
+ * and the like). Local file URLs are dropped and credentials redacted from
+ * every other attribute.
  */
 export function maskReplayAttribute(
   name: string,
@@ -118,11 +133,17 @@ export function maskReplayAttribute(
 export function maskReplayAttribute(
   name: string,
   value: string | null,
+  element?: Element,
 ): string | null {
   if (!value) return value;
   const normalizedName = name.toLowerCase();
   // Same fixed placeholder as typed input, so the length stays hidden.
   if (normalizedName === 'value') return INPUT_VALUE_MASK;
+  if (
+    MASKED_CONTENT_ATTRIBUTES.has(normalizedName) &&
+    element?.closest(MASKED_TITLE_SELECTOR)
+  )
+    return INPUT_VALUE_MASK;
   if (normalizedName === '_csstext') return sanitizeCssText(value);
   return redactReplaySecrets(stripLocalFileUrls(value));
 }

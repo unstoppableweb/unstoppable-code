@@ -145,6 +145,11 @@ export interface ChatRevisionedSlice {
       onResult?: (result: ChatCommandResult) => void;
       /** Treat an idempotent command's not-found result as success. */
       acceptNotFound?: boolean;
+      /**
+       * The caller shows its own failure, as the question card does, so a
+       * rejected or failed command raises no chat-wide notice.
+       */
+      callerReportsFailure?: boolean;
     },
   ) => Promise<ChatCommandDisposition>;
 }
@@ -807,6 +812,12 @@ export interface ChatMessagingSlice {
     target: { projectId: string; worktreeId: string; chatId: string },
     input: ProvisionalFirstSendInput,
   ) => boolean;
+  /** Clears the notice of a cloud send the web core refused (CAN-6364). */
+  dismissSendRefusal: (target: {
+    projectId: string;
+    worktreeId: string;
+    chatId: string;
+  }) => void;
   /**
    * Retires a presented first send that was never dispatched or queued,
    * restoring the prior title only while this submission still owns it.

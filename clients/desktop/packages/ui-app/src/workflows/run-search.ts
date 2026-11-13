@@ -6,6 +6,7 @@ import {
   type WorkflowRunRow,
   type WorkflowRunStarter,
   type WorkflowRunStatus,
+  workflowRunWhereLabel,
 } from './workflow-run-model';
 import { workflowSearchAlias } from '@canopy/ui-shared/lib/workflow-labels';
 
@@ -54,6 +55,7 @@ const STARTER_TOKENS: Readonly<Record<string, WorkflowRunStarter>> = {
   catchup: 'catch-up',
   'run-now': 'run-now',
   runnow: 'run-now',
+  automation: 'automation',
   manual: 'manual',
   plan: 'plan-approved',
   'plan-approved': 'plan-approved',
@@ -88,6 +90,7 @@ export const RUN_SEARCH_STARTER_VALUES: readonly string[] = [
   'schedule',
   'catch-up',
   'run-now',
+  'automation',
   'manual',
   'plan',
   'task',
@@ -181,7 +184,7 @@ function searchableText(row: WorkflowRunRow): string {
   return [
     row.name,
     row.detail ?? '',
-    row.where ?? '',
+    workflowRunWhereLabel(row),
     WORKFLOW_RUN_KIND_LABELS[row.kind],
     workflowSearchAlias(row.kind) ?? '',
     WORKFLOW_RUN_STATUS_LABELS[row.status],

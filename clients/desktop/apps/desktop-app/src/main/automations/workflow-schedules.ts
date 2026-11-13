@@ -5,47 +5,53 @@
  * its owner marker was cleared (`workflowPage`).
  *
  * The first schedule keeps the owner marker while it exists and still runs
- * the pipeline, so everything keyed on it (agent hiding of Orchestrator
- * prompts, the native grant, the package overlay) keeps working. Extra
- * schedules are plain records that target the pipeline.
+ * the pipeline. Extra schedules are plain records that target the pipeline.
+ * CAN-6065: every schedule runs as the first one does. An Orchestrator
+ * pipeline is hidden from agents by its own `agentHidden` flag before it
+ * takes another schedule; an agent's grant is the pipeline's, honored for
+ * the schedules of its own agent author or a person; an install stays on
+ * the owner, whose package every schedule resolves, and moves to the next
+ * schedule when the owner is removed.
  */
 import type {
   AutomationAction,
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
+import type { PipelineAgentAuthor } from '@canopy/execution-engine/types/pipeline';
 import {
   loadPipelinePluginCollectionPreferences,
   savePipelinePluginCollectionPreferences,
-} from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+} from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import type {
   PipelineInfo,
+  PipelinePackageRef,
   PipelineWorkflowPageInfo,
   WorkflowScheduleValues,
-  WorkflowSingleScheduleReason,
 } from '@canopy/protocol/pipelines';
 import { resolveChildPipelineRef } from '@canopy/desktop-shared/node/pipelines/child-pipeline-ref';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { isRecord } from '../lib/type-guards';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import {
+  markUserPipelineAgentHidden,
   markUserPipelineWorkflowPage,
   readPipelineLocalMetadata,
   releaseUserPipelineOwnerAutomation,
   setUserPipelineOwnerAutomation,
   type PipelineLocalMetadata,
 } from '../pipelines/pipeline-local-metadata-store';
+import { runsAsAuthor } from './chat-automation-native-grant';
 import { ownsOrchestratorPromptPipeline } from './owned-pipeline';
+import { firesLocally } from './cloud-schedules';
 
 type PipelineAction = Extract<AutomationAction, { type: 'worktree_pipeline' }>;
 
-/** Why a second schedule is refused, by why the pipeline is single-schedule. */
-export const SINGLE_SCHEDULE_MESSAGES: Readonly<
-  Record<WorkflowSingleScheduleReason, string>
-> = {
-  orchestrator_prompt: 'Orchestrator workflows can have one schedule.',
-  agent_grant: 'Workflows an agent created can have one schedule.',
-  installed_package: 'Installed workflows can have one schedule.',
-};
+/**
+ * Why an agent's schedule is refused on a workflow whose runs carry what it
+ * was installed or granted with for someone else (CAN-6065).
+ */
+export const AGENT_SCHEDULE_REFUSED =
+  "Agents can't add schedules to a workflow someone installed or another agent created.";
 
 /** Why a workflow's Delete is refused while one of its schedules runs. */
 export const WORKFLOW_DELETE_RUNNING =
@@ -153,46 +159,180 @@ export function isAgentGrantedPipeline(
   );
 }
 
-/**
- * Why the pipeline can have only one schedule, if it can: its Orchestrator
- * prompt (marked owner or `agentHidden`), an agent's grant, or its owner's
- * capability-package install.
- */
-export function singleScheduleReason(
+/** The installed owner of a workflow page, whose install its schedules run with. */
+export function installedPipelineOwner(
   activities: readonly ScheduledActivity[],
   pipelineId: string,
   metadata: PipelineLocalMetadata = userPipelineMetadata(pipelineId),
-): WorkflowSingleScheduleReason | undefined {
+): ScheduledActivity | undefined {
   const owner = pipelineOwnerRecord(activities, pipelineId, metadata);
+  return owner?.installedFrom !== undefined ? owner : undefined;
+}
+
+/**
+ * The refusal for a schedule written by `author` (an agent, else a person)
+ * starting to target `pipelineId` (create or retarget), or `undefined`.
+ * CAN-6065: a workflow page takes any number of schedules, except an
+ * agent's on a page someone installed or another agent was granted.
+ */
+export function addedScheduleRefusal(
+  activities: readonly ScheduledActivity[],
+  pipelineId: string,
+  author: PipelineAgentAuthor | undefined,
+): string | undefined {
+  if (author === undefined) return undefined;
+  const metadata = userPipelineMetadata(pipelineId);
+  if (!isWorkflowPagePipeline(activities, pipelineId, metadata))
+    return undefined;
   if (
-    metadata.agentHidden === true ||
-    (owner !== undefined && ownsOrchestratorPromptPipeline(owner))
+    isAgentGrantedPipeline(metadata) &&
+    !runsAsAuthor(author, metadata.agentAuthor)
   )
-    return 'orchestrator_prompt';
-  if (isAgentGrantedPipeline(metadata)) return 'agent_grant';
-  if (owner?.installedFrom?.capabilityPackage !== undefined)
-    return 'installed_package';
+    return AGENT_SCHEDULE_REFUSED;
+  const installed = installedPipelineOwner(activities, pipelineId, metadata);
+  if (installed !== undefined && !runsAsAuthor(author, installed.agentAuthor))
+    return AGENT_SCHEDULE_REFUSED;
   return undefined;
 }
 
 /**
- * The refusal for `activity` starting to target `pipelineId` (create or
- * retarget), or `undefined`. Other workflow pages accept extra schedules.
+ * CAN-6065: the installed owner of the workflow page `activity` runs, when
+ * `activity` is another of its schedules: its runs carry that install's
+ * definition, so they are authorized as the owner's are.
  */
-export function addedScheduleRefusal(
+export function inheritedInstallOwner(
   activities: readonly ScheduledActivity[],
-  activityId: string | undefined,
-  pipelineId: string,
-): string | undefined {
-  const metadata = userPipelineMetadata(pipelineId);
-  if (!isWorkflowPagePipeline(activities, pipelineId, metadata))
+  activity: Pick<ScheduledActivity, 'id' | 'action'>,
+): ScheduledActivity | undefined {
+  const pipelineId = scheduledUserPipelineId(activity);
+  if (pipelineId === undefined) return undefined;
+  const owner = installedPipelineOwner(activities, pipelineId);
+  return owner !== undefined && owner.id !== activity.id ? owner : undefined;
+}
+
+/** The install a schedule's run applies, and the record that holds it. */
+export interface ScheduleInstall {
+  holder: ScheduledActivity;
+  required: PipelinePackageRef;
+}
+
+/**
+ * CAN-6065: the capability package a run of `activity` applies: an owner's
+ * own, else, for another schedule of an installed workflow page, its owner's,
+ * when the schedule runs as the owner's author. `undefined` for anything else.
+ */
+export function scheduleInstall(
+  activities: readonly ScheduledActivity[],
+  activity: ScheduledActivity,
+): ScheduleInstall | undefined {
+  const pipelineId = scheduledUserPipelineId(activity);
+  if (pipelineId === undefined) return undefined;
+  const owner = installedPipelineOwner(activities, pipelineId);
+  const required = owner?.installedFrom?.capabilityPackage;
+  if (owner === undefined || required === undefined) return undefined;
+  if (
+    owner.id !== activity.id &&
+    !runsAsAuthor(activity.agentAuthor, owner.agentAuthor)
+  )
     return undefined;
-  const others = pipelineSchedules(activities, pipelineId).filter(
-    (activity) => activity.id !== activityId,
+  return { holder: owner, required };
+}
+
+/**
+ * CAN-6065: the schedule that takes the install when its installed owner is
+ * removed while other schedules still run the pipeline: the first of them
+ * that runs as the owner's author. `undefined` when the owner isn't
+ * installed or nothing else takes it.
+ */
+export function installSuccessor(
+  activities: readonly ScheduledActivity[],
+  owner: ScheduledActivity,
+  pipelineId: string,
+): ScheduledActivity | undefined {
+  if (installedPipelineOwner(activities, pipelineId)?.id !== owner.id)
+    return undefined;
+  return pipelineSchedules(activities, pipelineId).find(
+    (activity) =>
+      activity.id !== owner.id &&
+      activity.installedFrom === undefined &&
+      runsAsAuthor(activity.agentAuthor, owner.agentAuthor),
   );
-  if (others.length === 0) return undefined;
-  const reason = singleScheduleReason(activities, pipelineId, metadata);
-  return reason === undefined ? undefined : SINGLE_SCHEDULE_MESSAGES[reason];
+}
+
+/**
+ * CAN-6065: before a record starts to target an Orchestrator workflow page,
+ * marks its pipeline `agentHidden`, so every schedule on it stays hidden
+ * from denied agents whichever record is deleted. Returns whether the
+ * pipeline is hidden, or needs no hiding.
+ */
+export function hideOrchestratorPipelineForSchedule(
+  activities: readonly ScheduledActivity[],
+  pipelineId: string,
+): boolean {
+  const metadata = userPipelineMetadata(pipelineId);
+  if (metadata.agentHidden === true) return true;
+  const owner = pipelineOwnerRecord(activities, pipelineId, metadata);
+  if (owner === undefined || !ownsOrchestratorPromptPipeline(owner))
+    return true;
+  return markUserPipelineAgentHidden(pipelineId);
+}
+
+/** Why an installed owner can't move to another pipeline while shared. */
+export const INSTALLED_OWNER_RETARGET_REFUSED =
+  "This schedule holds what the workflow was installed with, so it can't run another workflow. Remove it from the workflow's page instead.";
+
+/** A handoff whose stored facts are written, and their undo. */
+export interface InstallHandoff {
+  undo: () => Promise<void>;
+}
+
+/**
+ * CAN-6065: before an installed owner is removed while `successor` still
+ * runs its pipeline, gives `successor` the owner's package install, install
+ * receipt and owner marker, so package update and uninstall find the
+ * install on a schedule that stays. `undefined` when a write didn't land;
+ * what did is undone. The caller moves `installedFrom` itself.
+ */
+export async function handOffInstall(
+  owner: Pick<ScheduledActivity, 'id'>,
+  successor: Pick<ScheduledActivity, 'id'>,
+  pipelineId: string,
+): Promise<InstallHandoff | undefined> {
+  const [
+    {
+      copyAutomationCapabilityPackageInstall,
+      removeAutomationCapabilityPackageInstall,
+    },
+    { bindResourceInstallLocalId },
+  ] = await Promise.all([
+    import('../pipelines/pipeline-package-service'),
+    import('../lib/resource-install-context'),
+  ]);
+  // The owner still holds its install, so dropping the copy releases nothing.
+  const dropCopy = (): Promise<void> =>
+    removeAutomationCapabilityPackageInstall(successor.id).catch(
+      () => undefined,
+    );
+  if (!(await copyAutomationCapabilityPackageInstall(owner.id, successor.id))) {
+    await dropCopy();
+    return undefined;
+  }
+  try {
+    await bindResourceInstallLocalId('automations', owner.id, successor.id);
+  } catch {
+    await dropCopy();
+    return undefined;
+  }
+  setUserPipelineOwnerAutomation(pipelineId, successor.id);
+  const undo = async (): Promise<void> => {
+    setUserPipelineOwnerAutomation(pipelineId, owner.id);
+    await dropCopy();
+  };
+  if (userPipelineMetadata(pipelineId).ownerAutomationId !== successor.id) {
+    await undo();
+    return undefined;
+  }
+  return { undo };
 }
 
 /**
@@ -299,18 +439,15 @@ export function sharedPipelineRelease(
 
 /**
  * Why `keepPipeline` can't keep the pipeline its last schedule `activity`
- * runs: an installed record's package binding, or an agent's grant, is
- * bound to it and can't outlive it.
+ * runs: an installed record's package binding is bound to it and can't
+ * outlive it. An agent's grant is the pipeline's, and stays (CAN-6065).
  */
 export function keepPipelineRefusal(
   activity: ScheduledActivity,
-  pipelineId: string,
 ): string | undefined {
-  if (activity.installedFrom?.capabilityPackage !== undefined)
-    return KEEP_PIPELINE_REFUSED;
-  if (isAgentGrantedPipeline(userPipelineMetadata(pipelineId)))
-    return KEEP_PIPELINE_REFUSED;
-  return undefined;
+  return activity.installedFrom?.capabilityPackage !== undefined
+    ? KEEP_PIPELINE_REFUSED
+    : undefined;
 }
 
 /** What a Remove that keeps the pipeline keeps, or why it can't. */
@@ -339,7 +476,7 @@ export function keptWorkflowPipeline(
     isSharedByOtherSchedules(activities, activity, pipelineId)
   )
     return undefined;
-  const refusal = keepPipelineRefusal(activity, pipelineId);
+  const refusal = keepPipelineRefusal(activity);
   return {
     pipelineId,
     lastScheduleValues: scheduleValuesOf(action),
@@ -366,10 +503,9 @@ export function workflowPageInfo(
   const metadata = userPipelineMetadata(pipelineId);
   if (!isWorkflowPagePipeline(activities, pipelineId, metadata))
     return undefined;
-  const reason = singleScheduleReason(activities, pipelineId, metadata);
   const empty = pipelineSchedules(activities, pipelineId).length === 0;
   return {
-    ...(reason !== undefined ? { singleSchedule: { reason } } : {}),
+    ...(isAgentGrantedPipeline(metadata) ? { agentGranted: true } : {}),
     ...(empty && metadata.lastScheduleValues !== undefined
       ? { lastScheduleValues: structuredClone(metadata.lastScheduleValues) }
       : {}),
@@ -548,7 +684,8 @@ export async function copyWorkflowNameToSchedules(
   const { getAutomationsService } = await import('./service');
   const service = getAutomationsService();
   for (const schedule of pipelineSchedules(activities, pipelineId)) {
-    if (schedule.name === trimmed) continue;
+    // A cloud schedule takes the name where it is stored (CAN-6183).
+    if (schedule.name === trimmed || !firesLocally(schedule)) continue;
     // The pipeline is already saved: one schedule's failure, refused or
     // thrown, neither fails the save nor stops the others.
     try {

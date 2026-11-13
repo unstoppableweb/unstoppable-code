@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { getCanopyDataDir } from '../../canopy-paths';
-import { worktreeListProcessLock } from '../w5-host-cohort/process-file-lock';
+import { worktreeListProcessLock } from '@canopy/execution-engine/node/w5-host-cohort/process-file-lock';
 import { createNodeW5FileStore } from '@canopy/core-runtime/node/w5/file-store';
 import type {
   CreateWorktreeResponse,
   CreateWorkspaceWorktreeResponse,
   WorktreeData,
 } from '../../types';
-import { writeFileAtomically } from './atomic-file';
+import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
 import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import { getWorkspaceItem } from './workspace-cli-reads';
 import {

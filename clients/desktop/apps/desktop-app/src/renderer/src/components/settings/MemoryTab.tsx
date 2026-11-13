@@ -1,10 +1,23 @@
-import { type JSX } from 'react';
-import { MemoryPanel } from '@canopy/ui-app/local-memory';
+import { useState, type JSX } from 'react';
+import {
+  MemoryPanel,
+  MemorySyncSettings,
+  type MemorySyncPanelUiState,
+  type MemorySyncSettingsUiState,
+} from '@canopy/ui-app/local-memory';
 import {
   USER_MEMORY_SCOPE,
+  desktopMemorySyncClient,
   notifyLocalMemory,
 } from '@/client/ipc-local-memory-client';
+import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useDesktopLocalMemoryClient } from '@/hooks/useDesktopLocalMemoryClient';
+import {
+  MEMORY_SYNC_SETTINGS_UI_STATE_KEY,
+  MEMORY_SYNC_VIEW_UI_STATE_KEYS,
+  memorySyncSettingsSlice,
+  memorySyncViewSlice,
+} from '@/lib/current-ui-state/memory-sync-ui-state';
 import { LocalMemorySettings } from './LocalMemorySettings';
 import { OrgMemorySettings } from './OrgMemorySettings';
 import { SettingsGroup, SettingsPage, SettingsSection } from './SettingsLayout';
@@ -13,6 +26,16 @@ const USER_SCOPES = [USER_MEMORY_SCOPE];
 
 export function MemoryTab(): JSX.Element {
   const client = useDesktopLocalMemoryClient();
+  const [syncUi, setSyncUi] = useState<MemorySyncSettingsUiState | null>(null);
+  const [syncView, setSyncView] = useState<MemorySyncPanelUiState | null>(null);
+  useCurrentUiStateReporter(
+    MEMORY_SYNC_SETTINGS_UI_STATE_KEY,
+    memorySyncSettingsSlice(syncUi),
+  );
+  useCurrentUiStateReporter(
+    MEMORY_SYNC_VIEW_UI_STATE_KEYS.settings,
+    memorySyncViewSlice(syncView),
+  );
   return (
     <SettingsPage
       title="Memory"
@@ -20,6 +43,11 @@ export function MemoryTab(): JSX.Element {
       dataTestId="settings-tab-memory"
     >
       <LocalMemorySettings />
+      <MemorySyncSettings
+        sync={desktopMemorySyncClient}
+        notify={notifyLocalMemory}
+        onUiStateChange={setSyncUi}
+      />
       <OrgMemorySettings />
       <SettingsSection
         title="Your memories"
@@ -34,6 +62,7 @@ export function MemoryTab(): JSX.Element {
               client={client}
               notify={notifyLocalMemory}
               scopes={USER_SCOPES}
+              onSyncViewChange={setSyncView}
             />
           </div>
         </SettingsGroup>

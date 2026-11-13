@@ -505,6 +505,11 @@ export const WorkerPipelineControlErrorSchema = CanopyErrorPayloadSchema.extend(
         'worker.pipeline.executionNotFound',
         'worker.pipeline.launchUnavailable',
         'worker.pipeline.controlFailed',
+        // A cloud runner's resume and retry (CAN-6103): its launch, host and owner.
+        'worker.pipeline.launchRefused',
+        'worker.pipeline.hostUnavailable',
+        'worker.pipeline.hostLost',
+        'worker.pipeline.ownerUnavailable',
         ...WORKER_EXECUTION_SECRET_ERROR_CODES,
       ])
       .optional(),
@@ -545,6 +550,410 @@ export const WorkerPipelineRecoveryCheckpointResultSchema = z.strictObject({
 export const WorkerPipelineRecoveryErrorSchema =
   CanopyErrorPayloadSchema.extend({
     code: z.enum(['worker.pipeline.checkpointFailed']).optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
+/*
+ * One run's graceful checkpoint (CAN-6199, cloud pipelines CP-09), which a
+ * cloud runner serves so its owner can roll its sandbox over, or stop paying
+ * for one that only waits. No new step starts; the steps already running may
+ * finish until the drain ends; then the rest pauses with `host_rollover`. A
+ * run whose only running work is host waits, such as `wait-for-agent-reply`,
+ * pauses at once, and each wait resumes on the same turn.
+ */
+
+/** The longest a checkpoint lets running steps finish: the rollover warning's lead. */
+export const WORKER_PIPELINE_CHECKPOINT_DRAIN_MAX_MS = 3_600_000;
+
+export const WorkerPipelineExecutionCheckpointParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  /**
+   * How long the run's running steps may finish before the rest is
+   * checkpointed; 0 checkpoints at once. A second checkpoint of the same run
+   * joins the first and may only bring its end forward.
+   */
+  drainMs: z.number().int().min(0).max(WORKER_PIPELINE_CHECKPOINT_DRAIN_MAX_MS),
+});
+
+export const WorkerPipelineExecutionCheckpointErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z
+      .enum([
+        'worker.pipeline.executionNotFound',
+        'worker.pipeline.checkpointFailed',
+        'worker.pipeline.hostUnavailable',
+      ])
+      .optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
+/*
+ * A pipeline's data on a cloud runner (CAN-6317, cloud pipelines CP-35): its
+ * `canopy.pipeline_data_dir` state, its installed assets and the workspace a
+ * global run works in, where `memory`, `memory-read`, `memory-write` and
+ * `comms-setup` keep their files. The web core keeps it per run owner and
+ * pipeline. It imports it before a start on each new incarnation, and
+ * exports it after a checkpoint and when the run ends. Both move one
+ * uncompressed tar archive in chunks, so each frame fits the relay. The
+ * runner never calls the web core, so the web core drives both.
+ */
+
+/** The largest pipeline data archive a runner imports or exports. */
+export const WORKER_PIPELINE_DATA_ARCHIVE_MAX_BYTES = 32 * 1024 * 1024;
+
+/** The largest chunk of an archive one call carries, before base64. */
+export const WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES = 3 * 1024 * 1024;
+
+const base64 = z
+  .string()
+  .max(Math.ceil(WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES / 3) * 4)
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/);
+
+/** The archive one import or export moves: its SHA-256 and size. */
+export const WorkerPipelineDataArchiveSchema = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  byteSize: z.number().int().min(0).max(WORKER_PIPELINE_DATA_ARCHIVE_MAX_BYTES),
+});
+
+/** Which pipeline's data: the run owner and pipeline id a start names. */
+const pipelineDataOf = {
+  owner: PipelineRunOwnerSchema,
+  pipelineId: id,
+};
+
+/**
+ * One chunk of the archive to restore, in order from offset 0. The runner
+ * unpacks it when the last chunk arrives and its SHA-256 matches, replacing
+ * the pipeline's data on the runner. A chunk sent again is answered as
+ * received.
+ */
+export const WorkerPipelineDataImportParamsSchema = z.strictObject({
+  requestId,
+  ...pipelineDataOf,
+  archive: WorkerPipelineDataArchiveSchema,
+  offset: z.number().int().min(0).max(WORKER_PIPELINE_DATA_ARCHIVE_MAX_BYTES),
+  /** base64 of at most `WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES`. */
+  chunk: base64,
+});
+
+export const WorkerPipelineDataImportResultSchema = z.strictObject({
+  /** Bytes of the archive the runner holds so far. */
+  received: z.number().int().min(0).max(WORKER_PIPELINE_DATA_ARCHIVE_MAX_BYTES),
+  /** The archive is complete and unpacked. */
+  complete: z.boolean(),
+});
+
+/**
+ * Reads the pipeline's data from the runner. Without `snapshot`, the runner
+ * packs the data as it is now; with it, the call continues reading that
+ * snapshot at `offset`.
+ */
+export const WorkerPipelineDataExportParamsSchema = z.strictObject({
+  requestId,
+  ...pipelineDataOf,
+  snapshot: z
+    .strictObject({
+      sha256: WorkerPipelineDataArchiveSchema.shape.sha256,
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .max(WORKER_PIPELINE_DATA_ARCHIVE_MAX_BYTES),
+    })
+    .optional(),
+});
+
+export const WorkerPipelineDataExportResultSchema = z.strictObject({
+  archive: WorkerPipelineDataArchiveSchema,
+  offset: z.number().int().min(0).max(WORKER_PIPELINE_DATA_ARCHIVE_MAX_BYTES),
+  chunk: base64,
+  /** This chunk ends the archive. */
+  complete: z.boolean(),
+});
+
+export const WorkerPipelineDataErrorSchema = CanopyErrorPayloadSchema.extend({
+  code: z
+    .enum([
+      /** A run of the pipeline is running; checkpoint it or let it end first. */
+      'worker.pipeline.dataBusy',
+      /** The data exceeds its limit, a chunk is out of order, or the archive is invalid. */
+      'worker.pipeline.dataRefused',
+      /** The snapshot an export continues is gone: export again without one. */
+      'worker.pipeline.dataSnapshotGone',
+    ])
+    .optional(),
+  retry: CanopyKeyedRetryDirectiveSchema,
+});
+
+/*
+ * One run's handoff between cloud runner incarnations (CAN-6376, cloud
+ * pipelines CP-74). A runner's data root is lost with its sandbox, so after
+ * a checkpoint the web core exports the paused run: its whole execution
+ * directory (CAN-6198) and the Claude Code and Codex sessions its agent
+ * steps recorded, so an agent step resumes its session. On a new
+ * incarnation the web core imports it before it sends the run's portable
+ * start again, which the runner takes as the run's own, and then resumes the
+ * run. Both move one archive in chunks, as pipeline data does; the web core
+ * stores it unread.
+ */
+
+/** The largest run handoff a runner imports or exports: the web core's object limit. */
+export const WORKER_PIPELINE_HANDOFF_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** The handoff archive one import or export moves: its SHA-256 and size. */
+export const WorkerPipelineHandoffArchiveSchema = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  byteSize: z
+    .number()
+    .int()
+    .min(0)
+    .max(WORKER_PIPELINE_HANDOFF_ARCHIVE_MAX_BYTES),
+});
+
+const handoffOffset = z
+  .number()
+  .int()
+  .min(0)
+  .max(WORKER_PIPELINE_HANDOFF_ARCHIVE_MAX_BYTES);
+
+/**
+ * Reads one run's handoff from the runner. Without `snapshot`, the runner
+ * packs the run as its store holds it now; with it, the call continues
+ * reading that snapshot at `offset`.
+ */
+export const WorkerPipelineExecutionHandoffExportParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  snapshot: z
+    .strictObject({
+      sha256: WorkerPipelineHandoffArchiveSchema.shape.sha256,
+      offset: handoffOffset,
+    })
+    .optional(),
+});
+
+export const WorkerPipelineExecutionHandoffExportResultSchema = z.strictObject({
+  archive: WorkerPipelineHandoffArchiveSchema,
+  offset: handoffOffset,
+  /** base64 of at most `WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES`. */
+  chunk: base64,
+  /** This chunk ends the archive. */
+  complete: z.boolean(),
+});
+
+/**
+ * One chunk of a run's handoff to restore, in order from offset 0. When the
+ * last chunk arrives and its SHA-256 matches, the runner restores the run
+ * into its store and its sessions into the provider stores. A store that
+ * already holds the run keeps it. A chunk sent again is answered as
+ * received.
+ */
+export const WorkerPipelineExecutionHandoffImportParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  archive: WorkerPipelineHandoffArchiveSchema,
+  offset: handoffOffset,
+  /** base64 of at most `WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES`. */
+  chunk: base64,
+});
+
+export const WorkerPipelineExecutionHandoffImportResultSchema = z.strictObject({
+  /** Bytes of the archive the runner holds so far. */
+  received: handoffOffset,
+  /** The archive is complete and the run restored. */
+  complete: z.boolean(),
+});
+
+export const WorkerPipelineHandoffErrorSchema = CanopyErrorPayloadSchema.extend(
+  {
+    code: z
+      .enum([
+        /** The runner holds no such run to export. */
+        'worker.pipeline.executionNotFound',
+        /** The run is pending or running, or another import of it is unpacking. */
+        'worker.pipeline.handoffBusy',
+        /** Over its limit, out of order, not this run's, invalid, or the lease ended. */
+        'worker.pipeline.handoffRefused',
+        /** The snapshot an export continues is gone: export again without one. */
+        'worker.pipeline.handoffSnapshotGone',
+      ])
+      .optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  },
+);
+
+/*
+ * One agent step's transcript from a cloud runner (CAN-6421, cloud pipelines
+ * CP-24). An agent step's events carry its transcript as output, but output
+ * is budgeted (cut past an item's limit, dropped past the stream's), and the
+ * transcript file the step records stays in the sandbox, which is lost with
+ * it. So the web core reads each finished agent step's transcript back, one
+ * chunk at a time, and keeps it as a run artifact. The step's latest
+ * attempt's transcript is read: the one its `transcript_file` output names.
+ */
+
+/** The largest transcript a runner exports: the web core's object limit. */
+export const WORKER_PIPELINE_TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024;
+
+/** The transcript one export reads: its SHA-256 and size. */
+export const WorkerPipelineTranscriptSchema = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  byteSize: z.number().int().min(0).max(WORKER_PIPELINE_TRANSCRIPT_MAX_BYTES),
+});
+
+const transcriptOffset = z
+  .number()
+  .int()
+  .min(0)
+  .max(WORKER_PIPELINE_TRANSCRIPT_MAX_BYTES);
+
+/**
+ * Reads one step's transcript from the runner. Without `snapshot`, the
+ * runner reads the transcript the step records now; with it, the call
+ * continues reading that transcript at `offset`.
+ */
+export const WorkerPipelineExecutionTranscriptExportParamsSchema =
+  z.strictObject({
+    requestId,
+    executionId: id,
+    /** The physical job: a single job's id, or a matrix variant's own. */
+    jobId: id,
+    stepId: id,
+    snapshot: z
+      .strictObject({
+        sha256: WorkerPipelineTranscriptSchema.shape.sha256,
+        offset: transcriptOffset,
+      })
+      .optional(),
+  });
+
+export const WorkerPipelineExecutionTranscriptExportResultSchema =
+  z.strictObject({
+    transcript: WorkerPipelineTranscriptSchema,
+    offset: transcriptOffset,
+    /** base64 of at most `WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES`. */
+    chunk: base64,
+    /** This chunk ends the transcript. */
+    complete: z.boolean(),
+  });
+
+export const WorkerPipelineTranscriptErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z
+      .enum([
+        /** The runner holds no such run. */
+        'worker.pipeline.executionNotFound',
+        /** The step recorded no transcript: it is not an agent step, or has not finished. */
+        'worker.pipeline.transcriptNotFound',
+        /** The transcript is over its limit, or not a file of the run. */
+        'worker.pipeline.transcriptRefused',
+        /** The transcript an export continues changed: export again without a snapshot. */
+        'worker.pipeline.transcriptSnapshotGone',
+      ])
+      .optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
+/*
+ * A cloud run's capabilities on its runner (CAN-6439, cloud pipelines
+ * CP-25). The web core resolves each plugin collection a run names into a
+ * capability bundle (`@canopy/protocol/capability-bundle`) before the run
+ * starts, and imports the bundles into each new incarnation before it sends
+ * the run's portable start: one delivery document with the bundles and the
+ * blobs of their plugin trees, moved in chunks as pipeline data is. The
+ * runner materializes each bundle in its data root, where its steps resolve
+ * the selection refs `cloudRunCapabilityPlan` names
+ * (`@canopy/protocol/capability-bundle`), and which the start's plugin
+ * collection snapshots carry. Bundles are secret-free: an MCP server's
+ * proxy credential is the run's AI Credits session key, which the runner
+ * adds from its activation.
+ */
+
+/** The largest capability delivery a runner imports: the web core's object limit. */
+export const WORKER_PIPELINE_CAPABILITIES_MAX_BYTES = 64 * 1024 * 1024;
+
+/** The most bundles one delivery carries: one per plugin collection a run names. */
+export const WORKER_PIPELINE_CAPABILITY_BUNDLES_MAX = 32;
+
+/** The most blobs one delivery carries: every bundle's file tree entries. */
+export const WORKER_PIPELINE_CAPABILITY_BLOBS_MAX = 8192;
+
+const capabilitiesOffset = z
+  .number()
+  .int()
+  .min(0)
+  .max(WORKER_PIPELINE_CAPABILITIES_MAX_BYTES);
+
+/** The delivery one import moves: the SHA-256 and size of its document's UTF-8 JSON. */
+export const WorkerPipelineCapabilityDeliveryRefSchema = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  byteSize: capabilitiesOffset,
+});
+
+/**
+ * The delivery document: each bundle with its digest, and the content of
+ * every blob a bundle's file trees name, once. The runner checks each
+ * bundle against its digest and validation, and each blob against its
+ * SHA-256 and the size its entries record, before it writes anything.
+ */
+export const WorkerPipelineCapabilityDeliverySchema = z.strictObject({
+  version: z.literal(1),
+  bundles: z
+    .array(
+      z.strictObject({
+        /** `cb:v1:<base64url SHA-256>` of the bundle's canonical form. */
+        digest: z.string().regex(/^cb:v1:[A-Za-z0-9_-]{43}$/),
+        /** A `CapabilityBundleV1`, checked with `isCapabilityBundleV1`. */
+        bundle: z.unknown(),
+      }),
+    )
+    .max(WORKER_PIPELINE_CAPABILITY_BUNDLES_MAX),
+  blobs: z
+    .array(
+      z.strictObject({
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        /** base64 of the blob's bytes. */
+        content: z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/),
+      }),
+    )
+    .max(WORKER_PIPELINE_CAPABILITY_BLOBS_MAX),
+});
+
+/**
+ * One chunk of a capability delivery, in order from offset 0. When the last
+ * chunk arrives and its SHA-256 matches, the runner materializes every
+ * bundle it does not hold yet. Bundles are immutable by digest, so a bundle
+ * the runner already holds is kept, and an import adds to what earlier
+ * imports delivered. A chunk sent again is answered as received.
+ */
+export const WorkerPipelineCapabilitiesImportParamsSchema = z.strictObject({
+  requestId,
+  delivery: WorkerPipelineCapabilityDeliveryRefSchema,
+  offset: capabilitiesOffset,
+  /** base64 of at most `WORKER_PIPELINE_DATA_CHUNK_MAX_BYTES`. */
+  chunk: base64,
+});
+
+export const WorkerPipelineCapabilitiesImportResultSchema = z.strictObject({
+  /** Bytes of the delivery the runner holds so far. */
+  received: capabilitiesOffset,
+  /** The delivery is complete and its bundles materialized. */
+  complete: z.boolean(),
+});
+
+export const WorkerPipelineCapabilitiesErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z
+      .enum([
+        /**
+         * Over its limit, out of order, not matching its digest, or a bundle
+         * or blob that is invalid, or an MCP server outside the runner's
+         * proxy origin.
+         */
+        'worker.pipeline.capabilitiesRefused',
+      ])
+      .optional(),
     retry: CanopyKeyedRetryDirectiveSchema,
   });
 
@@ -897,6 +1306,60 @@ export type WorkerPipelineRecoverySweepResult = z.output<
 export type WorkerPipelineRecoveryCheckpointResult = z.output<
   typeof WorkerPipelineRecoveryCheckpointResultSchema
 >;
+export type WorkerPipelineExecutionCheckpointParams = z.output<
+  typeof WorkerPipelineExecutionCheckpointParamsSchema
+>;
+export type WorkerPipelineDataArchive = z.output<
+  typeof WorkerPipelineDataArchiveSchema
+>;
+export type WorkerPipelineDataImportParams = z.output<
+  typeof WorkerPipelineDataImportParamsSchema
+>;
+export type WorkerPipelineDataImportResult = z.output<
+  typeof WorkerPipelineDataImportResultSchema
+>;
+export type WorkerPipelineDataExportParams = z.output<
+  typeof WorkerPipelineDataExportParamsSchema
+>;
+export type WorkerPipelineDataExportResult = z.output<
+  typeof WorkerPipelineDataExportResultSchema
+>;
+export type WorkerPipelineHandoffArchive = z.output<
+  typeof WorkerPipelineHandoffArchiveSchema
+>;
+export type WorkerPipelineExecutionHandoffExportParams = z.output<
+  typeof WorkerPipelineExecutionHandoffExportParamsSchema
+>;
+export type WorkerPipelineExecutionHandoffExportResult = z.output<
+  typeof WorkerPipelineExecutionHandoffExportResultSchema
+>;
+export type WorkerPipelineExecutionHandoffImportParams = z.output<
+  typeof WorkerPipelineExecutionHandoffImportParamsSchema
+>;
+export type WorkerPipelineExecutionHandoffImportResult = z.output<
+  typeof WorkerPipelineExecutionHandoffImportResultSchema
+>;
+export type WorkerPipelineTranscript = z.output<
+  typeof WorkerPipelineTranscriptSchema
+>;
+export type WorkerPipelineExecutionTranscriptExportParams = z.output<
+  typeof WorkerPipelineExecutionTranscriptExportParamsSchema
+>;
+export type WorkerPipelineExecutionTranscriptExportResult = z.output<
+  typeof WorkerPipelineExecutionTranscriptExportResultSchema
+>;
+export type WorkerPipelineCapabilityDeliveryRef = z.output<
+  typeof WorkerPipelineCapabilityDeliveryRefSchema
+>;
+export type WorkerPipelineCapabilityDelivery = z.output<
+  typeof WorkerPipelineCapabilityDeliverySchema
+>;
+export type WorkerPipelineCapabilitiesImportParams = z.output<
+  typeof WorkerPipelineCapabilitiesImportParamsSchema
+>;
+export type WorkerPipelineCapabilitiesImportResult = z.output<
+  typeof WorkerPipelineCapabilitiesImportResultSchema
+>;
 export type WorkerPipelineExecutionStatus =
   (typeof WORKER_PIPELINE_EXECUTION_STATUSES)[number];
 
@@ -1026,6 +1489,100 @@ export const WORKER_PIPELINE_INSTRUCTION_DEFINITIONS =
       params: WorkerPipelineExecutionCancelParamsSchema,
       result: WorkerPipelineExecutionResultSchema,
       error: WorkerPipelineExecutionCancelErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+  });
+
+/**
+ * The operations only a cloud runner serves (CAN-6199, CAN-6317, CAN-6376,
+ * CAN-6421).
+ * Desktop and the daemon pause their runs through
+ * `worker.pipeline.recovery.checkpoint` and the owner-loss pause, and keep
+ * pipeline data and their runs' execution directories on their own disk, so
+ * these are not composed into the worker registry.
+ */
+export const WORKER_PIPELINE_RUNNER_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('worker', {
+    'worker.pipeline.execution.checkpoint': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionCheckpointParamsSchema,
+      result: WorkerPipelineExecutionResultSchema,
+      error: WorkerPipelineExecutionCheckpointErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    // The pipeline's data, restored and saved by its owner (CAN-6317).
+    'worker.pipeline.data.import': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineDataImportParamsSchema,
+      result: WorkerPipelineDataImportResultSchema,
+      error: WorkerPipelineDataErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.data.export': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineDataExportParamsSchema,
+      result: WorkerPipelineDataExportResultSchema,
+      error: WorkerPipelineDataErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    // One run's handoff between incarnations, moved by its owner (CAN-6376).
+    'worker.pipeline.execution.handoff.export': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionHandoffExportParamsSchema,
+      result: WorkerPipelineExecutionHandoffExportResultSchema,
+      error: WorkerPipelineHandoffErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.execution.handoff.import': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionHandoffImportParamsSchema,
+      result: WorkerPipelineExecutionHandoffImportResultSchema,
+      error: WorkerPipelineHandoffErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    // An agent step's transcript, kept by its owner as a run artifact (CAN-6421).
+    'worker.pipeline.execution.transcript.export': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionTranscriptExportParamsSchema,
+      result: WorkerPipelineExecutionTranscriptExportResultSchema,
+      error: WorkerPipelineTranscriptErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    // A run's skills, plugin trees and MCP servers, delivered by its owner
+    // before the run's start (CAN-6439).
+    'worker.pipeline.capabilities.import': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineCapabilitiesImportParamsSchema,
+      result: WorkerPipelineCapabilitiesImportResultSchema,
+      error: WorkerPipelineCapabilitiesErrorSchema,
       idempotency: 'keyed',
       requiredGrants: [WORKER_PIPELINE_GRANTS.write],
     }),

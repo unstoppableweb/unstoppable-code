@@ -229,6 +229,7 @@ import type {
 } from '@canopy/agent-transcript/types';
 import { isErrnoException } from '../lib/type-guards';
 import { ChatVisualReadError } from '../lib/chat-visual-read-errors';
+import type { ChatFormat4Outcome } from './chat-format4-telemetry';
 
 /** Messages `ChatTranscriptArtifacts` uses when visual bytes fail validation. */
 const VISUAL_INTEGRITY_FAILURES: ReadonlySet<string> = new Set([
@@ -1047,8 +1048,18 @@ async function journalMtimeNs(path: string): Promise<string | undefined> {
 }
 
 export interface ChatStateV2BackendOptions {
-  /** Test-only explicit format-4 promotion; never enabled by production lanes. */
+  /** Format 4 writes and promotion; promotion is further gated by `format4Promotion`. */
   enableFormat4?: boolean;
+  /**
+   * Whether a writable format 3 scope may promote now, asked at each attempt.
+   * Absent means yes. A scope already in format 4 stays in format 4.
+   */
+  format4Promotion?: () => boolean;
+  /**
+   * Content-free format 4 outcomes (CAN-6217): promotion attempts and
+   * checkpoint durations of format 4 scopes. Never changes the storage work.
+   */
+  onFormat4Outcome?: (outcome: ChatFormat4Outcome) => void;
   /**
    * Admit version 3 (delta-journal) scopes and write them through the
    * journal. Only the chat state repository sets it. A backend constructed
@@ -1761,17 +1772,26 @@ export class ChatStateV2Backend {
    * demotion, or a failed promotion's bounded retry is due.
    */
   public wantsRepromotion(): boolean {
+    // A due format 4 retry waits, with its backoff kept, while promotion is
+    // withheld; asking for it then would re-queue reconciliation forever.
     return (
       this.repromote ||
       this.promotionRetry.due() ||
-      this.format4PromotionRetry.due()
+      (this.allowsFormat4Promotion() && this.format4PromotionRetry.due())
     );
   }
 
   /** Promotion policy only: handling selected format 4 never uses this gate. */
   public wantsFormat4Promotion(): boolean {
     return Boolean(
-      this.options.enableFormat4 && this.format4PromotionRetry.canAttempt(),
+      this.allowsFormat4Promotion() && this.format4PromotionRetry.canAttempt(),
+    );
+  }
+
+  /** Whether a format 3 scope may start promoting now, before retry limits. */
+  public allowsFormat4Promotion(): boolean {
+    return Boolean(
+      this.options.enableFormat4 && (this.options.format4Promotion?.() ?? true),
     );
   }
 
@@ -1947,6 +1967,7 @@ export class ChatStateV2Backend {
     journal: ChatDeltaJournalWriter,
     currentWriteChats: ReadonlySet<string> = new Set(),
   ): Promise<ChatStorageIndexes> {
+    const startedAt = performance.now();
     // Current transaction writes are counted by committed() after this call.
     // Other active projections have already been counted, but their physical
     // sidecars are only now materialized. Capture no transcript rows here.
@@ -1978,6 +1999,7 @@ export class ChatStateV2Backend {
     if (!onCheckpointed) {
       await journal.checkpoint();
       await rebase();
+      await this.reportFormat4Checkpoint(startedAt);
       return shareLoadedInputLedgerText(journal.indexes());
     }
     // Admitted records reach the journal first, so the rotation below covers
@@ -1997,6 +2019,7 @@ export class ChatStateV2Backend {
       mtimeNs !== previousMtimeNs
     )
       onCheckpointed({ previousMtimeNs, mtimeNs });
+    await this.reportFormat4Checkpoint(startedAt);
     return shareLoadedInputLedgerText(journal.indexes());
   }
 
@@ -2068,9 +2091,10 @@ export class ChatStateV2Backend {
         });
         return false;
       }
-      if (!this.format4PromotionRetry.canAttempt()) return false;
+      if (!this.wantsFormat4Promotion()) return false;
       if ((await this.store.format()) !== 'v3')
         throw new Error('Format 4 promotion requires a format-3 scope');
+      const attempt = this.format4PromotionRetry.failureCount() + 1;
       try {
         await promoteToFormat4Journal(this.store, {
           ...(this.journal?.isOpen() ? { writer: this.journal } : {}),
@@ -2079,21 +2103,66 @@ export class ChatStateV2Backend {
             ? { onBoundary: this.options.deltaJournal.onBoundary }
             : {}),
         });
-      } catch {
+      } catch (error) {
         this.format4PromotionRetry.failed();
+        const reportFailure = (): void => {
+          this.reportFormat4({ event: 'promotion_failed', attempt, error });
+          if (this.format4PromotionRetry.exhausted())
+            this.reportFormat4({ event: 'retries_exhausted', attempt });
+        };
         // The helper retires its old writer before publication. Never reuse
         // it, and never infer the selected manifest from the fault location.
         this.releaseJournal();
-        this.indexes = await this.loadIndexes();
-        if ((await this.store.format()) === 'v4')
+        try {
+          this.indexes = await this.loadIndexes();
+        } catch (recoveryError) {
+          // Report what the manifest shows: a published format 4 promoted,
+          // even when its reopen and this recovery both failed.
+          let published = false;
+          try {
+            published = (await this.store.format()) === 'v4';
+          } catch {
+            // Unreadable: report the attempt's own failure.
+          }
+          if (published) this.reportFormat4({ event: 'promoted', attempt });
+          else reportFailure();
+          throw recoveryError;
+        }
+        if ((await this.store.format()) === 'v4') {
           this.format4PromotionRetry.reset();
+          this.reportFormat4({ event: 'promoted', attempt });
+          return false;
+        }
+        reportFailure();
         return false;
       }
+      // Published: report it before the reload, which can still fail.
+      this.reportFormat4({ event: 'promoted', attempt });
       this.releaseJournal();
       this.indexes = await this.loadIndexes();
       this.format4PromotionRetry.reset();
       return true;
     });
+  }
+
+  /** A format 4 scope's checkpoint duration, for the slow-checkpoint signal. */
+  private async reportFormat4Checkpoint(startedAt: number): Promise<void> {
+    if (!this.options.onFormat4Outcome) return;
+    const durationMs = performance.now() - startedAt;
+    try {
+      if ((await this.store.format()) !== 'v4') return;
+    } catch {
+      return;
+    }
+    this.reportFormat4({ event: 'slow_checkpoint', durationMs });
+  }
+
+  private reportFormat4(outcome: ChatFormat4Outcome): void {
+    try {
+      this.options.onFormat4Outcome?.(outcome);
+    } catch {
+      // Diagnostics never change the storage outcome.
+    }
   }
 
   private async assertChildStreamSupport(): Promise<void> {

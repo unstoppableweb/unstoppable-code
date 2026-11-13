@@ -82,6 +82,7 @@ interface CallOptions {
   readonly metadata?: object;
   readonly signal?: AbortSignal;
   readonly execution?: object;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 interface PendingCall {
   respond(response: Response): void;
@@ -89,6 +90,7 @@ interface PendingCall {
 }
 interface RequestSpec<T> {
   readonly signal?: AbortSignal;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly deadlineAt?: number;
   readonly definition?: Definition;
   accept(response: Response): T;
@@ -97,6 +99,7 @@ interface RequestSpec<T> {
 }
 
 const INITIALIZE = 'core.runtime.initialize';
+const UNSUBSCRIBE = 'core.events.unsubscribe';
 // Late replies to abandoned calls are matched exactly. Contiguous ids share a
 // range; a core that fragments them past this bound closes the session rather
 // than letting the client forget an id or accept a stray reply.
@@ -238,9 +241,10 @@ interface Entry {
 /**
  * One subscription on one connection. The receive loop never waits on it:
  * undelivered frames are bounded by count and encoded bytes, and listener
- * errors are contained. The wire has no cancel message, so close, abort, and
- * deadline end it locally and later frames are dropped; the core's handler
- * runs until its own end.
+ * errors are contained. Close, abort, and deadline end it locally and later
+ * frames are dropped. A core that lists `core.events.unsubscribe` is asked to
+ * drop the subscription (CAN-5970); any other core's handler runs until its
+ * own end.
  */
 class ClientStream {
   readonly handle: StreamHandle;
@@ -542,12 +546,15 @@ class ClientSession {
           abandon(local(deadlineExceeded())),
         );
       this.connection
-        .send({
-          jsonrpc: CANOPY_JSON_RPC_VERSION,
-          id,
-          method: name.data,
-          params,
-        })
+        .send(
+          {
+            jsonrpc: CANOPY_JSON_RPC_VERSION,
+            id,
+            method: name.data,
+            params,
+          },
+          spec.headers === undefined ? undefined : { headers: spec.headers },
+        )
         .catch((error: unknown) => {
           const failure = toCanopyClientError(error);
           // A cancelled send may have delivered the request before failing.
@@ -574,6 +581,7 @@ class ClientSession {
     const prepared = this.prepare(kind, definition, name, params, options);
     return this.request(name, prepared.params, {
       ...prepared,
+      ...(options.headers === undefined ? {} : { headers: options.headers }),
       accept: (response) => {
         if ('error' in response)
           throw this.operationError(prepared.definition, response.error);
@@ -845,8 +853,14 @@ class ClientSession {
     }
   }
 
+  /** A subscription the core may still serve that nothing here reads. */
   private orphan(subscriptionId: string, name: string): void {
     this.orphans.set(subscriptionId, name);
+    // Refused locally, never sent, unless both the definitions and the
+    // core's manifest list it. A later turn, outside the receive loop.
+    void Promise.resolve()
+      .then(() => this.call('instruction', UNSUBSCRIBE, { subscriptionId }, {}))
+      .catch(() => {});
     const oldest = this.orphans.keys().next().value;
     if (this.orphans.size > MAX_ORPHANED_STREAMS && oldest !== undefined)
       this.orphans.delete(oldest);

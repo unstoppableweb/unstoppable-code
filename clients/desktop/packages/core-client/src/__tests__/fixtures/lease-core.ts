@@ -7,6 +7,7 @@ import {
   CoreClientLeaseRenewParamsSchema,
   type CanopyErrorPayload,
   type CoreClientLease,
+  type CoreRuntimeInitializeResult,
 } from '@canopy/protocol/canopy-core';
 
 import { createCanopyClient, type CanopyClient } from '../../index';
@@ -14,6 +15,8 @@ import {
   CanonicalCoreError,
   canonicalInitializeResult,
   serveCanonicalCore,
+  type CanonicalCoreServer,
+  type CanonicalHandlers,
 } from './canonical-core';
 
 const ACQUIRE = 'core.client.lease.acquire' as const;
@@ -88,6 +91,31 @@ export class FakeLeaseCore {
 
   async connect(): Promise<LeaseTestClient> {
     const { client: connection, server } = await createInMemoryFramedPair();
+    this.serve(server);
+    return createCanopyClient({
+      connection,
+      clientName: 'lease-test',
+      clientVersion: '1.0.0',
+      definitions: {
+        queries: {},
+        instructions: CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+        streams: {},
+      },
+    });
+  }
+
+  /**
+   * Serves the lease operations, plus `handlers`, on any server end, for
+   * example one an HTTP test server opened.
+   */
+  serve(
+    server: CanopyFramedConnection,
+    options: {
+      readonly handlers?: CanonicalHandlers;
+      /** Replaces fields of the initialize result, lease-only by default. */
+      readonly initialize?: Partial<CoreRuntimeInitializeResult>;
+    } = {},
+  ): CanonicalCoreServer {
     const index = this.servers.push(server) - 1;
     const handle =
       (method: LeaseMethod) =>
@@ -106,20 +134,16 @@ export class FakeLeaseCore {
         }
         return this.answer(method, index, params);
       };
-    const handlers = Object.fromEntries(METHODS.map((m) => [m, handle(m)]));
+    const handlers = {
+      ...options.handlers,
+      ...Object.fromEntries(METHODS.map((m) => [m, handle(m)])),
+    };
     const capabilities = { operations: METHODS, events: [], streams: [] };
-    serveCanonicalCore(server, handlers, {
-      initialize: canonicalInitializeResult({ capabilities }),
-    });
-    return createCanopyClient({
-      connection,
-      clientName: 'lease-test',
-      clientVersion: '1.0.0',
-      definitions: {
-        queries: {},
-        instructions: CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
-        streams: {},
-      },
+    return serveCanonicalCore(server, handlers, {
+      initialize: canonicalInitializeResult({
+        capabilities,
+        ...options.initialize,
+      }),
     });
   }
 

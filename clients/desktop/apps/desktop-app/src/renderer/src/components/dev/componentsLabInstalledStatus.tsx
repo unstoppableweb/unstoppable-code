@@ -14,6 +14,7 @@ import {
 import type {
   InstalledEntryStatusState,
   InstalledItemMutationOutcome,
+  InstalledStatusFilterValue,
 } from '@canopy/ui-shared/lib/installed-item-status';
 import {
   SpecimenCell,
@@ -149,11 +150,12 @@ function InteractivePicker(): JSX.Element {
 }
 
 function FilterDropdownDemo(): JSX.Element {
-  const [value, setValue] = useState<InstalledItemStatus | null>(null);
+  const [value, setValue] = useState<InstalledStatusFilterValue | null>(null);
   return (
     <InstalledStatusFilterDropdown
       value={value}
       onChange={setValue}
+      includeUpdateAvailable
       testId="lab-installed-status-filter"
     />
   );
@@ -169,19 +171,13 @@ export function InstalledStatusSpecimen(): JSX.Element {
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="InstalledItemStatusIcon">
         <SpecimenGrid min={140}>
-          {(['active', 'available', 'disabled'] as const).map((status) => (
-            <SpecimenCell key={status} label={status}>
-              <InstalledItemStatusIcon status={status} />
-            </SpecimenCell>
-          ))}
-          {(['active', 'available', 'disabled'] as const).map((status) => (
-            <SpecimenCell
-              key={`${status}-ro`}
-              label={`${status}, read-only ink`}
-            >
-              <InstalledItemStatusIcon status={status} disabled />
-            </SpecimenCell>
-          ))}
+          {(['active', 'available', 'disabled', 'unavailable'] as const).map(
+            (status) => (
+              <SpecimenCell key={status} label={status}>
+                <InstalledItemStatusIcon status={status} />
+              </SpecimenCell>
+            ),
+          )}
           <SpecimenCell label="size 20">
             <InstalledItemStatusIcon status="active" size={20} />
           </SpecimenCell>

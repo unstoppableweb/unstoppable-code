@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeFileAtomicallySync } from '../atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   admittedStorageRowForPath,
   isAdmittedStorageCandidate,
@@ -71,7 +71,7 @@ it('admits the store principal and refuses a different module', () => {
     admittedWriter: {
       namespace: 'pipeline_definitions',
       writer: 'desktop_cli',
-      module: 'shared/pipelines/store',
+      module: 'packages/execution-engine/src/pipelines/store.ts',
     },
   });
   expect(readFileSync(file, 'utf8')).toBe('stored');

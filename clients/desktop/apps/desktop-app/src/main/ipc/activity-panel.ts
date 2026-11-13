@@ -1,3 +1,4 @@
+import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import {
   revertFileThroughWorker,
   type WorkerGitLocalMutationDispatcher,
@@ -79,7 +80,6 @@ import { validateId } from '../lib/validation';
 import { isPathInside } from '../lib/path-safety';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { resolveEffectiveBaseBranchForRepo } from '../lib/worktree-base-branches';
-import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import { registerIpcHandler } from './register';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
 import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read/viewer-root';
@@ -392,17 +392,6 @@ function sortByPath(files: ChangedFileInfo[]): ChangedFileInfo[] {
   );
 }
 
-async function isWorktreeGitPending(
-  projectId: string,
-  worktreeId: string,
-): Promise<boolean> {
-  const worktrees = await readWorkspaceWorktrees(projectId).catch(() => []);
-  return worktrees.some(
-    (worktree) =>
-      worktree.id === worktreeId && worktree.setupPhase === 'git-pending',
-  );
-}
-
 const AUTOMATIC_ACTIVITY_FETCH_TTL_MS = 5 * 60_000;
 const AUTOMATIC_ACTIVITY_FETCH_OPTIONS = Object.freeze({
   ttlMs: AUTOMATIC_ACTIVITY_FETCH_TTL_MS,
@@ -557,64 +546,58 @@ export function registerActivityPanelHandlers(
   >(IPC_CHANNELS.activityChangedFiles, async (event, request) => {
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
-
-    if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+    if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
       return getViewerChangedFiles(request.worktreeId);
-    }
-
-    // A deferred worktree reservation is selectable before its directory
-    // exists. resolveWorktreeCwd intentionally falls back to the workspace's
-    // source checkout in that window, but changed files from that unrelated
-    // checkout must never be projected into the pending worktree's activity
-    // panel. Besides being incorrect, a large source diff can mount thousands
-    // of rows and freeze the composer during initial creation.
-    if (await isWorktreeGitPending(request.projectId, request.worktreeId)) {
-      return { uncommitted: [], committed: [] };
-    }
-
-    if (isMultiRepoWorkspace(request.projectId)) {
-      return getWorkspaceChangedFiles(
-        runtime.dispatcher,
-        runtime.resolveCaller(event),
-        request.projectId,
-        request.worktreeId,
-      );
-    }
-
-    const worktreePath = resolveWorktreeCwd(
+    return withWorktreeGitRead<ActivityChangedFilesResponse>(
       request.projectId,
       request.worktreeId,
-    );
-    await waitForFetchHeadStart(
-      fetchOrigin(worktreePath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
-    );
-    // `ls-remote` can wait on a credential helper as long as the fetch, so the
-    // remote default branch is revalidated in the background instead.
-    revalidateDefaultBranchInBackground(worktreePath);
-    const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      repoPath: worktreePath,
-      allowRemoteLookup: false,
-    });
-    const caller = runtime.resolveCaller(event);
-    const target = {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      repoId: WORKSPACE_ROOT_REPO_ID,
-      repoPath: worktreePath,
-    };
-    const [uncommitted, committed] = await Promise.all([
-      listUncommittedChangedFiles(runtime.dispatcher, caller, target),
-      listCommittedChangedFiles(
-        runtime.dispatcher,
-        caller,
-        target,
-        effectiveBaseBranch.branch ?? undefined,
-      ).catch(() => []),
-    ]);
+      { uncommitted: [], committed: [] },
+      async () => {
+        if (isMultiRepoWorkspace(request.projectId)) {
+          return getWorkspaceChangedFiles(
+            runtime.dispatcher,
+            runtime.resolveCaller(event),
+            request.projectId,
+            request.worktreeId,
+          );
+        }
 
-    return { uncommitted, committed };
+        const worktreePath = resolveWorktreeCwd(
+          request.projectId,
+          request.worktreeId,
+        );
+        await waitForFetchHeadStart(
+          fetchOrigin(worktreePath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
+        );
+        // `ls-remote` can wait on a credential helper as long as the fetch, so the
+        // remote default branch is revalidated in the background instead.
+        revalidateDefaultBranchInBackground(worktreePath);
+        const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          repoPath: worktreePath,
+          allowRemoteLookup: false,
+        });
+        const caller = runtime.resolveCaller(event);
+        const target = {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          repoId: WORKSPACE_ROOT_REPO_ID,
+          repoPath: worktreePath,
+        };
+        const [uncommitted, committed] = await Promise.all([
+          listUncommittedChangedFiles(runtime.dispatcher, caller, target),
+          listCommittedChangedFiles(
+            runtime.dispatcher,
+            caller,
+            target,
+            effectiveBaseBranch.branch ?? undefined,
+          ).catch(() => []),
+        ]);
+
+        return { uncommitted, committed };
+      },
+    );
   });
 
   registerIpcHandler<[ActivityFileDiffRequest], ActivityFileDiffResponse>(

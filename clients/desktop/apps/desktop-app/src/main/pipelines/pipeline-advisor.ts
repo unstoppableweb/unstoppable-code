@@ -45,9 +45,9 @@ import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type {
   ExecutionHandle,
   ExecutionRuntime,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
 import {
   PIPELINE_ADVISOR_SYSTEM_PROMPT,
   runPipelineAdvisorSdkTurn,
@@ -1370,7 +1370,8 @@ function isStartedJobStatus(
     status === 'running' ||
     status === 'restarting' ||
     status === 'paused' ||
-    status === 'queued'
+    status === 'queued' ||
+    status === 'waiting_for_capacity'
   );
 }
 

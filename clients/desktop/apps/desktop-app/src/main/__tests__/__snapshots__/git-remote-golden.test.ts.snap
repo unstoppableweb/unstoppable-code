@@ -50,7 +50,7 @@ exports[`reference repository health reports a source repository without origin 
 
 exports[`reference repository health reports a source that is not a repository as a failed shadow sync: missing directory 1`] = `
 {
-  "json": "{"referenceRepoPath":"<root>/missing/gone","healthy":false,"warnings":[{"code":"shadow-sync-failed","message":"Shadow sync failed"}],"lastCheckedAt":"<time>"}",
+  "json": "{"referenceRepoPath":"<root>/missing/gone","healthy":false,"warnings":[{"code":"shadow-sync-failed","message":"Folder <root>/missing/gone no longer exists"}],"lastCheckedAt":"<time>"}",
 }
 `;
 

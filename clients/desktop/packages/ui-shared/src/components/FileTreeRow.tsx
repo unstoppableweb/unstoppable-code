@@ -7,7 +7,7 @@ import type {
   MouseEvent,
   ReactNode,
 } from 'react';
-import { FileIcon } from '../icons/FileIcon';
+import { FileTypeIcon } from '../icons/FileTypeIcon';
 import { FolderIcon } from '../icons/FolderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
@@ -19,7 +19,7 @@ export interface FileTreeRowProps {
   label: string;
   /** Indent depth — each level adds 16px of left padding. */
   depth: number;
-  /** Folder rows render a chevron + folder glyph; file rows render the file icon. */
+  /** Folder rows render a chevron + folder glyph; file rows their file-type icon. */
   isDirectory: boolean;
   /** Only meaningful when `isDirectory` is true. */
   expanded?: boolean;
@@ -174,9 +174,11 @@ export function FileTreeRow({
       className={`shrink-0 fg-secondary ${isIgnored ? 'opacity-50' : ''}`}
     />
   );
+  // A file shows its type, in the file-type family's own colors.
   const fileIcon = (
-    <FileIcon
-      className={`shrink-0 fg-secondary ${isIgnored ? 'opacity-50' : ''}`}
+    <FileTypeIcon
+      filename={label}
+      className={isIgnored ? 'opacity-50' : undefined}
     />
   );
 

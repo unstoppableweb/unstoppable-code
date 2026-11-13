@@ -6,6 +6,7 @@ import {
   DropdownMenuItemIcon,
   FloatingMenu,
   ListRow,
+  NestedMenuFlyout,
   type DotTone,
 } from '@canopy/ui-shared/components';
 import {
@@ -18,6 +19,7 @@ import {
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   ADD_COMPUTER_LABEL,
+  COMPUTERS_LABEL,
   remoteHostDotTone,
   type RemoteHostStatus,
 } from './remote-control-display';
@@ -174,6 +176,56 @@ export function RemoteControlComputerMenuItems({
         </DropdownMenuItem>
       ) : null}
     </>
+  );
+}
+
+export interface RemoteControlComputersMenuItemProps {
+  readonly computers: readonly RemoteControlComputerRow[];
+  readonly localComputer?: RemoteControlLocalComputer;
+  readonly onChoose: (deviceId: string | null) => void;
+  readonly onAdd: () => void;
+  /** Close the menu the row lives in; choosing in the submenu closes both. */
+  readonly onClose: () => void;
+  /** Prefix for the row's and the submenu's test ids. */
+  readonly testIdPrefix: string;
+}
+
+/**
+ * One account menu row, "Computers", whose submenu lists the computer rows
+ * (this computer, the paired computers, then "Add a computer…"). The row
+ * counts the paired computers, so a menu with none paired says nothing more
+ * than the label. The submenu keeps the account menu's width: a long name
+ * truncates and shows in full on hover.
+ */
+export function RemoteControlComputersMenuItem({
+  computers,
+  localComputer,
+  onChoose,
+  onAdd,
+  onClose,
+  testIdPrefix,
+}: RemoteControlComputersMenuItemProps): JSX.Element {
+  return (
+    <NestedMenuFlyout
+      label={COMPUTERS_LABEL}
+      leading={<MacbookIcon size={16} aria-hidden="true" />}
+      {...(computers.length > 0 ? { trailing: computers.length } : {})}
+      menuWidth="compact"
+      triggerTestId={testIdPrefix}
+      menuTestId={`${testIdPrefix}-menu`}
+      // Every row closes the account menu, which closes the submenu with it.
+      closeOnSelect={false}
+    >
+      <RemoteControlComputerMenuItems
+        computers={computers}
+        {...(localComputer ? { localComputer } : {})}
+        onChoose={onChoose}
+        onAdd={onAdd}
+        onClose={onClose}
+        testIdPrefix={testIdPrefix}
+        dividerBeforeAdd
+      />
+    </NestedMenuFlyout>
   );
 }
 

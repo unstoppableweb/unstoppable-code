@@ -5,7 +5,12 @@
  * live in `@canopy/ui-app/remote-control`.
  */
 export const THIS_COMPUTER_LABEL = 'This computer';
-export const COMPUTERS_LABEL = 'Computers';
+/**
+ * The Settings → Remote Control switch, also named by the Add a computer
+ * dialog's hint, which sends people to it on the other computer.
+ */
+export const ALLOW_INCOMING_LABEL =
+  'Allow your other devices to control this computer';
 
 /** The message of a rejected action, for inline error lines. */
 export function describeError(cause: unknown, fallback: string): string {

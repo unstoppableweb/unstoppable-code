@@ -88,6 +88,7 @@ const TERMINAL_MATRIX_VARIANT_STATUSES: ReadonlySet<string> = new Set([
 const CANCELLABLE_MATRIX_VARIANT_STATUSES: ReadonlySet<string> = new Set([
   'pending',
   'queued',
+  'waiting_for_capacity',
   'running',
   'restarting',
   'paused',

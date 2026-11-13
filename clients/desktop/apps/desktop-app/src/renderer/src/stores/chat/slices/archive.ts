@@ -6,6 +6,7 @@ import { type Descendant } from 'slate';
 import { type PersistedChatTab } from '@canopy/desktop-shared/types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatArchiveSlice } from '../state';
+import { chatBackendFor } from '../backend';
 
 export const createArchiveSlice: StateCreator<
   ChatState,
@@ -19,12 +20,12 @@ export const createArchiveSlice: StateCreator<
     // Best-effort: the archive transport may not be wired in every host (tests,
     // or before the backend handlers ship). A missing method or a rejected call
     // simply leaves the current list untouched, so the icon stays hidden.
-    if (typeof window.api?.chat?.loadArchives !== 'function') {
+    if (typeof chatBackendFor({ projectId }).chat.loadArchives !== 'function') {
       return;
     }
     const key = `${projectId}/${worktreeId}`;
     try {
-      const summaries = await window.api.chat.loadArchives({
+      const summaries = await chatBackendFor({ projectId }).chat.loadArchives({
         projectId,
         worktreeId,
       });
@@ -41,7 +42,9 @@ export const createArchiveSlice: StateCreator<
     const key = `${projectId}/${worktreeId}`;
     // Main owns the archive/live-state transaction. Hydrate the returned
     // canonical tab only after that transaction has durably committed.
-    const { tab: persisted } = await window.api.chat.restoreArchive({
+    const { tab: persisted } = await chatBackendFor({
+      projectId,
+    }).chat.restoreArchive({
       projectId,
       worktreeId,
       chatId,
@@ -89,14 +92,18 @@ export const createArchiveSlice: StateCreator<
   ): Promise<void> => {
     const key = `${projectId}/${worktreeId}`;
     // Non-destructive read — the archive entry stays in place after Summarize.
-    const { tab: archivedTab } = await window.api.chat.readArchive({
+    const { tab: archivedTab } = await chatBackendFor({
+      projectId,
+    }).chat.readArchive({
       projectId,
       worktreeId,
       chatId,
       fullTranscript: true,
     });
     const conversationText = buildHandoffConversationText(archivedTab.messages);
-    const { summary } = await window.api.chat.generateHandoffSummary({
+    const { summary } = await chatBackendFor({
+      projectId,
+    }).chat.generateHandoffSummary({
       projectId,
       worktreeId,
       conversationText,
@@ -206,7 +213,7 @@ ${trimmedSummary}
     }
     let persisted: PersistedChatTab;
     try {
-      const response = await window.api.chat.restoreArchive({
+      const response = await chatBackendFor({ projectId }).chat.restoreArchive({
         projectId,
         worktreeId,
         chatId,
@@ -249,12 +256,16 @@ ${trimmedSummary}
     worktreeId,
     chatId,
   ): Promise<void> => {
-    if (typeof window.api?.chat?.markArchiveRead !== 'function') {
+    if (
+      typeof chatBackendFor({ projectId }).chat.markArchiveRead !== 'function'
+    ) {
       return;
     }
     const key = `${projectId}/${worktreeId}`;
     try {
-      const summaries = await window.api.chat.markArchiveRead({
+      const summaries = await chatBackendFor({
+        projectId,
+      }).chat.markArchiveRead({
         projectId,
         worktreeId,
         chatId,
@@ -269,12 +280,17 @@ ${trimmedSummary}
   },
 
   markAllArchivedChatsRead: async (projectId, worktreeId): Promise<void> => {
-    if (typeof window.api?.chat?.markAllArchivesRead !== 'function') {
+    if (
+      typeof chatBackendFor({ projectId }).chat.markAllArchivesRead !==
+      'function'
+    ) {
       return;
     }
     const key = `${projectId}/${worktreeId}`;
     try {
-      const summaries = await window.api.chat.markAllArchivesRead({
+      const summaries = await chatBackendFor({
+        projectId,
+      }).chat.markAllArchivesRead({
         projectId,
         worktreeId,
       });

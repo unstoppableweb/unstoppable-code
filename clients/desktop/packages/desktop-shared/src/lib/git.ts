@@ -1,3 +1,7 @@
+import {
+  assertWorkingDirectoryAvailable,
+  workingDirectoryLaunchError,
+} from '../node/lib/working-directory';
 import { execFile } from 'node:child_process';
 import { open, readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -97,6 +101,7 @@ async function runGit(
   cwd?: string,
   options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<string> {
+  await assertWorkingDirectoryAvailable(cwd);
   const { stdout } = await execFileAsync(await resolveGitExecutable(), args, {
     cwd,
     env: withGitRequestContextEnv(
@@ -106,12 +111,15 @@ async function runGit(
     signal: options?.signal,
     timeout: options?.timeoutMs,
     windowsHide: process.platform === 'win32',
+  }).catch(async (error: unknown) => {
+    throw await workingDirectoryLaunchError(error, cwd);
   });
 
   return stdout.trim();
 }
 
 async function runGitRaw(args: string[], cwd?: string): Promise<string> {
+  await assertWorkingDirectoryAvailable(cwd);
   const { stdout } = await execFileAsync(await resolveGitExecutable(), args, {
     cwd,
     env: withGitRequestContextEnv(
@@ -119,6 +127,8 @@ async function runGitRaw(args: string[], cwd?: string): Promise<string> {
     ),
     maxBuffer: MAX_BUFFER_BYTES,
     windowsHide: process.platform === 'win32',
+  }).catch(async (error: unknown) => {
+    throw await workingDirectoryLaunchError(error, cwd);
   });
   return stdout;
 }

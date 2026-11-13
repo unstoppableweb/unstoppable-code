@@ -14,6 +14,7 @@ import { normalizeMemoryText } from './text';
 // one, so it can keep a file that might otherwise go, never lose one.
 
 const TOPICS_PREFIX = 'topics/';
+const MARKDOWN_EXTENSION = '.md';
 
 /** Identity of a `topics/` filename such as `Build.md`. */
 export function topicIdentity(filename: string): string {
@@ -42,6 +43,24 @@ export function topicFileKeyIdentity(filename: string): string {
 }
 
 /**
+ * Every topic a scope holds, as the scope itself lists them. A run's input
+ * carries only as many topics as its budget fits, so it can never say what
+ * else is there: a write policy or an index-link resolution built from the
+ * input would treat a topic left out of the prompt as one that does not
+ * exist, and replace or fail to link saved memory the helper never read.
+ */
+export interface ScopeTopicInventory {
+  /** The `topics/` filenames the store lists, so a reference resolves. */
+  readonly names: readonly string[];
+  /**
+   * Identities of every `topics/` entry a generated filename would replace.
+   * A superset of {@link names}: an entry the store does not list still holds
+   * its name on disk.
+   */
+  readonly identities: ReadonlySet<string>;
+}
+
+/**
  * Normalize a topic name to the stem the store reads and lists. Consolidation
  * output validation enforces the same round-trip contract: only filenames
  * whose stem satisfies `normalizeTopicName(stem) === stem` are reachable
@@ -60,4 +79,26 @@ export function normalizeTopicName(topic: string): string | undefined {
     return undefined;
   }
   return name;
+}
+
+/** Whether the store lists a topic under `filename`, so a link resolves. */
+export function isListedTopicName(filename: string): boolean {
+  if (!filename.endsWith(MARKDOWN_EXTENSION)) return false;
+  const stem = filename.slice(0, -MARKDOWN_EXTENSION.length);
+  return normalizeTopicName(stem) === stem;
+}
+
+/**
+ * The inventory of a scope whose listed topics are everything it holds, such
+ * as a cloud scope's documents: every name is an entry and every entry has a
+ * name. A store that can hold entries it does not list reports both sets.
+ */
+export function scopeTopicInventory(
+  filenames: Iterable<string>,
+): ScopeTopicInventory {
+  const all = [...filenames];
+  return {
+    names: all.filter(isListedTopicName),
+    identities: new Set(all.map(topicIdentity)),
+  };
 }

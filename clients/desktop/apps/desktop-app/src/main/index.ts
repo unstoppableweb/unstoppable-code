@@ -221,6 +221,7 @@ import {
   IPC_CHANNELS,
   appAdvisorInitialLayoutArgument,
   clampAppAdvisorFloatingSize,
+  type AppAdvisorDockResult,
   type AppAdvisorFloatingSize,
   type AppAdvisorWindowCommand,
   type AppAdvisorWindowLayout,
@@ -360,7 +361,10 @@ import { releaseIdleSplitLocksForRendererLifecycle } from './ipc/github';
 import { setModelHarnessAssignmentController } from './ipc/model-harness-assignments';
 import { installClaudeModAdmissionHost } from './agents/claude-mod-admission-launch';
 import { shutdownOpenCodeConnections } from './ipc/opencode-connection';
-import { reprobeAndApplyCanopyCloudEnforcedSettings } from './ipc/settings';
+import {
+  reprobeAndApplyCanopyCloudEnforcedSettings,
+  stopSettingsWriteRefreshRetries,
+} from './ipc/settings';
 import { cancelAllDiscoveries } from './ipc/worktree-discovery';
 import { whenLedgerLifecycleIdle } from './ledger/lifecycle';
 import {
@@ -634,6 +638,7 @@ import { getExecutionHostPort } from './execution-host/utility-process-host';
 import { registerPluginHandlers } from './plugins';
 import { shutdownCodexPluginMaterializationWorker } from './plugins/codex-plugin-materialization-runner';
 import { startProviderPluginBackfill } from './plugins/provider-plugin-backfill';
+import { startCloudReachBack } from './mcp/cloud-reach-back/start';
 import {
   getCanopyPortalState,
   resumeCanopyPortalIfPossible,
@@ -658,6 +663,10 @@ import { getBackgroundExecutionContextRebinder } from './services/background-exe
 import { getChatStateService } from './services/chat-state-service';
 import { getDesktopInventorySyncService } from './services/desktop-inventory-sync-service';
 import { startOnboardingProfileSync } from './services/onboarding-profile-sync-service';
+import {
+  startLocalModelGatewayMigration,
+  startLocalModelGatewayPolicySync,
+} from './services/local-model-gateway-migration';
 import {
   startOrgEnforcedSettingsSync,
   stopOrgEnforcedSettingsSync,
@@ -809,7 +818,7 @@ let appAdvisorWindow: BrowserWindow | null = null;
 let appAdvisorViewContents: WebContents | null = null;
 let appAdvisorHost: AppAdvisorViewHost<WebContentsView, BrowserWindow> | null =
   null;
-/** Transparent native surfaces owned by the main renderer. */
+/** Transparent native surfaces, each owned by the renderer that opened it. */
 const overlayLayerHost = new OverlayLayerHost({
   routeAppLink: (url): Promise<unknown> =>
     routeSafeNavigation({
@@ -913,9 +922,12 @@ let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
 let disposeOnboardingProfileSync: (() => void) | null = null;
+let disposeLocalModelGatewayPolicySync: (() => void) | null = null;
+let disposeLocalModelGatewayMigration: (() => void) | null = null;
 let childToolsSettlement: ReturnType<typeof startChildToolsSettlement> | null =
   null;
 let disposeProviderPluginBackfill: (() => void) | null = null;
+let disposeCloudReachBack: (() => void) | null = null;
 let disposeNativeAccountChangeTracking: (() => void) | null = null;
 let disposeProviderAccountConnectTelemetry: (() => void) | null = null;
 let aiGatewayModelCatalogService: AiGatewayModelCatalogService | null = null;
@@ -2021,6 +2033,9 @@ function unlockStartupWork(): void {
     },
   );
   disposeOnboardingProfileSync ??= startOnboardingProfileSync();
+  // A device AI gateway set up while signed out moves to the account that
+  // signs in, when that account has none.
+  disposeLocalModelGatewayMigration ??= startLocalModelGatewayMigration();
   // Flush turn ratings queued while signed out (CAN-1521). Sign-in is the
   // trigger that makes rate-as-guest → sign in work.
   disposeTurnFeedbackFlush ??= subscribeTurnFeedbackFlush();
@@ -2034,6 +2049,9 @@ function unlockStartupWork(): void {
   disposeProviderPluginBackfill ??= startProviderPluginBackfill({
     subscribe: subscribeConfirmedProviderAuth,
   });
+  // Cloud chats reach this computer's allowed MCP servers (CAN-6176); it
+  // holds nothing until a server is allowed.
+  disposeCloudReachBack ??= startCloudReachBack();
   // A sign-in to a different Claude or Codex account ends session-scoped AI
   // Credits routing (CAN-4200). Startup replay covers a switch made while the
   // app was closed.
@@ -2144,6 +2162,7 @@ async function cleanupRuntimeResources(
 
   appIsQuitting = true;
   stopPreferencesGenerationStamp();
+  stopSettingsWriteRefreshRetries();
   stopMainEventLoopMonitor?.();
   stopMainEventLoopMonitor = null;
   stopPersonalCatalogSync();
@@ -2217,10 +2236,16 @@ async function cleanupRuntimeResources(
     stopOrgEnforcedSettingsSync();
     disposeOnboardingProfileSync?.();
     disposeOnboardingProfileSync = null;
+    disposeLocalModelGatewayMigration?.();
+    disposeLocalModelGatewayMigration = null;
+    disposeLocalModelGatewayPolicySync?.();
+    disposeLocalModelGatewayPolicySync = null;
     disposeCuratedMcpRefresh?.();
     disposeCuratedMcpRefresh = null;
     disposeProviderPluginBackfill?.();
     disposeProviderPluginBackfill = null;
+    disposeCloudReachBack?.();
+    disposeCloudReachBack = null;
     disposeNativeAccountChangeTracking?.();
     disposeNativeAccountChangeTracking = null;
     disposeProviderAccountConnectTelemetry?.();
@@ -2919,6 +2944,97 @@ function setAppAdvisorFloatingSize(size: unknown): AppAdvisorWindowState {
   return getAppAdvisorWindowState();
 }
 
+/** Whether App Advisor's page shows in the main window (panel or page). */
+function appAdvisorInMainWindow(): boolean {
+  const placement = appAdvisorHost?.placement;
+  return placement === 'floating' || placement === 'docked';
+}
+
+/** Counts dock requests, so a capture that resolves late never wins. */
+let appAdvisorDockRequestSeq = 0;
+
+function isFiniteDockNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * The main window's page reports where the docked Orchestrator page goes (its
+ * content area, in the page's CSS px) and whether it may show. `request` is
+ * untrusted renderer input, accepted only from the main window's page.
+ * Before hiding the page for an overlay, the page asks for a still frame of
+ * it to show in its place.
+ */
+async function setAppAdvisorDock(
+  sender: WebContents,
+  request: unknown,
+): Promise<AppAdvisorDockResult> {
+  const main = mainWindow;
+  const host = appAdvisorHost;
+  if (
+    !main ||
+    main.isDestroyed() ||
+    sender !== main.webContents ||
+    !host ||
+    typeof request !== 'object' ||
+    request === null ||
+    !('rect' in request) ||
+    !('visible' in request) ||
+    typeof request.visible !== 'boolean'
+  ) {
+    return { state: getAppAdvisorWindowState() };
+  }
+  const { rect, visible } = request;
+  const seq = ++appAdvisorDockRequestSeq;
+  let dipRect: Electron.Rectangle | null = null;
+  if (rect !== null) {
+    if (
+      typeof rect !== 'object' ||
+      !('x' in rect) ||
+      !('y' in rect) ||
+      !('width' in rect) ||
+      !('height' in rect) ||
+      !isFiniteDockNumber(rect.x) ||
+      !isFiniteDockNumber(rect.y) ||
+      !isFiniteDockNumber(rect.width) ||
+      !isFiniteDockNumber(rect.height)
+    ) {
+      return { state: getAppAdvisorWindowState() };
+    }
+    // The page reports CSS px; the view is placed in window DIPs, which
+    // differ under the interface scale's zoom.
+    const zoom = main.webContents.getZoomFactor();
+    dipRect = {
+      x: Math.round(rect.x * zoom),
+      y: Math.round(rect.y * zoom),
+      width: Math.max(0, Math.round(rect.width * zoom)),
+      height: Math.max(0, Math.round(rect.height * zoom)),
+    };
+  }
+  let frame: string | undefined;
+  const contents = appAdvisorViewContents;
+  if (
+    'captureFrame' in request &&
+    request.captureFrame === true &&
+    host.placement === 'docked' &&
+    contents &&
+    !contents.isDestroyed()
+  ) {
+    try {
+      const image = await contents.capturePage();
+      if (!image.isEmpty()) frame = image.toDataURL();
+    } catch {
+      // No frame: the page shows its background meanwhile.
+    }
+    // A newer request (a closed page's teardown, a reopened page) arrived
+    // during the capture: its state stands.
+    if (seq !== appAdvisorDockRequestSeq) {
+      return { state: getAppAdvisorWindowState() };
+    }
+  }
+  host.setDock(dipRect, visible);
+  return { state: getAppAdvisorWindowState(), ...(frame ? { frame } : {}) };
+}
+
 /**
  * The main page crashed or a main-frame reload committed. Main waits for the
  * new renderer before it delivers app links or notifications to it, and App
@@ -3075,6 +3191,12 @@ async function sendAppAdvisorWindowRequestCommands(
         ? { requestId: request.archivedOverview.requestId }
         : {}),
     });
+  }
+  if (request?.newWorkEntry === true) {
+    send({ type: 'new_entry' });
+  }
+  if (request?.openSettings === true) {
+    send({ type: 'open_settings' });
   }
   if (request?.quickPrompt?.trim()) {
     const chatId = request.quickPromptChatId ?? randomUUID();
@@ -3289,8 +3411,27 @@ function publishAutoArchiveNotification(
   }
 }
 
-function configureSafeNavigation(win: RendererSurfaceWindow): void {
+function configureSafeNavigation(
+  win: RendererSurfaceWindow,
+  overlayLayerWindow?: BrowserWindow,
+): void {
   win.webContents.setWindowOpenHandler((details) => {
+    // A page that hosts Browser views in `overlayLayerWindow` may open its
+    // own recognized same-origin layers there, as the main renderer does.
+    if (overlayLayerWindow && !overlayLayerWindow.isDestroyed()) {
+      const slot = decideOverlayLayerWindowOpen(
+        details,
+        win.webContents.id,
+        win.webContents.id,
+      );
+      if (slot) {
+        return overlayLayerHost.createWindowOpenResponse(
+          overlayLayerWindow,
+          slot,
+          win.webContents,
+        );
+      }
+    }
     const safeSchemes = new Set(['http:', 'https:', 'mailto:']);
     try {
       const parsed = new URL(details.url);
@@ -3471,7 +3612,9 @@ async function createAppAdvisorWindowIfMissing(
     const initialLayout: AppAdvisorWindowLayout =
       openLayout === 'full' || !mainWindow || mainWindow.isDestroyed()
         ? 'full'
-        : 'floating';
+        : openLayout === 'docked'
+          ? 'docked'
+          : 'floating';
     const view = new WebContentsView({
       webPreferences: {
         ...windowOptions.webPreferences,
@@ -3497,11 +3640,11 @@ async function createAppAdvisorWindowIfMissing(
       // menu over whichever window holds the page when it opens.
       attachInputGuardsToContents(contents);
       attachEditableContextMenuToContents(contents, () =>
-        appAdvisorHost?.placement === 'floating' ? mainWindow : win,
+        appAdvisorInMainWindow() ? mainWindow : win,
       );
       attachLinkContextMenuToContents(
         contents,
-        () => (appAdvisorHost?.placement === 'floating' ? mainWindow : win),
+        () => (appAdvisorInMainWindow() ? mainWindow : win),
         linkContextMenuDeps(contents),
       );
     }
@@ -3591,7 +3734,15 @@ async function createAppAdvisorWindowIfMissing(
       broadcastAppAdvisorWindowState();
     });
 
-    configureSafeNavigation(rendererSurface);
+    // The full Orchestrator page sits under its own Browser views, so its
+    // toasts lift into a notifications layer above them, as the main
+    // window's do. The layer lives in this window: the page has Browser
+    // views only here.
+    configureSafeNavigation(rendererSurface, view ? win : undefined);
+    if (view) {
+      overlayLayerHost.observeWindow(win);
+      overlayLayerHost.observeOpener(contents);
+    }
 
     contents.on('did-finish-load', (): void => {
       appAdvisorWindowReady = false;
@@ -3780,14 +3931,21 @@ async function applyAppAdvisorWindowLayout(
     // to its full window.
     earlyAccess: true,
   });
-  if (layout === 'floating') {
-    if (host.placement === 'floating') return 'floating';
+  if (layout === 'floating' || layout === 'docked') {
+    if (host.placement === layout) return layout;
     if (win.isVisible()) {
       await cancelDebouncedAppAdvisorWindowStateAndFlush(win);
       win.hide();
     }
-    const shown = appAdvisorLayoutAfterFloatingShow(await host.showFloating());
-    if (shown !== 'full') return shown;
+    if (layout === 'docked') {
+      // The main window's page then reports where the page goes.
+      if (host.showDocked()) return 'docked';
+    } else {
+      const shown = appAdvisorLayoutAfterFloatingShow(
+        await host.showFloating(),
+      );
+      if (shown !== 'full') return shown;
+    }
   }
   host.showFull();
   return 'full';
@@ -3822,12 +3980,15 @@ async function openAppAdvisorWindow(
   appAdvisorMinimized = false;
   const layout = await applyAppAdvisorWindowLayout(
     win,
-    appAdvisorRequestedLayout(request, { archivedChat }),
+    appAdvisorRequestedLayout(request, {
+      archivedChat,
+      docked: appAdvisorHost?.placement === 'docked',
+    }),
   );
   if (layout === 'superseded') {
     // A close (or another open) replaced this one while the panel painted;
     // that move decided what shows.
-  } else if (layout === 'floating') {
+  } else if (layout === 'floating' || layout === 'docked') {
     presentAppAdvisorPanel(request);
   } else if (shouldShowUiAutomationWindow()) {
     // Keep UI-automation windows hidden/unfocused (still scriptable) so both
@@ -3883,7 +4044,10 @@ async function closeAppAdvisorWindow(
     options,
     floating: appAdvisorHost?.placement === 'floating',
   });
-  if (appAdvisorHost?.placement === 'floating') {
+  if (
+    appAdvisorHost?.placement === 'floating' ||
+    appAdvisorHost?.placement === 'docked'
+  ) {
     appAdvisorHost.hide();
   } else {
     await cancelDebouncedAppAdvisorWindowStateAndFlush(win);
@@ -3998,6 +4162,7 @@ function createWindowWithState(preferences: PreferencesData): void {
   primaryWindowFocus.track(mainWindow);
   registerIpcSurface(mainWindow.webContents, 'main');
   overlayLayerHost.observeWindow(mainWindow);
+  overlayLayerHost.observeOpener(mainWindow.webContents);
   // A crashed, reloaded or destroyed renderer holds no edits and cannot answer
   // a pending unsaved-changes prompt, so the guard lets close and quit through.
   const releaseUnsavedCloseGuard = (): void => {
@@ -4121,6 +4286,8 @@ function createWindowWithState(preferences: PreferencesData): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
     mainWindowRendererReady = false;
+    // This listener runs before the floating host's own closed listener.
+    if (appAdvisorHost?.layout === 'floating') appAdvisorHost.dispose();
     // No renderer is left to place a link (CAN-2632).
     setLinkBrowserTargetAvailable(false);
     // App Advisor now raises its own chat notifications.
@@ -5354,6 +5521,9 @@ void app.whenReady().then(async (): Promise<void> => {
   startOrgEnforcedSettingsSync(async (): Promise<void> => {
     await reprobeAndApplyCanopyCloudEnforcedSettings();
   });
+  // Signed out the re-probe never applies, so the device AI gateway reaches
+  // the catalog through its own pass, after the model registries above.
+  disposeLocalModelGatewayPolicySync ??= startLocalModelGatewayPolicySync();
   installOrgProjectsCapabilityRefresh({
     flags: {
       isEnabled: (): boolean =>
@@ -6725,6 +6895,12 @@ void app.whenReady().then(async (): Promise<void> => {
     {
       getMainWindow,
       overlayLayerHost,
+      isOverlayLayerOpener: (contents): boolean =>
+        (mainWindow !== null &&
+          !mainWindow.isDestroyed() &&
+          contents === mainWindow.webContents) ||
+        (appAdvisorViewContents !== null &&
+          contents === appAdvisorViewContents),
       getAppAdvisorWindow,
       openAppAdvisorWindow,
       ensureAppAdvisorWindow,
@@ -6733,6 +6909,7 @@ void app.whenReady().then(async (): Promise<void> => {
       getAppAdvisorWindowState,
       markAppAdvisorWindowRendererReady,
       setAppAdvisorFloatingSize,
+      setAppAdvisorDock,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
       appAdvisorWorkspaceOperations: {
@@ -6745,9 +6922,9 @@ void app.whenReady().then(async (): Promise<void> => {
       installScopePinProvider: (provider): (() => void) =>
         getChatStateService().setScopePinProvider(provider),
       isMainWindowRendererReady: (): boolean => mainWindowRendererReady,
-      // Browser views < main-window overlay layers < floating App Advisor.
+      // Browser views < overlay layers < floating App Advisor.
       onBrowserViewAttached: (window: BrowserWindow): void => {
-        if (window === mainWindow) overlayLayerHost.raise(window);
+        overlayLayerHost.raise(window);
         appAdvisorHost?.raise(window);
       },
       unsavedCloseGuard,

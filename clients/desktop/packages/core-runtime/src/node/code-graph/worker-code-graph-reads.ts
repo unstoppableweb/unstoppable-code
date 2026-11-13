@@ -5,6 +5,7 @@ import type {
   CanopyQueryHandler,
   CanopyRetryDirective,
   WORKER_CODE_GRAPH_READ_FAILURE_CODES,
+  WorkerCodeGraphLanguagesValidateParams,
   WorkerCodeGraphLanguagesValidateResult,
   WorkerCodeGraphQueryParams,
   WorkerCodeGraphQueryResult,
@@ -91,7 +92,8 @@ export interface CodeGraphReadWorker {
     signal: AbortSignal,
   ): Promise<CodeGraphReadOutcome<CodeGraphSnapshotImportCounts>>;
   validateLanguages(
-    scope: WorkerCodeGraphScope,
+    params: WorkerCodeGraphLanguagesValidateParams,
+    signal: AbortSignal,
   ): Promise<CodeGraphReadOutcome<WorkerCodeGraphLanguagesValidateResult>>;
 }
 
@@ -275,8 +277,8 @@ export function createWorkerCodeGraphReadHandlers(
         );
         return { snapshot: toJsonValue(snapshot) };
       },
-      'worker.codeGraph.languages.validate': async ({ scope }) =>
-        settle(await worker.validateLanguages(scope)),
+      'worker.codeGraph.languages.validate': async (params, context) =>
+        settle(await worker.validateLanguages(params, context.signal)),
     },
     instructions: {
       'worker.codeGraph.snapshot.import': (params, context) =>

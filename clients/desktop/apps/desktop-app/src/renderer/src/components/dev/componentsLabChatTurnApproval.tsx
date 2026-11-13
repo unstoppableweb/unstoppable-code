@@ -159,6 +159,20 @@ const REQUESTS: readonly {
     },
   },
   {
+    label: 'Read a file',
+    request: {
+      requestId: 'tool-read',
+      title: 'Claude wants to use Read',
+      details: {
+        kind: 'tool',
+        toolName: 'Read',
+        path: '/Users/sam/projects/storefront/src/checkout/cart-summary.tsx',
+        displayPath: 'src/checkout/cart-summary.tsx',
+      },
+      suggestedTarget: { kind: 'tool', toolName: 'Read' },
+    },
+  },
+  {
     label: 'Other tool',
     request: {
       requestId: 'tool',

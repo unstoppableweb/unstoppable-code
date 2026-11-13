@@ -19,7 +19,7 @@ import {
   parseStructuredSchema,
   redactNormalizedStructuredValue,
   redactNormalizedText,
-} from '../agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 
 type CondenseStrategy =
   | 'key-outputs'

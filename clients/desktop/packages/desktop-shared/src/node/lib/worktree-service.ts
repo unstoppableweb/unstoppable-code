@@ -1,4 +1,4 @@
-import { worktreeListProcessLock } from '../w5-host-cohort/process-file-lock';
+import { worktreeListProcessLock } from '@canopy/execution-engine/node/w5-host-cohort/process-file-lock';
 import {
   lockCheckout,
   ownedCliWorktreeCreations,
@@ -20,7 +20,10 @@ import type {
   WorktreeGitFailedEvent,
   WorktreeGitReadyEvent,
 } from '../../types';
-import { writeFileAtomically, type AtomicFileStorage } from './atomic-file';
+import {
+  writeFileAtomically,
+  type AtomicFileStorage,
+} from '@canopy/execution-engine/node/lib/atomic-file';
 import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import { getWorkspaceItem } from './workspace-cli-reads';
 import {

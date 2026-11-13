@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   CAPABILITY_TILE_CELL_CLASS,
+  useCapabilityTileLayout,
   CapabilityTile,
   capabilityTileModel,
   RichHoverTooltip,
@@ -96,23 +97,33 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
       shareData.installedSkills,
     ],
   );
+  // Inside a turn's Agent activity the tile is a row (AA1); a card elsewhere.
+  const row = useCapabilityTileLayout() === 'row';
   const wrapTrigger = useCallback(
     (trigger: ReactElement<TooltipTriggerProps>): JSX.Element => (
       <RichHoverTooltip
         content={<AgentArtifactTooltip receipt={receipt} model={model} />}
-        // CAPABILITY_TILE_CELL_CLASS, spelled out: this prop takes only a
-        // static class string.
-        triggerWrapperClassName="h-full w-full supports-[grid-template-rows:subgrid]:row-span-2 supports-[grid-template-rows:subgrid]:grid supports-[grid-template-rows:subgrid]:grid-rows-subgrid"
+        // A row's trigger fills the row; a card's fills its grid cell
+        // (CAPABILITY_TILE_CELL_CLASS, spelled out: this prop takes only a
+        // static class string).
+        triggerWrapperClassName={
+          row
+            ? 'flex min-w-0 flex-1'
+            : 'h-full w-full supports-[grid-template-rows:subgrid]:row-span-2 supports-[grid-template-rows:subgrid]:grid supports-[grid-template-rows:subgrid]:grid-rows-subgrid'
+        }
       >
         {trigger}
       </RichHoverTooltip>
     ),
-    [model, receipt],
+    [model, receipt, row],
   );
   return (
-    // Fills the Agent activity grid cell and passes its rows through, so
-    // cards in a row share a height and a footer line.
-    <div ref={wrapperRef} className={CAPABILITY_TILE_CELL_CLASS}>
+    // A card fills the grid cell and passes its rows through, so cards in a
+    // row share a height and a footer line; a row is one line of the list.
+    <div
+      ref={wrapperRef}
+      className={row ? 'min-w-0' : CAPABILITY_TILE_CELL_CLASS}
+    >
       <CapabilityTile
         model={model}
         action={action}

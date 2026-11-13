@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { ParentPort } from 'electron';
 import type { ChatSearchQueryRequest } from '@canopy/desktop-shared/types';
-import { queryChatSearchDatabase } from './query';
+import { queryChatSearchDatabase, type AgentChatSearchFilter } from './query';
 
 const BUSY_TIMEOUT_MS = 5000;
 
@@ -10,6 +10,7 @@ export interface ChatSearchQueryWorkerRequest {
   request: ChatSearchQueryRequest;
   now?: number;
   offset?: number;
+  agent?: AgentChatSearchFilter;
 }
 
 export type ChatSearchQueryWorkerResponse =
@@ -31,7 +32,15 @@ function isWorkerRequest(
     (value.request.limit === undefined ||
       typeof value.request.limit === 'number') &&
     (value.now === undefined || typeof value.now === 'number') &&
-    (value.offset === undefined || typeof value.offset === 'number')
+    (value.offset === undefined || typeof value.offset === 'number') &&
+    (value.agent === undefined ||
+      (isRecord(value.agent) &&
+        typeof value.agent.projectId === 'string' &&
+        typeof value.agent.excludeChatId === 'string' &&
+        (value.agent.documentId === undefined ||
+          typeof value.agent.documentId === 'string') &&
+        (value.agent.excerpt === undefined ||
+          typeof value.agent.excerpt === 'boolean')))
   );
 }
 
@@ -59,6 +68,7 @@ export function executeChatSearchQuery(
         request.request,
         request.now,
         request.offset,
+        request.agent,
       ),
     };
   } catch (error) {

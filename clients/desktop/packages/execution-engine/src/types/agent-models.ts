@@ -56,7 +56,7 @@ export const DEFAULT_HELPER_MODEL: ChatModel = 'sonnet';
 export interface AgentModelDefinition {
   id: string;
   name: string;
-  /** A provider model, or {@link AGENT_DEFAULT_BASE_MODEL} to inherit. */
+  /** Default provider model, always overrideable by a route; "default" inherits the destination. */
   baseModel: ChatModel;
   instructions: string;
   pluginSelections: ChatTabPluginSelections;

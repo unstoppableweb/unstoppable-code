@@ -289,6 +289,11 @@ export interface ModelBillingPreference {
 }
 
 export interface ModelPickerMenuProps {
+  readonly triggerControlProps?: {
+    readonly id: string;
+    readonly 'aria-describedby': string | undefined;
+    readonly 'aria-invalid': true | undefined;
+  };
   readonly catalog: ModelCatalog;
   readonly currentModel?: string;
   readonly currentModelLabel?: string;
@@ -883,6 +888,7 @@ function coerceProvider(
 }
 
 export function ModelPickerMenu({
+  triggerControlProps,
   catalog,
   currentModel,
   currentModelLabel,
@@ -1920,6 +1926,7 @@ export function ModelPickerMenu({
 
   const triggerControl = (
     <ModelPickerTriggerControl
+      {...triggerControlProps}
       ref={triggerRef}
       type="button"
       data-testid={`${testIdPrefix}-picker`}

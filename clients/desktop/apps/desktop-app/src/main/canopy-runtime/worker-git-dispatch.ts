@@ -1,4 +1,10 @@
 import {
+  assertWorkingDirectoryAvailable,
+  withWorkingDirectoryReadCheck,
+} from '@canopy/desktop-shared/node/lib/working-directory';
+import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
+import { isWorkspaceTargetRemovalPending } from '../lib/workspace-target-exclusion';
+import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
@@ -141,39 +147,54 @@ export async function listWorktreeBranches(
     request.worktreeId,
   );
   const repoId = request.repoId;
-  if (target.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
-    // Compatibility debt (CAN-4107 D9): run directories are not workspace
-    // records, so the viewer keeps the direct listing.
-    return listBranches(resolveWorktreeRepoPath({ ...target, repoId }), {
-      resolveDefaultBranch: resolveFreshDefaultBranch,
-    });
+  const cwd = resolveWorktreeRepoPath({ ...target, repoId });
+  if (
+    !(await isWorktreeReadAvailable(target.projectId, target.worktreeId, cwd))
+  ) {
+    await assertWorkingDirectoryAvailable(cwd);
+    throw new Error(`Worktree ${target.worktreeId} is no longer available`);
   }
-  try {
-    const result = await queryBranchList(
-      dispatcher,
-      caller,
-      {
-        scope: {
-          workspaceId: target.projectId,
-          worktreeId: target.worktreeId,
-          ...(repoId === undefined ? {} : { repoId }),
-        },
-        repository: { kind: 'checkout' },
-      },
-      routing,
-      {
-        scope: {
-          workspaceId: request.projectId,
-          worktreeId: request.worktreeId,
-          ...(repoId === undefined ? {} : { repoId }),
-        },
-        repository: { kind: 'checkout' },
-      },
-    );
-    return { branches: result.branches, defaultBranch: result.defaultBranch };
-  } catch (error) {
-    throw hostError(error);
-  }
+  return withWorkingDirectoryReadCheck(
+    () => !isWorkspaceTargetRemovalPending(target.projectId, target.worktreeId),
+    async () => {
+      if (target.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+        // Compatibility debt (CAN-4107 D9): run directories are not workspace
+        // records, so the viewer keeps the direct listing.
+        return listBranches(resolveWorktreeRepoPath({ ...target, repoId }), {
+          resolveDefaultBranch: resolveFreshDefaultBranch,
+        });
+      }
+      try {
+        const result = await queryBranchList(
+          dispatcher,
+          caller,
+          {
+            scope: {
+              workspaceId: target.projectId,
+              worktreeId: target.worktreeId,
+              ...(repoId === undefined ? {} : { repoId }),
+            },
+            repository: { kind: 'checkout' },
+          },
+          routing,
+          {
+            scope: {
+              workspaceId: request.projectId,
+              worktreeId: request.worktreeId,
+              ...(repoId === undefined ? {} : { repoId }),
+            },
+            repository: { kind: 'checkout' },
+          },
+        );
+        return {
+          branches: result.branches,
+          defaultBranch: result.defaultBranch,
+        };
+      } catch (error) {
+        throw hostError(error);
+      }
+    },
+  );
 }
 
 export async function listHomeBranchTargets(

@@ -6,8 +6,8 @@ import type { CanopyCapabilities } from './capabilities';
 
 /**
  * `pipelineCloudRuns` from a web core manifest: true only when it reports
- * every cloud pipeline run operation available. An empty group, which is
- * the state until the run operations land (CP-21), is never available.
+ * every cloud pipeline run operation available. An empty group is never
+ * available.
  */
 export function pipelineCloudRunsFromManifest(
   operations: readonly Pick<

@@ -278,7 +278,8 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
         | 'resource_exhausted'
         | 'unauthenticated'
         | 'not_found'
-        | 'unavailable',
+        | 'unavailable'
+        | 'internal',
       code?: `core.${string}.${string}`,
     ): CanopyClientError =>
       new CanopyClientError({
@@ -287,20 +288,24 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
         retry: { kind: 'never' },
         ...(code === undefined ? {} : { code }),
       });
-    const cases: [CanopyClientError, string][] = [
+    const cases: [CanopyClientError, Record<string, unknown>][] = [
       [
         refusal('resource_exhausted', 'core.chat.attachment.tooLarge'),
-        'too_large',
+        { reason: 'too_large' },
       ],
-      [refusal('unauthenticated'), 'unauthenticated'],
-      [refusal('not_found'), 'rejected'],
-      [refusal('unavailable'), 'offline'],
+      [refusal('unauthenticated'), { reason: 'unauthenticated' }],
+      // A refusal keeps the web core's own words, which the composer shows
+      // instead of a bare "Couldn't upload it" (CAN-6369).
+      [refusal('not_found'), { reason: 'rejected', message: 'refused' }],
+      // An error the client raised itself keeps the composer's own words.
+      [refusal('internal'), { reason: 'rejected' }],
+      [refusal('unavailable'), { reason: 'offline' }],
     ];
-    for (const [error, reason] of cases) {
+    for (const [error, expected] of cases) {
       mockInstruction.mockImplementationOnce(() => Promise.reject(error));
       await expect(upload(MAIN, 'web-core:chat-1', file())).resolves.toEqual({
         ok: false,
-        reason,
+        ...expected,
       });
     }
   });

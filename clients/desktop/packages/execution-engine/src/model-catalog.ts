@@ -1,3 +1,4 @@
+import { resolveAgentBaseModel } from './lib/agent-model-selection';
 import type { AiGatewayModelEntry, GatewayRouteEntry } from './execution-types';
 import { getRawCopilotModelId, isCopilotModel } from './lib/copilot-models';
 import {
@@ -139,9 +140,12 @@ function isCodexHarnessModelId(resolved: string): boolean {
 /** Cursor catalog metadata is discovered lazily; persisted identity survives cold starts. */
 export const CURSOR_MODELS: string[] = ['cursor-default'];
 
+let cursorCatalogInitialized = false;
+
 export const COPILOT_MODELS: string[] = [];
 
 let copilotEntries: CopilotModelEntry[] = [];
+let copilotCatalogInitialized = false;
 
 export function initCopilotModels(entries: readonly CopilotModelEntry[]): void {
   _managedPickerMappings.delete('copilot');
@@ -156,6 +160,7 @@ export function initCopilotModels(entries: readonly CopilotModelEntry[]): void {
     COPILOT_MODELS.length,
     ...copilotEntries.map((entry) => entry.id),
   );
+  copilotCatalogInitialized = true;
 }
 
 export function getCopilotModelEntries(): CopilotModelEntry[] {
@@ -168,6 +173,21 @@ export function getCopilotModelEntries(): CopilotModelEntry[] {
 export const OPENCODE_MODELS: string[] = [];
 
 let opencodeEntries: OpenCodeModelEntry[] = [];
+let opencodeCatalogInitialized = false;
+
+/** Empty published catalogs are authoritative; undiscovered catalogs are not. */
+export function hasDiscoveredAccountModelCatalog(
+  provider: 'cursor' | 'copilot' | 'opencode',
+): boolean {
+  switch (provider) {
+    case 'cursor':
+      return cursorCatalogInitialized;
+    case 'copilot':
+      return copilotCatalogInitialized;
+    case 'opencode':
+      return opencodeCatalogInitialized;
+  }
+}
 
 export function initOpenCodeModels(
   entries: readonly OpenCodeModelEntry[],
@@ -184,6 +204,7 @@ export function initOpenCodeModels(
     OPENCODE_MODELS.length,
     ...opencodeEntries.map((entry) => entry.id),
   );
+  opencodeCatalogInitialized = true;
 }
 
 export function getOpenCodeModelEntries(): OpenCodeModelEntry[] {
@@ -412,6 +433,7 @@ export function initCursorModels(entries: CursorModelEntry[]): void {
         ...entry.supportedThinkingLevels,
       ]);
   }
+  cursorCatalogInitialized = true;
 }
 
 /**
@@ -503,8 +525,7 @@ const _agentModels: Record<string, AgentModelRegistryEntry> =
   createModelRegistryMap();
 
 /**
- * Registry entry for an Agent id, or for a chat route id that pins an
- * inheriting Agent to the base model resolved when its chat was instantiated.
+ * Registry entry for a bare Agent or its explicit-model route.
  */
 function lookupAgentModelEntry(
   model: string,
@@ -514,13 +535,18 @@ function lookupAgentModelEntry(
   const route = parseAgentRouteModelId(model);
   const agent = route ? _agentModels[route.agentId] : undefined;
   if (!route || !agent) return undefined;
-  // Only an inheriting Agent takes its base from the route; a pinned Agent
-  // keeps its own base whatever route id names it.
-  if (!isAgentDefaultBaseModel(agent.baseModel)) return agent;
-  const available = isBaseModelSelectableForAgent(route.baseModel);
+  const choice = resolveAgentBaseModel(
+    { explicitModel: route.baseModel, agentDefaultModel: agent.baseModel },
+    resolveModelAlias,
+  );
+  const baseModel = choice.kind === 'resolved' ? choice.model : route.baseModel;
+  const available =
+    choice.kind === 'resolved' && isSelectableAgentOverrideModel(baseModel);
+  const { unavailableReason, ...entry } = agent;
+  void unavailableReason;
   return {
-    ...agent,
-    baseModel: route.baseModel,
+    ...entry,
+    baseModel,
     available,
     ...(available
       ? {}
@@ -1593,6 +1619,7 @@ export function stripOllamaModelPrefix(model: string): string {
 }
 
 export const DEFAULT_CLAUDE_MODEL: ClaudeModel = 'opus[1m]';
+export const DEFAULT_CODEX_MODEL: string = 'gpt-6.1-sol';
 
 export function getProviderForModel(
   model: ChatModel,
@@ -1924,6 +1951,34 @@ export function isBaseModelSelectableForAgent(model: string): boolean {
     isCursorModel(resolved) ||
     isCopilotModel(resolved) ||
     isOpenCodeModel(resolved) ||
+    AI_GATEWAY_MODELS.includes(resolved) ||
+    OLLAMA_MODELS.includes(resolved)
+  );
+}
+
+/**
+ * Account catalogs start cold: admit persisted identities until publication,
+ * leaving exact live-model validation to launch. An initialized catalog,
+ * including an empty/revoked one, requires membership instead.
+ */
+export function isSelectableAgentOverrideModel(model: string): boolean {
+  if (isAgentModel(model)) {
+    return false;
+  }
+  const resolved = resolveModelAlias(model);
+  return (
+    CLAUDE_MODELS.includes(resolved) ||
+    CODEX_MODELS.includes(resolved) ||
+    CODEX_ACCOUNT_MODELS.includes(resolved) ||
+    (isCursorModel(resolved) &&
+      (!hasDiscoveredAccountModelCatalog('cursor') ||
+        CURSOR_MODELS.includes(resolved))) ||
+    (isCopilotModel(resolved) &&
+      (!hasDiscoveredAccountModelCatalog('copilot') ||
+        COPILOT_MODELS.includes(resolved))) ||
+    (isOpenCodeModel(resolved) &&
+      (!hasDiscoveredAccountModelCatalog('opencode') ||
+        OPENCODE_MODELS.includes(resolved))) ||
     AI_GATEWAY_MODELS.includes(resolved) ||
     OLLAMA_MODELS.includes(resolved)
   );

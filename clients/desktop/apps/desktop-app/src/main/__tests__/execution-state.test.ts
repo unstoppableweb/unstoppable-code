@@ -17,12 +17,12 @@ import {
   recoverInterruptedState,
   resumePipeline,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
-import { normalizeUsageInitiationSource } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+} from '@canopy/execution-engine/node/pipelines/executor';
+import { normalizeUsageInitiationSource } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import type {
   ExecutionState,
   StepResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 
 function listStateDirectory(dir: string): string[] {
   return fs.readdirSync(dir).filter((name) => name !== '.locks');

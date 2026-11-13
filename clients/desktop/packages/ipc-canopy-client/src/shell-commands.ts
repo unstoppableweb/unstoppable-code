@@ -1,3 +1,4 @@
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 /**
  * Shell commands (CAN-5985) over desktop IPC: the chat, standalone chat and
  * editor operations the web shell used to reach only through Portal
@@ -312,9 +313,26 @@ function providerForModel(
   const model = registry.aliases?.[requested] ?? requested;
   const native = find(model);
   if (native !== null) return native;
-  const agent = registry.agents?.find((entry) => entry.id === model);
+  const route = parseAgentRouteModelId(model);
+  const agent = registry.agents?.find(
+    (entry) => entry.id === (route?.agentId ?? model),
+  );
   if (agent === undefined) return null;
-  return find(registry.aliases?.[agent.baseModel] ?? agent.baseModel);
+  const base = route?.baseModel ?? agent.baseModel;
+  const resolvedBase = registry.aliases?.[base] ?? base;
+  const provider = find(resolvedBase);
+  if (provider !== null || route === null) return provider;
+  // A cold Agent route needs only a dispatch hint here. Host admission still
+  // validates the exact model, Agent authorization, plugins and policy.
+  for (const accountProvider of ['cursor', 'copilot', 'opencode'] as const) {
+    if (
+      registry[accountProvider] === undefined &&
+      (resolvedBase.startsWith(`${accountProvider}:`) ||
+        (accountProvider === 'cursor' && resolvedBase === 'cursor-default'))
+    )
+      return accountProvider;
+  }
+  return null;
 }
 
 interface MintedReference {

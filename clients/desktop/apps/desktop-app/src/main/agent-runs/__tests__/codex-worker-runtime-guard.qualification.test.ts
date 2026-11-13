@@ -51,10 +51,10 @@ const mockResolveOllama = jest.fn<
 );
 
 jest.mock(
-  '@canopy/desktop-shared/node/codex-runtime',
+  '@canopy/execution-engine/node/codex-runtime',
   (): Record<string, unknown> => ({
     ...jest.requireActual<Record<string, unknown>>(
-      '@canopy/desktop-shared/node/codex-runtime',
+      '@canopy/execution-engine/node/codex-runtime',
     ),
     createCodexRuntimeService: (options: unknown): unknown =>
       mockCreateCodexRuntimeService(options),

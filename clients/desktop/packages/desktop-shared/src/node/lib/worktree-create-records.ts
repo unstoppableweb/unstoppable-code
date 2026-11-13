@@ -1,5 +1,5 @@
 import { getCanopyDataDir } from '../../canopy-paths';
-import { withW5ProcessFileLocks } from '../w5-host-cohort/process-file-lock';
+import { withW5ProcessFileLocks } from '@canopy/execution-engine/node/w5-host-cohort/process-file-lock';
 import type { W5FileStore } from '@canopy/core-runtime/node/w5/file-store';
 import { withW5RepositoryLocks } from '@canopy/core-runtime/node/w5/repository-locks';
 import {

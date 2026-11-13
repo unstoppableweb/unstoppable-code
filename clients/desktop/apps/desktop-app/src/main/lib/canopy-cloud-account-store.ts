@@ -1,3 +1,10 @@
+import {
+  normalizeOrganizationAccessLossState,
+  prepareOrganizationAccessLossState,
+  type OrganizationAccessLossRecord,
+  type OrganizationAccessLossWorkspace,
+  type OrganizationAccessLossState,
+} from './organization-access-loss-record';
 import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
@@ -67,6 +74,8 @@ const ACCOUNT_OPERATION_QUEUE_TIMEOUT_MS = 30_000;
 export const CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR = `Secure storage is unavailable for ${CLOUD_DISPLAY_NAME} credentials.`;
 
 export interface CanopyCloudAccountEntry {
+  /** Recoverable handoff; private to main, never projected to clients. */
+  organizationAccessLossState?: OrganizationAccessLossState;
   apiKey: string;
   authMode?: CanopyCloudAuthMode;
   credentialSource?: CanopyCloudCredentialSource;
@@ -323,6 +332,10 @@ function normalizeStoredAccountEntry(
     );
   return {
     apiKey,
+    organizationAccessLossState: normalizeOrganizationAccessLossState(
+      value.organizationAccessLossState,
+      normalizedAccount?.id,
+    ),
     authMode: normalizedAuthMode,
     credentialSource: normalizedCredentialSource,
     ...(typeof serverApiKeyId === 'string' && serverApiKeyId.trim().length > 0
@@ -373,6 +386,9 @@ function cloneEntry(
 
   return {
     ...entry,
+    organizationAccessLossState: entry.organizationAccessLossState
+      ? structuredClone(entry.organizationAccessLossState)
+      : undefined,
     authMode: entry.authMode ?? 'api_key',
     credentialSource: entry.credentialSource ?? 'manual',
     ...(entry.serverApiKeyId ? { serverApiKeyId: entry.serverApiKeyId } : {}),
@@ -710,9 +726,11 @@ async function persistCanopyCloudAccount(
   entry: CanopyCloudAccountEntry,
   {
     notify = true,
+    confirm = true,
     replaceCredential = false,
   }: {
     notify?: boolean;
+    confirm?: boolean;
     replaceCredential?: boolean;
   } = {},
 ): Promise<CanopyCloudAccountEntry> {
@@ -739,7 +757,7 @@ async function persistCanopyCloudAccount(
     throw new Error(`Invalid ${CLOUD_DISPLAY_NAME} account entry.`);
   }
   if (notify) notifyAccountChange(persisted);
-  else notifyAccountConfirmation();
+  else if (confirm) notifyAccountConfirmation();
   return persisted;
 }
 
@@ -859,7 +877,24 @@ export async function saveCanopyCloudAccount(
       }
     }
     const persist = (): Promise<CanopyCloudAccountEntry> =>
-      persistCanopyCloudAccount(entry, { replaceCredential: true });
+      persistCanopyCloudAccount(
+        {
+          ...entry,
+          // OAuth renews credentials without ending this account's recovery.
+          // Only the authoritative refresh hook initiates loss processing.
+          ...(currentAccount
+            ? {
+                organizationAccessLossState: prepareOrganizationAccessLossState(
+                  currentAccount,
+                  entry,
+                  entry.authMode === 'oauth',
+                  { recordLosses: false },
+                ),
+              }
+            : {}),
+        },
+        { replaceCredential: true },
+      );
     if (hasCanopyCloudIdentityChanged(currentAccount, entry)) {
       return withIdentityTransition
         ? withIdentityTransition(persist)
@@ -883,7 +918,11 @@ function differsBeyondUpdatedAt(
 ): boolean {
   if (!previous) return true;
   const comparable = (value: CanopyCloudAccountEntry): string | null => {
-    const normalized = normalizeStoredAccountEntry({ ...value, updatedAt: '' });
+    const normalized = normalizeStoredAccountEntry({
+      ...value,
+      updatedAt: '',
+      organizationAccessLossState: undefined,
+    });
     return normalized ? JSON.stringify(normalized) : null;
   };
   const next = comparable(entry);
@@ -906,6 +945,7 @@ export async function saveCanopyCloudAccountIfUnchanged(
   expectedAccount: CanopyCloudAccountEntry,
   withMatchedTransition?: CanopyCloudAccountTransition<CanopyCloudAccountEntry>,
   sessionProbe?: CanopyCloudSessionProbe,
+  organizationsRefreshed = false,
 ): Promise<
   | { status: 'saved'; entry: CanopyCloudAccountEntry }
   | { status: 'superseded'; account: CanopyCloudAccountEntry | null }
@@ -918,6 +958,14 @@ export async function saveCanopyCloudAccountIfUnchanged(
     ) {
       return { status: 'superseded', account: currentAccount };
     }
+    entry = {
+      ...entry,
+      organizationAccessLossState: prepareOrganizationAccessLossState(
+        currentAccount ?? expectedAccount,
+        entry,
+        organizationsRefreshed,
+      ),
+    };
     const notify = differsBeyondUpdatedAt(entry, currentAccount);
     const persist = (): Promise<CanopyCloudAccountEntry> =>
       persistCanopyCloudAccount(entry, { notify });
@@ -964,7 +1012,10 @@ export async function saveManualCanopyCloudAccount(
       return { status: 'superseded', account: previousAccount };
     }
     const persist = (): Promise<CanopyCloudAccountEntry> =>
-      persistCanopyCloudAccount(entry, { replaceCredential: true });
+      persistCanopyCloudAccount(
+        { ...entry, organizationAccessLossState: undefined },
+        { replaceCredential: true },
+      );
     const identityChanged = hasCanopyCloudIdentityChanged(
       previousAccount,
       entry,
@@ -980,6 +1031,82 @@ export async function saveManualCanopyCloudAccount(
           : await persist(),
       previousAccount,
     };
+  });
+}
+
+/**
+ * Holds the account transition fence across a queued ownership mutation or its
+ * recovery effects. Refresh, disconnect and credential replacement cannot race
+ * the check. No account lock is acquired by the workspace writer.
+ */
+export async function withOrganizationAccessLoss<T>(
+  record: OrganizationAccessLossRecord,
+  operation: (context: {
+    membershipLost: boolean;
+    record: OrganizationAccessLossRecord;
+    checkpoint(workspaces: OrganizationAccessLossWorkspace[]): Promise<void>;
+  }) => Promise<T>,
+): Promise<T | undefined> {
+  return withAccountSaveLock(async () => {
+    const entry = await loadCanopyCloudAccountForGuard();
+    const state = entry?.organizationAccessLossState;
+    if (
+      !entry?.apiKey.trim() ||
+      entry.account?.id.trim() !== record.accountId ||
+      !state?.pending.some(
+        (held) =>
+          held.organizationId === record.organizationId &&
+          held.detachedAt === record.detachedAt,
+      )
+    )
+      return undefined;
+    const held = state.pending.find(
+      (item) =>
+        item.organizationId === record.organizationId &&
+        item.detachedAt === record.detachedAt,
+    );
+    if (!held) return undefined;
+    return operation({
+      membershipLost: !state.organizationIds.includes(record.organizationId),
+      record: held,
+      checkpoint: async (workspaces): Promise<void> => {
+        const replacement = { ...held, workspaces };
+        const nextState = {
+          ...state,
+          pending: state.pending.map((item) =>
+            item === held ? replacement : item,
+          ),
+        };
+        await persistCanopyCloudAccount(
+          { ...entry, organizationAccessLossState: nextState },
+          { notify: false, confirm: false },
+        );
+        // A callback may checkpoint both its captured binding and completion.
+        held.workspaces = workspaces;
+      },
+    });
+  });
+}
+
+/** Acknowledge only this durable handoff; never replace a newer refresh. */
+export async function completeOrganizationAccessLoss(
+  record: OrganizationAccessLossRecord,
+): Promise<void> {
+  await withAccountSaveLock(async () => {
+    const entry = await loadCanopyCloudAccountForGuard();
+    const state = entry?.organizationAccessLossState;
+    if (!entry || entry.account?.id.trim() !== record.accountId || !state)
+      return;
+    const pending = state.pending.filter(
+      (held) =>
+        held.organizationId !== record.organizationId ||
+        held.detachedAt !== record.detachedAt,
+    );
+    if (pending.length === state.pending.length) return;
+    await persistCanopyCloudAccount(
+      { ...entry, organizationAccessLossState: { ...state, pending } },
+      { notify: false, confirm: false },
+    );
   });
 }
 
@@ -1142,7 +1269,9 @@ export async function resetUnreadableCanopyCloudAccount(
   });
 }
 
-export async function getCanopyCloudCredentials(): Promise<{
+export async function getCanopyCloudCredentials({
+  preserveAccountReadErrors = false,
+}: { preserveAccountReadErrors?: boolean } = {}): Promise<{
   baseUrl: string;
   apiKey: string;
   capabilities: string[];
@@ -1155,7 +1284,11 @@ export async function getCanopyCloudCredentials(): Promise<{
   teams?: CanopyTeamSummary[];
 }> {
   const baseUrl = getCanopyCloudBaseUrl();
-  const entry = await loadCanopyCloudAccount();
+  const result = preserveAccountReadErrors
+    ? await readCanopyCloudAccountWithStatus()
+    : undefined;
+  if (result && result.status !== 'ok') throw result.error;
+  const entry = result ? result.entry : await loadCanopyCloudAccount();
   if (!entry || entry.apiKey.trim().length === 0) {
     throw new CanopyCloudConfigError(
       'api-key-required',

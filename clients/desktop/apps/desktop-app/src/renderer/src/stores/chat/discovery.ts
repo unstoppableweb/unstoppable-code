@@ -5,6 +5,7 @@ import {
   type ChatTabPluginSelections,
   type WorktreeDiscoveryRequest,
 } from '@canopy/desktop-shared/types';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { resolveAgentChatPluginSelections } from '@/lib/chatPluginSelections';
 import { CODEX_DISCOVERY_REFRESH_TTL_MS } from './constants';
 import type { ChatTab, WorktreeChatState } from './types';
@@ -28,6 +29,9 @@ export function requestTabDiscovery(options: {
   providerType?: AgentProviderType;
   selectedRepoId?: string;
 }): void {
+  // Discovery reads the local runtime's environment. A web core chat's
+  // skills come from its catalog instead (CAN-6175 R5).
+  if (isWebCoreScope(options.projectId)) return;
   const worktreeChat =
     chatStoreApi().getState().worktreeChats[
       `${options.projectId}/${options.worktreeId}`

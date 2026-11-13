@@ -1,3 +1,4 @@
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
 import {
@@ -38,6 +39,9 @@ import {
   TURN_DISPATCH_PHASES,
   type TurnDispatchPhase,
 } from '../lib/turn-dispatch-timing';
+import type { RemoteRelayStoppedDiagnostic } from '../remote-control/diagnostics';
+import type { RelayClientDiagnostic } from '../remote-control/transport/relay-client';
+import type { SessionClosedEvent } from '../remote-control/transport/session-manager';
 import { CANOPY_AUTH_FAILURE_EVENT_TYPE } from '@canopy/protocol/auth-recovery';
 import {
   ChatTurnFailureEvidence,
@@ -168,18 +172,18 @@ import {
   benchmarkModelRoutingUsage,
   priceModelRoutingUsage,
 } from '@canopy/protocol/model-routing';
-import type { GetAccountRateLimitsResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountRateLimitsResponse';
-import type { GetAccountResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountResponse';
+import type { GetAccountRateLimitsResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/GetAccountRateLimitsResponse';
+import type { GetAccountResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/GetAccountResponse';
 import type {
   ExecutionState,
   StepResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   ACCOUNT_PROXY_ROUTED_OUTPUT_KEY,
   ACCOUNT_PROXY_SESSION_OUTPUT_KEY,
   AI_CREDITS_ROUTED_OUTPUT_KEY,
   MODEL_GATEWAY_ROUTED_OUTPUT_KEY,
-} from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
+} from '@canopy/execution-engine/node/pipelines/executor/step-runner';
 import {
   getAgentObservabilityAppEventsDayFilePath,
   getAgentObservabilityAppEventsDir,
@@ -939,6 +943,16 @@ export interface AppDiagnosticRecord {
     | 'main_event_loop_stall'
     | 'renderer_frame_summary'
     | 'remote_push_summary'
+    /**
+     * Remote control's relay connection on this computer opened, closed or
+     * could not get a token; durations, counts and close codes only. See
+     * `remoteRelayConnection`.
+     */
+    | 'remote_relay_connection'
+    /** An encrypted remote session ended; see `remoteSessionClosed`. */
+    | 'remote_session_closed'
+    /** Remote control stopped its relay connection; see `remoteRelayStopped`. */
+    | 'remote_relay_stopped'
     | 'resource_guard_blocked_chat'
     | 'resource_guard_blocked_pipeline'
     | 'resource_codex_idle_suspended'
@@ -1231,6 +1245,12 @@ export interface AppDiagnosticRecord {
   rendererSummary?: RendererDiagnosticsSummary;
   /** `remote_push_summary` only; local per-session aggregate without identity. */
   remotePushSummary?: RemotePushSummary;
+  /** `remote_relay_connection` only; no device, account or token. */
+  remoteRelayConnection?: RelayClientDiagnostic;
+  /** `remote_session_closed` only; no device or session identifier. */
+  remoteSessionClosed?: SessionClosedEvent;
+  /** `remote_relay_stopped` only; no account key or device identifier. */
+  remoteRelayStopped?: RemoteRelayStoppedDiagnostic;
   /** `main_event_loop_stall` only: the sampling window length. */
   eventLoopWindowMs?: number;
   /** `main_event_loop_stall` only: delays beyond the sampling interval. */
@@ -2026,6 +2046,12 @@ export interface SessionDiagnosticRecord {
     | 'delta_journal_demoted'
     /** Demotion failed; the scope stays version 3 and is retried. */
     | 'delta_journal_demotion_failed'
+    /** The scope moved from format 3 to format 4 (manifest version 4). */
+    | 'format4_promoted'
+    /** A format 4 promotion attempt failed; the scope stays format 3. */
+    | 'format4_promotion_failed'
+    /** Every format 4 promotion retry is spent until the next process. */
+    | 'format4_promotion_exhausted'
     /** About one minute of one scope's canonical storage work. */
     | 'activity_summary';
   chatStorageAuthority?: 'v1' | 'v2';
@@ -7763,7 +7789,10 @@ export class ObservabilityService {
               attempt: historicalAttempt.attempt,
               iteration: iteration.iteration,
               step: stepValue,
-              modelConfig: stepValue.agent_model_config ?? state.model_config,
+              modelConfig: mergeAgentModelConfig(
+                state.model_config,
+                stepValue.agent_model_config ?? {},
+              ),
             });
           }
         }
@@ -7783,7 +7812,10 @@ export class ObservabilityService {
               historicalAttempt.iteration_history,
             ),
             step: stepValue,
-            modelConfig: stepValue.agent_model_config ?? state.model_config,
+            modelConfig: mergeAgentModelConfig(
+              state.model_config,
+              stepValue.agent_model_config ?? {},
+            ),
           });
         }
       }
@@ -7802,7 +7834,10 @@ export class ObservabilityService {
             attempt: currentAttempt,
             iteration: iteration.iteration,
             step: stepValue,
-            modelConfig: stepValue.agent_model_config ?? state.model_config,
+            modelConfig: mergeAgentModelConfig(
+              state.model_config,
+              stepValue.agent_model_config ?? {},
+            ),
           });
         }
       }
@@ -7840,7 +7875,10 @@ export class ObservabilityService {
             attempt: currentAttempt,
             iteration: job.iteration_count,
             step: stepValue,
-            modelConfig: stepValue.agent_model_config ?? state.model_config,
+            modelConfig: mergeAgentModelConfig(
+              state.model_config,
+              stepValue.agent_model_config ?? {},
+            ),
           });
         }
       }

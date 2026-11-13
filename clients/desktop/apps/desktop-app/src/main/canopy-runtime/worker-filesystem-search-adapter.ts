@@ -161,7 +161,7 @@ export function createWorkerFilesystemSearchAdapter(
             };
           },
           ...(!projected && {
-            maxResultBytes: RENDERER_RELAY_LIMITS.maxFrameBytes,
+            maxResultBytes: RENDERER_RELAY_LIMITS.maxReplyBytes,
           }),
           signal: context.signal,
         });

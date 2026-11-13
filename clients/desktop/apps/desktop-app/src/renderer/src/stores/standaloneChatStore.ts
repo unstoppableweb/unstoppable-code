@@ -62,6 +62,41 @@ import { setStandaloneChatArchiveOverlayOpen } from './standaloneChatVisibility'
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { markStartPageSuppressed } from '@/lib/panels/start-page-suppression';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { webCoreCoworkProject } from '@/lib/cowork-directory';
+import { webCoreUnavailable } from './chat/web-core/web-core-chat-backend';
+
+/**
+ * A web core project's tasks as work entries, from the cloud cowork store; a
+ * web core id never reaches main's registry (CAN-6175 D1).
+ */
+function webCoreWorkEntries(projectId: string): {
+  entries: CoworkWorkEntryMeta[];
+} {
+  const project = webCoreCoworkProject(projectId);
+  if (project === null) throw new Error('Cloud chats are offline.');
+  return { entries: [...project.entries] };
+}
+
+/**
+ * Refuses a work-entry or project change the web core doesn't serve through
+ * this store, before any request. Cloud tasks are renamed, archived and
+ * reordered from their own sidebar rows.
+ */
+function refuseWebCoreProject(projectId: string, member: string): void {
+  if (isWebCoreScope(projectId)) throw webCoreUnavailable(member);
+}
+
+/**
+ * Whether a selection may be written to main's startup preferences. A web
+ * core project is never restored at startup, before the cloud connects.
+ */
+function persistsCoworkSelection(
+  scopedWorkspaceId: string | null,
+  projectId: string,
+): boolean {
+  return scopedWorkspaceId === null && !isWebCoreScope(projectId);
+}
 
 /** Sentinel value indicating summary is still being generated. */
 export const SUMMARY_LOADING = '__loading__';
@@ -1053,9 +1088,11 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         generationIsCurrent?: () => boolean,
       ): Promise<boolean> => {
         const revision = workEntrySnapshotRevisions.get(resolvedProjectId) ?? 0;
-        const response = await window.api.workEntries.list({
-          projectId: resolvedProjectId,
-        });
+        const response = isWebCoreScope(resolvedProjectId)
+          ? webCoreWorkEntries(resolvedProjectId)
+          : await window.api.workEntries.list({
+              projectId: resolvedProjectId,
+            });
         if (generationIsCurrent !== undefined && !generationIsCurrent()) {
           return false;
         }
@@ -1227,7 +1264,17 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       // entry-refresh guard in `openWorkEntryFromSidebar` — that one covers an
       // already-active workspace whose new entry no project switch reloaded.
       // Do not "simplify" it away on the strength of this listing.
-      if (!get().chatProjects.some((p) => p.id === projectId)) {
+      //
+      // A web core project is never in that list: the cloud cowork store
+      // holds it, and an offline cloud means it is absent.
+      const webCoreProject = isWebCoreScope(projectId)
+        ? webCoreCoworkProject(projectId)
+        : undefined;
+      if (webCoreProject === null) throw new Error('Chat project not found');
+      if (
+        webCoreProject === undefined &&
+        !get().chatProjects.some((p) => p.id === projectId)
+      ) {
         const requestIdBeforeListing = switchChatProjectRequestId;
         await get().loadChatProjects();
         if (requestIdBeforeListing !== switchChatProjectRequestId) {
@@ -1247,13 +1294,18 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         requestId === switchChatProjectRequestId &&
         get().activeChatProjectId === projectId;
 
-      const project = get().chatProjects.find((p) => p.id === projectId);
+      const project =
+        webCoreProject ?? get().chatProjects.find((p) => p.id === projectId);
       if (!project) {
         // The list above is fresh, so this is a genuinely absent workspace
         // rather than a stale renderer. Throwing keeps it distinct from the
         // `false` returns below, which callers read as "superseded, abort".
         throw new Error('Chat project not found');
       }
+      const defaultPluginSelections =
+        'defaultPluginSelections' in project
+          ? project.defaultPluginSelections
+          : undefined;
 
       if (
         previousActiveProjectId !== projectId &&
@@ -1276,12 +1328,17 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         activeArchiveData: null,
       });
 
-      await window.api.standaloneChat.init(projectId);
-      if (!stillOwnsSwitch()) {
-        return false;
+      if (webCoreProject === undefined) {
+        await window.api.standaloneChat.init(projectId);
+        if (!stillOwnsSwitch()) {
+          return false;
+        }
       }
 
-      const listResponse = await window.api.workEntries.list({ projectId });
+      const listResponse =
+        webCoreProject === undefined
+          ? await window.api.workEntries.list({ projectId })
+          : webCoreWorkEntries(projectId);
       // Guard against a competing switch that started while the IPCs above
       // were in flight — the newer switch owns the state.
       if (!stillOwnsSwitch()) {
@@ -1290,9 +1347,14 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       let entries = listResponse.entries;
       let entryId =
         entries.find((entry) => entry.id === preferredEntryId)?.id ??
+        // A cloud task opened as it is created can precede its listing.
+        (webCoreProject === undefined ? undefined : preferredEntryId) ??
         entries[0]?.id ??
         null;
       if (entryId === null) {
+        // A cloud task is created from its project's sidebar row, never as a
+        // side effect of opening the project.
+        refuseWebCoreProject(projectId, 'Opening an empty project');
         const created = await window.api.workEntries.create({ projectId });
         if (!stillOwnsSwitch()) {
           return false;
@@ -1306,7 +1368,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       chatStore.setWorktreeDefaultPlugins(
         projectId,
         entryId,
-        project.defaultPluginSelections,
+        defaultPluginSelections,
       );
       if (options?.attentionLanding === true) {
         chatStore.selectWorktree(projectId, entryId, {
@@ -1335,7 +1397,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       // but that call can no-op for a workspace that isn't in the sidebar
       // list yet (e.g. immediately after creation), so write it explicitly
       // here.
-      if (get().scopedWorkspaceId === null) {
+      if (persistsCoworkSelection(get().scopedWorkspaceId, projectId)) {
         void window.api.savePreferences({
           lastActiveContext: {
             kind: 'cowork',
@@ -1519,6 +1581,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
     },
 
     deleteChatProject: async (projectId: string): Promise<void> => {
+      refuseWebCoreProject(projectId, 'Deleting a project here');
       const chatStore = useChatStore.getState();
 
       // Best-effort per-entry cleanup across every entry known to the
@@ -1610,7 +1673,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         }
 
         useChatStore.setState({ selectedWorktree: stableSelection });
-        if (get().scopedWorkspaceId === null) {
+        if (persistsCoworkSelection(get().scopedWorkspaceId, workspaceId)) {
           void window.api.savePreferences({
             lastSelectedWorktreeProjectId: stableSelection?.projectId ?? '',
             lastSelectedWorktreeId: stableSelection?.worktreeId ?? '',
@@ -1692,7 +1755,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       // for workspaces missing from the sidebar list (see switchChatProject),
       // so persist explicitly. NEVER in scoped mode: the App Advisor popout
       // must not overwrite the main window's MRU startup target.
-      if (get().scopedWorkspaceId === null) {
+      if (persistsCoworkSelection(get().scopedWorkspaceId, workspaceId)) {
         void window.api.savePreferences({
           lastActiveContext: {
             kind: 'cowork',
@@ -1706,6 +1769,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
 
     createWorkEntry: async (options = {}): Promise<void> => {
       const workspaceId = get().activeChatProjectId;
+      refuseWebCoreProject(workspaceId, 'Creating a task here');
       // Own a destination generation for the whole create, on the counter
       // every other Cowork destination uses, and snapshot the chat selection
       // too: Code worktree clicks go through chatStore and never touch that
@@ -1760,6 +1824,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       projectId?: string,
     ): Promise<void> => {
       const resolvedProjectId = projectId ?? get().activeChatProjectId;
+      refuseWebCoreProject(resolvedProjectId, 'Renaming a task here');
       await window.api.workEntries.update({
         projectId: resolvedProjectId,
         entryId,
@@ -1778,6 +1843,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       projectId?: string,
     ): Promise<void> => {
       const resolvedProjectId = projectId ?? get().activeChatProjectId;
+      refuseWebCoreProject(resolvedProjectId, 'Marking a task done here');
       await window.api.workEntries.update({
         projectId: resolvedProjectId,
         entryId,
@@ -1796,6 +1862,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       projectId?: string,
     ): Promise<void> => {
       const resolvedProjectId = projectId ?? get().activeChatProjectId;
+      refuseWebCoreProject(resolvedProjectId, 'Pinning a task');
       await window.api.workEntries.update({
         projectId: resolvedProjectId,
         entryId,
@@ -1813,6 +1880,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       activeEntryId: string,
       overEntryId: string,
     ): Promise<void> => {
+      refuseWebCoreProject(projectId, 'Reordering tasks here');
       const previous = getSidebarProjectEntries(get(), projectId);
       const fromIndex = previous.findIndex(
         (entry) => entry.id === activeEntryId,
@@ -1861,6 +1929,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       options?: { lockAfterArchive?: boolean },
     ): Promise<void> => {
       const resolvedProjectId = projectId ?? get().activeChatProjectId;
+      refuseWebCoreProject(resolvedProjectId, 'Deleting a task here');
       const chatStore = useChatStore.getState();
 
       // Announce the removal to the "Archived and deleted" surfaces right
@@ -2434,6 +2503,8 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
 
     selectChat: async (chatId: string): Promise<boolean> => {
       const activeProjectId = get().activeChatProjectId;
+      // main resolves only its own chats; a cloud chat opens from its task row.
+      if (isWebCoreScope(activeProjectId)) return false;
       const destinationRequestId = ++coworkDestinationRequestId;
       const resolved = await window.api.workEntries.resolveChat({
         projectId: activeProjectId,
@@ -2496,6 +2567,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
     },
 
     selectArchivedChat: async (chatId: string): Promise<void> => {
+      refuseWebCoreProject(get().activeChatProjectId, 'Legacy archives');
       ++coworkDestinationRequestId;
       const activeProjectId = get().activeChatProjectId;
 
@@ -2541,6 +2613,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
 
     resumeArchivedChat: async (chatId: string): Promise<void> => {
       const projectId = get().activeChatProjectId;
+      refuseWebCoreProject(projectId, 'Resuming an archived chat');
 
       // Resume into a NEW work entry (reuse-empty is fine) so the recovered
       // conversation gets its own work area. Create it first: main installs
@@ -2577,6 +2650,8 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       if (projectId === get().activeChatProjectId) {
         return;
       }
+      // Cloud projects list their tasks in their own sidebar rows.
+      if (isWebCoreScope(projectId)) return;
       const revision = workEntrySnapshotRevisions.get(projectId) ?? 0;
       const response = await window.api.workEntries.list({ projectId });
       if (revision !== (workEntrySnapshotRevisions.get(projectId) ?? 0)) {
@@ -2598,8 +2673,11 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
 
     loadLegacyArchivedChats: async (projectId: string): Promise<void> => {
       // `standaloneChat.list` serves ONLY legacy archived chats now (the
-      // live-chat mirror is gone); filter defensively anyway.
-      const response = await window.api.standaloneChat.list(projectId);
+      // live-chat mirror is gone); filter defensively anyway. A cloud project
+      // has no legacy archive.
+      const response = isWebCoreScope(projectId)
+        ? { chats: [] }
+        : await window.api.standaloneChat.list(projectId);
       const archived = response.chats.filter((chat) => chat.archived === true);
       set((state) => ({
         legacyArchivedByProject: {

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ResolvedProjectStartPage } from '@canopy/desktop-shared/types';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 /**
  * Renderer cache of each project's resolved start page, keyed by
@@ -40,6 +41,9 @@ export const useStartPageStore = create<StartPageStoreState>((set, get) => ({
     worktreeId,
   ): Promise<ResolvedProjectStartPage | null> => {
     const key = startPageCacheKey(projectId, worktreeId);
+    // Start pages come from a local project's configuration; main holds none
+    // for a web core project and must never be asked (CAN-6175 D1).
+    if (isWebCoreScope(projectId)) return Promise.resolve(null);
     const pending = inflight.get(key);
     if (pending) return pending;
     const epoch = projectEpochs.get(projectId) ?? 0;

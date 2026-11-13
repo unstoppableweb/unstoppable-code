@@ -60,6 +60,7 @@ import {
   normalizeManagedDelegationLifetimeLimit,
   managedDelegationEffectiveLifetimeLimit,
   DELEGATION_STORAGE_RECORD_LIMIT,
+  managedDelegationPolicyGuidance,
 } from '@canopy/protocol/delegation/discovery';
 import {
   readDelegationLifetimeBaseline,
@@ -150,8 +151,8 @@ import {
 import type { BrowserWindow } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { buildInjectedToolNamesForBrand } from '@canopy/protocol/brand';
-import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
-import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
+import { isJsonValue } from '@canopy/execution-engine/node/codex-runtime';
+import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
 import {
   AgentDelegationBroker,
   DELEGATION_APPLY_RESPONSE_WAIT_MS,
@@ -974,6 +975,20 @@ export async function deliverManagedDelegationWatcherToChild(
 }
 
 /**
+ * The working directory of a managed delegate's live run in this chat, which
+ * its watchers use (CAN-6031); undefined when it has no live run here.
+ */
+export async function managedDelegationWorkingDirectory(
+  scope: { projectId: string; worktreeId: string; chatId: string },
+  delegationId: string,
+): Promise<string | undefined> {
+  const pendingActor = actors.get(delegationDirectory(scope));
+  if (!pendingActor) return undefined;
+  const actor = await pendingActor;
+  return actor.runtime.workingDirectory(delegationId, scope.chatId);
+}
+
+/**
  * Stream-only startup maintenance. This boundary intentionally creates neither
  * an actor nor a provider runtime; it reuses the transcript and settlement
  * ports that ordinary actors use and lets the broker perform the scoped repair.
@@ -1384,6 +1399,7 @@ async function actorFor(
         createOpenCodeDelegationRunner({
           available: runtime.available,
           delegation: childDelegation,
+          ledger: childLedger,
           transcriptPort,
           prepare: (context) => runtime.prepareOpenCode(context),
           reportError,
@@ -1411,6 +1427,7 @@ async function actorFor(
             });
           if (!readiness.enableFormat4) return 'legacy';
           if (readiness.formatVersion === 4) return 'stream';
+          if (!readiness.promotes) return 'legacy';
           return {
             kind: 'refused',
             message: 'Delegation storage is not ready. Try again.',
@@ -2688,10 +2705,11 @@ export class ManagedDelegationSession {
     inputSchema: object;
   }[] {
     const spawnName = names(this.harness).spawn;
-    const policyGuidance =
+    const policyGuidance = managedDelegationPolicyGuidance(
       this.managedDelegationMode === 'proactive'
-        ? 'You may proactively consult another model for a concrete, independent task when useful; avoid redundant fan-out.'
-        : 'Only delegate when the user explicitly asks for delegation, another model, a subagent or a second opinion. Do not delegate proactively.';
+        ? 'proactive'
+        : 'explicit-only',
+    );
     const feedGuidance =
       this.ledgerTools?.delegationFeed === undefined
         ? undefined
@@ -2877,10 +2895,11 @@ export class ManagedDelegationSession {
 
   applyPolicyGuidance(text: string): string {
     if (!this.policyGuidanceOverrideActive) return text;
-    const guidance =
+    const guidance = managedDelegationPolicyGuidance(
       this.managedDelegationMode === 'proactive'
-        ? 'You may proactively consult another model for a concrete, independent task when useful; avoid redundant fan-out.'
-        : 'Only delegate when the user explicitly asks for delegation, another model, a subagent, or a second opinion. Do not delegate proactively.';
+        ? 'proactive'
+        : 'explicit-only',
+    );
     return `<managed_delegation_policy>\n${guidance} This current-turn policy overrides any earlier delegation tool description.\n</managed_delegation_policy>\n\n${text}`;
   }
 

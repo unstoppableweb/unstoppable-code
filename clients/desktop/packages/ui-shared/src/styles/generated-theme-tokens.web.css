@@ -20,24 +20,24 @@
   --primitive-blue-850: #02207F;
   --primitive-blue-900: #021962;
   --primitive-blue-950: #021148;
-  --primitive-cyan-0: #D7F8FF;
-  --primitive-cyan-25: #BAEDFF;
-  --primitive-cyan-50: #9BE1FF;
-  --primitive-cyan-100: #78D5FF;
-  --primitive-cyan-150: #4DC8FF;
+  --primitive-cyan-0: #E4F6FF;
+  --primitive-cyan-25: #C4EBFF;
+  --primitive-cyan-50: #A4E0FF;
+  --primitive-cyan-100: #7ED4FF;
+  --primitive-cyan-150: #52C8FF;
   --primitive-cyan-200: #26BBFF;
   --primitive-cyan-300: #00ADF5;
   --primitive-cyan-350: #009FE6;
-  --primitive-cyan-400: #0091D7;
-  --primitive-cyan-500: #0083C7;
-  --primitive-cyan-550: #0075B3;
-  --primitive-cyan-600: #0068A0;
-  --primitive-cyan-700: #005A8E;
-  --primitive-cyan-750: #004D7B;
-  --primitive-cyan-800: #004069;
-  --primitive-cyan-850: #003457;
-  --primitive-cyan-900: #002846;
-  --primitive-cyan-950: #001C36;
+  --primitive-cyan-400: #0091D5;
+  --primitive-cyan-500: #0083C1;
+  --primitive-cyan-550: #0075AE;
+  --primitive-cyan-600: #00689B;
+  --primitive-cyan-700: #005A89;
+  --primitive-cyan-750: #004D76;
+  --primitive-cyan-800: #004065;
+  --primitive-cyan-850: #003453;
+  --primitive-cyan-900: #002840;
+  --primitive-cyan-950: #001C30;
   --primitive-red-0: #FFF3F0;
   --primitive-red-25: #FFE1DB;
   --primitive-red-50: #FFCEC6;
@@ -206,12 +206,10 @@
   --_checkbox-gradient: linear-gradient(to bottom, transparent, #0000000a);
   --_checkbox-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
   --_checkbox-shadow: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
-  --_checkbox-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
   --_radio-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
   --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000000a);
   --_radio-gradient-outline: linear-gradient(to bottom, #00000005, transparent);
   --_radio-gradient-solid: linear-gradient(to bottom, transparent, #0000000a);
-  --_radio-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
   --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005, 0px 0px 0px 1px #0000003d;
   --_radio-shadow-outline: inset 0px 2px 2px -1px #0000000a, inset 0px 4px 4px -2px #00000005, 0px 1px 0px 0px #fff;
   --_radio-shadow-solid: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
@@ -231,8 +229,6 @@
   --glow-on-accent-pressed: lab(0% 0 0/.16);
   --glow-on-inverse-hover: lab(0% 0 0/.88);
   --glow-on-inverse-pressed: lab(0% 0 0);
-  --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.08);
-  --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.16);
   --glow-destructive-hover: lab(49.6786% 69.526 48.442/.08);
   --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.16);
   --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.08);
@@ -253,7 +249,6 @@
   --shadow-surface-border-alpha: .16;
   --shadow-button-neutral: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
   --shadow-button-inverse: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #000, inset 0px 1px 0px 0px #ffffff3d, inset 0px -1px 0px 0px #ffffff29, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-  --shadow-button-accent: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
   --shadow-button-destructive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #8d0e13, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #440b0c1f, 0px 4px 4px -2px #440b0c1f;
   --shadow-button-positive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #1d4e04, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #0f28001f, 0px 4px 4px -2px #0f28001f;
   --shadow-button-attention: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #773400, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #3a19001f, 0px 4px 4px -2px #3a19001f;
@@ -290,9 +285,15 @@
   --chart-negative: var(--primitive-red-600);
   --chart-attention: var(--primitive-orange-550);
   --chart-info: var(--primitive-purple-750);
+  --fg-accent-strong: var(--primitive-accent-700);
+  --fg-success-strong: var(--primitive-green-700);
+  --fg-warning-strong: var(--primitive-orange-700);
+  --fg-destructive-strong: var(--primitive-red-700);
+  --fg-special-strong: var(--primitive-purple-600);
+  --fg-info: var(--primitive-blue-600);
   --sidebar-fg-primary: rgb(0 0 0);
   --sidebar-fg-secondary: rgb(0 0 0 / 72%);
-  --sidebar-fg-tertiary: rgb(0 0 0 / 56%);
+  --sidebar-fg-tertiary: rgb(0 0 0 / 58%);
   --sidebar-fg-quaternary: rgb(0 0 0 / 36%);
   --radius: 12px;
 }
@@ -316,24 +317,24 @@
   --primitive-blue-850: #02207F;
   --primitive-blue-900: #021962;
   --primitive-blue-950: #021148;
-  --primitive-cyan-0: #D7F8FF;
-  --primitive-cyan-25: #BAEDFF;
-  --primitive-cyan-50: #9BE1FF;
-  --primitive-cyan-100: #78D5FF;
-  --primitive-cyan-150: #4DC8FF;
+  --primitive-cyan-0: #E4F6FF;
+  --primitive-cyan-25: #C4EBFF;
+  --primitive-cyan-50: #A4E0FF;
+  --primitive-cyan-100: #7ED4FF;
+  --primitive-cyan-150: #52C8FF;
   --primitive-cyan-200: #26BBFF;
   --primitive-cyan-300: #00ADF5;
   --primitive-cyan-350: #009FE6;
-  --primitive-cyan-400: #0091D7;
-  --primitive-cyan-500: #0083C7;
-  --primitive-cyan-550: #0075B3;
-  --primitive-cyan-600: #0068A0;
-  --primitive-cyan-700: #005A8E;
-  --primitive-cyan-750: #004D7B;
-  --primitive-cyan-800: #004069;
-  --primitive-cyan-850: #003457;
-  --primitive-cyan-900: #002846;
-  --primitive-cyan-950: #001C36;
+  --primitive-cyan-400: #0091D5;
+  --primitive-cyan-500: #0083C1;
+  --primitive-cyan-550: #0075AE;
+  --primitive-cyan-600: #00689B;
+  --primitive-cyan-700: #005A89;
+  --primitive-cyan-750: #004D76;
+  --primitive-cyan-800: #004065;
+  --primitive-cyan-850: #003453;
+  --primitive-cyan-900: #002840;
+  --primitive-cyan-950: #001C30;
   --primitive-red-0: #FFF3F0;
   --primitive-red-25: #FFE1DB;
   --primitive-red-50: #FFCEC6;
@@ -502,12 +503,10 @@
   --_checkbox-gradient: linear-gradient(to bottom, #ffffff0a, transparent);
   --_checkbox-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
   --_checkbox-shadow: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-  --_checkbox-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
   --_radio-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
   --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000001f);
   --_radio-gradient-outline: linear-gradient(to bottom, #0000000a, transparent);
   --_radio-gradient-solid: linear-gradient(to bottom, #ffffff0a, transparent);
-  --_radio-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
   --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f, 0px 0px 0px 1px #0000001f;
   --_radio-shadow-outline: inset 0px 1px 0px 0px #ffffff14, inset 0px 2px 2px -1px #00000014, inset 0px 4px 4px -2px #00000014, 0px 1px 0px 0px #0000001f;
   --_radio-shadow-solid: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
@@ -527,8 +526,6 @@
   --glow-on-accent-pressed: lab(100% 0 0/.16);
   --glow-on-inverse-hover: lab(100% 0 0/.4);
   --glow-on-inverse-pressed: lab(100% 0 0/.56);
-  --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.16);
-  --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.24);
   --glow-destructive-hover: lab(49.6786% 69.526 48.442/.16);
   --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.24);
   --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.16);
@@ -549,7 +546,6 @@
   --shadow-surface-border-alpha: .18;
   --shadow-button-neutral: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
   --shadow-button-inverse: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #fff, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-  --shadow-button-accent: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
   --shadow-button-destructive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #440b0c3d, 0px 4px 4px -2px #440b0c3d;
   --shadow-button-positive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0f28003d, 0px 4px 4px -2px #0f28003d;
   --shadow-button-attention: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #3a19003d, 0px 4px 4px -2px #3a19003d;
@@ -586,9 +582,15 @@
   --chart-negative: var(--primitive-red-200);
   --chart-attention: var(--primitive-orange-350);
   --chart-info: var(--primitive-purple-100);
+  --fg-accent-strong: var(--primitive-accent-300);
+  --fg-success-strong: var(--primitive-green-300);
+  --fg-warning-strong: var(--primitive-orange-350);
+  --fg-destructive-strong: var(--primitive-red-300);
+  --fg-special-strong: var(--primitive-purple-300);
+  --fg-info: var(--primitive-blue-300);
   --sidebar-fg-primary: rgb(255 255 255);
   --sidebar-fg-secondary: rgb(255 255 255 / 72%);
-  --sidebar-fg-tertiary: rgb(255 255 255 / 56%);
+  --sidebar-fg-tertiary: rgb(255 255 255 / 58%);
   --sidebar-fg-quaternary: rgb(255 255 255 / 36%);
   --radius: 12px;
 }
@@ -612,24 +614,24 @@
   --primitive-blue-850: #02207F;
   --primitive-blue-900: #021962;
   --primitive-blue-950: #021148;
-  --primitive-cyan-0: #D7F8FF;
-  --primitive-cyan-25: #BAEDFF;
-  --primitive-cyan-50: #9BE1FF;
-  --primitive-cyan-100: #78D5FF;
-  --primitive-cyan-150: #4DC8FF;
+  --primitive-cyan-0: #E4F6FF;
+  --primitive-cyan-25: #C4EBFF;
+  --primitive-cyan-50: #A4E0FF;
+  --primitive-cyan-100: #7ED4FF;
+  --primitive-cyan-150: #52C8FF;
   --primitive-cyan-200: #26BBFF;
   --primitive-cyan-300: #00ADF5;
   --primitive-cyan-350: #009FE6;
-  --primitive-cyan-400: #0091D7;
-  --primitive-cyan-500: #0083C7;
-  --primitive-cyan-550: #0075B3;
-  --primitive-cyan-600: #0068A0;
-  --primitive-cyan-700: #005A8E;
-  --primitive-cyan-750: #004D7B;
-  --primitive-cyan-800: #004069;
-  --primitive-cyan-850: #003457;
-  --primitive-cyan-900: #002846;
-  --primitive-cyan-950: #001C36;
+  --primitive-cyan-400: #0091D5;
+  --primitive-cyan-500: #0083C1;
+  --primitive-cyan-550: #0075AE;
+  --primitive-cyan-600: #00689B;
+  --primitive-cyan-700: #005A89;
+  --primitive-cyan-750: #004D76;
+  --primitive-cyan-800: #004065;
+  --primitive-cyan-850: #003453;
+  --primitive-cyan-900: #002840;
+  --primitive-cyan-950: #001C30;
   --primitive-red-0: #FFF3F0;
   --primitive-red-25: #FFE1DB;
   --primitive-red-50: #FFCEC6;
@@ -798,12 +800,10 @@
   --_checkbox-gradient: linear-gradient(to bottom, transparent, #0000000a);
   --_checkbox-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
   --_checkbox-shadow: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
-  --_checkbox-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
   --_radio-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
   --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000000a);
   --_radio-gradient-outline: linear-gradient(to bottom, #00000005, transparent);
   --_radio-gradient-solid: linear-gradient(to bottom, transparent, #0000000a);
-  --_radio-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
   --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005, 0px 0px 0px 1px #0000003d;
   --_radio-shadow-outline: inset 0px 2px 2px -1px #0000000a, inset 0px 4px 4px -2px #00000005, 0px 1px 0px 0px #fff;
   --_radio-shadow-solid: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
@@ -823,8 +823,6 @@
   --glow-on-accent-pressed: lab(0% 0 0/.16);
   --glow-on-inverse-hover: lab(0% 0 0/.88);
   --glow-on-inverse-pressed: lab(0% 0 0);
-  --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.08);
-  --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.16);
   --glow-destructive-hover: lab(49.6786% 69.526 48.442/.08);
   --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.16);
   --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.08);
@@ -845,7 +843,6 @@
   --shadow-surface-border-alpha: .16;
   --shadow-button-neutral: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
   --shadow-button-inverse: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #000, inset 0px 1px 0px 0px #ffffff3d, inset 0px -1px 0px 0px #ffffff29, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-  --shadow-button-accent: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
   --shadow-button-destructive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #8d0e13, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #440b0c1f, 0px 4px 4px -2px #440b0c1f;
   --shadow-button-positive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #1d4e04, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #0f28001f, 0px 4px 4px -2px #0f28001f;
   --shadow-button-attention: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #773400, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #3a19001f, 0px 4px 4px -2px #3a19001f;
@@ -882,9 +879,15 @@
   --chart-negative: var(--primitive-red-600);
   --chart-attention: var(--primitive-orange-550);
   --chart-info: var(--primitive-purple-600);
+  --fg-accent-strong: var(--primitive-accent-600);
+  --fg-success-strong: var(--primitive-green-700);
+  --fg-warning-strong: var(--primitive-orange-700);
+  --fg-destructive-strong: var(--primitive-red-700);
+  --fg-special-strong: var(--primitive-purple-600);
+  --fg-info: var(--primitive-blue-600);
   --sidebar-fg-primary: rgb(0 0 0);
   --sidebar-fg-secondary: rgb(0 0 0 / 72%);
-  --sidebar-fg-tertiary: rgb(0 0 0 / 56%);
+  --sidebar-fg-tertiary: rgb(0 0 0 / 58%);
   --sidebar-fg-quaternary: rgb(0 0 0 / 36%);
   --radius: 12px;
 }
@@ -908,24 +911,24 @@
   --primitive-blue-850: #02207F;
   --primitive-blue-900: #021962;
   --primitive-blue-950: #021148;
-  --primitive-cyan-0: #D7F8FF;
-  --primitive-cyan-25: #BAEDFF;
-  --primitive-cyan-50: #9BE1FF;
-  --primitive-cyan-100: #78D5FF;
-  --primitive-cyan-150: #4DC8FF;
+  --primitive-cyan-0: #E4F6FF;
+  --primitive-cyan-25: #C4EBFF;
+  --primitive-cyan-50: #A4E0FF;
+  --primitive-cyan-100: #7ED4FF;
+  --primitive-cyan-150: #52C8FF;
   --primitive-cyan-200: #26BBFF;
   --primitive-cyan-300: #00ADF5;
   --primitive-cyan-350: #009FE6;
-  --primitive-cyan-400: #0091D7;
-  --primitive-cyan-500: #0083C7;
-  --primitive-cyan-550: #0075B3;
-  --primitive-cyan-600: #0068A0;
-  --primitive-cyan-700: #005A8E;
-  --primitive-cyan-750: #004D7B;
-  --primitive-cyan-800: #004069;
-  --primitive-cyan-850: #003457;
-  --primitive-cyan-900: #002846;
-  --primitive-cyan-950: #001C36;
+  --primitive-cyan-400: #0091D5;
+  --primitive-cyan-500: #0083C1;
+  --primitive-cyan-550: #0075AE;
+  --primitive-cyan-600: #00689B;
+  --primitive-cyan-700: #005A89;
+  --primitive-cyan-750: #004D76;
+  --primitive-cyan-800: #004065;
+  --primitive-cyan-850: #003453;
+  --primitive-cyan-900: #002840;
+  --primitive-cyan-950: #001C30;
   --primitive-red-0: #FFF3F0;
   --primitive-red-25: #FFE1DB;
   --primitive-red-50: #FFCEC6;
@@ -1094,12 +1097,10 @@
   --_checkbox-gradient: linear-gradient(to bottom, #ffffff0a, transparent);
   --_checkbox-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
   --_checkbox-shadow: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-  --_checkbox-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
   --_radio-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
   --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000001f);
   --_radio-gradient-outline: linear-gradient(to bottom, #0000000a, transparent);
   --_radio-gradient-solid: linear-gradient(to bottom, #ffffff0a, transparent);
-  --_radio-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
   --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f, 0px 0px 0px 1px #0000001f;
   --_radio-shadow-outline: inset 0px 1px 0px 0px #ffffff14, inset 0px 2px 2px -1px #00000014, inset 0px 4px 4px -2px #00000014, 0px 1px 0px 0px #0000001f;
   --_radio-shadow-solid: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
@@ -1119,8 +1120,6 @@
   --glow-on-accent-pressed: lab(100% 0 0/.16);
   --glow-on-inverse-hover: lab(100% 0 0/.4);
   --glow-on-inverse-pressed: lab(100% 0 0/.56);
-  --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.16);
-  --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.24);
   --glow-destructive-hover: lab(49.6786% 69.526 48.442/.16);
   --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.24);
   --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.16);
@@ -1141,7 +1140,6 @@
   --shadow-surface-border-alpha: .18;
   --shadow-button-neutral: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
   --shadow-button-inverse: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #fff, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-  --shadow-button-accent: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
   --shadow-button-destructive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #440b0c3d, 0px 4px 4px -2px #440b0c3d;
   --shadow-button-positive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0f28003d, 0px 4px 4px -2px #0f28003d;
   --shadow-button-attention: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #3a19003d, 0px 4px 4px -2px #3a19003d;
@@ -1178,9 +1176,15 @@
   --chart-negative: var(--primitive-red-200);
   --chart-attention: var(--primitive-orange-350);
   --chart-info: var(--primitive-purple-200);
+  --fg-accent-strong: var(--primitive-accent-300);
+  --fg-success-strong: var(--primitive-green-300);
+  --fg-warning-strong: var(--primitive-orange-350);
+  --fg-destructive-strong: var(--primitive-red-300);
+  --fg-special-strong: var(--primitive-purple-300);
+  --fg-info: var(--primitive-blue-300);
   --sidebar-fg-primary: rgb(255 255 255);
   --sidebar-fg-secondary: rgb(255 255 255 / 72%);
-  --sidebar-fg-tertiary: rgb(255 255 255 / 56%);
+  --sidebar-fg-tertiary: rgb(255 255 255 / 58%);
   --sidebar-fg-quaternary: rgb(255 255 255 / 36%);
   --radius: 12px;
 }
@@ -1391,12 +1395,10 @@
     --_checkbox-gradient: linear-gradient(to bottom, transparent, #0000000a);
     --_checkbox-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
     --_checkbox-shadow: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
-    --_checkbox-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
     --_radio-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
     --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000000a);
     --_radio-gradient-outline: linear-gradient(to bottom, #00000005, transparent);
     --_radio-gradient-solid: linear-gradient(to bottom, transparent, #0000000a);
-    --_radio-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
     --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005, 0px 0px 0px 1px #0000003d;
     --_radio-shadow-outline: inset 0px 2px 2px -1px #0000000a, inset 0px 4px 4px -2px #00000005, 0px 1px 0px 0px #fff;
     --_radio-shadow-solid: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
@@ -1416,8 +1418,6 @@
     --glow-on-accent-pressed: lab(0% 0 0/.16);
     --glow-on-inverse-hover: lab(0% 0 0/.88);
     --glow-on-inverse-pressed: lab(0% 0 0);
-    --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.08);
-    --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.16);
     --glow-destructive-hover: lab(49.6786% 69.526 48.442/.08);
     --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.16);
     --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.08);
@@ -1438,7 +1438,6 @@
     --shadow-surface-border-alpha: .16;
     --shadow-button-neutral: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
     --shadow-button-inverse: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #000, inset 0px 1px 0px 0px #ffffff3d, inset 0px -1px 0px 0px #ffffff29, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-    --shadow-button-accent: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
     --shadow-button-destructive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #8d0e13, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #440b0c1f, 0px 4px 4px -2px #440b0c1f;
     --shadow-button-positive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #1d4e04, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #0f28001f, 0px 4px 4px -2px #0f28001f;
     --shadow-button-attention: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #773400, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #3a19001f, 0px 4px 4px -2px #3a19001f;
@@ -1475,6 +1474,12 @@
     --chart-negative: var(--primitive-red-600);
     --chart-attention: var(--primitive-orange-550);
     --chart-info: var(--primitive-purple-750);
+    --fg-accent-strong: var(--primitive-accent-700);
+    --fg-success-strong: var(--primitive-green-700);
+    --fg-warning-strong: var(--primitive-orange-700);
+    --fg-destructive-strong: var(--primitive-red-700);
+    --fg-special-strong: var(--primitive-purple-600);
+    --fg-info: var(--primitive-blue-600);
   }
 
   :root.dark {
@@ -1682,12 +1687,10 @@
     --_checkbox-gradient: linear-gradient(to bottom, #ffffff0a, transparent);
     --_checkbox-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
     --_checkbox-shadow: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-    --_checkbox-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
     --_radio-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
     --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000001f);
     --_radio-gradient-outline: linear-gradient(to bottom, #0000000a, transparent);
     --_radio-gradient-solid: linear-gradient(to bottom, #ffffff0a, transparent);
-    --_radio-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
     --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f, 0px 0px 0px 1px #0000001f;
     --_radio-shadow-outline: inset 0px 1px 0px 0px #ffffff14, inset 0px 2px 2px -1px #00000014, inset 0px 4px 4px -2px #00000014, 0px 1px 0px 0px #0000001f;
     --_radio-shadow-solid: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
@@ -1707,8 +1710,6 @@
     --glow-on-accent-pressed: lab(100% 0 0/.16);
     --glow-on-inverse-hover: lab(100% 0 0/.4);
     --glow-on-inverse-pressed: lab(100% 0 0/.56);
-    --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.16);
-    --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.24);
     --glow-destructive-hover: lab(49.6786% 69.526 48.442/.16);
     --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.24);
     --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.16);
@@ -1729,7 +1730,6 @@
     --shadow-surface-border-alpha: .18;
     --shadow-button-neutral: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
     --shadow-button-inverse: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #fff, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-    --shadow-button-accent: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
     --shadow-button-destructive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #440b0c3d, 0px 4px 4px -2px #440b0c3d;
     --shadow-button-positive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0f28003d, 0px 4px 4px -2px #0f28003d;
     --shadow-button-attention: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #3a19003d, 0px 4px 4px -2px #3a19003d;
@@ -1766,6 +1766,12 @@
     --chart-negative: var(--primitive-red-200);
     --chart-attention: var(--primitive-orange-350);
     --chart-info: var(--primitive-purple-100);
+    --fg-accent-strong: var(--primitive-accent-300);
+    --fg-success-strong: var(--primitive-green-300);
+    --fg-warning-strong: var(--primitive-orange-350);
+    --fg-destructive-strong: var(--primitive-red-300);
+    --fg-special-strong: var(--primitive-purple-300);
+    --fg-info: var(--primitive-blue-300);
   }
 
   [data-theme='unstoppable'] {
@@ -1973,12 +1979,10 @@
     --_checkbox-gradient: linear-gradient(to bottom, transparent, #0000000a);
     --_checkbox-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
     --_checkbox-shadow: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
-    --_checkbox-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
     --_radio-gradient-checked: linear-gradient(to bottom, transparent, #00000014);
     --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000000a);
     --_radio-gradient-outline: linear-gradient(to bottom, #00000005, transparent);
     --_radio-gradient-solid: linear-gradient(to bottom, transparent, #0000000a);
-    --_radio-shadow-checked: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
     --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005, 0px 0px 0px 1px #0000003d;
     --_radio-shadow-outline: inset 0px 2px 2px -1px #0000000a, inset 0px 4px 4px -2px #00000005, 0px 1px 0px 0px #fff;
     --_radio-shadow-solid: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
@@ -1998,8 +2002,6 @@
     --glow-on-accent-pressed: lab(0% 0 0/.16);
     --glow-on-inverse-hover: lab(0% 0 0/.88);
     --glow-on-inverse-pressed: lab(0% 0 0);
-    --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.08);
-    --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.16);
     --glow-destructive-hover: lab(49.6786% 69.526 48.442/.08);
     --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.16);
     --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.08);
@@ -2020,7 +2022,6 @@
     --shadow-surface-border-alpha: .16;
     --shadow-button-neutral: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #00000029, inset 0px 1px 0px 0px #fff, inset 0px -1px 0px 0px #fffc, 0px 2px 2px -1px #0000000a, 0px 4px 4px -2px #00000005;
     --shadow-button-inverse: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #000, inset 0px 1px 0px 0px #ffffff3d, inset 0px -1px 0px 0px #ffffff29, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-    --shadow-button-accent: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #11318c, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #091a481f, 0px 4px 4px -2px #091a481f;
     --shadow-button-destructive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #8d0e13, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #440b0c1f, 0px 4px 4px -2px #440b0c1f;
     --shadow-button-positive: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #1d4e04, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #0f28001f, 0px 4px 4px -2px #0f28001f;
     --shadow-button-attention: inset 0px 1px 0px 0px #00000014, inset 0px calc(-1 * 1px) 0px 0px #00000029, inset 0px 0px 0px 1px #773400, inset 0px 1px 0px 0px #ffffff29, inset 0px -1px 0px 0px #ffffff14, 0px 2px 2px -1px #3a19001f, 0px 4px 4px -2px #3a19001f;
@@ -2057,6 +2058,12 @@
     --chart-negative: var(--primitive-red-600);
     --chart-attention: var(--primitive-orange-550);
     --chart-info: var(--primitive-purple-600);
+    --fg-accent-strong: var(--primitive-accent-600);
+    --fg-success-strong: var(--primitive-green-700);
+    --fg-warning-strong: var(--primitive-orange-700);
+    --fg-destructive-strong: var(--primitive-red-700);
+    --fg-special-strong: var(--primitive-purple-600);
+    --fg-info: var(--primitive-blue-600);
   }
 
   [data-theme='unstoppable'].dark {
@@ -2264,12 +2271,10 @@
     --_checkbox-gradient: linear-gradient(to bottom, #ffffff0a, transparent);
     --_checkbox-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
     --_checkbox-shadow: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-    --_checkbox-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
     --_radio-gradient-checked: linear-gradient(to bottom, #ffffff14, transparent);
     --_radio-gradient-dot: linear-gradient(to bottom, transparent, #0000001f);
     --_radio-gradient-outline: linear-gradient(to bottom, #0000000a, transparent);
     --_radio-gradient-solid: linear-gradient(to bottom, #ffffff0a, transparent);
-    --_radio-shadow-checked: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
     --_radio-shadow-dot: inset 0px 1px 0px 0px #fff, inset 0px calc(-1 * 1px) 0px 0px #fffc, inset 0px 0px 0px 1px #fff, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f, 0px 0px 0px 1px #0000001f;
     --_radio-shadow-outline: inset 0px 1px 0px 0px #ffffff14, inset 0px 2px 2px -1px #00000014, inset 0px 4px 4px -2px #00000014, 0px 1px 0px 0px #0000001f;
     --_radio-shadow-solid: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
@@ -2289,8 +2294,6 @@
     --glow-on-accent-pressed: lab(100% 0 0/.16);
     --glow-on-inverse-hover: lab(100% 0 0/.4);
     --glow-on-inverse-pressed: lab(100% 0 0/.56);
-    --glow-accent-hover: lab(41.4547% 30.9431 -84.4155/.16);
-    --glow-accent-pressed: lab(41.4547% 30.9431 -84.4155/.24);
     --glow-destructive-hover: lab(49.6786% 69.526 48.442/.16);
     --glow-destructive-pressed: lab(49.6786% 69.526 48.442/.24);
     --glow-attention-hover: lab(50.6004% 37.3431 59.6255/.16);
@@ -2311,7 +2314,6 @@
     --shadow-surface-border-alpha: .18;
     --shadow-button-neutral: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #ffffff29, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
     --shadow-button-inverse: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff0a, inset 0px 0px 0px 1px #fff, inset 0px 0px 0px 0px #00000014, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0000001f, 0px 4px 4px -2px #0000001f;
-    --shadow-button-accent: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #091a483d, 0px 4px 4px -2px #091a483d;
     --shadow-button-destructive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #440b0c3d, 0px 4px 4px -2px #440b0c3d;
     --shadow-button-positive: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #0f28003d, 0px 4px 4px -2px #0f28003d;
     --shadow-button-attention: inset 0px 1px 0px 0px #ffffff29, inset 0px calc(-1 * 1px) 0px 0px #ffffff14, inset 0px 0px 0px 1px #ffffff52, inset 0px 0px 0px 0px #0000, inset 0px 0px 0px 0px #0000, 0px 2px 2px -1px #3a19003d, 0px 4px 4px -2px #3a19003d;
@@ -2348,5 +2350,11 @@
     --chart-negative: var(--primitive-red-200);
     --chart-attention: var(--primitive-orange-350);
     --chart-info: var(--primitive-purple-200);
+    --fg-accent-strong: var(--primitive-accent-300);
+    --fg-success-strong: var(--primitive-green-300);
+    --fg-warning-strong: var(--primitive-orange-350);
+    --fg-destructive-strong: var(--primitive-red-300);
+    --fg-special-strong: var(--primitive-purple-300);
+    --fg-info: var(--primitive-blue-300);
   }
 }

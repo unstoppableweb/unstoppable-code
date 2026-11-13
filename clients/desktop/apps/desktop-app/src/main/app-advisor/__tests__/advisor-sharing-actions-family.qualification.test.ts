@@ -65,6 +65,12 @@ function recordingHost(): AdvisorSharingActionHost {
     memberOrganizationIds: () => Promise.resolve(new Set(['org-member'])),
     planExists: (projectId, worktreeId, planId) =>
       Promise.resolve(
+        projectId === 'proj' &&
+          worktreeId === 'wt' &&
+          (planId === 'plan-1' || planId === 'plan-unshared'),
+      ),
+    planShared: (projectId, worktreeId, planId) =>
+      Promise.resolve(
         projectId === 'proj' && worktreeId === 'wt' && planId === 'plan-1',
       ),
     readChat: (target) =>
@@ -112,6 +118,10 @@ function recordingHost(): AdvisorSharingActionHost {
           share: { remoteId: 'r1', syncStatus: 'synced', shareScope: 'team' },
         },
       });
+    },
+    unsharePlan: (request) => {
+      record('unsharePlan')(request);
+      return Promise.resolve({ ok: true, value: { id: request.planId } });
     },
     shareRun: (request) => {
       record('shareRun')(request);
@@ -182,8 +192,8 @@ afterEach(() => {
 });
 
 describe('App Advisor sharing actions in main (CAN-6003)', () => {
-  it('seven are core sharing writes; runs.unshare also carries core.chat.write; the shared-container rows are presentation', () => {
-    expect(ADVISOR_SHARING_ACTION_TYPES).toHaveLength(7);
+  it('eight are core sharing writes; runs.unshare also carries core.chat.write; the shared-container rows are presentation', () => {
+    expect(ADVISOR_SHARING_ACTION_TYPES).toHaveLength(8);
     for (const type of ADVISOR_SHARING_ACTION_TYPES)
       expect(appAdvisorActionDisposition(type)).toEqual({
         kind: 'core',
@@ -352,6 +362,41 @@ describe('App Advisor sharing actions in main (CAN-6003)', () => {
     ).resolves.toMatchObject({ ok: true, result: { unshared: true } });
     expect(calls.marker).toEqual([{ target: TARGET, sharedRun: null }]);
     expect(calls.unshareRun).toEqual([TARGET]);
+  });
+
+  it('stopping sharing a plan deletes it only for a shared plan of the named worktree (CAN-5904)', async () => {
+    const h = setup();
+    const plan = { projectId: 'proj', worktreeId: 'wt' };
+    await expect(
+      h.route(
+        { type: 'plan.unshare', ...plan, planId: 'plan-1' },
+        { toolUseId: 'unshare-plan' },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { planId: 'plan-1', unshared: true },
+    });
+    await expect(
+      h.route(
+        { type: 'plan.unshare', ...plan, planId: 'plan-unshared' },
+        { toolUseId: 'unshare-unshared' },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { planId: 'plan-unshared', unshared: false },
+    });
+    await expect(
+      h.route(
+        {
+          type: 'plan.unshare',
+          ...plan,
+          worktreeId: 'other-wt',
+          planId: 'plan-1',
+        },
+        { toolUseId: 'unshare-missing' },
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(calls.unsharePlan).toEqual([{ ...plan, planId: 'plan-1' }]);
   });
 
   it('a failed hosted delete restores the run as it was shared', async () => {

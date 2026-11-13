@@ -24,7 +24,7 @@ import {
   readPipelineLedgerTools,
   redactNormalizedText,
   resolvePrompt,
-} from '../agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 
 function parseMaxRevisions(raw: string | undefined): number {
   if (!raw || raw.trim().length === 0) {

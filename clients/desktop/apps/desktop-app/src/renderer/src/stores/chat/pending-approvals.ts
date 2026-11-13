@@ -66,6 +66,8 @@ function isApprovalRequestDetails(value: unknown): boolean {
     case 'tool':
       return (
         typeof value.toolName === 'string' &&
+        isOptionalString(value.path) &&
+        isOptionalString(value.displayPath) &&
         isOptionalString(value.inputSummary) &&
         isOptionalString(value.reason)
       );

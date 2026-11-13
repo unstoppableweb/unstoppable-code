@@ -3,18 +3,21 @@
 // drives each runner over a serializing JSON-RPC pair; the supervisor
 // composition a cloud runner reuses and the reference fake runner must both
 // pass. See docs/planning/2026-11-10-cloud-pipelines-relay-binding/README.md.
+import VECTORS from '../../../../../../protocol/src/pipeline-relay/fixtures/session-vectors.json';
 import {
   WORKER_PIPELINE_PORTABLE_LAUNCH_HOST_MEMBERS,
+  WORKER_PIPELINE_ROUTE_ID_PATTERN,
   WorkerPipelineExecutionStartParamsSchema,
   WorkerPipelinePortableLaunchSchema,
   type CanopyHostExecution,
   type CanopyStreamCursor,
   type WorkerPipelineExecutionEventsItem,
+  type WorkerPipelineHostRequest,
+  type WorkerPipelineHostResult,
 } from '@canopy/protocol/canopy-core';
 import type { CanopyHandlerContext } from '../../../../runtime/types';
 import { NO_EXECUTION_SECRETS } from '../../../execution-secrets';
 import {
-  PIPELINE_REMOTE_OWNER_RETRY_DELAY_MS,
   PipelineEventJournal,
   createPipelineOwnerChannel,
   createWorkerPipelineHandlers,
@@ -23,12 +26,22 @@ import {
   type PipelineExecutionWorker,
 } from '../../execution';
 import {
+  createPipelineRelaySession,
+  type PipelineHostSettlement,
+  type PipelineRelaySession,
+  type PipelineRemoteOwner,
+} from '..';
+import {
   FakePipelineCore,
+  RELAY_SESSION_KEY,
+  SECRET_CANARY,
+  relayLegLink,
+  serveRunnerOverRelayLeg,
   FakeRunnerWorker,
+  ManualJournalExpiry,
   LEASE_TTL_MS,
   canarySecrets,
   RUNNER_PATHS,
-  SECRET_CANARY,
   fakeRunner,
   portableLaunch,
   portableStart,
@@ -37,8 +50,7 @@ import {
   type RelayRunner,
   type RelayRunnerOptions,
 } from './pipeline-relay-fixtures';
-
-const SECRET_REF = `ssr1_${'b'.repeat(43)}`;
+import { workerPipelineRelayConformanceCases } from './pipeline-relay-conformance-cases';
 
 const runners: Array<[string, (options?: RelayRunnerOptions) => RelayRunner]> =
   [
@@ -47,441 +59,24 @@ const runners: Array<[string, (options?: RelayRunnerOptions) => RelayRunner]> =
   ];
 
 describe.each(runners)('worker.pipeline over a relay: %s', (_name, make) => {
-  const open: Array<{ core: FakePipelineCore; runner: RelayRunner }> = [];
-  const connect = (options?: RelayRunnerOptions): FakePipelineCore => {
-    const runner = make(options);
-    const core = new FakePipelineCore(runner);
-    open.push({ core, runner });
-    return core;
-  };
-
-  afterEach(async () => {
-    for (const { core, runner } of open.splice(0)) {
-      core.close();
-      await runner.stop();
-    }
-  });
-
-  it('runs a portable start in the runner’s own paths, with secrets by reference only', async () => {
-    const core = connect();
-    const launch = portableLaunch();
-    const params = {
-      ...portableStart('run-paths', launch),
-      secrets: [
-        {
-          name: 'API_TOKEN',
-          source: {
-            kind: 'stored-secret' as const,
-            family: 'environment' as const,
-            record: 'config',
-            ref: SECRET_REF,
-          },
-        },
-      ],
-    };
-    const { execution } = await core.start(params);
-    expect(execution).toMatchObject({
-      executionId: 'run-paths',
-      status: 'running',
-      runScope: 'worktree',
-    });
-
-    const launched = core.runner.launched('run-paths');
-    expect(launched?.launch).toMatchObject({
-      pipeline: launch.definition.snapshot,
-      cwd: RUNNER_PATHS.checkout,
-      bundledActionsDir: RUNNER_PATHS.bundledActionsDir,
-      nodeProcess: { command: RUNNER_PATHS.node },
-      env: { STEP_VALUE: 'from-start' },
-      inputs: { greeting: 'hello' },
-      secretEnv: { API_TOKEN: SECRET_CANARY },
-    });
-    expect(launched?.params).not.toHaveProperty('portableLaunch');
-    expect(launched?.params).not.toHaveProperty('secrets');
-
-    // Nothing host-local crossed, in either direction.
-    expect(core.wireKeys().has('_execution')).toBe(false);
-    const wire = core.wireText();
-    expect(wire).not.toContain(SECRET_CANARY);
-    for (const path of Object.values(RUNNER_PATHS))
-      expect(wire).not.toContain(path);
-    expect(wire).toContain(SECRET_REF);
-  });
-
-  it('serves get, list, cancel and events for a portable run', async () => {
-    const core = connect();
-    await core.start(portableStart('run-read'));
-    await core.start(portableStart('run-cancel'));
-
-    await expect(core.get('run-read')).resolves.toMatchObject({
-      execution: { executionId: 'run-read', status: 'running' },
-    });
-    const { executions } = await core.list();
-    expect(
-      executions.map(({ execution }) => execution.executionId).sort(),
-    ).toEqual(['run-cancel', 'run-read']);
-
-    const events = await core.events('run-read');
-    await settle();
-    await core.runner.finish('run-read', 'success');
-    await expect(events.ended).resolves.toMatchObject({ outcome: 'completed' });
-    const { items } = events;
-    expect(items[0]).toMatchObject({ kind: 'execution', event: 'snapshot' });
-    expect(items[items.length - 1]).toMatchObject({
-      kind: 'execution',
-      execution: { status: 'success' },
-    });
-
-    await expect(core.cancel('run-cancel')).resolves.toMatchObject({
-      execution: { executionId: 'run-cancel' },
-    });
-    await expect(core.cancel('missing')).rejects.toMatchObject({
-      payload: { code: 'worker.pipeline.executionNotFound' },
-    });
-  });
-
-  it('joins a start resent with its idempotency key, without redeeming its secrets again', async () => {
-    const core = connect();
-    const params = {
-      ...portableStart('run-keyed'),
-      secrets: [
-        {
-          name: 'API_TOKEN',
-          source: {
-            kind: 'stored-secret' as const,
-            family: 'environment' as const,
-            record: 'config',
-            ref: SECRET_REF,
-          },
-        },
-      ],
-    };
-    const first = await core.start(params);
-    // A lost reply: the same start again. Its grant is already redeemed.
-    const again = await core.start(params);
-    expect(again.execution.executionId).toBe(first.execution.executionId);
-    expect((await core.list()).executions).toHaveLength(1);
-  });
-
-  it('joins a keyed resend that overlaps the first start, and one sent after its run settled', async () => {
-    const core = connect();
-    const params = {
-      ...portableStart('run-replay'),
-      secrets: [
-        {
-          name: 'API_TOKEN',
-          source: {
-            kind: 'stored-secret' as const,
-            family: 'environment' as const,
-            record: 'config',
-            ref: SECRET_REF,
-          },
-        },
-      ],
-    };
-    // Both reach the runner before either answers.
-    const [first, overlapping] = await Promise.all([
-      core.start(params),
-      core.start(params),
-    ]);
-    expect(overlapping.execution.executionId).toBe(first.execution.executionId);
-    await core.runner.finish('run-replay', 'success');
-
-    // After the run settled, a resend answers the run as it is now.
-    await expect(core.start(params)).resolves.toMatchObject({
-      execution: { executionId: 'run-replay', status: 'success' },
-    });
-    expect((await core.list()).executions).toHaveLength(1);
-  });
-
-  it('answers a resend whose receipt is gone with the run the worker holds', async () => {
-    // Another worker over the same runner state: a restart, or an evicted receipt.
-    const runner = make();
-    const first = new FakePipelineCore(runner);
-    const second = new FakePipelineCore(runner.rehandled());
-    open.push({ core: first, runner }, { core: second, runner });
-    await first.start(portableStart('run-restarted'));
-    await runner.finish('run-restarted', 'success');
-    await expect(
-      second.start(portableStart('run-restarted')),
-    ).resolves.toMatchObject({
-      execution: { executionId: 'run-restarted', status: 'success' },
-    });
-    expect((await second.list()).executions).toHaveLength(1);
-  });
-
-  it('refuses a start with no launch, and a portable start where the worker maps none', async () => {
-    const core = connect();
-    const { portableLaunch: _launch, ...bare } = portableStart('run-bare');
-    void _launch;
-    await expect(core.start(bare)).rejects.toMatchObject({
-      payload: {
-        code: 'worker.pipeline.launchUnavailable',
-        retry: { kind: 'never' },
-      },
-    });
-
-    const local = connect({ portable: false });
-    await expect(local.start(portableStart('run-local'))).rejects.toMatchObject(
-      {
-        payload: {
-          kind: 'invalid_argument',
-          code: 'worker.pipeline.launchRefused',
-          retry: { kind: 'never' },
-        },
-      },
-    );
-    expect(local.runner.launched('run-local')).toBeUndefined();
-  });
-
-  it('a remote owner retries an owner-bound start with its key once it subscribes, with its secrets', async () => {
-    const core = connect({ remoteOwner: { leaseTtlMs: LEASE_TTL_MS } });
-    const params = {
-      ...portableStart('run-bound', portableLaunch({ ownerBound: true })),
-      secrets: [
-        {
-          name: 'API_TOKEN',
-          source: {
-            kind: 'stored-secret' as const,
-            family: 'environment' as const,
-            record: 'config',
-            ref: SECRET_REF,
-          },
-        },
-      ],
-    };
-    await expect(core.start(params)).rejects.toMatchObject({
-      payload: {
-        kind: 'unavailable',
-        code: 'worker.pipeline.ownerUnavailable',
-        retry: {
-          kind: 'same_idempotency_key',
-          delayMs: PIPELINE_REMOTE_OWNER_RETRY_DELAY_MS,
-        },
-      },
-    });
-    expect(core.runner.launched('run-bound')).toBeUndefined();
-
-    await core.own(() => ({ status: 'success', outputs: {} }));
-    // The refusal left the secret grant for the retry.
-    await expect(core.start(params)).resolves.toMatchObject({
-      execution: { executionId: 'run-bound', status: 'running' },
-    });
-    expect(core.runner.launched('run-bound')?.launch.secretEnv).toEqual({
-      API_TOKEN: SECRET_CANARY,
-    });
-  });
-
-  it('resumes an events stream after its last cursor with what it missed during an outage', async () => {
-    const core = connect();
-    await core.start(portableStart('run-resume'));
-    const first = await core.events('run-resume');
-    // Without a cursor the stream starts from a snapshot, with a cursor of its own.
-    expect(first.acceptedCursor).toBeNull();
-    expect(first.items[0]).toMatchObject({
-      kind: 'execution',
-      event: 'snapshot',
-      execution: { executionId: 'run-resume', status: 'running' },
-    });
-    await core.runner.output('run-resume', 'one');
-    const last = first.cursors[first.cursors.length - 1];
-    expect(first.items[first.items.length - 1]).toMatchObject({
-      kind: 'output',
-      text: 'one',
-    });
-
-    first.close();
-    await settle();
-    await core.runner.output('run-resume', 'two');
-    await core.runner.output('run-resume', 'three');
-
-    const second = await core.events('run-resume', last);
-    expect(second.acceptedCursor).toEqual(last);
-    expect(
-      second.items.map((item) =>
-        item.kind === 'output' ? item.text : item.kind,
-      ),
-    ).toEqual(['two', 'three']);
-    await core.runner.finish('run-resume', 'success');
-    await expect(second.ended).resolves.toMatchObject({ outcome: 'completed' });
-    expect(second.items[second.items.length - 1]).toMatchObject({
-      kind: 'execution',
-      execution: { status: 'success' },
-    });
-
-    // One epoch, strictly increasing: the web core dedupes by (runtime, epoch, sequence).
-    const cursors = [...first.cursors, ...second.cursors];
-    expect(new Set(cursors.map(({ daemonEpoch }) => daemonEpoch)).size).toBe(1);
-    for (let index = 1; index < cursors.length; index += 1)
-      expect(cursors[index].sequence).toBeGreaterThan(
-        cursors[index - 1].sequence,
-      );
-  });
-
-  it('replays a run that finished during the outage to its end', async () => {
-    const core = connect();
-    await core.start(portableStart('run-finished'));
-    const first = await core.events('run-finished');
-    const last = first.cursors[first.cursors.length - 1];
-    first.close();
-    await settle();
-    await core.runner.output('run-finished', 'late');
-    await core.runner.finish('run-finished', 'failure');
-
-    const second = await core.events('run-finished', last);
-    await expect(second.ended).resolves.toMatchObject({ outcome: 'completed' });
-    expect(second.items).toMatchObject([
-      { kind: 'output', text: 'late' },
-      { kind: 'execution', execution: { status: 'failure' } },
-    ]);
-  });
-
-  it('answers snapshotRequired for another epoch’s cursor and one older than its journal', async () => {
-    const core = connect({ journal: { maxEntries: 3 } });
-    await core.start(portableStart('run-old'));
-    const first = await core.events('run-old');
-    const [{ daemonEpoch }] = first.cursors;
-    first.close();
-    for (const text of ['a', 'b', 'c', 'd', 'e'])
-      await core.runner.output('run-old', text);
-
-    for (const cursor of [
-      { daemonEpoch: 'another-incarnation', sequence: 1 },
-      { daemonEpoch, sequence: 1 },
-    ]) {
-      const stream = await core.events('run-old', cursor);
-      await expect(stream.ended).resolves.toMatchObject({
-        outcome: 'error',
-        error: {
-          kind: 'failed_precondition',
-          code: 'worker.pipeline.snapshotRequired',
-          retry: { kind: 'after_refresh' },
-        },
-      });
-      expect(stream.items).toEqual([]);
-    }
-
-    // The documented recovery: read the run and reopen without a cursor.
-    await expect(core.get('run-old')).resolves.toMatchObject({
-      execution: { status: 'running' },
-    });
-    const fresh = await core.events('run-old');
-    expect(fresh.items[0]).toMatchObject({
-      kind: 'execution',
-      event: 'snapshot',
-    });
-  });
-
-  it('a worker without a journal answers snapshotRequired for a cursor and a snapshot without one', async () => {
-    const core = connect({ journal: false });
-    await core.start(portableStart('run-unjournaled'));
-    const fresh = await core.events('run-unjournaled');
-    expect(fresh.items[0]).toMatchObject({
-      kind: 'execution',
-      event: 'snapshot',
-    });
-    const resumed = await core.events('run-unjournaled', fresh.cursors[0]);
-    await expect(resumed.ended).resolves.toMatchObject({
-      outcome: 'error',
-      error: { code: 'worker.pipeline.snapshotRequired' },
-    });
-  });
-
-  it('opens a stream on a run that just finished with its snapshot first', async () => {
-    const core = connect();
-    await core.start(portableStart('run-done'));
-    await core.runner.finish('run-done', 'success');
-    const stream = await core.events('run-done');
-    await expect(stream.ended).resolves.toMatchObject({ outcome: 'completed' });
-    expect(stream.items).toMatchObject([
-      {
-        kind: 'execution',
-        event: 'snapshot',
-        execution: { status: 'success' },
-      },
-    ]);
-  });
-
-  it('gives a new stream only the notifications no stream received', async () => {
-    const core = connect();
-    await core.start(portableStart('run-notify'));
-    const first = await core.events('run-notify');
-    await core.runner.notify('run-notify', 'seen');
-    expect(first.items[first.items.length - 1]).toMatchObject({
-      kind: 'notification',
-      title: 'seen',
-    });
-    first.close();
-    await settle();
-    await core.runner.notify('run-notify', 'unseen');
-
-    const second = await core.events('run-notify');
-    expect(second.items).toMatchObject([
-      { kind: 'notification', title: 'unseen' },
-      { kind: 'execution', event: 'snapshot' },
-    ]);
-  });
-
-  it('follows a paused run to its cancel', async () => {
-    const core = connect();
-    await core.start(portableStart('run-pause-cancel'));
-    const stream = await core.events('run-pause-cancel');
-    await core.runner.finish('run-pause-cancel', 'paused');
-    await core.cancel('run-pause-cancel');
-    await expect(stream.ended).resolves.toMatchObject({
-      outcome: 'completed',
-    });
-    expect(stream.items[stream.items.length - 1]).toMatchObject({
-      kind: 'execution',
-      execution: { status: 'cancelled' },
-    });
-  });
-
-  it('starts a new stream from the run as last journaled, changes that keep its status included', async () => {
-    const core = connect();
-    await core.start(portableStart('run-count'));
-    await core.runner.update('run-count', { pendingPauseCount: 2 });
-    const stream = await core.events('run-count');
-    expect(stream.items[0]).toMatchObject({
-      kind: 'execution',
-      event: 'snapshot',
-      execution: { status: 'running', pendingPauseCount: 2 },
-    });
-  });
-
-  it('ends a stream on a paused run with snapshotRequired once its journal expires', async () => {
-    const core = connect({ journal: { retainMs: 30 } });
-    await core.start(portableStart('run-paused'));
-    await core.runner.finish('run-paused', 'paused');
-    const stream = await core.events('run-paused');
-    expect(stream.items[0]).toMatchObject({
-      kind: 'execution',
-      execution: { status: 'paused' },
-    });
-    await expect(stream.ended).resolves.toMatchObject({
-      outcome: 'error',
-      error: { code: 'worker.pipeline.snapshotRequired' },
-    });
-    const resumed = await core.events('run-paused', stream.cursors[0]);
-    await expect(resumed.ended).resolves.toMatchObject({
-      error: { code: 'worker.pipeline.snapshotRequired' },
-    });
-  });
-
-  it('a local owner that is gone is never retried', async () => {
-    const core = connect();
-    await expect(
-      core.start(
-        portableStart('run-local-owner', portableLaunch({ ownerBound: true })),
-      ),
-    ).rejects.toMatchObject({
-      payload: {
-        code: 'worker.pipeline.ownerUnavailable',
-        retry: { kind: 'never' },
-      },
-    });
-  });
+  workerPipelineRelayConformanceCases(
+    make,
+    (runner) => new FakePipelineCore(runner),
+  );
 });
+
+// CP-11: the same cases through the cloud runner's own relay leg, its
+// end-to-end session and the binding it serves, as the runner entry serves
+// one relay attachment.
+describe.each(runners)(
+  'worker.pipeline over the cloud runner relay leg: %s',
+  (_name, make) => {
+    workerPipelineRelayConformanceCases(
+      make,
+      (runner) => new FakePipelineCore(runner, relayLegLink(runner)),
+    );
+  },
+);
 
 describe('the portable start contract', () => {
   it('admits no host-local launch member', () => {
@@ -590,6 +185,7 @@ describe('the runner event journal', () => {
   ): Promise<{
     worker: FakeRunnerWorker;
     journal: PipelineEventJournal;
+    expiry: ManualJournalExpiry;
   }> => {
     const worker = new FakeRunnerWorker(createPipelineOwnerChannel(), {});
     await worker.start(
@@ -597,7 +193,14 @@ describe('the runner event journal', () => {
       new AbortController().signal,
       NO_EXECUTION_SECRETS,
     );
-    return { worker, journal: new PipelineEventJournal({ retainMs: 10 }) };
+    const expiry = new ManualJournalExpiry();
+    return {
+      worker,
+      journal: new PipelineEventJournal({
+        expireAfter: expiry.expireAfter,
+      }),
+      expiry,
+    };
   };
   const follow = (
     journal: PipelineEventJournal,
@@ -613,13 +216,13 @@ describe('the runner event journal', () => {
   };
 
   it('numbers a run journaled again after its journal expired under a new epoch', async () => {
-    const { worker, journal } = await started('run-again');
+    const { worker, journal, expiry } = await started('run-again');
     trackRun(worker, journal, 'run-again');
     const before = follow(journal, 'run-again', null);
     worker.output('run-again', 'before');
     worker.finish('run-again', 'paused');
     const [first] = before.entries;
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await expiry.expire();
 
     // Resumed after its journal expired: a new journal, never the old cursors.
     const run = worker.runs.get('run-again');
@@ -638,14 +241,15 @@ describe('the runner event journal', () => {
   });
 
   it('journals how a run that settled before it could be followed is now', async () => {
-    const { worker, journal } = await started('run-instant');
+    const { worker, journal, expiry } = await started('run-instant');
     const run = worker.runs.get('run-instant');
     if (!run) throw new Error('No run.');
     // The start answered `running`, but the run finished in the same tick.
     const stale = run.execution;
     worker.finish('run-instant', 'success');
     journal.track(worker, 'run-instant', stale);
-    await settle();
+    // Armed once the journal has recorded how the run ended.
+    await expiry.whenArmed();
     const ends: unknown[] = [];
     const entries: PipelineEventJournalEntry[] = [];
     const opened = journal.open('run-instant', null, {
@@ -961,5 +565,764 @@ describe('the runner event journal', () => {
     });
     if (typeof stop === 'function') stop();
     journal.close();
+  });
+});
+
+describe('owner requests over a relay: the supervisor runner', () => {
+  const PROXY_KEY = 'proxy-key-canary-6161';
+  const PROXY_URL = 'https://llm-proxy.runner.internal';
+  const STEP_FOLDER = `${RUNNER_PATHS.checkout}/.step`;
+  const LLM_ROUTE = 'route_llmproxy0001';
+  const FEED_ROUTE = 'route_feedtools0001';
+
+  let request = 0;
+  const ownerRequest = (
+    executionId: string,
+    action: WorkerPipelineHostRequest['request'],
+  ): WorkerPipelineHostRequest => ({
+    requestId: `owner:${executionId}:${(request += 1)}`,
+    executionId,
+    jobId: '_run',
+    stepId: '_run',
+    childExecutionId: null,
+    attempt: 0,
+    iteration: 0,
+    owner: 'personal',
+    deadlineAt: new Date(Date.now() + 120_000).toISOString(),
+    request: action,
+  });
+
+  /** The web core's answers: route ids for capabilities, never values. */
+  const answer = (
+    item: WorkerPipelineHostRequest,
+  ): WorkerPipelineHostResult => {
+    switch (item.request.action) {
+      case 'owner.model.routing':
+        return {
+          status: 'owner',
+          value: {
+            kind: 'model.routing',
+            override: {
+              provider: 'claude',
+              model: 'claude-sonnet-5-5',
+              modelGatewayRouted: false,
+              accountProxyRouted: false,
+              routeId: LLM_ROUTE,
+            },
+          },
+        };
+      case 'owner.ledger.subprocessTools':
+        return {
+          status: 'owner',
+          value: { kind: 'ledger.subprocessTools', routeId: FEED_ROUTE },
+        };
+      case 'owner.ledger.codexTools':
+        return {
+          status: 'owner',
+          value: { kind: 'ledger.codexTools', tools: null },
+        };
+      case 'owner.claude.modAdmission':
+        return {
+          status: 'owner',
+          value: { kind: 'claude.modAdmission', context: null },
+        };
+      default:
+        return {
+          status: 'failure',
+          failureReason: null,
+          message: 'Not answered here.',
+          outputs: {},
+        };
+    }
+  };
+
+  /** The runner's own route resolution, with its bootstrap credentials. */
+  const remoteOwner: PipelineRemoteOwner = {
+    leaseTtlMs: LEASE_TTL_MS,
+    resolveOwnerValues: (_request, result) =>
+      Promise.resolve(
+        result.kind === 'model.routing' &&
+          result.override?.routeId === LLM_ROUTE
+          ? {
+              env: {
+                ANTHROPIC_BASE_URL: PROXY_URL,
+                ANTHROPIC_AUTH_TOKEN: PROXY_KEY,
+              },
+            }
+          : result.kind === 'ledger.subprocessTools' &&
+              result.routeId === FEED_ROUTE
+            ? {
+                ledgerSubprocessTools: {
+                  mcpServers: {
+                    feed: { type: 'http', url: `${PROXY_URL}/feed` },
+                  },
+                  allowedTools: ['mcp__feed__add'],
+                  secretValues: [PROXY_KEY],
+                },
+              }
+            : undefined,
+      ),
+  };
+
+  const connect = async (
+    options: RelayRunnerOptions,
+  ): Promise<{
+    core: FakePipelineCore;
+    seen: WorkerPipelineHostRequest[];
+    raise: (
+      action: WorkerPipelineHostRequest['request'],
+    ) => Promise<PipelineHostSettlement>;
+  }> => {
+    const runner = supervisorRunner(options);
+    const core = new FakePipelineCore(runner);
+    const seen: WorkerPipelineHostRequest[] = [];
+    await core.own((item) => {
+      seen.push(item);
+      return answer(item);
+    });
+    await core.start(
+      portableStart('run-owner', portableLaunch({ ownerBound: true })),
+    );
+    const raise = runner.raise;
+    if (!raise) throw new Error('The runner raises no requests.');
+    return {
+      core,
+      seen,
+      raise: (action) => raise(ownerRequest('run-owner', action)),
+    };
+  };
+
+  const open: FakePipelineCore[] = [];
+  afterEach(async () => {
+    for (const core of open.splice(0)) {
+      core.close();
+      await core.runner.stop();
+    }
+  });
+
+  it('a remote owner gets the Ledger tool requests without the step’s folder and never the local-only ones', async () => {
+    const { core, seen, raise } = await connect({ remoteOwner });
+    open.push(core);
+
+    const tools = await raise({
+      action: 'owner.ledger.subprocessTools',
+      attemptKey: 'attempt-1',
+      cwd: STEP_FOLDER,
+    });
+    expect(tools).toMatchObject({
+      kind: 'owner',
+      settlement: {
+        result: { status: 'owner', value: { kind: 'ledger.subprocessTools' } },
+        values: {
+          ledgerSubprocessTools: { allowedTools: ['mcp__feed__add'] },
+        },
+      },
+    });
+    await raise({
+      action: 'owner.ledger.codexTools',
+      attemptKey: 'attempt-1',
+      cwd: STEP_FOLDER,
+    });
+    const mods = await raise({
+      action: 'owner.claude.modAdmission',
+      cwd: STEP_FOLDER,
+      settingSources: [],
+      claudeConfigDir: `${RUNNER_PATHS.dataRoot}/claude`,
+    });
+    // The runner answered it itself: Mod admission is off for the run.
+    expect(mods).toMatchObject({
+      kind: 'owner',
+      settlement: {
+        result: { value: { kind: 'claude.modAdmission', context: null } },
+      },
+    });
+    // CAN-6168: nor does a plugin MCP credential: the runner refuses each.
+    const mcp = await Promise.all([
+      raise({
+        action: 'owner.mcp.bind',
+        marketplaceId: 'market',
+        pluginName: 'notes',
+        serverName: 'docs',
+        contentHash: 'a'.repeat(64),
+      }),
+      raise({
+        action: 'owner.mcp.authorize',
+        routeRef: 'mcpr1_AAAAAAAAAAAAAAAAAAAAAA',
+      }),
+      raise({
+        action: 'owner.mcp.rejected',
+        grantId: 'mcpg1_AAAAAAAAAAAAAAAAAAAAAA',
+      }),
+    ]);
+    expect(
+      mcp.map((answer) =>
+        answer.kind === 'owner' ? answer.settlement : undefined,
+      ),
+    ).toEqual([
+      {
+        result: {
+          status: 'owner',
+          value: { kind: 'mcp.bind', routeRef: null },
+        },
+      },
+      {
+        result: {
+          status: 'owner',
+          value: { kind: 'mcp.authorize', grantId: null },
+        },
+      },
+      { result: { status: 'owner', value: { kind: 'mcp.rejected' } } },
+    ]);
+
+    expect(seen.map(({ request }) => request)).toEqual([
+      { action: 'owner.ledger.subprocessTools', attemptKey: 'attempt-1' },
+      { action: 'owner.ledger.codexTools', attemptKey: 'attempt-1' },
+    ]);
+    const wire = core.wireText();
+    for (const path of Object.values(RUNNER_PATHS))
+      expect(wire).not.toContain(path);
+    expect(wire).not.toContain(PROXY_KEY);
+  });
+
+  it('a remote owner answers routing with a route id the runner resolves itself (P9)', async () => {
+    const { core, raise } = await connect({ remoteOwner });
+    open.push(core);
+    const routed = await raise({
+      action: 'owner.model.routing',
+      provider: 'claude',
+      model: 'claude-sonnet-5-5',
+      routeSessionId: 'route-session-1',
+    });
+    expect(routed).toMatchObject({
+      kind: 'owner',
+      settlement: {
+        result: {
+          value: { kind: 'model.routing', override: { routeId: LLM_ROUTE } },
+        },
+        values: {
+          env: {
+            ANTHROPIC_BASE_URL: PROXY_URL,
+            ANTHROPIC_AUTH_TOKEN: PROXY_KEY,
+          },
+        },
+      },
+    });
+    const wire = core.wireText();
+    expect(wire).toContain(LLM_ROUTE);
+    expect(wire).not.toContain(PROXY_KEY);
+    expect(wire).not.toContain(PROXY_URL);
+  });
+
+  it('a route id the runner cannot resolve runs the step with no route values', async () => {
+    const { core, raise } = await connect({
+      remoteOwner: { leaseTtlMs: LEASE_TTL_MS },
+    });
+    open.push(core);
+    const routed = await raise({
+      action: 'owner.model.routing',
+      provider: 'claude',
+      routeSessionId: 'route-session-2',
+    });
+    expect(routed).toMatchObject({ kind: 'owner' });
+    expect(routed.kind === 'owner' && routed.settlement.values).toBeFalsy();
+  });
+
+  it('a local owner still gets every request with the step’s folder, as on desktop', async () => {
+    const { core, seen, raise } = await connect({});
+    open.push(core);
+    await raise({
+      action: 'owner.ledger.subprocessTools',
+      attemptKey: 'attempt-2',
+      cwd: STEP_FOLDER,
+    });
+    await raise({
+      action: 'owner.claude.modAdmission',
+      cwd: STEP_FOLDER,
+      settingSources: ['user'],
+    });
+    expect(seen.map(({ request }) => request)).toEqual([
+      {
+        action: 'owner.ledger.subprocessTools',
+        attemptKey: 'attempt-2',
+        cwd: STEP_FOLDER,
+      },
+      {
+        action: 'owner.claude.modAdmission',
+        cwd: STEP_FOLDER,
+        settingSources: ['user'],
+      },
+    ]);
+  });
+
+  it('a route id is a reference, never a credential', () => {
+    for (const valid of [LLM_ROUTE, 'route_0123456789abcdef_-'])
+      expect(WORKER_PIPELINE_ROUTE_ID_PATTERN.test(valid)).toBe(true);
+    for (const invalid of [
+      PROXY_KEY,
+      PROXY_URL,
+      'route_short',
+      `route_${'x'.repeat(129)}`,
+      'route_has space',
+    ])
+      expect(WORKER_PIPELINE_ROUTE_ID_PATTERN.test(invalid)).toBe(false);
+  });
+});
+
+/** A core session in front of a relay leg, delivering in order. */
+function coreSessionTo(
+  leg: ReturnType<typeof serveRunnerOverRelayLeg>,
+  key: Uint8Array = RELAY_SESSION_KEY,
+): {
+  readonly session: PipelineRelaySession;
+  readonly received: string[];
+  readonly frames: string[];
+  readonly failed: string[];
+} {
+  const received: string[] = [];
+  const frames: string[] = [];
+  const failed: string[] = [];
+  const session = createPipelineRelaySession({
+    role: 'core',
+    sessionKey: key,
+    send: (text) => {
+      frames.push(text);
+      leg.receive(text);
+      return true;
+    },
+    onReady: () => undefined,
+    onMessage: (text) => received.push(text),
+    onFailed: (reason) => failed.push(reason),
+  });
+  leg.listen({
+    message: (text) => {
+      frames.push(text);
+      session.receive(text);
+    },
+    close: () => failed.push('closed'),
+  });
+  session.start();
+  return { session, received, frames, failed };
+}
+
+describe('the cloud runner relay leg (CP-11)', () => {
+  const stops: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    jest.useRealTimers();
+    for (const stop of stops.splice(0)) await stop();
+  });
+
+  it('speaks the session the web core speaks, byte for byte (session vectors)', () => {
+    const key = Buffer.from(VECTORS.sessionKey, 'base64url');
+    const nonce = (value: string) => (): Buffer =>
+      Buffer.from(value, 'base64url');
+    const runnerSent: string[] = [];
+    const coreSent: string[] = [];
+    const opened: string[] = [];
+    const runner = createPipelineRelaySession({
+      role: 'runner',
+      sessionKey: key,
+      nonce: nonce(VECTORS.runnerNonce),
+      send: (text) => runnerSent.push(text) > 0,
+      onReady: () => undefined,
+      onMessage: (text) => opened.push(text),
+      onFailed: (reason) => {
+        throw new Error(reason);
+      },
+    });
+    const core = createPipelineRelaySession({
+      role: 'core',
+      sessionKey: key,
+      nonce: nonce(VECTORS.coreNonce),
+      send: (text) => coreSent.push(text) > 0,
+      onReady: () => undefined,
+      onMessage: (text) => opened.push(text),
+      onFailed: (reason) => {
+        throw new Error(reason);
+      },
+    });
+    core.start();
+    expect(JSON.parse(coreSent[0])).toEqual(VECTORS.coreHello);
+    runner.receive(coreSent[0]);
+    expect(JSON.parse(runnerSent[0])).toEqual(VECTORS.runnerHello);
+    core.receive(runnerSent[0]);
+    expect(JSON.parse(coreSent[1])).toEqual(VECTORS.coreReady);
+    runner.receive(coreSent[1]);
+    expect(runner.ready && core.ready).toBe(true);
+    for (const { plaintext, frame } of VECTORS.coreData) {
+      core.send(plaintext);
+      expect(JSON.parse(coreSent[coreSent.length - 1])).toEqual(frame);
+      runner.receive(coreSent[coreSent.length - 1]);
+    }
+    for (const { plaintext, frame } of VECTORS.runnerData) {
+      runner.send(plaintext);
+      expect(JSON.parse(runnerSent[runnerSent.length - 1])).toEqual(frame);
+      core.receive(runnerSent[runnerSent.length - 1]);
+    }
+    expect(opened).toEqual([
+      ...VECTORS.coreData.map(({ plaintext }) => plaintext),
+      ...VECTORS.runnerData.map(({ plaintext }) => plaintext),
+    ]);
+  });
+
+  it('answers a request that carries _execution invalid_argument without reaching a handler', async () => {
+    const runner = supervisorRunner();
+    stops.push(() => runner.stop());
+    const leg = serveRunnerOverRelayLeg(runner);
+    const core = coreSessionTo(leg);
+    await settle();
+    const { portableLaunch: launch, ...rest } = portableStart('run-host');
+    core.session.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'r1',
+        method: 'worker.pipeline.execution.start',
+        params: {
+          ...rest,
+          portableLaunch: launch,
+          _meta: { idempotencyKey: 'run-host' },
+          _execution: { pipelineLaunch: { cwd: '/host/path' } },
+        },
+      }),
+    );
+    await settle();
+    expect(core.received).toHaveLength(1);
+    expect(JSON.parse(core.received[0])).toMatchObject({
+      id: 'r1',
+      error: { data: { kind: 'invalid_argument' } },
+    });
+    expect(runner.launched('run-host')).toBeUndefined();
+    // The leg stays open: the same start without it runs.
+    core.session.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'r2',
+        method: 'worker.pipeline.execution.start',
+        params: {
+          ...rest,
+          portableLaunch: launch,
+          _meta: { idempotencyKey: 'run-host' },
+        },
+      }),
+    );
+    await settle();
+    expect(JSON.parse(core.received[1])).toMatchObject({
+      id: 'r2',
+      result: { execution: { executionId: 'run-host', status: 'running' } },
+    });
+    leg.close();
+  });
+
+  it('carries only ciphertext: no envelope, secret or runner path crosses the relay', async () => {
+    const runner = supervisorRunner();
+    stops.push(() => runner.stop());
+    const link = relayLegLink(runner);
+    const core = new FakePipelineCore(runner, link);
+    await core.start({
+      ...portableStart('run-sealed'),
+      secrets: [
+        {
+          name: 'API_TOKEN',
+          source: {
+            kind: 'stored-secret',
+            family: 'environment',
+            record: 'config',
+            ref: `ssr1_${'d'.repeat(43)}`,
+          },
+        },
+      ],
+    });
+    await core.runner.output('run-sealed', 'sealed output');
+    await core.get('run-sealed');
+    const relayed = link.frames.join('\n');
+    for (const plain of [
+      'worker.pipeline',
+      'run-sealed',
+      'sealed output',
+      SECRET_CANARY,
+      RUNNER_PATHS.checkout,
+    ])
+      expect(relayed).not.toContain(plain);
+    expect(core.wireText()).toContain('run-sealed');
+    core.close();
+  });
+
+  it('ends the leg on a core that does not hold the session key', async () => {
+    const runner = supervisorRunner();
+    stops.push(() => runner.stop());
+    const leg = serveRunnerOverRelayLeg(runner);
+    const core = coreSessionTo(leg, Buffer.alloc(32, 1));
+    await settle();
+    expect(core.failed).toEqual(['bad_confirmation']);
+    expect(core.received).toEqual([]);
+    leg.close();
+  });
+
+  it('takes the first portable start’s lease TTL and refuses a start that names another', async () => {
+    const runner = supervisorRunner({ remoteOwner: {} });
+    stops.push(() => runner.stop());
+    const core = new FakePipelineCore(runner, relayLegLink(runner));
+    await core.start(
+      portableStart(
+        'run-ttl',
+        portableLaunch({ delegationLease: { leaseTtlMs: 10 * 60_000 } }),
+      ),
+    );
+    await expect(
+      core.start(
+        portableStart(
+          'run-other-ttl',
+          portableLaunch({ delegationLease: { leaseTtlMs: 60_000 } }),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.launchRefused' },
+    });
+    expect(runner.launched('run-other-ttl')).toBeUndefined();
+    core.close();
+  });
+
+  it('replays a journal longer than the default stream queue with a live change in the middle', async () => {
+    // A runner's journal keeps more than the 4,096 deliveries a stream used
+    // to hold, so a replay that long must not end at the next live item.
+    const runner = supervisorRunner({ journal: { maxEntries: 5_000 } });
+    stops.push(() => runner.stop());
+    const core = new FakePipelineCore(runner, relayLegLink(runner));
+    await core.start(portableStart('run-long'));
+    const first = await core.events('run-long');
+    const last = first.cursors[first.cursors.length - 1];
+    first.close();
+    await settle();
+    const lines: string[] = [];
+    for (let line = 0; line < 4_500; line += 1) {
+      lines.push(`line ${String(line)}`);
+      await runner.output('run-long', `line ${String(line)}`);
+    }
+    const replay = await core.events('run-long', last);
+    // A change while most of the replay still waits for the consumer.
+    await runner.update('run-long', { pendingPauseCount: 1 });
+    await runner.finish('run-long', 'success');
+    await expect(replay.ended).resolves.toMatchObject({ outcome: 'completed' });
+    expect(
+      replay.items.flatMap((item) =>
+        item.kind === 'output' ? [item.text] : [],
+      ),
+    ).toEqual(lines);
+    expect(replay.items[replay.items.length - 1]).toMatchObject({
+      kind: 'execution',
+      execution: { status: 'success' },
+    });
+    core.close();
+  });
+
+  it('gives a host a read started before the first start the lease TTL as its owner-request floor', async () => {
+    const runner = supervisorRunner({ remoteOwner: {} });
+    stops.push(() => runner.stop());
+    const core = new FakePipelineCore(runner, relayLegLink(runner));
+    // A read starts the host before any start brings the TTL.
+    await core.list();
+    expect(runner.ownerDeadlines?.()).toEqual([]);
+    await core.start(
+      portableStart(
+        'run-floor',
+        portableLaunch({ delegationLease: { leaseTtlMs: 10 * 60_000 } }),
+      ),
+    );
+    expect(runner.ownerDeadlines?.()).toEqual([10 * 60_000]);
+    core.close();
+  });
+
+  it('counts a start its host has not answered as running', async () => {
+    const runner = supervisorRunner({ holdStarts: true });
+    stops.push(() => runner.stop());
+    const core = new FakePipelineCore(runner, relayLegLink(runner));
+    const started = core.start(portableStart('run-pending'));
+    for (
+      let turn = 0;
+      turn < 50 && (runner.runningExecutionIds?.() ?? []).length === 0;
+      turn += 1
+    )
+      await settle();
+    // A stop now checkpoints it, so the exit census counts it.
+    expect(runner.runningExecutionIds?.()).toEqual(['run-pending']);
+    runner.releaseStarts?.();
+    await expect(started).resolves.toMatchObject({
+      execution: { executionId: 'run-pending' },
+    });
+    expect(runner.runningExecutionIds?.()).toEqual(['run-pending']);
+    core.close();
+  });
+
+  it('pauses an owner-bound run at the renewed expiry before its waiting request can fail', async () => {
+    const runner = supervisorRunner({
+      remoteOwner: {
+        lease: { leaseEpoch: 1, expiresAt: Date.now() + 3_600_000 },
+      },
+    });
+    stops.push(() => runner.stop());
+    const core = new FakePipelineCore(runner, relayLegLink(runner));
+    const leave = await core.own(() => ({
+      status: 'owner',
+      value: { kind: 'model.release' },
+    }));
+    await core.start(
+      portableStart(
+        'run-expiry',
+        portableLaunch({
+          ownerBound: true,
+          delegationLease: { leaseTtlMs: 60_000 },
+        }),
+      ),
+    );
+    leave();
+    await settle();
+    const raise = runner.raise;
+    if (!raise) throw new Error('The runner raises no requests.');
+    let settled: PipelineHostSettlement | null = null;
+    void raise({
+      requestId: 'owner:run-expiry:1',
+      executionId: 'run-expiry',
+      jobId: '_run',
+      stepId: '_run',
+      childExecutionId: null,
+      attempt: 0,
+      iteration: 0,
+      owner: 'personal',
+      deadlineAt: new Date(Date.now() + 120_000).toISOString(),
+      request: { action: 'owner.model.release', routeSessionId: 'route' },
+    }).then((settlement) => {
+      settled = settlement;
+    });
+    // The owner is away when the lease is renewed to a near expiry.
+    runner.observeOwnerLease?.({
+      kind: 'renewed',
+      lease: { leaseEpoch: 1, expiresAt: Date.now() + 300 },
+    });
+    for (
+      let turn = 0;
+      turn < 100 && !(runner.paused?.() ?? []).includes('run-expiry');
+      turn += 1
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runner.paused?.()).toContain('run-expiry');
+    // The pause came first: the request was not failed as unavailable.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(settled).toBeNull();
+    core.close();
+  });
+
+  it('keeps a request waiting for its owner to a lease renewed while it waits', async () => {
+    const runner = supervisorRunner({
+      remoteOwner: {
+        lease: { leaseEpoch: 1, expiresAt: Date.now() + 3_600_000 },
+      },
+    });
+    stops.push(() => runner.stop());
+    const core = new FakePipelineCore(runner, relayLegLink(runner));
+    await core.start(
+      portableStart(
+        'run-wait',
+        portableLaunch({ delegationLease: { leaseTtlMs: 300 } }),
+      ),
+    );
+    const raise = runner.raise;
+    if (!raise) throw new Error('The runner raises no requests.');
+    // No owner is subscribed: the request waits, for the 300 ms TTL.
+    const settled = raise({
+      requestId: 'owner:run-wait:1',
+      executionId: 'run-wait',
+      jobId: '_run',
+      stepId: '_run',
+      childExecutionId: null,
+      attempt: 0,
+      iteration: 0,
+      owner: 'personal',
+      deadlineAt: new Date(Date.now() + 120_000).toISOString(),
+      request: { action: 'owner.model.release', routeSessionId: 'route' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    runner.observeOwnerLease?.({
+      kind: 'renewed',
+      lease: { leaseEpoch: 1, expiresAt: Date.now() + 2_000 },
+    });
+    // Past the TTL, the owner comes back and answers it.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await core.own(() => ({
+      status: 'owner',
+      value: { kind: 'model.release' },
+    }));
+    await expect(settled).resolves.toMatchObject({ kind: 'owner' });
+    core.close();
+  });
+
+  it('survives a five-minute relay outage without losing events or pausing the run', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'],
+    });
+    const runner = supervisorRunner({ remoteOwner: {} });
+    stops.push(() => runner.stop());
+    const answer = (): WorkerPipelineHostResult => ({
+      status: 'success',
+      outputs: {},
+    });
+    const first = new FakePipelineCore(runner, relayLegLink(runner));
+    await first.own(answer);
+    await first.start(
+      portableStart(
+        'run-outage',
+        portableLaunch({
+          ownerBound: true,
+          delegationLease: { leaseTtlMs: 10 * 60_000 },
+        }),
+      ),
+    );
+    const before = await first.events('run-outage');
+    await runner.output('run-outage', 'before');
+    const last = before.cursors[before.cursors.length - 1];
+
+    // The relay drops the runner's connection: its streams and the owner's
+    // subscription end with it, and the runner keeps running.
+    first.close();
+    await settle();
+    const during: string[] = [];
+    for (let minute = 0; minute < 5; minute += 1) {
+      for (let line = 0; line < 200; line += 1) {
+        const text = `minute ${String(minute)} line ${String(line)}`;
+        during.push(text);
+        await runner.output('run-outage', text);
+      }
+      await jest.advanceTimersByTimeAsync(60_000);
+    }
+
+    // The runner dials again: a new attachment, a new session.
+    const second = new FakePipelineCore(runner, relayLegLink(runner));
+    await second.own(answer);
+    const after = await second.events('run-outage', last);
+    expect(after.acceptedCursor).toEqual(last);
+    // The replay waits for its consumer: a held item retries every 50 ms.
+    for (
+      let turn = 0;
+      turn < 200 && after.items.length < during.length;
+      turn += 1
+    ) {
+      await jest.advanceTimersByTimeAsync(50);
+      await settle();
+    }
+    expect(
+      after.items.flatMap((item) =>
+        item.kind === 'output' ? [item.text] : [],
+      ),
+    ).toEqual(during);
+    expect(after.items.some((item) => item.kind === 'execution')).toBe(false);
+    expect(runner.paused?.()).toEqual([]);
+    await expect(second.get('run-outage')).resolves.toMatchObject({
+      execution: { status: 'running' },
+    });
+
+    // The owner's absence timer was cleared by its return.
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    expect(runner.paused?.()).toEqual([]);
+    await runner.finish('run-outage', 'success');
+    await expect(after.ended).resolves.toMatchObject({ outcome: 'completed' });
+    second.close();
   });
 });

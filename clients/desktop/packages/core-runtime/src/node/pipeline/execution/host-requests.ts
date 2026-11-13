@@ -97,8 +97,11 @@ function hostStepResult(
   return result.status === 'owner' ? UNEXPECTED : result;
 }
 
-/** An owner request takes only an owner answer of its own kind, or a failure. */
-function ownerSettlement(
+/**
+ * An owner request takes only an owner answer of its own kind, or a failure;
+ * also how a worker settles a request it answers itself (CAN-6161).
+ */
+export function ownerSettlement(
   request: WorkerPipelineHostRequest,
   result: WorkerPipelineHostResult,
   values: WorkerPipelineOwnerValues | undefined,
@@ -111,7 +114,15 @@ function ownerSettlement(
     result.value.kind !== WORKER_PIPELINE_OWNER_RESULT_KIND[action]
   )
     return { result: UNEXPECTED };
-  return values ? { result, values } : { result };
+  if (!values) return { result };
+  // An MCP header rides only the authorization that granted it (CAN-6168).
+  const granted =
+    result.value.kind === 'mcp.authorize' && result.value.grantId !== null;
+  if (values.mcpAuthorization === undefined || granted)
+    return { result, values };
+  const kept: WorkerPipelineOwnerValues = { ...values };
+  delete kept.mcpAuthorization;
+  return { result, values: kept };
 }
 
 /** The worker side: pending host requests and their subscribers. */

@@ -334,6 +334,10 @@ export function normalizePreferences(
       typeof data?.sidebarCoworkSectionCollapsed === 'boolean'
         ? data.sidebarCoworkSectionCollapsed
         : DEFAULT_PREFERENCES.sidebarCoworkSectionCollapsed,
+    sidebarOrchestratorCollapsed:
+      typeof data?.sidebarOrchestratorCollapsed === 'boolean'
+        ? data.sidebarOrchestratorCollapsed
+        : DEFAULT_PREFERENCES.sidebarOrchestratorCollapsed,
     sidebarNavLayout:
       typeof data?.sidebarNavLayout === 'object' &&
       data?.sidebarNavLayout !== null

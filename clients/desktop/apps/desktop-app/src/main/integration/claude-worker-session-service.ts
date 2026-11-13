@@ -46,7 +46,7 @@ import {
 import {
   extractClaudeProposedPlanFromJsonl,
   normalizeClaudeTerminalTranscriptToSdkJsonl,
-} from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import { validateAgainstSchema } from '../canopy-tools/report-structured-result';
 import { getClaudeWorkerRuntimeDir } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';

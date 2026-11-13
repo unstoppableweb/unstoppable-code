@@ -420,8 +420,10 @@ export function normalizeInAppNotifications(
 
   const placementChosen = value.placementChosen === true;
   const storedPlacement = normalizeInAppNotificationPlacement(value.placement);
-  // Older builds wrote `bottom-right` as the default on every save. Only a
-  // corner the user picked is kept, so the default can change.
+  // Older builds wrote `bottom-right` automatically on every save. Discard
+  // that unchosen legacy value to follow the app default, even when it is also
+  // bottom-right. Retain other valid legacy corners: a missing chosen flag
+  // cannot distinguish their explicit choices from historical defaults.
   const placement =
     storedPlacement === 'bottom-right' && !placementChosen
       ? undefined

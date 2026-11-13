@@ -47,7 +47,7 @@ function StepRail({ active }: { active: WorkflowStep }): JSX.Element {
               <span
                 className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-3xs font-semibold ${
                   isActive
-                    ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
+                    ? 'bg-accent-subtle fg-accent-strong ring-1 ring-line-accent/40'
                     : isDone
                       ? 'bg-success-subtle fg-success-strong'
                       : 'bg-fg-primary/[0.06] fg-secondary'

@@ -179,6 +179,38 @@ type FilePanelPlacementHint =
   | { readonly kind: 'file-sibling'; readonly originFileTabId: string };
 
 const pendingFilePanelPlacements = new Map<string, FilePanelPlacementHint>();
+
+/** The chat that owns the content tab at `location` (see `panel-chat-scope`). */
+function panelChatScope(
+  location: { layoutKey: string; groupId: string; panelId: string } | null,
+): string | undefined {
+  if (location === null) return undefined;
+  return usePanelLayoutStore
+    .getState()
+    .layouts[
+      location.layoutKey
+    ]?.groups[location.groupId]?.tabs.find((tab) => tab.panelId === location.panelId)
+    ?.chatScope;
+}
+
+/**
+ * The chat a file opened through `hint` belongs to: the chat it opened beside,
+ * or the chat of the file it opened from. Every placement path, fallbacks
+ * included, passes it on, so the file never lands in whichever chat happens
+ * to be selected.
+ */
+function filePlacementChatScope(
+  worktreeKey: string,
+  hint: FilePanelPlacementHint | undefined,
+): string | undefined {
+  if (hint?.kind === 'beside-chat') return hint.originChatTabId;
+  if (hint?.kind === 'file-sibling') {
+    return panelChatScope(
+      findPanelByInstanceKey(worktreeKey, `file-diff:${hint.originFileTabId}`),
+    );
+  }
+  return undefined;
+}
 /**
  * Chat tab ids whose panel was removed while their backing chat is still being
  * closed. `chatStore.closeTab` archives a chat with history over an async IPC
@@ -729,17 +761,22 @@ function materializeFilePanelAsSibling(
     return null;
   }
   const store = usePanelLayoutStore.getState();
+  // A sibling belongs to the same chat as the file it opened from.
+  const chatScope = panelChatScope(origin);
+  const scoped = chatScope === undefined ? {} : { chatScope };
   const panelId =
     store.addTab(origin.layoutKey, origin.groupId, seed.kind, {
       panelId: seed.panelId,
       title: seed.title,
       instance: seed.instance,
       ...(activate ? {} : { activate: false }),
+      ...scoped,
     }) ??
     store.addTab(origin.layoutKey, origin.groupId, seed.kind, {
       title: seed.title,
       instance: seed.instance,
       ...(activate ? {} : { activate: false }),
+      ...scoped,
     });
   if (panelId === null) {
     return null;
@@ -802,6 +839,8 @@ function materializeContentBesideChat(
     return null;
   }
 
+  // The panel belongs to the chat it opened beside, even while another chat
+  // is selected.
   const store = usePanelLayoutStore.getState();
   const layout = store.layouts[origin.layoutKey];
   if (!layout) {
@@ -817,6 +856,7 @@ function materializeContentBesideChat(
       panelId: seed.panelId,
       title: seed.title,
       instance: seed.instance,
+      chatScope: originChatTabId,
       ...(activate ? {} : { activate: false }),
     });
   }
@@ -826,6 +866,7 @@ function materializeContentBesideChat(
       panelId: seed.panelId,
       title: seed.title,
       instance: seed.instance,
+      chatScope: originChatTabId,
       activate: false,
     });
   }
@@ -842,6 +883,7 @@ function materializeContentBesideChat(
     panelId: seed.panelId,
     title: seed.title,
     instance: seed.instance,
+    chatScope: originChatTabId,
   });
   if (panelId === null) {
     rollbackCreatedChatSiblingGroup(origin.layoutKey, created);
@@ -1004,7 +1046,15 @@ function materializeFilePanelInDocumentsGroup(
           seed,
           originFileTabId,
           activate,
-        )) ?? addFileTabToDocumentsGroup(layoutKey, anchor, seed, activate);
+        )) ??
+    addFileTabToDocumentsGroup(
+      layoutKey,
+      anchor,
+      seed,
+      activate,
+      // Beside the chat it opened for, else the chat it is placed beside.
+      originChatTabId ?? anchor.chatTabId,
+    );
   if (panelId === null) {
     return { kind: 'failed' };
   }
@@ -1043,6 +1093,7 @@ function addFileTabToDocumentsGroup(
   anchor: ChatPanelAnchor,
   seed: ChatTabPanelSeed,
   activate: boolean,
+  chatScope: string,
 ): string | null {
   const destination = ensureDocumentsGroup(layoutKey, anchor.groupId, activate);
   if (destination === null) {
@@ -1053,6 +1104,7 @@ function addFileTabToDocumentsGroup(
     title: seed.title,
     instance: seed.instance,
     ...(activate ? {} : { activate: false }),
+    chatScope,
   };
   const panelId =
     store.addTab(layoutKey, destination.groupId, seed.kind, {
@@ -1492,6 +1544,23 @@ function runSweep(): void {
           const preferredGroupId =
             minimalDestination ?? pickContentTargetGroupId(layout);
           if (preferredGroupId === null) break;
+          // Read before the hint is dropped: a fallback placement still
+          // belongs to the chat the file opened for.
+          const fileChatScope =
+            tab.kind === 'file'
+              ? filePlacementChatScope(
+                  worktreeKey,
+                  pendingFilePanelPlacements.get(tab.id),
+                )
+              : undefined;
+          // Keep the origin on main-layout fallbacks too. Content of a
+          // popped-out chat shows until that chat returns to this window.
+          const scoped =
+            fileChatScope === undefined
+              ? {}
+              : {
+                  chatScope: fileChatScope,
+                };
           // Resolved only when the placement hints below do not apply.
           const addToPlacementGroup = (): string | null => {
             const groupId = placementGroupId(
@@ -1510,6 +1579,7 @@ function runSweep(): void {
                   title: seed.title,
                   instance: seed.instance,
                   ...(activate ? {} : { activate: false }),
+                  ...scoped,
                 }) ??
               usePanelLayoutStore
                 .getState()
@@ -1517,6 +1587,7 @@ function runSweep(): void {
                   title: seed.title,
                   instance: seed.instance,
                   ...(activate ? {} : { activate: false }),
+                  ...scoped,
                 })
             );
           };
@@ -2186,6 +2257,7 @@ function addContentTab(
   layoutKey: string,
   groupId: string,
   seed: ContentPanelSeed,
+  chatScope?: string | null,
 ): string | null {
   const store = usePanelLayoutStore.getState();
   const options = {
@@ -2193,6 +2265,7 @@ function addContentTab(
     ...(Object.keys(seed.instance).length > 0
       ? { instance: seed.instance }
       : {}),
+    ...(chatScope === undefined ? {} : { chatScope }),
   };
   return (
     store.addTab(layoutKey, groupId, seed.kind, {
@@ -2245,7 +2318,17 @@ function placeContentPanelAutomatically(
     getWorkspaceLayoutMode(worktreeKey) === 'minimal'
       ? ensureMinimalDestination(worktreeKey, 'file-diff')
       : pickContentTargetGroupId(layout);
-  return groupId === null ? null : addContentTab(worktreeKey, groupId, seed);
+  // A fallback still belongs to the chat it opened for.
+  const chatScope =
+    origin?.chatTabId ??
+    (origin?.fileTabId === undefined
+      ? undefined
+      : panelChatScope(
+          findPanelByInstanceKey(worktreeKey, `file-diff:${origin.fileTabId}`),
+        ));
+  return groupId === null
+    ? null
+    : addContentTab(worktreeKey, groupId, seed, chatScope);
 }
 
 /** The `group` policy: exactly the requested group of the worktree's family. */

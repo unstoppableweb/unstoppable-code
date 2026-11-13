@@ -1,4 +1,5 @@
 import { withoutAutomationOwnedPipelines } from '../workflows/workflow-library-model';
+import { installedShareUpdateAvailable } from './installed-share-provenance';
 import type { ResourceOwner } from '@canopy/protocol/resource-owner';
 /**
  * Unified capability marketplace projection (CAN-1080 / API-2153 / CAN-1565).
@@ -194,6 +195,8 @@ export type UnifiedInstalledSkillInput = Pick<
   > & {
     /** Existing browser-safe author-side identity supplied by the Portal. */
     shareRemoteId?: string;
+    /** Current source hash resolved independently of the paginated browse list. */
+    sourceContentHash?: string;
   };
 
 /**
@@ -1682,7 +1685,15 @@ function projectInstalledSkill(
     updateAvailable: skill.updateAvailable,
     builtIn: skill.builtIn,
     custom: skill.custom,
-    ...(receipt ? { installedFrom: receiptAttribution(receipt) } : {}),
+    ...(receipt
+      ? {
+          installedFrom: receiptAttribution(receipt),
+          shareUpdateAvailable: installedShareUpdateAvailable(
+            receipt,
+            skill.sourceContentHash,
+          ),
+        }
+      : {}),
     // Built-in skills carry an empty `updatedAt`; only the viewer's own skills
     // say when they were edited (CAN-4844).
     editedAt:

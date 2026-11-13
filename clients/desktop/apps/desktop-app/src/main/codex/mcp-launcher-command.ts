@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { app } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
-import type { CodexMcpLauncherCommand } from '@canopy/desktop-shared/node/codex-runtime';
+import type { CodexMcpLauncherCommand } from '@canopy/execution-engine/node/codex-runtime';
 import { daemonName } from '@canopy/protocol/brand';
 import { getBundledBinDir } from '@canopy/execution-engine/pipelines/config-paths';
 

@@ -49,7 +49,16 @@ export type ApprovalRequestDetails =
       reason?: string;
     }
   | { kind: 'network'; host: string; reason?: string }
-  | { kind: 'tool'; toolName: string; inputSummary?: string; reason?: string }
+  | {
+      kind: 'tool';
+      toolName: string;
+      /** A read tool's target path, shown as supplied. */
+      path?: string;
+      /** Host-projected relative path; never an approval rule target. */
+      displayPath?: string;
+      inputSummary?: string;
+      reason?: string;
+    }
   | {
       kind: 'browser-upload';
       /** Origin of the frame that receives the files. */

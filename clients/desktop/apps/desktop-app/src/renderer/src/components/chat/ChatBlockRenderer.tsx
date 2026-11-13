@@ -42,9 +42,12 @@ import {
   Markdown,
   ErrorBanner,
   MarkdownCodeBlock,
+  MarkdownImage,
+  MarkdownImageUnavailable,
   markdownOptions,
   type MarkdownOverrides,
   markdownTableCellProps,
+  AskUserQuestionPreparingRow,
   Notice,
   resolveAskUserQuestionPresentation,
   Surface,
@@ -197,9 +200,11 @@ function isAbsoluteLocalImageSource(source: string): boolean {
   return /^\/(?!\/)/.test(source) || /^[a-zA-Z]:[\\/]/.test(source);
 }
 
-function isRemoteImageSource(source: string): boolean {
-  const candidate = source.trimStart();
-  return /^https?:/i.test(candidate) || /^[\\/]{2}/.test(candidate);
+// `//host/...` and `\\host\...` resolve against the renderer's `file:` or
+// custom-scheme origin, never the web, and on Windows reach SMB. No source of
+// that shape is a loadable chat image, so it never becomes a request.
+function isNetworkPathImageSource(source: string): boolean {
+  return /^[\\/]{2}/.test(source.trimStart());
 }
 
 const ChatMarkdownImage = memo(function ChatMarkdownImage({
@@ -211,8 +216,6 @@ const ChatMarkdownImage = memo(function ChatMarkdownImage({
   const target = useContext(ChatMarkdownFileTargetContext);
   const [resolvedSrc, setResolvedSrc] = useState<string | null | undefined>();
   const shouldResolve = target !== null && isAbsoluteLocalImageSource(rawSrc);
-  const shouldBlockRemote =
-    target?.allowRemoteImages === false && isRemoteImageSource(rawSrc);
 
   useEffect(() => {
     if (!shouldResolve || !target) return;
@@ -245,31 +248,20 @@ const ChatMarkdownImage = memo(function ChatMarkdownImage({
     };
   }, [rawSrc, shouldResolve, target]);
 
-  if (shouldBlockRemote) {
-    return (
-      <span
-        data-testid="chat-external-image-hidden"
-        className="text-xs fg-secondary"
-      >
-        {alt ? `${alt} (external image hidden)` : 'External image hidden'}
-      </span>
-    );
+  if (isNetworkPathImageSource(rawSrc)) {
+    return <MarkdownImageUnavailable alt={alt} />;
   }
   if (!shouldResolve) {
-    return <img src={src} alt={alt} {...props} />;
+    return <MarkdownImage {...props} src={src} alt={alt} />;
   }
 
   if (resolvedSrc === undefined) {
     return <span className="text-xs fg-secondary">Loading image…</span>;
   }
   if (resolvedSrc === null) {
-    return (
-      <span className="text-xs fg-secondary">
-        {alt ? `${alt} (image unavailable)` : 'Image unavailable'}
-      </span>
-    );
+    return <MarkdownImageUnavailable alt={alt} />;
   }
-  return <img src={resolvedSrc} alt={alt} {...props} />;
+  return <MarkdownImage {...props} src={resolvedSrc} alt={alt} />;
 });
 
 interface ChatImageBlockProps {
@@ -1584,21 +1576,14 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
             block.toolUseId,
             block.input,
           ),
+          turnSettled ? false : undefined,
         );
         switch (presentation.kind) {
           case 'awaiting':
             // The composer owns the unanswered prompt.
             return null;
           case 'preparing':
-            return (
-              <div
-                className="flex items-center gap-1.5 py-1 text-xs fg-secondary"
-                data-testid="ask-user-question-preparing"
-              >
-                <ThinkingSpinner tone="accent" />
-                <span>Preparing question…</span>
-              </div>
-            );
+            return <AskUserQuestionPreparingRow />;
           case 'answered':
             return (
               <>

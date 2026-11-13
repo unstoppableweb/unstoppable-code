@@ -97,8 +97,22 @@ function versionMismatch(
   );
 }
 
+/** The advertised minor schema revisions, by operation (protocol rule 5). */
+function schemaRevisionsOf(advertised: unknown): ReadonlyMap<string, number> {
+  if (typeof advertised !== 'object' || advertised === null) return new Map();
+  return new Map(
+    Object.entries(advertised).flatMap(([name, revision]: [string, unknown]) =>
+      typeof revision === 'number' && Number.isSafeInteger(revision)
+        ? [[name, revision] as const]
+        : [],
+    ),
+  );
+}
+
 function createManifest(
-  lists: Record<CanopyManifestKind, readonly string[]>,
+  lists: Record<CanopyManifestKind, readonly string[]> & {
+    readonly schemaRevisions?: unknown;
+  },
 ): CanopyEffectiveManifest {
   // The closure snapshot is unreachable; public sets are separate copies, so
   // mutating them never changes `has`.
@@ -111,6 +125,7 @@ function createManifest(
     operations: new Set(lists.operations),
     events: new Set(lists.events),
     streams: new Set(lists.streams),
+    schemaRevisions: schemaRevisionsOf(lists.schemaRevisions),
     has: (kind: CanopyManifestKind, name: string): boolean =>
       snapshot.get(kind)?.has(name) ?? false,
   });

@@ -11,7 +11,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
-import { listBuiltinActions, resolveAction } from '../action-resolver';
+import {
+  listBuiltinActions,
+  resolveAction,
+} from '@canopy/execution-engine/node/pipelines/action-resolver';
 import {
   getProjectActionsDir,
   getProjectActionsDirCandidates,
@@ -19,7 +22,7 @@ import {
 import {
   classifyDaemonPipeline,
   type DaemonPipelineClassifierContext,
-} from '../daemon-eligibility';
+} from '@canopy/execution-engine/node/pipelines/daemon-eligibility';
 
 const BUNDLED_ACTIONS = resolve(__dirname, '../../../../resources/actions');
 
@@ -166,6 +169,34 @@ describe('classifyDaemonPipeline', () => {
     ).toMatchObject({ eligible: false, reason: 'tsx_runtime' });
   });
 
+  it('admits tsx steps and actions on a runtime that stages its own tsx (CAN-6316 G1)', () => {
+    const staged: DaemonPipelineClassifierContext = {
+      runtime: { ...context.runtime, tsxCli: '/runner/tsx/dist/cli.mjs' },
+    };
+    const portable = { eligible: true, modelSteps: 0, modelHarnesses: [] };
+    expect(
+      classifyDaemonPipeline(oneStep({ run: 'x', shell: 'tsx' }), staged),
+    ).toEqual(portable);
+    expect(
+      classifyDaemonPipeline(
+        oneStep({ uses: 'builtin/hello-world-ts' }),
+        staged,
+      ),
+    ).toEqual(portable);
+    expect(
+      classifyDaemonPipeline(
+        {
+          name: 't',
+          on: 'dispatch',
+          defaults: { run: { shell: 'tsx' } },
+          jobs: { j: { steps: [{ run: 'x' }] } },
+        },
+        staged,
+        { modelSteps: 'claude_codex' },
+      ),
+    ).toEqual(portable);
+  });
+
   it('refuses unresolved and expression actions', () => {
     expect(
       classifyDaemonPipeline(
@@ -260,14 +291,19 @@ describe('classifyDaemonPipeline', () => {
       });
 
       writeComposite('nest-1', '    - run: echo leaf\n');
-      for (let level = 2; level <= 9; level += 1) {
+      for (let level = 2; level <= 10; level += 1) {
         writeComposite(
           `nest-${level}`,
           `    - uses: project/nest-${level - 1}\n`,
         );
       }
+      // The executor runs a step nine composites deep and fails one ten
+      // deep (MAX_NESTED_STEP_DEPTH); the host admits what it runs (G5).
       expect(
         classifyDaemonPipeline(oneStep({ uses: 'project/nest-9' }), withRepo),
+      ).toEqual({ eligible: true, modelSteps: 0, modelHarnesses: [] });
+      expect(
+        classifyDaemonPipeline(oneStep({ uses: 'project/nest-10' }), withRepo),
       ).toMatchObject({ eligible: false, reason: 'too_deep', jobId: 'j' });
     });
   });

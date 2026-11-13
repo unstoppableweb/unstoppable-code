@@ -12,6 +12,8 @@ export const POSTHOG_REPLAY_BLOCK_CLASS = 'ph-no-capture';
 
 /** Mask. The recorder replaces every visible character of text inside an
  * element carrying this class with `*`, keeping spaces, so a user-authored
- * title keeps its shape but cannot be read. Clicks on it are still recorded.
- * Read by `recordReplayText`. */
+ * title keeps its shape but cannot be read, and replaces the attributes that
+ * can carry that content (`placeholder`, `title`, `aria-label`, `data-value`
+ * and the like) with a fixed mask. Clicks and focus on it are still recorded.
+ * Read by `recordReplayText` and `maskReplayAttribute`. */
 export const POSTHOG_REPLAY_MASK_CLASS = 'ph-mask';

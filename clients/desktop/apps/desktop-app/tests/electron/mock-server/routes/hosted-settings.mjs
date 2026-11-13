@@ -319,7 +319,7 @@ function initialState(config, scenario) {
     digestPreferences: defaultDigestPreferences(),
     pushPreferences: { pushEnabled: false },
     apiKeys: defaultApiKeys(),
-    invites: [],
+    invites: clone(config.invites ?? []),
     organizations,
     orgOrder,
     feeds,
@@ -1190,7 +1190,72 @@ const OPERATION_ROUTES = [
     method: 'GET',
     path: /^\/api\/account\/invites$/,
     handle(ctx) {
-      respond(ctx, 200, { enabled: true, invites: clone(ctx.state.invites) });
+      respond(ctx, 200, {
+        enabled: true,
+        invites: clone(
+          ctx.state.invites.filter(
+            (invite) => invite.createdByUserId === ctx.state.viewer.id,
+          ),
+        ),
+      });
+    },
+  },
+  {
+    operation: 'organization.invitations.list',
+    method: 'GET',
+    path: new RegExp(`^${ORG}/invites$`),
+    handle(ctx, match) {
+      const org = orgFor(ctx, match);
+      if (org === null) return;
+      if (!canEditOrganization(org.viewerRole)) {
+        respond(ctx, 403, { error: 'Forbidden' });
+        return;
+      }
+      const invites = ctx.state.invites.filter(
+        (invite) =>
+          invite.organizationId === org.id &&
+          invite.status === 'ACTIVE' &&
+          (org.viewerRole === 'OWNER' ||
+            invite.createdByUserId === ctx.state.viewer.id),
+      );
+      const cursor = ctx.url.searchParams.get('cursor');
+      const start = cursor
+        ? invites.findIndex((invite) => invite.id === cursor) + 1
+        : 0;
+      const items = invites
+        .slice(start, start + 50)
+        .map(({ id, code, createdByUserId, ...invite }) => ({
+          ...invite,
+          externalId: id,
+        }));
+      respond(ctx, 200, {
+        enabled: true,
+        items,
+        nextCursor:
+          start + 50 < invites.length ? items.at(-1).externalId : null,
+      });
+    },
+  },
+  {
+    operation: 'organization.invitations.revoke',
+    method: 'DELETE',
+    path: new RegExp(`^${ORG}/invites/([^/]+)$`),
+    handle(ctx, match) {
+      const org = orgFor(ctx, match);
+      if (org === null) return;
+      const invite = ctx.state.invites.find(
+        (invite) =>
+          invite.id === match[2] &&
+          invite.organizationId === org.id &&
+          (org.viewerRole === 'OWNER' ||
+            invite.createdByUserId === ctx.state.viewer.id),
+      );
+      if (!canEditOrganization(org.viewerRole) || !invite) {
+        respond(ctx, 404, { error: 'Invite not found' });
+        return;
+      }
+      invite.status = 'REVOKED';
+      respond(ctx, 204);
     },
   },
   {
@@ -1217,6 +1282,7 @@ const OPERATION_ROUTES = [
       const invite = {
         id,
         code: `invite-${id}`,
+        createdByUserId: ctx.state.viewer.id,
         status: 'ACTIVE',
         organizationId,
         organizationTeamName: null,

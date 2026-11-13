@@ -16,6 +16,7 @@ import {
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_QUERY_DEFINITIONS,
   WORKER_PIPELINE_STREAM_DEFINITIONS,
+  CanopyJsonRpcMessageSchema,
   WorkerPipelineExecutionGetResultSchema,
   WorkerPipelineExecutionListResultSchema,
   WorkerPipelineExecutionEventsItemSchema,
@@ -32,6 +33,7 @@ import {
   type WorkerPipelineExecutionStartParams,
   type WorkerPipelineExecutionView,
   type WorkerPipelineHostLaunch,
+  type WorkerPipelineHostRequest,
   type WorkerPipelineHostRequestsItem,
   type WorkerPipelineHostResult,
   type WorkerPipelinePortableLaunch,
@@ -44,6 +46,10 @@ import {
   type InProcessWorkerBinding,
 } from '../../../../runtime/in-process-worker-binding';
 import { serializingWorkerPair } from '../../../../runtime/__tests__/serializing-worker-pair';
+import { canopyUnavailableError } from '../../../../runtime/errors';
+import { connectLocalWorkerBinding } from '../../../../runtime/local-worker-binding-client';
+import { serveLocalWorkerBinding } from '../../../../runtime/local-worker-binding-server';
+import type { WorkerBindingConnection } from '../../../../runtime/local-worker-binding-wire';
 import type { CanopyRuntimeHandlerMaps } from '../../../../runtime/types';
 import {
   executionSecretNotGrantedError,
@@ -68,10 +74,14 @@ import {
 } from '../../execution';
 import {
   PipelineHostSupervisor,
+  createPipelineRelaySession,
+  servePipelineRelayLeg,
   type PipelineHostLaunch,
   type PipelineHostMessage,
   type PipelineHostProcess,
   type PipelineHostRequestMessage,
+  type PipelineHostSettlement,
+  type PipelineRemoteOwner,
 } from '..';
 
 /** What a runner serves to its primary over the relay: the daemon's set. */
@@ -249,7 +259,46 @@ function journalOf(options: RelayRunnerOptions): PipelineEventJournal | null {
     ...(options.journal?.retainMs !== undefined && {
       retainMs: options.journal.retainMs,
     }),
+    ...(options.journal?.expiry && {
+      expireAfter: options.journal.expiry.expireAfter,
+    }),
   });
+}
+
+/**
+ * Journal expiries a test fires itself (CAN-6221). A retention timer races
+ * the test's own work under load: a journal can expire before the stream
+ * the test opens on it.
+ */
+export class ManualJournalExpiry {
+  private readonly armed = new Set<() => void>();
+
+  private readonly waiting = new Set<() => void>();
+
+  public readonly expireAfter = (expire: () => void): (() => void) => {
+    const fire = (): void => {
+      this.armed.delete(fire);
+      expire();
+    };
+    this.armed.add(fire);
+    for (const resolve of [...this.waiting]) resolve();
+    this.waiting.clear();
+    return () => {
+      this.armed.delete(fire);
+    };
+  };
+
+  /** Settles once a journal is waiting to expire. */
+  public whenArmed(): Promise<void> {
+    if (this.armed.size > 0) return Promise.resolve();
+    return new Promise((resolve) => this.waiting.add(resolve));
+  }
+
+  /** Expires every journal waiting to, once one is. */
+  public async expire(): Promise<void> {
+    await this.whenArmed();
+    for (const fire of [...this.armed]) fire();
+  }
 }
 
 function settled(
@@ -304,6 +353,29 @@ export interface RelayRunner {
     executionId: string,
     patch: Partial<WorkerPipelineExecution>,
   ): Promise<void>;
+  /**
+   * Raises a host or owner request as the run's host would, and resolves
+   * with how the runner settled it for the host; only a runner with a
+   * pipeline host raises them.
+   */
+  readonly raise?: (
+    request: WorkerPipelineHostRequest,
+  ) => Promise<PipelineHostSettlement>;
+  /**
+   * Every run its host was asked to pause, in order (an owner-loss or hung
+   * owner pause); only a runner with a pipeline host pauses them.
+   */
+  readonly paused?: () => readonly string[];
+  /** Every owner-request floor its hosts were given (CP-11). */
+  readonly ownerDeadlines?: () => readonly number[];
+  /** What its supervisor counts as running (CP-11). */
+  readonly runningExecutionIds?: () => readonly string[];
+  /** Answers the starts its hosts held back. */
+  readonly releaseStarts?: () => void;
+  /** What its relay binding learned about the delegation lease (CAN-6198). */
+  readonly observeOwnerLease?: (
+    observation: Parameters<PipelineHostSupervisor['observeOwnerLease']>[0],
+  ) => void;
   /** Ends a run as its host would. */
   finish(
     executionId: string,
@@ -313,14 +385,25 @@ export interface RelayRunner {
 }
 
 export interface RelayRunnerOptions {
-  /** The runner's owner is remote, with this lease (CAN-6102). */
-  readonly remoteOwner?: { readonly leaseTtlMs: number };
+  /** The runner's owner is remote, with this lease (CAN-6102) and route resolution (CAN-6161). */
+  readonly remoteOwner?: PipelineRemoteOwner;
   /** Whether the runner maps portable starts; a desktop-like worker doesn't. */
   readonly portable?: boolean;
   /** The runner's event journal (CAN-6161); `false` for none. Default on. */
   readonly journal?:
     | false
-    | { readonly maxEntries?: number; readonly retainMs?: number };
+    | {
+        readonly maxEntries?: number;
+        readonly retainMs?: number;
+        readonly expiry?: ManualJournalExpiry;
+      };
+  /**
+   * Where the start handler redeems bindings: a hosted activation's grant
+   * (CAN-6215). Default: the canary source, a fresh one per handler set.
+   */
+  readonly secrets?: ExecutionSecretSource;
+  /** The host holds its answer to each start until `releaseStarts` (CP-11). */
+  readonly holdStarts?: boolean;
 }
 
 /** One run as a fake host keeps it. */
@@ -333,18 +416,55 @@ interface HostedRun {
 class FakePipelineHost extends EventEmitter implements PipelineHostProcess {
   readonly runs = new Map<string, HostedRun>();
 
+  /** Every execution a `pause` op named. */
+  readonly paused: string[] = [];
+
+  /** Every owner-request floor the supervisor gave it (CP-11). */
+  readonly ownerDeadlines: number[] = [];
+
+  /** Start answers held back, when it holds them. */
+  readonly heldStarts: Array<() => void> = [];
+
+  constructor(private readonly holdStarts = false) {
+    super();
+  }
+
+  /** What the supervisor settled each raised request with, by request id. */
+  private readonly settlements = new Map<
+    string,
+    (settlement: PipelineHostSettlement) => void
+  >();
+
+  raise(request: WorkerPipelineHostRequest): Promise<PipelineHostSettlement> {
+    return new Promise((resolve) => {
+      this.settlements.set(request.requestId, resolve);
+      this.send({ kind: 'hostRequest', request });
+    });
+  }
+
   postMessage({ id, request }: PipelineHostRequestMessage): void {
     switch (request.op) {
-      case 'configure':
       case 'hostSettled':
+        this.settlements.get(request.requestId)?.(request.settlement);
+        this.settlements.delete(request.requestId);
+        this.reply(id, null);
+        return;
       case 'pause':
+        this.paused.push(...request.executionIds);
+        this.reply(id, null);
+        return;
+      case 'configure':
+        if (request.ownerRequestDeadlineMs !== undefined)
+          this.ownerDeadlines.push(request.ownerRequestDeadlineMs);
         this.reply(id, null);
         return;
       case 'start': {
         const { params } = request.start;
         const execution = projectionOf(params);
         this.runs.set(params.executionId, { launch: request.start, execution });
-        this.reply(id, execution);
+        if (this.holdStarts)
+          this.heldStarts.push(() => this.reply(id, execution));
+        else this.reply(id, execution);
         return;
       }
       case 'get': {
@@ -385,6 +505,10 @@ class FakePipelineHost extends EventEmitter implements PipelineHostProcess {
         return;
       case 'checkpoint':
         this.reply(id, { checkpointedCount: 0 });
+        return;
+      case 'ownerDeadline':
+        this.ownerDeadlines.push(request.ownerRequestDeadlineMs);
+        this.reply(id, null);
         return;
       case 'exit':
         this.reply(id, null);
@@ -456,10 +580,11 @@ function handlersOf(
   worker: PipelineExecutionWorker,
   owner: PipelineOwnerChannel,
   journal: PipelineEventJournal | null,
+  secrets: ExecutionSecretSource = canarySecrets(),
 ): RelayRunner['handlers'] {
   const all = createWorkerPipelineHandlers(
     journal ? withPipelineEventJournal(worker, journal) : worker,
-    { secrets: canarySecrets(), ...(journal && { journal }) },
+    { secrets, ...(journal && { journal }) },
   );
   return {
     queries: {
@@ -493,7 +618,7 @@ export function supervisorRunner(
   const hosts: FakePipelineHost[] = [];
   const supervisor = new PipelineHostSupervisor({
     launch: (): PipelineHostProcess => {
-      const host = new FakePipelineHost();
+      const host = new FakePipelineHost(options.holdStarts === true);
       hosts.push(host);
       return host;
     },
@@ -514,10 +639,10 @@ export function supervisorRunner(
   const journal = journalOf(options);
   const runner: RelayRunner = {
     name: 'supervisor runner',
-    handlers: handlersOf(supervisor, owner, journal),
+    handlers: handlersOf(supervisor, owner, journal, options.secrets),
     rehandled: () => ({
       ...runner,
-      handlers: handlersOf(supervisor, owner, journal),
+      handlers: handlersOf(supervisor, owner, journal, options.secrets),
     }),
     output: async (executionId, text) => {
       const host = hostOf(executionId);
@@ -537,8 +662,22 @@ export function supervisorRunner(
       host.update(executionId, patch);
       await settle();
     },
+    raise: (request) => {
+      const host = hostOf(request.executionId);
+      if (!host) throw new Error(`No run ${request.executionId}.`);
+      return host.raise(request);
+    },
     launched: (executionId) =>
       hostOf(executionId)?.runs.get(executionId)?.launch,
+    paused: () => hosts.flatMap((host) => host.paused),
+    ownerDeadlines: () => hosts.flatMap((host) => host.ownerDeadlines),
+    runningExecutionIds: () => supervisor.runningExecutionIds(),
+    releaseStarts: () => {
+      for (const host of hosts)
+        for (const answer of host.heldStarts.splice(0)) answer();
+    },
+    observeOwnerLease: (observation) =>
+      supervisor.observeOwnerLease(observation),
     finish: async (executionId, status) => {
       const host = hostOf(executionId);
       if (!host) throw new Error(`No run ${executionId}.`);
@@ -697,10 +836,10 @@ export function fakeRunner(options: RelayRunnerOptions = {}): RelayRunner {
   const journal = journalOf(options);
   const runner: RelayRunner = {
     name: 'fake runner',
-    handlers: handlersOf(worker, owner, journal),
+    handlers: handlersOf(worker, owner, journal, options.secrets),
     rehandled: () => ({
       ...runner,
-      handlers: handlersOf(worker, owner, journal),
+      handlers: handlersOf(worker, owner, journal, options.secrets),
     }),
     output: async (executionId, text) => {
       worker.output(executionId, text);
@@ -743,35 +882,56 @@ function keysOf(value: unknown, into: Set<string> = new Set()): Set<string> {
   return into;
 }
 
-/**
- * The fake web core: it reaches its runner only over a serializing JSON-RPC
- * pair and records every frame both ways, as the relay would carry them.
- */
-export class FakePipelineCore {
-  private readonly pair = serializingWorkerPair();
+/** How a fake core reaches its runner: a binding, and the wire it carries. */
+export interface FakeCoreLink {
+  readonly binding: Pick<
+    InProcessWorkerBinding,
+    'query' | 'instruction' | 'openStream'
+  > & { close(): void };
+  /** Every envelope either end sent, as JSON. */
+  wire(): CanopyJsonRpcMessage[];
+}
 
-  private readonly binding: InProcessWorkerBinding;
-
-  constructor(readonly runner: RelayRunner) {
-    const dispatcher = createCanopyDispatcher({
-      profile: 'worker',
-      definitions: RELAY_DEFINITIONS,
-      handlers: runner.handlers,
-    });
-    this.binding = createInProcessWorkerBinding({
+/** The runner's handlers behind a serializing JSON-RPC pair. */
+function serializingLink(runner: RelayRunner): FakeCoreLink {
+  const pair = serializingWorkerPair();
+  const dispatcher = createCanopyDispatcher({
+    profile: 'worker',
+    definitions: RELAY_DEFINITIONS,
+    handlers: runner.handlers,
+  });
+  return {
+    binding: createInProcessWorkerBinding({
       dispatcher,
       definitions: RELAY_DEFINITIONS,
       caller: RELAY_CALLER,
-      pair: this.pair,
-    });
+      pair,
+    }),
+    wire: () =>
+      [...pair.client.send.mock.calls, ...pair.server.send.mock.calls].map(
+        ([message]) => message,
+      ),
+  };
+}
+
+/**
+ * The fake web core: it reaches its runner only over a serializing JSON-RPC
+ * pair, or over the runner's relay leg (CP-11), and records every frame both
+ * ways, as the relay would carry them.
+ */
+export class FakePipelineCore {
+  private readonly binding: FakeCoreLink['binding'];
+
+  constructor(
+    readonly runner: RelayRunner,
+    private readonly link: FakeCoreLink = serializingLink(runner),
+  ) {
+    this.binding = link.binding;
   }
 
   /** Every frame either end sent, as JSON. */
   wire(): CanopyJsonRpcMessage[] {
-    return [
-      ...this.pair.client.send.mock.calls,
-      ...this.pair.server.send.mock.calls,
-    ].map(([message]) => message);
+    return this.link.wire();
   }
 
   /** The wire as one string, to look for values that must never cross. */
@@ -889,4 +1049,273 @@ export class FakePipelineCore {
   close(): void {
     this.binding.close();
   }
+}
+
+/** The far end of a runner served over text frames, as a relay carries them. */
+export interface RelayTextEnd {
+  /** Sends one text frame to the runner. */
+  send(text: string): void;
+  /** Receives every text frame the runner sends, and the end of the link. */
+  listen(listener: { message(text: string): void; close(): void }): void;
+  /** Ends the link as a lost connection would; the runner keeps running. */
+  close(): void;
+  /** Every frame either end sent, as text. */
+  readonly frames: readonly string[];
+}
+
+/**
+ * Serves a runner's worker.pipeline binding over one text-frame link, for a
+ * primary outside this package (the web core's relay client, CP-20). Each
+ * frame is one JSON-RPC envelope, validated on the way in as the relay's
+ * runner end would.
+ */
+export function serveRunnerOverText(runner: RelayRunner): RelayTextEnd {
+  const controller = new AbortController();
+  const frames: string[] = [];
+  const inbound: CanopyJsonRpcMessage[] = [];
+  let waiting:
+    | {
+        resolve(message: CanopyJsonRpcMessage): void;
+        reject(error: Error): void;
+      }
+    | undefined;
+  let listener: { message(text: string): void; close(): void } | undefined;
+  const pending: string[] = [];
+  const stop = (): void => {
+    if (controller.signal.aborted) return;
+    controller.abort();
+    waiting?.reject(canopyUnavailableError());
+    waiting = undefined;
+    queueMicrotask(() => listener?.close());
+  };
+  const connection: WorkerBindingConnection = {
+    signal: controller.signal,
+    send: (message) =>
+      Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw canopyUnavailableError();
+        const text = JSON.stringify(message);
+        frames.push(text);
+        if (listener) listener.message(text);
+        else pending.push(text);
+      }),
+    receive: () => {
+      if (controller.signal.aborted)
+        return Promise.reject(canopyUnavailableError());
+      const next = inbound.shift();
+      if (next) return Promise.resolve(next);
+      return new Promise((resolve, reject) => {
+        waiting = { resolve, reject };
+      });
+    },
+    close: stop,
+  };
+  serveLocalWorkerBinding({
+    dispatcher: createCanopyDispatcher({
+      profile: 'worker',
+      definitions: RELAY_DEFINITIONS,
+      handlers: runner.handlers,
+    }),
+    definitions: RELAY_DEFINITIONS,
+    caller: RELAY_CALLER,
+    connection,
+  });
+  return {
+    frames,
+    send: (text) => {
+      if (controller.signal.aborted) return;
+      frames.push(text);
+      const message = CanopyJsonRpcMessageSchema.parse(JSON.parse(text));
+      queueMicrotask(() => {
+        const receiver = waiting;
+        waiting = undefined;
+        if (receiver) receiver.resolve(message);
+        else inbound.push(message);
+      });
+    },
+    listen: (next) => {
+      listener = next;
+      for (const text of pending.splice(0)) next.message(text);
+      if (controller.signal.aborted) queueMicrotask(() => next.close());
+    },
+    close: stop,
+  };
+}
+
+/** The incarnation's session key both ends of a kit relay leg hold. */
+export const RELAY_SESSION_KEY = Buffer.alloc(32, 0x5a);
+
+/** A runner's relay leg (CP-11), as the relay reaches it with session frames. */
+export interface RelayLegEnd {
+  /** One session frame from the core, through the relay. */
+  receive(text: string): void;
+  /** Receives every session frame the leg sends, and the leg's end. */
+  listen(listener: { message(text: string): void; close(): void }): void;
+  /** The relay drops the runner's connection; the runner keeps running. */
+  close(): void;
+  /** Every envelope the leg opened or sealed, in plaintext. */
+  readonly envelopes: readonly string[];
+  /** Every lease notice the core sent the leg (CP-11). */
+  readonly leases: readonly { leaseEpoch: number; expiresAt: number }[];
+}
+
+/**
+ * Serves a runner over the cloud runner's relay leg: the end-to-end session
+ * in its runner role and the worker binding behind it, refusing
+ * `_execution`, exactly as the runner entry serves one relay attachment.
+ */
+export function serveRunnerOverRelayLeg(
+  runner: RelayRunner,
+  sessionKey: Uint8Array = RELAY_SESSION_KEY,
+): RelayLegEnd {
+  const envelopes: string[] = [];
+  const leases: { leaseEpoch: number; expiresAt: number }[] = [];
+  const pending: string[] = [];
+  let listener: { message(text: string): void; close(): void } | undefined;
+  let closed = false;
+  const ended = (): void => {
+    if (closed) return;
+    closed = true;
+    queueMicrotask(() => listener?.close());
+  };
+  const leg = servePipelineRelayLeg({
+    dispatcher: createCanopyDispatcher({
+      profile: 'worker',
+      definitions: RELAY_DEFINITIONS,
+      handlers: runner.handlers,
+    }),
+    definitions: RELAY_DEFINITIONS,
+    caller: RELAY_CALLER,
+    sessionKey,
+    send: (text) => {
+      if (closed) return false;
+      const to = listener;
+      if (to) queueMicrotask(() => to.message(text));
+      else pending.push(text);
+      return true;
+    },
+    onEnded: ended,
+    onLease: (lease): void => {
+      leases.push(lease);
+    },
+    trace: (_direction, envelope) => envelopes.push(envelope),
+  });
+  return {
+    envelopes,
+    leases,
+    receive: (text) => {
+      if (!closed) queueMicrotask(() => leg.receive(text));
+    },
+    listen: (next) => {
+      listener = next;
+      for (const text of pending.splice(0)) next.message(text);
+      if (closed) queueMicrotask(() => next.close());
+    },
+    close: () => {
+      leg.close();
+      ended();
+    },
+  };
+}
+
+/** A fake core's link through a runner's relay leg, with the core's session. */
+export interface RelayLegLink extends FakeCoreLink {
+  /** Every session frame the relay carried, as text. */
+  readonly frames: readonly string[];
+}
+
+/**
+ * The core's end of one relay attachment: its session in the core role,
+ * and the worker binding client over it, in front of the runner's leg.
+ * Closing the binding drops the attachment, as a relay outage does.
+ */
+export function relayLegLink(
+  runner: RelayRunner,
+  sessionKey: Uint8Array = RELAY_SESSION_KEY,
+): RelayLegLink {
+  const end = serveRunnerOverRelayLeg(runner, sessionKey);
+  const frames: string[] = [];
+  const controller = new AbortController();
+  const inbound: CanopyJsonRpcMessage[] = [];
+  let waiting:
+    | {
+        resolve(message: CanopyJsonRpcMessage): void;
+        reject(error: Error): void;
+      }
+    | undefined;
+  let resolveReady: () => void = () => undefined;
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+  const stop = (): void => {
+    if (controller.signal.aborted) return;
+    controller.abort();
+    session.close();
+    end.close();
+    waiting?.reject(canopyUnavailableError());
+    waiting = undefined;
+    resolveReady();
+  };
+  const session = createPipelineRelaySession({
+    role: 'core',
+    sessionKey,
+    send: (text) => {
+      if (controller.signal.aborted) return false;
+      frames.push(text);
+      end.receive(text);
+      return true;
+    },
+    onReady: () => resolveReady(),
+    onMessage: (plaintext) => {
+      const message = CanopyJsonRpcMessageSchema.parse(JSON.parse(plaintext));
+      const receiver = waiting;
+      waiting = undefined;
+      if (receiver) receiver.resolve(message);
+      else inbound.push(message);
+    },
+    onFailed: stop,
+  });
+  end.listen({
+    message: (text) => {
+      frames.push(text);
+      session.receive(text);
+    },
+    close: stop,
+  });
+  session.start();
+  const connection: WorkerBindingConnection = {
+    signal: controller.signal,
+    send: async (message) => {
+      await ready;
+      if (controller.signal.aborted || !session.send(JSON.stringify(message)))
+        throw canopyUnavailableError();
+    },
+    receive: () => {
+      if (controller.signal.aborted)
+        return Promise.reject(canopyUnavailableError());
+      const next = inbound.shift();
+      if (next) return Promise.resolve(next);
+      return new Promise((resolve, reject) => {
+        waiting = { resolve, reject };
+      });
+    },
+    close: stop,
+  };
+  const client = connectLocalWorkerBinding({
+    definitions: RELAY_DEFINITIONS,
+    caller: RELAY_CALLER,
+    connection,
+  });
+  return {
+    frames,
+    binding: {
+      query: (...args) => client.query(...args),
+      instruction: (...args) => client.instruction(...args),
+      openStream: (...args) => client.openStream(...args),
+      close: () => client.close(),
+    },
+    wire: () =>
+      end.envelopes.map((envelope) =>
+        CanopyJsonRpcMessageSchema.parse(JSON.parse(envelope)),
+      ),
+  };
 }

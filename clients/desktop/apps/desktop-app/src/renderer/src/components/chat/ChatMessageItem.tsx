@@ -231,7 +231,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         // descendants still receive their own events through the shared guard.
         {...contextMenuTarget}
       >
-        <div className="flex flex-col min-w-0 max-w-full text-s fg-primary has-[[data-testid=ask-user-question-card]]:w-full has-[[data-testid=chat-visual-block]]:w-full has-[[data-chat-notice]]:w-full gap-1">
+        <div className="flex flex-col min-w-0 max-w-full text-s fg-primary has-[[data-testid=ask-user-question-card]]:w-full has-[[data-testid=chat-visual-block]]:w-full has-[[data-chat-notice]]:w-full has-[[data-step-row]]:w-full gap-1">
           {message.blocks.map((block, i) => (
             <ChatBlockRenderer
               key={getDisplayBlockKey(block, i + blockKeyOffset)}

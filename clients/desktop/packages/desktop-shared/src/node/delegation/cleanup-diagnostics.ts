@@ -6,6 +6,7 @@ import { isNativeError } from 'node:util/types';
 const CLEANUP_LABELS = [
   'approval-session', 'background-task-dir', 'capability-overlay', 'claude-temp-dir',
   'delegation-detach', 'ledger-tools', 'mcp-session', 'native-process',
+  'watcher-directory',
 ] as const;
 // prettier-ignore
 const CLEANUP_PHASES = ['preparation', 'capability', 'parent', 'native'] as const;

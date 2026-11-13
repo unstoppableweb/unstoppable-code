@@ -1,5 +1,5 @@
 import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
-import type { ExecutePipelineRequestOptions } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutePipelineRequestOptions } from '@canopy/execution-engine/node/pipelines/executor';
 import {
   executionContextSatisfies,
   normalizePipelineScopes,

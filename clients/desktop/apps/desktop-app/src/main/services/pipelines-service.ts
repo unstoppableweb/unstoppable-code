@@ -86,12 +86,12 @@ import {
   getStoredPipeline,
   getStoredPipelinePath,
   listStoredPipelines,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import {
   isPathInsideExecutionsDir,
   listExecutionSummaries,
   loadExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import {
   cancelPipelineExecutionFromMain,
   startPipelineExecutionFromMain,
@@ -126,7 +126,7 @@ import {
   PIPELINE_PACKAGE_SETUP_REQUIRED_REMOTE_MESSAGE,
 } from '@canopy/desktop-shared/pipelines/package-readiness';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
-import { getStepLogFilePath } from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
+import { getStepLogFilePath } from '@canopy/execution-engine/node/pipelines/executor/step-runner';
 import type { BrowserWindow } from 'electron';
 import type {
   ExecutionState,
@@ -134,7 +134,7 @@ import type {
   JobResult,
   StepOutputEvent,
   StepResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   getTriggerInputDefs,
   getTriggerTypes,
@@ -1738,6 +1738,15 @@ export async function runPipeline(
   }
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
+  // CAN-6187: a run located elsewhere never runs on this computer.
+  if (request.targetId !== undefined) {
+    const { portalRunLocationRefusal } =
+      await import('../pipelines/cloud-pipeline-runs');
+    throw new PortalServiceError(
+      'invalid_payload',
+      portalRunLocationRefusal(String(request.targetId)),
+    );
+  }
   if (options.portalCommandId) {
     validateId(options.portalCommandId, 'portalCommandId');
     const receipt = await loadExecutionState(

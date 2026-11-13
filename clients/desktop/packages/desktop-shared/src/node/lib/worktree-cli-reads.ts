@@ -31,7 +31,9 @@ import type {
 import { isPrMergeQueuePhase } from '../../types/github';
 import { PORTAL_PULL_REQUEST_CHECK_EXECUTION_STATES } from '@canopy/protocol/portal';
 import { getWorkspaceItem } from './workspace-cli-reads';
-import { listExecutionSummaries } from '../pipelines/executor/execution-state';
+import { listCodeGraphWorktreeRepositories } from '@canopy/code-graph/host/worktree-repositories';
+import type { CodeGraphRepositoryInput } from '@canopy/code-graph/types/code-graph';
+import { listExecutionSummaries } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import { settleAll } from './detached-work';
 
 // CLI reads of worktree lists, paths and diff stats. Writers live in
@@ -744,6 +746,43 @@ async function isGitRepoDir(dir: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * The repositories a worktree's code graph lists, for the CLI: the listing
+ * Electron main and the core daemon use, with the layout from the workspace
+ * record, so every host graphs a checkout under the same repository ids
+ * (CAN-6010).
+ */
+export async function listWorktreeCliCodeGraphRepositories(
+  workspaceId: string,
+  worktreePath: string,
+): Promise<{ multiRepo: boolean; listed: CodeGraphRepositoryInput[] }> {
+  const workspace = await getWorkspaceItem(workspaceId);
+  const multiRepo = workspace.type === 'multi-repo';
+  const listed = await listCodeGraphWorktreeRepositories(
+    worktreePath,
+    {
+      multiRepo,
+      hasSourceRepo: multiRepo && Boolean(workspace.sourceRepoPath),
+    },
+    isGitRepoDir,
+  );
+  if (workspace.type !== 'multi-repo') return { multiRepo, listed };
+  // The ids are the shared listing's; the order stays the configured one,
+  // so a command without --repo still targets the first configured
+  // repository. Unconfigured directories keep their listed order, last.
+  const configured = new Map(
+    workspace.repos.map((repo, index) => [repo.id, index]),
+  );
+  const rank = (repository: CodeGraphRepositoryInput): number =>
+    repository.repoId === WORKSPACE_ROOT_REPO_ID
+      ? -1
+      : (configured.get(repository.repoId) ?? configured.size);
+  return {
+    multiRepo,
+    listed: [...listed].sort((a, b) => rank(a) - rank(b)),
+  };
 }
 
 /**

@@ -13,9 +13,11 @@ import {
 } from 'react';
 import {
   Button,
+  DetailSeparator,
   DrawerInspectorAction,
   Tooltip,
   useShimmerPhase,
+  ShimmerCopies,
   SpinnerStyleProvider,
 } from '@canopy/ui-shared/components';
 import {
@@ -23,6 +25,10 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  DRAWER_ITEM_ACTIONS_CLASS,
+  DRAWER_ITEM_GROUP_CLASS,
+} from '@canopy/ui-shared/lib';
 import { revealInList } from './drawer-layout';
 
 import { DrawerRowPresentationContext } from './drawer-presentation';
@@ -59,7 +65,7 @@ function RowDetail({
   return (
     <span
       ref={ref}
-      className={`min-w-0 truncate text-xs fg-tertiary ${compact ? '' : 'flex-1'}`}
+      className={`min-w-0 truncate text-s fg-tertiary ${compact ? '' : 'flex-1'}`}
       data-overflowing={overflowing ? 'true' : undefined}
       style={
         overflowing
@@ -124,14 +130,29 @@ export interface DrawerRowProps {
   readonly detail?: ReactNode;
   /** State follows the subtitle and precedes watcher indicators. */
   readonly status?: ReactNode;
-  /** Diff statistics or legacy elapsed time. */
+  /**
+   * After the name and its details with a plain gap, no separator: a pull
+   * request's diff statistics, a run's job dots, or legacy elapsed time.
+   */
   readonly trailing?: ReactNode;
+  /**
+   * How `trailing` meets a narrow row. `keep` (the default) holds its width,
+   * for text such as a diff; `clip` takes only the room the name and status
+   * leave and clips what does not fit, for a strip as long as its content,
+   * such as a run's job dots.
+   */
+  readonly trailingOverflow?: 'keep' | 'clip';
   /** The row's one action, outside its toggle. */
   readonly action?: ReactNode;
   /** Navigation uses the header unless a primary action already occupies it. */
   readonly openAction?: {
     readonly label: string;
     readonly onClick: () => void;
+    /**
+     * Opens outside the app (a run or pull request on GitHub): a link row
+     * ends in the diagonal arrow instead of the chevron.
+     */
+    readonly external?: boolean;
   };
   /** Independent header control before the timestamp, outside the disclosure button. */
   readonly headerAccessory?: ReactNode;
@@ -165,6 +186,7 @@ export function DrawerRow({
   detail,
   status,
   trailing,
+  trailingOverflow = 'keep',
   action,
   openAction,
   headerAccessory,
@@ -191,7 +213,7 @@ export function DrawerRow({
         data-testid="background-tray-row-open"
         onClick={navigation.onClick}
       >
-        <ArrowUpRightIcon size={14} />
+        <ArrowUpRightIcon />
       </Button>
     </Tooltip>
   ) : (
@@ -200,15 +222,22 @@ export function DrawerRow({
   const [animateDetails, setAnimateDetails] = useState(false);
   const actionGroup =
     redesigned && navigation && action ? (
-      <span className="flex items-center gap-1">
-        <Button
-          variant="ghost-overlay"
-          size="compact"
-          data-testid="background-tray-row-open"
-          onClick={navigation.onClick}
-        >
-          {navigation.label}
-        </Button>
+      <span className="flex items-center">
+        {/* The same icon button as a row with no other action: its label
+            (Open run, Open on GitHub) is the accessible name and tooltip,
+            never text in the row. */}
+        <Tooltip label={navigation.label}>
+          <Button
+            variant="ghost-overlay"
+            size="compact"
+            iconOnly
+            aria-label={navigation.label}
+            data-testid="background-tray-row-open"
+            onClick={navigation.onClick}
+          >
+            <ArrowUpRightIcon />
+          </Button>
+        </Tooltip>
         {action}
       </span>
     ) : (
@@ -223,6 +252,12 @@ export function DrawerRow({
   // The clean chat look's live-step shimmer, in step with every other row.
   const shimmering = running && !open;
   const shimmerStyle = useShimmerPhase(shimmering);
+  // A row's own controls show on hover, focus or touch; a row waiting on the
+  // user keeps its answer in view, and an open row its actions.
+  const revealClass =
+    modal || attention || open ? '' : DRAWER_ITEM_ACTIONS_CLASS;
+  // A separator only joins two parts: with no name it would lead the row.
+  const hasName = name !== null && name !== undefined && name !== '';
   useEffect(() => {
     const list = listRef.current;
     const row = ref.current;
@@ -239,14 +274,14 @@ export function DrawerRow({
   const leading = open ? (
     // Open, the row already has the fill, so hovering the header (it closes
     // the row) lifts its ink instead.
-    <ChevronDownIcon size={14} aria-hidden="true" className="fg-tertiary" />
+    <ChevronDownIcon aria-hidden="true" className="fg-tertiary" />
   ) : inspector ? (
     <>
       <span className="flex group-hover/row:hidden group-focus-within/row:hidden">
         {glyph}
       </span>
       <span className="hidden fg-tertiary group-hover/row:flex group-focus-within/row:flex">
-        <ChevronRightIcon size={14} aria-hidden="true" />
+        <ChevronRightIcon aria-hidden="true" />
       </span>
     </>
   ) : (
@@ -275,6 +310,7 @@ export function DrawerRow({
         style={shimmerStyle}
       >
         {name}
+        {!modal && !open && shimmering && <ShimmerCopies>{name}</ShimmerCopies>}
       </span>
       {!modal &&
         detail !== undefined &&
@@ -285,7 +321,7 @@ export function DrawerRow({
           <RowDetail>{detail}</RowDetail>
         ))}
       {!headerAccessory && trailing !== undefined && (
-        <span className="shrink-0 text-xs tabular-nums fg-tertiary">
+        <span className="shrink-0 text-s tabular-nums fg-tertiary">
           {trailing}
         </span>
       )}
@@ -299,57 +335,64 @@ export function DrawerRow({
       >
         {leading}
       </span>
-      <span className="flex min-w-0 flex-1 items-center gap-2.5">
+      <span className="flex min-w-0 flex-1 items-center">
         <span
           id={nameId}
           className={`min-w-0 truncate ${open ? 'fg-secondary' : shimmering ? 'canopy-text-shimmer-strong' : 'fg-primary'}`}
           style={shimmerStyle}
         >
           {name}
+          {!open && shimmering && <ShimmerCopies>{name}</ShimmerCopies>}
         </span>
-        {detail !== undefined && <RowDetail compact>{detail}</RowDetail>}
+        {detail !== undefined && (
+          // 6px from the name, as a separator's dot sits from its text.
+          <span className="flex min-w-0 pl-1.5">
+            <RowDetail compact>{detail}</RowDetail>
+          </span>
+        )}
         {status !== undefined && (
           <span
-            className="inline-flex min-w-0 shrink-0 items-center gap-2.5 text-xs fg-tertiary"
+            // A status is a state word or a time ("Running · 1m 35s");
+            // tabular digits keep a ticking time from shifting.
+            className="inline-flex min-w-0 shrink-0 items-center text-s tabular-nums fg-tertiary"
             style={{ WebkitTextFillColor: 'currentColor' }}
             data-testid="background-tray-inline-status"
           >
-            <span aria-hidden="true">·</span>
+            {/* The same dot, with the same 6px each side, as inside the
+                status ("Running · 1m 35s"). */}
+            {hasName && <DetailSeparator />}
             <span className="truncate">{status}</span>
           </span>
         )}
-        {headerAccessory && (
-          <span className="pointer-events-auto relative z-10 inline-flex shrink-0 items-center gap-2.5 text-xs fg-tertiary">
-            <span aria-hidden="true">·</span>
-            {headerAccessory}
+        {/* Beside the name and its details with a plain gap. A pull
+            request's diff is never pushed out (the name truncates first);
+            a run's job dots take what the name and status leave, and clip. */}
+        {trailing !== undefined && (
+          <span
+            className={`${trailingOverflow === 'clip' ? 'flex min-w-0 flex-1 overflow-hidden' : 'shrink-0'} pl-2.5 text-s tabular-nums fg-tertiary`}
+          >
+            {trailing}
           </span>
         )}
       </span>
-      {trailing !== undefined && (
-        <span className="shrink-0 text-xs tabular-nums fg-tertiary">
-          {trailing}
-        </span>
-      )}
     </>
   ) : (
     legacyContent
   );
-  // Waiting on the user, the row rests on the fill (hover steps up to
-  // muted); the glyph carries the attention ink, so the fill stays neutral.
+  // A row waiting on the user rests like any other (its glyph carries the
+  // attention ink); hover and an open row take the fill.
   const fill = open
     ? 'bg-subtle'
     : modal
       ? ''
-      : attention
-        ? 'bg-subtle hover:bg-muted'
-        : inspector || navigation || action
-          ? 'hover:bg-subtle'
-          : '';
+      : inspector || navigation || action
+        ? 'hover:bg-subtle'
+        : '';
   return (
     <SpinnerStyleProvider value="comet">
       <li
         ref={ref}
-        className={`group/row flex flex-col ${modal ? 'rounded-lg' : 'rounded-drawer-row'} ${fill}`}
+        className={`group/row ${DRAWER_ITEM_GROUP_CLASS} flex flex-col ${modal ? 'rounded-lg' : 'rounded-drawer-row'} ${fill}`}
         data-tray-row={rowKey}
         data-testid={testId}
       >
@@ -409,7 +452,7 @@ export function DrawerRow({
             <>
               <span className="relative shrink-0">{headerAccessory}</span>
               {trailing !== undefined && (
-                <span className="shrink-0 text-xs tabular-nums fg-tertiary">
+                <span className="shrink-0 text-s tabular-nums fg-tertiary">
                   {trailing}
                 </span>
               )}
@@ -417,23 +460,41 @@ export function DrawerRow({
           )}
           {/* One action column, so the times line up whichever icon action a
             row has, or none; a labeled action (Resume) widens its own row. */}
-          {linkRow ? (
-            <span
-              aria-hidden="true"
-              className="pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary"
-            >
-              {/* The whole row is the link, as View completed's is. */}
-              <ChevronRightIcon size={14} />
-            </span>
-          ) : (
-            (!modal || navigationInHeader) && (
+          {/* A row's own controls (Manage watching, a watcher) sit at its
+            end with its actions, flush like the actions themselves: a ghost
+            button's padding is its space. A filled action keeps its own. */}
+          <span className="flex shrink-0 items-center">
+            {redesigned && headerAccessory && (
               <span
-                className={`relative z-10 flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'}`}
+                className={`relative z-10 flex shrink-0 items-center ${revealClass}`}
               >
-                {actionGroup}
+                {headerAccessory}
               </span>
-            )
-          )}
+            )}
+            {linkRow ? (
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary ${revealClass}`}
+              >
+                {/* The whole row is the link, as View completed's is: the
+                  diagonal arrow when it leaves the app, the chevron when it
+                  opens in place. It shows with the row's other controls. */}
+                {navigation?.external === true ? (
+                  <ArrowUpRightIcon />
+                ) : (
+                  <ChevronRightIcon />
+                )}
+              </span>
+            ) : (
+              (!modal || navigationInHeader) && (
+                <span
+                  className={`relative z-10 flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'} ${revealClass}`}
+                >
+                  {actionGroup}
+                </span>
+              )
+            )}
+          </span>
         </div>
         {open && inspector && (
           <div
@@ -472,7 +533,7 @@ export function InspectorSubtitle({
   return (
     <div
       data-testid="background-tray-subtitle"
-      className={`min-w-0 text-xs fg-tertiary ${presentation === 'modal' ? 'ml-6' : 'mr-9.5'}`}
+      className={`min-w-0 text-s fg-tertiary ${presentation === 'modal' ? 'ml-6' : 'mr-9.5'}`}
     >
       {children}
     </div>
@@ -511,7 +572,7 @@ export function InspectorFooter({
   const leading = modal || children == null;
   return (
     <div
-      className={`mt-2 flex items-center gap-3 text-xs ${leading ? '' : 'mr-9.5 justify-end'}`}
+      className={`mt-2 flex items-center gap-3 text-s ${leading ? '' : 'mr-9.5 justify-end'}`}
     >
       {children}
       {action && (

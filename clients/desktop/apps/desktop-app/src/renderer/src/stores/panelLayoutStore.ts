@@ -17,6 +17,7 @@ export {
   setFixedSidePanelTabsClosable,
   setPanelLayoutChatGroup,
   setPanelLayoutExcludedKinds,
+  setPanelLayoutScopeExcludedKinds,
   setPanelLayoutFixedTopology,
   usePanelGridController,
   usePanelLayoutStore,

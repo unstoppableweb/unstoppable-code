@@ -25,19 +25,19 @@ import {
   type ExecutionHandle,
   type ExecutionOptions,
   type StepOutputEvent,
-} from '@canopy/desktop-shared/node/pipelines/executor';
-import { requestExecutionCancellation } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
-import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor';
+import { requestExecutionCancellation } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import type { ExecutionRuntime } from '@canopy/execution-engine/node/pipelines/executor/types';
 import type {
   ExecutionState,
   Pipeline,
 } from '@canopy/execution-engine/types/pipeline';
-import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
+import { recoverOrphanedPipelineExecutions } from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
 import {
   projectPipelineExecution,
   projectPipelineExecutionView,
 } from '@canopy/execution-engine/node/pipelines/execution-projection';
-import { listPipelineExecutionPage } from '@canopy/desktop-shared/node/pipelines/execution-list';
+import { listPipelineExecutionPage } from '@canopy/execution-engine/node/pipelines/execution-list';
 import { getDaemonPipelineExecutionHandle } from './daemon-pipeline-execution';
 import type {
   DaemonPipelineLaunch,

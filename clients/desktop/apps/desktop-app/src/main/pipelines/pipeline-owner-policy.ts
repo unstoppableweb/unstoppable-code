@@ -2,12 +2,12 @@ import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/a
 import type {
   PipelineOwnershipPort,
   PipelineOwnershipWorktreeTarget,
-} from '@canopy/desktop-shared/node/pipelines/executor';
-import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor';
+import type { PipelineHostActionCaller } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { PipelineHostRefusal } from '@canopy/execution-engine/pipelines/host-actions';
-import { isTopLevelGlobalRun } from '@canopy/desktop-shared/node/pipelines/executor';
+import { isTopLevelGlobalRun } from '@canopy/execution-engine/node/pipelines/executor';
 import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
-import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
+import { getStoredPipelinePathWithSource } from '@canopy/execution-engine/pipelines/store';
 import {
   PIPELINE_NOW_OWNED_ERROR_CODE,
   PIPELINE_NOW_OWNED_MESSAGE,

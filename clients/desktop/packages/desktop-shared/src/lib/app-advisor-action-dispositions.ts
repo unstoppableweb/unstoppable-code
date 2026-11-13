@@ -35,6 +35,7 @@ export type AppAdvisorActionGrant = (typeof APP_ADVISOR_ACTION_GRANTS)[number];
 export type AppAdvisorCoreExecutor =
   | 'shared-engine'
   | 'script-preferences'
+  | 'chat-history'
   | 'transcript-read'
   | 'code-graph'
   | 'browser'
@@ -43,8 +44,12 @@ export type AppAdvisorCoreExecutor =
   | 'pipeline-execution'
   | 'catalog'
   | 'sharing'
+  | 'automation-sharing'
+  | 'collection-sharing'
   | 'file-tree'
+  | 'memory'
   | 'records'
+  | 'settings'
   | 'credentials'
   | 'remote-access'
   | 'settings-surface'
@@ -111,11 +116,17 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   Record<string, AppAdvisorActionDisposition>
 > = Object.freeze({
   'account_proxy.set_routing': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
-  'account_proxy.status': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'account_proxy.status': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'settings',
+  }),
   'advisor-chat.create_chat': Object.freeze({
     kind: 'core',
     access: 'write',
@@ -202,9 +213,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'app_advisor.open': Object.freeze({ kind: 'presentation' }),
   'app_advisor.toggle': Object.freeze({ kind: 'presentation' }),
   'app_advisor.update_settings': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'archived.list': Object.freeze({
     kind: 'core',
@@ -264,12 +277,20 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'read',
     executor: 'automation',
   }),
-  'automation.list_shared': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'automation.list_shared': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'automation-sharing',
+  }),
   'automation.open_editor': Object.freeze({ kind: 'presentation' }),
   'automation.open_shared_pipeline_review': Object.freeze({
     kind: 'presentation',
   }),
-  'automation.read_shared': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'automation.read_shared': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'automation-sharing',
+  }),
   'automation.run_now': Object.freeze({
     kind: 'core',
     access: 'write',
@@ -278,14 +299,18 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'automation.share': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'automation-sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'automation.unshare': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'automation-sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'automation.update': Object.freeze({
     kind: 'core',
@@ -700,11 +725,26 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'read',
     executor: 'transcript-read',
   }),
+  'chat.history.search': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'chat-history',
+  }),
+  'chat.history.excerpt': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'chat-history',
+  }),
   'chat.transcript.page': Object.freeze({
     kind: 'core',
     access: 'read',
     executor: 'transcript-read',
   }),
+  // CAN-5974: permanent presentation reads, not migration debt. The main
+  // window serves them from the cloud chats its sidebar already loaded;
+  // App Advisor gains no web-core access.
+  'cloud_chats.list': Object.freeze({ kind: 'presentation' }),
+  'cloud_chats.open': Object.freeze({ kind: 'presentation' }),
   'code-graph.build': Object.freeze({
     kind: 'core',
     access: 'write',
@@ -768,26 +808,39 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'collections.delete_shared': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'collection-sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'collections.import_shared': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.sharing.write'] as const),
+    executor: 'collection-sharing',
+    grants: Object.freeze([
+      'core.sharing.write',
+      'core.catalog.write',
+    ] as const),
+    revision: 'none',
   }),
   'collections.list': Object.freeze({
     kind: 'core',
     access: 'read',
     executor: 'catalog',
   }),
-  'collections.list_shared': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'collections.list_shared': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'collection-sharing',
+  }),
   'collections.open_manager': Object.freeze({ kind: 'presentation' }),
   'collections.share': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'collection-sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'collections.update': Object.freeze({
     kind: 'core',
@@ -797,9 +850,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'collections.update_shared': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'collection-sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'cursor.approval_check': Object.freeze({
     kind: 'core',
@@ -1001,25 +1056,37 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     requiresInterface: true,
   }),
   'memory.consolidate_now': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'memory',
     grants: Object.freeze(['core.memory.write'] as const),
+    revision: 'none',
   }),
   'memory.import_external': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'memory',
     grants: Object.freeze(['core.memory.write'] as const),
+    revision: 'none',
   }),
-  'memory.list_snapshots': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'memory.list_snapshots': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'memory',
+  }),
   'memory.rebuild': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'memory',
     grants: Object.freeze(['core.memory.write'] as const),
+    revision: 'none',
   }),
   'memory.restore_snapshot': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'memory',
     grants: Object.freeze(['core.memory.write'] as const),
+    revision: 'none',
   }),
   'navigation.close_settings': Object.freeze({ kind: 'presentation' }),
   'navigation.go_back': Object.freeze({ kind: 'presentation' }),
@@ -1304,6 +1371,13 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.sharing.write'] as const),
     revision: 'none',
   }),
+  'plan.unshare': Object.freeze({
+    kind: 'core',
+    access: 'write',
+    executor: 'sharing',
+    grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
+  }),
   'plugins.list_marketplaces': Object.freeze({
     kind: 'core',
     access: 'read',
@@ -1484,16 +1558,19 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'settings.get_claude_max_turns': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'settings',
   }),
   'settings.get_handoff_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'settings',
   }),
   'settings.get_local_memory_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'settings',
   }),
   'settings.open': Object.freeze({
     kind: 'host_presentation',
@@ -1507,59 +1584,81 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'settings.review_privacy_opt_in': Object.freeze({ kind: 'presentation' }),
   'settings.set_claude_max_turns': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_handoff_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_launch_at_login': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'none',
   }),
   'settings.set_ledger_agent_recording_enabled': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_local_memory_enabled': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_local_memory_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_managed_delegation_max_depth': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_managed_delegation_mode': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_navigation_mode': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_profile_role': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'settings.set_skill_suggestions_enabled': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings',
     grants: Object.freeze(['core.config.write'] as const),
+    revision: 'domain',
   }),
   'shared-containers.open_invite': Object.freeze({ kind: 'presentation' }),
   'shared-containers.open_received': Object.freeze({ kind: 'presentation' }),

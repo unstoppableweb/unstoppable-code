@@ -16,6 +16,7 @@
     "./assets/store-badges": "./src/assets/store-badges.ts",
     "./components": "./src/components/index.ts",
     "./components/Surface": "./src/components/Surface.tsx",
+    "./components/page-header-copy": "./src/components/page-header-copy.ts",
     "./components/tooltip-handoff": "./src/components/tooltip-handoff.tsx",
     "./components/AutomationDefinitionSummary": "./src/components/AutomationDefinitionSummary.tsx",
     "./components/CreatablePickerSelect": "./src/components/CreatablePickerSelect.tsx",

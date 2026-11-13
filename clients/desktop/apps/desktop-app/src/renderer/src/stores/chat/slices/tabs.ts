@@ -34,6 +34,7 @@ import { normalizeChatCustomTitle } from '@/lib/chatTabLabel';
 import { getProviderLabel } from '@/lib/providerLabels';
 import type { ForkedPanelTabBinding } from '@canopy/desktop-shared/panels/fork-layout';
 import { withWorktreeRelocationInstruction } from '@canopy/desktop-shared/lib/pending-system-instructions';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useNavigationStore } from '../../navigationStore';
 import { useStartupResumeStore } from '../../startupResumeStore';
@@ -257,6 +258,14 @@ import {
   waitForChatScopeLive,
 } from './revisioned';
 import type { ChatCommandDisposition } from '../revisioned-commands';
+import {
+  chatBackendFor,
+  chatBackends,
+  ignoreUnavailable,
+  isCapabilityUnavailable,
+  localChatBackend,
+  type ChatBackendScope,
+} from '../backend';
 
 /**
  * Display-side enrichment after a revisioned canonical snapshot installed a
@@ -458,11 +467,23 @@ function replacementTabCommand(
   };
 }
 
-const loadActiveApprovalRequests = (): Promise<
-  ApprovalRequestEvent[] | undefined
-> =>
-  window.api.approvals?.pendingRequests?.().catch(() => undefined) ??
-  Promise.resolve(undefined);
+/** One scope's live approval requests, or every backend's without a scope. */
+const loadActiveApprovalRequests = async (
+  scope?: ChatBackendScope,
+): Promise<ApprovalRequestEvent[] | undefined> => {
+  const backends =
+    scope === undefined ? chatBackends() : [chatBackendFor(scope)];
+  const lists = await Promise.all(
+    backends.map(
+      (backend) =>
+        backend.approvals.pendingRequests?.().catch(() => undefined) ??
+        Promise.resolve(undefined),
+    ),
+  );
+  return lists.some((list) => list === undefined)
+    ? undefined
+    : lists.flatMap((list) => list ?? []);
+};
 
 function recoverRevisionedPendingApprovals(
   state: ChatState,
@@ -1107,8 +1128,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     // App Advisor selections are EXCLUDED: the popout window selects
     // `(app-advisor, <entryId>)` through this same path, and writing that
     // into the main-window MRU would corrupt startup routing (there is no
-    // `app-advisor` sidebar workspace to resume into).
-    if (!isAppAdvisorChatTarget(projectId, worktreeId)) {
+    // `app-advisor` sidebar workspace to resume into). Web core selections
+    // are excluded too: startup restores before the cloud connects, and main
+    // never holds a web core id (CAN-6175 D1).
+    if (
+      !isAppAdvisorChatTarget(projectId, worktreeId) &&
+      !isWebCoreScope(projectId)
+    ) {
       void window.api.savePreferences({
         lastSelectedWorktreeProjectId: projectId,
         lastSelectedWorktreeId: worktreeId,
@@ -1170,7 +1196,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               set,
               sel.projectId,
               sel.worktreeId,
-              loadActiveApprovalRequests(),
+              loadActiveApprovalRequests(sel),
             );
             applyPendingAttentionLanding(
               get,
@@ -1197,7 +1223,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     loadingKeys.add(key);
 
     try {
-      const activeApprovalRequestsPromise = loadActiveApprovalRequests();
+      const activeApprovalRequestsPromise = loadActiveApprovalRequests(sel);
       // Prefer the main-owned revisioned snapshot/delta stream. Only when the
       // main process does not expose the revisioned chat service does the
       // legacy load-merge-save hydration below run.
@@ -1233,19 +1259,19 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
 
       const [file, active, queueSnapshots, activeApprovalRequests] =
         await Promise.all([
-          window.api.chat.loadTabs({
+          chatBackendFor(sel).chat.loadTabs({
             projectId: sel.projectId,
             worktreeId: sel.worktreeId,
             ...(isSentinelWriteAllowed(sel.projectId, sel.worktreeId)
               ? { establishRendererMergeBase: true }
               : {}),
           }),
-          window.api.chat.activeSessions({
+          chatBackendFor(sel).chat.activeSessions({
             projectId: sel.projectId,
             worktreeId: sel.worktreeId,
           }),
-          window.api.chat.getChatQueueSnapshot
-            ? window.api.chat.getChatQueueSnapshot({
+          chatBackendFor(sel).chat.getChatQueueSnapshot
+            ? chatBackendFor(sel).chat.getChatQueueSnapshot({
                 projectId: sel.projectId,
                 worktreeId: sel.worktreeId,
               })
@@ -1568,7 +1594,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               set,
               projectId,
               worktreeId,
-              loadActiveApprovalRequests(),
+              loadActiveApprovalRequests({ projectId }),
             );
           } else {
             await get().ensureWorktreeHasChatTab(sel, {
@@ -1584,7 +1610,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     loadingKeys.add(key);
 
     try {
-      const activeApprovalRequestsPromise = loadActiveApprovalRequests();
+      const activeApprovalRequestsPromise = loadActiveApprovalRequests({
+        projectId,
+      });
       // Prefer the main-owned revisioned snapshot/delta stream (see loadTabs).
       if (revisionedChatStateSupported()) {
         const revisioned = await get().hydrateChatScopeRevisioned(
@@ -1609,7 +1637,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
 
       const [file, active, queueSnapshots, activeApprovalRequests] =
         await Promise.all([
-          window.api.chat.loadTabs({
+          chatBackendFor({ projectId }).chat.loadTabs({
             projectId,
             worktreeId,
             ...(isSentinelWriteAllowed(projectId, worktreeId)
@@ -1618,13 +1646,19 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           }),
           defaults?.skipActiveSessions === true
             ? Promise.resolve<ChatActiveSessions>({ activeChatIds: [] })
-            : window.api.chat.activeSessions({ projectId, worktreeId }),
+            : chatBackendFor({ projectId }).chat.activeSessions({
+                projectId,
+                worktreeId,
+              }),
           // Race-free recovery of the host-owned message queue: fetch it as part
           // of hydration (no extra round-trip latency) so queued rows are built
           // into the hydrated tab atomically, rather than an async push/pull that
           // races streaming restoration after a renderer reload.
-          window.api.chat.getChatQueueSnapshot
-            ? window.api.chat.getChatQueueSnapshot({ projectId, worktreeId })
+          chatBackendFor({ projectId }).chat.getChatQueueSnapshot
+            ? chatBackendFor({ projectId }).chat.getChatQueueSnapshot({
+                projectId,
+                worktreeId,
+              })
             : Promise.resolve<ChatQueueUpdatedEvent[]>([]),
           activeApprovalRequestsPromise,
         ]);
@@ -1990,19 +2024,19 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
             }
             try {
               const [file, active, queueSnapshots] = await Promise.all([
-                window.api.chat.loadTabs({
+                chatBackendFor(wt).chat.loadTabs({
                   projectId: wt.projectId,
                   worktreeId: wt.worktreeId,
                   ...(isSentinelWriteAllowed(wt.projectId, wt.worktreeId)
                     ? { establishRendererMergeBase: true }
                     : {}),
                 }),
-                window.api.chat.activeSessions({
+                chatBackendFor(wt).chat.activeSessions({
                   projectId: wt.projectId,
                   worktreeId: wt.worktreeId,
                 }),
-                window.api.chat.getChatQueueSnapshot
-                  ? window.api.chat.getChatQueueSnapshot({
+                chatBackendFor(wt).chat.getChatQueueSnapshot
+                  ? chatBackendFor(wt).chat.getChatQueueSnapshot({
                       projectId: wt.projectId,
                       worktreeId: wt.worktreeId,
                     })
@@ -2995,7 +3029,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       const repoId = source.selectedRepoId;
       void (async (): Promise<void> => {
         try {
-          const { forkedThreadId } = await window.api.chat.forkCodexThread({
+          const { forkedThreadId } = await chatBackendFor(
+            target,
+          ).chat.forkCodexThread({
             projectId: target.projectId,
             worktreeId: target.worktreeId,
             chatId: forkedTabId,
@@ -3271,7 +3307,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     let summary = '';
     try {
       const response = await withContinueStepTimeout(
-        window.api.chat.generateHandoffSummary({
+        chatBackendFor(sel).chat.generateHandoffSummary({
           projectId: sel.projectId,
           worktreeId: sel.worktreeId,
           conversationText,
@@ -4050,7 +4086,9 @@ ${summary}
     let committedApprovalMode: ApprovalMode | undefined;
     let sourceApprovalChanged = false;
     try {
-      const response = await window.api.chat.forkOpenWorktreeTabs({
+      const response = await chatBackendFor({
+        projectId: sourceProjectId,
+      }).chat.forkOpenWorktreeTabs({
         projectId: sourceProjectId,
         sourceWorktreeId,
         destinationWorktreeId: newWorktreeId,
@@ -4073,7 +4111,9 @@ ${summary}
       // the destination authority before rolling back so an ambiguous transport
       // failure cannot delete a branch that was actually created.
       try {
-        const canonical = await window.api.chat.getState({
+        const canonical = await chatBackendFor({
+          projectId: sourceProjectId,
+        }).chat.getState({
           projectId: sourceProjectId,
           worktreeId: newWorktreeId,
         });
@@ -4176,7 +4216,9 @@ ${summary}
       void (async (): Promise<void> => {
         let forkedThreadIdToRollback: string | null = null;
         try {
-          const { forkedThreadId } = await window.api.chat.forkCodexThread({
+          const { forkedThreadId } = await chatBackendFor(
+            target,
+          ).chat.forkCodexThread({
             projectId: target.projectId,
             worktreeId: target.worktreeId,
             chatId: branchedTabId,
@@ -4245,9 +4287,10 @@ ${summary}
             }
             if (disposition === 'transport_failed') {
               let canonicalPersistenceConfirmed: boolean | null = null;
-              if (typeof window.api.chat.getState === 'function') {
+              if (typeof chatBackendFor(target).chat.getState === 'function') {
                 try {
-                  const snapshot = await window.api.chat.getState(target);
+                  const snapshot =
+                    await chatBackendFor(target).chat.getState(target);
                   canonicalPersistenceConfirmed = snapshot.tabsFile.tabs.some(
                     (tab) =>
                       tab.id === branchedTabId &&
@@ -5059,7 +5102,7 @@ ${summary}
       // write is confirmed. On failure we never call `finalizeClose`, so a
       // rejected archive can never silently delete the transcript (the tab
       // simply stays open).
-      const chatApi = window.api?.chat;
+      const chatApi = chatBackendFor({ projectId }).chat;
       if (typeof chatApi?.archiveTab !== 'function') {
         return;
       }
@@ -5083,8 +5126,8 @@ ${summary}
 
     if (queuedHookQueueId !== null) {
       markClosePending();
-      void window.api.chat
-        .cancelQueuedHookChat({ queueId: queuedHookQueueId })
+      void localChatBackend()
+        .chat.cancelQueuedHookChat({ queueId: queuedHookQueueId })
         .then(({ cancelled }) => {
           if (!cancelled) {
             clearClosePending();
@@ -5223,9 +5266,10 @@ ${summary}
       const nextCloseIds = new Set(closeIds);
       for (const target of queuedHookTargets) {
         try {
-          const { cancelled } = await window.api.chat.cancelQueuedHookChat({
-            queueId: target.queueId,
-          });
+          const { cancelled } =
+            await localChatBackend().chat.cancelQueuedHookChat({
+              queueId: target.queueId,
+            });
           if (!cancelled) {
             nextCloseIds.delete(target.tabId);
           }
@@ -5540,7 +5584,7 @@ ${summary}
       return;
     }
 
-    const chatApi = window.api?.chat;
+    const chatApi = chatBackendFor(sel).chat;
     if (typeof chatApi?.archiveTab !== 'function') {
       if (nonArchiveIdsToClose.length > 0) {
         void closeQueuedHookPlaceholders(nonArchiveIdsToClose).then(
@@ -5893,7 +5937,10 @@ ${summary}
     // Main owns canonical durability. Ask the repository to journal-flush and
     // checkpoint the scope so flows that consume the durable snapshot next
     // (workspace combine, container capture) read a current file.
-    await window.api.chat.flushScope({ projectId, worktreeId });
+    // An authority with no local journal has nothing to flush.
+    await chatBackendFor({ projectId })
+      .chat.flushScope({ projectId, worktreeId })
+      .catch(ignoreUnavailable);
   },
 
   reloadWorktreeTabs: async (projectId, worktreeId): Promise<void> => {
@@ -5934,11 +5981,19 @@ ${summary}
       // Claude session continuity, and commits the destination through the chat
       // state service. The renderer forks only its live panel layout (see
       // `forkOpenWorktreeState`) and refreshes its local projection.
-      const { tabBindings } = await window.api.chat.forkOpenWorktreeTabs({
+      const { tabBindings } = await chatBackendFor({
         projectId,
-        sourceWorktreeId,
-        destinationWorktreeId,
-      });
+      })
+        .chat.forkOpenWorktreeTabs({
+          projectId,
+          sourceWorktreeId,
+          destinationWorktreeId,
+        })
+        // An authority that serves no fork forks no tabs.
+        .catch((error: unknown) => {
+          if (isCapabilityUnavailable(error)) return { tabBindings: {} };
+          throw error;
+        });
       const bindings = new Map<string, ForkedPanelTabBinding>(
         Object.entries(tabBindings),
       );
@@ -6008,7 +6063,7 @@ ${summary}
     // repo remaps, file-path rewrites, Codex thread forks, and the merge into
     // any existing destination tabs without clobbering them.
     try {
-      await window.api.chat.adhocMigrateTabs({
+      await localChatBackend().chat.adhocMigrateTabs({
         sourceWorkspaceId: response.sourceWorkspaceId,
         sourceWorktreeId: response.sourceWorktreeId,
         destinationWorkspaceId: response.destinationWorkspaceId,

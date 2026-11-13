@@ -114,6 +114,11 @@ import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpin
 import { WorktreeChatSurface } from '@/components/chat/WorktreeChatSurface';
 import { getWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import {
+  layoutScopeServesActivitySection,
+  scopeServesActivitySection,
+} from '@/lib/panels/scope-panel-kinds';
 import { DesktopSharedFileViewer } from '@/components/chat/DesktopSharedFileViewer';
 import { TerminalPanelSurface } from '@/components/terminal/TerminalPanelSurface';
 import { SharedActivityPanelAdapter } from '@/components/activity/SharedActivityPanelAdapter';
@@ -1266,11 +1271,17 @@ const PanelActivityCardContent = memo(function PanelActivityCardContent(
   const selectedWorktree = useSelectedWorktree();
   const access = useWorkspaceAccess();
   const sectionId = props.instance?.sectionId;
+  const scopeCapabilities = useScopeCapabilities({
+    projectId: selectedWorktree?.projectId ?? '',
+  });
   // A read-only scope refuses sections outside its access filter, so a
-  // published layout cannot mount a write-only card (fails closed).
+  // published layout cannot mount a write-only card (fails closed); a scope
+  // refuses sections it doesn't serve, so a restored or default layout
+  // cannot mount one with a cloud task's ids (CAN-6431).
   const section =
     sectionId !== undefined &&
-    isActivitySectionAllowedForAccess(sectionId, access)
+    isActivitySectionAllowedForAccess(sectionId, access) &&
+    scopeServesActivitySection(scopeCapabilities, sectionId)
       ? getActivitySectionDefinition(sectionId)
       : undefined;
   return (
@@ -1874,7 +1885,7 @@ function basenameOf(filePath: string): string {
  *    Automations variant not yet open as an `automations` panel;
  * 4. every surface-compatible activity section id not yet open as an
  *    `activity-card`
- *    (`{ sectionId }`).
+ *    (`{ sectionId }`), except Cost, which step 1 lists as its panel.
  *
  * Openness is resolved through the layout store's family-wide instance-key
  * index ({@link findPanelByInstanceKey} + {@link getPanelInstanceKey}), the
@@ -2036,6 +2047,13 @@ export function listAddablePanels(
       ? 'cowork'
       : 'worktree';
   for (const section of getActivitySectionsForSurface(surface)) {
+    // Cost is the Cost panel, listed with the singletons above; a Cost card
+    // here would open a second "Cost" tab over the same data (CAN-6432). The
+    // Activity rail's Cost row opens that panel too.
+    if (section.id === 'cost') continue;
+    // A cloud scope's cards for sections it doesn't serve would read this
+    // computer with its cloud ids (CAN-6431).
+    if (!layoutScopeServesActivitySection(worktreeKey, section.id)) continue;
     const instance: Record<string, string> = { sectionId: section.id };
     const instanceKey = getPanelInstanceKey({
       kind: 'activity-card',

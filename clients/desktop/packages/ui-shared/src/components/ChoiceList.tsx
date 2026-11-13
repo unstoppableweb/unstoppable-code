@@ -1,4 +1,6 @@
 import {
+  forwardRef,
+  useCallback,
   useLayoutEffect,
   useRef,
   type ButtonHTMLAttributes,
@@ -24,6 +26,9 @@ import { ChoiceMark } from './Choice';
  * - `kind="radio"` makes the list a radiogroup: one tab stop (the chosen row,
  *   or the first) and arrow keys that move and choose, skipping disabled
  *   rows and wrapping.
+ * - A long list a host virtualizes takes the forwarded ref (the scrolling
+ *   box) and moves focus itself through `onKeyDown`; its rows set
+ *   `focusableWhenDisabled` so the arrow keys can pass over a disabled row.
  */
 export interface ChoiceListProps {
   /** Accessible name of the group: `Projects`, `Owners`. */
@@ -34,6 +39,8 @@ export interface ChoiceListProps {
   readonly className?: string;
   /** `radio` when the rows are one choice: a radiogroup with arrow keys. */
   readonly kind?: 'checkbox' | 'radio';
+  /** Runs before the radiogroup's own arrow keys. */
+  readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
 }
 
 const NEXT_KEYS = new Set(['ArrowDown', 'ArrowRight']);
@@ -45,62 +52,77 @@ function enabledRadios(group: HTMLElement): HTMLButtonElement[] {
   ).filter((radio) => !radio.disabled);
 }
 
-export function ChoiceList({
-  'aria-label': ariaLabel,
-  children,
-  'data-testid': dataTestId,
-  className = '',
-  kind = 'checkbox',
-}: ChoiceListProps): JSX.Element {
-  const groupRef = useRef<HTMLDivElement>(null);
-  const radio = kind === 'radio';
+export const ChoiceList = forwardRef<HTMLDivElement, ChoiceListProps>(
+  function ChoiceList(
+    {
+      'aria-label': ariaLabel,
+      children,
+      'data-testid': dataTestId,
+      className = '',
+      kind = 'checkbox',
+      onKeyDown: onHostKeyDown,
+    },
+    ref,
+  ): JSX.Element {
+    const groupRef = useRef<HTMLDivElement | null>(null);
+    const radio = kind === 'radio';
+    const setGroupRef = useCallback(
+      (node: HTMLDivElement | null): void => {
+        groupRef.current = node;
+        if (typeof ref === 'function') ref(node);
+        else if (ref) ref.current = node;
+      },
+      [ref],
+    );
 
-  // Roving tab stop: the chosen radio, or the first enabled one.
-  useLayoutEffect(() => {
-    const group = groupRef.current;
-    if (!radio || !group) return;
-    const radios = enabledRadios(group);
-    const stop =
-      radios.find((row) => row.getAttribute('aria-checked') === 'true') ??
-      radios[0];
-    for (const row of group.querySelectorAll<HTMLButtonElement>(
-      '[role="radio"]',
-    )) {
-      row.tabIndex = row === stop ? 0 : -1;
-    }
-  });
+    // Roving tab stop: the chosen radio, or the first enabled one.
+    useLayoutEffect(() => {
+      const group = groupRef.current;
+      if (!radio || !group) return;
+      const radios = enabledRadios(group);
+      const stop =
+        radios.find((row) => row.getAttribute('aria-checked') === 'true') ??
+        radios[0];
+      for (const row of group.querySelectorAll<HTMLButtonElement>(
+        '[role="radio"]',
+      )) {
+        row.tabIndex = row === stop ? 0 : -1;
+      }
+    });
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    const group = groupRef.current;
-    if (!radio || !group) return;
-    const step = NEXT_KEYS.has(event.key)
-      ? 1
-      : PREVIOUS_KEYS.has(event.key)
-        ? -1
-        : 0;
-    if (step === 0) return;
-    const radios = enabledRadios(group);
-    const current = radios.findIndex((row) => row === event.target);
-    if (current === -1 || radios.length === 0) return;
-    event.preventDefault();
-    const next = radios[(current + step + radios.length) % radios.length];
-    next?.focus();
-    next?.click();
-  };
+    const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+      onHostKeyDown?.(event);
+      const group = groupRef.current;
+      if (!radio || !group) return;
+      const step = NEXT_KEYS.has(event.key)
+        ? 1
+        : PREVIOUS_KEYS.has(event.key)
+          ? -1
+          : 0;
+      if (step === 0) return;
+      const radios = enabledRadios(group);
+      const current = radios.findIndex((row) => row === event.target);
+      if (current === -1 || radios.length === 0) return;
+      event.preventDefault();
+      const next = radios[(current + step + radios.length) % radios.length];
+      next?.focus();
+      next?.click();
+    };
 
-  return (
-    <div
-      ref={groupRef}
-      role={radio ? 'radiogroup' : 'group'}
-      aria-label={ariaLabel}
-      onKeyDown={onKeyDown}
-      data-testid={dataTestId}
-      className={`flex flex-col divide-y overflow-y-auto rounded-lg ${HAIRLINE_INSET_RING_CLASS} ring-line-base ${className}`}
-    >
-      {children}
-    </div>
-  );
-}
+    return (
+      <div
+        ref={setGroupRef}
+        role={radio ? 'radiogroup' : 'group'}
+        aria-label={ariaLabel}
+        onKeyDown={onKeyDown}
+        data-testid={dataTestId}
+        className={`flex flex-col divide-y overflow-y-auto rounded-lg ${HAIRLINE_INSET_RING_CLASS} ring-line-base ${className}`}
+      >
+        {children}
+      </div>
+    );
+  },
+);
 
 export interface ChoiceListRowProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
@@ -115,6 +137,11 @@ export interface ChoiceListRowProps extends Omit<
   readonly trailing?: ReactNode;
   /** A glyph or avatar between the mark and the text. */
   readonly leading?: ReactNode;
+  /**
+   * A disabled row stays focusable (`aria-disabled`) and never toggles, so
+   * a host's arrow keys can move through it.
+   */
+  readonly focusableWhenDisabled?: boolean;
 }
 
 /** One choice: the mark, the text, and an optional trailing note. */
@@ -125,8 +152,11 @@ export function ChoiceListRow({
   trailing,
   leading,
   disabled,
+  focusableWhenDisabled = false,
+  onClick,
   ...props
 }: ChoiceListRowProps): JSX.Element {
+  const softDisabled = focusableWhenDisabled && disabled === true;
   // The focus ring sits inside the full-width row: the list scrolls, and
   // would cut an outside ring off at its sides and the first row's top.
   return (
@@ -135,8 +165,15 @@ export function ChoiceListRow({
       type="button"
       role={kind}
       aria-checked={selected}
-      disabled={disabled}
-      className="group/choice-row focus-ring focus-ring-inset flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-s fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
+      {...(focusableWhenDisabled
+        ? { 'aria-disabled': softDisabled || undefined }
+        : { disabled })}
+      onClick={softDisabled ? undefined : onClick}
+      className={
+        focusableWhenDisabled
+          ? 'group/choice-row focus-ring focus-ring-inset flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-s fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent'
+          : 'group/choice-row focus-ring focus-ring-inset flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-s fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent'
+      }
     >
       <ChoiceMark kind={kind} checked={selected} disabled={disabled} />
       {leading}

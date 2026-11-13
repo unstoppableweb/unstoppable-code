@@ -14,6 +14,7 @@ import {
   type TrackedPlanData,
   type TrackedPlanGetRequest,
   type TrackedPlanListRequest,
+  type UnshareTrackedPlanRequest,
   type UpdateTrackedPlanRequest,
 } from '@canopy/desktop-shared/types';
 import {
@@ -24,6 +25,7 @@ import {
   saveTrackedPlanCommentsData,
   shareTrackedPlanData,
   syncTrackedPlansToPortal,
+  unshareTrackedPlanData,
   updateTrackedPlanData,
 } from '../services/plans-service';
 import {
@@ -97,6 +99,16 @@ export async function shareTrackedPlanForWindow(
     validateId(request.organizationId, 'organizationId');
   }
   return toShareOperationResult(() => shareTrackedPlanData(request));
+}
+
+/** Stop sharing the window's tracked plan, which App Advisor's plan.unshare calls (CAN-5904). */
+export async function unshareTrackedPlanForWindow(
+  request: UnshareTrackedPlanRequest,
+): Promise<ShareOperationResult<TrackedPlanData | null>> {
+  validateId(request.projectId, 'projectId');
+  validateId(request.worktreeId, 'worktreeId');
+  validateId(request.planId, 'planId');
+  return toShareOperationResult(() => unshareTrackedPlanData(request));
 }
 
 export function registerPlansHandlers(
@@ -189,6 +201,13 @@ export function registerPlansHandlers(
     ShareOperationResult<TrackedPlanData | null>
   >(IPC_CHANNELS.trackedPlansShare, (_event, request) =>
     shareTrackedPlanForWindow(request),
+  );
+
+  registerIpcHandler<
+    [UnshareTrackedPlanRequest],
+    ShareOperationResult<TrackedPlanData | null>
+  >(IPC_CHANNELS.trackedPlansUnshare, (_event, request) =>
+    unshareTrackedPlanForWindow(request),
   );
 
   registerIpcHandler<[ImportTrackedPlanRequest], ImportTrackedPlanResponse>(

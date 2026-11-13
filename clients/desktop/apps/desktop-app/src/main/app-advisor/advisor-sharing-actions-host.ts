@@ -15,6 +15,25 @@ import { getWorkspaceScopingContext } from '../lib/workspace-context-service';
 import type { AdvisorChatReadHost } from './advisor-chat-reads';
 import type { AdvisorSharingActionHost } from './advisor-sharing-actions';
 
+/** The organization the window's sidebar scopes to, if one. */
+export function selectedOrganizationId(): string | undefined {
+  const context = getWorkspaceScopingContext();
+  return context?.kind === 'organization' ? context.organizationId : undefined;
+}
+
+/**
+ * The account's own memberships: the workspace context's list is empty while
+ * the organization-projects rollout is off.
+ */
+export async function memberOrganizationIds(): Promise<ReadonlySet<string>> {
+  const { loadCanopyCloudAccount } =
+    await import('../lib/canopy-cloud-account-store');
+  const account = await loadCanopyCloudAccount();
+  return new Set(
+    (account?.organizations ?? []).map((organization) => organization.id),
+  );
+}
+
 const PUBLISH_PUBLIC_LINK = 'Publish public link';
 const KEEP_PRIVATE = 'Keep it private';
 
@@ -34,25 +53,18 @@ export function mainAdvisorSharingActionHost(options: {
 }): AdvisorSharingActionHost {
   let markerWrites = 0;
   return {
-    selectedOrganizationId: () => {
-      const context = getWorkspaceScopingContext();
-      return context?.kind === 'organization'
-        ? context.organizationId
-        : undefined;
-    },
-    // The account's own memberships: the workspace context's list is empty
-    // while the organization-projects rollout is off.
-    memberOrganizationIds: async () => {
-      const { loadCanopyCloudAccount } =
-        await import('../lib/canopy-cloud-account-store');
-      const account = await loadCanopyCloudAccount();
-      return new Set(
-        (account?.organizations ?? []).map((organization) => organization.id),
-      );
-    },
+    selectedOrganizationId,
+    memberOrganizationIds,
     planExists: async (projectId, worktreeId, planId) => {
       const { getTrackedPlan } = await import('../lib/plan-persistence');
       return (await getTrackedPlan(projectId, worktreeId, planId)) !== null;
+    },
+    planShared: async (projectId, worktreeId, planId) => {
+      const { getTrackedPlan } = await import('../lib/plan-persistence');
+      return (
+        (await getTrackedPlan(projectId, worktreeId, planId))?.share !==
+        undefined
+      );
     },
     readChat: async (target) => {
       const stored = await options.readTabs(
@@ -112,6 +124,10 @@ export function mainAdvisorSharingActionHost(options: {
     shareRun: async (request) => {
       const { shareRunForWindow } = await import('../ipc/runs');
       return shareRunForWindow(request);
+    },
+    unsharePlan: async (request) => {
+      const { unshareTrackedPlanForWindow } = await import('../ipc/plans');
+      return unshareTrackedPlanForWindow(request);
     },
     unshareRun: async (target) => {
       const { unshareRunForWindow } = await import('../ipc/runs');

@@ -41,7 +41,9 @@ export type AgentActionErrorCode =
   | 'cursor_context_changed'
   | 'unsupported_filter'
   | 'scan_budget_exceeded'
-  | 'unknown_bot';
+  | 'unknown_bot'
+  /** A managed delegation child's grant does not allow the action. */
+  | 'policy_blocked';
 
 /** Detailed error returned from a failed agent action dispatch. */
 export interface AgentActionError<TCode extends string = AgentActionErrorCode> {

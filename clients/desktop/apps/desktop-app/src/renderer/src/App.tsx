@@ -9,7 +9,10 @@ import {
   useWindowsGitRequirement,
 } from '@/hooks/useWindowsGitRequirement';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
-import { localPlatform } from '@/lib/local-platform';
+import {
+  localPlatform,
+  shellDrawsTitlebarDragRegion,
+} from '@/lib/local-platform';
 import { bridgeMainSkillsChanged } from '@/lib/skillsChanged';
 import {
   openCloudAccountSettings,
@@ -65,6 +68,7 @@ import {
   type JSX,
 } from 'react';
 import { ImportPlanModalHost } from './components/activity/ImportPlanModal';
+import { AppAdvisorDockPage } from './components/app-advisor/AppAdvisorDockPage';
 import { AppAdvisorMinimizedBubble } from './components/app-advisor/AppAdvisorMinimizedBubble';
 import { AppAdvisorPanelShadow } from './components/app-advisor/AppAdvisorPanelShadow';
 import { AppAdvisorMainRuntimeBridge } from './components/app-advisor/AppAdvisorRuntimeBridge';
@@ -93,6 +97,7 @@ import { CloudConnectGate } from './components/shared/CloudConnectGate';
 import { GuestUpgradeNudge } from './components/shared/GuestUpgradeNudge';
 import { SuggestionCorner } from '@canopy/ui-app/suggestions';
 import { OsNotificationOfferProducer } from './components/suggestions/OsNotificationOfferProducer';
+import { DeviceAiGatewayConflictNotice } from './components/settings/DeviceAiGatewayConflictNotice';
 import { RepeatTaskOfferProducer } from './components/suggestions/RepeatTaskOfferProducer';
 import { RunCommentsModalHost } from './components/shared/RunCommentsModal';
 import { ShareSessionStatusModal } from './components/shared/ShareSessionStatusModal';
@@ -159,7 +164,10 @@ import {
   refreshOsNotificationPrefs,
   setOsNotificationNavigationHandler,
 } from './lib/osNotifications';
-import { subscribePreferencesUpdated } from './lib/preferences-events';
+import {
+  emitPreferencesUpdated,
+  subscribePreferencesUpdated,
+} from './lib/preferences-events';
 import { useRendererDiagnostics } from './lib/renderer-diagnostics';
 import {
   requestSidebarPreviewClose,
@@ -176,6 +184,8 @@ import { installWorkspaceContextSelectionSync } from './lib/workspaceContextSele
 import { canNavigateToWorktreeFromSidebarItems } from './lib/worktreeNavigation';
 import { useActivityStore } from './stores/activityStore';
 import { useAppAdvisorStore } from './stores/appAdvisorStore';
+import { setMainContentCoveredByAppAdvisorDock } from './stores/appAdvisorDockCover';
+import { installAppAdvisorDockLeaveOnNavigation } from './lib/appAdvisorDockLeave';
 import { ensureArchivedContainersSubscription } from './stores/archivedContainersStore';
 import { useBranchDisplayStore } from './stores/branchDisplayStore';
 import { useBranchGroupingPreferenceStore } from './stores/branchGroupingPreferenceStore';
@@ -204,6 +214,8 @@ import {
 import { useCloudConnectGateStore } from './stores/cloudConnectGateStore';
 import { useFeatureFlagsStore } from './stores/featureFlagsStore';
 import { useRemoteControlStore } from './stores/remoteControlStore';
+import { useLabsExperimentEnabled } from './stores/labsExperimentsStore';
+import { ORCHESTRATOR_PAGE_EXPERIMENT_ID } from './lib/orchestratorPageExperiment';
 import { useFileLabelsStore } from './stores/fileLabelsStore';
 import { useFileTabUiStore } from './stores/fileTabUiStore';
 import { useGitHubStore } from './stores/githubStore';
@@ -255,11 +267,6 @@ const HomePage = lazy(() =>
   })),
 );
 
-const CloudChatPage = lazy(() =>
-  import('./cloud-chats/CloudChatPage').then((m) => ({
-    default: m.CloudChatPage,
-  })),
-);
 const StandaloneChatPage = lazy(() =>
   import('./components/pages/StandaloneChatPage').then((m) => ({
     default: m.StandaloneChatPage,
@@ -582,6 +589,29 @@ function App(): JSX.Element {
   const gitGate = useWindowsGitRequirement({ enabled: cloudGateSatisfied });
   const appAdvisorOpen = useNavigationStore((s) => s.appAdvisorOpen);
   const appAdvisorFocused = useNavigationStore((s) => s.appAdvisorFocused);
+  // The Orchestrator as a page in this window's content area (docked): its
+  // own page draws the panel grid in the slot `AppAdvisorDockPage` reports.
+  const appAdvisorDocked = useAppAdvisorStore(
+    (s) => s.open && s.layout === 'docked',
+  );
+  const orchestratorPageEnabled = useLabsExperimentEnabled(
+    ORCHESTRATOR_PAGE_EXPERIMENT_ID,
+  );
+  // Any navigation leaves the Orchestrator page: a page request (even for
+  // the page already open), or another worktree or chat chosen anywhere
+  // (palette, notification, agent action). The sidebar closes it itself.
+  useEffect(() => installAppAdvisorDockLeaveOnNavigation(), []);
+  // While it shows, the page under it is hidden, so its chat is not in view
+  // (unread, attention, OS notifications). Leaving it shows that chat again,
+  // which counts as seeing it, as returning to the page does.
+  const appAdvisorWasDockedRef = useRef(false);
+  useLayoutEffect(() => {
+    setMainContentCoveredByAppAdvisorDock(appAdvisorDocked);
+    if (appAdvisorWasDockedRef.current && !appAdvisorDocked) {
+      useChatStore.getState().acknowledgeSelectedWorktreeAttention();
+    }
+    appAdvisorWasDockedRef.current = appAdvisorDocked;
+  }, [appAdvisorDocked]);
   // Entry-keyed read-only mirrors — populated by `hydrateForNavigation()`
   // (which lists App Advisor Work Entries and loads each entry's tab
   // metadata) and updated via the shared `useChatEventSubscriptions` stream.
@@ -827,6 +857,11 @@ function App(): JSX.Element {
         );
       useBrowserStore.getState().applySearchPreferences(preferences);
       followClaudeModAdmissionPreferences(preferences);
+      // A save made in main, such as an App Advisor settings action
+      // (CAN-6004), reaches this window only through this broadcast, so
+      // announce it the way this window's own Settings save does.
+      emitPreferencesUpdated(preferences);
+      useAppAdvisorStore.getState().applyPreferences(preferences);
     });
   }, []);
 
@@ -1982,7 +2017,10 @@ function App(): JSX.Element {
   // card the panel grid under it. Every other page is one card that keeps the
   // same top bar row, empty, so it starts where a worktree's grid does.
   const mainFrame =
-    visiblePage === 'main' || visiblePage === 'kanban' || visiblePage === 'chat'
+    appAdvisorDocked ||
+    visiblePage === 'main' ||
+    visiblePage === 'kanban' ||
+    visiblePage === 'chat'
       ? 'split'
       : visiblePage === 'home'
         ? 'card-below-bar'
@@ -2004,10 +2042,12 @@ function App(): JSX.Element {
         data-testid="app-sidebar-page"
       >
         <AppSidebar
-          activePage={activePage}
-          onNavigate={(page) =>
-            dispatchUiAction({ type: 'navigation.go_to_page', page })
-          }
+          // On the Orchestrator page only its row is selected.
+          activePage={appAdvisorDocked ? 'main' : activePage}
+          onNavigate={(page) => {
+            if (appAdvisorDocked) useAppAdvisorStore.getState().closeDialog();
+            dispatchUiAction({ type: 'navigation.go_to_page', page });
+          }}
           onReturnToSectionRoot={returnToSectionRoot}
           onSettingsClick={() =>
             dispatchUiAction({ type: 'navigation.open_settings' })
@@ -2019,9 +2059,16 @@ function App(): JSX.Element {
           canopyPortalEnabled={canopyPortalEnabled}
           ledgerEnabled={ledgerEnabled}
           claudeTuiWorkersEnabled={claudeTuiWorkersEnabled}
-          onAppAdvisorClick={() =>
-            dispatchUiAction({ type: 'app_advisor.open' })
-          }
+          // With the Orchestrator page experiment the row opens it as a page
+          // here, in the normal chat layout; ⌘L and agent requests keep the
+          // floating panel.
+          onAppAdvisorClick={() => {
+            if (orchestratorPageEnabled) {
+              useAppAdvisorStore.getState().openDocked();
+            } else {
+              dispatchUiAction({ type: 'app_advisor.open' });
+            }
+          }}
           appAdvisorOpen={appAdvisorOpen}
           appAdvisorThinking={appAdvisorThinking}
           appAdvisorUnread={appAdvisorUnread}
@@ -2034,7 +2081,7 @@ function App(): JSX.Element {
         className={`relative flex min-w-0 flex-1 flex-col bg-base ${mainShellCovered ? 'invisible' : ''}`}
         data-testid="app-main-shell"
       >
-        {localPlatform() === 'darwin' && (
+        {shellDrawsTitlebarDragRegion(localPlatform()) && (
           <div
             className="electron-drag absolute inset-x-0 top-0 h-10"
             data-testid="app-main-titlebar-drag-region"
@@ -2070,75 +2117,89 @@ function App(): JSX.Element {
             }
             data-main-frame={mainFrame}
           >
-            {/* Over whichever page is open: a worktree started, repaired,
-                joined, archived or deleted from the sidebar can fail while
-                another page shows. */}
+            {/* A worktree started, repaired, joined, archived or deleted
+                from the sidebar can fail while another page shows: the
+                failure is a card in the window's toast stack. */}
             <WorktreeErrorNotice />
             <div
               className={
-                visiblePage === 'main' || visiblePage === 'kanban'
+                !appAdvisorDocked &&
+                (visiblePage === 'main' || visiblePage === 'kanban')
                   ? 'h-full w-full'
                   : 'hidden'
               }
               data-main-page-hidden={
-                visiblePage === 'main' || visiblePage === 'kanban'
+                !appAdvisorDocked &&
+                (visiblePage === 'main' || visiblePage === 'kanban')
                   ? undefined
                   : 'true'
               }
             >
               <MainPage />
             </div>
+            {appAdvisorDocked && <AppAdvisorDockPage />}
             {/* Keyed so a section returning to its root from the sidebar
                 mounts fresh. Entering Customize from another page restores
                 where it was left (CAN-4267); its root return clears that. */}
-            <Fragment key={sectionRootRequest}>
-              {visiblePage === 'overview' && <OverviewPage />}
-              {visiblePage === 'home' && <HomePage />}
-              {visiblePage === 'chat' && <StandaloneChatPage />}
-              {visiblePage === 'cloud-chat' && <CloudChatPage />}
-              {visiblePage !== null && isWorkflowsTabId(visiblePage) && (
-                <WorkflowsPage tab={visiblePage} />
-              )}
-              {visiblePage === 'plugins' && (
-                <PluginsPage
-                  onOpenAccountSettings={() => {
-                    dispatchUiAction({
-                      type: 'canopy_portal.open_account_settings',
-                    });
-                  }}
-                />
-              )}
-              {visiblePage === 'audit' && <AuditTrailPage />}
-              {visiblePage !== null && isDevPage(visiblePage) && (
-                <DevPagesShell
-                  page={visiblePage}
-                  onNavigate={(page) =>
-                    dispatchUiAction({ type: 'navigation.go_to_page', page })
-                  }
-                >
-                  {visiblePage === 'notice-states' && (
-                    <NoticeStateGalleryPage />
-                  )}
-                  {visiblePage === 'header-states' && (
-                    <HeaderStateGalleryPage />
-                  )}
-                  {visiblePage === 'worktree-states' && (
-                    <WorktreeStateGalleryPage />
-                  )}
-                  {visiblePage === 'activity-states' && (
-                    <ActivityStateGalleryPage />
-                  )}
-                  {visiblePage === 'message-bubble-states' && (
-                    <MessageBubbleStateGalleryPage />
-                  )}
-                  {visiblePage === 'change-review' && <ChangeReviewPage />}
-                </DevPagesShell>
-              )}
-              {visiblePage === 'statistics' && <StatisticsPage />}
-              {visiblePage === 'usage' && <UsagePage />}
-              {visiblePage === 'workers' && <WorkersPage />}
-              {visiblePage === 'feed' && <FeedPage />}
-            </Fragment>
+            {/* The Orchestrator page stands in for every other page while it
+                shows. They stay mounted, hidden, so leaving it returns to
+                them as they were, and no page's teardown (a Cowork chat
+                restoring the previous selection) reads as navigation. */}
+            <div
+              className={appAdvisorDocked ? 'hidden' : 'contents'}
+              data-testid="app-pages"
+              // Hidden like the worktree page above: the inset frame rules
+              // skip what a hidden page holds (styles/globals.css).
+              data-main-page-hidden={appAdvisorDocked ? 'true' : undefined}
+            >
+              <Fragment key={sectionRootRequest}>
+                {visiblePage === 'overview' && <OverviewPage />}
+                {visiblePage === 'home' && <HomePage />}
+                {visiblePage === 'chat' && <StandaloneChatPage />}
+                {visiblePage !== null && isWorkflowsTabId(visiblePage) && (
+                  <WorkflowsPage tab={visiblePage} />
+                )}
+                {visiblePage === 'plugins' && (
+                  <PluginsPage
+                    onOpenAccountSettings={() => {
+                      dispatchUiAction({
+                        type: 'canopy_portal.open_account_settings',
+                      });
+                    }}
+                  />
+                )}
+                {visiblePage === 'audit' && <AuditTrailPage />}
+                {visiblePage !== null && isDevPage(visiblePage) && (
+                  <DevPagesShell
+                    page={visiblePage}
+                    onNavigate={(page) =>
+                      dispatchUiAction({ type: 'navigation.go_to_page', page })
+                    }
+                  >
+                    {visiblePage === 'notice-states' && (
+                      <NoticeStateGalleryPage />
+                    )}
+                    {visiblePage === 'header-states' && (
+                      <HeaderStateGalleryPage />
+                    )}
+                    {visiblePage === 'worktree-states' && (
+                      <WorktreeStateGalleryPage />
+                    )}
+                    {visiblePage === 'activity-states' && (
+                      <ActivityStateGalleryPage />
+                    )}
+                    {visiblePage === 'message-bubble-states' && (
+                      <MessageBubbleStateGalleryPage />
+                    )}
+                    {visiblePage === 'change-review' && <ChangeReviewPage />}
+                  </DevPagesShell>
+                )}
+                {visiblePage === 'statistics' && <StatisticsPage />}
+                {visiblePage === 'usage' && <UsagePage />}
+                {visiblePage === 'workers' && <WorkersPage />}
+                {visiblePage === 'feed' && <FeedPage />}
+              </Fragment>
+            </div>
           </main>
         </Suspense>
         {/* Floating overlay, not a flow row: this host exists only for small
@@ -2195,7 +2256,7 @@ function App(): JSX.Element {
       {/* Early access: the shadow under the floating App Advisor panel, and
           the bubble it folds into when minimized. */}
       <AppAdvisorPanelShadow />
-      <AppAdvisorMinimizedBubble />
+      <AppAdvisorMinimizedBubble running={appAdvisorThinking} />
       {fileSearchPaletteOpen && (
         <Suspense fallback={null}>
           <FileSearchPalette
@@ -2296,14 +2357,20 @@ function App(): JSX.Element {
       <GitHubConnectOfferHost />
       <ReleaseHighlightsHost ready={startupUnlockReady} />
       <RemoteAccessHost />
+      {/* `electron-no-drag` is load-bearing: a top corner overlaps the drag
+          strip a page without a top bar draws at its top edge, and app-region
+          hit testing ignores z-order, so without it a window drag would take
+          clicks from the banners and toasts here (CAN-5711). The box is
+          content-sized, so the hole only covers notifications on screen. */}
       <div
-        className={getInAppNotificationContainerClasses(
+        className={`electron-no-drag ${getInAppNotificationContainerClasses(
           inAppNotificationPlacement,
           {
             // The notification stack starts top corners below the header.
             clearHeader: true,
           },
-        )}
+        )}`}
+        data-testid="in-app-notification-corner"
         // The corner's own `z-toast` class must not freeze a Browser page
         // under it: each child below decides for itself (nearest marker wins).
         data-canopy-browser-native-overlay="false"
@@ -2332,15 +2399,15 @@ function App(): JSX.Element {
           {/* While another computer controls this one; persistent until the
               session ends, so it sits above the transient layers. */}
           <RemoteAccessControlledNotice />
-          {/* The top standing condition, until it recovers. */}
+          {/* The top standing condition, as a pinned card in the toast
+              stack until it recovers or is closed; renders nothing here. */}
           <Suspense fallback={null}>
             <DesktopStandingConditions />
           </Suspense>
-          {/* Persistent until the background service is reached again. */}
-          <BackgroundServiceUnavailableNotice />
           <WorkspaceRecoveryNotice />
           <GuestUpgradeNudge />
           <OsNotificationOfferProducer />
+          <DeviceAiGatewayConflictNotice />
           <RepeatTaskOfferProducer />
           <SuggestionCorner />
           <Suspense fallback={null}>
@@ -2349,6 +2416,9 @@ function App(): JSX.Element {
         </div>
         {/* Over a live Browser page the toasts move into a native overlay
             layer above it, so the page keeps running under them. */}
+        {/* Pins its warning card into the toast stack below until the
+            background service is reached again or the card is closed. */}
+        <BackgroundServiceUnavailableNotice />
         <OverlayLayerSlot
           slot="notifications"
           placement={inAppNotificationPlacement}

@@ -242,6 +242,14 @@ export interface NoticeProps extends Omit<
   onDismiss?: () => void;
   /** Accessible name for the dismiss control. Defaults to `Dismiss`. */
   dismissLabel?: string;
+  /**
+   * Takes the dismiss control's accessible name from this element, over
+   * `dismissLabel`, for a name carrying user-authored text: session replay
+   * records `aria-label` verbatim, but keeps nothing of a blocked element.
+   */
+  dismissLabelledBy?: string;
+  /** Holds the dismiss control while its request is in flight. */
+  dismissDisabled?: boolean;
   dismissTestId?: string;
   /**
    * Live-region role. Defaults to `alert` for `destructive` (a failure the
@@ -499,6 +507,8 @@ export function Notice({
   actionsPlacement = 'trailing',
   onDismiss,
   dismissLabel = 'Dismiss',
+  dismissLabelledBy,
+  dismissDisabled = false,
   dismissTestId,
   role,
   liveRegionScope = 'notice',
@@ -717,7 +727,9 @@ export function Notice({
           size="sm"
           iconOnly
           onClick={onDismiss}
+          disabled={dismissDisabled}
           aria-label={dismissLabel}
+          aria-labelledby={dismissLabelledBy}
           data-testid={dismissTestId}
           className={toastShape ? 'mt-px' : pullControlsIn ? '-mr-1' : ''}
         >

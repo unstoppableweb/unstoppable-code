@@ -2372,6 +2372,14 @@ function chatSummaryEntity(input: {
     description: input.tab.description,
     turnActive,
     ...(turnElapsedMs !== undefined ? { turnElapsedMs } : {}),
+    // A session that applies setters only from its next turn says so, with
+    // the running turn's settings, so a composer can show a change as pending.
+    ...(activeTurnSession?.settingApplication
+      ? { settingApplication: { ...activeTurnSession.settingApplication } }
+      : {}),
+    ...(turnActive && activeTurnSession?.turnSettings
+      ? { turnSettings: { ...activeTurnSession.turnSettings } }
+      : {}),
     ...(canonicalTurn ? { turnPhase: canonicalTurn.phase } : {}),
     ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
     ...(canonicalTurn
@@ -3191,6 +3199,14 @@ async function sendWorktreeChatMessageNow(
     request.projectId,
     existingTab?.model ?? undefined,
     request.model ?? undefined,
+    {
+      worktreeId: request.worktreeId,
+      chatId,
+      executionHarness:
+        request.model && request.model !== existingTab?.model
+          ? getExecutionHarnessForModel(request.model)
+          : existingTab?.executionHarness,
+    },
   );
   if (sendModelPin !== undefined) {
     request = {

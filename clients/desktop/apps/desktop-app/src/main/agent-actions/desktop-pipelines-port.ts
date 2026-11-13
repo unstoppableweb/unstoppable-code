@@ -16,7 +16,7 @@ import {
   buildPipelineRunArtifactReceipt,
   withAgentArtifacts,
 } from '@canopy/desktop-shared/lib/agent-artifacts';
-import type { ExecutePipelineRequestOptions } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ExecutePipelineRequestOptions } from '@canopy/execution-engine/node/pipelines/executor';
 import {
   DEFAULT_PIPELINE_SCOPES,
   executionContextSatisfies,
@@ -53,6 +53,11 @@ import {
   type GlobalStartRefusal,
 } from '../pipelines/pipeline-global-start';
 import { agentPipelineOwnerContext } from '../pipelines/pipeline-owner-policy';
+import type {
+  CloudRunAgentChat,
+  CloudRunAgentDestination,
+} from '../pipelines/cloud-pipeline-runs';
+import { CLOUD_PIPELINE_RUN_TARGET_ID } from '@canopy/protocol/canopy-core/core/pipeline/cloud-runs';
 import { inlineWatcherSetupJson } from './desktop-legacy-family';
 import { worktreeWatcherDestination } from './desktop-watcher-port';
 
@@ -354,6 +359,27 @@ async function runInScopedTask(
       `Pipeline ${action.pipelineId} does not declare the ${eventName} run mode.`,
     );
   }
+  if (action.runOn === 'cloud') {
+    const owner = await agentPipelineOwnerContext({
+      projectId: runtime.projectId,
+      worktreeId: runtime.worktreeId,
+    });
+    if ('refusal' in owner) return rejected('owner_unavailable', owner.refusal);
+    return runInCloud(
+      action,
+      pipeline,
+      owner.owner,
+      watcherCall,
+      {
+        workspaceId: runtime.projectId,
+        ...(executionScope === 'worktree'
+          ? { worktreeId: runtime.worktreeId }
+          : {}),
+        ...(action.repoId ? { repoId: action.repoId } : {}),
+      },
+      agentChatOf(initiatorForWorktreeRuntime(runtime)),
+    );
+  }
   const { createElectronExecutionRuntime } =
     await import('../pipelines/execution-runtime');
   const { executionsDir } = createElectronExecutionRuntime();
@@ -489,6 +515,15 @@ async function runInAppAdvisorTask(
       `Pipeline ${action.pipelineId} does not support ${eventName}.`,
     );
   }
+  if (action.runOn === 'cloud') {
+    const owner = await agentPipelineOwnerContext(target);
+    if ('refusal' in owner) return rejected('owner_unavailable', owner.refusal);
+    return runInCloud(action, pipeline, owner.owner, watcherCall, {
+      workspaceId: target.projectId,
+      worktreeId: target.worktreeId,
+      ...(action.repoId ? { repoId: action.repoId } : {}),
+    });
+  }
   const chat: PipelineAgentChatAddress = {
     projectId: destination.projectId,
     worktreeId: destination.worktreeId,
@@ -598,6 +633,7 @@ function globalRunSource(host: Host): GlobalRunSource | null {
 async function runGlobal(
   action: PipelineRunAction,
   host: Host,
+  call: WatcherCall,
 ): Promise<AgentPipelineRunResult> {
   const source = globalRunSource(host);
   if (!source)
@@ -632,6 +668,15 @@ async function runGlobal(
       `Pipeline ${action.pipelineId} does not declare the dispatch run mode.`,
     );
   }
+  if (action.runOn === 'cloud')
+    return runInCloud(
+      action,
+      pipeline,
+      owner.owner,
+      call,
+      undefined,
+      agentChatOf(source.initiator),
+    );
   const options: ExecutePipelineRequestOptions = {
     pipelineId: pipeline.info.id,
     ...pipelineSourceExecutionOptions(pipeline),
@@ -660,12 +705,129 @@ async function runGlobal(
   };
 }
 
+const CLOUD_REFUSAL_REASONS: Readonly<
+  Partial<Record<string, AgentPipelineRunRejectionReason>>
+> = {
+  cloud_destination_unavailable: 'unsupported_scope',
+  cloud_source_unavailable: 'invalid_target',
+  cloud_target_unavailable: 'invalid_target',
+  cloud_owner_required: 'owner_unavailable',
+};
+
+/**
+ * `runOn: "cloud"` (CAN-6187): the run starts in the web core through the
+ * same main-process path the Run dialog uses, under the calling chat's
+ * owner. An agent can't confirm cloud models, so a workflow whose model
+ * steps have none saved is refused until the person picks them once in the
+ * Run dialog; nothing runs on this computer.
+ *
+ * Without `scope: "global"` (CAN-6354) the start names the calling chat's
+ * project, and its task for a worktree chat, for the web core to admit or
+ * refuse with its own reason.
+ */
+/**
+ * The agent chat a cloud start names (CAN-6391), so the run reports which
+ * desktop chat started it; Orchestrator's runs name none, since it watches
+ * no cloud runs.
+ */
+function agentChatOf(
+  initiator: PipelineExecutionInitiator,
+): CloudRunAgentChat | undefined {
+  return initiator.kind === 'agent' ? initiator.chat : undefined;
+}
+
+async function runInCloud(
+  action: PipelineRunAction,
+  pipeline: PipelineData,
+  owner: string,
+  call: WatcherCall,
+  destination?: CloudRunAgentDestination,
+  chat?: CloudRunAgentChat,
+): Promise<AgentPipelineRunResult> {
+  const { info } = pipeline;
+  const { startAgentCloudPipelineRun } =
+    await import('../pipelines/cloud-pipeline-runs');
+  const result = await startAgentCloudPipelineRun(
+    {
+      pipelineId:
+        info.source === 'curated' && info.curatedKey !== undefined
+          ? `curated:${info.curatedKey}`
+          : info.id,
+      scope: 'global',
+      target: { scope: 'global' },
+      eventName: 'dispatch',
+      requestedOwner: owner,
+      targetId: CLOUD_PIPELINE_RUN_TARGET_ID,
+      // A redelivered tool call resends the same start, which the web core
+      // answers with the run it recorded; a new call starts a new run.
+      ...(call.toolUseId !== undefined
+        ? { cloudIdempotencyKey: `agent-tool-call:${call.toolUseId}` }
+        : {}),
+      ...inputOptions(action),
+      ...(info.source === 'shared' &&
+      info.serverId !== undefined &&
+      info.remoteId !== undefined
+        ? {
+            sharedPipeline: {
+              serverId: info.serverId,
+              remoteId: info.remoteId,
+            },
+          }
+        : {}),
+    },
+    destination,
+    chat,
+  );
+  if (result.success)
+    return {
+      status: 'started',
+      execution: {
+        executionId: result.cloudRun.operationId,
+        pipelineId: info.id,
+        pipelineName: info.name,
+        executionStatus: result.cloudRun.admission,
+        executionScope:
+          destination === undefined
+            ? 'global'
+            : destination.worktreeId === undefined
+              ? 'directory'
+              : 'worktree',
+        ...(destination === undefined
+          ? {}
+          : {
+              projectId: destination.workspaceId,
+              ...(destination.worktreeId === undefined
+                ? {}
+                : { worktreeId: destination.worktreeId }),
+            }),
+        owner,
+        eventName: 'dispatch',
+        startedAt: new Date().toISOString(),
+        location: 'cloud',
+      },
+    };
+  if (result.errorCode === 'cloud_start_uncertain')
+    return rejected(
+      'execution_failed',
+      'The cloud run may have started. Check the Runs list before starting another; a new pipeline.run call starts a new run.',
+    );
+  if (result.errorCode === 'cloud_models_unconfirmed')
+    return rejected(
+      'execution_failed',
+      'Some agent steps need a cloud model. Ask the person to choose them once in the Run dialog with Run on: Cloud; later cloud runs reuse them.',
+    );
+  return rejected(
+    CLOUD_REFUSAL_REASONS[result.errorCode] ?? 'execution_failed',
+    result.error,
+  );
+}
+
 async function runDesktopPipeline(
   action: PipelineRunAction,
   host: Host,
   watcherCall: WatcherCall,
 ): Promise<AgentPipelineRunResult> {
-  if (action.scope === 'global') return runGlobal(action, host);
+  if (action.scope === 'global') return runGlobal(action, host, watcherCall);
   if (host.worktreeActionRuntime)
     return runInScopedTask(
       action,

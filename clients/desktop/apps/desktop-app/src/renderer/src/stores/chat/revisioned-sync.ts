@@ -44,6 +44,8 @@ export interface ChatScopeSyncStatus {
   phase: ChatScopeSyncPhase;
   /** Last committed revision applied to the client projection, if any. */
   revision: number | null;
+  /** Why the scope's first read failed, for the page that has no chats to show. */
+  reason?: string;
 }
 
 export type ChatScopeHydrateResult = 'installed' | 'already' | 'failed';

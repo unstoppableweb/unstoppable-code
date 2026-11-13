@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type JSX,
@@ -9,25 +10,27 @@ import {
 import { useCapabilities } from '@canopy/app-state';
 import {
   availableWorkflowRunKinds,
+  cloudExecutionIdOfRow,
+  CloudPipelineRunDialog,
   EMPTY_WORKFLOW_LIBRARY_FILTERS,
-  EMPTY_WORKFLOW_RUN_FILTERS,
-  filterWorkflowRunRows,
+  isCloudRunRowControl,
+  sendCloudRunRowControl,
   WORKFLOW_RUN_STARTERS,
-  WORKFLOW_RUN_STATUSES,
-  WorkflowsRunsEmptyState,
-  WorkflowsRunsTable,
-  WorkflowsRunsToolbar,
-  workflowRunFiltersActive,
+  WorkflowsRunsList,
   type WorkflowRunAction,
-  type WorkflowRunFilters,
-  type WorkflowRunKind,
   type WorkflowRunRow,
   type WorkflowRunStarter,
-  type WorkflowRunStatus,
-  type WorkflowsRunsLibraryPreview,
+  type WorkflowsRunsListProps,
 } from '@canopy/ui-app/workflows';
-import { Button, ConfirmDialog } from '@canopy/ui-shared/components';
+import { ConfirmDialog } from '@canopy/ui-shared/components';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
+import {
+  cloudPipelineRunsStore,
+  cloudRunControlKeys,
+  cloudRunControlSession,
+  cloudRunsInvoker,
+  onCloudRunsAccountChange,
+} from '@/lib/workflows/cloud-runs';
 import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useAutomationsStore } from '@/stores/automationsStore';
@@ -36,7 +39,6 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useWorkflowsViewStore } from '@/stores/workflowsViewStore';
 import { usePipelineExecutionActions } from '../../activity/usePipelineExecutionActions';
-import { useNowTick } from '../../automations/calendar/useNowTick';
 import {
   openAutomationRunDestination,
   resolveAutomationRunDestination,
@@ -47,14 +49,12 @@ import { WatcherManagementModal } from '../../watchers/WatcherManagementModal';
 import type { WorkflowRunFeed } from './useWorkflowRunFeed';
 
 /**
- * What a desktop run can be attributed to. A pipeline run's summary does not
- * say whether App Advisor or Remote Control started it, so those two are not
- * offered as filters that could never match.
+ * What a desktop run can be attributed to: every starter, now that a
+ * pipeline run's summary records its initiator, App Advisor and Remote
+ * Control included (CAN-6326).
  */
 export const DESKTOP_RUN_STARTERS: readonly WorkflowRunStarter[] =
-  WORKFLOW_RUN_STARTERS.filter(
-    (starter) => starter !== 'app-advisor' && starter !== 'remote-control',
-  );
+  WORKFLOW_RUN_STARTERS;
 
 function showError(message: string): void {
   useGitHubStore
@@ -120,6 +120,9 @@ export function useWorkflowRunRowActions(
     null,
   );
   const [watcherCancelBusy, setWatcherCancelBusy] = useState(false);
+  const [openCloudRunId, setOpenCloudRunId] = useState<string | null>(null);
+  // An open cloud run belongs to the account that opened it.
+  useEffect(() => onCloudRunsAccountChange(() => setOpenCloudRunId(null)), []);
 
   const withBusy = useCallback(
     async (key: string, action: () => Promise<void>): Promise<void> => {
@@ -171,6 +174,11 @@ export function useWorkflowRunRowActions(
         setInspectingWatcherId(row.watcherId);
         return;
       }
+      const cloudExecutionId = cloudExecutionIdOfRow(row);
+      if (cloudExecutionId !== undefined) {
+        setOpenCloudRunId(cloudExecutionId);
+        return;
+      }
       const executionId = executionIdFor(row);
       if (executionId !== undefined) {
         void openPipelineExecutionFromUi({ executionId });
@@ -199,8 +207,32 @@ export function useWorkflowRunRowActions(
     useNavigationStore.getState().navigate('workflows-library');
   }, []);
 
+  /** A cloud run's row control, answered by the web core (CAN-6326). */
+  const handleCloudAction = useCallback(
+    (
+      row: WorkflowRunRow,
+      executionId: string,
+      action: WorkflowRunAction,
+    ): void => {
+      if (action === 'respond' || action === 'inspect') {
+        setOpenCloudRunId(executionId);
+        return;
+      }
+      if (!isCloudRunRowControl(action)) return;
+      const session = cloudRunControlSession(executionId);
+      if (session === null) return;
+      void withBusy(row.key, () => sendCloudRunRowControl(session, action));
+    },
+    [withBusy],
+  );
+
   const handleAction = useCallback(
     (row: WorkflowRunRow, action: WorkflowRunAction): void => {
+      const cloudExecutionId = cloudExecutionIdOfRow(row);
+      if (cloudExecutionId !== undefined) {
+        handleCloudAction(row, cloudExecutionId, action);
+        return;
+      }
       const executionId = executionIdFor(row);
       switch (action) {
         case 'respond':
@@ -280,6 +312,7 @@ export function useWorkflowRunRowActions(
     [
       executionActions,
       executionIdFor,
+      handleCloudAction,
       watchersById,
       openAutomationRunResult,
       openInLibrary,
@@ -297,9 +330,21 @@ export function useWorkflowRunRowActions(
       ? watchersById.get(cancellingWatcherId)
       : undefined;
 
+  const cloudInvoker = cloudRunsInvoker();
   const dialogs = (
     <>
       {executionActions.dialogs}
+      {openCloudRunId !== null && cloudInvoker !== null && (
+        <CloudPipelineRunDialog
+          key={openCloudRunId}
+          invoker={cloudInvoker}
+          executionId={openCloudRunId}
+          onClose={(): void => setOpenCloudRunId(null)}
+          onOpenRun={setOpenCloudRunId}
+          onView={(view): void => cloudPipelineRunsStore()?.upsert(view)}
+          controlKeys={cloudRunControlKeys}
+        />
+      )}
       {inspectingWatcher && (
         <WatcherManagementModal
           title="Watcher"
@@ -351,157 +396,32 @@ export function useWorkflowRunRowActions(
   };
 }
 
-export interface WorkflowRunsListProps {
-  /** Every row the host lists, before the search and filters apply. */
-  readonly rows: readonly WorkflowRunRow[];
-  /** The first load has not finished; shown while there are no rows yet. */
-  readonly loading: boolean;
-  readonly query: string;
-  readonly onQueryChange: (query: string) => void;
-  readonly filters: WorkflowRunFilters;
-  readonly onFiltersChange: (filters: WorkflowRunFilters) => void;
-  /** Status filter values. Defaults to every status. */
-  readonly statuses?: readonly WorkflowRunStatus[];
-  /**
-   * Kind filter values; the Kind menu shows only with two or more. Defaults
-   * to the kinds this host's capabilities can list.
-   */
-  readonly kinds?: readonly WorkflowRunKind[];
-  /** Started-by filter values. Defaults to what a desktop run records. */
-  readonly starters?: readonly WorkflowRunStarter[];
-  readonly onOpen: (row: WorkflowRunRow) => void;
-  readonly onAction: (row: WorkflowRunRow, action: WorkflowRunAction) => void;
-  readonly busyKeys?: ReadonlySet<string>;
-  /** An older page might hold more matching runs. */
-  readonly hasMore: boolean;
-  readonly loadingMore: boolean;
-  readonly onLoadMore: () => void;
-  /**
-   * Shown instead of `No runs yet` when there are no rows at all. A search or
-   * filter that hides every row still shows `No runs match`.
-   */
-  readonly emptyState?: ReactNode;
-  readonly onRunWorkflow?: () => void;
-  readonly onNewWorkflow?: () => void;
-  readonly onBrowseMarketplace?: () => void;
-  /** Library workflows `No runs yet` previews; omit to preview none. */
-  readonly libraryPreview?: WorkflowsRunsLibraryPreview;
-  /** A row to mark as selected. */
-  readonly highlightKey?: string | null;
-}
+export type WorkflowRunsListProps = Omit<
+  WorkflowsRunsListProps,
+  'kinds' | 'starters'
+> &
+  Partial<Pick<WorkflowsRunsListProps, 'kinds' | 'starters'>>;
 
 /**
- * A searchable, filterable runs list: toolbar, table and empty state. It is
- * controlled, so the host owns the rows, query, filters and actions; render
- * it inside an element that carries the row actions' `dialogAnchorRef`.
+ * The shared runs list with desktop's defaults: the kinds this host's
+ * capabilities can list, and every starter a desktop run records. Render it
+ * inside an element that carries the row actions' `dialogAnchorRef`.
  */
 export function WorkflowRunsList({
-  rows,
-  loading,
-  query,
-  onQueryChange,
-  filters,
-  onFiltersChange,
-  statuses = WORKFLOW_RUN_STATUSES,
   kinds,
   starters = DESKTOP_RUN_STARTERS,
-  onOpen,
-  onAction,
-  busyKeys,
-  hasMore,
-  loadingMore,
-  onLoadMore,
-  emptyState,
-  onRunWorkflow,
-  onNewWorkflow,
-  onBrowseMarketplace,
-  libraryPreview,
-  highlightKey,
+  ...props
 }: WorkflowRunsListProps): JSX.Element {
   const capabilities = useCapabilities();
-  // One clock for the table, advancing each minute.
-  const now = useNowTick().getTime();
-
   const capabilityKinds = useMemo(
     () => availableWorkflowRunKinds(capabilities),
     [capabilities],
   );
-  const visible = useMemo(
-    () => filterWorkflowRunRows(rows, query, filters),
-    [rows, filters, query],
-  );
-
-  const clearFilters = useCallback((): void => {
-    onQueryChange('');
-    onFiltersChange(EMPTY_WORKFLOW_RUN_FILTERS);
-  }, [onFiltersChange, onQueryChange]);
-
-  const emptyQuery = rows.length === 0 ? '' : query;
-  const emptyFilters = rows.length === 0 ? EMPTY_WORKFLOW_RUN_FILTERS : filters;
-
   return (
-    <>
-      {rows.length > 0 && (
-        <WorkflowsRunsToolbar
-          query={query}
-          onQueryChange={onQueryChange}
-          filters={filters}
-          onFiltersChange={onFiltersChange}
-          statuses={statuses}
-          kinds={kinds ?? capabilityKinds}
-          starters={starters}
-        />
-      )}
-      {loading && rows.length === 0 ? (
-        <p className="py-8 text-center text-s fg-secondary" role="status">
-          Loading runs…
-        </p>
-      ) : visible.length === 0 ? (
-        <>
-          {emptyState !== undefined &&
-          !workflowRunFiltersActive(emptyQuery, emptyFilters) ? (
-            emptyState
-          ) : (
-            <WorkflowsRunsEmptyState
-              query={emptyQuery}
-              filters={emptyFilters}
-              onClearFilters={clearFilters}
-              onRunWorkflow={onRunWorkflow}
-              onNewWorkflow={onNewWorkflow}
-              onBrowseMarketplace={onBrowseMarketplace}
-              libraryPreview={libraryPreview}
-            />
-          )}
-          {/* No loaded run matches, but an older one still might, also
-              when the rows are narrowed to one workflow. */}
-          {hasMore && (
-            <div className="flex justify-center">
-              <Button
-                variant="secondary"
-                size="compact"
-                disabled={loadingMore}
-                aria-busy={loadingMore}
-                data-testid="workflows-runs-load-more"
-                onClick={onLoadMore}
-              >
-                Load more
-              </Button>
-            </div>
-          )}
-        </>
-      ) : (
-        <WorkflowsRunsTable
-          rows={visible}
-          now={now}
-          onOpen={onOpen}
-          onAction={onAction}
-          busyKeys={busyKeys}
-          hasMore={hasMore}
-          loadingMore={loadingMore}
-          onLoadMore={onLoadMore}
-          highlightKey={highlightKey}
-        />
-      )}
-    </>
+    <WorkflowsRunsList
+      {...props}
+      kinds={kinds ?? capabilityKinds}
+      starters={starters}
+    />
   );
 }

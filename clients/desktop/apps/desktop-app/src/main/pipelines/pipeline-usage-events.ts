@@ -6,11 +6,11 @@ import type {
   ExecutionState,
   JobResult,
   StepResult,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import {
   getExecutionRunDurationMs,
   logicalJobIdForPhysicalJob,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { emitPipelineRunCompletion } from '../lib/pipeline-run-completion-emitter';
 import { resolveAction } from './action-resolver';

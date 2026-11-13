@@ -1,3 +1,5 @@
+import { createChatHistoryActionFamily } from '@canopy/agent-actions/families/chat-history';
+import { desktopChatHistoryPort } from '../agent-actions/desktop-chat-history-port';
 import {
   isTranscriptReadActionType,
   dispatchAdvisorTranscriptRead,
@@ -32,8 +34,12 @@ import { isAdvisorDelegationControlAction } from './advisor-delegation-control';
 import { isAdvisorPipelineAction } from './advisor-pipeline-actions';
 import { isAdvisorCatalogAction } from './advisor-catalog-actions';
 import { isAdvisorSharingAction } from './advisor-sharing-actions';
+import { isAdvisorAutomationSharingAction } from './advisor-automation-sharing-actions';
+import { isAdvisorCollectionSharingAction } from './advisor-collection-sharing-actions';
 import { isAdvisorFileTreeAction } from './advisor-file-tree-actions';
+import { isAdvisorMemoryAction } from './advisor-memory-actions';
 import { isAdvisorRecordsAction } from './advisor-records-actions';
+import { isAdvisorSettingsAction } from './advisor-settings-actions';
 import { isAdvisorCredentialAction } from './advisor-credential-actions';
 import type { AppAdvisorCodeGraphAction } from '@canopy/desktop-shared/types/app-advisor-code-graph';
 import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
@@ -697,6 +703,53 @@ export function createAppAdvisorToolRuntime(
       requestId = randomUUID(),
       signal?: AbortSignal,
     ): Promise<AppAdvisorActionResponse> => {
+      if (
+        action.type === 'chat.history.search' ||
+        action.type === 'chat.history.excerpt'
+      ) {
+        // Its trusted root scope is the Orchestrator chat, outside a project.
+        const family = createChatHistoryActionFamily(desktopChatHistoryPort);
+        const parsed = family.parse(action);
+        if (!parsed?.ok)
+          return {
+            requestId,
+            ok: false,
+            error: {
+              code: 'invalid_payload',
+              message: 'Check the chat history action fields.',
+            },
+          };
+        const result = await parsed.dispatch({
+          host: runtime,
+          toolUseId: requestId,
+          signal,
+        });
+        if ('text' in result)
+          return {
+            requestId,
+            ok: false,
+            error: {
+              code: 'execution_failed',
+              message: 'Chat history retrieval failed.',
+            },
+          };
+        return {
+          requestId,
+          ok: result.ok,
+          result: result.result,
+          ...(result.error
+            ? {
+                error: {
+                  code:
+                    result.error.code === 'timeout'
+                      ? 'timeout'
+                      : 'execution_failed',
+                  message: result.error.message,
+                },
+              }
+            : {}),
+        };
+      }
       if (isTranscriptReadActionType(action)) {
         return dispatchAdvisorTranscriptRead(
           action,
@@ -796,6 +849,49 @@ export function createAppAdvisorToolRuntime(
           requestId,
         };
       }
+      if (isAdvisorAutomationSharingAction(action)) {
+        // CAN-6003 part B: automation sharing on the window's owners, with
+        // its readiness checks.
+        const [
+          { dispatchAdvisorAutomationSharingAction },
+          { mainAdvisorAutomationSharingHost },
+        ] = await Promise.all([
+          import('./advisor-automation-sharing-actions'),
+          import('./advisor-automation-sharing-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorAutomationSharingAction(
+            action,
+            mainAdvisorAutomationSharingHost(),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorCollectionSharingAction(action)) {
+        // CAN-6003 part B: collection sharing on the window's owners; a
+        // person confirms every import, which installs skills and plugins.
+        const [
+          { dispatchAdvisorCollectionSharingAction },
+          { mainAdvisorCollectionSharingHost },
+        ] = await Promise.all([
+          import('./advisor-collection-sharing-actions'),
+          import('./advisor-collection-sharing-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorCollectionSharingAction(
+            action,
+            mainAdvisorCollectionSharingHost({
+              chatId: destination.chatId,
+              requestUserAnswers: (questions) =>
+                runtime.requestUserAnswers(
+                  questions,
+                  signal ? { signal } : undefined,
+                ),
+            }),
+          )),
+          requestId,
+        };
+      }
       if (isAdvisorSharingAction(action)) {
         // CAN-6003: sharing on the window's hosted owners; a public agent
         // link only after a person confirms.
@@ -884,6 +980,32 @@ export function createAppAdvisorToolRuntime(
           requestId,
         };
       }
+      if (isAdvisorMemoryAction(action)) {
+        // CAN-6005: the core.memory maintenance operations as the advisor
+        // chat; a rebuild, restore or import only after a person confirms.
+        const [
+          { dispatchAdvisorMemoryAction },
+          { mainAdvisorMemoryActionHost },
+        ] = await Promise.all([
+          import('./advisor-memory-actions'),
+          import('./advisor-memory-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorMemoryAction(
+            action,
+            mainAdvisorMemoryActionHost({
+              chatId: destination.chatId,
+              callKey: `${destination.chatId}:${requestId}`,
+              requestUserAnswers: (questions) =>
+                runtime.requestUserAnswers(
+                  questions,
+                  signal ? { signal } : undefined,
+                ),
+            }),
+          )),
+          requestId,
+        };
+      }
       if (isAdvisorRecordsAction(action)) {
         // CAN-6007: the Feed as the advisor chat, every watcher read-only,
         // and the archive through core.archive.*; another chat's watcher and
@@ -900,6 +1022,33 @@ export function createAppAdvisorToolRuntime(
             action,
             mainAdvisorRecordsActionHost({
               destination,
+              callKey: `${destination.chatId}:${requestId}`,
+              requestUserAnswers: (questions) =>
+                runtime.requestUserAnswers(
+                  questions,
+                  signal ? { signal } : undefined,
+                ),
+            }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorSettingsAction(action)) {
+        // CAN-6004: settings through core.config.*, as the advisor chat; a
+        // person confirms before delegation widens, the proxy's routing
+        // changes, or recording stops or archived chats are deleted sooner.
+        const [
+          { dispatchAdvisorSettingsAction },
+          { mainAdvisorSettingsActionHost },
+        ] = await Promise.all([
+          import('./advisor-settings-actions'),
+          import('./advisor-settings-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorSettingsAction(
+            action,
+            mainAdvisorSettingsActionHost({
+              chatId: destination.chatId,
               callKey: `${destination.chatId}:${requestId}`,
               requestUserAnswers: (questions) =>
                 runtime.requestUserAnswers(

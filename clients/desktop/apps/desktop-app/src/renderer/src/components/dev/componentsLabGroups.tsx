@@ -1,7 +1,6 @@
 import type { JSX } from 'react';
 import { ConfirmDialogSpecimen } from './componentsLabFeedback';
 import { DialogSpecimen } from './componentsLabLayout';
-import { FieldsPlayground, FieldsStatesGrid } from './FieldsLabPage';
 import {
   BadgeSection,
   CountSection,
@@ -26,15 +25,6 @@ export function DialogsSpecimen(): JSX.Element {
     <div className="flex flex-col gap-8">
       <DialogSpecimen />
       <ConfirmDialogSpecimen />
-    </div>
-  );
-}
-
-export function FieldsSpecimen(): JSX.Element {
-  return (
-    <div className="flex flex-col gap-8">
-      <FieldsStatesGrid />
-      <FieldsPlayground />
     </div>
   );
 }

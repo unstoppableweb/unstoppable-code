@@ -1,4 +1,8 @@
 import {
+  getRendererModelFactsVersion,
+  subscribeRendererModelFacts,
+} from '@/stores/modelPolicyRuntime';
+import {
   PipelineSourceLabel,
   pipelineOriginLabel,
 } from '@canopy/ui-shared/components/EntrySourceLabel';
@@ -7,6 +11,7 @@ import {
   Stack,
   ErrorBanner,
   ErrorState,
+  FieldError,
   Notice,
   Surface,
 } from '@canopy/ui-shared/components';
@@ -18,6 +23,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
@@ -221,6 +227,12 @@ export interface PipelineTriggerModalProps {
    * pipeline declares; the user can still change everything before running.
    */
   initialInputs?: Record<string, string>;
+  /**
+   * Opens on `initialPipelineId`'s run settings once it loads, as the Run of
+   * that workflow's own editor does (CAN-6406). It never runs by itself:
+   * the settings step always waits for Run.
+   */
+  startOnSettings?: boolean;
   onClose: () => void;
   onRun: (
     pipelineId: string,
@@ -267,6 +279,11 @@ export interface PipelineRunContextReview {
   blockedReason?: string;
   /** The run targets the current task, so repository and watcher controls apply. */
   targeted: boolean;
+  /**
+   * The run executes off this computer (Run on: Cloud, CAN-6187), so this
+   * computer's model settings, such as Fast mode, don't apply to it.
+   */
+  executesElsewhere?: boolean;
 }
 
 type LoadState =
@@ -569,6 +586,7 @@ export function PipelineTriggerModal({
   reloadToken = 0,
   initialPipelineId,
   initialInputs,
+  startOnSettings = false,
   onClose,
   onRun,
   isRunning = false,
@@ -996,19 +1014,21 @@ export function PipelineTriggerModal({
     (selectedPipeline !== null &&
       aliasDraftSeededFor === selectedPipeline.info.id);
   const aliasReadyToRun = !hasAliases || aliasDraftSeeded;
-  const aliasesBlocked = useMemo(() => {
-    if (!hasAliases) return false;
-    return areAliasPreferencesBlocked(pipelineAliases, aliasDraft, {
+  useSyncExternalStore(
+    subscribeRendererModelFacts,
+    getRendererModelFactsVersion,
+    getRendererModelFactsVersion,
+  );
+  const aliasesBlocked =
+    hasAliases &&
+    areAliasPreferencesBlocked(pipelineAliases, aliasDraft, {
       pluginCollectionIds: new Set(
         (selectedPipeline?.content.plugin_collections ?? []).map((c) => c.id),
       ),
-      availableAgentIds: new Set(
-        agents
-          .filter((agent) => getAgentModelAvailability(agent.id).available)
-          .map((agent) => agent.id),
-      ),
+      isAgentRouteAvailable: (route: string): boolean =>
+        getAgentModelAvailability(route).available,
+      availableAgentIds: new Set(agents.map((agent) => agent.id)),
     });
-  }, [hasAliases, pipelineAliases, aliasDraft, selectedPipeline, agents]);
 
   const viewerId = cloudReady
     ? (sharedCloudAccount?.account?.id ?? null)
@@ -1305,6 +1325,10 @@ export function PipelineTriggerModal({
     ? runContext?.blockedReason
     : undefined;
   const showTargetControls = runContext?.targeted ?? true;
+  // A run off this computer (Run on: Cloud) takes neither this computer's
+  // model settings nor its package setup; the cloud checks its own.
+  const runsOnThisComputer = runContext?.executesElsewhere !== true;
+  const localSetupBlocked = packageSetupBlocked && runsOnThisComputer;
   const hasConfigurationStep =
     hasInputs ||
     hasCollections ||
@@ -1842,6 +1866,29 @@ export function PipelineTriggerModal({
     setStep('configure');
   };
 
+  const openedOnSettings = useRef(false);
+  useEffect(() => {
+    if (
+      !startOnSettings ||
+      openedOnSettings.current ||
+      selectedPipeline?.info.id !== initialPipelineId
+    )
+      return;
+    openedOnSettings.current = true;
+    if (hasInputs) {
+      setInputValues(seedInitialInputValues(selectedInputDefs, initialInputs));
+      setInputErrors({});
+    }
+    setStep('configure');
+  }, [
+    hasInputs,
+    initialInputs,
+    initialPipelineId,
+    selectedInputDefs,
+    selectedPipeline,
+    startOnSettings,
+  ]);
+
   const handleBack = (): void => {
     if (isRunning) return;
     setStep('select');
@@ -1898,6 +1945,29 @@ export function PipelineTriggerModal({
         ? `Configure inputs for ${selectedPipeline.info.name}`
         : '';
 
+  // The working directory shows with the workflow list and with a
+  // workflow's run settings, which a run can open on (CAN-6406).
+  const repoSelector =
+    showRepoDropdown && showTargetControls && repoChoices ? (
+      <div data-testid="pipeline-trigger-modal-repo-select">
+        <DialogFormField
+          label="Working directory"
+          htmlFor="pipeline-trigger-modal-repo"
+        >
+          <SelectField
+            id="pipeline-trigger-modal-repo"
+            value={selectedRepoId ?? ''}
+            onChange={(e) => setSelectedRepoId(e.target.value)}
+            options={repoChoices.map((choice) => ({
+              value: choice.repoId,
+              label: choice.repoName,
+            }))}
+            disabled={isRunning}
+          />
+        </DialogFormField>
+      </div>
+    ) : null;
+
   return (
     <DialogModal
       inset="flush"
@@ -1941,25 +2011,7 @@ export function PipelineTriggerModal({
                 loadState.curated.length > 0 ||
                 cloudReady) && (
                 <Stack gap="item">
-                  {showRepoDropdown && showTargetControls && repoChoices && (
-                    <div data-testid="pipeline-trigger-modal-repo-select">
-                      <DialogFormField
-                        label="Working directory"
-                        htmlFor="pipeline-trigger-modal-repo"
-                      >
-                        <SelectField
-                          id="pipeline-trigger-modal-repo"
-                          value={selectedRepoId ?? ''}
-                          onChange={(e) => setSelectedRepoId(e.target.value)}
-                          options={repoChoices.map((choice) => ({
-                            value: choice.repoId,
-                            label: choice.repoName,
-                          }))}
-                          disabled={isRunning}
-                        />
-                      </DialogFormField>
-                    </div>
-                  )}
+                  {repoSelector}
 
                   <Stack gap="item">
                     <Stack gap="inline">
@@ -2125,13 +2177,15 @@ export function PipelineTriggerModal({
 
         {step === 'configure' && selectedPipeline && (
           <Stack gap="group">
-            <CapabilityPackageReadiness
-              readiness={packageReadiness}
-              definitionOnly={
-                selectedPipeline.info.source === 'shared' &&
-                selectedPipeline.info.distributionMode !== 'package'
-              }
-            />
+            {runsOnThisComputer && (
+              <CapabilityPackageReadiness
+                readiness={packageReadiness}
+                definitionOnly={
+                  selectedPipeline.info.source === 'shared' &&
+                  selectedPipeline.info.distributionMode !== 'package'
+                }
+              />
+            )}
             <Button
               variant="ghost"
               size="compact"
@@ -2142,6 +2196,8 @@ export function PipelineTriggerModal({
               <AppCatalogChevronLeftMediumIcon size="sm" />
               Back to workflow list
             </Button>
+
+            {repoSelector}
 
             <Surface variant="group" className="">
               <div className="flex items-center gap-3 px-3 py-2.5">
@@ -2251,15 +2307,17 @@ export function PipelineTriggerModal({
                 )}
               </Stack>
             )}
-            <Tooltip label="Fast mode consumes 2x usage." className="w-full">
-              <ChoiceField
-                checked={fastMode}
-                onChange={(event) => setFastMode(event.target.checked)}
-                disabled={isRunning}
-                label="Fast mode"
-                description="Runs supported model providers in fast mode."
-              />
-            </Tooltip>
+            {runsOnThisComputer && (
+              <Tooltip label="Fast mode consumes 2x usage." className="w-full">
+                <ChoiceField
+                  checked={fastMode}
+                  onChange={(event) => setFastMode(event.target.checked)}
+                  disabled={isRunning}
+                  label="Fast mode"
+                  description="Runs supported model providers in fast mode."
+                />
+              </Tooltip>
+            )}
           </Stack>
         )}
       </div>
@@ -2292,16 +2350,19 @@ export function PipelineTriggerModal({
         !hasUnresolvedRequiredDefaults &&
         collectionValidation?.messages?.length ? (
           <ul className="flex flex-col text-xs gap-0.5">
-            {collectionValidation.messages.map((m, idx) => (
-              <li
-                key={`validation-${idx}`}
-                className={
-                  m.severity === 'error' ? 'fg-destructive' : 'fg-warning'
-                }
-              >
-                {m.text}
-              </li>
-            ))}
+            {collectionValidation.messages.map((m, idx) =>
+              m.severity === 'error' ? (
+                <li key={`validation-${idx}`}>
+                  <FieldError id={`pipeline-trigger-validation-${idx}`}>
+                    {m.text}
+                  </FieldError>
+                </li>
+              ) : (
+                <li key={`validation-${idx}`} className="fg-warning">
+                  {m.text}
+                </li>
+              ),
+            )}
           </ul>
         ) : null}
         {step === 'configure' && hasAliases && aliasesBlocked && (
@@ -2312,7 +2373,7 @@ export function PipelineTriggerModal({
             Configure every required model alias before running this workflow.
           </Notice>
         )}
-        {packageSetupBlocked && (
+        {localSetupBlocked && (
           <Notice
             intent="attention"
             data-testid="pipeline-trigger-modal-setup-blocking"
@@ -2428,7 +2489,7 @@ export function PipelineTriggerModal({
                   !aliasReadyToRun ||
                   hasUnresolvedRequiredDefaults ||
                   aliasesBlocked ||
-                  packageSetupBlocked ||
+                  localSetupBlocked ||
                   runContextBlocked
                 }
                 onClick={handleSubmit}

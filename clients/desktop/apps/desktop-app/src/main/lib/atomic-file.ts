@@ -6,4 +6,4 @@ export {
   type AdmittedWriterTarget,
   type AtomicFileStorage,
   type AtomicFileWriteOptions,
-} from '@canopy/desktop-shared/node/lib/atomic-file';
+} from '@canopy/execution-engine/node/lib/atomic-file';

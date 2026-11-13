@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { markForeignPipelineResultsSeen } from '../services/foreign-activity-sources';
 import {
   normalizeWorkspaceOwner,
+  normalizeWorkspaceDetachedOwner,
   normalizeWorkspaceOwnershipTransfer,
 } from '@canopy/desktop-shared/lib/workspace-owner';
 import type {
@@ -27,6 +28,7 @@ import type {
   WorkspaceConfigFile,
   WorkspaceOwnerBinding,
   WorkspaceOwnershipTransfer,
+  WorkspaceDetachedOwner,
   WorkspaceRepoData,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
@@ -110,6 +112,7 @@ import { runW5PreEffectUnit } from './w5-pre-effect-retry';
 import { addOrganizationSourceHookBindings } from './source-hook-context-bindings';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
+import { notifyWorkspaceMemoryBindingChanged } from './workspace-memory-binding-events';
 import {
   inMcpRefRewritePhase,
   recordMcpRefRewriteFailure,
@@ -832,6 +835,7 @@ async function normalizeWorkspaceConfig(
               ? undefined
               : true,
         owner: normalizeWorkspaceOwner(parsed.owner),
+        detachedOwner: normalizeWorkspaceDetachedOwner(parsed.detachedOwner),
         ownershipTransfer: normalizeWorkspaceOwnershipTransfer(
           parsed.ownershipTransfer,
         ),
@@ -1051,6 +1055,7 @@ export async function ensureOrganizationSourceHookBindings(args: {
 }
 
 export interface WorkspaceOwnership {
+  detachedOwner?: WorkspaceDetachedOwner;
   owner?: WorkspaceOwnerBinding;
   ownershipTransfer?: WorkspaceOwnershipTransfer;
 }
@@ -1078,6 +1083,7 @@ export async function readWorkspaceOwnership(
     type: detail.config.type,
     owner: detail.config.owner,
     ownershipTransfer: detail.config.ownershipTransfer,
+    detachedOwner: detail.config.detachedOwner,
   };
 }
 
@@ -1113,6 +1119,7 @@ export async function updateWorkspaceOwnership(
       type: detail.config.type,
       owner: detail.config.owner,
       ownershipTransfer: detail.config.ownershipTransfer,
+      detachedOwner: detail.config.detachedOwner,
     });
     if (next === null) {
       outcome.value = 'declined';
@@ -1124,6 +1131,9 @@ export async function updateWorkspaceOwnership(
         ...detail.config,
         owner: next.owner,
         ownershipTransfer: next.ownershipTransfer,
+        ...(Object.prototype.hasOwnProperty.call(next, 'detachedOwner')
+          ? { detachedOwner: next.detachedOwner }
+          : {}),
       },
       'replace',
     );
@@ -1205,6 +1215,8 @@ export async function updateWorkspaceCloudBinding(
     );
     outcome.value = 'written';
   });
+  if (outcome.value === 'written')
+    notifyWorkspaceMemoryBindingChanged(workspaceId);
   return outcome.value;
 }
 
@@ -1384,6 +1396,12 @@ async function writeAdmittedWorkspaceConfig(
     ownership === 'preserve' && existing?.authority === 'ok'
       ? existing.config
       : config;
+  const detachedOwner =
+    previous.authority === 'ok' &&
+    (ownership === 'preserve' ||
+      !Object.prototype.hasOwnProperty.call(config, 'detachedOwner'))
+      ? previous.config.detachedOwner
+      : config.detachedOwner;
   const payload: WorkspaceConfigFile = {
     privateMemory: config.privateMemory ?? previous.config.privateMemory,
     privateMemoryManagedBy:
@@ -1433,6 +1451,7 @@ async function writeAdmittedWorkspaceConfig(
     suppressedRepoIds: normalizeSuppressedRepoIds(config.suppressedRepoIds),
     alwaysShow: config.alwaysShow,
     owner: normalizeWorkspaceOwner(ownershipSource.owner),
+    detachedOwner: normalizeWorkspaceDetachedOwner(detachedOwner),
     ownershipTransfer: normalizeWorkspaceOwnershipTransfer(
       ownershipSource.ownershipTransfer,
     ),

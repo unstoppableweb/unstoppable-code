@@ -18,8 +18,8 @@ import {
   getEnhancedEnv,
 } from '../pipelines/config-paths';
 import { parseGetAccountResponsePayload } from '../codex/app-server-client';
-import type { GetAccountResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountResponse';
-import { getObservedCanonicalCodexHome } from '@canopy/desktop-shared/node/codex-runtime';
+import type { GetAccountResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/GetAccountResponse';
+import { getObservedCanonicalCodexHome } from '@canopy/execution-engine/node/codex-runtime';
 import { getCodexRuntimeService } from '../codex/runtime-service';
 import {
   fetchMockControlPlaneRecord,

@@ -32,7 +32,11 @@ import type {
   RunConsolidationOptions,
   RunConsolidationResult,
 } from './consolidation-task';
-import { recordMemoryEdit, withMemoryWriteLock } from './edit-coordination';
+import {
+  LocalMemoryPreconditionError,
+  recordMemoryEdit,
+  withMemoryWriteLock,
+} from './edit-coordination';
 import {
   resolveLocalMemoryRunModel,
   type LocalMemoryHelperModel,
@@ -625,6 +629,7 @@ async function localMemoryStillEnabled(): Promise<boolean> {
  */
 export async function runManualLocalMemoryRebuild(
   request: LocalMemoryScopeRequest,
+  precondition?: () => Promise<void>,
 ): Promise<LocalMemoryRebuildResult> {
   const scopeDir = scopeDirectory(request);
   if (await isSyncedMemoryReplica(scopeDir)) {
@@ -651,6 +656,7 @@ export async function runManualLocalMemoryRebuild(
         };
     try {
       prepared = await withMemoryWriteLock(scopeDir, async () => {
+        await precondition?.();
         await recordMemoryEdit(scopeDir);
         const plan = await planRebuild(request, scopeDir);
         if (!plan.ok) return plan;
@@ -670,6 +676,7 @@ export async function runManualLocalMemoryRebuild(
             };
       });
     } catch (error) {
+      if (error instanceof LocalMemoryPreconditionError) throw error;
       return rebuildResult('failed', failureReason(error));
     }
     if (!prepared.ok) {
@@ -744,6 +751,7 @@ export async function runManualLocalMemoryRebuild(
 export async function restoreManualLocalMemorySnapshot(
   request: LocalMemoryScopeRequest,
   snapshotId: string,
+  precondition?: () => Promise<void>,
 ): Promise<LocalMemorySnapshotRestoreResponse> {
   if (!isLocalMemorySnapshotId(snapshotId)) {
     throw new Error('Choose a memory snapshot.');
@@ -778,6 +786,7 @@ export async function restoreManualLocalMemorySnapshot(
         scopeDir,
         snapshotId,
         () => assertReplicaStillSyncing(target),
+        precondition,
       ));
     } catch (error) {
       if (error instanceof LocalMemoryReplicaUnavailableError) return cancelled;

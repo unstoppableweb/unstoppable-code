@@ -1,6 +1,7 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
-import { Tooltip } from '@canopy/ui-shared/components';
+import { RunningGlyph, Tooltip } from '@canopy/ui-shared/components';
+import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib/operational-status-colors';
 import { AppAdvisorIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 
@@ -9,9 +10,14 @@ import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
  * in this window's bottom-right corner, where the panel's corner was (16px
  * from the edges), on the panel's surface and shadow. Clicking it opens the
  * panel again as it was. The main process only reports `minimized` with
- * early access, for a floating panel.
+ * early access, for a floating panel. While the Orchestrator works, its
+ * orbit turns in the running ink, as on its sidebar row.
  */
-export function AppAdvisorMinimizedBubble(): JSX.Element | null {
+export function AppAdvisorMinimizedBubble({
+  running,
+}: {
+  readonly running: boolean;
+}): JSX.Element | null {
   const minimized = useAppAdvisorStore((s) => s.minimized && !s.open);
   const openDialog = useAppAdvisorStore((s) => s.openDialog);
   if (!minimized) return null;
@@ -26,12 +32,22 @@ export function AppAdvisorMinimizedBubble(): JSX.Element | null {
       <Tooltip label={`Open ${ORCHESTRATOR_LABEL}`} placement="left">
         <button
           type="button"
-          aria-label={`Open ${ORCHESTRATOR_LABEL}`}
+          aria-label={
+            running
+              ? `Open ${ORCHESTRATOR_LABEL}: thinking`
+              : `Open ${ORCHESTRATOR_LABEL}`
+          }
           data-testid="app-advisor-minimized-bubble"
           onClick={openDialog}
-          className="focus-ring inline-flex size-10 items-center justify-center rounded-full bg-tertiary fg-secondary shadow-xl transition-colors hover:fg-primary"
+          className={`focus-ring inline-flex size-10 items-center justify-center rounded-full bg-tertiary shadow-xl transition-colors ${
+            running
+              ? OPERATIONAL_STATUS_COLORS.active.foreground
+              : 'fg-secondary hover:fg-primary'
+          }`}
         >
-          <AppAdvisorIcon size={20} aria-hidden="true" />
+          <RunningGlyph running={running}>
+            <AppAdvisorIcon size={20} aria-hidden="true" />
+          </RunningGlyph>
         </button>
       </Tooltip>
     </div>

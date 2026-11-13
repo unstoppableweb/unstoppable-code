@@ -19,14 +19,22 @@ import { useScrollbarBehavior } from '../lib/useAlwaysVisibleScrollbars';
  * the surface's grid cell, clips horizontally, contains overscroll, and
  * rounds to the surface's inner radius. `pickerList` is a picker's option
  * list, which keeps the containment and radius and leaves the rest of the
- * anatomy to the picker.
+ * anatomy to the picker. `drawer` is a drawer card's row list, 4px inside
+ * the card: it rounds to the drawer rows' corner (`--radius-drawer-row`),
+ * so a row cut by its edge while scrolling keeps a row's corner, nested in
+ * the card's, instead of a square one.
  */
-export type OverlayScrollAreaViewport = 'plain' | 'menu' | 'pickerList';
+export type OverlayScrollAreaViewport =
+  | 'plain'
+  | 'menu'
+  | 'pickerList'
+  | 'drawer';
 
 const VIEWPORT_CLASS_NAMES: Record<OverlayScrollAreaViewport, string> = {
   plain: '',
   menu: 'canopy-floating-menu-scroll-viewport',
   pickerList: 'canopy-picker-menu-list',
+  drawer: 'overflow-x-hidden overscroll-contain rounded-drawer-row',
 };
 
 /**
@@ -39,6 +47,7 @@ const CONTENT_INSET_CLASS_NAMES: Record<OverlayScrollAreaViewport, string> = {
   plain: '',
   menu: 'canopy-floating-menu-scroll-content',
   pickerList: 'canopy-picker-menu-list-content',
+  drawer: '',
 };
 
 export interface OverlayScrollAreaProps {

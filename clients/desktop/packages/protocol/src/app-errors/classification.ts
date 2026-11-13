@@ -89,6 +89,10 @@ const classificationCodes: Record<AppErrorCode, true> = {
   'external.disk_full': true,
   'external.runtime_unreachable': true,
   'external.sync_paused': true,
+  'external.worktree_recovery_required': true,
+  'external.worktree_recovery_retryable': true,
+  'external.worktree_recovery_cleanup': true,
+  'external.worktree_recovery_unreadable': true,
 };
 
 function usableClassification(value: unknown): value is ErrorClassification {

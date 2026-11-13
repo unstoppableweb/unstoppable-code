@@ -28,8 +28,8 @@ export function createWorkerCodeGraphReadAdapter(
       (await loaded()).exportSnapshot(params, signal),
     importSnapshot: async (params, signal) =>
       (await loaded()).importSnapshot(params, signal),
-    validateLanguages: async (scope) =>
-      (await loaded()).validateLanguages(scope),
+    validateLanguages: async (params, signal) =>
+      (await loaded()).validateLanguages(params, signal),
   });
   return {
     queries: {

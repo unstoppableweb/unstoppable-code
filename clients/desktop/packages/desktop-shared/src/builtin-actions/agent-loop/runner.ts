@@ -22,7 +22,7 @@ import {
   readPipelineLedgerTools,
   redactNormalizedText,
   resolvePrompt,
-} from '../agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 
 type ContextStrategy = 'transcript' | 'summary';
 type ExitReason = 'check_passed' | 'max_iterations' | 'failure';

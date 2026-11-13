@@ -22,6 +22,7 @@ import {
   REMOTE_PROTOCOL_MISMATCH_CODE,
   REMOTE_EVENTS,
   REMOTE_METHODS,
+  REMOTE_TRANSPORT_RESUME_VERSION,
   SessionEndedParamsSchema,
   UnknownRemoteMethodError,
   UploadPutResultSchema,
@@ -39,7 +40,10 @@ import {
   type RemoteSessionEndReason,
 } from '../remote-protocol';
 import { RpcClosedError, RpcPeer, RpcRemoteError } from '../transport/rpc-peer';
-import type { SecureSession } from '../transport/session-manager';
+import type {
+  SecureSession,
+  SessionCloseReason,
+} from '../transport/session-manager';
 
 export interface HostConnectionOptions {
   /** This computer's version; the host must speak the same protocol. */
@@ -54,7 +58,10 @@ export interface HostConnectionOptions {
     params: AppAdvisorWindowParams,
   ) => Promise<AppAdvisorWindowStateParams>;
   onStatusChange: () => void;
-  /** Called after a dropped session is re-established. */
+  /**
+   * Called after a dropped session is replaced by a new handshake. A session
+   * that resumes after a relay drop lost nothing, so this is not called.
+   */
   onReconnected: () => void;
   /**
    * Opens an account proxy sign-in page the host asked for and listens for
@@ -66,8 +73,11 @@ export interface HostConnectionOptions {
   ) => Promise<void>;
   /** The host stopped waiting for that sign-in. */
   onAccountProxySignInEnded?: (state: string) => void;
-  /** The open session closed, or the connection was released. */
-  onSessionEnded?: () => void;
+  /**
+   * The open session closed, with its close reason, or the connection was
+   * released (`released`).
+   */
+  onSessionEnded?: (reason: SessionCloseReason | 'released') => void;
   minRetryDelayMs?: number;
   maxRetryDelayMs?: number;
 }
@@ -174,7 +184,7 @@ export class RemoteHostConnection {
     this.pendingRpc?.close('closed');
     this.pendingRpc = null;
     this.hadSession = false;
-    this.options.onSessionEnded?.();
+    this.options.onSessionEnded?.('released');
     this.setStatus('idle', null);
   }
 
@@ -382,11 +392,20 @@ export class RemoteHostConnection {
         }
       },
     });
-    rpc.onClose(() => this.handleDropped(rpc));
+    rpc.onClose((reason) => this.handleDropped(rpc, reason));
+    // A resumable session rides out a relay drop: show it as connecting
+    // meanwhile, and keep the window, since nothing was lost.
+    session.onStateChange((state) => {
+      if (this.rpc !== rpc) return;
+      this.setStatus(state === 'active' ? 'connected' : 'connecting', null);
+    });
     this.pendingRpc = rpc;
     let hello: HelloResult;
     try {
-      const params: HelloParams = { version: this.options.version };
+      const params: HelloParams = {
+        version: this.options.version,
+        transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
+      };
       hello = HelloResultSchema.parse(
         await rpc
           .request(REMOTE_METHODS.hello, params, { timeoutMs: 15_000 })
@@ -418,6 +437,10 @@ export class RemoteHostConnection {
         );
         throw new Error(this.endedMessage);
       }
+      // Hosts released before session resume answer without it.
+      session.setResumeNegotiated(
+        (hello.transport?.resume ?? 0) >= REMOTE_TRANSPORT_RESUME_VERSION,
+      );
       // It may have closed after answering, before this resumed; its close
       // was ignored because it was not published yet, so retry from here.
       if (rpc.isClosed) {
@@ -435,15 +458,18 @@ export class RemoteHostConnection {
     this.attempt = 0;
     const reconnected = this.hadSession;
     this.hadSession = true;
-    this.setStatus('connected', null);
+    this.setStatus(
+      session.state === 'active' ? 'connected' : 'connecting',
+      null,
+    );
     if (reconnected) this.options.onReconnected();
     return rpc;
   }
 
-  private handleDropped(rpc: RpcPeer): void {
+  private handleDropped(rpc: RpcPeer, reason: SessionCloseReason): void {
     if (this.rpc !== rpc) return;
     this.rpc = null;
-    this.options.onSessionEnded?.();
+    this.options.onSessionEnded?.(reason);
     if (!this.wanted) {
       this.setStatus('idle', null);
       return;

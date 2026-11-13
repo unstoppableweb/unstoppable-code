@@ -8,7 +8,10 @@ import { lstat, realpath } from 'node:fs/promises';
 import type { ApprovalMode } from '@canopy/desktop-shared/types';
 import type { ApprovalSessionHandle } from '../../approvals/approval-service';
 import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
-import { approvalCheckForClaudeTool } from '../claude-approval-adapter';
+import {
+  approvalCheckForClaudeTool,
+  isContainedGlobPattern,
+} from '../claude-approval-adapter';
 import { suggestedCommandPattern } from '@canopy/desktop-shared/lib/approval-engine';
 
 export const DELEGATION_NATIVE_CLAUDE_TOOLS = [
@@ -757,16 +760,7 @@ export class DelegationNativePolicy {
         : undefined;
     if (commandApproval?.failClosedReason) return false;
     const write = name === 'Edit' || name === 'Write';
-    if (name === 'Glob') {
-      if (
-        typeof data.pattern !== 'string' ||
-        path.isAbsolute(data.pattern) ||
-        path.win32.isAbsolute(data.pattern) ||
-        data.pattern.startsWith('~') ||
-        data.pattern.split(/[\\/]/).includes('..')
-      )
-        return false;
-    }
+    if (name === 'Glob' && !isContainedGlobPattern(data.pattern)) return false;
     const file =
       data.file_path ?? data.path ?? (write ? undefined : this.options.cwd);
     if (

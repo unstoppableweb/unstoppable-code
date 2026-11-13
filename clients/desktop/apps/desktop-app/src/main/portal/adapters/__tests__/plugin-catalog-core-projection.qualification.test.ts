@@ -13,6 +13,7 @@ import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 import {
   CORE_CATALOG_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_QUERY_DEFINITIONS,
+  CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
   emptyCatalogSelectionRefs,
@@ -275,6 +276,7 @@ function compose() {
       instructions: {
         ...CORE_CATALOG_INSTRUCTION_DEFINITIONS,
         ...CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
+        ...CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
       },
       streams: {},
     },

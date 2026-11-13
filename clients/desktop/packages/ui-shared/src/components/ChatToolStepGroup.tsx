@@ -10,7 +10,11 @@ import {
 import { ChevronDownIcon, ChevronRightIcon } from '../icons';
 import { ThinkingSpinner } from './ThinkingSpinner';
 import { StepTenseProvider, useCleanChatLook } from './chat-look';
-import { STEP_GROUP_BODY_CLASS, StepRow } from './chat/StepRow';
+import {
+  STEP_GROUP_BODY_CLASS,
+  STEP_GROUP_NESTED_BODY_CLASS,
+  StepRow,
+} from './chat/StepRow';
 import type { ChatToolStepLive } from './chat/live-tool-activity';
 import { TOOL_APPROVAL_WAITING_LABEL } from './chat/tool-approval-wait';
 import { TurnOutcomeWords } from './chat/TurnOutcomeWords';
@@ -180,7 +184,10 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
           />
         </div>
         {isOpen && expandable ? (
-          <div className={STEP_GROUP_BODY_CLASS} data-chat-reveal-body="">
+          <div
+            className={STEP_GROUP_NESTED_BODY_CLASS}
+            data-chat-reveal-body=""
+          >
             {hiddenSteps ?? children}
           </div>
         ) : null}
@@ -188,7 +195,7 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
           // "Show only recent steps": the newest steps stay in view under
           // the closed line while the run is live.
           <div
-            className={STEP_GROUP_BODY_CLASS}
+            className={STEP_GROUP_NESTED_BODY_CLASS}
             data-testid="chat-tool-step-live"
           >
             {liveSteps}

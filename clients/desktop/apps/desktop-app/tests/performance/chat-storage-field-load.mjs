@@ -273,7 +273,7 @@ async function loadRuntime() {
       '../../../../packages/desktop-shared/src/node/chat-storage-activity.ts',
     )),
     ...(await load(
-      '../../../../packages/desktop-shared/src/node/codex-runtime/owner-admission-lanes.ts',
+      '../../../../packages/execution-engine/src/node/codex-runtime/owner-admission-lanes.ts',
     )),
     ...(await load(
       '../../../../packages/agent-transcript/src/lib/delegation-transcript.ts',

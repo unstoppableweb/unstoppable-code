@@ -1,6 +1,7 @@
 import { memo, type JSX } from 'react';
 import { RestoreIcon as AppCatalogRestoreIcon } from '../../icons/AppIcons';
 import { useCleanChatLook } from '../chat-look';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 /**
  * Who compacted the session, keyed off both provider and interface mode so a
@@ -70,7 +71,9 @@ function CompactionInfoBlockComponent({
           </span>
         </span>
         {summary !== undefined && summary.length > 0 ? (
-          <span className="max-w-full whitespace-pre-wrap break-words">
+          <span
+            className={`${REPLAY_BLOCK_CLASS} max-w-full whitespace-pre-wrap break-words`}
+          >
             {summary}
           </span>
         ) : null}
@@ -93,7 +96,9 @@ function CompactionInfoBlockComponent({
         </span>
       </div>
       {summary !== undefined && summary.length > 0 ? (
-        <div className="pl-6 fg-secondary/80">{summary}</div>
+        <div className={`${REPLAY_BLOCK_CLASS} pl-6 fg-secondary/80`}>
+          {summary}
+        </div>
       ) : null}
     </div>
   );

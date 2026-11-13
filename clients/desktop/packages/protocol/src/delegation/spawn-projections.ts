@@ -93,7 +93,7 @@ export const CLAUDE_DELEGATION_SPAWN_SCHEMA = {
     model: {
       type: 'string',
       description:
-        'A model ID or configured Agent ID from List Delegates with includeModels: true. An Agent carries its model, instructions and selected capabilities.',
+        'A model ID, bare Agent ID, or agent_model_<id>@<model-id> route from List Delegates with includeModels: true. Agents are listed separately with their runnable model routes; pass a route to choose its model. A bare Agent ID uses its default model.',
       minLength: 1,
       maxLength: AGENT_DELEGATION_INPUT_LIMITS.idCharacters,
     },
@@ -126,7 +126,7 @@ export const CODEX_DELEGATION_SPAWN_SCHEMA = {
     model: {
       type: 'string',
       description:
-        'A model ID or configured Agent ID from List Delegates with includeModels: true. An Agent carries its model, instructions and selected capabilities.',
+        'A model ID, bare Agent ID, or agent_model_<id>@<model-id> route from List Delegates with includeModels: true. Agents are listed separately with their runnable model routes; pass a route to choose its model. A bare Agent ID uses its default model.',
       minLength: 1,
       maxLength: AGENT_DELEGATION_INPUT_LIMITS.idCharacters,
     },

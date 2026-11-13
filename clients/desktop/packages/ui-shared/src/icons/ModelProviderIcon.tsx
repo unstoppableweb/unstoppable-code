@@ -10,12 +10,16 @@ import {
   MiniMaxIcon,
   MoonshotIcon,
   OllamaIcon,
+  OpenRouterIcon,
+  VercelIcon,
   ZaiIcon,
 } from './AppIcons';
 import { ClaudeLogo } from './ClaudeLogo';
 import { CodexLogo } from './CodexLogo';
 import { CursorLogo } from './CursorLogo';
+import { LiteLLMLogo } from './LiteLLMLogo';
 import { OllamaLogo } from './OllamaLogo';
+import { RequestyLogo } from './RequestyLogo';
 import { ICON_SIZE_PX, isIconSize, type IconSize } from './icon-size';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
@@ -115,6 +119,16 @@ export function ModelProviderIcon({
     case 'zai':
     case 'z.ai':
       return <ZaiIcon size="md" {...centralProps} />;
+    case 'openrouter':
+      return <OpenRouterIcon size="md" {...centralProps} />;
+    case 'vercel':
+      return <VercelIcon size="md" {...centralProps} />;
+    // Neither set has these marks, so they are repository logos from each
+    // project's own MIT repository.
+    case 'requesty':
+      return <RequestyLogo {...svgProps} />;
+    case 'litellm':
+      return <LiteLLMLogo {...svgProps} />;
     default:
       return (
         <svg

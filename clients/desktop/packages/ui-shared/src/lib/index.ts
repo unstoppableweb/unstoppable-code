@@ -38,6 +38,7 @@ export * from './marketplace-card-subtitle';
 export * from './customize-row-copy';
 export * from './marketplace-share';
 export * from './installed-item-status';
+export * from './installed-share-copy';
 export * from './useInstalledItemStatuses';
 export * from './skill-update-action';
 export * from './money-format';
@@ -60,6 +61,7 @@ export * from './workflows-tabs';
 export * from './curated-pipeline-search';
 export { prefersReducedMotion } from './reduced-motion';
 export * from './badge';
+export * from './drawer-reveal';
 export * from './planDisplayStatus';
 export { useFlipBox, type FlipBoxOptions } from './flip-box';
 export * from './row-chips';
@@ -102,6 +104,7 @@ export * from './notification-message';
 export * from './worktree-failure-copy';
 export * from './toast-failure';
 export * from './toast-lifetime';
+export * from './background-service-copy';
 export * from './toast-queue';
 export * from './archived-state';
 export * from './cron-description';
@@ -112,6 +115,7 @@ export * from './useSidebarHeaderRest';
 export * from './plan-proposal-markdown';
 export * from './useDelayedFlag';
 export * from './composer-placeholder';
+export * from './prompt-suggestion';
 
 export {
   pluginNeedsInstall,

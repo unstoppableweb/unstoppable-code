@@ -157,6 +157,20 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Obsolete daemon workflows Labs selector. Retained only for wire compatibility.',
   },
+  canopyDesktopLabsOrchestratorPage: {
+    key: 'canopy-desktop-labs-orchestrator-page',
+    // Off until opted in: the Orchestrator opens as a page in the main window.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the Orchestrator page Labs experiment.',
+  },
+  canopyDesktopLabsPromptSuggestions: {
+    key: 'canopy-desktop-labs-prompt-suggestions',
+    // Off until opted in: each suggestion is an extra provider request.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the next prompt suggestions Labs experiment.',
+  },
   canopyDesktopLabsOverviewPage: {
     key: 'canopy-desktop-labs-overview-page',
     launchDarklyDisabledDefaultValue: 'offered',
@@ -355,6 +369,13 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     description:
       'Controls whether desktop PR Split entry points are visible and usable.',
+  },
+  canopyDesktopChatFormat4Promotion: {
+    key: 'canopy-desktop-chat-format4-promotion',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Controls whether desktop promotes writable chat scopes to storage format 4. Turning it off stops new promotions and never demotes a promoted scope.',
   },
   canopyDesktopCursorHarness: {
     key: 'canopy-desktop-cursor-harness',
@@ -634,6 +655,15 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Obsolete Files selector. Retained only for wire compatibility.',
   },
+  canopyWebCoreClient: {
+    key: 'canopy-web-core-client',
+    // Off everywhere until browser features move onto the web core
+    // (CAN-6092 to CAN-6094); the /chat route evaluates it per user.
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Web /chat opens and holds a shared-protocol connection to the web core (CAN-6091); no feature uses it yet.',
+  },
   canopyDesktopExternalAgentsMenu: {
     key: 'canopy-desktop-external-agents-menu',
     // On without LaunchDarkly, so local builds show the row; off when
@@ -703,6 +733,10 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
     .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
+    .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
+    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage
@@ -729,6 +763,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: boolean;
@@ -759,6 +794,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopSkillSuggestions.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopHostedSettings.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyWebCoreClient.key]: boolean;
 };
 
 /**
@@ -840,6 +876,12 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
         .launchDarklyDisabledDefaultValue,
@@ -906,6 +948,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -996,6 +1041,8 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyWebCoreClient.key]:
+      CLIENT_FEATURE_FLAGS.canopyWebCoreClient.launchDarklyDisabledDefaultValue,
   };
 
 /**
@@ -1060,6 +1107,12 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -1129,6 +1182,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -1220,6 +1276,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyWebCoreClient.key]:
+      CLIENT_FEATURE_FLAGS.canopyWebCoreClient
+        .launchDarklyEnabledUnavailableValue,
   };
 
 /**
@@ -1249,6 +1308,8 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,

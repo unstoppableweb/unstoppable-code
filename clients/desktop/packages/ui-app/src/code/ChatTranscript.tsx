@@ -58,6 +58,7 @@ import {
   useTurnWorkingStatus,
 } from './ChatPartView';
 import { summarizeTranscriptPrompts } from './sent-prompt-summary';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /**
  * Presentational chat transcript: renders the turn groups (via
@@ -975,11 +976,14 @@ export function ChatTranscript({
         {status === 'error' &&
           error &&
           !latestTurnShowsError(turnGroups, messagesById, error) && (
-            <ErrorBanner
-              className=""
-              error={error}
-              testId="chat-transcript-error"
-            />
+            // An agent or server error can quote the conversation.
+            <div className={REPLAY_BLOCK_CLASS}>
+              <ErrorBanner
+                className=""
+                error={error}
+                testId="chat-transcript-error"
+              />
+            </div>
           )}
 
         {footerSlot}

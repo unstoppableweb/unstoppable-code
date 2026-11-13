@@ -35,7 +35,7 @@ import {
   type CollapsedIconColor,
   useActivitySectionChrome,
 } from '@/components/shared/panel-section';
-import { FileTypeIcon } from '@/components/shared/file-icons';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import {
   ATTACHMENT_IMPORT_ERROR_MESSAGE,
@@ -113,8 +113,7 @@ function AttachmentRow({
       icon={
         <FileTypeIcon
           filename={attachment.filename}
-          size={16}
-          boxSize={14}
+          size="sm"
           className="shrink-0"
         />
       }

@@ -14,7 +14,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { formatDate } from '@canopy/ui-shared/lib';
 import {
-  CONNECT_COMPUTER_LABEL,
+  ADD_COMPUTER_ROW_LABEL,
   HOSTED_CONTROLLER_LIMITS,
   PAIR_DEVICE_LABEL,
   deviceKindLabel,
@@ -282,7 +282,7 @@ export function RemoteControlDevices({
       >
         <SettingsRowsGroup>
           <SettingsButtonRow
-            label={CONNECT_COMPUTER_LABEL}
+            label={ADD_COMPUTER_ROW_LABEL}
             trailing="open"
             onClick={ports.connectComputer}
             data-testid={`${testIdPrefix}-add`}

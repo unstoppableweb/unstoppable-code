@@ -73,6 +73,7 @@ export const NAVIGATION_PAGE_ROUTES = Object.freeze({
   overview: 'app://main/overview',
   home: 'app://main/home',
   chat: 'app://main/chat',
+  // Legacy id; `navigate` opens the cowork page instead (CAN-6175).
   'cloud-chat': 'app://main/cloud-chat',
   pipelines: 'app://main/pipelines',
   plugins: 'app://main/plugins',

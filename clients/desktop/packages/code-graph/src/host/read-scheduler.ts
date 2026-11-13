@@ -44,7 +44,9 @@ export type CodeGraphQueryKind =
   | 'review-context'
   | 'ui-summary'
   | 'snapshot-export'
-  | 'snapshot-import';
+  | 'snapshot-import'
+  /** Custom-language validation that loads each grammar (CAN-6010). */
+  | 'languages-validate';
 
 export type CodeGraphQueryOutcome =
   | 'success'
@@ -143,14 +145,18 @@ const AGING_THRESHOLDS_MS: Partial<Record<ReadAdmissionClass, number>> = {
 /** An idle read worker exits after this long without a request. */
 export const CODE_GRAPH_READ_WORKER_IDLE_TIMEOUT_MS = 3 * 60_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
-/** Change impact and snapshot transfer walk the whole graph. */
+/**
+ * Change impact and snapshot transfer walk the whole graph; language
+ * validation loads every custom grammar.
+ */
 const LONG_TASK_TIMEOUT_MS = 5 * 60_000;
 
 function isLongTask(task: CodeGraphWorkerReadTask): boolean {
   return (
     task.kind === 'change-impact' ||
     task.kind === 'snapshot-export' ||
-    task.kind === 'snapshot-import'
+    task.kind === 'snapshot-import' ||
+    task.kind === 'languages-validate'
   );
 }
 /** How long to await a killed worker's exit once the kill has landed. */
@@ -488,8 +494,53 @@ function isWorkerResponse(
       value.edgesImported !== null
     );
   }
+  if (task.kind === 'languages-validate')
+    return (
+      hasExactKeys(result, ['kind', 'value']) &&
+      isLanguagesValidation(result.value)
+    );
   // Structural payload decoders are intentionally unchanged. Only correlate the task/result kind.
   return true;
+}
+
+function isLanguagesValidation(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['config', 'languages', 'diagnostics']) ||
+    !['absent', 'invalid', 'present'].includes(String(value.config)) ||
+    !Array.isArray(value.languages) ||
+    !Array.isArray(value.diagnostics)
+  )
+    return false;
+  const languages: readonly unknown[] = value.languages;
+  const diagnostics: readonly unknown[] = value.diagnostics;
+  return (
+    languages.every(isLoadedLanguage) && diagnostics.every(isLanguageDiagnostic)
+  );
+}
+
+function isLoadedLanguage(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['id', 'extensions', 'index', 'abiVersion']) ||
+    typeof value.id !== 'string' ||
+    !Number.isSafeInteger(value.index) ||
+    !Number.isSafeInteger(value.abiVersion) ||
+    !Array.isArray(value.extensions)
+  )
+    return false;
+  const extensions: readonly unknown[] = value.extensions;
+  return extensions.every((extension) => typeof extension === 'string');
+}
+
+function isLanguageDiagnostic(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['entryId', 'index', 'message']) &&
+    (value.entryId === null || typeof value.entryId === 'string') &&
+    Number.isSafeInteger(value.index) &&
+    typeof value.message === 'string'
+  );
 }
 
 function responseReadFailure(

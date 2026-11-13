@@ -55,14 +55,21 @@ export const RELAY_DEFINITIONS: RelayDefinitions = {
 };
 
 /**
- * A bound connection plus a host-local stream release. The wire has no stream
- * cancel message (K1), so the relay calls `releaseStream` with the open
- * result's `subscriptionId` when the renderer closes a stream, including one
- * whose open settled after the renderer gave up. Unknown or ended ids no-op.
+ * A bound connection plus a host-local stream release. The relay calls
+ * `releaseStream` with the open result's `subscriptionId` when the renderer
+ * closes a stream, including one whose open settled after the renderer gave
+ * up. Unknown or ended ids no-op.
  */
 export interface RelayBindingConnection extends CanopyFramedConnection {
-  /** `ended`: the core delivered its end; `cancelled`: abandoned while the core may still serve it. */
-  releaseStream?(subscriptionId: string, reason?: 'ended' | 'cancelled'): void;
+  /**
+   * `ended`: the core delivered its end; `unsubscribed`: abandoned and the
+   * client asked the core to drop it (`core.events.unsubscribe`, CAN-5970);
+   * `cancelled`: abandoned while the core may still serve it.
+   */
+  releaseStream?(
+    subscriptionId: string,
+    reason?: 'ended' | 'unsubscribed' | 'cancelled',
+  ): void;
 }
 
 /** Opens one authenticated framed connection bound to `caller`. */

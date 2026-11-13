@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { readdir, realpath } from 'node:fs/promises';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import {
   inertArchiveGroup,
   isAbandonedArchive,
@@ -10,14 +11,29 @@ import { inspectDestructiveJournals } from '@canopy/desktop-shared/node/w5-destr
 import { statIfPresent } from '@canopy/desktop-shared/node/internal-root-migration/filesystem';
 import { isToleratedInternalRootW5Issue } from './internal-root-migration-w5-adoption';
 import { diagnoseW5State } from './w5-maintenance-diagnosis';
+import {
+  describeInternalRootCommit,
+  internalRootCommitAbandonments,
+} from './internal-root-migration-commits';
 
 /** Inventory only: SQLite diagnosis uses a disposable copy, never the live writer. */
 export async function diagnoseInternalRootW5(
   source: string,
   abandonArchives: readonly string[] = [],
+  abandonCommits: readonly number[] = [],
 ): Promise<readonly string[]> {
-  const diagnosis = await diagnoseW5State(source, 'w5-owned', true);
+  const diagnosis = await diagnoseW5State(
+    source,
+    'w5-owned',
+    true,
+    abandonCommits,
+  );
+  internalRootCommitAbandonments(diagnosis, abandonCommits);
   const blockers: string[] = [];
+  if (abandonCommits.length && hostOperatingSystem() === 'win32')
+    blockers.push(
+      '--abandon-commit is supported only on macOS/Linux; Windows offline W5 resolve is not qualified.',
+    );
   if (diagnosis.schemaUpgrade && !diagnosis.logIssue)
     process.stderr.write(
       `Internal-root migration inventory: W5 log schema v${diagnosis.schemaUpgrade.from} will be upgraded to v${diagnosis.schemaUpgrade.to} during settlement.\n`,
@@ -37,9 +53,12 @@ export async function diagnoseInternalRootW5(
       blockers.push(`Unsafe W5 log/sidecar: ${path}`);
   }
   for (const row of diagnosis.commits)
-    blockers.push(
-      `W5 pending commit ${row.commitId}: ${row.operation} state=${row.state}`,
-    );
+    if (!abandonCommits.includes(row.commitId)) {
+      const detail = `W5 pending ${describeInternalRootCommit(source, row)}`;
+      // The core inventory summary is bounded; retain every opt-in hint in stderr.
+      process.stderr.write(`Internal-root migration inventory: ${detail}\n`);
+      blockers.push(detail);
+    }
   for (const row of diagnosis.reservations)
     blockers.push(
       `W5 reservation ${row.reservationId}: ${row.operation} state=${row.state}`,
@@ -97,7 +116,9 @@ export async function diagnoseInternalRootW5(
   }
   return blockers
     .slice(0, 40)
-    .map((value) => value.slice(0, 1000))
+    .map((value) =>
+      value.startsWith('W5 pending commit ') ? value : value.slice(0, 1000),
+    )
     .concat(
       blockers.length > 40
         ? [`… ${blockers.length - 40} more W5 blockers`]

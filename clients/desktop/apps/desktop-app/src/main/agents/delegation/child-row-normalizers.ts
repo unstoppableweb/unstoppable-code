@@ -10,7 +10,7 @@ import type {
   PersistedChatBlock,
   PersistedChatMessage,
 } from '@canopy/agent-transcript';
-import { projectCodexThreadItem } from '@canopy/desktop-shared/node/codex-runtime';
+import { projectCodexThreadItem } from '@canopy/execution-engine/node/codex-runtime';
 import { createHash } from 'node:crypto';
 import {
   DELEGATION_REGISTRY_MAX_ID_LENGTH,

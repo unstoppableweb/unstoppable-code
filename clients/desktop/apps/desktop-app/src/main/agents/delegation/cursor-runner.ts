@@ -20,7 +20,7 @@ import type {
   DelegationTranscriptChange,
   DelegationTranscriptPort,
 } from '@canopy/desktop-shared/node/delegation/transcript-port';
-import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
+import { isJsonValue } from '@canopy/execution-engine/node/codex-runtime';
 import type { CursorProviderProcess } from '@canopy/desktop-shared/node/cursor/runtime-process';
 import type { CursorTurnGates } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import {

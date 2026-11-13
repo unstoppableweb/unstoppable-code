@@ -90,6 +90,9 @@ function safeSemanticIssue(error: unknown): PipelineCatalogIssue {
   } else if (/local_state/i.test(sourceMessage)) {
     path = 'local_state';
     message = 'local_state must be a list of paths';
+  } else if (/Pipeline sandbox/.test(sourceMessage)) {
+    path = 'sandbox';
+    message = 'sandbox.vcpus must be 1, 2, 4 or 8';
   } else if (/dependenc/i.test(sourceMessage)) {
     path = 'dependencies';
     message =
@@ -199,6 +202,7 @@ export function validateCuratedPipeline(
     'dependencies',
     'assets',
     'local_state',
+    'sandbox',
   ]);
   for (const key of Object.keys(raw))
     if (!allowed.has(key))

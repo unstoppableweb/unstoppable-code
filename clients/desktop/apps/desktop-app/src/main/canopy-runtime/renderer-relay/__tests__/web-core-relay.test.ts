@@ -8,7 +8,11 @@ import {
 } from '../relay';
 import { routeRendererRelayRequest } from '../relay-authority';
 import type { RendererRelaySurface } from '../surface-allowlist';
-import { WEB_CORE_RELAY_OPERATIONS } from '../web-core-relay-definitions';
+import {
+  WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS,
+  WEB_CORE_TEARDOWN_RELAY_OPERATIONS,
+  WEB_CORE_RELAY_OPERATIONS,
+} from '../web-core-relay-definitions';
 import { createWebCoreRendererRelay } from '../../../ipc/canopy-core-relay';
 
 const CALLER: CanopyCallerDescriptor = {
@@ -73,7 +77,8 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       'core.workspace.create',
       'core.git.status.get',
       'core.runtime.initialize',
-      'worker.filesystem.file.read',
+      'worker.filesystem.entry.copy',
+      'worker.terminal.restore',
     ]) {
       expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
       await expect(
@@ -116,6 +121,383 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
     expect(binding).toHaveBeenCalledTimes(1);
     relay.dispose();
     advisor.dispose();
+  });
+
+  it('cloud project reorder, update and delete reach the web core binding (CAN-6099)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const requests = [
+      {
+        method: 'core.workspace.reorder',
+        params: {
+          visibleWorkspaceIds: ['ws-1', 'ws-2'],
+          activeWorkspaceId: 'ws-1',
+          overWorkspaceId: 'ws-2',
+          _meta: { idempotencyKey: 'key-1' },
+        },
+      },
+      {
+        method: 'core.workspace.update',
+        params: {
+          workspaceId: 'ws-1',
+          patch: { name: 'Renamed' },
+          _meta: { idempotencyKey: 'key-3' },
+        },
+      },
+      {
+        method: 'core.workspace.delete',
+        params: {
+          workspaceId: 'ws-1',
+          expectedRevision: 1,
+          _meta: { idempotencyKey: 'key-2' },
+        },
+      },
+    ];
+    for (const { method, params } of requests) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      // Past the allowlist, the request fails only at the unreachable binding.
+      await expect(
+        relay.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(binding).toHaveBeenCalledTimes(requests.length);
+    relay.dispose();
+  });
+
+  it('cloud project writes reach only the web core, from the main window, and update only name and colour (CAN-6099)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const local = {
+      invoke: jest.fn(() =>
+        Promise.resolve({ ok: true as const, value: { from: 'local' } }),
+      ),
+    };
+    const targets = { local, webCore: relay };
+    const update = (
+      patch: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      kind: 'request',
+      method: 'core.workspace.update',
+      params: {
+        workspaceId: 'ws-1',
+        patch,
+        _meta: { idempotencyKey: 'key-u' },
+      },
+    });
+
+    // Another principal (App Advisor's surface) gets none of them.
+    for (const method of [
+      'core.workspace.reorder',
+      'core.workspace.update',
+      'core.workspace.delete',
+    ]) {
+      await expect(
+        advisor.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    // Without the web-core authority a request goes to the local relay only;
+    // an unknown authority goes nowhere.
+    await routeRendererRelayRequest(
+      targets,
+      rendererEvent(),
+      update({ name: 'x' }),
+    );
+    expect(local.invoke).toHaveBeenCalledTimes(1);
+    await expect(
+      routeRendererRelayRequest(targets, rendererEvent(), {
+        ...update({ name: 'x' }),
+        authority: 'elsewhere',
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'invalid_argument' },
+    });
+    expect(binding).not.toHaveBeenCalled();
+
+    // Any patch field besides name and colour is refused before it leaves main.
+    for (const patch of [{ pinned: true }, { name: 'x', collapsed: true }]) {
+      await expect(
+        routeRendererRelayRequest(targets, rendererEvent(), {
+          ...update(patch),
+          authority: 'web-core',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+    await expect(
+      routeRendererRelayRequest(targets, rendererEvent(), {
+        ...update({ name: 'Renamed', color: '#336699' }),
+        authority: 'web-core',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalledTimes(1);
+    expect(local.invoke).toHaveBeenCalledTimes(1);
+    relay.dispose();
+    advisor.dispose();
+  });
+
+  it('cloud file reads reach the web core binding (CAN-6175 R9)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const reads = [
+      'worker.filesystem.roots.list',
+      'worker.filesystem.directory.list',
+      'worker.filesystem.file.read',
+      'worker.filesystem.search',
+      'worker.filesystem.link.resolve',
+    ];
+    for (const method of reads) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      // Past the allowlist, the request fails only at the unreachable binding.
+      await expect(
+        relay.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: { scope: { chatId: 'chat-1' } },
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(binding).toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it('cloud durable terminal operations reach the web core binding (CAN-6175 R10)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    for (const method of [
+      'worker.terminal.create',
+      'worker.terminal.get',
+      'worker.terminal.list',
+      'worker.terminal.write',
+      'worker.terminal.resize',
+      'worker.terminal.kill',
+      'worker.terminal.release',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      await expect(
+        relay.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: { scope: { chatId: 'chat-1' } },
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(WEB_CORE_RELAY_OPERATIONS.has('worker.terminal.attach')).toBe(true);
+    await expect(
+      relay.invoke(rendererEvent(), {
+        kind: 'openStream',
+        method: 'worker.terminal.attach',
+        params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it('ending a cloud terminal reaches the web core after cloud chats are turned off, and nothing else does (CAN-6175 R10)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = createWebCoreRendererRelay({
+      bindingProvider: binding,
+      resolveSurface: (): RendererRelaySurfaceResolution => ({
+        surface: 'main',
+        caller: CALLER,
+      }),
+      cloudChatsEnabled: () => false,
+    });
+    const event = rendererEvent();
+    expect([...WEB_CORE_TEARDOWN_RELAY_OPERATIONS]).toEqual([
+      'worker.terminal.kill',
+    ]);
+    // The renderer's teardown kill gets past the flag to the binding.
+    await expect(
+      relay.invoke(event, {
+        kind: 'request',
+        method: 'worker.terminal.kill',
+        params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalledTimes(1);
+    binding.mockClear();
+    // Every other terminal call is refused before the binding.
+    for (const method of [
+      'worker.terminal.create',
+      'worker.terminal.write',
+      'worker.terminal.release',
+    ]) {
+      await expect(
+        relay.invoke(event, {
+          kind: 'request',
+          method,
+          params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it('cloud file writes reach the web core and are never replayed with the same key (CAN-6175)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(() =>
+      Promise.reject(
+        new CanopyTransportError({
+          kind: 'unavailable',
+          message: 'Not connected in this test.',
+          retry: { kind: 'same_idempotency_key' },
+        }),
+      ),
+    );
+    const relay = webCoreRelay(binding);
+    for (const method of [
+      'worker.filesystem.file.write',
+      'worker.filesystem.directory.create',
+      'worker.filesystem.entry.delete',
+      'worker.filesystem.entry.move',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      // The web core releases a key when its write fails, even after the
+      // write may have applied, so a same-key replay could act twice
+      // (CAN-4733): the relay answers never, as for local writes.
+      await expect(
+        relay.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: {
+            scope: { chatId: 'chat-1' },
+            _meta: { idempotencyKey: `key-${method}` },
+          },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable', retry: { kind: 'never' } },
+      });
+    }
+    expect(binding).toHaveBeenCalled();
+
+    // A save of a file at the web core's 1 MiB read limit is past the local
+    // relay's 1 MiB request cap once JSON-encoded; the web core relay takes it.
+    await expect(
+      relay.invoke(rendererEvent(), {
+        kind: 'request',
+        method: 'worker.filesystem.file.write',
+        params: {
+          scope: { chatId: 'chat-1' },
+          fileRootId: 'workspace',
+          relativePath: 'large.txt',
+          content: 'x'.repeat(1024 * 1024 + 1),
+          createOnly: false,
+          expectedVersion: 'v1',
+          _meta: { idempotencyKey: 'key-large' },
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    relay.dispose();
+  });
+
+  it('cloud run operations reach the web core without the cloud chats flag, and chats still need it (CAN-6326)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    let cloudChats = false;
+    const relay = createWebCoreRendererRelay({
+      bindingProvider: binding,
+      resolveSurface: (): RendererRelaySurfaceResolution => ({
+        surface: 'main',
+        caller: CALLER,
+      }),
+      cloudChatsEnabled: () => cloudChats,
+    });
+    const event = rendererEvent();
+    const requests: readonly {
+      readonly kind: 'request' | 'openStream';
+      readonly method: string;
+    }[] = [
+      { kind: 'request', method: 'worker.pipeline.execution.list' },
+      { kind: 'request', method: 'worker.pipeline.execution.get' },
+      { kind: 'openStream', method: 'worker.pipeline.execution.events' },
+      { kind: 'request', method: 'worker.pipeline.execution.cancel' },
+      { kind: 'request', method: 'worker.pipeline.execution.resume' },
+      { kind: 'request', method: 'worker.pipeline.execution.retry' },
+      { kind: 'request', method: 'worker.pipeline.matrixJob.retry' },
+      { kind: 'request', method: 'worker.pipeline.matrixVariant.cancel' },
+      { kind: 'request', method: 'core.pipeline.execution.stepLog.read' },
+      { kind: 'request', method: 'core.pipeline.execution.artifact.read' },
+    ];
+    for (const { kind, method } of requests) {
+      expect(WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS.has(method)).toBe(true);
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      // Past the allowlist, the call fails only at the unreachable binding.
+      await expect(
+        relay.invoke(event, { kind, method, params: { executionId: 'run-1' } }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(binding).toHaveBeenCalled();
+    binding.mockClear();
+
+    // Starting a run stays in main, after its model preflight (CAN-6187).
+    expect(WEB_CORE_RELAY_OPERATIONS.has('core.pipeline.execution.start')).toBe(
+      false,
+    );
+    // Host requests are the run owner's alone.
+    expect(WEB_CORE_RELAY_OPERATIONS.has('worker.pipeline.hostRequests')).toBe(
+      false,
+    );
+
+    // Cloud chats are refused while their flag is off, before the binding.
+    await expect(
+      relay.invoke(event, {
+        kind: 'request',
+        method: 'core.chat.list',
+        params: {},
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        kind: 'capability_unavailable',
+        message: 'Cloud chats are not available.',
+      },
+    });
+    expect(binding).not.toHaveBeenCalled();
+    cloudChats = true;
+    await relay.invoke(event, {
+      kind: 'request',
+      method: 'core.chat.list',
+      params: {},
+    });
+    expect(binding).toHaveBeenCalledTimes(1);
+    relay.dispose();
   });
 
   it('core.chat.live.events reaches the web core only (CAN-5984)', async () => {

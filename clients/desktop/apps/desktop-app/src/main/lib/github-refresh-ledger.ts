@@ -269,3 +269,19 @@ export async function recordGitHubRefreshFailure(args: {
     },
   );
 }
+
+/** Serialized with attempts/results, so retiring a worktree cannot lose a neighbor's write. */
+export async function removeGitHubRefreshLedgerEntry(
+  projectId: string,
+  worktreeId: string,
+): Promise<void> {
+  writeChain = writeChain
+    .catch(() => undefined)
+    .then(async () => {
+      const ledger = await loadLedger();
+      if (!(ledgerKey(projectId, worktreeId) in ledger.entries)) return;
+      delete ledger.entries[ledgerKey(projectId, worktreeId)];
+      await persistLedger(ledger);
+    });
+  await writeChain;
+}

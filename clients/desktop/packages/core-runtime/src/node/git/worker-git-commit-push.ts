@@ -7,6 +7,7 @@ import type {
 import {
   CanopyOperationError,
   canopyCancelledError,
+  canopyCapabilityUnavailableError,
 } from '../../runtime/errors';
 import type { CanopyHandlerContext } from '../../runtime/types';
 import { WorkerGitScopeError } from './worker-git-branch-list';
@@ -112,6 +113,18 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
   return {
     'worker.git.commit': (params, context) =>
       run('worker.git.commit', params.scope, context, async (port) => {
+        const { message } = params;
+        // The web core's head revision (CAN-6093); this host advertises none.
+        if (params.revision !== undefined)
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'This worker does not serve this revision.',
+            details: { unsupported: ['revision'], reason: 'unserved' },
+            retry: {
+              kind: 'after_refresh',
+              resource: 'core.runtime.manifest.get',
+            },
+          });
         if (
           params.paths !== undefined ||
           params.amend === true ||
@@ -122,8 +135,25 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
             message: 'This worker commits every change as a new commit.',
             retry: { kind: 'never' },
           });
+        // Only the web core writes a message for an absent one. An empty one
+        // stays invalid_argument, as the schema answered it before CAN-6115,
+        // and a blank one still fails at the commit, after staging.
+        if (message === undefined)
+          throw canopyCapabilityUnavailableError(
+            "This worker commits with the caller's message only.",
+          );
+        if (message === '')
+          throw new CanopyOperationError({
+            kind: 'invalid_argument',
+            message: 'The commit message is empty.',
+            retry: { kind: 'never' },
+          });
         const branch = await port.currentBranch();
-        if ((await port.head()) !== params.expectedHeadSha)
+        if (
+          (params.expected !== undefined &&
+            branch !== params.expected.branch) ||
+          (await port.head()) !== params.expectedHeadSha
+        )
           throw refuse(
             'conflict',
             'worker.git.commit.headChanged',
@@ -142,7 +172,7 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
             'The branch changed. Start a new push.',
           );
         if (context.signal.aborted) throw canopyCancelledError();
-        await port.commit(params.message);
+        await port.commit(message);
       }),
     'worker.git.push': (params, context) =>
       run('worker.git.push', params.scope, context, async (port) => {
@@ -161,9 +191,11 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
             'worker.git.push.headChanged',
             'The branch changed. Start a new push.',
           );
+        // Unpinned, the remote branch is not checked.
         if (
+          params.expectedRemoteHeadSha !== undefined &&
           (await port.trackingHead(params.branch)) !==
-          params.expectedRemoteHeadSha
+            params.expectedRemoteHeadSha
         )
           throw refuse(
             'conflict',

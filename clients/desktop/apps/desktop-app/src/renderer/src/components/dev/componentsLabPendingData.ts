@@ -58,7 +58,6 @@ export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
       'Popover (7 files)',
     ],
     copies: [
-      `${UI_APP}/code/composer/CommandsPopup.tsx`,
       `${UI_APP}/code/composer/PortalDirectoryPicker.tsx`,
       `${UI_APP}/sharing/InviteTeammateDialog.tsx`,
       `${DESKTOP}/shared/invite-teammate/LinkSharingSection.tsx`,
@@ -236,6 +235,12 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     remaining: 33,
     breakdown: '33 raw <h1>…<h6>, across 27 files',
     baseline: 'docs/design/legacy-headings.baseline.json',
+  },
+  {
+    family: 'Links',
+    remaining: 76,
+    breakdown: '76 raw <a>, across 56 files',
+    baseline: 'docs/design/legacy-links.baseline.json',
   },
   {
     family: 'Tooltips',

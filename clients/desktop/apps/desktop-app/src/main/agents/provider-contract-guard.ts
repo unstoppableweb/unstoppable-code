@@ -5,7 +5,7 @@
  * The guard reports them, without payload text, and never changes behavior.
  */
 import { CLAUDE_LIFECYCLE } from '@canopy/desktop-shared/node/harness-contract/claude-lifecycle';
-import { CODEX_LIFECYCLE } from '@canopy/desktop-shared/node/harness-contract/codex-lifecycle';
+import { CODEX_LIFECYCLE } from '@canopy/execution-engine/node/harness-contract/codex-lifecycle';
 import type { SessionDiagnosticRecord } from '../observability/service';
 
 interface GuardScope {

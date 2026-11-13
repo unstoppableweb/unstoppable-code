@@ -17,7 +17,7 @@ export const TRIGGER_META: Record<PipelineTriggerType, TriggerMeta> = {
   dispatch: {
     label: PIPELINE_TRIGGER_LABELS.dispatch,
     description: 'Manually triggered via the UI or API',
-    badgeClass: 'bg-accent-subtle fg-accent',
+    badgeClass: 'bg-accent-subtle fg-accent-strong',
   },
   plan_ready: {
     label: PIPELINE_TRIGGER_LABELS.plan_ready,

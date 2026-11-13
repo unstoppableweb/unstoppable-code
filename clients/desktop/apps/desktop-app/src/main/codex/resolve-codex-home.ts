@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getObservedCanonicalCodexHome } from '@canopy/desktop-shared/node/codex-runtime';
+import { getObservedCanonicalCodexHome } from '@canopy/execution-engine/node/codex-runtime';
 import { getCodexRuntimeService } from './runtime-service';
 
 /**

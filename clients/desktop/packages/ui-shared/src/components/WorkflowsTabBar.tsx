@@ -37,6 +37,11 @@ export interface WorkflowsTabBarProps {
    * entry, or with zero, shows none.
    */
   readonly counts?: Readonly<Partial<Record<WorkflowsTabId, number>>>;
+  /**
+   * The tabs a host serves, in their usual order; every tab by default. A
+   * host with no schedules of its own leaves Schedule out.
+   */
+  readonly tabs?: readonly WorkflowsTabId[];
   /** Placement only; the tab list owns its own layout. */
   readonly className?: string;
 }
@@ -59,19 +64,20 @@ export function WorkflowsTabBar({
   onChange,
   focusSelectedOnMount = false,
   counts,
+  tabs = WORKFLOWS_TABS,
   className,
 }: WorkflowsTabBarProps): JSX.Element {
-  const items: readonly TabBarItem<WorkflowsTabId>[] = WORKFLOWS_TABS.map(
-    (tab) => ({
-      id: tab,
-      label: WORKFLOWS_TAB_LABELS[tab],
-      icon: TAB_ICONS[tab],
-      count: counts?.[tab],
-      dataTestId: `workflows-tab-${tab}`,
-      countTestId: `workflows-tab-count-${tab}`,
-      tabId: workflowsTabElementId(tab),
-    }),
-  );
+  const items: readonly TabBarItem<WorkflowsTabId>[] = WORKFLOWS_TABS.filter(
+    (tab) => tabs.includes(tab),
+  ).map((tab) => ({
+    id: tab,
+    label: WORKFLOWS_TAB_LABELS[tab],
+    icon: TAB_ICONS[tab],
+    count: counts?.[tab],
+    dataTestId: `workflows-tab-${tab}`,
+    countTestId: `workflows-tab-count-${tab}`,
+    tabId: workflowsTabElementId(tab),
+  }));
   return (
     <TabBar
       items={items}

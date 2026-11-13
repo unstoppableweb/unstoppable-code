@@ -279,6 +279,7 @@ export function UsageIndicator({
       ? undefined
       : planProvider,
     usageModel,
+    turnActive,
   );
   // Copilot reports cumulative token buckets, but no dollar cost or current
   // context occupancy. Keep its totals visible without inventing those figures.

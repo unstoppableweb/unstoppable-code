@@ -6,7 +6,9 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -15,7 +17,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from '../canopyApp.mjs';
 import {
   captureDaemonDryRunEvidence,
@@ -325,9 +327,32 @@ export async function quitGracefullyKeepingData(
   ]);
   clearTimeout(deadline);
   await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+  if (outcome !== 'exited') keepQuitLogs(userDataDir);
   expect(outcome, 'graceful quit must finish without a forced kill').toBe(
     'exited',
   );
+}
+
+/**
+ * Copies a timed-out quit's logs into the test's output, which CI uploads on
+ * failure: main.log's `[shutdown]` lines time each runtime cleanup stage
+ * (CAN-6456). Logs only, never sockets or tokens, and a failed copy never
+ * hides the quit failure itself.
+ */
+function keepQuitLogs(userDataDir) {
+  const logs = path.join(userDataDir, 'logs');
+  if (!existsSync(logs)) return;
+  try {
+    cpSync(logs, test.info().outputPath('graceful-quit-logs'), {
+      recursive: true,
+      filter: (source) => {
+        const entry = lstatSync(source);
+        return entry.isDirectory() || entry.isFile();
+      },
+    });
+  } catch (error) {
+    console.warn(`Could not keep the quit logs: ${String(error)}`);
+  }
 }
 
 /** SIGKILLs the app's process tree, then reaps it, keeping its data root. */
@@ -367,7 +392,9 @@ export async function invokeWithoutAwaiting(window, method, request) {
  * A `CANOPY_GIT_EXECUTABLE` shim that holds matching Git commands until the
  * test writes `release` in `gateDir`. The app runs Git with hooks disabled,
  * so this is the seam that pauses its own `git clone` or `git worktree add`.
- * Each held invocation records `entered.<pid>`.
+ * Each held invocation records `entered.<pid>`. A held command exits once the
+ * process that ran it is gone: an orphan would keep the quit app's crashpad
+ * handler, and so its stderr, open until the harness happened to reap it.
  */
 export function writeGatedGitShim(gateDir, casePattern) {
   mkdirSync(gateDir, { recursive: true });
@@ -382,7 +409,10 @@ export function writeGatedGitShim(gateDir, casePattern) {
       'case " $* " in',
       `  ${casePattern})`,
       `    touch "${gateDir}/entered.$$"`,
-      `    while [ ! -f "${gateDir}/release" ]; do sleep 0.05; done`,
+      `    while [ ! -f "${gateDir}/release" ]; do`,
+      '      kill -0 "$PPID" 2>/dev/null || exit 1',
+      '      sleep 0.05',
+      '    done',
       '    ;;',
       'esac',
       `exec "${realGit}" "$@"`,

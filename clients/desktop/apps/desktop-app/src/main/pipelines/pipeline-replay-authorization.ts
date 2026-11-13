@@ -1,8 +1,8 @@
-import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
+import type { ChildPipelineAuthorization } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 import type {
   ExecutionState,
   ExecutionOptions,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { getStoredPipelineBySource } from './pipeline-service';
 import {
   backgroundExecutionDeniedMessage,

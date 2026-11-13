@@ -1,4 +1,4 @@
-import { reconcileStoredPipelineIndex } from '@canopy/desktop-shared/pipelines/store';
+import { reconcileStoredPipelineIndex } from '@canopy/execution-engine/pipelines/store';
 import { logMainProcessWarn } from './main-process-logging';
 import { join } from 'node:path';
 import { utilityProcess } from 'electron';
@@ -52,6 +52,7 @@ function scan(executionsDir: string): Promise<InterruptedWorkScan> {
 
 /** Executions the startup scan found, for the orphan sweep once core runs. */
 let interruptedPipelineIds: string[] = [];
+let daemonCommitHookIds: string[] = [];
 
 /**
  * Recover interrupted chats before the first window can admit new work, and
@@ -81,6 +82,7 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   const installs = whenPipelineInstallsRecovered();
   const found = await scan(runtime.executionsDir);
   interruptedPipelineIds = found.pipelineIds;
+  daemonCommitHookIds = found.daemonCommitHookIds;
   const errors = [...found.errors];
   for (const scope of found.chatScopes) {
     try {
@@ -102,19 +104,24 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
  */
 export function sweepInterruptedPipelinesAtStartup(): Promise<void> | null {
   const pipelineIds = interruptedPipelineIds;
+  const commitHookIds = daemonCommitHookIds;
   interruptedPipelineIds = [];
-  if (pipelineIds.length === 0) return null;
-  return sweepOrphanedPipelinesThroughLocalWorker(pipelineIds).then(
-    async (errors) => {
-      // What the sweep left running belongs to a live owner such as the
-      // daemon: it stays active work (CAN-5086).
-      const { followSurvivingDaemonRuns } =
-        await import('../pipelines/daemon-pipeline-route');
-      await followSurvivingDaemonRuns(
-        pipelineIds,
-        createElectronExecutionRuntime().executionsDir,
-      );
-      if (errors.length) throw new Error(errors.join('\n'));
-    },
-  );
+  daemonCommitHookIds = [];
+  if (pipelineIds.length === 0 && commitHookIds.length === 0) return null;
+  const swept: Promise<string[]> =
+    pipelineIds.length === 0
+      ? Promise.resolve([])
+      : sweepOrphanedPipelinesThroughLocalWorker(pipelineIds);
+  return swept.then(async (errors) => {
+    const { catchUpDaemonCommitHooksFor, followSurvivingDaemonRuns } =
+      await import('../pipelines/daemon-pipeline-route');
+    const executionsDir = createElectronExecutionRuntime().executionsDir;
+    // What the sweep left running belongs to a live owner such as the
+    // daemon: it stays active work (CAN-5086).
+    if (pipelineIds.length > 0)
+      await followSurvivingDaemonRuns(pipelineIds, executionsDir);
+    // Commit results that settled while nothing followed their run (CAN-6012 D3).
+    await catchUpDaemonCommitHooksFor(commitHookIds, executionsDir);
+    if (errors.length) throw new Error(errors.join('\n'));
+  });
 }

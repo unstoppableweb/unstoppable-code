@@ -121,6 +121,7 @@ jest.mock('../action-caller', (): object => {
 });
 
 import { AdvisorActionRuns } from '@canopy/core-runtime/node/agent/advisor';
+import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { OperationService } from '@canopy/core-runtime/node/operations';
 import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 import { appAdvisorActionDisposition } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
@@ -341,6 +342,58 @@ describe('App Advisor worktree actions in main (CAN-5829)', () => {
       source: 'app_advisor',
     });
     expect(mockRequestRendererTool).not.toHaveBeenCalled();
+  });
+
+  it('a refused worktree-list write reports a typed hook error, never an internal one (CAN-5680)', async () => {
+    const actual = jest.requireActual<typeof WorktreeActionsModule>(
+      '../../canopy-tools/worktree-actions',
+    );
+    mockDispatchWorktreeAction.mockImplementation((input, runtime) =>
+      actual.dispatchWorktreeAction(
+        input as Parameters<typeof actual.dispatchWorktreeAction>[0],
+        runtime as unknown as Parameters<
+          typeof actual.dispatchWorktreeAction
+        >[1],
+      ),
+    );
+    const h = setup();
+    const pause = async (
+      type: 'hook.pause' | 'hook.resume',
+      key: string,
+    ): Promise<unknown> => {
+      const routed = await h.route(
+        action({ type, projectId: 'proj', worktreeId: 'wt', hookKey: 'lint' }),
+        { toolUseId: key },
+      );
+      const parsed: unknown = JSON.parse(routed.text);
+      return parsed;
+    };
+
+    mockSetWorktreeHooksPaused.mockRejectedValueOnce(
+      new W5CommitRefusedError(
+        'unapplied-change',
+        'An earlier change (commit 84426, w5.worktree_list.write) to worktrees.json has not finished saving.',
+        { commitId: 84426, operation: 'w5.worktree_list.write' },
+      ),
+    );
+    const wedged = await pause('hook.pause', 'toolu_wedged');
+    expect(wedged).toMatchObject({
+      ok: false,
+      error: { code: 'execution_failed' },
+    });
+    expect(JSON.stringify(wedged)).toContain('commit 84426');
+
+    mockSetWorktreeHooksPaused.mockRejectedValueOnce(
+      new W5CommitRefusedError(
+        'in-progress',
+        'This request is still in progress.',
+      ),
+    );
+    expect(await pause('hook.resume', 'toolu_busy')).toMatchObject({
+      ok: false,
+      error: { code: 'in_progress', retryable: true },
+    });
+    mockDispatchWorktreeAction.mockReset();
   });
 
   it('a moved write runs once per key', async () => {

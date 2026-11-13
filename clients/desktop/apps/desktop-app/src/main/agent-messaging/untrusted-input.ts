@@ -12,6 +12,7 @@ const FORBIDDEN_CHAT_INPUT_FIELDS = [
   'watcherPartSnapshots',
   'turnOverride',
   'automationDispatch',
+  'executionHarnessChoice',
 ] as const;
 
 const AGENT_SENDER_CONTEXT_KIND = 'agent-sender-context';

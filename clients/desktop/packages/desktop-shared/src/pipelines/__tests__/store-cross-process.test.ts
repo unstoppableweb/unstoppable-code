@@ -11,7 +11,7 @@ jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
     join(mockRoot, 'pipelines', 'index.json'),
   getBundledPipelinesDir: (): string => join(mockRoot, 'bundled'),
 }));
-import { saveStoredPipeline } from '../store';
+import { saveStoredPipeline } from '@canopy/execution-engine/pipelines/store';
 import type { PipelineIndex } from '@canopy/execution-engine/types/pipeline';
 
 const REPOSITORY_ROOT = resolve(__dirname, '../../../../..');

@@ -119,19 +119,37 @@ export async function handlePortalWorkEntryUpdate(
   }
 }
 
+/** Fixed, path-free refusal; `failServiceError` reports its `code`. */
+class WorkEntryRemovalPermissionError extends Error {
+  public readonly code = 'forbidden';
+}
+
 /** Delete or archive a Work Entry through the same fenced IPC lifecycle. */
 export async function handlePortalWorkEntryDelete(
   command: PortalCommandEnvelope<unknown>,
   context: PortalAdapterContext,
 ): Promise<void> {
+  // The deletion waits for preparation and the archive lock; a pairing
+  // revoked meanwhile must stop it before views close or teardown starts.
+  const authorize = (): void => {
+    if (context.canMutateResources?.() !== true)
+      throw new WorkEntryRemovalPermissionError(
+        'The paired session cannot remove Work Entries.',
+      );
+  };
   try {
+    authorize();
     const payload = readPortalWorkEntryDeletePayload(command.payload);
     const projectId = await resolveLiveCoworkEntry(payload);
-    const result = await deleteWorkEntryMutation({
-      projectId,
-      entryId: payload.entryId,
-      ...(payload.archive ? { lockAfterArchive: true } : {}),
-    });
+    authorize();
+    const result = await deleteWorkEntryMutation(
+      {
+        projectId,
+        entryId: payload.entryId,
+        ...(payload.archive ? { lockAfterArchive: true } : {}),
+      },
+      { authorize },
+    );
     context.complete(command, result);
   } catch (error) {
     failServiceError(command, context, error);

@@ -131,16 +131,16 @@ import {
 import {
   interpolateExpression,
   templateInputReferences,
-} from '@canopy/desktop-shared/node/pipelines/executor/expression-evaluator';
+} from '@canopy/execution-engine/node/pipelines/executor/expression-evaluator';
 import {
   buildExpressionContext,
   cascadeEnv,
-} from '@canopy/desktop-shared/node/pipelines/executor/execution-context';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-context';
 import {
   resolveChildPipelineRef,
   type ChildPipelineRefResolution,
 } from '@canopy/desktop-shared/node/pipelines/child-pipeline-ref';
-import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
+import { getStoredPipelinePathWithSource } from '@canopy/execution-engine/pipelines/store';
 import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
@@ -157,7 +157,7 @@ import {
   getTriggerTypes,
 } from '@canopy/execution-engine/types/pipeline';
 import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
-import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { ExecutionOptions } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { loadPipelinePackageInventorySources } from '../plugins/invocable-inventory-service';
 import {
   loadShareablePluginCatalog,
@@ -303,6 +303,8 @@ const analyses = new Map<
   PipelinePackageAnalysisInternal & {
     shareSource?: PipelineShareSource;
     shareBytes?: string;
+    /** The skill a skill analysis read its folder from. */
+    skill?: { sourceId: string; skillName: string };
   }
 >();
 const activeAnalysisRequests = new Map<string, symbol>();
@@ -378,7 +380,9 @@ function providerForConfiguredModel(
   // with, so they stay the analyzed (confirmed) model.
   if (alias && !alias.defaults) return undefined;
   const concreteModel =
-    alias?.defaults && 'base' in alias.defaults
+    alias?.defaults &&
+    'base' in alias.defaults &&
+    alias.defaults.base !== undefined
       ? alias.defaults.base
       : alias?.defaults && 'agent_id' in alias.defaults
         ? alias.defaults.agent_id
@@ -1949,7 +1953,10 @@ export async function analyzeSkillCapabilityPackage(
         requestToken,
         analysis.summary.dismissedInvocations ?? [],
       );
-    analyses.set(analysis.summary.analysisId, analysis);
+    analyses.set(analysis.summary.analysisId, {
+      ...analysis,
+      skill: { sourceId: input.sourceId, skillName: input.skillName },
+    });
     pruneAnalyses();
     return analysis.summary;
   } finally {
@@ -1968,6 +1975,30 @@ function skillEnvironmentRequirements(
       frontmatter: parseFrontmatterAndBody(rawSkill).frontmatter,
     }),
   );
+}
+
+/** The skill a live skill analysis covered and the content hash it was made over. */
+export interface SkillAnalysisSubject {
+  sourceId: string;
+  skillName: string;
+  contentHash: string;
+}
+
+/**
+ * What a live skill analysis covered, or null when it expired, never existed
+ * or analysed a pipeline. A skill publish (CAN-6176) checks both against the
+ * skill it publishes and its local file before committing: the caller chose
+ * the skill and supplied the content separately, so an analysis of one skill's
+ * folder must not vouch for another skill's bytes.
+ */
+export function skillAnalysisSubject(
+  analysisId: string,
+): SkillAnalysisSubject | null {
+  pruneAnalyses();
+  const analysis = analyses.get(analysisId);
+  return analysis?.skill && Date.parse(analysis.summary.expiresAt) > Date.now()
+    ? { ...analysis.skill, contentHash: analysis.summary.pipelineContentHash }
+    : null;
 }
 
 export function cancelPackageAnalysis(analysisId: string): void {
@@ -2203,6 +2234,7 @@ async function commitAnalyzedCapabilityPackage(
   },
   getWindow?: () => BrowserWindow | null,
   beforeCommit?: () => Promise<void>,
+  credentialContext?: CanopyCloudCredentialContext,
 ): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
   pruneAnalyses();
   const analysis = analyses.get(request.analysisId);
@@ -2245,6 +2277,7 @@ async function commitAnalyzedCapabilityPackage(
     },
     getWindow,
     beforeCommit,
+    credentialContext,
   );
 }
 
@@ -2253,6 +2286,8 @@ export async function commitCapabilityPackageUpload(
   readBlob: (sha256: string) => Uint8Array | Promise<Uint8Array>,
   getWindow?: () => BrowserWindow | null,
   beforeCommit?: () => Promise<void>,
+  /** The publishing account's context; resolved here when absent. */
+  givenCredentialContext?: CanopyCloudCredentialContext,
 ): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
   const startedAt = Date.now();
   emitProgress(getWindow, { stage: 'Preparing files…' });
@@ -2262,9 +2297,9 @@ export async function commitCapabilityPackageUpload(
   // server only attaches an upload owned by the publishing account. When the
   // context can't be resolved here, each request resolves (and fails) on its
   // own.
-  const credentialContext = await resolveCanopyCloudCredentialContext().catch(
-    () => undefined,
-  );
+  const credentialContext =
+    givenCredentialContext ??
+    (await resolveCanopyCloudCredentialContext().catch(() => undefined));
   const digest = computePipelinePackageDigestSync(manifest);
   // The deadline scales with the blob count, which is unknown until the
   // upload is prepared; preparation runs under the base allowance.
@@ -2679,6 +2714,8 @@ export async function createSubjectCapabilityPackage(
     selectedOptionalResourceIds?: string[];
   },
   getWindow?: () => BrowserWindow | null,
+  /** The publishing account's context, so the package lands in that account. */
+  credentialContext?: CanopyCloudCredentialContext,
 ): Promise<{
   capabilityPackage: PipelinePackageRef;
   committedPackageUploadId: string;
@@ -2689,6 +2726,8 @@ export async function createSubjectCapabilityPackage(
       selectedOptionalResourceIds: request.selectedOptionalResourceIds ?? [],
     },
     getWindow,
+    undefined,
+    credentialContext,
   );
   return {
     capabilityPackage: committed.packageRef,
@@ -3094,6 +3133,31 @@ export async function repinAutomationCapabilityPackageContent(
     expected,
     next,
   );
+}
+
+/**
+ * CAN-6065: gives `toAutomationId` the package install `fromAutomationId`
+ * has, when a workflow's installed schedule hands it to another. Resolves to
+ * whether `to` holds it, read back; with nothing to copy, `to` holds what
+ * `from` did. `from`'s own install stays until its record is deleted.
+ */
+export async function copyAutomationCapabilityPackageInstall(
+  fromAutomationId: string,
+  toAutomationId: string,
+): Promise<boolean> {
+  const storePath = getPipelinePackageInstallStorePath();
+  const to = { kind: 'automation' as const, localAutomationId: toAutomationId };
+  try {
+    const install = await findCapabilityPackageInstallByOwner(storePath, {
+      kind: 'automation',
+      localAutomationId: fromAutomationId,
+    });
+    if (!install) return true;
+    await upsertCapabilityPackageInstall(storePath, { ...install, owner: to });
+    return (await findCapabilityPackageInstallByOwner(storePath, to)) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**

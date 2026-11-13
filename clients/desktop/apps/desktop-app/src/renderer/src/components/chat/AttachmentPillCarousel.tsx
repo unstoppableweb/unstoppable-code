@@ -6,7 +6,7 @@ import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import { useFilePreview } from '@/hooks/useFilePreview';
 import { IMAGE_FILENAME } from '@/lib/file-type';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
-import { FileTypeIcon } from '@/components/shared/file-icons';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import {
   AttachmentCardTile,
   AttachmentImageTile,
@@ -77,8 +77,7 @@ function AttachmentTile({
             ) : (
               <FileTypeIcon
                 filename={attachment.filename}
-                size={28}
-                boxSize={28}
+                size="2xl"
                 className="shrink-0"
               />
             )}
@@ -91,8 +90,7 @@ function AttachmentTile({
         ) : (
           <FileTypeIcon
             filename={attachment.filename}
-            size={16}
-            boxSize={16}
+            size="md"
             className="shrink-0"
           />
         )

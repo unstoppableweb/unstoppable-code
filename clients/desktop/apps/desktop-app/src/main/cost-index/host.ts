@@ -219,7 +219,7 @@ async function readPipelineRun(
   executionId: string,
 ): Promise<Awaited<ReturnType<CostIndexHost['readPipelineRun']>>> {
   const { loadExecutionState } =
-    await import('@canopy/desktop-shared/node/pipelines/executor');
+    await import('@canopy/execution-engine/node/pipelines/executor');
   const { getArchivedContainerExecutionsDir } = await import('../lib/paths');
   const directory =
     scope.kind === 'retained'
@@ -292,7 +292,7 @@ async function readPipelineRunStates(
   >();
   if (scope.kind !== 'entry') return states;
   const { listExecutionSummaries } =
-    await import('@canopy/desktop-shared/node/pipelines/executor');
+    await import('@canopy/execution-engine/node/pipelines/executor');
   const summaries = await listExecutionSummaries(
     join(getDataDir(), 'pipeline-executions'),
   );

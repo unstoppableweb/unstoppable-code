@@ -32,7 +32,6 @@ import { useGitHubStore } from '@/stores/githubStore';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { extractIpcErrorMessage } from '@/lib/errors';
-import { resolveSharedPlanUrl } from '@/lib/share-links';
 import { useTeamOrgShareEntryVisible } from '@/lib/share-targets';
 import { buildPlanReadyExecuteOptions } from '@/lib/planReadyPipelineExecuteOptions';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
@@ -320,6 +319,9 @@ export function PlansSection(): JSX.Element {
   const loadTrackedPlans = useActivityStore((state) => state.loadTrackedPlans);
   const togglePlanHidden = useActivityStore((state) => state.togglePlanHidden);
   const shareTrackedPlan = useActivityStore((state) => state.shareTrackedPlan);
+  const unshareTrackedPlan = useActivityStore(
+    (state) => state.unshareTrackedPlan,
+  );
   const addToast = useGitHubStore((state) => state.addToast);
   const openImportModal = useActivityStore((state) => state.openImportModal);
   const loadDetectedPlans = useActivityStore(
@@ -426,61 +428,11 @@ export function PlansSection(): JSX.Element {
     setPipelineRunError(null);
   }, []);
 
-  // Fire the "Plan shared." success toast, resolving the plan's shareable link
-  // so the notification hands the user the URL directly. Best-effort: the toast
-  // still fires without a link when the cloud base URL is unavailable or the
-  // plan has no server copy yet.
-  const emitPlanSharedToast = useCallback(
-    (plan: TrackedPlanData): void => {
-      const remoteId = plan.share?.remoteId;
-      if (!remoteId) {
-        addToast('Plan shared.', 'success', undefined, {
-          projectId: plan.projectId,
-          worktreeId: plan.worktreeId,
-        });
-        return;
-      }
-      void resolveSharedPlanUrl(remoteId).then((shareUrl) => {
-        addToast('Plan shared.', 'success', undefined, {
-          projectId: plan.projectId,
-          worktreeId: plan.worktreeId,
-          ...(shareUrl ? { link: { url: shareUrl, signedIn: true } } : {}),
-        });
-      });
-    },
-    [addToast],
-  );
-
-  const handleShare = useCallback(
-    (plan: TrackedPlanData): void => {
-      if (!hasVisiblePlanShare(plan)) {
-        setSharePlan(plan);
-        return;
-      }
-      setSharingPlanId(plan.id);
-      void shareTrackedPlan(plan.projectId, plan.worktreeId, plan.id)
-        .then((updated) => {
-          if (!updated) {
-            addToast('Failed to share plan.', 'error', undefined, {
-              projectId: plan.projectId,
-              worktreeId: plan.worktreeId,
-            });
-            return;
-          }
-          emitPlanSharedToast(updated);
-        })
-        .catch(() => {
-          addToast('Failed to share plan.', 'error', undefined, {
-            projectId: plan.projectId,
-            worktreeId: plan.worktreeId,
-          });
-        })
-        .finally(() => {
-          setSharingPlanId(null);
-        });
-    },
-    [addToast, emitPlanSharedToast, shareTrackedPlan],
-  );
+  // A shared plan opens its access view, like a first share opens the form;
+  // nothing is pushed until the dialog's own actions ask (CAN-5904).
+  const handleShare = useCallback((plan: TrackedPlanData): void => {
+    setSharePlan(plan);
+  }, []);
 
   const handleShareSubmit = useCallback(
     async (request: SharePlanShareRequest): Promise<TrackedPlanData | null> => {
@@ -502,6 +454,25 @@ export function PlansSection(): JSX.Element {
     },
     [shareTrackedPlan, sharePlan],
   );
+
+  // Leaves `sharingPlanId` alone: the dialog locks itself while it stops,
+  // and closes the moment the stop lands.
+  const handleUnshare =
+    useCallback(async (): Promise<TrackedPlanData | null> => {
+      if (!sharePlan) {
+        return null;
+      }
+      return unshareTrackedPlan(
+        sharePlan.projectId,
+        sharePlan.worktreeId,
+        sharePlan.id,
+      );
+    }, [sharePlan, unshareTrackedPlan]);
+  // The dialog follows the store's copy, so a retry, a stop, or another
+  // window's change reaches it while it is open.
+  const liveSharePlan = sharePlan
+    ? (plans.find((plan) => plan.id === sharePlan.id) ?? sharePlan)
+    : null;
 
   const handlePipelineRun = useCallback(
     async (
@@ -784,11 +755,11 @@ export function PlansSection(): JSX.Element {
         />
       )}
 
-      {sharePlan && (
+      {liveSharePlan && (
         <SharePlanModal
-          planId={sharePlan.id}
-          planTitle={sharePlan.title}
-          existingShare={sharePlan.share}
+          planId={liveSharePlan.id}
+          planTitle={liveSharePlan.title}
+          existingShare={liveSharePlan.share}
           onClose={(): void => {
             if (sharingPlanId) {
               return;
@@ -796,6 +767,7 @@ export function PlansSection(): JSX.Element {
             setSharePlan(null);
           }}
           onShare={handleShareSubmit}
+          onUnshare={handleUnshare}
         />
       )}
 

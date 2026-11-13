@@ -14,7 +14,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  watch,
   writeFileSync,
   writeSync,
 } from 'node:fs';
@@ -360,8 +359,9 @@ function expectPushWithoutForce(commands: string[][]): void {
 
 /**
  * O_RDWR keeps release non-blocking even when a regression never runs the hook.
- * A file notification replaces the old blocking FIFO reader; both the watcher
- * and deadline are disposed on early completion, rejection and assertion errors.
+ * A polled marker file replaces the old blocking FIFO reader; `fs.watch` can
+ * miss the hook's write on macOS (CAN-6409). Both the poll and the deadline
+ * are disposed on early completion, rejection and assertion errors.
  */
 async function duringHook<T>(
   name: string,
@@ -374,9 +374,9 @@ async function duringHook<T>(
   execFileSync('mkfifo', [release]);
   const fd = openSync(release, constants.O_RDWR);
   let entered = (): void => {};
-  const watcher = watch(barrier, () => {
+  const poll = setInterval(() => {
     if (existsSync(started)) entered();
-  });
+  }, 10);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const ready = new Promise<void>((resolve, reject) => {
     entered = resolve;
@@ -396,7 +396,7 @@ async function duringHook<T>(
     ]);
     await inspect(pending);
   } finally {
-    watcher.close();
+    clearInterval(poll);
     if (timer !== undefined) clearTimeout(timer);
     writeSync(fd, 'continue\n');
     try {

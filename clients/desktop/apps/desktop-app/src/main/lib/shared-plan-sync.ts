@@ -8,6 +8,7 @@ import {
   type PlanCommentThread,
   type ShareTrackedPlanRequest,
   type TrackedPlanData,
+  type UnshareTrackedPlanRequest,
   type TrackedPlanShareState,
 } from '@canopy/desktop-shared/types';
 import {
@@ -24,6 +25,7 @@ import {
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import {
   createSharedPlan,
+  deleteSharedPlan,
   getSharedPlan,
   updateSharedPlan,
 } from '../plans/canopy-server-client';
@@ -95,6 +97,32 @@ interface RealtimeBucket {
 }
 const realtimeByRemote = new Map<string /* remoteId */, RealtimeBucket>();
 const remoteByTuple = new Map<string /* planKey */, string /* remoteId */>();
+// Unshares in flight by planKey (CAN-5904). While a key is here no sync, share,
+// retry or realtime refresh writes share state, so nothing resurrects the share
+// the unshare is clearing.
+const unsharing = new Map<string, Promise<TrackedPlanData | null>>();
+// Plans edited while their unshare ran; a failed unshare pushes them again.
+const editedWhileUnsharing = new Set<string>();
+// Sync runs and share calls in flight by planKey, which an unshare awaits
+// before it clears timers, so nothing they schedule survives it.
+const activeWork = new Map<string, Set<Promise<unknown>>>();
+
+function trackWork<T>(key: string, work: Promise<T>): Promise<T> {
+  let set = activeWork.get(key);
+  if (!set) {
+    set = new Set();
+    activeWork.set(key, set);
+  }
+  set.add(work);
+  const remove = (): void => {
+    set.delete(work);
+    if (set.size === 0 && activeWork.get(key) === set) {
+      activeWork.delete(key);
+    }
+  };
+  work.then(remove, remove);
+  return work;
+}
 
 export function initializeSharedPlanSync(nextRuntime: SyncRuntime): void {
   runtime = nextRuntime;
@@ -106,6 +134,9 @@ export function initializeSharedPlanSync(nextRuntime: SyncRuntime): void {
   pending.clear();
   retryAttempts.clear();
   lastPushedCommentHash.clear();
+  unsharing.clear();
+  editedWhileUnsharing.clear();
+  activeWork.clear();
   stopAllPlanRealtimeSubscriptions();
 }
 
@@ -431,7 +462,19 @@ function isNonRetryableCloudConfigError(error: unknown): boolean {
   );
 }
 
-export async function shareTrackedPlan(
+export function shareTrackedPlan(
+  request: ShareTrackedPlanRequest,
+): Promise<TrackedPlanData | null> {
+  const key = planKey(request);
+  if (unsharing.has(key)) {
+    return Promise.reject(
+      new Error('This plan is being unshared. Try again in a moment.'),
+    );
+  }
+  return trackWork(key, shareTrackedPlanNow(request));
+}
+
+async function shareTrackedPlanNow(
   request: ShareTrackedPlanRequest,
 ): Promise<TrackedPlanData | null> {
   const plan = await getTrackedPlan(
@@ -555,6 +598,10 @@ export function queueSharedPlanSync(
     worktreeId: plan.worktreeId,
     planId: plan.id,
   };
+  if (unsharing.has(planKey(ref))) {
+    editedWhileUnsharing.add(planKey(ref));
+    return;
+  }
   void writeShareStatus(ref, 'pending').catch((error: unknown) => {
     logMainProcessError(
       `Failed to mark shared plan ${ref.planId} pending sync`,
@@ -678,6 +725,10 @@ function reconcilePlanRealtimeSubscription(plan: TrackedPlanData): void {
       remoteId: nextRemoteId,
       onSignal: (): void => {
         refs.forEach((bucketRef) => {
+          // The final signal of our own unshare: the plan is gone remotely.
+          if (unsharing.has(planKey(bucketRef))) {
+            return;
+          }
           void refreshSharedPlanFromServer(bucketRef).catch(() => undefined);
         });
       },
@@ -744,6 +795,9 @@ export function stopAllPlanRealtimeSubscriptions(): void {
  */
 async function runSharedPlanSync(ref: SyncRef): Promise<void> {
   const key = planKey(ref);
+  if (unsharing.has(key)) {
+    return;
+  }
   if (inFlight.has(key)) {
     pending.add(key);
     return;
@@ -751,7 +805,7 @@ async function runSharedPlanSync(ref: SyncRef): Promise<void> {
   inFlight.add(key);
 
   try {
-    await syncLatestPlan(ref);
+    await trackWork(key, syncLatestPlan(ref));
   } catch (error) {
     logMainProcessError(
       `Shared-plan sync failed for plan ${ref.planId}`,
@@ -767,6 +821,9 @@ async function runSharedPlanSync(ref: SyncRef): Promise<void> {
 }
 
 async function syncLatestPlan(ref: SyncRef): Promise<void> {
+  if (unsharing.has(planKey(ref))) {
+    return;
+  }
   const plan = await getTrackedPlan(ref.projectId, ref.worktreeId, ref.planId);
   if (!plan?.share) {
     return;
@@ -848,6 +905,9 @@ async function persistSyncError(
   error: unknown,
   stopRetry: boolean,
 ): Promise<void> {
+  if (unsharing.has(planKey(ref))) {
+    return;
+  }
   const message = isHttpStatus(error, 409)
     ? 'The shared plan changed on the server. Review the cloud copy before syncing again.'
     : errorMessage(error);
@@ -866,4 +926,90 @@ async function persistSyncError(
     void runSharedPlanSync(ref);
   }, delay);
   retryTimers.set(key, timer);
+}
+
+/**
+ * Stop sharing a tracked plan (CAN-5904): delete the cloud copy, then clear
+ * the local `share`. A second call while one runs answers the same promise.
+ *
+ * In order: the key joins `unsharing`, so no new sync, share, retry or
+ * realtime refresh writes share state; work already in flight is awaited;
+ * only then are its timers and per-plan sync state dropped, so nothing it
+ * scheduled survives. A share whose first push never succeeded has no
+ * `remoteId` and clears without a network call. A cloud copy that is already
+ * gone (`unshared: false`) still clears. Any other failure (offline, 5xx)
+ * leaves the share as it was and rethrows, so the caller can show it; there
+ * is no local-only unshare.
+ *
+ * Only `share` is cleared. The local plan content and its comment threads,
+ * teammate comments merged in by `applyRemoteSharedPlanComments` included,
+ * stay in the local plan file.
+ */
+export function unshareTrackedPlan(
+  request: UnshareTrackedPlanRequest,
+): Promise<TrackedPlanData | null> {
+  const ref: SyncRef = {
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    planId: request.planId,
+  };
+  const key = planKey(ref);
+  const existing = unsharing.get(key);
+  if (existing) {
+    return existing;
+  }
+  const run = (async (): Promise<TrackedPlanData | null> => {
+    try {
+      await Promise.allSettled([...(activeWork.get(key) ?? [])]);
+      clearTimeout(debounceTimers.get(key));
+      debounceTimers.delete(key);
+      clearTimeout(retryTimers.get(key));
+      retryTimers.delete(key);
+      retryAttempts.delete(key);
+      pending.delete(key);
+      lastPushedCommentHash.delete(key);
+
+      const plan = await getTrackedPlan(
+        ref.projectId,
+        ref.worktreeId,
+        ref.planId,
+      );
+      if (!plan) {
+        return null;
+      }
+      if (!plan.share) {
+        reconcilePlanRealtimeSubscription(plan);
+        return plan;
+      }
+      // `remoteId` is typed as required, but a share whose first push never
+      // succeeded may have persisted without one.
+      if (plan.share.remoteId) {
+        try {
+          await deleteSharedPlan(plan.share.remoteId);
+        } catch (error) {
+          // The share stays, but its timers and pending state were dropped
+          // above and edits made meanwhile were not queued. Push once more
+          // when anything was left unpushed; a synced share stays as it was.
+          unsharing.delete(key);
+          if (
+            plan.share.syncStatus !== 'synced' ||
+            editedWhileUnsharing.has(key)
+          ) {
+            scheduleSharedPlanSync(ref);
+          }
+          throw error;
+        }
+      }
+      const updated = await writeShareState(ref, undefined);
+      if (updated) {
+        reconcilePlanRealtimeSubscription(updated);
+      }
+      return updated;
+    } finally {
+      unsharing.delete(key);
+      editedWhileUnsharing.delete(key);
+    }
+  })();
+  unsharing.set(key, run);
+  return run;
 }

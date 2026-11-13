@@ -1,5 +1,5 @@
 import { StringDecoder } from 'node:string_decoder';
-import type { McpAvailabilityObserver } from '@canopy/desktop-shared/node/codex-runtime/mcp-availability-observer';
+import type { McpAvailabilityObserver } from '@canopy/execution-engine/node/codex-runtime/mcp-availability-observer';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 

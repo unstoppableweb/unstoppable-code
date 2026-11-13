@@ -1,8 +1,8 @@
 import {
   forwardRef,
   useCallback,
-  useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,6 +10,7 @@ import {
   type ForwardedRef,
   type JSX,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import type { Descendant } from 'slate';
 import {
@@ -19,16 +20,11 @@ import {
 } from '@canopy/ui-shared';
 import type {
   ChatEditor,
-  FileMentionOption,
   SerializedEditorValue,
   SerializedFileReference,
-  SlashCommandOption,
-  SlashCommandPreparation,
 } from '../types';
 import { createEmptyValue } from '../types';
-import { useFileTypeahead, useSlashCommands } from '../plugins';
-import { FileTypeaheadMenu } from './FileTypeaheadMenu';
-import { SlashCommandMenu } from './SlashCommandMenu';
+import type { ComposerMenuChannel } from './composer-menu-channel';
 import { SlateEditor, type SlateEditorHandle } from './SlateEditor';
 import {
   COMPOSER_DENSITY_CLASS_NAMES,
@@ -43,7 +39,7 @@ import {
   restoreEditorContent,
   serializeEditorValue,
 } from './slate-utils';
-import { usePendingSlashCommand } from './use-pending-slash-command';
+import { useComposerMenu } from './useComposerMenu';
 
 /**
  * Imperative handle for the composer editor. Hosts drive the draft from
@@ -103,6 +99,8 @@ export interface ComposerEditorProps {
    */
   initialFileReferences?: SerializedFileReference[];
   placeholder?: string;
+  /** Drawn after the placeholder text, such as a key hint. */
+  placeholderSuffix?: ReactNode;
   /**
    * Vertical density step (see `COMPOSER_DENSITY_CLASS_NAMES`). Desktop picks
    * a smaller step as its panel gets shorter; web stays comfortable.
@@ -149,34 +147,32 @@ export interface ComposerEditorProps {
   /** Forward pasted files to the host attachment pipeline. */
   onPasteFiles?: (files: File[]) => void;
   /**
-   * Optional slash-command catalog fetcher. The host owns the IO; the
-   * editor caches the result for the duration of the active trigger.
-   * A new identity means a new catalog scope: an open trigger drops its
-   * in-flight request and refetches, so keep the identity stable across
-   * renders that do not change the catalog.
+   * Runs the composer menu session (`/`, `@`, `$` and the `+` toolbar) in
+   * the editor and publishes it on `channel` for the host's menu. A host
+   * that runs its own session (desktop) omits it.
    */
-  fetchSlashCommands?: () => Promise<SlashCommandOption[]>;
-  /**
-   * Host gate run before a slash row is inserted. Cloud uses it to enable an
-   * available catalog skill and Portal to resolve a row's host text; `false`
-   * or a rejection leaves the trigger text untouched.
-   */
-  onSelectSlashCommand?: (
-    command: SlashCommandOption,
-  ) => SlashCommandPreparation | Promise<SlashCommandPreparation>;
-  /**
-   * Optional file-mention search. Receives the typeahead query and returns
-   * matching files for the menu.
-   */
-  searchFileMentions?: (query: string) => Promise<FileMentionOption[]>;
-  /** Render a multi-repo header row in the file-mention menu. */
-  multiRepo?: boolean;
+  composerMenu?: ComposerEditorMenuSession;
+}
+
+export interface ComposerEditorMenuSession {
+  readonly channel: ComposerMenuChannel;
+  /** Whether typed triggers open the menu. */
+  readonly enabled: boolean;
+  /** Codex's `$` opens the commands menu like `/`. */
+  readonly dollar?: boolean;
+  /** A new scope closes the session and forgets a dismissed trigger. */
+  readonly scopeKey: string;
+  /** Commands are listed: `/` opens them, and the placeholder says so. */
+  readonly hasCommands: boolean;
+  /** Files can be mentioned: `@` opens them, and the placeholder says so. */
+  readonly hasFiles: boolean;
 }
 
 /**
  * The one chat composer editor both hosts render: the shared Slate editor
- * plus the inline `/` command and `@` file-mention typeaheads, the density
- * map, the coarse-pointer Enter rule, and the pasted-files hook.
+ * plus, when the host asks, the composer menu session that `/`, `@` and the
+ * `+` share, the density map, the coarse-pointer Enter rule, and the
+ * pasted-files hook.
  *
  * Two ownership modes keep both hosts on it. Web lets the editor own the
  * draft (uncontrolled, seeded by `initialText`). Desktop passes its own
@@ -194,6 +190,7 @@ function ComposerEditorInner(
     initialText,
     initialFileReferences,
     placeholder,
+    placeholderSuffix,
     density = 'comfortable',
     containerClassName,
     className,
@@ -208,10 +205,7 @@ function ComposerEditorInner(
     onSubmit,
     canSubmit,
     onPasteFiles,
-    fetchSlashCommands,
-    onSelectSlashCommand,
-    searchFileMentions,
-    multiRepo = false,
+    composerMenu,
   }: ComposerEditorProps,
   ref: ForwardedRef<ComposerEditorHandle>,
 ): JSX.Element {
@@ -252,170 +246,13 @@ function ComposerEditorInner(
     [isControlled, onChange],
   );
 
-  // Cache the slash-command catalog for the lifetime of an open trigger so
-  // typing into the menu doesn't fan out one network round-trip per keystroke.
-  const [slashCommands, setSlashCommands] = useState<SlashCommandOption[]>([]);
-  const slashLoadedForRef =
-    useRef<ComposerEditorProps['fetchSlashCommands']>(undefined);
-  const [slashLoading, setSlashLoading] = useState(false);
-
-  // Only a host that supplies a catalog gets the inline `/` flow; a host that
-  // owns `/` itself (desktop's composer menu) must not have a second trigger
-  // tracker here that could swallow its keys, mirroring the `@` gate below.
-  const slash = useSlashCommands(editor, {
-    commands: slashCommands,
-    isDiscovering: slashLoading,
-    enabled: fetchSlashCommands !== undefined,
-  });
-  // Latest-slash ref so the async enablement gate below inserts through (and
-  // checks staleness against) the CURRENT trigger, not the render that
-  // started the selection.
-  // A query changed away and back is still a different selection session.
-  const slashGeneration = useRef(0);
-  useEffect(() => {
-    slashGeneration.current += 1;
-  }, [slash.triggerKey, slash.isOpen]);
-  const slashRef = useRef(slash);
-  useEffect(() => {
-    slashRef.current = slash;
-  }, [slash]);
-
-  // Shared enable-before-insert gate (also used by a Commands popup): one
-  // pending selection at a time, no insert on failure or staleness.
-  const {
-    pendingCommand: pendingSlashCommand,
-    selectCommand: gateSlashSelect,
-  } = usePendingSlashCommand(onSelectSlashCommand);
-
-  const selectSlashCommand = useCallback(
-    (command: SlashCommandOption): void => {
-      if (command.disabledReason !== undefined) return;
-      const triggerKey = slash.triggerKey;
-      const generation = slashGeneration.current;
-      if (onSelectSlashCommand && triggerKey === null) return;
-      gateSlashSelect(
-        command,
-        (cmd) => slashRef.current.selectCommand(cmd),
-        () => {
-          // Stale when the trigger closed or was retargeted (different text
-          // or range) while the host enablement was in flight.
-          const latest = slashRef.current;
-          return !(
-            latest.isOpen &&
-            latest.triggerKey === triggerKey &&
-            slashGeneration.current === generation
-          );
-        },
-      );
-    },
-    [gateSlashSelect, onSelectSlashCommand, slash],
-  );
-
-  useEffect(() => {
-    if (
-      !slash.isOpen ||
-      !fetchSlashCommands ||
-      slashLoadedForRef.current === fetchSlashCommands
-    ) {
-      return;
-    }
-    let cancelled = false;
-    slashLoadedForRef.current = fetchSlashCommands;
-    setSlashCommands([]);
-    setSlashLoading(true);
-    fetchSlashCommands()
-      .then((commands) => {
-        if (!cancelled) {
-          setSlashCommands(commands);
-        }
-      })
-      .catch(() => {
-        // Swallow the error — the menu shows "No matching commands" when the
-        // catalog stays empty, which is the desired UX.
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setSlashLoading(false);
-        }
-      });
-    return (): void => {
-      cancelled = true;
-    };
-  }, [slash.isOpen, fetchSlashCommands]);
-
-  // File mentions: query the host on every typeahead query change. The host
-  // is expected to debounce / cache as appropriate.
-  const [mentionResults, setMentionResults] = useState<{
-    query: string;
-    files: FileMentionOption[];
-  } | null>(null);
-  const [mentionQueryInFlight, setMentionQueryInFlight] = useState<
-    string | null
-  >(null);
-  const mentionQueryInFlightRef = useRef<string | null>(null);
-
-  const synchronousSearch = useCallback(
-    (query: string): FileMentionOption[] => {
-      // The shared hook expects a synchronous search; we couple it to the
-      // cached `mentionResults` and trigger an async refresh via effect below.
-      return mentionResults?.query === query ? mentionResults.files : [];
-    },
-    [mentionResults],
-  );
-
-  const fileTypeahead = useFileTypeahead(editor, {
-    enabled: Boolean(searchFileMentions),
-    search: synchronousSearch,
-    includeRepoName: multiRepo,
-  });
   const resolvedPlaceholder =
     placeholder ??
     defaultChatPlaceholder(
-      Boolean(fetchSlashCommands),
-      Boolean(searchFileMentions),
+      composerMenu?.hasCommands ?? false,
+      composerMenu?.hasFiles ?? false,
       isPhonePlaceholderWidth,
     );
-
-  useEffect(() => {
-    if (!fileTypeahead.isOpen || !searchFileMentions) {
-      return;
-    }
-    const query = fileTypeahead.query;
-    if (mentionQueryInFlightRef.current === query) return;
-    mentionQueryInFlightRef.current = query;
-    setMentionQueryInFlight(query);
-    let cancelled = false;
-    searchFileMentions(query)
-      .then((results) => {
-        if (!cancelled) {
-          setMentionResults({ query, files: results });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMentionResults({ query, files: [] });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          mentionQueryInFlightRef.current = null;
-          setMentionQueryInFlight(null);
-        }
-      });
-    return (): void => {
-      cancelled = true;
-      if (mentionQueryInFlightRef.current === query) {
-        mentionQueryInFlightRef.current = null;
-      }
-    };
-  }, [fileTypeahead.isOpen, fileTypeahead.query, searchFileMentions]);
-
-  // Reset cache when the trigger closes so a re-open re-fetches commands.
-  useEffect(() => {
-    if (!slash.isOpen) {
-      slashLoadedForRef.current = undefined;
-    }
-  }, [slash.isOpen]);
 
   const publishSerialized = useCallback((): void => {
     const serialized = serializeEditorValue(editor.children);
@@ -440,19 +277,8 @@ function ComposerEditorInner(
       // Enter and Escape that confirm or dismiss an IME candidate belong to
       // the composition, not to typeaheads or submission.
       if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-      if (fileTypeahead.isOpen && fileTypeahead.onKeyDown(event)) return;
-      if (slash.isOpen) {
-        // Show all is handled by the hook: Enter expands, Tab is consumed.
-        if (
-          (event.key === 'Enter' || event.key === 'Tab') &&
-          slash.selectedCommand !== null
-        ) {
-          event.preventDefault();
-          selectSlashCommand(slash.selectedCommand);
-          return;
-        }
-        if (slash.onKeyDown(event)) return;
-      }
+      // The open composer menu takes navigation, selection and Escape.
+      if (composerMenu?.channel.getSnapshot()?.handleKeyDown(event)) return;
       if (
         onSubmit !== undefined &&
         event.key === 'Enter' &&
@@ -466,16 +292,7 @@ function ComposerEditorInner(
         onSubmit(payload);
       }
     },
-    [
-      editor,
-      fileTypeahead,
-      slash,
-      selectSlashCommand,
-      onKeyDown,
-      onSubmit,
-      canSubmit,
-      isCoarsePointer,
-    ],
+    [editor, composerMenu, onKeyDown, onSubmit, canSubmit, isCoarsePointer],
   );
 
   const handlePaste = useCallback(
@@ -546,36 +363,13 @@ function ComposerEditorInner(
       className={className ? `relative ${className}` : 'relative'}
       aria-disabled={disabled || undefined}
     >
-      {fileTypeahead.isOpen && searchFileMentions && (
-        <FileTypeaheadMenu
-          files={fileTypeahead.filteredFiles}
-          selectedIndex={fileTypeahead.selectedIndex}
-          isMultiRepo={multiRepo}
-          isLoading={mentionQueryInFlight !== null}
-          onSelect={fileTypeahead.selectFile}
-        />
-      )}
-      {!fileTypeahead.isOpen && slash.isOpen && fetchSlashCommands && (
-        <SlashCommandMenu
-          commands={slash.filteredCommands}
-          selectedIndex={slash.selectedIndex}
-          onHover={slash.setSelectedIndex}
-          isDiscovering={slash.isDiscovering}
-          itemLabel="commands"
-          title="Commands"
-          onSelect={selectSlashCommand}
-          pendingCommand={pendingSlashCommand}
-          hiddenCount={slash.hiddenCount}
-          totalCount={slash.totalCount}
-          onShowAll={slash.showAll}
-        />
-      )}
       <SlateEditor
         ref={editorRef}
         editor={editor}
         value={value}
         readOnly={disabled}
         placeholder={resolvedPlaceholder}
+        placeholderSuffix={placeholderSuffix}
         onChange={handleChange}
         onSelectionChange={onSelectionChange}
         onKeyDown={handleKeyDown}
@@ -586,8 +380,50 @@ function ComposerEditorInner(
         dataTestId={dataTestId}
         typeToFocus={typeToFocus}
       />
+      {/* After the editor, so the session's layout effects find its DOM. */}
+      {composerMenu ? (
+        <ComposerMenuSession
+          editor={editor}
+          session={composerMenu}
+          onChange={(): void => {
+            commit([...editor.children]);
+            publishSerialized();
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+/**
+ * Runs the composer menu session beside the editor and publishes it. It
+ * renders with the editor on every change, so the session reads the same
+ * document and selection snapshot the editor does; it publishes only when
+ * the session itself changes (the controller is memoized on its state).
+ */
+function ComposerMenuSession({
+  editor,
+  session,
+  onChange,
+}: {
+  editor: ChatEditor;
+  session: ComposerEditorMenuSession;
+  onChange: () => void;
+}): null {
+  const controller = useComposerMenu(editor, {
+    enabled: session.enabled,
+    slash: session.hasCommands,
+    at: session.hasFiles,
+    dollar: session.dollar ?? false,
+    scopeKey: session.scopeKey,
+    onChange,
+  });
+  const { channel } = session;
+  useLayoutEffect(() => {
+    channel.publish(controller);
+  }, [channel, controller]);
+  useLayoutEffect(() => (): void => channel.publish(null), [channel]);
+  return null;
 }
 
 export const ComposerEditor = forwardRef<

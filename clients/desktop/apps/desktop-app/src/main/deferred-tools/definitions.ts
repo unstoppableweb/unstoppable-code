@@ -1,6 +1,6 @@
 import { z } from 'zod/v4';
 import { BRAND } from '@canopy/brand/current';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 
 const appName = BRAND.displayName;
 

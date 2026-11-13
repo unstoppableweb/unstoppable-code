@@ -48,6 +48,11 @@ export class MemoryRelayEndpoint {
     return () => this.offlineListeners.delete(listener);
   }
 
+  // Presence here only goes offline; nothing announces a peer online.
+  onPeerOnline(): () => void {
+    return () => undefined;
+  }
+
   onUndeliverable(listener: (peer: string) => void): () => void {
     this.undeliverableListeners.add(listener);
     return () => this.undeliverableListeners.delete(listener);

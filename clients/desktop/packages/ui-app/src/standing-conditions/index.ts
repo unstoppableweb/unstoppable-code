@@ -1,7 +1,7 @@
 export {
-  StandingConditionsBanner,
-  type StandingConditionsBannerProps,
-} from './StandingConditionsBanner';
+  standingConditionToast,
+  type StandingConditionToast,
+} from './standing-condition-toast';
 export {
   OFFLINE_STANDING_CONDITION,
   rankStandingConditions,

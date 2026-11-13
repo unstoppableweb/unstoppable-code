@@ -52,6 +52,12 @@ export interface ToastActionButtonProps {
    * them spins and none starts it again.
    */
   readonly actionKey?: string;
+  /**
+   * Work the host tracks itself is running, such as a pinned condition's
+   * retry whose probe reports its own progress: the button spins and takes
+   * no presses until it clears.
+   */
+  readonly busy?: boolean;
   readonly 'data-testid'?: string;
 }
 
@@ -83,6 +89,7 @@ export function ToastActionButton({
   onDone,
   busyLabel,
   actionKey,
+  busy: hostBusy = false,
   'data-testid': dataTestId,
 }: ToastActionButtonProps): JSX.Element {
   const [ownBusy, setOwnBusy] = useState(false);
@@ -91,7 +98,7 @@ export function ToastActionButton({
     () => actionKey !== undefined && runningToastActions.has(actionKey),
     () => false,
   );
-  const busy = ownBusy || sharedBusy;
+  const busy = ownBusy || sharedBusy || hostBusy;
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;

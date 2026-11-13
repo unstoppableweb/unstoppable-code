@@ -301,10 +301,12 @@ html[data-sidebar-appearance='translucent'] .app-sidebar-material {
   border-right-color: var(--line-selected);
 }
 
-/* Early access: the floating App Advisor panel's page sits in a transparent
- * native view and rounds its own corners (FloatingChatWindow), so the body
- * paints nothing behind it. */
-body[data-app-advisor-floating] {
+/* The floating App Advisor panel's page sits in a transparent native view
+ * and rounds its own corners (FloatingChatWindow), and the docked page draws
+ * only its panel cards over the main window, so the body paints nothing
+ * behind either. */
+body[data-app-advisor-floating],
+body[data-app-advisor-docked] {
   background-color: transparent;
 }
 
@@ -559,11 +561,13 @@ body[data-app-advisor-floating] {
 }
 
 /* Pages without a panel grid are one card. A top bar on the worktree page,
- * kept mounted but hidden while another page shows, does not count. */
+ * kept mounted but hidden while another page shows, does not count. The
+ * docked Orchestrator page sits under a top bar its host (the main window)
+ * draws, so it is split like a page with its own. */
 [data-window-layout='inset'] main[data-main-frame='card'],
 [data-window-layout='inset'] main[data-main-frame='card-below-bar'],
 [data-window-layout='inset']
-  main[data-main-frame='split']:not(
+  main[data-main-frame='split']:not([data-main-frame-under-host-bar]):not(
     :has(
       :is(
         [data-testid='worktree-top-bar'],
@@ -721,11 +725,12 @@ body[data-app-advisor-floating] {
 
 /* Every page without a top bar of its own (New Task, Automations, and the
  * rest, plus a worktree page with nothing selected) keeps the 46px top bar
- * row empty, so its card starts exactly where a worktree's panel grid does. */
+ * row empty, so its card starts exactly where a worktree's panel grid does.
+ * The docked Orchestrator page already sits under its host's top bar. */
 [data-window-layout='inset'] main[data-main-frame='card'],
 [data-window-layout='inset'] main[data-main-frame='card-below-bar'],
 [data-window-layout='inset']
-  main[data-main-frame='split']:not(
+  main[data-main-frame='split']:not([data-main-frame-under-host-bar]):not(
     :has(
       :is(
         [data-testid='worktree-top-bar'],

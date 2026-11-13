@@ -46,11 +46,11 @@ import {
   listExecutionSummaries,
   loadExecutionState,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { getDefaultWorkspaceClaudeMd } from '@canopy/desktop-shared/constants/workspace-templates';
 import { listArchivedContainerManifests } from './archived-containers';
 import {

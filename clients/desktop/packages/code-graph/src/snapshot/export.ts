@@ -279,11 +279,17 @@ export async function buildCodeGraphSnapshot(input: {
       )
       .sort(compareSnapshotEdges),
   };
-  // 2-space indent + trailing newline, per the source-controlled-snapshot
-  // contract (docs/planning/2026-07-07-code-graph-asts/README.md) — a
-  // trailing newline keeps the committed file POSIX-text-file-clean.
-  const json = `${JSON.stringify(envelope, null, 2)}\n`;
-  return { envelope, json };
+  return { envelope, json: serializeCodeGraphSnapshot(envelope) };
+}
+
+/**
+ * A snapshot's file text: 2-space indent + trailing newline, per the
+ * source-controlled-snapshot contract
+ * (docs/planning/2026-07-07-code-graph-asts/README.md) — a trailing newline
+ * keeps the committed file POSIX-text-file-clean.
+ */
+export function serializeCodeGraphSnapshot(snapshot: unknown): string {
+  return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
 async function readPreviousSnapshotSymbolCount(
@@ -311,12 +317,41 @@ async function readPreviousSnapshotSymbolCount(
 }
 
 /**
+ * Writes a serialized snapshot to `outPath`, enforcing the refuse-to-shrink
+ * guard first: if a snapshot already exists at `outPath` with N symbols and
+ * the new snapshot has fewer than N/2, this throws
+ * {@link CodeGraphSnapshotShrinkError} unless `force: true` is passed. A
+ * destination that does not exist yet, or is not a valid snapshot, is never
+ * protected (nothing to refuse-to-shrink FROM).
+ */
+export async function writeCodeGraphSnapshotFile(input: {
+  json: string;
+  symbolCount: number;
+  outPath: string;
+  force?: boolean;
+}): Promise<void> {
+  const previousSymbolCount = await readPreviousSnapshotSymbolCount(
+    input.outPath,
+  );
+  if (
+    previousSymbolCount !== null &&
+    previousSymbolCount > 0 &&
+    !(input.force ?? false) &&
+    input.symbolCount < previousSymbolCount * 0.5
+  ) {
+    throw new CodeGraphSnapshotShrinkError(
+      previousSymbolCount,
+      input.symbolCount,
+      input.outPath,
+    );
+  }
+  await fs.mkdir(path.dirname(input.outPath), { recursive: true });
+  await fs.writeFile(input.outPath, input.json, 'utf8');
+}
+
+/**
  * Builds a snapshot (via {@link buildCodeGraphSnapshot}) and writes it to
- * `outPath`, enforcing the refuse-to-shrink guard first: if a snapshot
- * already exists at `outPath` with N symbols and the new snapshot has fewer
- * than N/2, this throws {@link CodeGraphSnapshotShrinkError} unless
- * `force: true` is passed. A destination that does not exist yet, or is not
- * a valid snapshot, is never protected (nothing to refuse-to-shrink FROM).
+ * `outPath` through {@link writeCodeGraphSnapshotFile}.
  */
 export async function exportCodeGraphSnapshotToFile(input: {
   store: CodeGraphStore;
@@ -326,22 +361,11 @@ export async function exportCodeGraphSnapshotToFile(input: {
   force?: boolean;
 }): Promise<{ envelope: CodeGraphSnapshotEnvelope; json: string }> {
   const built = await buildCodeGraphSnapshot(input);
-  const previousSymbolCount = await readPreviousSnapshotSymbolCount(
-    input.outPath,
-  );
-  if (
-    previousSymbolCount !== null &&
-    previousSymbolCount > 0 &&
-    !(input.force ?? false) &&
-    built.envelope.symbols.length < previousSymbolCount * 0.5
-  ) {
-    throw new CodeGraphSnapshotShrinkError(
-      previousSymbolCount,
-      built.envelope.symbols.length,
-      input.outPath,
-    );
-  }
-  await fs.mkdir(path.dirname(input.outPath), { recursive: true });
-  await fs.writeFile(input.outPath, built.json, 'utf8');
+  await writeCodeGraphSnapshotFile({
+    json: built.json,
+    symbolCount: built.envelope.symbols.length,
+    outPath: input.outPath,
+    ...(input.force === undefined ? {} : { force: input.force }),
+  });
   return built;
 }

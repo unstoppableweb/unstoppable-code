@@ -7,7 +7,11 @@ import {
   CanopyStreamCursorSchema,
   CanopyStreamEndSchema,
 } from '../../definitions';
-import { CanopyJsonValueSchema } from '../../errors';
+import {
+  CanopyErrorPayloadSchema,
+  CanopyJsonValueSchema,
+  CanopyQueryRetryDirectiveSchema,
+} from '../../errors';
 import { CanopyEventSchema } from '../../wire';
 import { inherentOperationErrorSchema } from '../shared';
 
@@ -51,3 +55,15 @@ export const CoreEventsAckErrorSchema = inherentOperationErrorSchema([
   'core.events.revisionConflict',
   'core.events.notFound',
 ]);
+
+export const CoreEventsUnsubscribeParamsSchema = z.strictObject({
+  subscriptionId: id,
+});
+/** `unsubscribed` is false when the connection holds no such subscription. */
+export const CoreEventsUnsubscribeResultSchema = z
+  .object({ unsubscribed: z.boolean() })
+  .catchall(CanopyJsonValueSchema);
+// No operation codes: an unknown id answers `unsubscribed: false`.
+export const CoreEventsUnsubscribeErrorSchema = CanopyErrorPayloadSchema.extend(
+  { code: z.never().optional(), retry: CanopyQueryRetryDirectiveSchema },
+);

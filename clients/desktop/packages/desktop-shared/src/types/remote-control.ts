@@ -157,6 +157,8 @@ export interface RemoteControlState {
   relayDetail: string | null;
   thisDevice: RemoteControlDevice | null;
   allowIncoming: boolean;
+  /** Paired computers that control this one may install its updates. */
+  allowRemoteUpdates: boolean;
   hosts: RemoteControlHost[];
   controllers: RemoteControlController[];
   /** Online devices on this account that accept pairing and are not paired. */
@@ -235,6 +237,7 @@ export interface RemoteControlApi {
    * and Portal sessions and closes the pairing window; pairings are kept.
    */
   setAllowIncoming(allow: boolean): Promise<RemoteControlState>;
+  setAllowRemoteUpdates(allow: boolean): Promise<RemoteControlState>;
   /** Opens, or replaces, the pairing link window. Needs Remote Control on. */
   openPairingWindow(): Promise<RemoteControlOpenPairingWindowResult>;
   closePairingWindow(): Promise<RemoteControlState>;

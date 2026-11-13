@@ -2,7 +2,18 @@ import type {
   CoreCoworkProject,
   CoreCoworkTask,
 } from '@canopy/app-state/core-cowork';
-import { cloudProjectsForContext } from '../useCloudCoworkSidebar';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import {
+  listCloudChatsForAdvisor,
+  openCloudChatForAdvisor,
+} from '../cloud-chat-advisor-actions';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import {
+  cloudCoworkStore,
+  cloudProjectsForContext,
+} from '../useCloudCoworkSidebar';
 
 const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_ORG = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -10,10 +21,12 @@ const OTHER_ORG = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const project = (
   workspaceId: string,
   ownerOrganizationId: string | null,
+  kind: CoreCoworkProject['kind'] = 'cowork',
 ): CoreCoworkProject => ({
   key: `web-core:${workspaceId}`,
   workspaceId,
   name: workspaceId,
+  kind,
   ownerOrganizationId,
 });
 
@@ -53,6 +66,28 @@ describe('cloud cowork sidebar rows', () => {
     expect(personal.map((row) => row.workspaceId)).toEqual(['personal']);
   });
 
+  it('without a scoping context every project shows, as local rows do (CAN-6100)', () => {
+    const all = cloudProjectsForContext(PROJECTS, TASKS, undefined);
+    expect(all.map((row) => row.workspaceId)).toEqual([
+      'personal',
+      'ours',
+      'theirs',
+    ]);
+  });
+
+  it('a repository project is listed in its context with no entries (CAN-6100)', () => {
+    const rows = cloudProjectsForContext(
+      [...PROJECTS, project('repo', ORG.toUpperCase(), 'git')],
+      TASKS,
+      { kind: 'organization', organizationId: ORG },
+    );
+    expect(rows.map((row) => [row.workspaceId, row.kind])).toEqual([
+      ['ours', 'cowork'],
+      ['repo', 'git'],
+    ]);
+    expect(rows[1]?.entries).toEqual([]);
+  });
+
   it('an archived task leaves the sidebar', () => {
     const archived: CoreCoworkTask = {
       key: 'web-core:ours:task-2',
@@ -68,5 +103,82 @@ describe('cloud cowork sidebar rows', () => {
       { kind: 'organization', organizationId: ORG },
     );
     expect(row?.entries.map((entry) => entry.title)).toEqual(['Plan']);
+  });
+});
+
+describe('App Advisor reads and opens the cloud chats the sidebar shows (CAN-5974)', () => {
+  const setFlag = (on: boolean): void =>
+    useFeatureFlagsStore.setState({
+      isEnabled: (key) =>
+        key === CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key ||
+        (on && key === CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key),
+    });
+  const openTask = jest.fn(() => Promise.resolve());
+
+  beforeEach(() => {
+    setFlag(true);
+    useWorkspaceContextStore.setState((store) => ({
+      hydrated: true,
+      state: {
+        ...store.state,
+        context: { kind: 'organization', organizationId: ORG },
+      },
+    }));
+    cloudCoworkStore.setState({
+      status: 'online',
+      projects: PROJECTS,
+      tasksByProject: TASKS,
+    });
+    useStandaloneChatStore.setState({ openWorkEntryFromSidebar: openTask });
+    openTask.mockClear();
+  });
+
+  it("lists the selected context's chats as ids and titles, and opens only those", () => {
+    expect(listCloudChatsForAdvisor()).toEqual({
+      ok: true,
+      result: {
+        chats: [
+          {
+            chatId: 'task-1',
+            projectId: 'ours',
+            projectName: 'ours',
+            title: 'Plan',
+          },
+        ],
+      },
+    });
+
+    expect(openCloudChatForAdvisor('task-elsewhere')).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    expect(openTask).not.toHaveBeenCalled();
+
+    expect(openCloudChatForAdvisor('task-1')).toEqual({
+      ok: true,
+      result: { chatId: 'task-1', projectId: 'ours', title: 'Plan' },
+    });
+    // It opens on the cowork page, like a local task (CAN-6175 R2b).
+    expect(openTask).toHaveBeenCalledWith('web-core:ours', 'web-core:task-1');
+  });
+
+  it('answers unavailable while cloud chats are off or offline', () => {
+    cloudCoworkStore.setState({ status: 'offline' });
+    expect(listCloudChatsForAdvisor()).toMatchObject({
+      ok: false,
+      error: { code: 'surface_unavailable' },
+    });
+    expect(openCloudChatForAdvisor('task-1')).toMatchObject({
+      ok: false,
+      error: { code: 'surface_unavailable' },
+    });
+
+    cloudCoworkStore.setState({ status: 'online' });
+    setFlag(false);
+    expect(listCloudChatsForAdvisor()).toMatchObject({
+      ok: false,
+      error: { code: 'surface_unavailable' },
+    });
+    expect(openTask).not.toHaveBeenCalled();
   });
 });

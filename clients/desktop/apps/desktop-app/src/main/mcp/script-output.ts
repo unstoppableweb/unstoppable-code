@@ -43,7 +43,8 @@ export interface ScriptOutputSnapshot {
     | 'failed'
     | 'timed out'
     | 'stopped'
-    | 'interrupted';
+    | 'interrupted'
+    | 'orphaned';
   exitCode?: number | null;
   timedOut?: boolean;
   durationMs?: number;
@@ -214,7 +215,7 @@ export async function resolveScriptKey(args: {
 }
 
 export function mapHumanStatus(meta: {
-  status: 'running' | 'success' | 'failed' | 'cancelled' | 'lost';
+  status: 'running' | 'success' | 'failed' | 'cancelled' | 'lost' | 'orphaned';
   timedOut: boolean;
   exitCode: number | null;
 }): NonNullable<ScriptOutputSnapshot['humanStatus']> {
@@ -224,6 +225,10 @@ export function mapHumanStatus(meta: {
   // A restart interrupted the run; it was not run again.
   if (meta.status === 'lost') {
     return 'interrupted';
+  }
+  // A restart left its process running, unproven and not stopped (CAN-6482).
+  if (meta.status === 'orphaned') {
+    return 'orphaned';
   }
   if (meta.status === 'success') {
     return 'succeeded';

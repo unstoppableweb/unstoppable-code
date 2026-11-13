@@ -15,6 +15,7 @@ import {
 import {
   fetchOrigin,
   getCurrentBranch,
+  getHeadCommitSha,
   hasAutostashEntry,
   hasUnmergedPaths,
   isRebaseInProgress,
@@ -58,6 +59,7 @@ export function desktopGitSyncWritePort(repoPath: string): GitSyncWritePort {
     fetchOrigin: ({ prune }) =>
       fetchOrigin(repoPath, { prune, signal: new AbortController().signal }),
     currentBranch: () => getCurrentBranch(repoPath),
+    head: () => getHeadCommitSha(repoPath),
     pullFastForward: (branch) => pullBranchFastForward(repoPath, branch),
     pullRebase: async (branch) => {
       try {

@@ -171,7 +171,7 @@ test('bounds-only main and aux window resizes persist without any layout mutatio
   // Well inside any display so main's visible-display clamp
   // (hardenPanelAuxWindow) does not move the restored window.
   const RESIZED_BOUNDS = { x: 60, y: 60, width: 700, height: 500 };
-  const MAIN_SIZE = { width: 1100, height: 720 };
+  let MAIN_SIZE;
   // Keep the existing cross-platform placement/main-window tolerance. Linux
   // aux persistence must additionally round-trip the exact native size.
   const TOLERANCE_PX = 40;
@@ -219,6 +219,16 @@ test('bounds-only main and aux window resizes persist without any layout mutatio
     const mainWorkArea = await first.electronApp.evaluate(
       ({ screen }) => screen.getPrimaryDisplay().workArea,
     );
+    // Fit the size and the 60px origin inset inside the display. In
+    // particular, macOS CI has a 1024x680 work area: a fixed 1100x720
+    // fixture would be clamped on relaunch instead of round-tripping.
+    MAIN_SIZE = await mainWindow.evaluate((win, workArea) => {
+      const [minWidth, minHeight] = win.getMinimumSize();
+      return {
+        width: Math.max(minWidth, Math.min(1100, workArea.width - 60)),
+        height: Math.max(minHeight, Math.min(720, workArea.height - 60)),
+      };
+    }, mainWorkArea);
     // Hidden native windows can start at (0, 0), above the macOS work area.
     // Give the size-persistence check a valid origin; the non-Linux
     // offscreen fallback is deliberately unchanged by this fix.

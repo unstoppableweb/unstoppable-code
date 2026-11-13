@@ -16,6 +16,8 @@ export interface SettingsConfirmDialogProps {
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
   readonly dataTestId?: string;
+  /** Overrides the default confirm-button test id. */
+  readonly confirmTestId?: string;
   /** The failed action, shown above the buttons while the dialog stays open. */
   readonly errorMessage?: string | null;
   /** The failure's raw reason: copied by `Copy details`, never shown. */
@@ -42,6 +44,7 @@ export function SettingsConfirmDialog({
   onConfirm,
   onCancel,
   dataTestId,
+  confirmTestId,
   errorMessage,
   errorDetails,
   restoreFocusRef,
@@ -57,6 +60,7 @@ export function SettingsConfirmDialog({
       onConfirm={onConfirm}
       onCancel={onCancel}
       dataTestId={dataTestId}
+      confirmTestId={confirmTestId}
       cancelTestId="confirm-dialog-cancel"
       errorMessage={errorMessage}
       errorDetails={errorDetails}

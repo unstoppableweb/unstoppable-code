@@ -56,7 +56,7 @@ export async function createCursorCheckHook(
             : undefined,
           details: isWrite
             ? { kind: 'file-write', path: filePath }
-            : { kind: 'tool', toolName: 'Read', inputSummary: filePath },
+            : { kind: 'tool', toolName: 'Read', path: filePath },
           toolUseId: payload.tool_use_id,
         },
       );

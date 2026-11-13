@@ -1,3 +1,11 @@
+import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
+import {
+  startPolling,
+  stopPolling,
+  stopTracking,
+  getForegroundWorktreeKey,
+  setForegroundWorktree,
+} from '../github-poller';
 import type * as WorkerTerminalModule from '../../terminal/worker-terminal';
 import type * as RoutedWorkerTerminalModule from '../../terminal/routed-worker-terminal';
 import type * as PortalEventBusModule from '../../portal/portal-event-bus';
@@ -65,6 +73,12 @@ jest.mock('../code-graph-eager-seed', () => ({
   eagerSeedNewWorktreeCodeGraph: jest.fn(() => Promise.resolve()),
 }));
 
+import { executeArchiveIoRequest } from '../../archive/archive-io-engine';
+import {
+  captureArchivedContainerGitState,
+  setArchivedContainerGitIoExecutorForTests,
+} from '../archived-container-git';
+import { markWorkspaceTargetRemovalPending } from '../workspace-target-exclusion';
 import { realpathSync } from 'node:fs';
 import { registerWorkspaceTypes } from '../workspace-registry';
 import { spawnTerminalForRenderer } from '../../services/terminal-service';
@@ -282,6 +296,161 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     else process.env.CANOPY_DATA_DIR = originalDataDir;
   });
 
+  it(
+    'enrolls a newly created worktree in PR polling without a sidebar sync',
+    async () => {
+      startPolling(() => null);
+      stopPolling();
+      const { record } = await createWorktreeFromSelection({
+        workspaceId: SINGLE,
+        workspaceKind: 'single-repo',
+        branch: { kind: 'new', branchName: 'feature/poller-enrollment' },
+        base: { kind: 'repository-default' },
+      });
+      try {
+        await settleDetachedWork();
+        setForegroundWorktree(SINGLE, record.worktreeId);
+        expect(getForegroundWorktreeKey()).toBe(
+          `${SINGLE}/${record.worktreeId}`,
+        );
+      } finally {
+        stopTracking(SINGLE, record.worktreeId);
+        stopPolling();
+        await settleDetachedWork();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'captures the configured archive base and pinned refs while removal is pending',
+    async () => {
+      const { record } = await createWorktreeFromSelection({
+        workspaceId: SINGLE,
+        workspaceKind: 'single-repo',
+        branch: { kind: 'new', branchName: 'feature/archive-base' },
+        base: { kind: 'branch', baseBranch: 'develop' },
+      });
+      const row = await persistedRow(SINGLE, record.worktreeId);
+      const release = markWorkspaceTargetRemovalPending(
+        SINGLE,
+        record.worktreeId,
+      );
+      setArchivedContainerGitIoExecutorForTests((request, signal) =>
+        executeArchiveIoRequest(
+          request,
+          signal ?? new AbortController().signal,
+          {
+            progress: () => {},
+            child: { started: () => {}, exited: () => {} },
+          },
+        ),
+      );
+      try {
+        const captured = await captureArchivedContainerGitState({
+          workspaceId: SINGLE,
+          containerId: record.worktreeId,
+          workspaceType: 'single-repo',
+          worktreePath: getWorktreeDir(SINGLE, record.worktreeId),
+          persistedWorktree: row,
+        });
+        const repository = captured.gitState.repositories[0];
+        expect(repository).toMatchObject({
+          comparisonBaseBranch: 'develop',
+          baseBranchCommit: git(singleRepo, ['rev-parse', 'develop']),
+        });
+        expect(repository?.snapshotRef).toBeTruthy();
+        if (!repository) throw new Error('Missing archive repository');
+        expect(
+          git(repository.referenceRepoPath, [
+            'rev-parse',
+            `${repository.snapshotRef}^{commit}`,
+          ]),
+        ).toBe(repository.worktreeSnapshotCommit);
+      } finally {
+        release();
+        setArchivedContainerGitIoExecutorForTests();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'repairs an absent unowned startup registration while preserving a quarantined archive and both branches',
+    async () => {
+      const { rename } = await import('node:fs/promises');
+      const { reconcileGitPendingWorktrees } =
+        await import('../worktree-boot-recovery');
+      await writeJson(getWorkspaceWorktreesFilePath(SINGLE), {
+        version: 1,
+        worktrees: [],
+      });
+      const orphan = getWorktreeDir(SINGLE, 'startup-orphan');
+      const held = getWorktreeDir(SINGLE, 'startup-held');
+      await mkdir(path.dirname(orphan), { recursive: true });
+      git(singleRepo, [
+        'worktree',
+        'add',
+        '-b',
+        `orphan-${path.basename(process.env.CANOPY_DATA_DIR ?? '')}`,
+        orphan,
+        'main',
+      ]);
+      git(singleRepo, [
+        'worktree',
+        'add',
+        '-b',
+        `held-${path.basename(process.env.CANOPY_DATA_DIR ?? '')}`,
+        held,
+        'main',
+      ]);
+      const orphanBranch = git(orphan, ['branch', '--show-current']);
+      const heldBranch = git(held, ['branch', '--show-current']);
+      const quarantine = path.join(
+        path.dirname(held),
+        '.startup-held.archive-quarantine',
+      );
+      await rename(held, quarantine);
+      const registeredBefore = git(singleRepo, [
+        'worktree',
+        'list',
+        '--porcelain',
+      ]);
+      expect(registeredBefore).toContain(orphan);
+      await rm(orphan, { recursive: true });
+      const workspaces = await import('../workspace-service');
+      const listed = await workspaces.listWorkspaceItems();
+      const onlySingle = jest
+        .spyOn(workspaces, 'listWorkspaceItems')
+        .mockResolvedValue(
+          listed
+            .filter((entry) => entry.id === SINGLE)
+            .map((entry) => ({ ...entry, worktrees: [] })),
+        );
+      try {
+        await reconcileGitPendingWorktrees();
+      } finally {
+        onlySingle.mockRestore();
+      }
+      const registeredAfter = git(singleRepo, [
+        'worktree',
+        'list',
+        '--porcelain',
+      ]);
+      expect(registeredAfter).not.toContain(`worktree ${orphan}\n`);
+      expect(registeredAfter).toContain(`worktree ${held}\n`);
+      expect(git(singleRepo, ['branch', '--list', orphanBranch])).toContain(
+        orphanBranch,
+      );
+      expect(git(singleRepo, ['branch', '--list', heldBranch])).toContain(
+        heldBranch,
+      );
+      expect(
+        await readFile(path.join(quarantine, 'README.md'), 'utf8'),
+      ).toContain('base');
+    },
+    TEST_TIMEOUT_MS,
+  );
   (process.platform === 'win32' ? it.skip : it).each([
     ['single-repo', SINGLE, undefined, 'renderer'],
     ['multi-repo', MULTI, 'api', 'renderer'],

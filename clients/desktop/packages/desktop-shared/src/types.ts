@@ -1,12 +1,17 @@
+import type { AssistantMode } from '@canopy/execution-engine/types/assistant-mode';
+import type { WorkspaceType } from '@canopy/execution-engine/types/workspace-type';
 import type {
   WorkEntryAutoDeleteWorkspaceSnapshot,
   WorkEntryAutoDeleteDisarmRequest,
   WorkEntryAutoDeleteResolveBranchRequest,
 } from '@canopy/protocol/work-entry-auto-delete';
 import type {
+  WorktreeRecoveryListParams,
+  WorktreeRecoveryListResult,
   CoworkFolderStatus,
   CoworkFolderMissing,
   CoworkUnstartedSend,
+  PipelineSchedule,
 } from '@canopy/protocol/canopy-core';
 import type {
   FeedbackReportContext,
@@ -19,6 +24,7 @@ import type {
 import {
   CLAUDE_MODELS,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CODEX_MODEL,
   OLLAMA_MODELS,
   OLLAMA_MODEL_PREFIX,
   clampThinkingLevelForModel,
@@ -49,6 +55,7 @@ export {
   COPILOT_MODELS,
   CURSOR_MODELS,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CODEX_MODEL,
   OLLAMA_MODELS,
   OLLAMA_MODEL_PREFIX,
   OPENCODE_MODELS,
@@ -91,6 +98,7 @@ export {
   getProviderForModel,
   getRemovedGatewayOnlyModelHarness,
   hasGatewayModelRoutes,
+  hasDiscoveredAccountModelCatalog,
   hasHydratedGatewayCatalog,
   hasHydratedModelRegistry,
   hasRequiredOllamaCapabilities,
@@ -210,6 +218,11 @@ import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import type { ChatEvent } from '@canopy/agent-transcript/lib/chat-event-output';
 import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import type {
+  PersonalAiGatewayConfig,
+  PersonalAiGatewayUpdate,
+} from '@canopy/protocol/model-gateway';
+import type { AiGatewayConnectionResult } from '@canopy/protocol/model-gateway/discovery';
+import type {
   PortalChatCloudAttachmentRef,
   W5RecoveryApi,
 } from '@canopy/protocol/portal';
@@ -222,6 +235,7 @@ export type {
   ClaudeModAdmission,
   SkippedClaudeMod,
 } from '@canopy/execution-engine/types/claude-mod-admission';
+import type { WorktreeRecoveryRequest } from '@canopy/protocol/portal/worktree-recovery';
 import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 import type {
   SharedMultiRepoCreateCommand,
@@ -285,11 +299,13 @@ import type {
 } from '@canopy/protocol/plan-detection';
 import type { ChatDetail } from '@canopy/protocol/chat-detail';
 import type { EditorSetupAction } from '@canopy/agent-actions/families/editor-setup/actions';
+import type { CloudChatAction } from '@canopy/agent-actions/families/cloud-chats/actions';
 import type {
   RepoRulesScanRequest,
   RepoRulesScanResponse,
   RepoRulesApplyRequest,
   RepoRulesApplyResponse,
+  RepoRulesCheckResponse,
   RepoRulesStatus,
   RepoRulesPreviewRequest,
   RepoRulesPreviewResponse,
@@ -570,6 +586,17 @@ import type {
   LocalMemorySnapshotRestoreResponse,
 } from './types/local-memory';
 import type {
+  MemorySyncConflict,
+  MemorySyncConflictAction,
+  MemorySyncControlResult,
+  MemorySyncHistoryResult,
+  MemorySyncMode,
+  MemorySyncPreviewResult,
+  MemorySyncScopeState,
+  MemorySyncSettingsPatch,
+  MemorySyncState,
+} from './types/memory-sync';
+import type {
   LocalWatcherTarget,
   LocalWatcherRuntimeState,
 } from './types/local-watchers';
@@ -594,6 +621,7 @@ import type {
   CreateSharedContainerGrantResponse,
   ListSharedContainerRecipientsResponse,
   ListDismissedSharedContainersResponse,
+  ListSharedContainerOwnerDeparturesResponse,
   ListSharedContainersResponse,
   SearchSharedContainerMembersResponse,
   SharedContainerCapability,
@@ -646,6 +674,7 @@ import type {
   GatewayModelConfig,
 } from '@canopy/protocol/llm-gateway';
 import type {
+  AutomationExecutionLocation,
   AutomationShareScope,
   ListSharedAutomationsResponse,
   SharedAutomationDetail,
@@ -1975,6 +2004,8 @@ export type CloudChatAttachmentUploadResult =
         | 'too_large'
         | 'rejected'
         | 'offline';
+      /** The web core's own words for a refusal it explained (CAN-6369). */
+      message?: string;
     };
 
 /** Cloud cowork chats over the web core (CAN-4185). */
@@ -2471,6 +2502,25 @@ export interface LinearStatus {
   displayName: string | null;
   error: string | null;
 }
+
+/** The device AI gateway and the id its models and key are keyed by. */
+export interface LocalModelGatewayState {
+  organizationId: string;
+  /** Null until a gateway is first saved on this device. */
+  gateway: PersonalAiGatewayConfig | null;
+}
+
+export interface LocalModelGatewayConnectInput {
+  expectedOrganizationId: string;
+  baseUrl: string;
+  /** Omitted to reuse this device's stored key for the same endpoint. */
+  apiKey?: string;
+}
+
+/** Errors cross IPC as plain settings payloads, like hosted settings. */
+export type LocalModelGatewayResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: SettingsErrorPayload };
 
 export interface ModelGatewayCredentialState {
   secureStorageFailure?: SecureStorageFailure;
@@ -3822,7 +3872,7 @@ export interface WorktreeHealthCheckResponse {
   issue?: WorktreeHealthIssue;
 }
 
-export type WorkspaceType = 'single-repo' | 'multi-repo' | 'cowork';
+export type { WorkspaceType };
 
 export type ActivitySectionId =
   | 'plugins'
@@ -4369,6 +4419,14 @@ export interface ChatProjectsFile {
   projects: ChatProjectData[];
 }
 
+/** Most recent detached organization binding; history never grants access. */
+export interface WorkspaceDetachedOwner {
+  version: 1;
+  owner: WorkspaceOwnerBinding;
+  reason: 'organization-access-lost';
+  detachedAt: string;
+}
+
 export interface WorkspaceConfigFile {
   privateMemory?: boolean;
   privateMemoryManagedBy?: 'organization';
@@ -4389,6 +4447,8 @@ export interface WorkspaceConfigFile {
    * changes it; ordinary config writes keep what is on disk.
    */
   ownershipTransfer?: WorkspaceOwnershipTransfer;
+  /** Historical binding only; ordinary config writes preserve it. */
+  detachedOwner?: WorkspaceDetachedOwner;
   repoPath?: string;
   repos: WorkspaceRepoData[];
   /** Ordering mode for the workspace's child rows. Missing means recency. */
@@ -5976,15 +6036,17 @@ export type InAppNotificationPlacement =
 export interface InAppNotificationPreferences {
   enabled: boolean;
   /**
-   * The corner the user picked. Unset keeps the app's default corner, which
-   * the renderer resolves: top-right with early access on, bottom-right
-   * otherwise.
+   * A retained notification corner. Unset follows the app's bottom-right
+   * default, resolved by the renderer. Explicit choices are preserved, as are
+   * legacy top-right, top-left, and bottom-left values without a chosen flag.
    */
   placement?: InAppNotificationPlacement;
   /**
-   * Set when the user picked `placement` in Settings. Older builds saved
-   * `bottom-right` on their own, so a stored `bottom-right` without this flag
-   * is dropped on load and the default corner applies.
+   * Set when the user picked `placement` in Settings, preserving any of the
+   * four corners, including bottom-right. Older builds saved `bottom-right`
+   * automatically; without this flag, that value is dropped on load to follow
+   * the app default, even when the default is also bottom-right. Other valid
+   * legacy corners are retained without this flag.
    */
   placementChosen?: true;
   categories: NotificationCategoryMap;
@@ -6678,6 +6740,39 @@ export function isChatIngestionLagEventData(
   );
 }
 
+/**
+ * Raw session-event `data.type` a provider session emits when the provider
+ * predicts the person's next message after a completed turn (the
+ * `prompt-suggestions` Labs experiment). Sent over the existing
+ * `IPC_CHANNELS.chatEvent` pipeline, outside the admission and commit path,
+ * like {@link INGESTION_LAG_EVENT_TYPE}. Not persisted and not part of
+ * canonical chat state.
+ */
+export const PROMPT_SUGGESTION_EVENT_TYPE = 'canopy_prompt_suggestion';
+
+/** Payload shape for {@link PROMPT_SUGGESTION_EVENT_TYPE} events. */
+export interface PromptSuggestionEventData {
+  type: typeof PROMPT_SUGGESTION_EVENT_TYPE;
+  /** The predicted next message, trimmed and non-empty. */
+  text: string;
+  /** The user message that started the turn the suggestion follows. */
+  turnUserMessageId: string;
+}
+
+/** Narrow an emitted session-event payload to a prompt-suggestion event. */
+export function isPromptSuggestionEventData(
+  value: unknown,
+): value is PromptSuggestionEventData {
+  return (
+    isRecord(value) &&
+    value.type === PROMPT_SUGGESTION_EVENT_TYPE &&
+    typeof value.text === 'string' &&
+    value.text.trim().length > 0 &&
+    typeof value.turnUserMessageId === 'string' &&
+    value.turnUserMessageId.length > 0
+  );
+}
+
 /** A registry entry recorded when a chat hits a provider usage limit. */
 export interface UsageLimitedChatEntry extends UsageLimitedChatTarget {
   /** Exact owning turn captured by the trusted detector, absent on legacy entries. */
@@ -7113,6 +7208,8 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * reused so the persisted preference shape stays stable.
    */
   sidebarCoworkSectionCollapsed: boolean;
+  /** Whether the Orchestrator's chat list under its sidebar row is collapsed. */
+  sidebarOrchestratorCollapsed: boolean;
   /** Left-nav ordering and main-nav/More split. Normalized on read. */
   sidebarNavLayout: SidebarNavLayout;
   branchNamePrefixMode: BranchNamePrefixMode;
@@ -8569,6 +8666,7 @@ export interface ArchiveWorktreeResponse {
 
 /** `worktree:discard-describe`: read-only. */
 export interface WorktreeDiscardDescribeRequest {
+  recovery?: WorktreeRecoveryRequest;
   projectId: string;
   worktreeId: string;
   /** CAN-5338: also describe a retained archive of this id. */
@@ -9219,7 +9317,6 @@ export function isSelectableOllamaModel(
 }
 /** @deprecated Use DEFAULT_CLAUDE_MODEL instead. Kept as alias during rollout. */
 export const DEFAULT_MODEL: ClaudeModel = DEFAULT_CLAUDE_MODEL;
-export const DEFAULT_CODEX_MODEL: CodexModel = 'gpt-6.1-sol';
 /** Gateway-routable fallback for Codex calls without native authentication. */
 export const DEFAULT_CREDITS_CODEX_MODEL: CodexModel = 'gpt-6-luna';
 /** Preferred chat description model; see {@link defaultSummaryModel}. */
@@ -9375,7 +9472,7 @@ export interface WorktreeSelection {
  * `assistantMode === 'pipeline-editor'` comparison in `ipc/chat.ts` type-checks
  * against the widened union.
  */
-export type AssistantMode = 'default' | 'app-advisor' | 'pipeline-editor';
+export type { AssistantMode };
 
 export const GLOBAL_INSTRUCTIONS_SNAPSHOT_EVENT_TYPE =
   'global_instructions_snapshot';
@@ -9502,6 +9599,14 @@ export interface ChatSendMessageRequest {
   providerType?: AgentProviderType;
   /** Captured execution harness. Clients may echo this but cannot override main. */
   executionHarness?: ModelHarness;
+  /**
+   * The sender chose `executionHarness` for the fresh chat this send
+   * reserves, as a picker's harness choice does: the tab is pinned to it and
+   * the choice is checked against the model's chat harness options. Only an
+   * agent action sets this; every other sender echoes a captured harness,
+   * which pins nothing.
+   */
+  executionHarnessChoice?: true;
   /** @deprecated Use modelConfig.fastMode. */
   codexFastModeEnabled?: boolean;
   codexProposalMode?: 'optional' | 'required';
@@ -13879,6 +13984,14 @@ export interface ShareTrackedPlanRequest extends TrackedPlanGetRequest {
   organizationId?: string;
 }
 
+/**
+ * Renderer ⇄ main request to stop sharing a tracked plan (CAN-5904): delete
+ * the cloud copy and clear the local `share`. Handled on
+ * `IPC_CHANNELS.trackedPlansUnshare`; the answer is a
+ * `ShareOperationResult<TrackedPlanData | null>` whose plan has no `share`.
+ */
+export type UnshareTrackedPlanRequest = TrackedPlanGetRequest;
+
 export interface ShareTrackedPlanResponse {
   /** The updated local plan (now carrying `share` metadata), or null. */
   plan: TrackedPlanData | null;
@@ -14888,6 +15001,24 @@ export type ListDismissedSharedContainersResult =
   | { unsupported: true };
 
 /**
+ * Notices that a share ended because its owner left the organization.
+ * `unsupported` means notices are unavailable on the server or to the current
+ * credential. The renderer clears its cache on that result.
+ */
+export type ListSharedContainerOwnerDeparturesResult =
+  | ListSharedContainerOwnerDeparturesResponse
+  | { unsupported: true };
+
+export interface DismissSharedContainerOwnerDepartureRequest {
+  noticeId: string;
+}
+
+/** A notice the server no longer has is already dismissed. Unavailable access clears the cache. */
+export type DismissSharedContainerOwnerDepartureResult =
+  | { dismissed: true }
+  | { unsupported: true };
+
+/**
  * `not-restorable` covers every server 404: the owner revoked the removed
  * share, or it is no longer shared with this account. The server does not say
  * which, and neither does this.
@@ -15124,6 +15255,11 @@ export interface SharedContainersApi {
   listDismissed(
     request: ListDismissedSharedContainersRequest,
   ): Promise<ListDismissedSharedContainersResult>;
+  /** Notices that shares ended because their owners left (CAN-5120). */
+  listOwnerDepartures(): Promise<ListSharedContainerOwnerDeparturesResult>;
+  dismissOwnerDeparture(
+    request: DismissSharedContainerOwnerDepartureRequest,
+  ): Promise<DismissSharedContainerOwnerDepartureResult>;
   /** Returns a removed share to the inbox as a pending invitation. */
   restore(
     request: SharedContainerRecipientRequest,
@@ -17299,6 +17435,7 @@ export const AI_GATEWAY_CATALOG_STATUSES: readonly AiGatewayCatalogStatus[] = [
 ];
 
 export interface ModelRegistrySnapshot {
+  /** Account catalogs are omitted before discovery; [] publishes an empty/revoked catalog. */
   cursor?: CursorModelEntry[];
   copilot?: CopilotModelEntry[];
   opencode?: OpenCodeModelEntry[];
@@ -17810,6 +17947,24 @@ export interface ScheduledActivity {
   targetRequirementCleared?: true;
   /** Context captured by the host when enabled; never navigation at trigger time. */
   executionContext?: string;
+  /**
+   * Where the schedule fires (CAN-6183, decision P3): an
+   * `AutomationExecutionLocation`. Absent or `local` fires on this desktop.
+   * `cloud` marks a stub: the schedule is stored and fired server-side, as
+   * `cloudSchedule` names it, and this desktop never fires it. A location
+   * this desktop doesn't know is kept as written and never fired, so the
+   * field is a string here.
+   */
+  executionLocation?: string;
+  /** The server record a `cloud` stub stands for. */
+  cloudSchedule?: AutomationCloudScheduleStub;
+  /**
+   * Renderer projection only, never stored (CAN-6183): the server record of
+   * a `cloud` stub as main last read it. Its values are shown in place of
+   * the stub's, so desktop and web show one schedule; absent while main has
+   * not read it.
+   */
+  cloudRecord?: PipelineSchedule;
   version: 1;
   id: string;
   name: string;
@@ -17884,7 +18039,8 @@ export interface ScheduledActivity {
    * automation owns, as main validated its marker. While `chatEditable`,
    * `action` is the chat action the pipeline stands for, and a save of it
    * regenerates the pipeline; otherwise the pipeline was edited by hand.
-   * `storedAction` is the action main stores and runs, which sharing uses.
+   * `storedAction` is the action main stores and runs. Sharing uses it unless
+   * the validated chat projection carries an Agent or an installed package.
    */
   ownedPipeline?: {
     pipelineId: string;
@@ -17952,6 +18108,26 @@ export interface AgentScheduledSend {
   provenance: AgentSenderProvenance;
 }
 
+/**
+ * The server record a cloud schedule stub stands for (CAN-6183). The stub is
+ * stored with `enabled: false`, so a desktop that predates
+ * `executionLocation` never fires it; the server record holds on/off.
+ */
+export interface AutomationCloudScheduleStub {
+  /** The server's `scheduleId`; absent while the move has not finished. */
+  scheduleId?: string;
+  /** The cloud account that owns it; another account's stub is never acted on. */
+  accountId: string;
+  movedAt: string;
+  /** Whether the local record was on, restored if the move doesn't finish. */
+  localEnabled: boolean;
+  /**
+   * The idempotency key of a move back that has not finished, kept so a
+   * retry replays the server's answer instead of finding the record gone.
+   */
+  moveBackKey?: string;
+}
+
 /** Author-side link from a local automation to its Canopy Cloud share. */
 export interface AutomationRemoteMetadata {
   /** Cloud account that owns this author-side remote link. */
@@ -18014,7 +18190,8 @@ export interface ScheduledActivityRun {
   scheduledFor: string;
   manual: boolean;
   trigger?: AutomationRunTrigger;
-  executionLocation?: 'local';
+  /** Absent means `local`; `cloud` runs come from a cloud schedule (CAN-6183). */
+  executionLocation?: AutomationExecutionLocation;
   status: AutomationRunStatus;
   startedAt: string;
   completedAt?: string;
@@ -19089,6 +19266,12 @@ export interface ManagedDelegationApi {
 export interface CanopyApi {
   reloadWindow: () => Promise<boolean>;
   restartApp: () => Promise<boolean>;
+  /**
+   * Shows the macOS dictionary for the selection in the focused window of
+   * this renderer (its own page or a panel pull-out). Does nothing on other
+   * platforms.
+   */
+  lookUpSelection: () => Promise<void>;
   notifyStartupUnlocked: () => Promise<void>;
   loadProjects: () => Promise<SidebarItemsFile>;
   getDesktopSessionSnapshot: (
@@ -19343,6 +19526,9 @@ export interface CanopyApi {
   checkWorktreeRemovalAdmission: (
     request: CheckWorktreeRemovalAdmissionRequest,
   ) => Promise<CheckWorktreeRemovalAdmissionResponse>;
+  listWorktreeRecovery: (
+    request: WorktreeRecoveryListParams,
+  ) => Promise<WorktreeRecoveryListResult>;
   describeWorktreeDiscard: (
     request: WorktreeDiscardDescribeRequest,
   ) => Promise<WorktreeDiscardDescription>;
@@ -19819,6 +20005,19 @@ export interface CanopyApi {
   onModelGatewayCredentialChanged?: (
     cb: (organizationId: string) => void,
   ) => () => void;
+  /** The device AI gateway, used while the account names no Personal org. */
+  localModelGateway: {
+    read: () => Promise<LocalModelGatewayState>;
+    update: (
+      input: PersonalAiGatewayUpdate,
+    ) => Promise<LocalModelGatewayResult<PersonalAiGatewayConfig>>;
+    connect: (
+      input: LocalModelGatewayConnectInput,
+    ) => Promise<LocalModelGatewayResult<AiGatewayConnectionResult>>;
+    onChanged: (cb: () => void) => () => void;
+    /** Sign-in kept the account's different gateway; fires once per revision. */
+    onMigrationConflict: (cb: () => void) => () => void;
+  };
   searchLinearIssues: (query: string) => Promise<LinearTicketSearchResult[]>;
   resolvePullRequest: (
     request: ResolvePullRequestRequest,
@@ -19916,6 +20115,53 @@ export interface CanopyApi {
   restoreLocalMemorySnapshot: (
     request: LocalMemorySnapshotRestoreRequest,
   ) => Promise<LocalMemorySnapshotRestoreResponse>;
+  /** Memory sync's state for the Memory settings and panel. */
+  getMemorySyncState: () => Promise<MemorySyncState>;
+  onMemorySyncChanged: (
+    callback: (state: MemorySyncState) => void,
+  ) => () => void;
+  updateMemorySyncSettings: (
+    patch: MemorySyncSettingsPatch,
+  ) => Promise<MemorySyncControlResult>;
+  /**
+   * The first-enable review; changes nothing (design §17). `workspaceId`
+   * reviews the cloud project that workspace is bound to instead of the
+   * memories saved for every project (design §22).
+   */
+  previewMemorySyncMerge: (request?: {
+    workspaceId?: string;
+  }) => Promise<MemorySyncPreviewResult>;
+  applyMemorySyncMerge: (request: {
+    previewId: string;
+    workspaceId?: string;
+  }) => Promise<MemorySyncControlResult>;
+  readMemorySyncConflict: (request: {
+    path: string;
+  }) => Promise<MemorySyncConflict | null>;
+  resolveMemorySyncConflict: (request: {
+    path: string;
+    action: MemorySyncConflictAction;
+  }) => Promise<MemorySyncControlResult>;
+  listMemorySyncHistory: (request: {
+    before: number | null;
+  }) => Promise<MemorySyncHistoryResult>;
+  restoreMemorySyncRevision: (request: {
+    revision: number;
+  }) => Promise<MemorySyncControlResult>;
+  /** "Delete from the cloud": every cloud scope, and sync off. */
+  deleteMemorySyncFromCloud: (request: {
+    confirmed: true;
+  }) => Promise<MemorySyncControlResult>;
+  /**
+   * "Keep memories on this computer" for the cloud project a workspace is
+   * bound to: the account's choice, which every computer honors (design
+   * §22). Refused as `not_bound`, `private_memory`, `not_syncing`,
+   * `sync_disabled`, `off` or `failed`.
+   */
+  setMemorySyncProjectMemory: (request: {
+    workspaceId: string;
+    keepOnThisComputer: boolean;
+  }) => Promise<MemorySyncControlResult>;
   /**
    * Submits like/dislike/comment feedback on one injected organization-memory
    * fact to Canopy Cloud. Resolves `{ recorded: false }` (never rejects) when
@@ -20402,6 +20648,7 @@ export interface CanopyApi {
     scan(request: RepoRulesScanRequest): Promise<RepoRulesScanResponse>;
     apply(request: RepoRulesApplyRequest): Promise<RepoRulesApplyResponse>;
     status(request: { workspaceId: string }): Promise<RepoRulesStatus>;
+    check(request: { workspaceId: string }): Promise<RepoRulesCheckResponse>;
     preview(
       request: RepoRulesPreviewRequest,
     ): Promise<RepoRulesPreviewResponse>;
@@ -20732,7 +20979,11 @@ export type NavigationPage =
   | 'overview'
   | 'home'
   | 'chat'
-  /** One cloud cowork chat from the web core (CAN-4185), behind canopy-desktop-cloud-chats. */
+  /**
+   * Legacy id of the retired cloud chat page (CAN-4185), kept so older
+   * controllers and desktops still parse it. `navigate` opens the cowork
+   * page, where cloud tasks open since CAN-6175 R2b.
+   */
   | 'cloud-chat'
   | 'pipelines'
   | 'plugins'
@@ -20924,6 +21175,35 @@ export const APP_ADVISOR_REPO_RULES_MODAL_SOURCES = [
 export type AppAdvisorRepoRulesModalSource =
   (typeof APP_ADVISOR_REPO_RULES_MODAL_SOURCES)[number];
 
+/** Settings › Memory's Sync section as App Advisor sees it (CAN-5188). */
+export interface AppAdvisorMemorySyncSettingsState {
+  available: boolean;
+  signedIn: boolean;
+  enabled: boolean;
+  userScope: MemorySyncMode | null;
+  cloudConsolidation: 'allowed' | 'disallowed' | null;
+  scopeState: MemorySyncScopeState | null;
+  needsReview: boolean;
+  conflicts: number;
+  waitingToSend: number;
+  keptOnDevice: number;
+  restoreBeforeMergeAvailable: boolean;
+  saving: boolean;
+  /** A control's failure showing, as a code. */
+  failure: string | null;
+  review: {
+    phase: 'loading' | 'ready' | 'applying' | 'failed';
+    kind: 'upload' | 'merge' | 'keep' | null;
+    reloadedAfterChange: boolean;
+    failure: string | null;
+    documentsAfter: number;
+    notesSent: number;
+    notesKeptOnDevice: number;
+    memoriesSkipped: number;
+  } | null;
+  confirming: 'delete' | 'restore' | null;
+}
+
 /**
  * Sanitized snapshot of the renderer UI state exposed to the App Advisor.
  *
@@ -20949,6 +21229,10 @@ export interface AppAdvisorUiStateSnapshot {
   };
   scriptActionsReview?: { projectId: string; worktreeId: string };
   activePage: NavigationPage;
+  /** The cloud chat open on the cloud chat page (CAN-5974): ids and title, never content. */
+  cloudChat?: {
+    open: { chatId: string; projectId: string; title: string };
+  };
   /**
    * Current renderer-owned page availability; excludes Settings aliases.
    * Optional for older producers and backend-first rollout. Missing means
@@ -21178,6 +21462,14 @@ export interface AppAdvisorUiStateSnapshot {
       loaded: boolean;
       enabled: boolean;
     };
+    /**
+     * Settings › Memory's Sync section (CAN-5188), reported while it is
+     * mounted: its switches, the user scope's state and counts, and the
+     * first-enable review or confirmation open in it. Memory names and
+     * contents and the computer's name are excluded. App Advisor has no
+     * action that changes memory sync (agent actions: `ui-only`).
+     */
+    memorySync?: AppAdvisorMemorySyncSettingsState;
     /**
      * Managed delegation policy reported while the Labs settings tab is
      * mounted. Session identifiers and shutdown errors are deliberately
@@ -21470,6 +21762,16 @@ export interface AppAdvisorUiStateSnapshot {
   memoryUsedDialog?: {
     open: boolean;
     factCount: number;
+  };
+  /**
+   * The memory sync view open in a Memory panel (CAN-5188): conflicts or
+   * sync history, in Settings › Memory or a project's panel (Settings first).
+   * Never memory names or contents.
+   */
+  memorySyncView?: {
+    surface: 'settings' | 'project-panel';
+    view: 'conflicts' | 'history';
+    conflicts: number;
   };
   /**
    * Privacy opt-in confirmation sheet (CAN-3383), reported through the
@@ -22115,7 +22417,8 @@ export interface AppAdvisorUiStateSnapshot {
         | 'collection'
         | 'agent'
         | 'blueprint';
-      installedStatusFilter?: InstalledItemStatus;
+      /** A status, or `update-available` (CAN-5309; not a status). */
+      installedStatusFilter?: InstalledItemStatus | 'update-available';
       installedExpanded?: boolean;
       searchActive: boolean;
       resultCount: number;
@@ -22777,6 +23080,7 @@ export type AppAdvisorAction =
   | { type: 'navigation.close_settings' }
   | { type: 'navigation.open_import_projects' }
   | EditorSetupAction
+  | CloudChatAction
   | { type: 'navigation.open_command_palette'; query?: string }
   | { type: 'navigation.open_file_search'; query?: string }
   | {
@@ -22917,8 +23221,10 @@ export type AppAdvisorAction =
    * dispatcher routes through the same main-owned service as the sidebar.
    */
   | { type: 'workspace_context.switch'; context: WorkspaceContext }
-  | { type: 'memory.import_external' }
-  | { type: 'memory.consolidate_now' }
+  /** `workspaceId` names the project read with the user's memory; never the selected one. */
+  | { type: 'memory.import_external'; workspaceId?: string }
+  /** Consolidates the user's memory, and the named project's when given. */
+  | { type: 'memory.consolidate_now'; workspaceId?: string }
   /**
    * Destructive, so the target is explicit: a project rebuild names the
    * project whose memory it replaces (`workspaceId`, required exactly when
@@ -24163,6 +24469,8 @@ export type AppAdvisorAction =
         | 'failure'
         | 'cancelled';
       limit?: number;
+      /** `cloud` lists the account's cloud runs (CAN-6354). */
+      runOn?: 'local' | 'cloud';
     }
   | {
       type: 'pipeline.execution_get';
@@ -24394,6 +24702,16 @@ export type AppAdvisorAction =
       shareScope: 'team' | 'organization';
       teamId?: string;
       organizationId?: string;
+    }
+  | {
+      /**
+       * Stop sharing a tracked plan (CAN-5904): delete the cloud copy and
+       * clear the local share. Local content and comments are kept.
+       */
+      type: 'plan.unshare';
+      projectId: string;
+      worktreeId: string;
+      planId: string;
     }
   | {
       /**
@@ -24931,11 +25249,44 @@ export interface PipelineEditorRendererToolResponse {
  */
 /**
  * How the App Advisor window presents itself. `full` is the App Advisor
- * window (nav, tabs, panels) at its saved size. `floating` (early access) is
- * a small chat window floating over other apps in the screen's bottom-right
- * corner.
+ * window (nav, tabs, panels) at its saved size. `floating` is a chat panel
+ * in the main window's bottom-right corner. `docked` is the Orchestrator
+ * page in the main window's content area, beside the main sidebar, in the
+ * same layout as other chats (top bar, tabs, Side Panel, composer).
  */
-export type AppAdvisorWindowLayout = 'floating' | 'full';
+export type AppAdvisorWindowLayout = 'floating' | 'full' | 'docked';
+
+/** A rectangle in the main window page's CSS px. */
+export interface AppAdvisorDockRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The main window's report of where the docked Orchestrator page goes: its
+ * content area, or `null` once the page has left it.
+ */
+export interface AppAdvisorDockRequest {
+  rect: AppAdvisorDockRect | null;
+  /**
+   * False while a main-window overlay (menu, dialog, palette) covers the
+   * area: the native page would paint over it, so it is hidden meanwhile.
+   */
+  visible: boolean;
+  /**
+   * Return a still frame of the page (a PNG data URL) taken before this
+   * request applies, for the main window to show while the page is hidden.
+   */
+  captureFrame?: boolean;
+}
+
+export interface AppAdvisorDockResult {
+  state: AppAdvisorWindowState;
+  /** The still frame, when one was asked for and could be taken. */
+  frame?: string;
+}
 
 /**
  * Early access: the command-line switch that gives App Advisor's page the
@@ -24955,7 +25306,7 @@ export function appAdvisorInitialLayoutArgument(
 export function readAppAdvisorInitialLayout(
   argv: readonly string[],
 ): AppAdvisorWindowLayout | undefined {
-  for (const layout of ['floating', 'full'] as const) {
+  for (const layout of ['floating', 'full', 'docked'] as const) {
     if (argv.includes(appAdvisorInitialLayoutArgument(layout))) return layout;
   }
   return undefined;
@@ -25012,6 +25363,10 @@ export interface AppAdvisorWindowOpenRequest {
   layout?: AppAdvisorWindowLayout;
   /** Focus this user-authored turn after selecting `chatId`. */
   userMessageId?: string;
+  /** Start a new Work Entry once the window is ready (the docked page's New chat). */
+  newWorkEntry?: boolean;
+  /** Open the Orchestrator's settings once the window is ready. */
+  openSettings?: boolean;
   /**
    * Select this Work Entry once the window is ready (e.g. revealing the
    * destination of an archived-container restore initiated elsewhere).
@@ -25221,6 +25576,12 @@ export type AppAdvisorWatcherTarget =
       worktreeId: string;
       executionId?: string;
       pipelineId?: string;
+      /**
+       * Cloud runs (CAN-6391): the cloud run `executionId` names, or the
+       * cloud runs of the project's owner that start after the watcher is
+       * armed. Omitted: runs on this computer, in this worktree.
+       */
+      runOn?: 'cloud';
       workspaceName?: string;
       worktreeBranchName?: string;
       pipelineName?: string;
@@ -25501,6 +25862,12 @@ export interface AppAdvisorWatcher {
     consume: boolean;
     pipelineTransitionKey?: string;
     pipelineExecutionId?: string;
+    /**
+     * The owner a cloud run was recorded with when the queued notice was
+     * observed (CAN-6391): its delivery is authorized as that owner's, not
+     * as whoever owns the project when it is retried.
+     */
+    cloudRunOwner?: string;
     /**
      * Set when the queued message is an App Advisor prompt automation run, so
      * a retry stays gated by project-agent access even if the automation's
@@ -25875,6 +26242,10 @@ export type AppAdvisorWindowCommand =
       requestId?: string;
     }
   | { type: 'focus_composer' }
+  /** Start a new Work Entry (the docked page's New chat). */
+  | { type: 'new_entry' }
+  /** Open the Orchestrator settings modal. */
+  | { type: 'open_settings' }
   | {
       type: 'send_quick_prompt';
       text: string;
@@ -26137,6 +26508,12 @@ export interface AppAdvisorApi {
    * `APP_ADVISOR_FLOATING_SIZE_LIMITS` and to the main window.
    */
   setFloatingSize(size: AppAdvisorFloatingSize): Promise<AppAdvisorWindowState>;
+  /**
+   * Main window only: where the docked Orchestrator page goes (the content
+   * area beside the sidebar), whether it may show, and optionally a still
+   * frame of it to stand in while an overlay covers it.
+   */
+  setDock(request: AppAdvisorDockRequest): Promise<AppAdvisorDockResult>;
   /**
    * Subscribe to broadcast window-state envelopes. The main process emits
    * on the BrowserWindow `show`, `hide`, `focus`, `blur`, `minimize`, and
@@ -26732,6 +27109,7 @@ export const IPC_CHANNELS = {
   canopyCoreRelay: 'canopy-core:relay',
   appWindowReload: 'app-window:reload',
   appWindowRestart: 'app-window:restart',
+  appWindowLookUpSelection: 'app-window:look-up-selection', // renderer → main invoke
   appWindowSetUnsavedChanges: 'app-window:set-unsaved-changes', // renderer → main invoke
   appWindowConfirmClose: 'app-window:confirm-close', // main → renderer event
   appWindowConfirmCloseResponse: 'app-window:confirm-close-response', // renderer → main invoke
@@ -26782,6 +27160,17 @@ export const IPC_CHANNELS = {
   localMemoryRebuild: 'local-memory:rebuild',
   localMemoryListSnapshots: 'local-memory:list-snapshots',
   localMemoryRestoreSnapshot: 'local-memory:restore-snapshot',
+  memorySyncGetState: 'memory-sync:get-state',
+  memorySyncChanged: 'memory-sync:changed',
+  memorySyncUpdateSettings: 'memory-sync:update-settings',
+  memorySyncPreviewMerge: 'memory-sync:preview-merge',
+  memorySyncApplyMerge: 'memory-sync:apply-merge',
+  memorySyncReadConflict: 'memory-sync:read-conflict',
+  memorySyncResolveConflict: 'memory-sync:resolve-conflict',
+  memorySyncListHistory: 'memory-sync:list-history',
+  memorySyncRestore: 'memory-sync:restore',
+  memorySyncDeleteFromCloud: 'memory-sync:delete-from-cloud',
+  memorySyncSetProjectMemory: 'memory-sync:set-project-memory',
   copilotConnectionUsage: 'copilot-connection:usage',
   copilotConnectionModels: 'copilot-connection:models',
   opencodeConnectionModels: 'opencode-connection:models',
@@ -26849,6 +27238,7 @@ export const IPC_CHANNELS = {
   trackedPlansSaveComments: 'tracked-plans:save-comments',
   trackedPlansGenerateDiagrams: 'tracked-plans:generate-diagrams',
   trackedPlansShare: 'tracked-plans:share',
+  trackedPlansUnshare: 'tracked-plans:unshare',
   trackedPlansImport: 'tracked-plans:import',
   detectedPlansScan: 'detected-plans:scan',
   detectedPlansList: 'detected-plans:list',
@@ -26898,6 +27288,10 @@ export const IPC_CHANNELS = {
   sharedContainersReadForkProvenance: 'shared-containers:read-fork-provenance',
   sharedContainersDismiss: 'shared-containers:dismiss',
   sharedContainersListDismissed: 'shared-containers:list-dismissed',
+  sharedContainersListOwnerDepartures:
+    'shared-containers:list-owner-departures',
+  sharedContainersDismissOwnerDeparture:
+    'shared-containers:dismiss-owner-departure',
   sharedContainersRestore: 'shared-containers:restore',
   sharedContainersRetry: 'shared-containers:retry',
   sharedContainersClose: 'shared-containers:close',
@@ -26954,6 +27348,7 @@ export const IPC_CHANNELS = {
   worktreeArchive: REMOTE_IPC_CHANNELS.worktreeArchive,
   worktreeActivityEntities: REMOTE_IPC_CHANNELS.worktreeActivityEntities,
   worktreeCheckRemovalAdmission: 'worktree:check-removal-admission',
+  worktreeRecoveryList: 'worktree:recovery-list',
   worktreeDiscardDescribe: REMOTE_IPC_CHANNELS.worktreeDiscardDescribe,
   worktreeDiscard: REMOTE_IPC_CHANNELS.worktreeDiscard,
   workspaceDeleteDiscardDescribe:
@@ -27315,6 +27710,11 @@ export const IPC_CHANNELS = {
   modelGatewaySaveCredential: 'model-gateway:save-credential',
   modelGatewayValidateCredential: 'model-gateway:validate-credential',
   modelGatewayCredentialChanged: 'model-gateway:credential-changed',
+  localModelGatewayRead: 'local-model-gateway:read',
+  localModelGatewayUpdate: 'local-model-gateway:update',
+  localModelGatewayConnect: 'local-model-gateway:connect',
+  localModelGatewayChanged: 'local-model-gateway:changed',
+  localModelGatewayMigrationConflict: 'local-model-gateway:migration-conflict',
   settingsLoadCanopyCloudAccount: 'settings:load-canopy-cloud-account',
   settingsCanopyCloudSessionStatusChanged:
     'settings:canopy-cloud-session-status-changed',
@@ -27838,6 +28238,7 @@ export const IPC_CHANNELS = {
   appAdvisorWindowToggle: 'app-advisor:window-toggle',
   appAdvisorWindowGetState: 'app-advisor:window-get-state',
   appAdvisorWindowSetFloatingSize: 'app-advisor:window-set-floating-size',
+  appAdvisorWindowSetDock: 'app-advisor:window-set-dock',
   appAdvisorWindowStateChanged: 'app-advisor:window-state-changed',
   appAdvisorWindowRendererReady:
     REMOTE_IPC_CHANNELS.appAdvisorWindowRendererReady,
@@ -27945,6 +28346,7 @@ export const IPC_CHANNELS = {
   repoRulesScan: REMOTE_IPC_CHANNELS.repoRulesScan,
   repoRulesApply: REMOTE_IPC_CHANNELS.repoRulesApply,
   repoRulesStatus: REMOTE_IPC_CHANNELS.repoRulesStatus,
+  repoRulesCheck: REMOTE_IPC_CHANNELS.repoRulesCheck,
   repoRulesPreview: REMOTE_IPC_CHANNELS.repoRulesPreview,
   editorSetupPresence: REMOTE_IPC_CHANNELS.editorSetupPresence,
   // Read-only composer menus and the plugin picker catalog for controllers
@@ -27999,6 +28401,7 @@ export const IPC_CHANNELS = {
   remoteControlStateChanged: 'remote-control:state-changed',
   remoteControlOpenMachine: 'remote-control:open-machine',
   remoteControlSetAllowIncoming: 'remote-control:set-allow-incoming',
+  remoteControlSetAllowRemoteUpdates: 'remote-control:set-allow-remote-updates',
   remoteControlStartPairing: 'remote-control:start-pairing',
   remoteControlCancelPairing: 'remote-control:cancel-pairing',
   remoteControlRespondToPairing: 'remote-control:respond-to-pairing',
@@ -28268,6 +28671,7 @@ export {
 } from '@canopy/execution-engine/types/observability';
 
 export type * from './types/local-memory';
+export type * from './types/memory-sync';
 
 export type {
   ChatHookAction,

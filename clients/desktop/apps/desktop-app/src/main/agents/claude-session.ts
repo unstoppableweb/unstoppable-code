@@ -199,6 +199,8 @@ import {
   loadWorktreeScriptOutput,
   saveLocalMemory,
   searchLocalMemory,
+  searchChats,
+  readChatExcerpt,
   requestAnswersFromRenderer,
   respondToFileCommentInSession,
 } from '../canopy-tools/session-runtime';
@@ -237,6 +239,10 @@ import {
 import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
 import { buildPlanFileSystemInstruction } from '../lib/plan-system-instructions';
 import { sendToWindow } from '../lib/window-send';
+import {
+  isPromptSuggestionsEnabled,
+  sendPromptSuggestion,
+} from './prompt-suggestions';
 import { noteChatSessionEvent } from '../lib/transient-error-retry-service';
 import { getAttentionTracker } from '../services/attention-tracker';
 import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
@@ -3093,6 +3099,13 @@ export class ClaudeCodeProvider implements AgentProvider {
     // below.
     const ledger: { tools: LedgerChatToolsSession | null } = { tools: null };
     let terminalTurn: QueuedClaudeMessage | undefined;
+    /**
+     * The user message of the last root turn that ended in a successful
+     * result, while no later turn has started: the only turn a Claude
+     * `prompt_suggestion` may follow. Wakes, task notifications and cron turns
+     * have no person waiting to type, so they leave it unset.
+     */
+    let suggestibleTurnUserMessageId: string | undefined;
     /** The turn whose plan went to review, which its result then marks. */
     let planHandoff: { turn: QueuedClaudeMessage | undefined } | undefined;
     let lastRootAssistantContext:
@@ -3513,6 +3526,20 @@ export class ClaudeCodeProvider implements AgentProvider {
             sessionId: opts.sdkSessionId,
             provider: 'claude',
             ...request,
+          }),
+        searchChats: (request) =>
+          searchChats({
+            ...request,
+            projectId: opts.projectId,
+            worktreeId: opts.worktreeId,
+            chatId: opts.chatId,
+          }),
+        readChatExcerpt: (request) =>
+          readChatExcerpt({
+            ...request,
+            projectId: opts.projectId,
+            worktreeId: opts.worktreeId,
+            chatId: opts.chatId,
           }),
         searchLocalMemory: (request) =>
           searchLocalMemory({
@@ -4480,6 +4507,11 @@ export class ClaudeCodeProvider implements AgentProvider {
         ...(invocation.providerType === 'claude'
           ? { perTaskStopAffordance: true }
           : {}),
+        // A launch flag, so an open chat follows a Labs change once its CLI
+        // process restarts. Its suggestion arrives after the turn's `result`.
+        ...(invocation.providerType === 'claude' && isPromptSuggestionsEnabled()
+          ? { promptSuggestions: true }
+          : {}),
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
@@ -4939,6 +4971,30 @@ export class ClaudeCodeProvider implements AgentProvider {
                 }
                 continue;
               }
+              if (data.type === 'prompt_suggestion') {
+                // Shown only by the composer, never written to the transcript.
+                const turnUserMessageId = suggestibleTurnUserMessageId;
+                suggestibleTurnUserMessageId = undefined;
+                if (
+                  turnUserMessageId !== undefined &&
+                  getForegroundTurn() === undefined &&
+                  messageQueue.length === 0
+                ) {
+                  sendPromptSuggestion(
+                    getWindow,
+                    {
+                      projectId: opts.projectId,
+                      worktreeId: opts.worktreeId,
+                      chatId: opts.chatId,
+                    },
+                    data.suggestion,
+                    turnUserMessageId,
+                  );
+                }
+                continue;
+              }
+              if (isClaudeRootInitEvent(data))
+                suggestibleTurnUserMessageId = undefined;
               const foregroundTurn = getForegroundTurn();
               if (
                 invocationProvider === 'claude' &&
@@ -4994,6 +5050,13 @@ export class ClaudeCodeProvider implements AgentProvider {
                 terminalEmitted = true;
                 terminalTurn = receipt.eventTurn;
                 markReceiptTurnIdle(receipt);
+                suggestibleTurnUserMessageId =
+                  data.type === 'result' &&
+                  data.subtype === 'success' &&
+                  data.is_error !== true &&
+                  receipt.runningTurn?.origin === 'user'
+                    ? receipt.runningTurn.userMessageId
+                    : undefined;
               }
               const admission = emitEvent(data, undefined, receipt);
               if (admission) await admission;

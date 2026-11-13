@@ -178,6 +178,16 @@ export const MemorySyncStateFileSchema = z.looseObject({
       // Absent in a file an earlier build wrote, and unknown in one a later
       // build wrote: either reads as an overlap, not as an unreadable state.
       reason: MemoryConflictReasonSchema.catch('overlap'),
+      /** This device had deleted the document. */
+      oursDeleted: z.boolean().optional(),
+      /**
+       * The inbox notes that carry this device's side to the next
+       * consolidation, recorded before any is queued; absent until then,
+       * as in a file an earlier build wrote.
+       */
+      autoNoteIds: z.array(MemoryNoteIdSchema).max(64).optional(),
+      /** Every note in `autoNoteIds` is queued or already settled. */
+      autoNotesQueued: z.boolean().optional(),
     }),
   ),
   firstEnable: z
@@ -185,6 +195,17 @@ export const MemorySyncStateFileSchema = z.looseObject({
       state: z.enum(['uploading', 'merging', 'reviewing', 'done']),
       startedAt: MemoryTimestampSchema,
       preMergeRevision: MemoryRevisionSchema.nullable(),
+      /**
+       * The first enable's commit, recorded before it is sent: once the
+       * cloud holds it, a retry or restart finishes the first enable
+       * instead of sending its notes again. Absent before that.
+       */
+      commitId: MemoryCommitIdSchema.optional(),
+      /**
+       * Every note this first enable queued to send, so a later try knows
+       * which of them the cloud has consumed since. Absent before any.
+       */
+      sentNoteIds: z.array(MemoryNoteIdSchema).max(100_000).optional(),
     })
     .nullable(),
   lastPulledAt: MemoryTimestampSchema.nullable(),

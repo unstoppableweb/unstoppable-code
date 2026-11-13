@@ -50,6 +50,7 @@ import {
 import { type WorktreeChatState } from '../types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatPlanSlice } from '../state';
+import { chatBackendFor, localChatBackend } from '../backend';
 
 const pendingPlanMutationsByStore = new WeakMap<
   () => ChatState,
@@ -71,8 +72,8 @@ function commitPlanExitResolution(
   keepPlanMode = false,
   reviewStatus?: 'approved' | 'dismissed',
 ): Promise<boolean> {
-  return window.api.chat
-    .command({
+  return chatBackendFor(target)
+    .chat.command({
       schemaVersion: 1,
       commandId: `renderer-plan-resolution-${crypto.randomUUID()}`,
       projectId: target.projectId,
@@ -345,8 +346,8 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
       });
     }
 
-    void window.api.chat
-      .togglePlanMode({
+    void chatBackendFor(sel)
+      .chat.togglePlanMode({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
@@ -572,8 +573,8 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
           if (!trackedPlan) {
             return;
           }
-          const preparedInstruction = await window.api.chat
-            .preparePlanFileSystemInstruction({
+          const preparedInstruction = await chatBackendFor(event)
+            .chat.preparePlanFileSystemInstruction({
               projectId: event.projectId,
               worktreeId: event.worktreeId,
               planId: trackedPlan.id,
@@ -640,8 +641,8 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
               worktreeChats: { ...state.worktreeChats, [key]: updated },
             };
           });
-          void window.api.chat
-            .command({
+          void chatBackendFor(event)
+            .chat.command({
               schemaVersion: 1,
               commandId: `renderer-${proposalSource}-plan-${trackedPlan.id}-${trackedPlan.latestRevisionNumber}`,
               projectId: event.projectId,
@@ -761,7 +762,7 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
     if (target.tab.trackedPlanId) {
       reviewSync = updateTrackedPlanReview(target, 'dismissed');
     } else if (requestId) {
-      void window.api.chat.denyPlanExit({ requestId });
+      void localChatBackend().chat.denyPlanExit({ requestId });
     }
 
     set((state) =>
@@ -974,8 +975,8 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
       return { worktreeChats: { ...state.worktreeChats, ...nextChats } };
     });
     for (const target of durableTargets) {
-      void window.api.chat
-        .command({
+      void chatBackendFor(target)
+        .chat.command({
           schemaVersion: 1,
           commandId: `renderer-${crypto.randomUUID()}`,
           projectId: target.projectId,

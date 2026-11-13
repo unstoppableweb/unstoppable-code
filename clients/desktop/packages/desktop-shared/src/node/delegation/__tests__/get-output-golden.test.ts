@@ -7,8 +7,8 @@ import type {
   AgentDelegationSpawnRequest,
   GetDelegateOutputValue,
 } from '@canopy/protocol/delegation';
-import type { DynamicToolCallResponse } from '../../codex-runtime/generated/v2/DynamicToolCallResponse';
-import { CodexHostToolDispatcher } from '../../codex-runtime/host-tools';
+import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
+import { CodexHostToolDispatcher } from '@canopy/execution-engine/node/codex-runtime/host-tools';
 import {
   AgentDelegationBroker,
   type AgentDelegationBrokerOptions,

@@ -149,6 +149,14 @@ const APPROVAL_CONTENT_COPY: Record<
 const RULE_TARGET_VIEW_TITLE = 'Rule target';
 const RULE_TARGET_VIEW_SUBTITLE = 'Applies to every scoped option in this menu';
 
+const TOOL_WIDE_RULE_LABELS: ReadonlyMap<string, string> = new Map([
+  ['Skill', 'Skill (all skills)'],
+  ['Read', 'Read (all files)'],
+  ['NotebookRead', 'NotebookRead (all notebooks)'],
+  ['Glob', 'Glob (all folders)'],
+  ['Grep', 'Grep (all folders)'],
+]);
+
 function describeApprovalTarget(target: ApprovalRuleTarget): string {
   switch (target.kind) {
     case 'command':
@@ -160,11 +168,10 @@ function describeApprovalTarget(target: ApprovalRuleTarget): string {
     case 'network':
       return target.host;
     case 'tool':
-      // The card names the specific skill, but a remembered Skill rule covers
-      // every skill. Say so here so the two cannot be confused.
-      return target.toolName === 'Skill'
-        ? 'Skill (all skills)'
-        : target.toolName;
+      // The card names the specific skill or read target, but a remembered
+      // rule covers every skill or every read. Say so here so the two cannot
+      // be confused.
+      return TOOL_WIDE_RULE_LABELS.get(target.toolName) ?? target.toolName;
     case 'browser-upload':
       return target.path ? `${target.origin}: ${target.path}` : target.origin;
     default:
@@ -402,13 +409,21 @@ function ApprovalDetails({
     case 'tool':
       return (
         <div
-          className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1 text-xs fg-primary/80`}
+          className={`${REPLAY_BLOCK_CLASS} flex min-w-0 flex-col gap-1 text-xs fg-primary/80`}
         >
-          <div>
-            <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
-              {details.toolName}
-            </code>
-          </div>
+          {/* A read tool names its target (CAN-4998); the title names the tool. */}
+          {details.path ? (
+            <ApprovalFileTarget
+              path={details.path}
+              displayPath={details.displayPath}
+            />
+          ) : (
+            <div>
+              <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
+                {details.toolName}
+              </code>
+            </div>
+          )}
           {details.inputSummary && (
             <div>
               <ApprovalContentPreview
@@ -857,7 +872,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                   type="button"
                   onClick={allowOnce}
                   data-testid="tool-approval-allow"
-                  className={`${ruleScopes ? 'rounded-l' : 'rounded'} bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent transition-colors hover:bg-accent-subtle/80`}
+                  className={`${ruleScopes ? 'rounded-l' : 'rounded'} bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent-strong transition-colors hover:bg-accent-subtle/80`}
                 >
                   Allow once
                 </button>
@@ -870,7 +885,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                       aria-expanded={allowMenuOpen}
                       aria-label="More allow options"
                       onClick={toggleAllowMenu}
-                      className="rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent transition-colors hover:bg-accent-subtle/80"
+                      className="rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent-strong transition-colors hover:bg-accent-subtle/80"
                     >
                       <AppCatalogChevronDownMediumIcon size={14} />
                     </button>

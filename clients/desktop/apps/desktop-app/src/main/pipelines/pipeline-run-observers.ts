@@ -2,7 +2,7 @@ import type {
   ExecutionEvent,
   ExecutionState,
   StepOutputEvent,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 
 /**
  * Observers attached to EVERY pipeline execution so a run started outside the

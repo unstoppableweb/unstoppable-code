@@ -9,15 +9,15 @@ import {
   parseSharedPipelineLocalId,
 } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import type { createBackgroundCapabilityResolver } from './background-capability-context';
-import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
-import type { getStoredPipelineBySource } from '@canopy/desktop-shared/pipelines/store';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
+import type { getStoredPipelineBySource } from '@canopy/execution-engine/pipelines/store';
 import {
   pipelineContextResources,
   localPipelineContextResources,
   type PipelineContextLocation,
 } from '@canopy/desktop-shared/node/background-execution-context';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
-import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
+import type { ChildPipelineAuthorization } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 import {
   APP_ADVISOR_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,

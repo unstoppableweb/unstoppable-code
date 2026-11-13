@@ -66,8 +66,15 @@ export interface CanopyFramedConnection {
    * across message parts instead of refusing it as `resource_exhausted`.
    */
   allowPeerMessageBytes?(bytes: number): void;
-  /** Resolves once the frame is accepted by a bounded peer buffer (backpressure). */
-  send(message: CanopyJsonRpcMessage): Promise<void>;
+  /**
+   * Resolves once the frame is accepted by a bounded peer buffer
+   * (backpressure). `headers` go on this message's own request where the
+   * binding has one (HTTP); other bindings ignore them.
+   */
+  send(
+    message: CanopyJsonRpcMessage,
+    options?: { readonly headers?: Readonly<Record<string, string>> },
+  ): Promise<void>;
   /** Next validated envelope; rejects with the close reason or `cancelled`. */
   receive(options?: {
     readonly signal?: AbortSignal;

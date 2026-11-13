@@ -771,7 +771,9 @@ function PanelGroupComponent({
             </div>
           </div>
         ) : null}
-        {group.tabs.map((tab) => {
+        {/* Tabs hidden for another chat keep their body (hidden, not
+            unmounted), so a page or preview survives switching chats. */}
+        {[...group.tabs, ...(group.hiddenTabs ?? [])].map((tab) => {
           const isActiveTab = tab.panelId === group.activePanelId;
 
           // Adoption mode: the wrapper adopts the app-owned container; the

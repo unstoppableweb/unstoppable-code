@@ -28,8 +28,6 @@
     "./browser": "./src/browser/index.ts",
     "./node": "./src/node/index.ts",
     "./node/acp": "./src/node/acp/index.ts",
-    "./node/codex-runtime/connection": null,
-    "./node/codex-runtime/connection*": null,
     "./pipelines": "./src/pipelines/index.ts",
     "./actions": "./src/actions/index.ts",
     "./*": "./src/*"

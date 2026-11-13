@@ -126,6 +126,8 @@ export const CoreChatRuntimeSummarySchema = z.object({
   lastActivityAt: z.number().optional(),
   /** The running turn's id, as `core.chat.turn.cancel` takes it; absent when none runs or the core does not report it (CAN-4185). */
   activeTurnId: id.optional(),
+  /** Whether the core holds this chat's queued entries for editing (`lock`); absent when it does not say, which clients read as unsupported (CAN-6106). */
+  queuedEditHold: z.boolean().optional(),
 });
 
 export const CoreChatQueueSummarySchema = z.object({
@@ -154,7 +156,11 @@ export const CoreChatSnapshotGetResultSchema = z.object({
   runtimeByChatId: z.record(id, CoreChatRuntimeSummarySchema),
   queue: z.array(CoreChatQueueSummarySchema),
   pendingApprovals: z.array(CanopyJsonValueSchema).optional(),
-  /** The opened chat's unanswered questions, in the shape `pending_question.upserted` carries (CAN-4185). */
+  /**
+   * Unanswered questions, in the shape `pending_question.upserted` carries
+   * (CAN-4185): every live chat's in a task-scope read (no `chatId`), the
+   * opened chat's in a chat-scope read (CAN-6319).
+   */
   pendingQuestions: z
     .array(
       z
@@ -167,6 +173,12 @@ export const CoreChatSnapshotGetResultSchema = z.object({
         .catchall(CanopyJsonValueSchema),
     )
     .optional(),
+  /**
+   * Chats whose unanswered questions could not be read, so `pendingQuestions`
+   * leaves theirs out. A client keeps the questions it shows for them
+   * (CAN-6319).
+   */
+  unreadQuestionChatIds: z.array(id).optional(),
   todos: z.array(CanopyJsonValueSchema).optional(),
   tasks: z.array(CanopyJsonValueSchema).optional(),
 });

@@ -224,6 +224,8 @@ class SharedContainerInboxWatcher {
       onAccessDenied: () => {
         if (this.subscription === nextSubscription) {
           this.subscription = null;
+          // Revalidate immediately so the renderer can clear denied listings.
+          this.emitSignal('realtime');
         }
       },
     });

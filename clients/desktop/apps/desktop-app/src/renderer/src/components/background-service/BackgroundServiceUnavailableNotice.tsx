@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState, type JSX } from 'react';
-import { BackgroundServiceNotice } from '@canopy/ui-shared/components';
+import { useCallback, useEffect, useState } from 'react';
+import { TRY_AGAIN_LABEL, TRYING_AGAIN_LABEL } from '@canopy/ui-shared';
+import { backgroundServiceNoticeCopy } from '@canopy/ui-shared/lib';
 import type {
   BackgroundServiceApi,
   BackgroundServiceStatus,
 } from '@canopy/desktop-shared/lib/background-service-status';
+import { pinToast, unpinToast } from '@/stores/toastStore';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 
 function getApi(): BackgroundServiceApi | undefined {
@@ -12,17 +14,21 @@ function getApi(): BackgroundServiceApi | undefined {
     : undefined;
 }
 
+const TOAST_ID = 'background-service';
+
 /**
- * Persistent notice while this computer's background service can't be
- * reached, with Try again (CAN-5541). Mounted in the in-app notification
- * column; it renders nothing, and never calls the blocked channels, in a
- * window that shows another computer.
+ * A warning card in the toast stack while this computer's background service
+ * can't be reached, with Try again (CAN-5541). It stays until the service is
+ * reached again or the person closes it; a closed card stays closed until the
+ * service has been reached and lost again. Renders nothing itself, and never
+ * calls the blocked channels in a window that shows another computer.
  */
-export function BackgroundServiceUnavailableNotice(): JSX.Element | null {
+export function BackgroundServiceUnavailableNotice(): null {
   const local = useRemoteControlStore(
     (store) => store.context.mode === 'local',
   );
   const [status, setStatus] = useState<BackgroundServiceStatus | null>(null);
+  const [closed, setClosed] = useState(false);
 
   // Pushes, the first read and retry answers can land in any order.
   const accept = useCallback((next: BackgroundServiceStatus): void => {
@@ -40,15 +46,42 @@ export function BackgroundServiceUnavailableNotice(): JSX.Element | null {
     return unsubscribe;
   }, [local, accept]);
 
-  if (!local || status?.state !== 'unavailable') return null;
-  return (
-    <BackgroundServiceNotice
-      retry={status.retry}
-      onRetry={(): void => {
-        getApi()
-          ?.retry()
-          .then(accept, () => undefined);
-      }}
-    />
-  );
+  const unavailable = local && status?.state === 'unavailable';
+  // Reached again: a later loss shows its card even if this one was closed.
+  if (!unavailable && closed) setClosed(false);
+  const retry = unavailable && !closed ? status.retry : null;
+
+  useEffect(() => {
+    if (retry === null) {
+      unpinToast(TOAST_ID);
+      return;
+    }
+    const copy = backgroundServiceNoticeCopy(retry);
+    pinToast({
+      id: TOAST_ID,
+      type: 'warning',
+      message: copy.message,
+      testId: 'background-service-notice',
+      meta: {
+        title: copy.title,
+        action: {
+          label: TRY_AGAIN_LABEL,
+          busyLabel: TRYING_AGAIN_LABEL,
+          testId: 'background-service-notice-retry',
+          // The card answers the retry itself: it leaves once the service is
+          // reached and says so when it still can't be.
+          keepOpen: true,
+          onClick: () =>
+            getApi()
+              ?.retry()
+              .then(accept, () => undefined),
+        },
+      },
+      onDismiss: () => setClosed(true),
+    });
+  }, [retry, accept]);
+
+  useEffect(() => (): void => unpinToast(TOAST_ID), []);
+
+  return null;
 }

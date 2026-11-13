@@ -337,7 +337,7 @@ describe('single-repository worktree', () => {
           }),
         ).resolves.toEqual({
           rendered:
-            'FileSaveConflictError: File changed on disk since it was loaded.',
+            'FileSaveConflictError: The document changed after you started editing.',
           code: undefined,
         });
       }

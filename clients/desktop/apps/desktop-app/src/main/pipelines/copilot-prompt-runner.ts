@@ -6,7 +6,7 @@ import {
 import type {
   CopilotPromptRunnerRequest,
   CopilotPromptRunnerResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { createCopilotCapabilitySnapshot } from '@canopy/copilot-recipient/capability-snapshot';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';

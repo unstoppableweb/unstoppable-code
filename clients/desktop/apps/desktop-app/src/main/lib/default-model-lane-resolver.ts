@@ -43,6 +43,7 @@ import {
 import {
   isModelExcludedByGatewayRequirement,
   listOrgGatewayModelsForOrganization,
+  soleEnforcingOrganizationId,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
 import {
   isProviderNativelyAuthenticatedForRouting,
@@ -451,14 +452,24 @@ export async function resolveDefaultModelLaneForPreferences(
    * own branch.
    */
   const orgGatewayExcluded = (model: ChatModel): boolean =>
-    isModelExcludedByGatewayRequirement(model, gatewayRequirement, owner);
+    isModelExcludedByGatewayRequirement(
+      model,
+      gatewayRequirement,
+      owner,
+      account?.personalOrganizationId,
+    );
+  // The owner's enforced gateway: an organization's, or your own under
+  // "Use only my AI gateway".
+  const enforcedGatewayOrganizationId = owner
+    ? soleEnforcingOrganizationId(gatewayRequirement)
+    : undefined;
   const orgGateway: EnforcedOrgGatewayLane | undefined =
-    gatewayRequirement.kind === 'enforced' && owner?.kind === 'organization'
+    enforcedGatewayOrganizationId
       ? {
           enforced: true,
           models: listOrgGatewayModelsForOrganization(
             AI_GATEWAY_MODELS,
-            owner.organizationId,
+            enforcedGatewayOrganizationId,
           ),
         }
       : undefined;

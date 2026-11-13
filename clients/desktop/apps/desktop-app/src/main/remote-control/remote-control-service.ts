@@ -19,6 +19,7 @@ import {
   type DeviceRelayDeviceInfo,
   type DeviceRelayTokenResponse,
 } from '@canopy/protocol/device-relay';
+import { wakeLockHolder, wakeLockHolderKey } from '@canopy/core-runtime';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
@@ -43,10 +44,17 @@ import {
   remoteImageForLocalOpen,
 } from './client/remote-file-opens';
 import type { RemoteControlWindows } from './client/remote-windows';
+import type { RemoteControlFeatureState } from './availability';
 import { encodeBase64Url, type DeviceKeyPair } from './crypto/device-key';
+import type {
+  RemoteControlAvailability,
+  RemoteControlDiagnostic,
+  RemoteRelayStoppedDiagnostic,
+} from './diagnostics';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
 import type { RemoteAppAdvisorSurface } from './host/app-advisor-surface';
 import type { HostBridge } from './host/bridge-window';
+import type { RemoteCoreAccess } from './host/remote-core-access';
 import {
   HOST_FEATURES,
   accountUserIdFrom,
@@ -86,6 +94,7 @@ import {
   type RemoteSessionEndReason,
 } from './remote-protocol';
 import type {
+  RelayClientDiagnostic,
   RelayConnectionStatus,
   RemoteRelay,
 } from './transport/relay-client';
@@ -95,6 +104,7 @@ import {
   type HandshakeAdmission,
   type SecureSession,
   type SessionGrant,
+  type SessionState,
 } from './transport/session-manager';
 
 export type { RemoteControlWindows, RemoteRelay };
@@ -111,6 +121,7 @@ export interface RemoteRelayFactoryOptions {
   deviceInfo: () => DeviceRelayDeviceInfo;
   onStatusChange: (status: RelayConnectionStatus, detail?: string) => void;
   onPeersChange: () => void;
+  onDiagnostic: (diagnostic: RelayClientDiagnostic) => void;
 }
 
 /**
@@ -133,17 +144,45 @@ export interface RemoteControlServiceDeps {
   recordPairing?: PairingTelemetryRecorder;
   /** Host product events (`remote_control:*`); bounded values only. */
   recordTelemetry?: RemoteControlTelemetryRecorder;
+  /** Connection diagnostics kept on this computer; bounded values only. */
+  recordDiagnostic?: (diagnostic: RemoteControlDiagnostic) => void;
   store: RemoteAccessStore;
   createRelay: (options: RemoteRelayFactoryOptions) => RemoteRelay;
   fetchToken: (deviceId: string) => Promise<DeviceRelayTokenResponse>;
   isFeatureEnabled: () => boolean;
   /**
+   * `isFeatureEnabled`, with whether a "no" is transient: the flag has no
+   * live value right now. A running relay then stays up for a while (see
+   * `transientStopHoldMs`) instead of ending every session. Absent, every
+   * "no" stops the relay at once.
+   */
+  featureState?: () => RemoteControlFeatureState;
+  /**
+   * Why `isFeatureEnabled` answers as it does, for the diagnostic recorded
+   * when it stops the relay.
+   */
+  describeAvailability?: () => RemoteControlAvailability;
+  /**
    * A stable key for the signed-in account, or null when signed out. The
    * relay and every session belong to the account they started under.
    */
   signedInAccount: () => string | null;
+  /**
+   * Every key the signed-in account is known by, `signedInAccount` among
+   * them: its server ID and its credential digest. When the account key
+   * changes form but the old key is one of these, it is the same account
+   * and the relay keeps running. Absent, only `signedInAccount` counts.
+   */
+  signedInAccountKeys?: () => ReadonlyArray<string>;
+  /**
+   * Keeps the computer awake while it hosts a session, so a host does not
+   * sleep under a controller. The wake-lock preference still applies.
+   */
+  wakeLock?: RemoteWakeLock;
   deviceName: () => string;
   platform: DevicePlatform;
+  /** Called when whether paired computers may update this one changes. */
+  onRemoteUpdatesAllowedChange?: () => void;
   /** This computer's version; sessions need the same protocol on both sides. */
   version: RemoteVersion;
   createBridge: (
@@ -169,6 +208,8 @@ export interface RemoteControlServiceDeps {
   openLocalFile: (path: string) => Promise<void>;
   /** Bytes per `file.read`; tests shorten it. */
   fileReadChunkBytes?: number;
+  /** Core operations served to paired controllers, whatever their protocol. */
+  core?: RemoteCoreAccess;
   /**
    * Serves a hosted agent session's `chat:command` with the attribution this
    * computer derived from the session (CAN-5985). Without it hosted sessions
@@ -210,6 +251,17 @@ export interface RemoteControlServiceDeps {
   now?: () => number;
   /** How long a discovery request keeps the relay up; tests shorten it. */
   discoveryWindowMs?: number;
+  /**
+   * How long a transient flag change may keep a running relay up before it
+   * stops; tests shorten it.
+   */
+  transientStopHoldMs?: number;
+}
+
+/** The wake-lock holders a host takes; the desktop's wake-lock service. */
+export interface RemoteWakeLock {
+  acquire(key: string, reason: string): void;
+  release(key: string): void;
 }
 
 const DISCOVERY_WINDOW_MS = 5 * 60_000;
@@ -217,6 +269,34 @@ const PAIRING_DECISION_TIMEOUT_MS = 3 * 60_000;
 const PAIRING_WINDOW_MS = 10 * 60_000;
 const PAIRING_SECRET_BYTES = 32;
 const MIGRATION_RETRY_MS = 60_000;
+/**
+ * The longest a transient flag change (the flag service initializing, or
+ * in an outage without live values) keeps a running relay up. Meanwhile no
+ * new session is admitted; when it ends with the flag still off, the relay
+ * stops as it would have at once.
+ */
+const TRANSIENT_STOP_HOLD_MS = 60_000;
+/** One holder for every hosted session: held while any is live. */
+const HOST_WAKE_LOCK_ID = 'host';
+
+/** What `stopRelay` was asked to stop for; the rest it fills in. */
+type RelayStop = Pick<
+  RemoteRelayStoppedDiagnostic,
+  'cause' | 'accountFormChanged' | 'flagStatus' | 'heldMs'
+>;
+
+/** `account` or `key`: how `signedInAccount` identified the account. */
+function accountKeyForm(account: string): string {
+  return account.slice(0, Math.max(0, account.indexOf(':')));
+}
+
+/**
+ * How long a paired host stays shown online while this computer's session
+ * with it is suspended, so a relay rotation or a brief drop on either side
+ * passes without the host flickering offline. Presence still follows the
+ * relay once the grace ends, or at once when the session closes.
+ */
+const HOST_PRESENCE_GRACE_MS = 10_000;
 
 interface PairingWindow {
   /** Single-use link secret; held only in this process's memory. */
@@ -274,10 +354,34 @@ export class RemoteControlService {
   private relay: RemoteRelay | null = null;
   private sessions: RemoteSessionManager | null = null;
   private relayAccount: string | null = null;
+  /** Every key `relayAccount`'s account was known by when last checked. */
+  private relayAccountKeys: ReadonlySet<string> = new Set();
+  /**
+   * A transient flag change is holding the running relay up until `until`;
+   * no new session is admitted meanwhile.
+   */
+  private transientHold: {
+    since: number;
+    until: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  private hostWakeLockHeld = false;
+  /** When the current relay connection was started. */
+  private relayStartedAt = 0;
   private relayStatus: RelayConnectionStatus = 'stopped';
   private relayDetail: string | null = null;
   private discoveryUntil = 0;
   private discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Each suspended session with a host, true while its presence grace runs
+   * and false once its timer has ended it, until the session is active again.
+   */
+  private readonly presenceGrace = new WeakMap<SecureSession, boolean>();
+  /** Each running grace's timer, which ends it and broadcasts. */
+  private readonly presenceGraceTimers = new Map<
+    SecureSession,
+    ReturnType<typeof setTimeout>
+  >();
   private reconcileChain: Promise<void> = Promise.resolve();
   private readonly hostSessions = new Set<RemoteHostSession>();
   private readonly appAdvisorSurfaces = new Map<
@@ -293,7 +397,15 @@ export class RemoteControlService {
    */
   private readonly revokingControllers = new Set<string>();
   private disallowingIncoming = 0;
-  private settingsCache: { allowIncoming: boolean } = { allowIncoming: false };
+  /** Remote-update opt-outs still saving; a cache refresh cannot undo them. */
+  private disallowingRemoteUpdates = 0;
+  private settingsCache: {
+    allowIncoming: boolean;
+    allowRemoteUpdates: boolean;
+  } = { allowIncoming: false, allowRemoteUpdates: false };
+  private lastRemoteUpdatesAllowed = false;
+  /** Paired controllers' names, for the update notice and status. */
+  private controllerNames = new Map<string, string>();
   private pairingWindow: PairingWindow | null = null;
   /** Serializes proof verification, consumption and pinning. */
   private proofChain: Promise<unknown> = Promise.resolve();
@@ -359,29 +471,134 @@ export class RemoteControlService {
     if (this.disposed) return;
     const settings = await this.refreshCaches();
     const account = this.deps.signedInAccount();
+    if (this.relay && this.relayAccount !== account && account !== null) {
+      this.adoptSameAccountKey(account);
+    }
     // Another account signed in: nothing set up under the old one survives.
     if (this.relay && this.relayAccount !== account) {
       this.cancelOutgoing();
-      this.stopRelay();
+      this.stopRelay(
+        account === null || this.relayAccount === null
+          ? { cause: 'signed_out' }
+          : {
+              cause: 'account_changed',
+              accountFormChanged:
+                accountKeyForm(this.relayAccount) !== accountKeyForm(account),
+            },
+      );
     }
-    const wanted =
-      this.deps.isFeatureEnabled() &&
+    const feature = this.featureState();
+    const featureEnabled = feature.enabled;
+    const needed =
       account !== null &&
       (settings.allowIncoming ||
         settings.pairedHosts.length > 0 ||
         this.discoveryUntil > this.now() ||
         this.pairingInProgress());
+    const wanted = featureEnabled && needed;
+    let held = false;
     if (wanted && account !== null && !this.relay) {
       await this.startRelay(account);
     } else if (!wanted && this.relay) {
-      this.stopRelay();
+      // Only a flag value still settling may hold the relay; Labs off,
+      // sign-out, a live "no" and nothing needing the relay stop it now.
+      held = !featureEnabled && feature.transient && needed && this.holdRelay();
+      if (!held) this.stopRelay(this.unwantedStop(featureEnabled));
     } else if (this.relay) {
       this.relay.announce();
     } else if (!wanted) {
       this.relayStatus = 'stopped';
       this.relayDetail = null;
     }
+    if (!held) this.endTransientHold();
     this.scheduleBroadcast();
+  }
+
+  private featureState(): RemoteControlFeatureState {
+    return (
+      this.deps.featureState?.() ?? {
+        enabled: this.deps.isFeatureEnabled(),
+        transient: false,
+      }
+    );
+  }
+
+  /**
+   * The account key changed form (a credential digest and a server ID) for
+   * the same account: keep the relay, now under the new key. Any other
+   * change is another account, and `reconcileNow` stops the relay.
+   */
+  private adoptSameAccountKey(account: string): void {
+    const keys = new Set([
+      account,
+      ...(this.deps.signedInAccountKeys?.() ?? []),
+    ]);
+    const relayKeys = this.relayAccountKeys;
+    if (!Array.from(keys).some((key) => relayKeys.has(key))) return;
+    this.deps.log?.('Remote control account key changed form', {
+      from:
+        this.relayAccount === null ? null : accountKeyForm(this.relayAccount),
+      to: accountKeyForm(account),
+    });
+    this.relayAccount = account;
+    this.relayAccountKeys = keys;
+  }
+
+  /**
+   * Keeps the running relay up through a transient flag change, for at most
+   * `transientStopHoldMs` from the first one. False once that has passed.
+   */
+  private holdRelay(): boolean {
+    const now = this.now();
+    if (this.transientHold === null) {
+      const holdMs = this.deps.transientStopHoldMs ?? TRANSIENT_STOP_HOLD_MS;
+      const holdTimer = setTimeout(() => {
+        if (this.transientHold?.timer === holdTimer) {
+          this.transientHold = { ...this.transientHold, until: 0 };
+        }
+        void this.reconcile().catch(() => undefined);
+      }, holdMs);
+      holdTimer.unref?.();
+      this.transientHold = {
+        since: now,
+        until: now + holdMs,
+        timer: holdTimer,
+      };
+      this.deps.log?.('Remote control relay held for a transient flag change', {
+        holdMs,
+      });
+      return true;
+    }
+    return now < this.transientHold.until;
+  }
+
+  private endTransientHold(): void {
+    if (this.transientHold === null) return;
+    clearTimeout(this.transientHold.timer);
+    this.transientHold = null;
+  }
+
+  /** Why a running relay is no longer wanted, for its stop diagnostic. */
+  private unwantedStop(featureEnabled: boolean): RelayStop {
+    if (featureEnabled) return { cause: 'not_wanted' };
+    let availability: RemoteControlAvailability | undefined;
+    try {
+      availability = this.deps.describeAvailability?.();
+    } catch {
+      availability = undefined;
+    }
+    if (availability && !availability.labsEnabled) return { cause: 'labs_off' };
+    const heldMs =
+      this.transientHold === null
+        ? {}
+        : { heldMs: Math.max(0, this.now() - this.transientHold.since) };
+    return availability
+      ? {
+          cause: 'feature_flag',
+          flagStatus: availability.flagStatus,
+          ...heldMs,
+        }
+      : { cause: 'feature_flag', ...heldMs };
   }
 
   /** A finished pairing stays on screen but no longer needs the relay. */
@@ -397,7 +614,7 @@ export class RemoteControlService {
     if (this.migrationTimer) clearTimeout(this.migrationTimer);
     this.migrationTimer = null;
     this.endPairingWindow('disabled');
-    this.stopRelay();
+    this.stopRelay({ cause: 'dispose' });
   }
 
   // -------------------------------------------------------------------------
@@ -465,7 +682,16 @@ export class RemoteControlService {
     Awaited<ReturnType<RemoteAccessStore['read']>>
   > {
     const settings = await this.deps.store.read();
-    this.settingsCache = { allowIncoming: settings.allowIncoming };
+    this.setSettingsCache({
+      allowIncoming: settings.allowIncoming,
+      allowRemoteUpdates: this.remoteUpdatesSetting(settings),
+    });
+    this.controllerNames = new Map(
+      settings.pairedControllers.map((controller) => [
+        controller.deviceId,
+        controller.name,
+      ]),
+    );
     return settings;
   }
 
@@ -500,6 +726,12 @@ export class RemoteControlService {
       fetchToken: () => this.deps.fetchToken(identity.deviceId),
       deviceInfo: () => this.deviceInfo(),
       onStatusChange: (status, detail) => {
+        if (status !== this.relayStatus) {
+          this.deps.log?.('Remote control relay status changed', {
+            status,
+            previous: this.relayStatus,
+          });
+        }
         this.relayStatus = status;
         this.relayDetail = detail ?? null;
         if (status === 'connected') this.retryHostConnections();
@@ -509,9 +741,24 @@ export class RemoteControlService {
         this.retryHostConnections();
         this.scheduleBroadcast();
       },
+      onDiagnostic: (remoteRelayConnection) => {
+        this.diagnostic({
+          kind: 'remote_relay_connection',
+          remoteRelayConnection,
+        });
+        this.deps.log?.(
+          'Remote control relay connection',
+          remoteRelayConnection,
+        );
+      },
     });
     this.relay = relay;
     this.relayAccount = account;
+    this.relayAccountKeys = new Set([
+      account,
+      ...(this.deps.signedInAccountKeys?.() ?? []),
+    ]);
+    this.relayStartedAt = this.now();
     this.sessions = new RemoteSessionManager({
       transport: relay,
       identity: (): DeviceKeyPair => identity,
@@ -519,18 +766,62 @@ export class RemoteControlService {
         this.authorizeHandshake(request),
       onIncomingSession: (session: SecureSession): void =>
         this.handleIncomingSession(session),
+      onSessionClosed: (remoteSessionClosed): void => {
+        this.diagnostic({ kind: 'remote_session_closed', remoteSessionClosed });
+        this.deps.log?.('Remote control session closed', remoteSessionClosed);
+      },
     });
+    this.sessions.onSessionStateChange((session, state) =>
+      this.handleSessionStateChange(session, state),
+    );
     relay.start();
   }
 
   /**
    * The computer woke from sleep: its relay socket may have died silently
-   * meanwhile. Reconnecting now ends every session over it at once (peers
-   * go offline, then online), so host windows come back without waiting for
-   * a keepalive to time out.
+   * meanwhile. Reconnecting now takes every session over it through the
+   * peers going offline, then online, so resumable sessions resume and the
+   * rest end at once, and host windows come back without waiting for a
+   * keepalive to time out.
    */
   handleSystemResume(): void {
     this.relay?.reconnectNow();
+  }
+
+  /**
+   * Starts a host's presence grace when this computer's session with it
+   * suspends, and ends it when the session is active again.
+   */
+  private handleSessionStateChange(
+    session: SecureSession,
+    state: SessionState,
+  ): void {
+    if (session.role !== 'initiator' || session.purpose !== 'control') return;
+    if (state === 'active') {
+      // A later suspension starts a grace of its own.
+      clearTimeout(this.presenceGraceTimers.get(session));
+      this.presenceGraceTimers.delete(session);
+      this.presenceGrace.delete(session);
+    } else if (!this.presenceGrace.has(session)) {
+      this.presenceGrace.set(session, true);
+      // The timer alone ends the grace: a clock read here could still fall
+      // just inside it when the timer fires, leaving the host shown online.
+      const timer = setTimeout(() => {
+        this.presenceGraceTimers.delete(session);
+        this.presenceGrace.set(session, false);
+        this.scheduleBroadcast();
+      }, HOST_PRESENCE_GRACE_MS);
+      timer.unref?.();
+      this.presenceGraceTimers.set(session, timer);
+    }
+    this.scheduleBroadcast();
+  }
+
+  /** Whether a host that left the relay is still shown online. */
+  private inPresenceGrace(hostDeviceId: string): boolean {
+    return (this.sessions?.suspendedSessions(hostDeviceId) ?? []).some(
+      (session) => this.presenceGrace.get(session) === true,
+    );
   }
 
   /** Reconnects every wanted host connection whose host is online now. */
@@ -543,27 +834,66 @@ export class RemoteControlService {
     });
   }
 
-  private stopRelay(): void {
+  private stopRelay(stop: RelayStop): void {
+    if (this.relay) {
+      const remoteRelayStopped: RemoteRelayStoppedDiagnostic = {
+        ...stop,
+        relayStatus: this.relayStatus,
+        uptimeMs: Math.max(0, this.now() - this.relayStartedAt),
+        hostSessions: this.hostSessions.size,
+        hostConnections: this.connections.size,
+      };
+      this.diagnostic({ kind: 'remote_relay_stopped', remoteRelayStopped });
+      this.deps.log?.('Remote control relay stopped', remoteRelayStopped);
+    }
     // A window left without its connection could never reconnect; close it.
     for (const [deviceId, connection] of Array.from(this.connections)) {
       connection.release();
       this.deps.windows.close(deviceId);
     }
     this.connections.clear();
+    this.endTransientHold();
     this.endPairingWindow('disabled');
     for (const session of Array.from(this.hostSessions))
       session.close('shutdown');
+    this.setHostWakeLock(false);
     for (const entry of Array.from(this.incoming.values())) entry.cancel();
     // A finished pairing's outcome stays on screen.
     if (this.pairingInProgress()) this.cancelOutgoing();
     this.sessions?.dispose();
     this.sessions = null;
+    for (const timer of this.presenceGraceTimers.values()) clearTimeout(timer);
+    this.presenceGraceTimers.clear();
     this.relay?.stop();
     this.relay = null;
     this.relayAccount = null;
+    this.relayAccountKeys = new Set();
     this.relayStatus = 'stopped';
     this.relayDetail = null;
     this.scheduleBroadcast();
+  }
+
+  /**
+   * Holds the computer awake while it hosts any session: asleep, it would
+   * miss the relay's pings and drop every controller.
+   */
+  private setHostWakeLock(held: boolean): void {
+    const wakeLock = this.deps.wakeLock;
+    if (!wakeLock || held === this.hostWakeLockHeld) return;
+    this.hostWakeLockHeld = held;
+    try {
+      if (held) {
+        wakeLock.acquire(
+          ...wakeLockHolder('remote-session', HOST_WAKE_LOCK_ID),
+        );
+      } else {
+        wakeLock.release(
+          wakeLockHolderKey('remote-session', HOST_WAKE_LOCK_ID),
+        );
+      }
+    } catch (error) {
+      this.deps.log?.('Remote control wake lock failed', error);
+    }
   }
 
   private deviceInfo(): DeviceRelayDeviceInfo {
@@ -637,6 +967,7 @@ export class RemoteControlService {
           }
         : null,
       allowIncoming: settings.allowIncoming,
+      allowRemoteUpdates: this.remoteUpdatesSetting(settings),
       hosts: settings.pairedHosts.map((host) => {
         const connection = this.connections.get(host.deviceId);
         const peer = peers.get(host.deviceId);
@@ -645,7 +976,9 @@ export class RemoteControlService {
           name: peer?.name ?? host.name,
           platform: peer?.platform ?? host.platform,
           pairedAt: host.pairedAt,
-          online: peer !== undefined && peer.acceptsRemoteControl,
+          online:
+            (peer !== undefined && peer.acceptsRemoteControl) ||
+            this.inPresenceGrace(host.deviceId),
           connection: connection?.status ?? 'idle',
           error: connection?.error ?? null,
           ended: connection?.ended ?? false,
@@ -704,6 +1037,14 @@ export class RemoteControlService {
     return children;
   }
 
+  private diagnostic(diagnostic: RemoteControlDiagnostic): void {
+    try {
+      this.deps.recordDiagnostic?.(diagnostic);
+    } catch {
+      // Diagnostics never affect Remote Control.
+    }
+  }
+
   private telemetry(event: RemoteControlTelemetryEvent): void {
     try {
       this.deps.recordTelemetry?.(event);
@@ -749,6 +1090,74 @@ export class RemoteControlService {
   // Settings
   // -------------------------------------------------------------------------
 
+  /**
+   * Whether paired computers may install this computer's updates. Off by
+   * default on Linux, where an install needs administrator approval.
+   */
+  private remoteUpdatesSetting(settings: {
+    allowRemoteUpdates?: boolean | undefined;
+  }): boolean {
+    return settings.allowRemoteUpdates ?? this.deps.platform !== 'linux';
+  }
+
+  /** Paired computers controlling this one may install its updates now. */
+  remoteUpdatesAllowed(): boolean {
+    return (
+      this.disallowingRemoteUpdates === 0 &&
+      this.disallowingIncoming === 0 &&
+      this.settingsCache.allowIncoming &&
+      this.settingsCache.allowRemoteUpdates
+    );
+  }
+
+  private setSettingsCache(next: RemoteControlService['settingsCache']): void {
+    this.settingsCache = next;
+    this.noteRemoteUpdatesAllowed();
+  }
+
+  private noteRemoteUpdatesAllowed(): void {
+    const allowed = this.remoteUpdatesAllowed();
+    if (allowed === this.lastRemoteUpdatesAllowed) return;
+    this.lastRemoteUpdatesAllowed = allowed;
+    this.deps.onRemoteUpdatesAllowedChange?.();
+  }
+
+  /** A paired controller's name, or null for a device this one doesn't know. */
+  controllerName(deviceId: string): string | null {
+    return this.controllerNames.get(deviceId) ?? null;
+  }
+
+  async setAllowRemoteUpdates(allow: boolean): Promise<RemoteControlState> {
+    const saving = this.deps.store.update((current) => ({
+      ...current,
+      allowRemoteUpdates: allow,
+    }));
+    if (!allow) {
+      // Refused at once, without waiting for the save, and a cache refresh
+      // that reads the old value meanwhile cannot turn it back on.
+      this.disallowingRemoteUpdates += 1;
+      this.setSettingsCache({
+        ...this.settingsCache,
+        allowRemoteUpdates: false,
+      });
+    }
+    try {
+      await saving;
+      // An opt-in counts only once saved; a failed one leaves it off.
+      this.setSettingsCache({
+        ...this.settingsCache,
+        allowRemoteUpdates: allow,
+      });
+    } finally {
+      if (!allow) {
+        this.disallowingRemoteUpdates -= 1;
+        this.noteRemoteUpdatesAllowed();
+      }
+    }
+    this.scheduleBroadcast();
+    return this.snapshot();
+  }
+
   async setAllowIncoming(allow: boolean): Promise<RemoteControlState> {
     this.allowIncomingGeneration += 1;
     const wasAllowed = this.settingsCache.allowIncoming;
@@ -763,7 +1172,7 @@ export class RemoteControlService {
       // holds even if saving fails; the error still reaches the caller.
       this.disallowingIncoming += 1;
       this.incomingEpoch += 1;
-      this.settingsCache = { allowIncoming: false };
+      this.setSettingsCache({ ...this.settingsCache, allowIncoming: false });
       this.endPairingWindow('disabled');
       this.endAllControl();
       this.stopPortal();
@@ -771,12 +1180,12 @@ export class RemoteControlService {
     try {
       await saving;
     } finally {
-      this.settingsCache = { allowIncoming: allow };
       if (!allow) {
         // The cache now refuses on its own; drop anything that got through.
         this.endAllControl();
         this.disallowingIncoming -= 1;
       }
+      this.setSettingsCache({ ...this.settingsCache, allowIncoming: allow });
     }
     if (allow && !wasAllowed) this.startPortalIfEnabled();
     await this.reconcile();
@@ -1002,6 +1411,8 @@ export class RemoteControlService {
     request: HandshakeAdmission,
   ): Promise<SessionGrant | null> {
     if (!this.incomingAllowed()) return null;
+    // The flag may be turning off: keep live sessions, admit no new ones.
+    if (this.transientHold !== null) return null;
     const presence = this.presenceKind(request.peerDeviceId);
     // A relay that authenticates kinds lists every connected peer, so a peer
     // missing from its presence is refused, never read as a legacy desktop.
@@ -1183,6 +1594,11 @@ export class RemoteControlService {
   }
 
   private handleIncomingSession(session: SecureSession): void {
+    // Admitted before the flag started turning off (see `holdRelay`).
+    if (this.transientHold !== null) {
+      session.close('closed');
+      return;
+    }
     if (session.purpose === 'pair') {
       this.handleIncomingPairing(session);
       return;
@@ -1214,17 +1630,24 @@ export class RemoteControlService {
         name: this.deps.deviceName(),
         platform: this.deps.platform,
       }),
-      onClose: (): void => {
+      onClose: (reason): void => {
         if (this.hostSessions.has(hostSession)) {
+          const endReason =
+            this.sessionEndReasons.get(hostSession) ?? 'disconnected';
           this.telemetry({
             event: 'session_end',
             device_kind: grant.kind,
-            end_reason:
-              this.sessionEndReasons.get(hostSession) ?? 'disconnected',
+            end_reason: endReason,
+          });
+          this.deps.log?.('Remote control session ended', {
+            reason,
+            endReason,
+            kind: grant.kind,
           });
         }
         this.sessionEndReasons.delete(hostSession);
         this.hostSessions.delete(hostSession);
+        this.setHostWakeLock(this.hostSessions.size > 0);
         this.appAdvisorSurfaces.delete(hostSession);
         const expiry = this.sessionExpiries.get(hostSession);
         if (expiry) clearTimeout(expiry.timer);
@@ -1237,6 +1660,7 @@ export class RemoteControlService {
       ...(this.deps.completeAccountProxySignIn
         ? { completeAccountProxySignIn: this.deps.completeAccountProxySignIn }
         : {}),
+      ...(this.deps.core ? { core: this.deps.core } : {}),
       ...(grant.kind === 'hosted'
         ? {
             hostedChat: (request: unknown): Promise<unknown> =>
@@ -1250,6 +1674,7 @@ export class RemoteControlService {
     });
     if (hostSession.rpc.isClosed) return;
     this.hostSessions.add(hostSession);
+    this.setHostWakeLock(true);
     this.telemetry({
       event: 'session_start',
       device_kind: grant.kind,
@@ -1867,9 +2292,12 @@ export class RemoteControlService {
               signIns.open(params),
             onAccountProxySignInEnded: (state: string): void =>
               signIns.end(state),
-            onSessionEnded: (): void => signIns.closeAll(),
           }
         : {}),
+      onSessionEnded: (reason): void => {
+        signIns?.closeAll();
+        this.deps.log?.('Remote control host connection ended', { reason });
+      },
     });
     this.connections.set(host.deviceId, connection);
     return connection;

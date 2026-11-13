@@ -23,6 +23,12 @@ import type {
   ChatQueueSlice,
   QueuedMessageEditFailure,
 } from '../state';
+import {
+  chatBackendFor,
+  ignoreUnavailable,
+  localChatBackend,
+  reportUnlessUnavailable,
+} from '../backend';
 
 // The pending host lock request per edited entry. Leaving the editor (cancel,
 // switch, or save) forgets the attempt, so a rejection the host reports only
@@ -121,8 +127,8 @@ export const createQueueSlice: StateCreator<
     const isHookPlaceholder = queuedHookQueueId !== undefined;
 
     if (isHookPlaceholder) {
-      void window.api.chat
-        .cancelQueuedHookChat({
+      void localChatBackend()
+        .chat.cancelQueuedHookChat({
           queueId: queuedHookQueueId,
         })
         .then(
@@ -175,12 +181,14 @@ export const createQueueSlice: StateCreator<
     }
 
     if (targetMessage?.hostQueueEntryId) {
-      void window.api.chat.cancelQueuedMessage({
-        projectId: sel.projectId,
-        worktreeId: sel.worktreeId,
-        chatId,
-        entryId: targetMessage.hostQueueEntryId,
-      });
+      void chatBackendFor(sel)
+        .chat.cancelQueuedMessage({
+          projectId: sel.projectId,
+          worktreeId: sel.worktreeId,
+          chatId,
+          entryId: targetMessage.hostQueueEntryId,
+        })
+        .catch(reportUnlessUnavailable);
       return;
     }
 
@@ -220,8 +228,8 @@ export const createQueueSlice: StateCreator<
     }
     // Main retains accepted agent input; settle it first so it can never be
     // delivered later. A refusal keeps the entry so the user can retry.
-    void window.api.chat
-      .cancelQueuedMessage({
+    void chatBackendFor(sel)
+      .chat.cancelQueuedMessage({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
@@ -238,8 +246,8 @@ export const createQueueSlice: StateCreator<
     if (!activeTab || !targetMessage) return;
 
     if (targetMessage.queuedHookQueueId) {
-      void window.api.chat
-        .forceQueuedHookChat({
+      void localChatBackend()
+        .chat.forceQueuedHookChat({
           queueId: targetMessage.queuedHookQueueId,
         })
         .catch((error: unknown) => {
@@ -250,12 +258,14 @@ export const createQueueSlice: StateCreator<
     }
 
     if (targetMessage.hostQueueEntryId) {
-      void window.api.chat.forceQueuedMessage({
-        projectId: sel.projectId,
-        worktreeId: sel.worktreeId,
-        chatId,
-        entryId: targetMessage.hostQueueEntryId,
-      });
+      void chatBackendFor(sel)
+        .chat.forceQueuedMessage({
+          projectId: sel.projectId,
+          worktreeId: sel.worktreeId,
+          chatId,
+          entryId: targetMessage.hostQueueEntryId,
+        })
+        .catch(reportUnlessUnavailable);
       return;
     }
 
@@ -442,12 +452,14 @@ export const createQueueSlice: StateCreator<
           : activeTab?.queuedMessages[previousIndex]?.hostQueueEntryId;
       updateEditing(null);
       if (previousEntryId) {
-        await window.api.chat.setQueuedMessageEditLock({
-          ...sel,
-          chatId,
-          entryId: previousEntryId,
-          locked: false,
-        });
+        await chatBackendFor(sel)
+          .chat.setQueuedMessageEditLock({
+            ...sel,
+            chatId,
+            entryId: previousEntryId,
+            locked: false,
+          })
+          .catch(ignoreUnavailable);
       } else if (
         activeTab?.status === 'idle' &&
         activeTab.queuedMessages.length > 0
@@ -508,7 +520,7 @@ export const createQueueSlice: StateCreator<
     };
     globalThis.document?.addEventListener('focusin', onFocus);
     try {
-      await window.api.chat.setQueuedMessageEditLock({
+      await chatBackendFor(sel).chat.setQueuedMessageEditLock({
         ...sel,
         chatId,
         entryId,
@@ -531,7 +543,7 @@ export const createQueueSlice: StateCreator<
         currentTab?.editingQueuedMessageIndex !== undefined
       ) {
         // Only a successful acquisition owns a lock that this attempt may release.
-        await window.api.chat.setQueuedMessageEditLock({
+        await chatBackendFor(sel).chat.setQueuedMessageEditLock({
           ...sel,
           chatId,
           entryId,
@@ -621,8 +633,8 @@ export const createQueueSlice: StateCreator<
         };
       });
 
-      void window.api.chat
-        .editQueuedMessage({
+      void chatBackendFor(sel)
+        .chat.editQueuedMessage({
           projectId: sel.projectId,
           worktreeId: sel.worktreeId,
           chatId,
@@ -644,13 +656,15 @@ export const createQueueSlice: StateCreator<
             );
           // A failed edit leaves the host lock intact; release it so the queue
           // can continue draining after the local editor has closed.
-          void window.api.chat.setQueuedMessageEditLock({
-            projectId: sel.projectId,
-            worktreeId: sel.worktreeId,
-            chatId,
-            entryId: hostQueueEntryId,
-            locked: false,
-          });
+          void chatBackendFor(sel)
+            .chat.setQueuedMessageEditLock({
+              projectId: sel.projectId,
+              worktreeId: sel.worktreeId,
+              chatId,
+              entryId: hostQueueEntryId,
+              locked: false,
+            })
+            .catch(reportUnlessUnavailable);
         });
       return;
     }
@@ -733,8 +747,8 @@ export const createQueueSlice: StateCreator<
       applyLocalEdit(true);
       return;
     }
-    void window.api.chat
-      .editQueuedMessage({
+    void chatBackendFor(sel)
+      .chat.editQueuedMessage({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,

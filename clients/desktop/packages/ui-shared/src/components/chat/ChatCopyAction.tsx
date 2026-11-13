@@ -34,7 +34,7 @@ export function ChatCopyAction(props: ChatCopyActionProps): JSX.Element {
 
 function ChatCopyActionControl({
   text,
-  label = 'Copy message',
+  label = 'Copy',
   dataTestId,
 }: ChatCopyActionProps): JSX.Element {
   const { copied, announcement, copy } = useAnnouncedCopy();

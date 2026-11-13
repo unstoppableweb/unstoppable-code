@@ -978,9 +978,11 @@ export async function restoreLocalMemorySnapshot(
   scopeDir: string,
   id: string,
   assertTarget: () => void = () => undefined,
+  precondition?: () => Promise<void>,
 ): Promise<{ previousSnapshotId: string | null }> {
   return withMemoryWriteLock(scopeDir, async () => {
     assertTarget();
+    await precondition?.();
     await recordMemoryEdit(scopeDir);
     const snapshot = await readLocalMemorySnapshot(scopeDir, id);
     // Read once: the snapshot saves this state, the guard checks the scope

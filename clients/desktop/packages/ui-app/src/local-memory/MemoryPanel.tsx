@@ -42,6 +42,7 @@ import {
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import {
   BackIcon,
+  HistoryIcon,
   ListFilterIcon,
   PencilIcon,
   RefreshIcon,
@@ -79,7 +80,18 @@ import {
   editorKeyDown,
   rowMenuItems,
 } from './memory-panel-parts';
+import { memorySyncFailureText } from './memory-sync-copy';
 import { consolidationProblem, rebuildProblem } from './memory-status-copy';
+import {
+  MemoryProjectSyncRow,
+  MemorySyncConflictsView,
+  MemorySyncHistoryView,
+  MemorySyncMergeReview,
+  MemorySyncStatusRow,
+  memorySyncActive,
+  useMemorySyncState,
+  type MemorySyncPanelUiState,
+} from './MemorySyncPanelParts';
 
 export interface MemoryPanelProps {
   readonly client: LocalMemoryClient;
@@ -94,6 +106,8 @@ export interface MemoryPanelProps {
   readonly showSettingsLink?: boolean;
   readonly hideWhenEmpty?: boolean;
   readonly onEmptyChange?: (empty: boolean) => void;
+  /** The sync view open in the panel, for the host's assistant context. */
+  readonly onSyncViewChange?: (view: MemorySyncPanelUiState | null) => void;
 }
 
 /**
@@ -124,6 +138,10 @@ function linkedFileKey(fileKey: string, href: string): string | null {
 
 type View =
   | { readonly kind: 'list' }
+  /** Memory sync: memories two computers changed at once. */
+  | { readonly kind: 'conflicts' }
+  /** Memory sync: the versions the cloud keeps. */
+  | { readonly kind: 'history' }
   | {
       readonly kind: 'detail';
       readonly id: string;
@@ -238,6 +256,7 @@ export function MemoryPanel({
   showSettingsLink = false,
   hideWhenEmpty = false,
   onEmptyChange,
+  onSyncViewChange,
 }: MemoryPanelProps): JSX.Element {
   // Each scope's files under the scope's key, so a scope added or removed
   // leaves every other scope's rows, ids and filter choice as they were.
@@ -272,6 +291,10 @@ export function MemoryPanel({
     text: string;
     lastRunAt: string | null;
   } | null>(null);
+  const [savingProjectMemory, setSavingProjectMemory] = useState(false);
+  const [reviewingProject, setReviewingProject] = useState(false);
+  const closeProjectReview = useCallback(() => setReviewingProject(false), []);
+  const ignoreProjectReviewState = useCallback(() => undefined, []);
   const pending = useRef(new Map<string, PendingDelete>());
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const backRef = useRef<HTMLButtonElement>(null);
@@ -311,6 +334,62 @@ export function MemoryPanel({
   );
   const maintenance = stableScopes[stableScopes.length - 1]?.scope;
   const now = new Date();
+  // Memory sync covers the memories saved for every project (the user
+  // scope) and each project linked to a cloud project, so a panel that
+  // lists either one reads sync's state.
+  const listsUserScope = stableScopes.some(
+    ({ scope }) => scope.scope === 'user',
+  );
+  const listedWorkspaceId = stableScopes.find(
+    ({ scope }) => scope.scope === 'workspace',
+  )?.scope;
+  const workspaceId =
+    listedWorkspaceId?.scope === 'workspace'
+      ? listedWorkspaceId.workspaceId
+      : undefined;
+  const allState = useMemorySyncState(
+    listsUserScope || workspaceId !== undefined ? client.sync : undefined,
+  );
+  // The user scope's line, history and conflicts belong to a panel that
+  // lists it: a project with Private memory on lists only its own.
+  const syncState = listsUserScope ? allState : null;
+  const projectMemory =
+    workspaceId === undefined
+      ? undefined
+      : allState?.projects.find((memory) => memory.workspaceId === workspaceId);
+  const userScopeLabel = stableScopes.find(
+    ({ scope }) => scope.scope === 'user',
+  )?.label;
+
+  /**
+   * Keeps this project's memories on this computer, or syncs them again.
+   * The host reads the project's link again and refuses when it no longer
+   * syncs, which the notice explains; the next broadcast carries the new
+   * switch either way.
+   */
+  async function setProjectMemory(keepOnThisComputer: boolean): Promise<void> {
+    const sync = client.sync;
+    if (sync?.setProjectMemory === undefined || workspaceId === undefined) {
+      return;
+    }
+    setSavingProjectMemory(true);
+    try {
+      const result = await sync.setProjectMemory(
+        workspaceId,
+        keepOnThisComputer,
+      );
+      if (!result.ok) {
+        notify({
+          message: memorySyncFailureText(result.code),
+          tone: 'error',
+        });
+      }
+    } catch {
+      notify({ message: memorySyncFailureText('offline'), tone: 'error' });
+    } finally {
+      setSavingProjectMemory(false);
+    }
+  }
 
   useEffect(() => {
     active.current = true;
@@ -445,6 +524,20 @@ export function MemoryPanel({
   useEffect(() => {
     if (!loading) onEmptyChange?.(empty);
   }, [empty, loading, onEmptyChange]);
+  const syncView =
+    view.kind === 'conflicts' || view.kind === 'history' ? view.kind : null;
+  const syncConflicts = syncState?.user?.conflicts.length ?? 0;
+  useEffect(() => {
+    onSyncViewChange?.(
+      syncView === null ? null : { view: syncView, conflicts: syncConflicts },
+    );
+  }, [syncView, syncConflicts, onSyncViewChange]);
+  useEffect(
+    () => (): void => {
+      onSyncViewChange?.(null);
+    },
+    [onSyncViewChange],
+  );
 
   // A deletion still waiting for Undo happens now when the panel closes or
   // the window unloads: quitting or reloading skips React's cleanup.
@@ -850,6 +943,17 @@ export function MemoryPanel({
             onSelect: () => setConfirmingRebuild(true),
           },
         ]),
+    ...(client.sync !== undefined && memorySyncActive(syncState)
+      ? [
+          {
+            key: 'sync-history',
+            label: 'Sync history',
+            icon: <HistoryIcon size="sm" />,
+            disabled: editing,
+            onSelect: () => setView({ kind: 'history' }),
+          },
+        ]
+      : []),
     ...(showSettingsLink
       ? [
           {
@@ -1084,6 +1188,11 @@ export function MemoryPanel({
           </span>
         </Fact>
         <Fact label="Kind">{MEMORY_KIND_LABELS[entry.file.kind]}</Fact>
+        {entry.file.deviceLabel !== undefined && (
+          <Fact label="Saved on" dataTestId="memory-detail-device">
+            <span className={REPLAY_MASK_CLASS}>{entry.file.deviceLabel}</span>
+          </Fact>
+        )}
         <Fact label="Saved">{savedTime(entry.file.modifiedAt, now)}</Fact>
         {entry.file.usageCount !== undefined && (
           <>
@@ -1296,7 +1405,20 @@ export function MemoryPanel({
       className="relative flex min-h-0 flex-auto flex-col"
       data-testid={`memory-explorer-${maintenance?.scope ?? 'user'}`}
     >
-      {openEntry ? (
+      {view.kind === 'conflicts' && client.sync !== undefined ? (
+        <MemorySyncConflictsView
+          sync={client.sync}
+          state={syncState}
+          notify={notify}
+          onBack={() => setView({ kind: 'list' })}
+        />
+      ) : view.kind === 'history' && client.sync !== undefined ? (
+        <MemorySyncHistoryView
+          sync={client.sync}
+          notify={notify}
+          onBack={() => setView({ kind: 'list' })}
+        />
+      ) : openEntry ? (
         renderDetail(openEntry)
       ) : (
         <>
@@ -1323,12 +1445,40 @@ export function MemoryPanel({
               items={panelMenu}
             />
           </div>
+          <MemorySyncStatusRow
+            state={syncState}
+            {...(stableScopes.length > 1 && userScopeLabel !== undefined
+              ? { prefix: userScopeLabel }
+              : {})}
+            onReviewConflicts={() => setView({ kind: 'conflicts' })}
+          />
+          {projectMemory !== undefined && client.sync !== undefined && (
+            <MemoryProjectSyncRow
+              memory={projectMemory}
+              saving={savingProjectMemory}
+              onChange={(keepOnThisComputer) =>
+                void setProjectMemory(keepOnThisComputer)
+              }
+              onReviewMerge={() => setReviewingProject(true)}
+            />
+          )}
           {renderStatus()}
           <div className="min-h-0 flex-auto overflow-y-auto overflow-x-hidden pb-3">
             {renderList()}
           </div>
         </>
       )}
+      {reviewingProject &&
+        workspaceId !== undefined &&
+        client.sync !== undefined && (
+          <MemorySyncMergeReview
+            sync={client.sync}
+            notify={notify}
+            workspaceId={workspaceId}
+            onClose={closeProjectReview}
+            onStateChange={ignoreProjectReviewState}
+          />
+        )}
       {confirmingRebuild && (
         <ConfirmDialog
           title="Rebuild memories?"

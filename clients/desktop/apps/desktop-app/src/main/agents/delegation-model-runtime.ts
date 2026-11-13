@@ -1,3 +1,5 @@
+import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { AgentDelegationResult } from '@canopy/protocol/delegation';
 import type {
   ChatTabPluginSelections,
@@ -76,6 +78,7 @@ export async function resolveDelegationModel(
     const runtime = structuredClone(
       await resolveAgentModelRuntime({
         model: modelId,
+        projectId: parentProjectId,
         inheritDefaultFrom: { projectId: parentProjectId },
       }),
     );
@@ -133,6 +136,8 @@ export async function resolveDelegationModel(
       delegationAgentCapabilityError(error) ??
       delegationCapabilityAssignmentError(error);
     if (capability) return capabilityUnavailable(capability.publicMessage);
+    if (error instanceof AgentModelSelectionError)
+      return capabilityUnavailable(error.message);
     return unavailable();
   }
 }
@@ -164,7 +169,9 @@ export async function resumeDelegationModel(
     if (
       isAgentModel(route.selectedModelId) !== Boolean(route.agentOverlay) ||
       (route.agentOverlay &&
-        route.agentOverlay.agentDefinitionId !== route.selectedModelId)
+        route.agentOverlay.agentDefinitionId !==
+          (parseAgentRouteModelId(route.selectedModelId)?.agentId ??
+            route.selectedModelId))
     )
       return unavailable();
     const projection = route.agentOverlay

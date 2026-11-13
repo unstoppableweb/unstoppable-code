@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   Button,
   DialogModal,
@@ -17,9 +17,16 @@ import {
   useSettingsClient,
   useSettingsPrivacy,
 } from '../host';
+import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
+import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
 import { useSettingsErrorCopy } from '../errors';
 import { AddGatewayModelForm } from './gateway-model-list';
-import { GatewayModelChecklist, suggestModels } from './AiGatewaySetup';
+import { AI_GATEWAY_SETUP_CAP_HINT, suggestModels } from './AiGatewaySetup';
+import { GatewayModelBrowser } from './GatewayModelBrowser';
+import {
+  initialGatewaySelection,
+  openWeightGatewayIds,
+} from './gateway-model-search';
 import {
   keepKeyForCloudChats,
   type AiGatewayEditorAdapter,
@@ -29,7 +36,13 @@ import {
   AI_GATEWAY_ERROR_SCOPE,
   AI_GATEWAY_KNOWN_ERRORS,
   connectionFailureCopy,
+  presetShortName,
 } from './ai-gateway-copy';
+
+// The dialog can't turn stored models off, so once they alone fill the
+// gateway it points to settings; picks made here can just be turned off.
+const REFRESH_CAP_HINT = `This gateway already has ${MODEL_GATEWAY_MAX_MODELS} models. Remove one in settings to add another.`;
+const NO_MODELS: readonly ModelGatewayModel[] = [];
 
 export interface AiGatewayRefreshDialogProps {
   readonly adapter: AiGatewayEditorAdapter;
@@ -47,6 +60,7 @@ type RefreshState =
   | {
       readonly kind: 'listed';
       readonly suggestions: readonly ModelGatewayModel[];
+      readonly openWeightIds: ReadonlySet<string>;
     };
 
 /**
@@ -71,7 +85,12 @@ export function AiGatewayRefreshDialog({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [manual, setManual] = useState<ModelGatewayModel[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
+  const [manualGatewayId, setManualGatewayId] = useState('');
   const [saving, setSaving] = useState(false);
+  const preset = useMemo(
+    () => matchAiGatewayPreset(config.baseUrl),
+    [config.baseUrl],
+  );
   const attemptRef = useRef(0);
   const discoveringRef = useRef(false);
   const savingRef = useRef(false);
@@ -90,7 +109,11 @@ export function AiGatewayRefreshDialog({
       if (result.status !== 'connected') {
         setState({
           kind: 'failed',
-          copy: connectionFailureCopy(result.status, keepsKeys),
+          copy: connectionFailureCopy(
+            result.status,
+            keepsKeys,
+            presetShortName(preset),
+          ),
         });
         return;
       }
@@ -112,8 +135,22 @@ export function AiGatewayRefreshDialog({
         config.models,
         adapter.organizationId,
       );
-      setSelected(new Set(suggestions.map((model) => model.id)));
-      setState({ kind: 'listed', suggestions });
+      setSelected(
+        new Set(
+          initialGatewaySelection({
+            stored: [],
+            candidates: suggestions,
+            suggestedIds: preset?.suggestedModelIds ?? [],
+            reservedCount: config.models.length,
+            limit: MODEL_GATEWAY_MAX_MODELS,
+          }),
+        ),
+      );
+      setState({
+        kind: 'listed',
+        suggestions,
+        openWeightIds: openWeightGatewayIds(result.models),
+      });
     } catch (err) {
       if (attempt !== attemptRef.current) return;
       setState({
@@ -139,16 +176,30 @@ export function AiGatewayRefreshDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const listed = state.kind === 'listed' ? state.suggestions : [];
-  const models = [...listed, ...manual];
+  const listed = state.kind === 'listed' ? state.suggestions : NO_MODELS;
+  // Stable across renders that don't change it: the browser indexes the
+  // catalog once per array.
+  const models = useMemo(() => [...listed, ...manual], [listed, manual]);
   const chosen = models.filter((model) => selected.has(model.id));
+  const atCapacity =
+    config.models.length + chosen.length >= MODEL_GATEWAY_MAX_MODELS;
+  // A safety net only: the browser stops turning models on at the limit.
   const overLimit =
     config.models.length + chosen.length > MODEL_GATEWAY_MAX_MODELS;
+  const openManual = (gatewayId: string): void => {
+    setManualGatewayId(gatewayId);
+    setManualOpen(true);
+  };
 
   return (
     <DialogModal
       title="Refresh models"
-      maxWidth="md"
+      subtitle={
+        <span className={maskClassName}>
+          {preset?.name ?? gatewayHostname(config.baseUrl)}
+        </span>
+      }
+      maxWidth="xl"
       dataTestId="ai-gateway-refresh-dialog"
       closeOnBackdrop={!saving}
       closeButtonDisabled={saving}
@@ -211,10 +262,24 @@ export function AiGatewayRefreshDialog({
             </Button>
           </div>
         ) : null}
-        <GatewayModelChecklist
+        <GatewayModelBrowser
           models={models}
           selected={selected}
+          suggestedIds={preset?.suggestedModelIds}
+          {...(state.kind === 'listed'
+            ? { openWeightIds: state.openWeightIds }
+            : {})}
+          reservedCount={config.models.length}
+          limit={MODEL_GATEWAY_MAX_MODELS}
+          capHint={
+            config.models.length >= MODEL_GATEWAY_MAX_MODELS
+              ? REFRESH_CAP_HINT
+              : AI_GATEWAY_SETUP_CAP_HINT
+          }
           disabled={saving}
+          layout="dialog"
+          autoFocus
+          onAddManually={openManual}
           onToggle={(id) =>
             setSelected((previous) => {
               const next = new Set(previous);
@@ -227,22 +292,21 @@ export function AiGatewayRefreshDialog({
         {manualOpen ? (
           <div className="flex flex-col">
             <AddGatewayModelForm
+              key={manualGatewayId}
               busy={saving}
               existing={[...config.models, ...models]}
+              atCapacity={atCapacity}
+              initialGatewayId={manualGatewayId}
               organizationId={adapter.organizationId}
               onAdd={(model) => {
                 setManual((previous) => [...previous, model]);
                 setSelected((previous) => new Set(previous).add(model.id));
+                setManualGatewayId('');
                 setManualOpen(false);
               }}
               onCancel={() => setManualOpen(false)}
             />
           </div>
-        ) : null}
-        {overLimit ? (
-          <StatusLabel tone="destructive" size="xs">
-            {`A gateway can have up to ${MODEL_GATEWAY_MAX_MODELS} models.`}
-          </StatusLabel>
         ) : null}
         <div className="flex items-center justify-between gap-2">
           {manualOpen ? (
@@ -252,9 +316,9 @@ export function AiGatewayRefreshDialog({
               type="button"
               variant="secondary"
               size="compact"
-              disabled={saving}
+              disabled={saving || atCapacity}
               data-testid="ai-gateway-refresh-add-manual"
-              onClick={() => setManualOpen(true)}
+              onClick={() => openManual('')}
             >
               Add model manually
             </Button>

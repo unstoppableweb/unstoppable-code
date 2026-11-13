@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import {
   MEMORY_REPLICA_ACCOUNT_FILENAME,
+  MEMORY_REPLICA_PROJECTS_DIRNAME,
   MEMORY_SYNC_OUTBOX_FILENAME,
   MEMORY_SYNC_PRIVATE_DIRNAME,
   MEMORY_SYNC_STATE_FILENAME,
@@ -34,6 +35,14 @@ export function memoryReplicaScopeDir(
   // The protocol's segments start with the root's own name.
   const [, ...segments] = memoryReplicaPathSegments(accountId, scope);
   return join(replicasRoot, ...segments);
+}
+
+/** `<account>/projects`, where the account's project scope replicas live. */
+export function memoryReplicaProjectsDir(
+  replicasRoot: string,
+  accountId: string,
+): string {
+  return join(replicasRoot, accountId, MEMORY_REPLICA_PROJECTS_DIRNAME);
 }
 
 export function memoryReplicaAccountFile(accountDir: string): string {

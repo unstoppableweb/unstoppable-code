@@ -1,4 +1,5 @@
 import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { internalRootMigrationProgress } from './progress';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { InternalRootIdentity } from '@canopy/core-runtime/node/internal-root-migration';
 import {
@@ -141,6 +142,7 @@ function rowCheckoutPaths(row: Record<string, unknown>): string[] | null {
 /** Logical file bytes, not allocated blocks; hard links count once per path. */
 async function size(path: string): Promise<number> {
   const stat = await lstat(path);
+  internalRootMigrationProgress('sizing cleanup candidates');
   if (!stat.isDirectory()) return stat.size;
   let bytes = 0;
   for (const name of await readdir(path)) bytes += await size(join(path, name));
@@ -151,6 +153,7 @@ export async function collectInternalRootCleanupCandidates(
   identity: InternalRootIdentity,
   options: {
     readonly abandonArchives?: readonly string[];
+    readonly abandonCheckouts?: readonly string[];
     readonly applied: boolean;
     readonly git: RelocationGit;
     /** Reuse the migration inventory; never walk the restore root just to size it. */
@@ -226,6 +229,10 @@ export async function collectInternalRootCleanupCandidates(
     });
   };
   const inspectGit = async (checkout: string): Promise<void> => {
+    if (
+      (options.abandonCheckouts ?? []).some((path) => isWithin(path, checkout))
+    )
+      return;
     try {
       if (!isAbsolute(checkout) || !(await canonicalDirectory(checkout)))
         return;
@@ -334,6 +341,20 @@ export async function collectInternalRootCleanupCandidates(
       warn(checkout);
     }
   };
+
+  for (const path of options.abandonCheckouts ?? []) {
+    if (!(await statIfPresent(path))) continue;
+    if ((await realpath(dirname(path))) !== dirname(path)) {
+      warn(path);
+      continue;
+    }
+    await add(
+      path,
+      'abandoned-archive',
+      `Broken checkout ${JSON.stringify(path)}: explicitly omitted from migration; retained in the old root.`,
+      'old-root',
+    );
+  }
 
   for (const root of options.applied
     ? [identity.source, identity.destination]
@@ -608,6 +629,7 @@ export async function collectInternalRootCleanupCandidates(
         if (entries.has(path) || opaqueDirectories.has(path)) return [];
         try {
           const children = await readdir(path, { withFileTypes: true });
+          internalRootMigrationProgress('scanning cleanup directories');
           if (
             path !== w5 &&
             !path.startsWith(`${w5}/`) &&

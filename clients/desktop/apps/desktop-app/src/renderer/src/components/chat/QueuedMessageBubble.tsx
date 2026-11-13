@@ -238,12 +238,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
             <QueuedMessageActions
               placement="corner"
               variant="badge"
-              cornerLeading={
-                <BubbleCopyBadge
-                  copyText={copyText}
-                  label="Copy to clipboard"
-                />
-              }
+              cornerLeading={<BubbleCopyBadge copyText={copyText} />}
               onEdit={showEdit ? handleEdit : undefined}
               onCancel={handleClear}
               pending={message.pendingSend === true}

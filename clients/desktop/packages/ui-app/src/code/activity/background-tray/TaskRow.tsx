@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type ReactNode,
   type RefObject,
 } from 'react';
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
@@ -15,6 +16,7 @@ import {
   SpinnerStyleProvider,
   StatusGlyph,
   EmptyStateRow,
+  joinDetails,
 } from '@canopy/ui-shared/components';
 import {
   AgentIcon,
@@ -93,7 +95,7 @@ function ShellInspector({
     <>
       <Subtitle>
         <code
-          className={`${REPLAY_BLOCK_CLASS} truncate font-mono text-xs ${redesigned ? '' : 'fg-secondary'}`}
+          className={`${REPLAY_BLOCK_CLASS} truncate font-mono text-s ${redesigned ? '' : 'fg-secondary'}`}
         >
           $ {command}
         </code>
@@ -124,9 +126,9 @@ const AGENT_GLYPH_STATES = {
   failed: 'failed',
 } as const satisfies Record<BackgroundWorkflowAgentProgress['state'], string>;
 
-function workflowProgressLine(progress: BackgroundWorkflowProgress): string {
+function workflowProgressLine(progress: BackgroundWorkflowProgress): ReactNode {
   const done = progress.agents.filter((agent) => agent.state === 'done').length;
-  return [
+  return joinDetails([
     progress.phaseIndex !== null && progress.phaseCount > 0
       ? `Phase ${String(progress.phaseIndex + 1)} of ${String(progress.phaseCount)}`
       : null,
@@ -134,9 +136,7 @@ function workflowProgressLine(progress: BackgroundWorkflowProgress): string {
     progress.agents.length > 0
       ? `${String(done)} of ${String(progress.agents.length)} agents done`
       : null,
-  ]
-    .filter((part) => part !== null)
-    .join(' · ');
+  ]);
 }
 
 function WorkflowInspector({
@@ -167,14 +167,14 @@ function WorkflowInspector({
     () => latest.current.subscribe?.(latest.current.task, setProgress),
     [task.id, runId, canSubscribe],
   );
-  const line = progress === null ? '' : workflowProgressLine(progress);
+  const line = progress === null ? null : workflowProgressLine(progress);
   return (
     <>
       <Subtitle>
         <p
           className={`${REPLAY_BLOCK_CLASS} ${redesigned ? '' : 'fg-secondary'}`}
         >
-          {line || task.lastDescription || task.summary || 'Starting'}
+          {line ?? (task.lastDescription || task.summary || 'Starting')}
         </p>
       </Subtitle>
       {progress !== null && progress.agents.length > 0 && (

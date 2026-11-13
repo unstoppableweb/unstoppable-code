@@ -773,6 +773,7 @@ function ComposerInstance({
           commands={commands}
           searchFiles={searchFiles}
           onSelectFile={(file) => menu.insertFile(file, repos.length)}
+          multiRepo={repos.length > 1}
           onSelectCommand={selectCommand}
           includeCommandsInAddMenu
           additionalItems={addItems}

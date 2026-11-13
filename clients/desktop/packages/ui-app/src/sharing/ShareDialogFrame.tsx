@@ -4,13 +4,18 @@ import type { JSX, ReactNode } from 'react';
 import type { ShareAudience } from '@canopy/protocol/sharing';
 import type { PipelinePackageProgressEvent } from '@canopy/protocol/pipelines';
 import {
+  Button,
   CopyLinkButton,
   DialogModal,
   ProgressBar,
   Notice,
 } from '@canopy/ui-shared/components';
 import { PUBLIC_SHARE_RETRY_LABEL } from './capability-package/share-copy';
-import { ShareFooter, type ShareFooterSecondaryAction } from './ShareFooter';
+import {
+  ShareFooter,
+  type ShareFooterDestructiveAction,
+  type ShareFooterSecondaryAction,
+} from './ShareFooter';
 
 /**
  * The common share-dialog structure. Every share surface renders it: the one
@@ -71,6 +76,11 @@ function capitalize(value: string): string {
 export interface ShareSuccessNotice {
   readonly tone: 'success' | 'warning';
   readonly message: string;
+  /**
+   * Lines under the message, e.g. what the audience can do and the share's
+   * sync state. They stack the notice like a link does.
+   */
+  readonly details?: readonly string[];
   /** The share's link, shown under the message; never auto-copied. */
   readonly link?: string;
 }
@@ -234,11 +244,23 @@ export interface ShareDialogFrameProps {
   readonly submitDisabled?: boolean;
   readonly submitTestId?: string;
   readonly onSubmit: () => void;
+  /**
+   * The primary's own work is running outside a share (retrying a sync): it
+   * spins with `sharingLabel` and the dialog stays on its current notice.
+   */
+  readonly submitBusy?: boolean;
   readonly secondaryAction?: ShareFooterSecondaryAction;
+  /** A destructive action on the share (Stop sharing), on the footer's left. */
+  readonly destructiveAction?: ShareFooterDestructiveAction;
   /** The capability-package stage, shown in the footer while sharing. */
   readonly stage?: PipelinePackageProgressEvent | null;
   /** The resource's existing link: Copy link in the footer. */
   readonly link?: ShareDialogLink;
+  /**
+   * The resource has a link that is still resolving: Copy link renders
+   * disabled until `link` arrives.
+   */
+  readonly linkPending?: boolean;
   /** Host clipboard writer for Copy link. */
   readonly copyText?: (text: string) => Promise<boolean>;
   /** Fires after Copy link wrote the link. */
@@ -275,15 +297,18 @@ export function ShareDialogFrame({
   submitDisabled = false,
   submitTestId,
   onSubmit,
+  submitBusy = false,
   secondaryAction,
+  destructiveAction,
   stage,
   link,
+  linkPending = false,
   copyText,
   onLinkCopied,
   children,
 }: ShareDialogFrameProps): JSX.Element {
   const sharing = lifecycle.status === 'sharing';
-  const busy = sharing || retryingPublic || extraBusy;
+  const busy = sharing || submitBusy || retryingPublic || extraBusy;
   const gated = gate !== undefined && gate !== null && gate !== false;
   const partial = lifecycle.status === 'partial';
 
@@ -322,6 +347,19 @@ export function ShareDialogFrame({
         />
       );
     }
+    if (!sharing && !gated && linkPending) {
+      return (
+        <Button
+          type="button"
+          variant="secondary"
+          size="compact"
+          disabled
+          data-testid={`${p}-copy-link`}
+        >
+          Copy link
+        </Button>
+      );
+    }
     return null;
   })();
 
@@ -329,8 +367,13 @@ export function ShareDialogFrame({
   // the same rules ShareFooter is given below, so no empty strip remains.
   const showPrimary = partial ? onRetryPublic !== undefined : showSubmit;
   const showSecondary = secondaryAction !== undefined && !partial;
+  const showDestructive = destructiveAction !== undefined && !partial;
   const hasFooterActions =
-    lifecycle.committed || showPrimary || Boolean(leading) || showSecondary;
+    lifecycle.committed ||
+    showPrimary ||
+    Boolean(leading) ||
+    showSecondary ||
+    showDestructive;
 
   return (
     <DialogModal
@@ -396,21 +439,31 @@ export function ShareDialogFrame({
 
       {lifecycle.status === 'success' && success && (
         <div className="px-6 pb-3">
-          {success.link !== undefined ? (
+          {success.link !== undefined || (success.details?.length ?? 0) > 0 ? (
             <Notice
               intent={success.tone === 'success' ? 'positive' : 'attention'}
               title={success.message}
               titleLayout="stacked"
               data-testid={`${p}-success`}
             >
-              <span className="flex items-center gap-1">
-                <span
-                  className="min-w-0 flex-1 break-all select-all"
-                  data-testid={`${p}-link`}
-                >
-                  {success.link}
-                </span>
-                {successLinkAction}
+              <span className="flex flex-col gap-1">
+                {success.details?.map((detail) => (
+                  <span key={detail} data-testid={`${p}-success-detail`}>
+                    {detail}
+                  </span>
+                ))}
+                {success.link !== undefined && (
+                  <span className="flex items-center gap-1">
+                    <span
+                      className="min-w-0 flex-1 break-all select-all"
+                      data-testid={`${p}-link`}
+                    >
+                      {success.link}
+                    </span>
+                    {successLinkAction}
+                  </span>
+                )}
+                {success.link === undefined && successLinkAction}
               </span>
             </Notice>
           ) : (
@@ -445,9 +498,10 @@ export function ShareDialogFrame({
           submitTestId={
             partial ? `${p}-retry-public` : (submitTestId ?? `${p}-submit`)
           }
-          loading={partial ? retryingPublic : sharing}
+          loading={partial ? retryingPublic : sharing || submitBusy}
           loadingLabel={partial ? PUBLIC_SHARE_RETRY_LABEL : sharingLabel}
           {...(showSecondary ? { secondaryAction } : {})}
+          {...(showDestructive ? { destructiveAction } : {})}
           leading={leading}
           testIdPrefix={p}
         />

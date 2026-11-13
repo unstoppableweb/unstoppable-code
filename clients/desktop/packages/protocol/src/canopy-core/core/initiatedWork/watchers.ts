@@ -80,17 +80,20 @@ export const WatcherCreateRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('github'),
     input: JSON_OBJECT,
-    /** The calling session's checkout, for repository resolution; host-local. */
-    repositoryCwd: z.string().min(1).max(4096).optional(),
+    /** The calling session's selected repository, for repository resolution. */
+    repoId: ID.optional(),
   }),
-  /** WatchCommand: a repeat-safe probe the host runs in the session's directory. */
+  /**
+   * WatchCommand: a repeat-safe probe the host runs in the session's
+   * directory, which it resolves from the recipient (CAN-6031).
+   */
   z.strictObject({
     kind: z.literal('command'),
     command: z.string().min(1).max(16384),
     intervalSeconds: z.number().int().min(5).max(3600),
     maxAttempts: z.number().int().min(1).max(100),
-    /** The calling session's working directory; host-local. */
-    cwd: z.string().min(1).max(4096),
+    /** The calling session's selected repository. */
+    repoId: ID.optional(),
     followUpInstruction: FOLLOW_UP,
   }),
   /** ScheduleWakeup: one wakeup after a delay. */

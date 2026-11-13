@@ -69,37 +69,37 @@ import {
   DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   extractProposedPlan,
 } from './plan-mode-instructions';
-import type { AuthMode } from '@canopy/desktop-shared/node/codex-runtime/generated/AuthMode';
-import type { PlanType } from '@canopy/desktop-shared/node/codex-runtime/generated/PlanType';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import type { AccountUpdatedNotification } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/AccountUpdatedNotification';
-import type { AccountRateLimitsUpdatedNotification } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/AccountRateLimitsUpdatedNotification';
-import type { Account } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/Account';
-import type { GetAccountRateLimitsResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountRateLimitsResponse';
-import type { GetAccountResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountResponse';
-import type { RateLimitResetCredit } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/RateLimitResetCredit';
-import type { RateLimitResetCreditStatus } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/RateLimitResetCreditStatus';
-import type { RateLimitResetCreditsSummary } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/RateLimitResetCreditsSummary';
-import type { RateLimitResetType } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/RateLimitResetType';
-import type { RateLimitSnapshot } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/RateLimitSnapshot';
-import type { RateLimitReachedType } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/RateLimitReachedType';
-import type { SpendControlLimitSnapshot } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/SpendControlLimitSnapshot';
-import type { ToolRequestUserInputResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ToolRequestUserInputResponse';
-import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
-import type { SelectedCapabilityRoot } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/SelectedCapabilityRoot';
-import type { DynamicToolCallParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallParams';
-import type { DynamicToolCallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallResponse';
-import type { McpServerElicitationRequestResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/McpServerElicitationRequestResponse';
+import type { AuthMode } from '@canopy/execution-engine/node/codex-runtime/generated/AuthMode';
+import type { PlanType } from '@canopy/execution-engine/node/codex-runtime/generated/PlanType';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
+import type { AccountUpdatedNotification } from '@canopy/execution-engine/node/codex-runtime/generated/v2/AccountUpdatedNotification';
+import type { AccountRateLimitsUpdatedNotification } from '@canopy/execution-engine/node/codex-runtime/generated/v2/AccountRateLimitsUpdatedNotification';
+import type { Account } from '@canopy/execution-engine/node/codex-runtime/generated/v2/Account';
+import type { GetAccountRateLimitsResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/GetAccountRateLimitsResponse';
+import type { GetAccountResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/GetAccountResponse';
+import type { RateLimitResetCredit } from '@canopy/execution-engine/node/codex-runtime/generated/v2/RateLimitResetCredit';
+import type { RateLimitResetCreditStatus } from '@canopy/execution-engine/node/codex-runtime/generated/v2/RateLimitResetCreditStatus';
+import type { RateLimitResetCreditsSummary } from '@canopy/execution-engine/node/codex-runtime/generated/v2/RateLimitResetCreditsSummary';
+import type { RateLimitResetType } from '@canopy/execution-engine/node/codex-runtime/generated/v2/RateLimitResetType';
+import type { RateLimitSnapshot } from '@canopy/execution-engine/node/codex-runtime/generated/v2/RateLimitSnapshot';
+import type { RateLimitReachedType } from '@canopy/execution-engine/node/codex-runtime/generated/v2/RateLimitReachedType';
+import type { SpendControlLimitSnapshot } from '@canopy/execution-engine/node/codex-runtime/generated/v2/SpendControlLimitSnapshot';
+import type { ToolRequestUserInputResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ToolRequestUserInputResponse';
+import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
+import type { SelectedCapabilityRoot } from '@canopy/execution-engine/node/codex-runtime/generated/v2/SelectedCapabilityRoot';
+import type { DynamicToolCallParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallParams';
+import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
+import type { McpServerElicitationRequestResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/McpServerElicitationRequestResponse';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { immediateTurnRestartCodexToolName } from './canopy-dynamic-tools';
-import type { CodexErrorInfo } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/CodexErrorInfo';
-import type { CollaborationMode } from '@canopy/desktop-shared/node/codex-runtime/generated/CollaborationMode';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { CodexErrorInfo } from '@canopy/execution-engine/node/codex-runtime/generated/v2/CodexErrorInfo';
+import type { CollaborationMode } from '@canopy/execution-engine/node/codex-runtime/generated/CollaborationMode';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
 import type {
   CodexIngestionLagChange,
   CodexIngestionLagSample,
   CodexIngestionLagSnapshot,
-} from '@canopy/desktop-shared/node/codex-runtime/runtime-service';
+} from '@canopy/execution-engine/node/codex-runtime/runtime-service';
 import {
   type CodexCapabilityLeaseStore,
   type CodexCapabilityLeaseFile,
@@ -136,7 +136,7 @@ import {
   type CodexNativeBackgroundWork,
   readCodexMcpToolEvidence,
   type CodexMcpToolEvidence,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 import { codexRuntimeForWorkerRun } from './runtime-service';
 import type { ChatEventDrop } from '../lib/chat-event-drop-diagnostics';
 import {
@@ -527,6 +527,12 @@ const DEFERRED_TOOLS_CODE_MODE_DRAIN_MS = 250;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_INTERVAL_MS = 100;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_CHARS = 16 * 1024;
 const CODEX_PROCESS_RECOVERY_MAX_ATTEMPTS = 3;
+/**
+ * The `thread/sample` prompt for a next prompt suggestion: the person's own
+ * likely next message, short, in their words, or nothing.
+ */
+const CODEX_PROMPT_SUGGESTION_PROMPT =
+  'Predict the next message the user will send in this conversation. Reply with only that message, written as the user would type it, in under 20 words. Do not use tools. If there is no clear next step, reply with nothing.';
 const CODEX_PROCESS_RECOVERY_RETRY_DELAYS_MS: readonly number[] = [0, 250, 750];
 
 function recoveryDelay(ms: number): Promise<void> {
@@ -3970,6 +3976,30 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
   getThreadId(): string | undefined {
     return this.threadId;
+  }
+
+  /**
+   * Codex's prediction of the person's next message after a completed turn
+   * (the `prompt-suggestions` Labs experiment), from one `thread/sample` on
+   * the turn's cached context at low effort. Null when Codex has none. Rejects
+   * when Codex refuses the sample, as it does once a newer turn has started.
+   */
+  async samplePromptSuggestion(input: {
+    threadId: string;
+    turnId: string;
+  }): Promise<string | null> {
+    const response = await this.connection.request('thread/sample', {
+      threadId: input.threadId,
+      expectedTurnId: input.turnId,
+      prompt: CODEX_PROMPT_SUGGESTION_PROMPT,
+      effort: 'low',
+    });
+    // ThreadSampleResponse: `text` is null when Codex attempted a tool call
+    // or replied with nothing.
+    const text =
+      (isRecord(response) ? readString(response, 'text') : undefined)?.trim() ??
+      '';
+    return text.length > 0 ? text : null;
   }
 
   getIngestionLag(): CodexIngestionLagSnapshot | undefined {

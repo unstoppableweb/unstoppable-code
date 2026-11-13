@@ -232,7 +232,9 @@ export function PipelineRunPauseForm({
   );
 
   return (
-    <div className="flex max-h-[40vh] min-h-0 flex-col">
+    // Keeps its own height up to the cap in a column the log fills, so the
+    // question and its fields stay readable; the fields scroll past the cap.
+    <div className="flex max-h-[40vh] shrink-0 flex-col">
       <Surface
         variant="group"
         size="small"

@@ -121,7 +121,7 @@ export interface NotificationSettingsController {
    * toggle for notifications that cannot fire is a silently-lying control.
    */
   activationJourneyEnabled: boolean;
-  /** Experimental toast stack, which changes the default banner placement. */
+  /** Always true: every window renders the shared toast stack. */
   toastStackEnabled: boolean;
   /** Close-to-tray applies only on Windows. */
   isWindows: boolean;

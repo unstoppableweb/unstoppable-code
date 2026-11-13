@@ -5,7 +5,7 @@ import {
   registerW5Host,
   W5HostCohortRefusedError,
   type W5HostRegistrationOptions,
-} from '@canopy/desktop-shared/node/w5-host-cohort';
+} from '@canopy/execution-engine/node/w5-host-cohort';
 
 /*
  * TRANSITIONAL (CAN-3797 W11-2): Electron main's membership in the W5 host

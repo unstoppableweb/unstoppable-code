@@ -1,4 +1,4 @@
-import { codexProfileDigest } from '@canopy/desktop-shared/node/codex-runtime/profile-digest-key';
+import { codexProfileDigest } from '@canopy/execution-engine/node/codex-runtime/profile-digest-key';
 import { readFileSync, statSync } from 'node:fs';
 import type {
   EnvironmentConfigData,

@@ -1,5 +1,8 @@
 import { W5FileWriteRefusedError } from './errors';
-import { isCleanConflictEvidence } from './apply-evidence';
+import {
+  isCleanConflictEvidence,
+  isTransientUnwrittenFailureEvidence,
+} from './apply-evidence';
 import { CORE_WORKSPACE_RECORDS_LIMITS } from '@canopy/protocol/canopy-core';
 
 import { mkdir, open, readFile, realpath, rm } from 'node:fs/promises';
@@ -56,6 +59,20 @@ export function isCleanApplyConflict(
     result.conflicts.length > 0 &&
     result.written.length === 0 &&
     result.error === undefined
+  );
+}
+
+/** A live apply stopped on a transient I/O error before writing anything. */
+export function isTransientUnwrittenApplyFailure(
+  result: W5ApplyResult,
+): boolean {
+  return (
+    result.status === 'recovery-required' &&
+    isTransientUnwrittenFailureEvidence({
+      conflicts: result.conflicts,
+      written: result.written,
+      ...(result.error === undefined ? {} : { error: result.error }),
+    })
   );
 }
 
@@ -346,6 +363,27 @@ export async function recoverW5CommitLog(
   for (const commit of log.listPendingCommits()) {
     const result = await applyW5Commit(log, commit, options);
     if (result.status === 'applied') applied.push(commit.commitId);
+  }
+  // CAN-5680: an unkeyed list write that stopped on a transient I/O error
+  // before writing anything is applied again. If the file changed meanwhile,
+  // the attempt ends as a clean conflict, which the loop below drops.
+  for (const row of log.listRecoveryRequiredCommits()) {
+    if (
+      !options.healCleanConflictOperations?.has(row.operation) ||
+      row.hasReceipt ||
+      !row.transientFailure
+    )
+      continue;
+    log.retryRecoveryRequiredCommit(row.commitId);
+    const pending = log
+      .listPendingCommits()
+      .find((commit) => commit.commitId === row.commitId);
+    if (!pending) continue;
+    const result = await applyW5Commit(log, pending, options);
+    if (result.status === 'applied') applied.push(row.commitId);
+    // Still failing: it stays pending, and the next write applies it first.
+    else if (isTransientUnwrittenApplyFailure(result))
+      log.retryRecoveryRequiredCommit(row.commitId);
   }
   const abandoned: NonNullable<W5RecoveryReport['abandoned']> = [];
   for (const row of log.listRecoveryRequiredCommits()) {

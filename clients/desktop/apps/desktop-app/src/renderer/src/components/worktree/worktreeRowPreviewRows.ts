@@ -44,10 +44,16 @@ function summarizeApprovalRequest(event: ApprovalRequestEvent): string {
       return `${details.server}: ${details.tool}`;
     case 'network':
       return `Fetch ${details.host}`;
-    case 'tool':
-      return details.inputSummary
-        ? `${details.toolName}: ${details.inputSummary}`
-        : details.toolName;
+    case 'tool': {
+      // A read tool names its target, like the approval card. A search of the
+      // whole worktree (`.`) says more through its pattern.
+      const target = details.displayPath ?? details.path;
+      const subject =
+        target === '.'
+          ? (details.inputSummary ?? target)
+          : (target ?? details.inputSummary);
+      return subject ? `${details.toolName}: ${subject}` : details.toolName;
+    }
     default:
       return event.title;
   }

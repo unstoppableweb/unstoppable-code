@@ -878,3 +878,154 @@ describe('PipelineHostSupervisor', () => {
     await dispatcher.shutdown();
   });
 });
+
+// CAN-6103: a cloud runner's resume and retry admit the run they start
+// only when the host still runs it, whatever ends arrive around the answer.
+describe('PipelineHostSupervisor recovery controls', () => {
+  function runner(): {
+    readonly host: () => FakeHost;
+    readonly supervisor: PipelineHostSupervisor;
+    readonly held: () => number;
+  } {
+    const hosts: FakeHost[] = [];
+    let holds = 0;
+    const resolved: PipelineHostLaunch = {
+      params,
+      launch: {
+        pipeline: { name: 'p', on: 'dispatch', jobs: {} },
+        cwd: '/w',
+        bundledActionsDir: '/a',
+        env: {},
+        secretEnv: {},
+      },
+      processEnvironment: {},
+    };
+    const supervisor = new PipelineHostSupervisor({
+      launch: (): FakeHost => {
+        const host = new FakeHost();
+        hosts.push(host);
+        return host;
+      },
+      configure: { dataRoot: '/data' },
+      resolveLaunch: (): Promise<PipelineHostLaunch> =>
+        Promise.reject(new Error('Not a host-local run.')),
+      resolvePortableLaunch: (): Promise<PipelineHostLaunch> =>
+        Promise.resolve(resolved),
+      holdExecution: (): (() => void) => {
+        holds += 1;
+        return (): void => {
+          holds -= 1;
+        };
+      },
+      idleStopMs: 60_000,
+    });
+    return {
+      host: () => {
+        const host = hosts[hosts.length - 1];
+        if (!host) throw new Error('No host.');
+        return host;
+      },
+      supervisor,
+      held: () => holds,
+    };
+  }
+
+  async function startPortable(r: ReturnType<typeof runner>): Promise<void> {
+    const result = r.supervisor.start(
+      {
+        ...params,
+        portableLaunch: {
+          definition: {
+            pin: { contentHash: 'a'.repeat(64), packageDigest: null },
+            snapshot: { name: 'p', on: 'dispatch', jobs: {} },
+          },
+          env: {},
+          delegationLease: { leaseTtlMs: 60_000 },
+        },
+      },
+      new AbortController().signal,
+      NO_EXECUTION_SECRETS,
+    );
+    await settle();
+    r.host().reply(r.host().last('start').id, projection('running'));
+    await result;
+  }
+
+  /** Answers the reconciling read with the run as the host has it. */
+  async function answerRead(
+    r: ReturnType<typeof runner>,
+    status: WorkerPipelineExecution['status'],
+  ): Promise<void> {
+    await settle();
+    r.host().reply(r.host().last('get').id, projection(status));
+    await settle();
+  }
+
+  it('does not keep a run that ended as its live resume answered', async () => {
+    const r = runner();
+    await startPortable(r);
+    expect(r.held()).toBe(1);
+    const resumed = r.supervisor.control(
+      {
+        operation: 'worker.pipeline.execution.resume',
+        params: {
+          requestId: 'r1',
+          executionId: 'run',
+          initiationSource: 'user',
+        },
+      },
+      new AbortController().signal,
+      NO_EXECUTION_SECRETS,
+    );
+    await settle();
+    // The answer and the run's end arrive together.
+    r.host().reply(r.host().last('control').id, {
+      outcome: 'started',
+      execution: projection('running'),
+    });
+    r.host().send({
+      kind: 'execution',
+      executionId: 'run',
+      event: 'execution.completed',
+      execution: projection('success'),
+    });
+    await answerRead(r, 'success');
+    await resumed;
+    expect(r.held()).toBe(0);
+  });
+
+  it('admits a retry when its earlier attempt ends, twice, before the answer', async () => {
+    const r = runner();
+    await startPortable(r);
+    const retried = r.supervisor.control(
+      {
+        operation: 'worker.pipeline.execution.retry',
+        params: { requestId: 'r2', executionId: 'run', mode: 'failed_only' },
+      },
+      new AbortController().signal,
+      NO_EXECUTION_SECRETS,
+    );
+    await settle();
+    // The executor-error path posts the earlier attempt's end twice.
+    for (const event of ['execution.failed', 'execution.updated'])
+      r.host().send({
+        kind: 'execution',
+        executionId: 'run',
+        event,
+        execution: projection('failure'),
+      });
+    r.host().reply(r.host().last('control').id, {
+      outcome: 'started',
+      execution: projection('running'),
+    });
+    await answerRead(r, 'running');
+    await retried;
+    expect(r.held()).toBe(1);
+    expect(
+      r.supervisor.observe('run', {
+        onExecution: () => undefined,
+        onOutput: () => undefined,
+      }),
+    ).not.toBeNull();
+  });
+});

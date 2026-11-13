@@ -1,5 +1,5 @@
 import type { CursorReportedUsage } from '@canopy/agent-transcript/lib/cursor-usage';
-import type { PermissionPreset } from '../../builtin-actions/agent-prompt/logic';
+import type { PermissionPreset } from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import {
   cursorCanopyMcpServerNames,
   isReadOnlyCursorAppTool,

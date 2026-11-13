@@ -11,7 +11,7 @@ import {
   type LedgerViewSummarySnapshot,
 } from '@canopy/protocol/ledger-view';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import { readChatArchivesFile } from '../lib/chat-archives';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import { getDataDir } from '../lib/paths';

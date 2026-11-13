@@ -1,7 +1,5 @@
-import {
-  isAgentDefaultBaseModel,
-  parseAgentRouteModelId,
-} from '@canopy/protocol/agents';
+import { resolveAgentBaseModel } from './lib/agent-model-selection';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { isSyntacticallyValidModelId } from './lib/model-id';
 export { isSyntacticallyValidModelId } from './lib/model-id';
 import { isCursorModel } from './lib/cursor-models';
@@ -138,8 +136,7 @@ export function normalizeModelHarnessOverrides(
 }
 
 /**
- * Base of a chat route id: the route's own base for an inheriting Agent, the
- * Agent's configured base for a pinned one.
+ * The explicit route base takes precedence over the Agent's default.
  */
 function agentRouteBaseModel(
   modelId: string,
@@ -152,9 +149,14 @@ function agentRouteBaseModel(
     Object.prototype.hasOwnProperty.call(agentBaseModels, route.agentId)
       ? agentBaseModels[route.agentId]
       : undefined;
-  return agentBase && !isAgentDefaultBaseModel(agentBase)
-    ? agentBase
-    : route.baseModel;
+  const choice = resolveAgentBaseModel(
+    {
+      explicitModel: route.baseModel,
+      agentDefaultModel: agentBase ?? 'default',
+    },
+    (model) => model,
+  );
+  return choice.kind === 'resolved' ? choice.model : undefined;
 }
 
 function resolveCatalogModelId(

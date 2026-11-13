@@ -10,12 +10,16 @@ import { describeLegacyControllerRefusal } from '../protocol-version';
 import {
   AppAdvisorWindowStateParamsSchema,
   AccountProxySignInCallbackParamsSchema,
+  CoreCallParamsSchema,
+  CoreSubscribeParamsSchema,
+  CoreUnsubscribeParamsSchema,
   DialogOpenResultSchema,
   HelloParamsSchema,
   FileReadParamsSchema,
   InvokeParamsSchema,
   PairRevokeParamsSchema,
   REMOTE_EVENTS,
+  REMOTE_TRANSPORT_RESUME_VERSION,
   REMOTE_METHODS,
   RemoteProtocolMismatchError,
   RemoteChannelUnavailableError,
@@ -53,6 +57,7 @@ import type { HostFileReader } from './file-reads';
 import type { MainWindowPushSource } from './main-window-pushes';
 import { createPushForwarder, type PushForwarder } from './push-forwarder';
 import { RemotePushSummaryAccumulator } from './push-summary';
+import type { RemoteCoreAccess } from './remote-core-access';
 import type { RemoteUploadStore } from './uploads';
 
 export interface HostSessionOptions {
@@ -106,6 +111,23 @@ export interface HostSessionOptions {
     controllerDeviceId: string,
     callback: AccountProxySignInCallbackParams,
   ) => Promise<void>;
+  /**
+   * Core operations served to this controller whatever its protocol, listed
+   * in hello. Without it the host answers that it does not serve them.
+   */
+  core?: RemoteCoreAccess;
+}
+
+/** Streams one controller may hold open at once. */
+const MAX_CORE_SUBSCRIPTIONS = 8;
+
+function isEndFrame(frame: unknown): boolean {
+  return (
+    typeof frame === 'object' &&
+    frame !== null &&
+    'kind' in frame &&
+    frame.kind === 'end'
+  );
 }
 
 const APP_ADVISOR_WINDOW_TIMEOUT_MS = 15_000;
@@ -164,6 +186,10 @@ export class RemoteHostSession {
     },
   );
   private compatible = false;
+  /** The controller sent a valid hello, whatever its protocol. */
+  private greeted = false;
+  /** Each open core stream's close, by key, including ones still opening. */
+  private readonly coreSubscriptions = new Map<string, () => void>();
   private readonly closedListeners = new Set<() => void>();
 
   constructor(private readonly options: HostSessionOptions) {
@@ -471,8 +497,125 @@ export class RemoteHostSession {
         );
         return { accepted: true };
       }
+      case REMOTE_METHODS.coreCall: {
+        const core = this.requireCore(method);
+        const {
+          operation,
+          version,
+          params: call,
+        } = CoreCallParamsSchema.parse(params);
+        return core.call(this.controllerDeviceId, operation, version, call);
+      }
+      case REMOTE_METHODS.coreSubscribe:
+        return this.subscribeCore(
+          this.requireCore(method),
+          CoreSubscribeParamsSchema.parse(params),
+        );
+      case REMOTE_METHODS.coreUnsubscribe: {
+        this.requireCore(method);
+        const { subscriptionKey } = CoreUnsubscribeParamsSchema.parse(params);
+        this.coreSubscriptions.get(subscriptionKey)?.();
+        this.coreSubscriptions.delete(subscriptionKey);
+        return { closed: true };
+      }
       default:
         throw new UnknownRemoteMethodError(method);
+    }
+  }
+
+  /**
+   * Core operations need only a valid hello: their own versions are the
+   * contract, so a controller on another protocol is still served them.
+   */
+  private requireCore(method: string): RemoteCoreAccess {
+    const core = this.options.core;
+    if (!core) throw new UnknownRemoteMethodError(method);
+    if (!this.greeted) throw this.mismatchError();
+    this.assertDesktopProfile(method);
+    return core;
+  }
+
+  private async subscribeCore(
+    core: RemoteCoreAccess,
+    request: {
+      subscriptionKey: string;
+      operation: string;
+      version: number;
+      params: unknown;
+    },
+  ): Promise<unknown> {
+    const { subscriptionKey } = request;
+    if (this.coreSubscriptions.has(subscriptionKey)) {
+      return {
+        ok: false,
+        error: {
+          kind: 'already_exists',
+          message: 'A stream with this key is already open.',
+        },
+      };
+    }
+    if (this.coreSubscriptions.size >= MAX_CORE_SUBSCRIPTIONS) {
+      return {
+        ok: false,
+        error: {
+          kind: 'resource_exhausted',
+          message: 'Too many streams are open on this computer.',
+        },
+      };
+    }
+    // The key and its place under the limit are held while the stream
+    // opens, so an overlapping request with the same key is refused. Closing
+    // it meanwhile closes the stream as soon as it opens.
+    let cancelled = false;
+    let ended = false;
+    const reservation = (): void => {
+      cancelled = true;
+    };
+    // This stream's entry: the reservation, then the open stream's close.
+    let entry = reservation;
+    const release = (): void => {
+      if (this.coreSubscriptions.get(subscriptionKey) === entry)
+        this.coreSubscriptions.delete(subscriptionKey);
+    };
+    this.coreSubscriptions.set(subscriptionKey, entry);
+    let settled = false;
+    try {
+      const opened = await core.subscribe(
+        this.controllerDeviceId,
+        request.operation,
+        request.version,
+        request.params,
+        (frame) => {
+          if (this.closed) return;
+          // A stream unsubscribed while it opened no longer owns its key,
+          // which a newer stream may use; its frames go nowhere.
+          if (this.coreSubscriptions.get(subscriptionKey) !== entry) {
+            if (isEndFrame(frame)) ended = true;
+            return;
+          }
+          this.rpc.notify(REMOTE_EVENTS.coreEvent, { subscriptionKey, frame });
+          if (!isEndFrame(frame)) return;
+          // An ended stream frees its key at once, even before it finished
+          // opening as a stale cursor's does, so the retry can reuse it.
+          ended = true;
+          release();
+        },
+      );
+      settled = true;
+      if (!opened.ok) {
+        release();
+        return opened;
+      }
+      if (this.closed || cancelled || ended) {
+        opened.close();
+        release();
+        return { ok: true, result: null };
+      }
+      entry = opened.close;
+      this.coreSubscriptions.set(subscriptionKey, entry);
+      return { ok: true, result: null };
+    } finally {
+      if (!settled) release();
     }
   }
 
@@ -486,23 +629,40 @@ export class RemoteHostSession {
       ...this.options.hello(),
       appVersion: this.options.version.appVersion,
       version: this.options.version,
+      ...(this.options.core && this.options.kind === 'desktop'
+        ? { coreOperations: { ...this.options.core.operations } }
+        : {}),
       features: { ...HOST_FEATURES },
     };
+    const session = this.options.session;
     const parsed = HelloParamsSchema.safeParse(params);
-    if (!parsed.success) throw this.mismatchError();
+    if (!parsed.success) {
+      session.setResumeNegotiated(false);
+      throw this.mismatchError();
+    }
     const decision = negotiateHello(
       parsed.data,
       this.options.kind,
       this.options.version,
     );
+    // Resume only a session this computer serves, and only when offered.
+    const resume =
+      decision.outcome === 'compatible' &&
+      session.purpose === 'control' &&
+      (parsed.data.transport?.resume ?? 0) >= REMOTE_TRANSPORT_RESUME_VERSION;
+    // Before the answer is sealed, so every frame from here on is held.
+    session.setResumeNegotiated(resume);
     if (decision.outcome === 'refused') {
       throw new RemoteControllerRefusedError(decision.reason);
     }
+    this.greeted = true;
     if (decision.outcome === 'incompatible') return hello;
     this.compatible = true;
     // Warm the bridge so the controller's first calls do not wait for it.
     this.start().catch((error: unknown) => this.options.onBridgeError?.(error));
-    return hello;
+    return resume
+      ? { ...hello, transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION } }
+      : hello;
   }
 
   /** A hosted session's chat dispatch, which this computer serves itself. */
@@ -586,6 +746,8 @@ export class RemoteHostSession {
     if (this.closed) return;
     this.closed = true;
     this.pushSummary.close();
+    for (const close of Array.from(this.coreSubscriptions.values())) close();
+    this.coreSubscriptions.clear();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     this.unsubscribers.length = 0;
     for (const webContentsId of Array.from(this.leasedWebContents.values()))

@@ -75,6 +75,32 @@ import {
   pendingEagerChatCreation,
 } from '../hydration';
 import { pendingTabCreation } from '../pending-tab-creation';
+import {
+  chatBackendFor,
+  ignoreUnavailable,
+  reportUnlessUnavailable,
+} from '../backend';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import type { ChatCommandDisposition } from '../revisioned-commands';
+import {
+  useWebCoreModelCatalogStore,
+  webCoreModelOption,
+  webCoreModelProvider,
+  webCoreThinkingLevels,
+} from '../web-core/model-catalog';
+import { pickWebCoreTabModel, webCoreTabModel } from '../web-core';
+import { useWebCoreFastModeStore } from '../web-core/fast-mode';
+
+/** Whether a cloud chat's model runs fast mode, as its catalog lists it. */
+function webCoreModelRunsFastMode(
+  projectId: string,
+  model: string | undefined,
+): boolean {
+  return (
+    webCoreModelOption(useWebCoreModelCatalogStore.getState(), projectId, model)
+      ?.supportsFastMode === true
+  );
+}
 
 /**
  * Synthetic selection-failure state stamped on a tab when a chosen or fallback
@@ -109,6 +135,22 @@ const clearedUnresolvedProviderError = (
   tab.error.startsWith(UNRESOLVED_PROVIDER_ERROR_PREFIX)
     ? { status: 'idle', error: null }
     : undefined;
+
+interface CloudModelChoice {
+  readonly model: ChatModel | undefined;
+  readonly providerType: AgentProviderType | undefined;
+}
+
+/** Per tab, the cloud model the web core last confirmed while changes overlap. */
+const confirmedCloudModels = new Map<string, CloudModelChoice>();
+/** Per tab, the cloud model change in flight, which the next one waits for. */
+const cloudModelWrites = new Map<string, Promise<void>>();
+/**
+ * Per tab, the request id of the newest cloud pick the composer showed. Only
+ * it sends, shows the model the web core runs and clears the backend's
+ * note, also when a later request for the tab returned before picking.
+ */
+const cloudPickOwners = new Map<string, string>();
 
 export const createModelsSlice: StateCreator<
   ChatState,
@@ -186,10 +228,13 @@ export const createModelsSlice: StateCreator<
     const requestId = ++nextPersistedModelSyncRequestId;
     persistedModelSyncRequests.set(syncKey, requestId);
     try {
-      const file = await window.api.chat.loadTabs({
-        projectId: selection.projectId,
-        worktreeId: selection.worktreeId,
-      });
+      const file = await chatBackendFor(selection)
+        .chat.loadTabs({
+          projectId: selection.projectId,
+          worktreeId: selection.worktreeId,
+        })
+        .catch(ignoreUnavailable);
+      if (file === undefined) return false;
       if (persistedModelSyncRequests.get(syncKey) !== requestId) return false;
       const persisted = file.tabs.find((tab) => tab.id === chatId);
       if (!persisted?.model) return false;
@@ -301,6 +346,89 @@ export const createModelsSlice: StateCreator<
       const { selection: sel, key, chatId, activeTab: currentTab } = context;
       // File tabs are inert for chat-side state.
       if (currentTab?.kind === 'file') return false;
+      // A cloud chat's model is a web core catalog entry the desktop model
+      // registry does not know: the web core sets it (CAN-6175 R5).
+      if (isWebCoreScope(sel.projectId)) {
+        const option = webCoreModelOption(
+          useWebCoreModelCatalogStore.getState(),
+          sel.projectId,
+          requestedModel,
+        );
+        if (option === undefined) return false;
+        const providerType = webCoreModelProvider(option);
+        const show = (choice: CloudModelChoice): void =>
+          set((state) =>
+            updateCapturedChatTab(state, context, (shown) => ({
+              ...shown,
+              model: choice.model,
+              providerType: choice.providerType,
+            })),
+          );
+        // A tab's model changes reach the web core one at a time, so the model
+        // it last confirmed is always its newest answer. A pick a newer one
+        // replaced before it was sent is never sent, and only the newest pick
+        // rolls back, to that confirmed model.
+        if (!confirmedCloudModels.has(requestKey))
+          confirmedCloudModels.set(requestKey, {
+            model: currentTab.model,
+            providerType: currentTab.providerType,
+          });
+        show({ model: requestedModel, providerType });
+        // A refresh while this pick waits behind an older one keeps it shown.
+        cloudPickOwners.set(requestKey, requestId);
+        const ownsPick = (): boolean =>
+          cloudPickOwners.get(requestKey) === requestId;
+        pickWebCoreTabModel(
+          { ...sel, chatId },
+          { model: requestedModel, providerType },
+        );
+        const previous = cloudModelWrites.get(requestKey) ?? Promise.resolve();
+        let release = (): void => undefined;
+        const write = previous.then(
+          () =>
+            new Promise<void>((resolve) => {
+              release = resolve;
+            }),
+        );
+        cloudModelWrites.set(requestKey, write);
+        try {
+          await previous;
+          let outcome: ChatCommandDisposition | null = null;
+          if (ownsPick()) {
+            outcome = await get().dispatchChatCommand(sel, {
+              type: 'chat.set_model',
+              tabId: chatId,
+              model: requestedModel,
+              providerType,
+            });
+            if (outcome === 'accepted')
+              confirmedCloudModels.set(requestKey, {
+                model: requestedModel,
+                providerType,
+              });
+          }
+          if (!ownsPick()) return outcome === 'accepted';
+          const confirmed = confirmedCloudModels.get(requestKey);
+          confirmedCloudModels.delete(requestKey);
+          // The web core backend orders the tab's model by revision, so after
+          // the reply it names the model the web core runs, whatever reached
+          // the tab meanwhile (CAN-6345). Before it has read the tab, a
+          // refused pick rolls back to the model the web core last confirmed.
+          const runs = webCoreTabModel({ ...sel, chatId });
+          if (runs !== undefined) show(runs);
+          else if (outcome !== 'accepted' && confirmed !== undefined)
+            show(confirmed);
+          return outcome === 'accepted';
+        } finally {
+          release();
+          if (cloudModelWrites.get(requestKey) === write)
+            cloudModelWrites.delete(requestKey);
+          if (ownsPick()) {
+            cloudPickOwners.delete(requestKey);
+            pickWebCoreTabModel({ ...sel, chatId }, null);
+          }
+        }
+      }
       const model = pinInheritingAgentModel(
         requestedModel,
         resolveTabDefaults(sel.projectId, get().modelDefaults).model,
@@ -334,8 +462,8 @@ export const createModelsSlice: StateCreator<
         currentTab !== undefined &&
         !currentTabHasContent;
 
-      return await window.api.chat
-        .changeModel({
+      return await chatBackendFor(sel)
+        .chat.changeModel({
           projectId: sel.projectId,
           worktreeId: sel.worktreeId,
           chatId,
@@ -1008,8 +1136,8 @@ export const createModelsSlice: StateCreator<
     });
 
     for (const change of pendingDiscovery) {
-      void window.api.chat
-        .changeModel({
+      void chatBackendFor(change)
+        .chat.changeModel({
           projectId: change.projectId,
           worktreeId: change.worktreeId,
           chatId: change.chatId,
@@ -1138,6 +1266,20 @@ export const createModelsSlice: StateCreator<
     }
     const { selection: sel, chatId, activeTab } = context;
     if (!activeTab || activeTab.kind === 'file') return;
+    // A cloud chat's fast mode is the window's choice for its sends, not the
+    // tab's Codex speed, and runs only where the model's catalog says so
+    // (CAN-6322).
+    if (isWebCoreScope(sel.projectId)) {
+      if (!webCoreModelRunsFastMode(sel.projectId, activeTab.model)) return;
+      await chatBackendFor(sel).chat.toggleCodexFastMode({
+        projectId: sel.projectId,
+        worktreeId: sel.worktreeId,
+        chatId,
+        enabled: codexSpeedFastMode(speed),
+        speed,
+      });
+      return;
+    }
     const provider = resolveDiscoveryProviderType(activeTab);
     if (!provider || !modelConfigForProviderSupportsFastMode(provider)) return;
     const enabled = codexSpeedFastMode(speed);
@@ -1164,7 +1306,7 @@ export const createModelsSlice: StateCreator<
     // The existing canonical channel: main treats `speed` as authoritative
     // and requires `enabled` to equal its projection.
     try {
-      await window.api.chat.toggleCodexFastMode({
+      await chatBackendFor(sel).chat.toggleCodexFastMode({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
@@ -1216,6 +1358,12 @@ export const createModelsSlice: StateCreator<
   toggleFastMode: (target): void => {
     const context = getWorktreeChatContext(get(), target);
     if (!context?.activeTab || context.activeTab.kind === 'file') return;
+    if (isWebCoreScope(context.selection.projectId)) {
+      const on =
+        useWebCoreFastModeStore.getState().byChat[context.chatId] === true;
+      void get().setFastMode(!on, target);
+      return;
+    }
     const provider = resolveDiscoveryProviderType(context.activeTab);
     if (!provider || !modelConfigForProviderSupportsFastMode(provider)) return;
     // Flips the derived boolean: Ultra fast (projected `false`) becomes Fast.
@@ -1258,12 +1406,22 @@ export const createModelsSlice: StateCreator<
     // The cycle must honor the billing route the session actually executes
     // on: an AI-Credits-routed chat is constrained to the gateway-advertised
     // set, not the model's native tiers.
-    const cycle = getEffectiveSupportedThinkingLevelsForModel(
-      tab.model,
-      isTabAiCreditsRouted(tab),
-      providerType,
-      tab.executionHarness,
-    );
+    // A cloud chat's model runs the levels its web core catalog lists; none
+    // until the catalog is read.
+    const webCore = isWebCoreScope(sel.projectId);
+    const cycle = webCore
+      ? webCoreThinkingLevels(
+          useWebCoreModelCatalogStore.getState(),
+          sel.projectId,
+          tab.model,
+        )
+      : getEffectiveSupportedThinkingLevelsForModel(
+          tab.model,
+          isTabAiCreditsRouted(tab),
+          providerType,
+          tab.executionHarness,
+        );
+    if (webCore && cycle.length === 0) return;
     const next = advanceThinkingControlLevel(
       clampModelThinkingLevel(tab.thinkingLevel, cycle),
       cycle,
@@ -1278,12 +1436,14 @@ export const createModelsSlice: StateCreator<
       })),
     );
 
-    void window.api.chat.toggleThinkingLevel({
-      projectId: sel.projectId,
-      worktreeId: sel.worktreeId,
-      chatId,
-      level: next,
-    });
+    void chatBackendFor(sel)
+      .chat.toggleThinkingLevel({
+        projectId: sel.projectId,
+        worktreeId: sel.worktreeId,
+        chatId,
+        level: next,
+      })
+      .catch(reportUnlessUnavailable);
     // A live managed terminal only honors the new thinking level after a
     // relaunch with fresh CLI args.
     void restartClaudeTerminalForSettingsChange(sel, chatId).catch(
@@ -1322,12 +1482,14 @@ export const createModelsSlice: StateCreator<
       })),
     );
 
-    await window.api.chat.toggleThinkingLevel({
-      projectId: sel.projectId,
-      worktreeId: sel.worktreeId,
-      chatId,
-      level: next,
-    });
+    await chatBackendFor(sel)
+      .chat.toggleThinkingLevel({
+        projectId: sel.projectId,
+        worktreeId: sel.worktreeId,
+        chatId,
+        level: next,
+      })
+      .catch(ignoreUnavailable);
     // A live managed terminal only honors the new thinking level after a
     // relaunch with fresh CLI args.
     void restartClaudeTerminalForSettingsChange(sel, chatId).catch(

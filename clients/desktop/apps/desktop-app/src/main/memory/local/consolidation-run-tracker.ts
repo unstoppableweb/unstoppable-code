@@ -1,6 +1,14 @@
 import { resolve } from 'node:path';
 
-export type LocalMemoryRunKind = 'consolidation' | 'rebuild' | 'restore';
+/**
+ * `first_enable`: memory sync sends this folder's memory to the cloud for a
+ * first enable, so nothing may change it as a run would.
+ */
+export type LocalMemoryRunKind =
+  | 'consolidation'
+  | 'rebuild'
+  | 'restore'
+  | 'first_enable';
 
 /**
  * In-memory "a consolidation run is executing" registry shared by the manual

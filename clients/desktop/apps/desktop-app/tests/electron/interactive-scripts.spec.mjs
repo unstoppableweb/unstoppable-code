@@ -49,7 +49,7 @@ async function launchFixture(mode) {
       .getByTestId('activity-scripts-entry')
       .filter({ hasText: 'Runner Contract' });
     await entry.getByTestId('activity-scripts-run').click();
-    await entry.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await entry.getByRole('button', { name: 'Run', exact: true }).click();
     const output = window.getByTestId('terminal-pane').locator('.xterm-rows');
     await expect(output).toBeVisible();
     await expect(entry).toContainText('Running in terminal');

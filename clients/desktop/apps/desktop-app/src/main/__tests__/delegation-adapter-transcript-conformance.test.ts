@@ -33,7 +33,7 @@ import {
   type DelegationChildRow,
   type PersistedChatBlock,
 } from '@canopy/agent-transcript';
-import { projectCodexThreadItem } from '@canopy/desktop-shared/node/codex-runtime';
+import { projectCodexThreadItem } from '@canopy/execution-engine/node/codex-runtime';
 import { createCommandOutputSpools } from '../agents/delegation/command-output-spools';
 import { FieldSpool } from '../lib/chat-transcript-field-spool';
 import {

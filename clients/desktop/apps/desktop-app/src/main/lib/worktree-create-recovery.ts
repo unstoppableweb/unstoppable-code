@@ -1,3 +1,22 @@
+import { isW5DaemonFlipCompiled } from './w5-flip-gate';
+import { lstat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { withArchivedWorkspaceOperationLock } from './archived-containers';
+import { withW5RepositoryLock } from './w5-repository-locks';
+import {
+  hasDestructiveWorktreeOwner,
+  withSharedLifecycleJournalAccess,
+} from './w5-destructive-recovery';
+import { isWorkspaceTargetRemovalPending } from './workspace-target-exclusion';
+import {
+  getArchivedContainerManifestPath,
+  getWorkspaceWorktreesFilePath,
+} from './paths';
+import { getGitCommonDir } from './git';
+import {
+  removeAbsentWorktreeRegistrations,
+  hasWorktreeRegistration,
+} from './worktree-registration-removal';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type {
   WorkspaceConfigFile,
@@ -11,7 +30,10 @@ import {
   getWorkspaceWorktreeRootRepoDir,
   getWorkspaceWorktreesRootDir,
 } from './paths';
-import { readWorkspaceWorktreesDetailed } from './workspace-persistence';
+import {
+  readWorkspaceWorktreesDetailed,
+  readWorkspaceWorktreesUnlocked,
+} from './workspace-persistence';
 import { resolveProjectReferenceRepoPath } from './project-reference-repo';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
 import { canonicalizePossiblyMissingPath } from './worktree-registration-removal';
@@ -42,7 +64,9 @@ export async function inspectWorktreeCreationRecovery(
   if (config.type === 'cowork') return [];
   let registryComplete = true;
   if (!rows) {
-    const read = await readWorkspaceWorktreesDetailed(workspaceId);
+    const read = await readWorkspaceWorktreesDetailed(workspaceId, {
+      persistRemovalCleanup: false,
+    });
     // Partial rows still contain authoritative recovery metadata. They only
     // cannot prove that an unlisted checkout is orphaned.
     registryComplete = read.authority === 'ok' || read.authority === 'absent';
@@ -168,4 +192,112 @@ export async function inspectWorktreeCreationRecovery(
     }
   }
   return issues;
+}
+
+/** Startup only repairs an unlisted, absent checkout; it never removes files or branches. */
+export async function repairOrphanedWorktreeRegistration(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  recovery: NonNullable<WorkspaceReadinessIssue['recovery']>,
+): Promise<boolean> {
+  if (isW5DaemonFlipCompiled()) return false;
+  if (
+    recovery.phase !== 'orphan-checkout' ||
+    recovery.workspaceId !== workspaceId
+  )
+    return false;
+  const root = await canonicalizePossiblyMissingPath(
+    getWorkspaceWorktreesRootDir(workspaceId),
+  );
+  const checkout = await canonicalizePossiblyMissingPath(recovery.checkoutPath);
+  const child = relative(root, checkout);
+  const worktreeId = child.split(/[\\/]/)[0];
+  if (!worktreeId || child.startsWith('..') || isAbsolute(child)) return false;
+  const common = await getGitCommonDir(recovery.repositoryPath);
+  const identity = await lstat(common);
+  const absent = async (path: string): Promise<boolean> => {
+    try {
+      await lstat(path);
+      return false;
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      )
+        return true;
+      throw error;
+    }
+  };
+  return withArchivedWorkspaceOperationLock(workspaceId, () =>
+    withW5RepositoryLock(
+      { kind: 'list', path: getWorkspaceWorktreesFilePath(workspaceId) },
+      () =>
+        withSharedLifecycleJournalAccess(async () => {
+          const canRemove = async (): Promise<boolean> => {
+            if (
+              isWorkspaceTargetRemovalPending(workspaceId, worktreeId) ||
+              (await hasDestructiveWorktreeOwner(
+                workspaceId,
+                worktreeId,
+                recovery.checkoutPath,
+              ))
+            )
+              return false;
+            if (
+              !(await absent(
+                join(root, `.${worktreeId}.archive-quarantine`),
+              )) ||
+              !(await absent(
+                getArchivedContainerManifestPath(workspaceId, worktreeId),
+              )) ||
+              !(await absent(recovery.checkoutPath))
+            )
+              return false;
+            const fresh = await lstat(common);
+            if (
+              fresh.dev !== identity.dev ||
+              fresh.ino !== identity.ino ||
+              fresh.birthtimeMs !== identity.birthtimeMs
+            )
+              return false;
+            const read = await readWorkspaceWorktreesUnlocked(workspaceId);
+            if (read.authority !== 'ok' && read.authority !== 'absent')
+              return false;
+            // The same inspection proves scope/ownership again under the list lock.
+            const issues = await inspectWorktreeCreationRecovery(
+              workspaceId,
+              config,
+              read.worktrees,
+            );
+            const orphan = issues.some(
+              (issue) =>
+                issue.recovery?.phase === 'orphan-checkout' &&
+                issue.recovery.checkoutPath === recovery.checkoutPath &&
+                issue.recovery.branchName === recovery.branchName,
+            );
+            return (
+              orphan &&
+              !isWorkspaceTargetRemovalPending(workspaceId, worktreeId) &&
+              !(await hasDestructiveWorktreeOwner(
+                workspaceId,
+                worktreeId,
+                recovery.checkoutPath,
+              )) &&
+              (await absent(recovery.checkoutPath))
+            );
+          };
+          if (!(await canRemove())) return false;
+          await removeAbsentWorktreeRegistrations(
+            common,
+            [recovery.checkoutPath],
+            { canRemove },
+          );
+          return !(await hasWorktreeRegistration(common, [
+            recovery.checkoutPath,
+          ]));
+        }),
+    ),
+  );
 }

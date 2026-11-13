@@ -1,5 +1,15 @@
-import { portErrorResponse, missingScopeResponse } from '../../action-support';
-import type { AgentProjectBotPort } from '../../port/project-bot-port';
+import {
+  agentActionIdempotencyKey,
+  agentActionToolResult,
+  missingScopeResponse,
+  portErrorResponse,
+  runIdempotentWrite,
+} from '../../action-support';
+import type { AgentActionLimitKind } from '../../limits';
+import type {
+  AgentProjectBotPort,
+  AgentProjectWrites,
+} from '../../port/project-bot-port';
 import type { AgentJson } from '../../response';
 import {
   defineAgentActionFamily,
@@ -17,6 +27,7 @@ import {
   PROJECT_DISCOVERY_TEXT_MAX,
   projectActionSchema,
   type ProjectAction,
+  type ProjectWriteAction,
 } from './actions';
 import { PROJECT_ACTION_CATALOG } from './catalog';
 import { MAX_SEND_INLINE_WATCHERS } from './messages';
@@ -25,9 +36,11 @@ export {
   PROJECT_ACTION_TYPES,
   PROJECT_DISCOVERY_TYPES,
   PROJECT_READ_TYPES,
+  PROJECT_WRITE_TYPES,
   projectActionSchema,
   type ProjectAction,
   type ProjectActionType,
+  type ProjectWriteAction,
 } from './actions';
 export { PROJECT_ACTION_CATALOG } from './catalog';
 
@@ -191,12 +204,87 @@ export async function dispatchProjectBotAction<H>(
 }
 
 /**
+ * The limits kind each project write reserves under. Steering and scheduling
+ * deliver an input, so they count as sends; creations spawn work, so the
+ * limits also check their depth.
+ */
+const PROJECT_WRITE_LIMIT_KIND: Record<
+  ProjectWriteAction['type'],
+  AgentActionLimitKind
+> = {
+  'projects.send_message': 'chat.send_message',
+  'projects.steer_queued_message': 'chat.send_message',
+  'projects.schedule_message': 'chat.send_message',
+  'projects.create_task': 'chat.create',
+  'projects.create_task_chat': 'chat.create',
+};
+
+/** The action, when it is one of the project writes. */
+function projectWrite(action: ProjectAction): ProjectWriteAction | null {
+  switch (action.type) {
+    case 'projects.send_message':
+    case 'projects.steer_queued_message':
+    case 'projects.schedule_message':
+    case 'projects.create_task':
+    case 'projects.create_task_chat':
+      return action;
+    default:
+      return null;
+  }
+}
+
+/**
+ * One project write behind the host's receipts and limits, keyed like the
+ * environment writes by the calling chat, actor, turn and tool call.
+ */
+async function dispatchProjectWrite<H>(
+  action: ProjectWriteAction,
+  writes: AgentProjectWrites<H>,
+  call: AgentActionCall<H>,
+): Promise<AgentActionDispatchOutput> {
+  if (!call.scope) return missingScopeResponse(call, action.type);
+  const idempotencyKey = agentActionIdempotencyKey(action.type, call, action);
+  try {
+    return await runIdempotentWrite({
+      receipts: writes.receipts,
+      limits: writes.limits,
+      kind: PROJECT_WRITE_LIMIT_KIND[action.type],
+      call,
+      idempotencyKey,
+      payload: action,
+      prepare: async () => {
+        const callerDepth = await writes.callerDepth(call);
+        return {
+          ok: true,
+          parentDepth: callerDepth,
+          write: async ({ uncertain }) =>
+            agentActionToolResult({
+              requestId: call.toolUseId ?? '',
+              ...(await writes.write(action, call, {
+                idempotencyKey,
+                uncertain,
+                callerDepth,
+              })),
+            }),
+        };
+      },
+    });
+  } catch (error) {
+    return portErrorResponse(call, action.type, error);
+  }
+}
+
+/**
  * The explicit-target project actions: discovery of projects, tasks and
- * chats, and bounded reads of one chat. Targets are canonical IDs, kept
- * through the dispatch envelope; the host authorizes them per call.
+ * chats, bounded reads of one chat, and the writes. Targets are canonical
+ * IDs, kept through the dispatch envelope; the host authorizes them per
+ * call. With `writes`, the project writes run behind the host's receipts
+ * and limits (see {@link AgentProjectWrites}); without it, the port
+ * dispatches them as it does every other action.
  */
 export function createProjectActionFamily<H>(
   port: AgentProjectBotPort<H>,
+  writes?: AgentProjectWrites<H>,
 ): AgentActionFamily<H> {
   return defineAgentActionFamily<H, ProjectAction>({
     id: 'projects',
@@ -209,6 +297,11 @@ export function createProjectActionFamily<H>(
       ),
     actionSchema: projectActionSchema,
     dispatchJsonSchema: projectDispatchJsonSchema,
-    dispatch: (action, call) => dispatchProjectBotAction(action, port, call),
+    dispatch: (action, call) => {
+      const write = writes === undefined ? null : projectWrite(action);
+      return write === null || writes === undefined
+        ? dispatchProjectBotAction(action, port, call)
+        : dispatchProjectWrite(write, writes, call);
+    },
   });
 }

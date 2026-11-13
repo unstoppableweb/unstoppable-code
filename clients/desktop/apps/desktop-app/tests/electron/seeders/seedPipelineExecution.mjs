@@ -15,7 +15,7 @@ import { writeJson } from './fsHelpers.mjs';
  * Path sources:
  *   - executions dir: `apps/desktop-app/src/main/services/pipelines-service.ts`
  *     `getPipelineExecutionsDir()` → `join(getDataDir(), 'pipeline-executions')`.
- *   - state file: `packages/desktop-shared/src/node/pipelines/executor/execution-state.ts`
+ *   - state file: `packages/execution-engine/src/node/pipelines/executor/execution-state.ts`
  *     `getExecutionStatePath` → `{executionsDir}/{executionId}.json`. The reader
  *     `loadExecutionState` only hard-requires `version` ∈ {1..5}; it backfills
  *     `inputs`, normalizes a few optional fields, and migrates to v5.
@@ -29,7 +29,7 @@ import { writeJson } from './fsHelpers.mjs';
  *     `version === 1` plus non-empty `executionId`, `executionDataDir`,
  *     `stateFilePath`, `provider` ('claude'|'codex'), `model`, valid
  *     `thinkingLevel`, valid `status`, and `lastUpdatedAt`.
- *   - step log: `packages/desktop-shared/src/node/pipelines/executor/step-runner.ts`
+ *   - step log: `packages/execution-engine/src/node/pipelines/executor/step-runner.ts`
  *     `getStepLogFilePath` →
  *     `{executionsDir}/{executionId}/logs/{sanitize(jobId)}--{sanitize(stepId)}[--attemptN][--iterN].log`
  *     (sanitize collapses `[^A-Za-z0-9._-]+` to `_`). This is the "transcript

@@ -3,7 +3,7 @@ import {
   projectChatWatcherAddressSchema,
   botChatWatcherAddressSchema,
 } from '@canopy/desktop-shared/lib/chat-watcher-contracts';
-import { writeFileAtomically } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   sanitizeImportedUserText,
   ATTACHMENT_MEDIA_TYPE_EXTENSIONS,

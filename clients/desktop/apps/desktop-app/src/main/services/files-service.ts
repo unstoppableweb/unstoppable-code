@@ -770,7 +770,7 @@ export async function savePortalFile(
   ) {
     throw new PortalServiceError(
       'execution_failed',
-      'File changed on disk since it was loaded.',
+      'The document changed after you started editing.',
     );
   }
 

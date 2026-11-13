@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { access, cp, mkdir, realpath, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { readCodexRolloutSeedItems } from '@canopy/desktop-shared/node/codex-runtime';
+import { readCodexRolloutSeedItems } from '@canopy/execution-engine/node/codex-runtime';
 import {
   IPC_CHANNELS,
   type ChatSessionImportedEvent,
@@ -364,6 +364,7 @@ async function rollbackChatDestination(
       return;
     }
     await archiveSingleRepoWorktree({
+      archiveTrigger: 'import',
       workspaceId: workspace.id,
       worktreeId,
       // This run created the branch and nothing landed on it.

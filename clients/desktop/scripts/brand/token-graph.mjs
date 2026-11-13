@@ -51,10 +51,46 @@ const SURFACE_SHADOW_RING_TOKENS = new Set(
   ['xs', 'sm', 'md', 'lg', 'xl'].map((size) => `shadow-surface-${size}`),
 );
 
+// The engine aims tertiary text at 3.4:1 and intent inks at 3:1. Canopy holds
+// text to WCAG AA, including on the hover, selection and popover fills that
+// rows sit on. Light-mode intent inks keep the engine target: small text uses
+// the -strong inks below instead (docs/design/colors.md).
+const TEXT_CONTRAST_RATIO = 4.5;
+const PAGE_SURFACES = ['surface-base', 'surface-primary', 'surface-secondary'];
+const STRONG_INKS = Object.freeze({
+  'fg-accent-strong': 'accent',
+  'fg-success-strong': 'positive',
+  'fg-warning-strong': 'attention',
+  'fg-destructive-strong': 'destructive',
+  'fg-special-strong': 'special',
+});
+// Light strong inks never get paler than the step they first shipped with.
+const LIGHT_STRONG_INK_MIN_STEP = 600;
+// Info is not an engine intent: it uses the blue scale at the steps fg-blue
+// uses, and its tint is the ink at 16% (bg-info-subtle in canopy-tokens-core.css).
+const INFO_INK_STEP = Object.freeze({ light: 600, dark: 300 });
+const INFO_TINT_ALPHA = 0.16;
+
+// Engine tokens nothing in Canopy reads. The engine draws them from a fixed
+// blue, so in a green-accent theme they would not match the accent anyway.
+const UNUSED_ENGINE_TOKENS = new Set([
+  'glow-accent-hover',
+  'glow-accent-pressed',
+  'shadow-button-accent',
+  '_checkbox-shadow-checked',
+  '_radio-shadow-checked',
+]);
+
 export const generatedSemanticTokenNames = Object.freeze([
   ...engineSemanticTokenNames
-    .filter((tokenName) => !ENGINE_ON_FOREGROUND_TOKENS.has(tokenName))
+    .filter(
+      (tokenName) =>
+        !ENGINE_ON_FOREGROUND_TOKENS.has(tokenName) &&
+        !UNUSED_ENGINE_TOKENS.has(tokenName),
+    )
     .map(canonicalSemanticTokenName),
+  ...Object.keys(STRONG_INKS),
+  'fg-info',
 ]);
 
 export function canonicalSemanticTokenName(engineName) {
@@ -88,15 +124,50 @@ function displayP3Value(value) {
   return new Color(value).to('p3').toString({ precision: 6 });
 }
 
+// The engine builds each scale at one hue in wide gamut, then clips it to
+// sRGB, which can turn the sRGB hue far enough that one scale reads as two
+// colors (cyan 950 looks blue). Past this spread, Canopy maps the wide-gamut
+// stops into sRGB by lowering chroma only, so sRGB keeps the P3 hue.
+const SCALE_HUE_SPREAD_LIMIT = 20;
+// Stops paler than this have no reliable hue after 8-bit rounding.
+const SCALE_HUE_MIN_CHROMA = 0.04;
+
+function srgbHueSpread(stops) {
+  const hues = stops
+    .map((stop) => new Color(stop.hex).to('oklch').coords)
+    .filter(([, chroma]) => chroma > SCALE_HUE_MIN_CHROMA)
+    .map(([, , hue]) => hue);
+  if (hues.length < 2) return 0;
+  const reference = hues[Math.floor(hues.length / 2)];
+  const offsets = hues.map((hue) => ((hue - reference + 540) % 360) - 180);
+  return Math.max(...offsets) - Math.min(...offsets);
+}
+
+function srgbStopKeepingHue(stop) {
+  const color = new Color(stop.wideGamutCss).toGamut({
+    space: 'srgb',
+    method: 'oklch.c',
+  });
+  const srgb = color
+    .to('srgb')
+    .toString({ format: 'hex', collapse: false })
+    .toUpperCase();
+  return { srgb, oklch: new Color(srgb).to('oklch').toString() };
+}
+
 function buildPrimitives(theme) {
   const primitives = {};
   for (const [family, stops] of Object.entries(theme.debug.primitiveScales)) {
     if (family === 'neutral') continue;
+    const keepHue = srgbHueSpread(stops) > SCALE_HUE_SPREAD_LIMIT;
     for (const stop of stops) {
+      const srgb = keepHue
+        ? srgbStopKeepingHue(stop)
+        : { srgb: stop.hex, oklch: stop.oklchCss };
       primitives[`${family}-${stop.step}`] = {
-        srgb: stop.hex,
+        srgb: srgb.srgb,
         displayP3: displayP3Value(stop.wideGamutCss),
-        oklch: stop.oklchCss,
+        oklch: srgb.oklch,
       };
     }
   }
@@ -472,6 +543,148 @@ function candidatePasses(
   });
 }
 
+function clearsText(foreground, backgrounds) {
+  return backgrounds.every(
+    (background) =>
+      contrastRatio(foreground, background) >= TEXT_CONTRAST_RATIO,
+  );
+}
+
+function textBackgrounds(bindings, primitives) {
+  const value = (tokenName) => bindingValue(bindings[tokenName], primitives);
+  const over = (tokenName, under) =>
+    compositeOver(value(tokenName), value(under));
+  const pages = PAGE_SURFACES.map(value);
+  return {
+    pages,
+    // Page hover, selected row, and hover inside a card or popover.
+    rows: [
+      ...pages,
+      over('surface-muted', 'surface-base'),
+      over('surface-selected', 'surface-base'),
+      over('surface-subtle', 'surface-secondary'),
+    ],
+    neutralBadge: over('surface-muted', 'surface-secondary'),
+    tint: (tokenName) => [
+      over(tokenName, 'surface-base'),
+      over(tokenName, 'surface-secondary'),
+    ],
+  };
+}
+
+// Neutral inks are engine literals, not scale steps: move lightness only,
+// keeping chroma and hue, until the ink clears every background.
+function literalInkClearing(binding, backgrounds, mode) {
+  const [lightness, chroma, hue] = new Color(binding.srgb).to('oklch').coords;
+  const direction = mode === 'dark' ? 1 : -1;
+  for (let step = 0; step <= 400; step += 1) {
+    const candidate = new Color('oklch', [
+      Math.max(0, Math.min(1, lightness + direction * step * 0.0025)),
+      chroma,
+      Number.isNaN(hue) ? 0 : hue,
+    ])
+      .toGamut({ space: 'srgb', method: 'oklch.c' })
+      .to('srgb')
+      .toString({ format: 'hex', collapse: false })
+      .toUpperCase();
+    if (clearsText(candidate, backgrounds)) {
+      return {
+        kind: 'literal',
+        srgb: candidate,
+        displayP3: displayP3Value(candidate),
+        alpha: 1,
+      };
+    }
+  }
+  throw new Error(`No lightness clears ${TEXT_CONTRAST_RATIO}:1`);
+}
+
+function applyNeutralInkPolicy(bindings, primitives, mode) {
+  const backgrounds = textBackgrounds(bindings, primitives);
+  const required = {
+    'fg-primary': [...backgrounds.rows, backgrounds.neutralBadge],
+    'fg-secondary': [...backgrounds.rows, backgrounds.neutralBadge],
+    'fg-tertiary': backgrounds.rows,
+  };
+  for (const [tokenName, list] of Object.entries(required)) {
+    const binding = bindings[tokenName];
+    if (clearsText(bindingValue(binding, primitives), list)) continue;
+    bindings[tokenName] = literalInkClearing(binding, list, mode);
+  }
+}
+
+function stepOf(primitiveName) {
+  return Number(primitiveName.slice(primitiveName.lastIndexOf('-') + 1));
+}
+
+// Walk a scale from startStep toward more contrast; return the first step
+// whose ink clears every background backgroundsFor() names for it.
+function firstClearingStep(
+  primitives,
+  family,
+  startStep,
+  mode,
+  backgroundsFor,
+) {
+  const steps = Object.keys(primitives)
+    .filter((name) => name.startsWith(`${family}-`))
+    .map(stepOf)
+    .sort((left, right) => left - right);
+  const ordered =
+    mode === 'light'
+      ? steps.filter((step) => step >= startStep)
+      : steps.filter((step) => step <= startStep).reverse();
+  for (const step of ordered) {
+    const name = `${family}-${step}`;
+    if (clearsText(primitives[name].srgb, backgroundsFor(primitives[name])))
+      return name;
+  }
+  throw new Error(
+    `${family} has no step from ${startStep} that clears ${TEXT_CONTRAST_RATIO}:1`,
+  );
+}
+
+// Inks for small text and for text on intent tints, solved per theme.
+function resolveTextInks(bindings, primitives, mode) {
+  const backgrounds = textBackgrounds(bindings, primitives);
+  const inks = {};
+  for (const [tokenName, family] of Object.entries(STRONG_INKS)) {
+    const ink = bindings[`fg-${family}`];
+    const startStep =
+      mode === 'light'
+        ? Math.max(stepOf(ink.primitive), LIGHT_STRONG_INK_MIN_STEP)
+        : stepOf(ink.primitive);
+    const list = [
+      ...backgrounds.pages,
+      ...backgrounds.tint(`surface-${family}-muted`),
+    ];
+    inks[tokenName] = firstClearingStep(
+      primitives,
+      INTENT_PRIMITIVE_FAMILIES[family],
+      startStep,
+      mode,
+      () => list,
+    );
+  }
+  const base = backgrounds.pages[0];
+  const card = backgrounds.pages[2];
+  inks['fg-info'] = firstClearingStep(
+    primitives,
+    'blue',
+    INFO_INK_STEP[mode],
+    mode,
+    (primitive) => {
+      const tint = colorWithAlpha(primitive.srgb, INFO_TINT_ALPHA);
+      return [
+        ...backgrounds.pages,
+        compositeOver(tint, base),
+        compositeOver(tint, card),
+      ];
+    },
+  );
+  return inks;
+}
+
 export function buildThemeTokenGraph(theme, radius, options = {}) {
   const primitives = buildPrimitives(theme);
   const metadataByToken = new Map(
@@ -565,6 +778,18 @@ export function buildThemeTokenGraph(theme, radius, options = {}) {
   }
 
   const engineConstraints = constraintsBySubject(theme);
+  if (theme.mode === 'dark') {
+    for (const family of INTENT_FAMILIES) {
+      const tokenName = `fg-${family}`;
+      engineConstraints.set(tokenName, [
+        ...(engineConstraints.get(tokenName) ?? []),
+        ...PAGE_SURFACES.map((background) => ({
+          background,
+          requiredRatio: TEXT_CONTRAST_RATIO,
+        })),
+      ]);
+    }
+  }
   for (const [tokenName, constraints] of engineConstraints) {
     if (
       tokenName === 'fg-emphasis' ||
@@ -603,6 +828,8 @@ export function buildThemeTokenGraph(theme, radius, options = {}) {
     engineConstraints,
     primitives,
   });
+
+  applyNeutralInkPolicy(bindings, primitives, theme.mode);
 
   const failures = [];
   for (const [tokenName, constraints] of engineConstraints) {
@@ -647,7 +874,11 @@ export function buildThemeTokenGraph(theme, radius, options = {}) {
   const cssBindings = {};
   const displayP3CssBindings = {};
   for (const tokenName of engineSemanticTokenNames) {
-    if (ENGINE_ON_FOREGROUND_TOKENS.has(tokenName)) continue;
+    if (
+      ENGINE_ON_FOREGROUND_TOKENS.has(tokenName) ||
+      UNUSED_ENGINE_TOKENS.has(tokenName)
+    )
+      continue;
     const canonicalName = canonicalSemanticTokenName(tokenName);
     const semanticValue = bindingValue(bindings[tokenName], primitives);
     const displayP3Value = bindingValue(
@@ -699,6 +930,15 @@ export function buildThemeTokenGraph(theme, radius, options = {}) {
     cssBindings[chartName] = reference;
     displayP3CssBindings[chartName] = reference;
   });
+  for (const [tokenName, primitiveName] of Object.entries(
+    resolveTextInks(bindings, primitives, theme.mode),
+  )) {
+    const reference = `var(${primitiveCssVariableName(primitiveName)})`;
+    semantic[tokenName] = primitives[primitiveName].srgb;
+    displayP3[tokenName] = primitives[primitiveName].displayP3;
+    cssBindings[tokenName] = reference;
+    displayP3CssBindings[tokenName] = reference;
+  }
   const chartPalette = evaluateChartPalette(
     generatedChartCategoricalTokenNames.map((name) => semantic[name]),
     semantic['bg-base'],

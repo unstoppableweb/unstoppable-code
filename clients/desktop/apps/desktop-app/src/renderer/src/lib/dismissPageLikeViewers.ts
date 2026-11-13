@@ -11,6 +11,7 @@
  * the stores itself, so a future overlay is added in one place rather than
  * remembered at a dozen call sites.
  */
+import { leaveAppAdvisorDock } from '@/stores/appAdvisorDockCover';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
 
@@ -35,6 +36,9 @@ export interface DismissPageLikeViewersOptions {
 export function dismissPageLikeViewers(
   options?: DismissPageLikeViewersOptions,
 ): void {
+  // The docked Orchestrator page covers this window's pages too: an explicit
+  // navigation leaves it, even to the destination already open under it.
+  leaveAppAdvisorDock();
   useArchivedContainersStore.getState().closeViewer();
   // The Past shares page shares the overlay slot and is never a destination
   // of the navigations that call this, so it always closes.

@@ -82,6 +82,8 @@ export interface PlanFollowUpActions {
   submitShare: (
     request: SharePlanShareRequest,
   ) => Promise<TrackedPlanData | null>;
+  /** Stop sharing the plan; rejects with the reason when it failed. */
+  submitUnshare: () => Promise<TrackedPlanData | null>;
   /** Cloud sign-in prompt backing {@link requestShare}; render it once. */
   shareGateModal: JSX.Element | null;
 }
@@ -230,6 +232,7 @@ interface PlanShareState {
   shareModalOpen: boolean;
   setShareModalOpen: Dispatch<SetStateAction<boolean>>;
   submitShare: PlanFollowUpActions['submitShare'];
+  submitUnshare: PlanFollowUpActions['submitUnshare'];
   startShare: () => void;
 }
 
@@ -238,7 +241,7 @@ function usePlanShare(
   viewedRevision: number | null,
 ): PlanShareState {
   const shareTrackedPlan = useActivityStore((s) => s.shareTrackedPlan);
-  const addToast = useGitHubStore((s) => s.addToast);
+  const unshareTrackedPlan = useActivityStore((s) => s.unshareTrackedPlan);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [sharing, setSharing] = useState(false);
   const { projectId, worktreeId, id: planId } = plan;
@@ -257,44 +260,22 @@ function usePlanShare(
     [projectId, worktreeId, planId, shareTrackedPlan],
   );
 
+  // Leaves `sharing` alone: the dialog locks itself while it stops, and
+  // closes through `closeShareModal` the moment the stop lands.
+  const submitUnshare = useCallback(
+    (): Promise<TrackedPlanData | null> =>
+      unshareTrackedPlan(projectId, worktreeId, planId),
+    [projectId, worktreeId, planId, unshareTrackedPlan],
+  );
+
+  // A shared plan opens its access view; nothing is pushed until the
+  // dialog's own actions ask (CAN-5904).
   const startShare = useCallback((): void => {
     if (viewedRevision !== null) {
       return;
     }
-    if (!hasVisiblePlanShare(plan)) {
-      setShareModalOpen(true);
-      return;
-    }
-    const context = { projectId, worktreeId };
-    setSharing(true);
-    void shareTrackedPlan(projectId, worktreeId, planId)
-      .then((shared) => {
-        if (!shared) {
-          addToast('Failed to share plan.', 'error', undefined, context);
-          return;
-        }
-        addToast('Plan shared.', 'success', undefined, context);
-      })
-      .catch((error: unknown) => {
-        addToast(
-          error instanceof Error ? error.message : 'Failed to share plan.',
-          'error',
-          undefined,
-          context,
-        );
-      })
-      .finally(() => {
-        setSharing(false);
-      });
-  }, [
-    addToast,
-    plan,
-    projectId,
-    worktreeId,
-    planId,
-    shareTrackedPlan,
-    viewedRevision,
-  ]);
+    setShareModalOpen(true);
+  }, [viewedRevision]);
 
   return {
     sharing,
@@ -302,6 +283,7 @@ function usePlanShare(
     shareModalOpen,
     setShareModalOpen,
     submitShare,
+    submitUnshare,
     startShare,
   };
 }
@@ -383,6 +365,7 @@ export function usePlanFollowUpActions(
     shareModalOpen: share.shareModalOpen,
     closeShareModal,
     submitShare: share.submitShare,
+    submitUnshare: share.submitUnshare,
     shareGateModal,
   };
 }

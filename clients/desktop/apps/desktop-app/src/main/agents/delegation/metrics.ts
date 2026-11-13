@@ -1,5 +1,6 @@
 import type {
   AgentDelegationPhase,
+  AgentDelegationQueueState,
   AgentDelegationResult,
   AgentDelegationSnapshot,
   AgentDelegationSpawnRequest,
@@ -30,7 +31,7 @@ export interface DelegationMetric {
   /** Live 1-based queue position; on `queued`, when known at invocation time. */
   position?: number;
   /** What a queued run was waiting for; on `queued`, when known. */
-  waitingFor?: 'queue' | 'app';
+  waitingFor?: AgentDelegationQueueState['waitingFor'];
   /** Why a queued run left the queue without running; on `queue_withdrawn`. */
   reason?: string;
   /** Whether a spawn started queued or was granted immediately; on `invocation`. */
@@ -58,7 +59,7 @@ export class DelegationMetrics {
    */
   private readonly queueHints = new Map<
     string,
-    { position?: number; waitingFor?: 'queue' | 'app' }
+    { position?: number; waitingFor?: AgentDelegationQueueState['waitingFor'] }
   >();
   constructor(
     private readonly emit: (metric: DelegationMetric) => void,

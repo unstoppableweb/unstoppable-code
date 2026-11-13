@@ -9,7 +9,12 @@ import {
   navigateToToastWorktree,
 } from '@/lib/toastWorktreeNavigation';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
-import type { Toast, ToastLink, ToastMeta } from '@/stores/toastStore';
+import type {
+  PinnedToast,
+  Toast,
+  ToastLink,
+  ToastMeta,
+} from '@/stores/toastStore';
 import {
   toastLifetimeMs,
   toastStack,
@@ -25,21 +30,25 @@ import {
   type ToastFailureReport,
 } from '@canopy/ui-app/feedback';
 import {
-  Notice,
+  DEFAULT_IN_APP_NOTIFICATION_PLACEMENT,
   NoticeButton,
   NotificationDetailsDialog,
   previewToastMessage,
   ToastActionButton,
+  ToastNotice,
   ToastStack,
   ToastStackActivatableCard,
-  ToastStackDescription,
-  ToastStackTitle,
   type InAppNotificationPlacement,
   type ToastStackItem,
 } from '@canopy/ui-shared';
-import { Button, CopyLinkButton } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CopyDetailsButton,
+  CopyLinkButton,
+} from '@canopy/ui-shared/components';
 import { ExternalIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { TOAST_INTENT } from '@canopy/ui-shared/lib';
+import type { AppError } from '@canopy/protocol/app-errors';
 import type { JSX, MouseEvent, ReactNode } from 'react';
 import { useState, useSyncExternalStore } from 'react';
 import { DesktopReportEligibility } from './DesktopReportThisAction';
@@ -48,6 +57,8 @@ import { toastTrackpadSwipe } from './toastTrackpadSwipe';
 import { useCoworkEntryLabel } from './useCoworkEntryLabel';
 
 const OPEN_LABEL = 'Open';
+
+function noop(): void {}
 
 /**
  * Copy/open actions for a shareable link attached to a toast. Rendered inside
@@ -135,15 +146,20 @@ function openToastFailureOrigin(toast: Toast, onOpened: () => void): void {
   });
 }
 
+/** The error a toast's reference row and `Report this` describe. */
+function reportedError(toast: PinnedToast): AppError | undefined {
+  return toast.failure?.error ?? toast.reference;
+}
+
 /** Runs a defect's card or details under the account's report capability. */
 function WithToastReportEligibility({
   toast,
   children,
 }: {
-  toast: Toast;
+  toast: PinnedToast;
   children: (eligible: boolean) => ReactNode;
 }): ReactNode {
-  return toast.failure?.error.kind === 'defect' ? (
+  return reportedError(toast)?.kind === 'defect' ? (
     <DesktopReportEligibility>{children}</DesktopReportEligibility>
   ) : (
     children(false)
@@ -299,6 +315,7 @@ function ToastDetailModal({
                 data-testid="toast-action"
                 label={toast.meta.action.label}
                 busyLabel={toast.meta.action.busyLabel}
+                busy={toast.meta.action.busy === true}
                 actionKey={toast.id}
                 run={toast.meta.action.onClick}
                 onDone={onActionDone}
@@ -344,14 +361,14 @@ function ToastDetailModal({
 }
 
 interface StackedToast extends ToastStackItem {
-  readonly toast: Toast;
+  readonly toast: PinnedToast;
 }
 
 // One stack item per store toast, so an unchanged toast keeps its identity
 // across store updates and the stack leaves it alone.
-const stackedToasts = new WeakMap<Toast, StackedToast>();
+const stackedToasts = new WeakMap<PinnedToast, StackedToast>();
 
-function stacked(toast: Toast): StackedToast {
+function stacked(toast: PinnedToast): StackedToast {
   const cached = stackedToasts.get(toast);
   if (cached !== undefined) return cached;
   const item: StackedToast = {
@@ -371,7 +388,7 @@ function stacked(toast: Toast): StackedToast {
  * job.
  */
 function StackToastCard(props: {
-  toast: Toast;
+  toast: PinnedToast;
   onExpand: () => void;
   onDismiss: () => void;
   onReport: (report: ToastFailureReport) => void;
@@ -392,7 +409,7 @@ function StackToastCardBody({
   onReport,
   canReport,
 }: {
-  toast: Toast;
+  toast: PinnedToast;
   onExpand: () => void;
   onDismiss: () => void;
   onReport: (report: ToastFailureReport) => void;
@@ -512,26 +529,42 @@ function StackToastCardBody({
   const opensDestination = activate === openDestination;
   const link = meta?.link;
   const action = meta?.action;
+  const copyDetails = meta?.copyDetails;
   const failure = toast.failure;
+  const reported = reportedError(toast);
+  const reportedTelemetry = failure?.telemetry ?? toast.referenceTelemetry;
   const actions =
-    link === undefined && action === undefined && !canReport ? undefined : (
+    link === undefined &&
+    action === undefined &&
+    copyDetails === undefined &&
+    !canReport ? undefined : (
       <>
         {link !== undefined && <ToastLinkActions link={link} />}
-        {canReport && failure !== undefined && (
+        {copyDetails !== undefined && (
+          <CopyDetailsButton
+            details={copyDetails}
+            write={copyTextToClipboard}
+            data-testid="toast-copy-details"
+          />
+        )}
+        {canReport && reported !== undefined && (
           <ToastFailureReportButton
-            error={failure.error}
-            {...(failure.telemetry ? { telemetry: failure.telemetry } : {})}
+            error={reported}
+            {...(reportedTelemetry === undefined
+              ? {}
+              : { telemetry: reportedTelemetry })}
             onReport={onReport}
           />
         )}
         {action !== undefined && (
           <ToastActionButton
-            data-testid="toast-action"
+            data-testid={action.testId ?? 'toast-action'}
             label={action.label}
             busyLabel={action.busyLabel}
+            busy={action.busy === true}
             actionKey={toast.id}
             run={action.onClick}
-            onDone={onDismiss}
+            onDone={action.keepOpen === true ? noop : onDismiss}
           />
         )}
       </>
@@ -546,7 +579,7 @@ function StackToastCardBody({
       blurFocusBeforeActivate={!opensDestination}
       toastType={toast.type}
     >
-      <Notice
+      <ToastNotice
         intent={TOAST_INTENT[toast.type]}
         icon={
           project === undefined ? undefined : (
@@ -565,76 +598,60 @@ function StackToastCardBody({
             </span>
           )
         }
-        surface="none"
-        shape="toast"
-        titleLayout="stacked"
-        // The stack's region announces additions; a per-notice alert would
-        // nest a second live region inside it.
-        role="none"
         title={
           headline === undefined ? undefined : (
-            <ToastStackTitle>
-              <span
-                data-testid="toast-meta-title"
-                // The headline names the worktree or project when it has one.
-                className={
-                  headline === contextName
-                    ? POSTHOG_REPLAY_MASK_CLASS
-                    : undefined
-                }
-              >
-                {projectName !== undefined && worktreeName !== undefined ? (
-                  // A long entry name truncates; the project stays whole.
-                  <span className="flex min-w-0">
-                    <span className="shrink-0">{projectName}</span>
-                    <span
-                      data-testid="toast-meta-worktree"
-                      className="min-w-0 truncate fg-tertiary"
-                    >
-                      <span aria-hidden="true" className="whitespace-pre">
-                        {' · '}
-                      </span>
-                      {worktreeName}
+            <span
+              data-testid="toast-meta-title"
+              // The headline names the worktree or project when it has one.
+              className={
+                headline === contextName ? POSTHOG_REPLAY_MASK_CLASS : undefined
+              }
+            >
+              {projectName !== undefined && worktreeName !== undefined ? (
+                // A long entry name truncates; the project stays whole.
+                <span className="flex min-w-0">
+                  <span className="shrink-0">{projectName}</span>
+                  <span
+                    data-testid="toast-meta-worktree"
+                    className="min-w-0 truncate fg-tertiary"
+                  >
+                    <span aria-hidden="true" className="whitespace-pre">
+                      {' · '}
                     </span>
+                    {worktreeName}
                   </span>
-                ) : (
-                  headline
-                )}
-              </span>
-            </ToastStackTitle>
+                </span>
+              ) : (
+                headline
+              )}
+            </span>
+          )
+        }
+        text={preview.text}
+        // A message that names a person, such as an invite, opts out of
+        // session replay.
+        blockTextFromReplay={
+          toastMessageReplayClass(
+            toast.type,
+            meta?.category,
+            meta?.blockMessageFromReplay,
+          ) !== ''
+        }
+        {...(messageContext === undefined
+          ? {}
+          : { textContext: messageContext })}
+        onOverflowChange={setClampOverflow}
+        footer={
+          // A card that leaves the row off relies on Report this for the
+          // reference; without Report this (a guest) the row stays.
+          reported === undefined ||
+          (toast.hideReference === true && canReport) ? undefined : (
+            <ToastFailureReference error={reported} />
           )
         }
         actions={actions}
-        // Buttons get their own row under the message, so the close button
-        // stays in the top-right corner of every toast.
-        actionsPlacement="below"
         onDismiss={onDismiss}
-        dismissTestId="toast-dismiss"
-      >
-        <ToastStackDescription onOverflowChange={setClampOverflow}>
-          {/* A message that names a person, such as an invite, opts out of
-              session replay. */}
-          <span
-            className={`${toastMessageReplayClass(toast.type, meta?.category, meta?.blockMessageFromReplay)} whitespace-pre-wrap break-words`}
-          >
-            {messageContext === undefined ? (
-              preview.text
-            ) : (
-              <>
-                {/* Reserve the last line for context within the card's
-                    three-line budget. Details retain the full message. */}
-                <span className="line-clamp-2">{preview.text}</span>
-                <span data-testid="toast-message-context" className="block">
-                  {messageContext}
-                </span>
-              </>
-            )}
-          </span>
-        </ToastStackDescription>
-        {failure !== undefined && (
-          <ToastFailureReference error={failure.error} />
-        )}
-      </Notice>
+      />
     </ToastStackActivatableCard>
   );
 }
@@ -685,7 +702,7 @@ function ToastStackHost({
           // toast, as dragging it away does.
           swipeInput={toastTrackpadSwipe}
           renderToast={(item): JSX.Element => (
-            <div data-toast-id={item.toast.id}>
+            <div data-toast-id={item.toast.id} data-testid={item.toast.testId}>
               <StackToastCard
                 toast={item.toast}
                 onExpand={(): void => setExpandedToast(item.toast)}
@@ -741,7 +758,7 @@ export interface ToastContainerProps {
  * The window's shared notification stack.
  */
 export function ToastContainer({
-  placement = 'top-right',
+  placement = DEFAULT_IN_APP_NOTIFICATION_PLACEMENT,
 }: ToastContainerProps): JSX.Element {
   return <ToastStackHost placement={placement} />;
 }

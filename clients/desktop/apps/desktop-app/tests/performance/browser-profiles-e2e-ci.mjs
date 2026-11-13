@@ -973,8 +973,9 @@ const REVIEWED_CURRENT_STUDY_OVERLAYS = Object.freeze({
   // CAN-4187 can seed a web page into the publisher's preferred layout.
   // CAN-4908 distinguishes revision-two note bytes for copy consistency coverage.
   // A comment now names `.claude/skills` as the committed symlink example.
+  // CAN-4785 seeds one mock-served remote image and one unreachable one.
   'apps/desktop-app/tests/electron/seeders/seedSharedContainerRecipientReplicas.mjs':
-    'c832b719fbd30aa27c0b2cdacb9f81ac737ff711781add35895b49c4a5e88e8a',
+    'd66c3d0396bd0f199c6724b013db8405626d34fa6ae972795648db75d9681d93',
   // Project template checklist coverage (CAN-3032) adds template stamping,
   // starter prompts, default plugin selections, and index merging to the
   // cowork seeder without changing the study's original bytes.
@@ -1027,8 +1028,15 @@ const REVIEWED_HOSTED_SETTINGS_HELPERS = Object.freeze({
     '7727df3daf3f476fa3a8d1659dd4e853c703c0a92e7cc49347a6bf48199d3288',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings-fixtures.mjs':
     '76aa450ea4dd54fd07f20913ea18cd5f9ea5d4d882ae9e1e9cd97e8887f1a0a0',
+  // CAN-5110: scoped outgoing invitation pages/revocation and seeded creators.
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings.mjs':
-    'ba5c3b7c393b134d39c463813d14ae217b523eeac5c7c980669537aeb6afc79c',
+    '7202c24c96df662d648cb67142c5a4af72afb7c3c2b379550330bcee85942427',
+});
+// CAN-5188 adds the memory sync mock route, absent from the frozen study
+// baseline; the study's scenarios never call it.
+const REVIEWED_MEMORY_SYNC_HELPERS = Object.freeze({
+  'apps/desktop-app/tests/electron/mock-server/routes/memory-sync.mjs':
+    '76acab5b21ecbc468f79ae273e1f79c3d21b75f16321631dd5a2d7173276a859',
 });
 // Sidebar reorder adds two helpers absent from the frozen study baseline.
 const REVIEWED_SIDEBAR_REORDER_HELPERS = Object.freeze({
@@ -1075,6 +1083,7 @@ const REVIEWED_ADDED_HARNESS_HELPERS = Object.freeze([
   'apps/desktop-app/tests/performance/scaling-ratios.mjs',
   'apps/desktop-app/tests/performance/verdicts.mjs',
   ...Object.keys(REVIEWED_HOSTED_SETTINGS_HELPERS),
+  ...Object.keys(REVIEWED_MEMORY_SYNC_HELPERS),
   ...Object.keys(REVIEWED_COST_HARNESS_HELPERS),
   'apps/desktop-app/tests/electron/cowork-summary-fixture.mjs',
   // B7 adds the deterministic scope-residency fixture.
@@ -1207,6 +1216,12 @@ export function matchedHarnessSource(file, before, after) {
         digest(after),
         REVIEWED_GATEWAY_CATALOG_HELPERS[file],
         'Unreviewed gateway catalog helper bytes',
+      );
+    if (Object.hasOwn(REVIEWED_MEMORY_SYNC_HELPERS, file))
+      assert.equal(
+        digest(after),
+        REVIEWED_MEMORY_SYNC_HELPERS[file],
+        'Unreviewed memory sync helper bytes',
       );
     return after;
   }

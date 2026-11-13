@@ -3,6 +3,7 @@ import type {
   ChatSearchSource,
 } from '@canopy/desktop-shared/types';
 import type { WorktreeUiStatus } from '@/lib/worktree-status';
+import type { WorkspaceKind } from '@canopy/ui-shared/components';
 import type { SettingsSection } from '@/components/settings/SettingsNav';
 import { WORKFLOW_TYPE_TAB_LABELS } from '@canopy/ui-shared/lib/workflow-labels';
 import type { CommandExecutionResult } from './paletteCommands';
@@ -27,6 +28,18 @@ export type PaletteItemKind =
   | 'plugin'
   | 'skill'
   | 'setting';
+
+/**
+ * The owning project's badge, drawn as the sidebar draws it: its kind, its
+ * colour (stored or derived), and the repository whose owner avatar it may
+ * show.
+ */
+export interface PaletteProjectBadge {
+  kind: WorkspaceKind;
+  color: string;
+  temporary: boolean;
+  repoPath?: string;
+}
 
 /**
  * A single palette result. Display fields are precomputed by the providers so
@@ -60,6 +73,13 @@ interface PaletteItemBase {
   statusBadge?: string;
   /** Keyboard-shortcut hint rendered on the right (commands only). */
   shortcut?: string;
+  /** The owning project's badge, the row glyph for chats and worktrees. */
+  project?: PaletteProjectBadge;
+  /**
+   * Quiet text at the row's end saying where the item lives: the worktree a
+   * chat runs in, or a worktree's branch when its title is a task name.
+   */
+  context?: string;
   /** Worktree status → colored status dot. */
   worktreeStatus?: WorktreeUiStatus;
   /** Agent provider (`claude` | `codex` | …) → provider glyph on chat rows. */

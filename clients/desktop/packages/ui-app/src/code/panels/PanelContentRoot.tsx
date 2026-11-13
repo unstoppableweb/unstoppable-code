@@ -243,7 +243,9 @@ export function PanelContentRoot({
         viewModel.maximizedGroupId === null ||
         group.groupId === viewModel.maximizedGroupId;
       const isGroupExpanded = group.collapsed === undefined;
-      for (const tab of group.tabs) {
+      // Another chat's tabs stay mounted while hidden, so their state
+      // survives a switch to another chat and back.
+      for (const tab of [...group.tabs, ...(group.hiddenTabs ?? [])]) {
         const isActiveTab = tab.panelId === group.activePanelId;
         const isVisible = isActiveTab && isGroupVisible && isGroupExpanded;
         const key = containerKey(ownerKey, tab.panelId);

@@ -260,7 +260,7 @@ import {
   setSplitPrRuntimeProjection,
 } from '../services/split-pr-runtime-projection';
 import { hasActiveChatWorkForWorktree } from '../agents/session-manager';
-import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { listExecutionSummaries } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import { getDataDir } from '../lib/paths';
 import {
   mergeWorktreeRepository,

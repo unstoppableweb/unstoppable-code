@@ -40,9 +40,12 @@ export function WorkflowsRunsTab({
   const librarySort = useWorkflowsViewStore((state) => state.librarySort);
   const rowActions = useWorkflowRunRowActions(feed);
 
-  // Older pages hold automation runs only.
+  // Older pages hold automation runs, and cloud runs while they are listed.
   const hasMore =
-    feed.hasMore && (filters.kind === null || filters.kind === 'automation');
+    (feed.hasMore &&
+      (filters.kind === null || filters.kind === 'automation')) ||
+    (feed.cloudHasMore &&
+      (filters.kind === null || filters.kind === 'pipeline'));
 
   const targets = library?.targets;
   const openLibraryRow = useCallback(
@@ -90,6 +93,12 @@ export function WorkflowsRunsTab({
         <Notice intent="destructive" data-testid="workflows-runs-error">
           On-demand workflow runs could not be loaded. Scheduled workflow runs
           and watchers are still listed.
+        </Notice>
+      )}
+      {feed.cloudError !== null && (
+        <Notice intent="attention" data-testid="workflows-runs-cloud-error">
+          Cloud runs could not be loaded. Runs on this computer are still
+          listed.
         </Notice>
       )}
       <WorkflowRunsList

@@ -82,6 +82,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   sidebarCodeSectionCollapsed: false,
   sidebarCoworkSectionCollapsed: false,
+  sidebarOrchestratorCollapsed: false,
   sidebarNavLayout: createDefaultSidebarNavLayout(),
   branchNamePrefixMode: 'github',
   branchNameCustomPrefix: '',

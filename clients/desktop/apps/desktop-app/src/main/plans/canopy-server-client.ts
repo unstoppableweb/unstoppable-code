@@ -2,10 +2,12 @@ import { BRAND } from '@canopy/brand/current';
 import type {
   SharedPlanCreateRequest,
   SharedPlanDetail,
+  SharedPlanUnshareResult,
   SharedPlanUpdateRequest,
 } from '@canopy/protocol/plans';
 import {
   assertCanopyCloudCapability,
+  CanopyCloudClientError,
   requestCanopyCloudJson,
 } from '../canopy-cloud/client';
 
@@ -63,4 +65,28 @@ export async function updateSharedPlan(
       body: JSON.stringify(request),
     },
   );
+}
+
+/**
+ * Stop sharing (hard-delete) a shared plan by its `remoteId` (CAN-5904), the
+ * web plan's `externalId`, as GET and PUT address it. The web route answers a
+ * uniform 404 for a plan that is already gone or not the caller's, which maps
+ * to `{ unshared: false }` so the local share still clears. Any other failure
+ * (offline, 5xx) is thrown with its message and leaves the share in place.
+ */
+export async function deleteSharedPlan(
+  remoteId: string,
+): Promise<SharedPlanUnshareResult> {
+  await assertCanopyCloudCapability(PLANS_CAPABILITY);
+  try {
+    return await requestCanopyCloudJson<SharedPlanUnshareResult>(
+      `${API_PREFIX}/plans/${encodeURIComponent(remoteId)}`,
+      { method: 'DELETE' },
+    );
+  } catch (error) {
+    if (error instanceof CanopyCloudClientError && error.status === 404) {
+      return { unshared: false };
+    }
+    throw error;
+  }
 }

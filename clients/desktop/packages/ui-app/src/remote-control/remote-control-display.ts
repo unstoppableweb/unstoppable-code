@@ -6,6 +6,14 @@ import type { DotTone } from '@canopy/ui-shared/components';
  * pairing flow, the device lists and the desktop's sidebar computer picker.
  */
 export const ADD_COMPUTER_LABEL = 'Add a computer…';
+/**
+ * The same action as a settings row, which opens its dialog without an
+ * ellipsis like `Pair a device` beside it. One name everywhere: pairing adds
+ * an existing computer to this one's list (docs/ux-writing/labels.md).
+ */
+export const ADD_COMPUTER_ROW_LABEL = 'Add a computer';
+/** The account menu row whose submenu lists the account's computers. */
+export const COMPUTERS_LABEL = 'Computers';
 export const CONTROL_RISK_SENTENCE =
   'can see and change everything on this computer, including running commands';
 /**
@@ -16,8 +24,6 @@ export const HOSTED_CONTROLLER_LIMITS =
   "Can't use terminals, answer approvals or delete work";
 /** The settings action that pairs a device to control this computer. */
 export const PAIR_DEVICE_LABEL = 'Pair a device';
-/** The settings action that pairs this device with a computer to control. */
-export const CONNECT_COMPUTER_LABEL = 'Connect to a computer';
 
 /**
  * A paired controller's kind, as a person names the device. The relay

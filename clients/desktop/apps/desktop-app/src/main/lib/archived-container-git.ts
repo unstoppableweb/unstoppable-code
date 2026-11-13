@@ -3332,12 +3332,14 @@ async function continueRecoveredArchive(args: {
   const response =
     args.workspaceType === 'single-repo'
       ? await worktreeService.archiveSingleRepoWorktree({
+          archiveTrigger: 'internal-rollback',
           workspaceId: args.workspaceId,
           worktreeId: args.containerId,
           retainAsArchivedContainer: true,
           ...(args.preserveBranches ? { deleteBranch: false } : {}),
         })
       : await worktreeService.archiveMultiRepoWorktree({
+          archiveTrigger: 'internal-rollback',
           workspaceId: args.workspaceId,
           worktreeId: args.containerId,
           retainAsArchivedContainer: true,

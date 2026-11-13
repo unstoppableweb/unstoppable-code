@@ -8,6 +8,7 @@ import {
   ErrorState,
   Notice,
   NoticeButton,
+  ToastNotice,
   ToastStack,
   type NoticeIntent,
   type NoticeShape,
@@ -19,6 +20,10 @@ import {
   SpecimenGrid,
   SpecimenPanel,
 } from './componentsLabParts';
+import {
+  INFO_TOAST_LIFETIME_MS,
+  toastStackLifetimeMs,
+} from '@canopy/ui-shared/lib';
 
 const INTENTS: readonly {
   intent: NoticeIntent;
@@ -46,6 +51,10 @@ const INTENTS: readonly {
     body: 'Reviewers were notified.',
   },
 ];
+
+// A long path shortens in its middle; hover shows it and copy copies it.
+const LONG_PATH_BODY =
+  'Branch "sam/thinking-lightbulb-restore" is already checked out at /Users/sam/.unstoppable-code/workspaces/canopy/worktrees/sloth';
 
 const SHAPES: readonly NoticeShape[] = ['default', 'composer', 'settings'];
 
@@ -158,7 +167,7 @@ interface LabToast extends ToastStackItem {
 
 export function ToastSpecimen(): JSX.Element {
   const [toasts, setToasts] = useState<readonly LabToast[]>([]);
-  const push = (intent: NoticeIntent): void => {
+  const push = (intent: NoticeIntent, longPath = false): void => {
     const sample = INTENTS.find((item) => item.intent === intent);
     if (!sample) return;
     setToasts((current) => [
@@ -166,9 +175,9 @@ export function ToastSpecimen(): JSX.Element {
       {
         id: `${intent}-${Date.now()}`,
         intent,
-        timeoutMs: 6000,
+        timeoutMs: toastStackLifetimeMs(intent, INFO_TOAST_LIFETIME_MS),
         title: sample.title,
-        body: sample.body,
+        body: longPath ? LONG_PATH_BODY : sample.body,
       },
     ]);
   };
@@ -189,24 +198,21 @@ export function ToastSpecimen(): JSX.Element {
             Show {intent}
           </Button>
         ))}
+        <Button size="compact" onClick={(): void => push('destructive', true)}>
+          Show a long path
+        </Button>
       </SpecimenCell>
       <ToastStack
         toasts={toasts}
         placement="bottom-right"
         onClose={close}
         renderToast={(toast): JSX.Element => (
-          <Notice
+          <ToastNotice
             intent={toast.intent}
-            surface="none"
-            shape="toast"
-            titleLayout="stacked"
-            actionsPlacement="below"
-            role="none"
             title={toast.title}
+            text={toast.body}
             onDismiss={(): void => close(toast.id)}
-          >
-            {toast.body}
-          </Notice>
+          />
         )}
       />
     </SpecimenPanel>
@@ -218,7 +224,15 @@ export function FailureSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="ErrorBanner (a failure inside a page or panel)">
-        <SpecimenCell label="With retry" wide>
+        <SpecimenCell label="Message only" wide>
+          <div className="w-full">
+            <ErrorBanner error="The repository is archived and read-only." />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell
+          label="Try again switches to a spinner and keeps its width"
+          wide
+        >
           <div className="w-full">
             <ErrorBanner
               error="Couldn’t load skills."

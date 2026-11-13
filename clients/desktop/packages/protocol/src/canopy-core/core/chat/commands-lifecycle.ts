@@ -13,6 +13,7 @@ import {
   CanopyErrorPayloadSchema,
   CanopyJsonValueSchema,
   CanopyRetryDirectiveSchema,
+  canopyJsonValueSchemaWithin,
 } from '../../errors';
 
 const id = z.string().min(1).max(512);
@@ -29,7 +30,8 @@ const keyedMetadata = CanopyRequestMetadataSchema.extend({
   idempotencyKey: id,
 });
 const origin = z.enum(['desktop', 'portal']);
-const modelConfig = z.strictObject({
+/** A chat's model settings: thinking, speed and Codex context window. */
+export const CoreChatModelConfigSchema = z.strictObject({
   thinkingLevel: z.string().optional(),
   fastMode: z.boolean().optional(),
   // A Codex context window preset, or tokens at or above the 128K floor
@@ -42,6 +44,7 @@ const modelConfig = z.strictObject({
     .optional(),
   speed: z.enum(CODEX_SPEEDS).optional(),
 });
+const modelConfig = CoreChatModelConfigSchema;
 const providerType = z.enum([
   'claude',
   'codex',
@@ -247,7 +250,14 @@ const forkAction = z.strictObject({
   atMessageId: id.optional(),
   sourceSdkSessionId: z.string().optional(),
   syncWarning: z.string().optional(),
-  cloneMode: z.literal('continuation').optional(),
+  /**
+   * `continuation` clones into a new tab (desktop OpenCode); `in-place`
+   * continues an ended cloud chat on its own tab from `sourceSdkSessionId`,
+   * the ended session the client saw (CAN-6106).
+   */
+  cloneMode: z.enum(['continuation', 'in-place']).optional(),
+  /** Fast mode for the session an `in-place` continue creates. */
+  fastMode: z.boolean().optional(),
   destinationCreate: forkDestination.optional(),
 });
 
@@ -265,9 +275,59 @@ export const CoreChatCreateParamsSchema = z.strictObject({
   ...envelope,
   action: createAction,
 });
+/**
+ * The minor schema revision `core.chat.update` serves (protocol rule 5,
+ * CAN-6092): revision 2 adds a `pluginSelections` patch's `capabilities`. A
+ * runtime advertises it in its manifest; a client asks for it with `revision`
+ * only when it is advertised, and a client that does not ask gets revision 1
+ * output.
+ */
+export const CORE_CHAT_UPDATE_SCHEMA_REVISION = 2;
+
+/**
+ * The minor schema revision `core.chat.message.send` serves (protocol rule 5,
+ * CAN-6092): revision 2 adds what the web core's send accepted the turn with
+ * (its session, model, routing and capability state). Asked for with
+ * `revision` only when advertised; a client that does not ask gets revision
+ * 1 output.
+ */
+export const CORE_CHAT_MESSAGE_SEND_SCHEMA_REVISION = 2;
+
+const capabilityBundleRef = z.strictObject({
+  version: z.number().int(),
+  digest: z.string().min(1),
+});
+
+/**
+ * A capability state detail, bounded by a framed binding's 8 MiB frame
+ * rather than the 32 KiB JSON detail bound: a large selection's pruning list
+ * exceeds that, and the PUT answers it whole (CAN-6092).
+ */
+const capabilityStateJson = canopyJsonValueSchemaWithin(8 * 1024 * 1024);
+
+/**
+ * A chat's capability state, with the fields `PUT /cloud/chats/:id/capabilities`
+ * answers (CAN-6092): what a selection patch or a send left on the web core.
+ * Output only; the desktop core never sets it.
+ */
+export const CoreChatCapabilityStateSchema = z.strictObject({
+  capabilityBundles: z.strictObject({
+    activeBundle: capabilityBundleRef.optional(),
+    pendingBundle: capabilityBundleRef.optional(),
+  }),
+  capabilityBundleStateVersion: z.number().int().nonnegative(),
+  capabilitySelections: capabilityStateJson.optional(),
+  inheritedCapabilitySelections: capabilityStateJson.optional(),
+  capabilityUnavailable: capabilityStateJson.optional(),
+  capabilityPruned: capabilityStateJson.optional(),
+  warnings: z.array(z.string()),
+});
+
 export const CoreChatUpdateParamsSchema = z.strictObject({
   ...envelope,
   action: updateAction,
+  /** Revision 2 output, sent only when the runtime advertises it. */
+  revision: z.literal(CORE_CHAT_UPDATE_SCHEMA_REVISION).optional(),
 });
 export const CoreChatArchiveParamsSchema = z.strictObject({
   ...envelope,
@@ -298,6 +358,18 @@ export const CoreChatLifecycleResultSchema = z
     messageId: id.optional(),
     /** Set when the command archived chats: the archive entries' `archivedAt`. */
     archivedAt: z.string().optional(),
+    /**
+     * A `chat.set_model` change's model as the chat now has it, when the
+     * core reports it (CAN-6092): the resolved id (a gateway row's new id on
+     * its first pick) and the settings the change confirmed.
+     */
+    model: z
+      .object({
+        id: z.string().nullable(),
+        thinkingLevel: z.string().nullable(),
+        fastMode: z.boolean().optional(),
+      })
+      .optional(),
   })
   .catchall(CanopyJsonValueSchema);
 

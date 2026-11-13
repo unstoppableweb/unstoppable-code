@@ -1,6 +1,7 @@
 import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { ModelGatewayModel } from '@canopy/protocol/canopy-server';
+import type { PersonalAiGatewayConfig } from '@canopy/protocol/model-gateway';
 import type { CanopyCloudAccountPublicState } from '../types';
 import { resolveOrgGatewayOrganizationId } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
@@ -48,6 +49,69 @@ export function soleEnforcingOrganizationId(
   return undefined;
 }
 
+/** The routable Personal gateway shape, shared by the account and the device. */
+export type PersonalModelGatewayProjection = NonNullable<
+  CanopyCloudAccountPublicState['personalModelGateway']
+>;
+
+/**
+ * The device AI gateway applies while the account names no Personal
+ * organization: signed out, a guest, or before the Personal id arrives.
+ */
+export function accountUsesDeviceModelGateway(
+  account: { personalOrganizationId?: string | null } | null | undefined,
+): boolean {
+  return normalizeUuid(account?.personalOrganizationId) === null;
+}
+
+/** Project a device gateway config like the hosted account response does. */
+export function localModelGatewayProjection(
+  config: PersonalAiGatewayConfig | null | undefined,
+): PersonalModelGatewayProjection | null {
+  const organizationId = normalizeUuid(config?.organizationId);
+  if (!config?.enabled || !config.baseUrl || !organizationId) return null;
+  return {
+    kind: 'model-gateway',
+    organizationId,
+    baseUrl: config.baseUrl,
+    models: config.models,
+    enforced: config.onlyThisGateway,
+    promptCachePassthrough: config.promptCachePassthrough,
+    ...(config.displayName ? { displayName: config.displayName } : {}),
+  };
+}
+
+/**
+ * The Personal gateway that routes for this account: the account's own, or
+ * the device gateway while the account names no Personal organization.
+ */
+export function effectivePersonalModelGateway(
+  account: Pick<
+    CanopyCloudAccountPublicState,
+    'personalOrganizationId' | 'personalModelGateway'
+  > | null,
+  localGateway?: PersonalModelGatewayProjection | null,
+): {
+  personalOrganizationId?: string;
+  personalModelGateway?: PersonalModelGatewayProjection;
+} {
+  if (accountUsesDeviceModelGateway(account)) {
+    return localGateway
+      ? {
+          personalOrganizationId: localGateway.organizationId,
+          personalModelGateway: localGateway,
+        }
+      : {};
+  }
+  return {
+    personalOrganizationId:
+      normalizeUuid(account?.personalOrganizationId) ?? undefined,
+    ...(account?.personalModelGateway
+      ? { personalModelGateway: account.personalModelGateway }
+      : {}),
+  };
+}
+
 export function resolveModelGatewayIndex(
   account: Pick<
     CanopyCloudAccountPublicState,
@@ -58,6 +122,7 @@ export function resolveModelGatewayIndex(
     | 'personalModelGateway'
     | 'personalModelGatewayEnforcementUnavailable'
   > | null,
+  localGateway?: PersonalModelGatewayProjection | null,
 ): ModelGatewayIndex {
   const byOrganization = new Map<string, OrganizationModelGateway>();
   for (const setting of account?.enforcedSettings ?? []) {
@@ -82,9 +147,9 @@ export function resolveModelGatewayIndex(
         previous?.unavailable === true,
     });
   }
-  const personalOrganizationId =
-    normalizeUuid(account?.personalOrganizationId) ?? undefined;
-  const personalGateway = account?.personalModelGateway;
+  const personal = effectivePersonalModelGateway(account, localGateway);
+  const personalOrganizationId = personal.personalOrganizationId;
+  const personalGateway = personal.personalModelGateway;
   if (
     personalGateway &&
     personalOrganizationId &&

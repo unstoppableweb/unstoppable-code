@@ -4,6 +4,7 @@ import {
   type SidebarItem,
 } from '@canopy/desktop-shared/types';
 import { isOrgDefaultCoworkWorkspaceId } from '@canopy/protocol/ui-labels';
+import { isWebCoreScope } from './chat-authority';
 import { isRegisteredCoworkWorkspaceId } from './cowork-registry';
 
 /**
@@ -23,13 +24,17 @@ import { isRegisteredCoworkWorkspaceId } from './cowork-registry';
  * an import cycle through `chatStore.ts`). `projectsStore.ts` keeps the
  * registry in sync whenever its `projects` state changes, so this stays a
  * plain synchronous `projectId`-only check for the ~35 existing call sites.
+ *
+ * A web core project is a cloud cowork project (CAN-6175 D2): desktop opens
+ * only cowork tasks from the cloud, so its chats are cowork chats too.
  */
 export function isCoworkChatTarget(projectId: string): boolean {
   return (
     projectId === STANDALONE_CHAT_PROJECT_ID ||
     projectId === APP_ADVISOR_PROJECT_ID ||
     isOrgDefaultCoworkWorkspaceId(projectId) ||
-    isRegisteredCoworkWorkspaceId(projectId)
+    isRegisteredCoworkWorkspaceId(projectId) ||
+    isWebCoreScope(projectId)
   );
 }
 

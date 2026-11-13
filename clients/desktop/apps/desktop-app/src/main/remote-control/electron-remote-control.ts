@@ -45,6 +45,12 @@ import {
   type RemotePathPickerResponse,
 } from '@canopy/desktop-shared/types';
 import { setAccountProxyRemoteSignInProvider } from '../account-proxy/remote-sign-in';
+import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
+import { createRemoteCoreAccess } from './host/remote-core-access';
+import {
+  notifyRemoteUpdatePolicyChanged,
+  setRemoteUpdatePolicy,
+} from './remote-update-policy';
 import { setInterfaceToolAudienceResolver } from '../agents/interface-tool-binding';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
@@ -70,6 +76,7 @@ import {
 import { authorizeExternalFileRead } from '../lib/external-file-open';
 import { openExternalGuarded } from '../lib/open-external';
 import { getDataDir } from '../lib/paths';
+import { getWakeLockService } from '../power/wake-lock-service';
 import {
   APP_ADVISOR_RENDERER_PAGE,
   APP_ADVISOR_RENDERER_SEARCH,
@@ -88,10 +95,14 @@ import {
 import { validateId } from '../lib/validation';
 import { getMainWindowMaterialOptions } from '../lib/window-material';
 import { sendToAllWindows, sendToWindowDetailed } from '../lib/window-send';
+import { getObservabilityService } from '../observability';
 import {
+  describeRemoteControlAvailability,
   isRemoteControlAvailable,
+  remoteControlFeatureState,
   onRemoteControlAvailabilityChanged,
 } from './availability';
+import type { RemoteControlDiagnostic } from './diagnostics';
 import {
   RemoteAccountProxySignIns,
   accountProxySignInCallbackPorts,
@@ -197,13 +208,34 @@ async function fetchRelayToken(
  * credential for entries saved before accounts had one.
  */
 function signedInAccount(): string | null {
+  return signedInAccountKeys()[0] ?? null;
+}
+
+/**
+ * Every key the signed-in account is known by, `signedInAccount` first: its
+ * server ID when it has one, and the digest of its credential. One
+ * credential belongs to one account, so a key that changes between the two
+ * forms with the same credential is still the same account.
+ */
+function signedInAccountKeys(): string[] {
   const account = peekCanopyCloudAccount();
   if (!account || account.apiKey.length === 0 || isGuestAccount(account)) {
-    return null;
+    return [];
   }
+  const keyDigest = `key:${createHash('sha256').update(account.apiKey).digest('hex')}`;
   const accountId = account.account?.id.trim();
-  if (accountId) return `account:${accountId}`;
-  return `key:${createHash('sha256').update(account.apiKey).digest('hex')}`;
+  return accountId ? [`account:${accountId}`, keyDigest] : [keyDigest];
+}
+
+/** Keeps a connection diagnostic in this computer's app events only. */
+function recordRemoteControlDiagnostic(
+  diagnostic: RemoteControlDiagnostic,
+): void {
+  getObservabilityService().recordAppDiagnostic({
+    version: 1,
+    timestamp: new Date().toISOString(),
+    ...diagnostic,
+  });
 }
 
 export interface RemoteControlRuntime {
@@ -310,12 +342,19 @@ export function initializeRemoteControl(options: {
         deviceInfo: relayOptions.deviceInfo,
         onStatusChange: relayOptions.onStatusChange,
         onPeersChange: (): void => relayOptions.onPeersChange(),
+        onDiagnostic: relayOptions.onDiagnostic,
       }),
     fetchToken: fetchRelayToken,
     isFeatureEnabled: isRemoteControlAvailable,
+    featureState: remoteControlFeatureState,
+    signedInAccountKeys,
+    wakeLock: getWakeLockService(),
+    describeAvailability: describeRemoteControlAvailability,
+    recordDiagnostic: recordRemoteControlDiagnostic,
     signedInAccount,
     deviceName,
     platform: devicePlatform(),
+    onRemoteUpdatesAllowedChange: notifyRemoteUpdatePolicyChanged,
     version: currentRemoteVersion(
       app.getVersion(),
       process.env,
@@ -359,6 +398,7 @@ export function initializeRemoteControl(options: {
       markAsDownloaded(path, { agentName: BRAND.displayName }),
     openLocalFile: (path: string): Promise<void> =>
       openExternalGuarded(pathToFileURL(path).toString()),
+    core: createRemoteCoreAccess(getDesktopCanopyRuntime),
     dispatchHostedChatCommand: async (
       request,
       attribution,
@@ -434,6 +474,15 @@ export function initializeRemoteControl(options: {
     return controllerDeviceId
       ? activeService.appAdvisorSurfaceForController(controllerDeviceId)
       : null;
+  });
+  setRemoteUpdatePolicy({
+    allowed: () => activeService.remoteUpdatesAllowed(),
+    nameOf: (principalId) =>
+      principalId.startsWith('remote-device:')
+        ? activeService.controllerName(
+            principalId.slice('remote-device:'.length),
+          )
+        : null,
   });
   // CAN-5823: a chat driven from a connected controller is served only by
   // that controller's window leases; otherwise by this computer's own.
@@ -543,6 +592,13 @@ function registerRemoteControlIpc(
   );
   registerIpcHandler(IPC_CHANNELS.remoteControlCancelPairing, () =>
     service.cancelPairing(),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlSetAllowRemoteUpdates,
+    (_event, allow: unknown) => {
+      if (typeof allow !== 'boolean') throw new Error('Expected a boolean.');
+      return service.setAllowRemoteUpdates(allow);
+    },
   );
   registerIpcHandler(
     IPC_CHANNELS.remoteControlRespondToPairing,

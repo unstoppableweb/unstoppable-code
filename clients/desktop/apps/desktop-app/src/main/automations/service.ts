@@ -1,3 +1,5 @@
+import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
+import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import {
   assertCoworkChatRootPresent,
   assertCoworkWorkspaceRootPresent,
@@ -8,8 +10,8 @@ import { ownedPipelineToChatAction } from '@canopy/desktop-shared/lib/chat-autom
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
-import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
+import type { ChildPipelineAuthorization } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 import {
   backgroundExecutionDeniedMessage,
   backgroundExecutionRetryMessage,
@@ -73,6 +75,7 @@ import {
   type AutomationRunHistoryRequest,
   type AutomationRunHistoryResponse,
   type AutomationRunTrigger,
+  type AutomationTrigger,
   type AutomationRemoteMetadata,
   type AutomationRunNowRequest,
   type AutomationSkipReason,
@@ -91,7 +94,12 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
 import type { PortalChatScheduledMessages } from '@canopy/protocol/portal';
+import type {
+  PipelineSchedule,
+  PipelineScheduleUpdateParams,
+} from '@canopy/protocol/canopy-core';
 import {
+  isAutomationExecutionLocation,
   projectKindToTargetContext,
   validateSharedAutomationTargetRequirement,
 } from '@canopy/protocol/automations';
@@ -157,6 +165,22 @@ import {
   type WorkspaceContext,
 } from '@canopy/protocol/workspace-context';
 import { runAutomationIfCommand } from './if-command-runner';
+import {
+  CLOUD_SCHEDULE_MESSAGES,
+  CloudScheduleRemoteError,
+  cachedCloudRecord,
+  cloudScheduleRecordCache,
+  UNAVAILABLE_CLOUD_SCHEDULE_REMOTE,
+  cloudScheduleDestination,
+  cloudScheduleTrigger,
+  cloudScheduleWorkflow,
+  firesLocally,
+  hostTimeZone,
+  isCloudScheduleStub,
+  localRecordFromCloud,
+  normalizePersistedLocation,
+  type CloudScheduleRemote,
+} from './cloud-schedules';
 import { decideIfCommandGate } from './if-command-gate';
 import {
   automationDefinitionResource,
@@ -232,7 +256,7 @@ import {
 import { isPipelineLocalMetadataReadable } from '../pipelines/pipeline-local-metadata-store';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
-import { normalizePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+import { normalizePipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
 import * as pipelineStore from '../pipelines/pipeline-service';
 import type {
@@ -252,12 +276,18 @@ import {
   deleteOwnedPipeline,
   ownedChatPipelineState,
   ownedPipelineId,
+  ownsOrchestratorPromptPipeline,
 } from './owned-pipeline';
 import {
   WORKFLOW_DELETE_FAILED,
   WORKFLOW_DELETE_RUNNING,
   WORKFLOW_RELEASE_FAILED,
+  INSTALLED_OWNER_RETARGET_REFUSED,
   addedScheduleRefusal,
+  handOffInstall,
+  hideOrchestratorPipelineForSchedule,
+  inheritedInstallOwner,
+  installSuccessor,
   isSharedByOtherSchedules,
   isWorkflowPagePipeline,
   keepLastScheduleValues,
@@ -266,6 +296,8 @@ import {
   pipelineSchedules,
   releaseOwnedPipeline,
   scheduledUserPipelineId,
+  targetsAgentHiddenPipeline,
+  userPipelineMetadata,
   type OwnedPipelineRelease,
 } from './workflow-schedules';
 import {
@@ -360,7 +392,15 @@ function isPipelineModelAliasPreference(
 ): value is PipelineModelAliasPreference {
   if (!isRecord(value)) return false;
   if (value.mode === 'reset') return true;
-  if (value.mode === 'agent') return typeof value.agent_id === 'string';
+  if (value.mode === 'agent') {
+    return (
+      typeof value.agent_id === 'string' &&
+      parsePipelineAgentAliasRoute({
+        agent_id: value.agent_id.trim(),
+        base: value.base,
+      }).ok
+    );
+  }
   return (
     value.mode === 'inline' &&
     typeof value.base === 'string' &&
@@ -737,6 +777,22 @@ function isValidIsoString(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
+/** Why a record that doesn't fire here can't be changed or run here. */
+function locationRefusal(activity: ScheduledActivity): {
+  ok: false;
+  error: string;
+} {
+  return {
+    ok: false,
+    error: isCloudScheduleStub(activity)
+      ? CLOUD_SCHEDULE_MESSAGES.stub
+      : CLOUD_SCHEDULE_MESSAGES.unknownLocation,
+  };
+}
+
+/** How long main shows a cloud stub's server record before reading it again. */
+const CLOUD_RECORDS_MAX_AGE_MS = 60_000;
+
 function cloneActivity(activity: ScheduledActivity): ScheduledActivity {
   return JSON.parse(JSON.stringify(activity)) as ScheduledActivity;
 }
@@ -1084,6 +1140,8 @@ function isPipelineAgentAuthor(value: unknown): value is PipelineAgentAuthor {
 
 function isPersistedActivity(value: unknown): value is ScheduledActivity {
   if (!isRecord(value)) return false;
+  // CAN-6183: an unknown location is kept and never fired here.
+  normalizePersistedLocation(value);
   // A malformed agent marker is dropped; the automation itself stays valid.
   if (
     value.agentAuthor !== undefined &&
@@ -1191,12 +1249,12 @@ function isPersistedRun(value: unknown): value is ScheduledActivityRun {
       return false;
     }
   }
+  // CAN-6183: a run from a location this desktop doesn't know is kept.
   if (
     value.executionLocation !== undefined &&
-    value.executionLocation !== 'local'
-  ) {
-    return false;
-  }
+    !isAutomationExecutionLocation(value.executionLocation)
+  )
+    delete value.executionLocation;
   if (value.recovered !== undefined && typeof value.recovered !== 'boolean') {
     return false;
   }
@@ -1392,7 +1450,8 @@ function nextRunForEnabledActivity(
   now: Date,
   options: { preserveExistingCronNextRun?: boolean } = {},
 ): string | undefined {
-  if (!activity.enabled) return undefined;
+  // A cloud stub fires server-side (CAN-6183); it has no local next run.
+  if (!activity.enabled || !firesLocally(activity)) return undefined;
   if (activity.schedule.kind === 'one_time') {
     const runAt = activity.schedule.runAt;
     if (activity.sharedPipelineReview && activity.lastScheduledFor === runAt) {
@@ -1772,6 +1831,11 @@ async function sharedPipelineReadDecision(
 export class AutomationsService {
   private surfaces: AutomationsServiceSurfaces | null = null;
   private file: AutomationsFile | null = null;
+  private cloudRemote: CloudScheduleRemote = UNAVAILABLE_CLOUD_SCHEDULE_REMOTE;
+  /** CAN-6183: the server records of cloud stubs, as main last read them. */
+  private readonly cloudRecords = cloudScheduleRecordCache();
+  private cloudRecordsReadAt = 0;
+  private cloudRecordsRead: Promise<void> | null = null;
   private loadingFile: Promise<AutomationsFile> | null = null;
   private persistedScheduledMessageContributors: Map<
     string,
@@ -1905,6 +1969,9 @@ export class AutomationsService {
   }
 
   async list(): Promise<AutomationsListResponse> {
+    // CAN-6183: a read of the cloud stubs' records that finds a change
+    // republishes the list.
+    void this.refreshCloudRecords();
     const file = await this.ensureFile();
     return contextSnapshot(file);
   }
@@ -1995,7 +2062,11 @@ export class AutomationsService {
     nextContext: string;
   }): Promise<string[]> {
     return this.enqueueMutation(async (): Promise<string[]> => {
-      const file = await this.ensureFile();
+      const current = await this.ensureFile();
+      const file: AutomationsFile = {
+        ...current,
+        activities: current.activities.map(cloneActivity),
+      };
       const rebound: string[] = [];
       const updatedAt = new Date().toISOString();
       for (const activity of file.activities) {
@@ -2014,7 +2085,11 @@ export class AutomationsService {
         activity.updatedAt = updatedAt;
         rebound.push(activity.id);
       }
-      if (rebound.length > 0) await this.persistAndNotify(file);
+      if (rebound.length > 0) {
+        await this.writeFile(file);
+        this.file = file;
+        await this.republish();
+      }
       return rebound;
     });
   }
@@ -2056,6 +2131,15 @@ export class AutomationsService {
         },
       },
     ];
+    // CAN-6065: another schedule of an installed workflow runs the owner's
+    // install, so it passes the owner's install check too: a revoked share
+    // denies every schedule, not only the owner.
+    const installOwner = inheritedInstallOwner(
+      (await this.ensureFile()).activities,
+      activity,
+    );
+    if (installOwner !== undefined)
+      resources.push(automationDefinitionResource(installOwner));
     let sharedPipelineReadFailure:
       | {
           error: unknown;
@@ -2968,17 +3052,27 @@ export class AutomationsService {
             return { ok: false, error: globalOwner.error };
           activity.executionContext = globalOwner.context ?? 'personal';
         }
-        // CAN-5782: a single-schedule workflow page takes no second schedule.
+        // CAN-6065: an agent's schedule only joins a workflow it may run as.
         const scheduledPipeline = scheduledUserPipelineId(activity);
         const addedRefusal =
           scheduledPipeline === undefined
             ? undefined
             : addedScheduleRefusal(
                 file.activities,
-                undefined,
                 scheduledPipeline,
+                activity.agentAuthor,
               );
         if (addedRefusal) return { ok: false, error: addedRefusal };
+        // CAN-6065: an Orchestrator pipeline is hidden by its own flag
+        // before it takes another schedule; one that didn't persist refuses.
+        if (
+          scheduledPipeline !== undefined &&
+          !hideOrchestratorPipelineForSchedule(
+            file.activities,
+            scheduledPipeline,
+          )
+        )
+          return { ok: false, error: WORKFLOW_RELEASE_FAILED };
         const destinationRefusal =
           await this.workflowScheduleDestinationRefusal(
             activity,
@@ -3092,6 +3186,9 @@ export class AutomationsService {
       if (!activity) return { ok: false, error: 'Activity not found.' };
       if (authorize && !(await authorize(cloneActivity(activity))))
         return { ok: false, error: 'Activity not found.' };
+      // CAN-6183: the server record is authoritative for a cloud schedule,
+      // and a location this version doesn't know is never rewritten here.
+      if (!firesLocally(activity)) return locationRefusal(activity);
       // Only session prompts carry the agent sender; other types would drop it.
       if (
         activity.agentScheduledSend &&
@@ -3136,23 +3233,37 @@ export class AutomationsService {
       const normalizedRequestedAction = request.action
         ? normalizeAutomationAction(request.action)
         : undefined;
-      // CAN-5782: retargeting onto a single-schedule workflow page that
-      // already has a schedule is refused, as a create is.
+      // CAN-6065: retargeting is refused where a create is.
       const retargetedPipeline =
         normalizedRequestedAction === undefined
           ? undefined
           : scheduledUserPipelineId({ action: normalizedRequestedAction });
+      const currentPipeline = scheduledUserPipelineId(activity);
       const startsTargeting =
-        retargetedPipeline !== scheduledUserPipelineId(activity)
-          ? retargetedPipeline
-          : undefined;
+        retargetedPipeline !== currentPipeline ? retargetedPipeline : undefined;
+      // CAN-6065: an installed owner leaving the pipeline other schedules
+      // run would take their install along; only Remove hands it on.
+      if (
+        normalizedRequestedAction !== undefined &&
+        retargetedPipeline !== currentPipeline &&
+        currentPipeline !== undefined &&
+        installSuccessor(file.activities, activity, currentPipeline) !==
+          undefined
+      )
+        return { ok: false, error: INSTALLED_OWNER_RETARGET_REFUSED };
       if (startsTargeting !== undefined) {
         const refusal = addedScheduleRefusal(
           file.activities,
-          activity.id,
           startsTargeting,
+          trusted.agentAuthor === null
+            ? undefined
+            : (trusted.agentAuthor ?? activity.agentAuthor),
         );
         if (refusal) return { ok: false, error: refusal };
+        if (
+          !hideOrchestratorPipelineForSchedule(file.activities, startsTargeting)
+        )
+          return { ok: false, error: WORKFLOW_RELEASE_FAILED };
       }
       const effectiveAction = normalizedRequestedAction ?? activity.action;
       const sharedUpdateRebinds =
@@ -3513,21 +3624,37 @@ export class AutomationsService {
       );
       if (index === -1) return { ok: false, error: 'Activity not found.' };
       await assertAutomationContext(file.activities[index], callerContext);
+      // CAN-6183: a cloud schedule goes server-side first, so it never
+      // keeps firing there once its record is gone here.
+      const cloudRefusal = await this.deleteCloudRecord(file.activities[index]);
+      if (cloudRefusal !== null) return { ok: false, error: cloudRefusal };
       // CAN-5782: Remove on a workflow page's last schedule may keep its
-      // pipeline, unless its package binding or agent grant can't outlive
-      // the record.
+      // pipeline, unless its package binding can't outlive the record.
       const keep = keptWorkflowPipeline(
         file.activities,
         file.activities[index],
         request.keepPipeline === true,
       );
       if (keep?.refusal) return { ok: false, error: keep.refusal };
+      const target = file.activities[index];
+      const owned = ownedPipelineId(target);
+      // CAN-6065: an installed owner hands its install and owner marker to a
+      // schedule that stays, before it goes; one that didn't land refuses.
+      const successor =
+        owned === undefined
+          ? undefined
+          : installSuccessor(file.activities, target, owned);
+      const handoff =
+        successor === undefined || owned === undefined
+          ? undefined
+          : await handOffInstall(target, successor, owned);
+      if (successor !== undefined && handoff === undefined)
+        return { ok: false, error: WORKFLOW_RELEASE_FAILED };
       // CAN-5782: a pipeline that stays is released before its owner goes,
       // so its hiding facts are durable first; one that didn't persist
       // refuses the delete.
-      const target = file.activities[index];
-      const owned = ownedPipelineId(target);
       if (
+        handoff === undefined &&
         owned !== undefined &&
         (keep !== undefined ||
           isSharedByOtherSchedules(file.activities, target, owned)) &&
@@ -3542,12 +3669,40 @@ export class AutomationsService {
         !keepLastScheduleValues(keep.pipelineId, keep.lastScheduleValues)
       )
         return { ok: false, error: WORKFLOW_RELEASE_FAILED };
+      // What the cache goes back to when the write below fails.
+      const storedSuccessor =
+        successor === undefined ? undefined : cloneActivity(successor);
+      const storedRuns = file.recentRuns;
+      if (successor !== undefined) {
+        successor.installedFrom = structuredClone(target.installedFrom);
+        if (target.publicInstallContext !== undefined)
+          successor.publicInstallContext = target.publicInstallContext;
+        else delete successor.publicInstallContext;
+        // An owner names its pipeline's source, as ownership reads it; one
+        // that omits it would hand nothing on when it is removed in turn.
+        if (successor.action.type === 'worktree_pipeline')
+          successor.action = { ...successor.action, pipelineSource: 'user' };
+        successor.updatedAt = new Date().toISOString();
+      }
       const [activity] = file.activities.splice(index, 1);
-      this.enabledIntentRevisions.delete(activity.id);
       file.recentRuns = file.recentRuns.filter(
         (run) => run.activityId !== request.id,
       );
-      await this.persistAndNotify(file);
+      try {
+        await this.persistAndNotify(file);
+      } catch (error) {
+        if (successor !== undefined && storedSuccessor !== undefined) {
+          file.activities[file.activities.indexOf(successor)] = storedSuccessor;
+          file.activities.splice(index, 0, activity);
+          file.recentRuns = storedRuns;
+          await handoff?.undo();
+        }
+        throw error;
+      }
+      this.enabledIntentRevisions.delete(activity.id);
+      // The install's subscription names the schedule that holds it first,
+      // so it never reads as uninstalled in between.
+      if (successor !== undefined) registerAutomationInstall(successor);
       await this.cleanUpDeletedActivity(activity);
       // A converted chat automation's own pipeline goes with it (CAN-4551),
       // unless another schedule runs it or Remove keeps it (CAN-5782).
@@ -3598,6 +3753,12 @@ export class AutomationsService {
     }
     if (schedules.some((schedule) => isActivityRunning(file, schedule.id)))
       return { ok: false, error: WORKFLOW_DELETE_RUNNING };
+    // CAN-6183: cloud schedules go server-side before anything here. One
+    // that fails stops the delete; a stub whose record went stays, unfired.
+    for (const schedule of schedules) {
+      const cloudRefusal = await this.deleteCloudRecord(schedule);
+      if (cloudRefusal !== null) return { ok: false, error: cloudRefusal };
+    }
     const [{ deleteUserPipeline }, { AUTOMATION_PIPELINE_CALLER }] =
       await Promise.all([
         import('../canopy-runtime/pipeline-definition-dispatch'),
@@ -3908,6 +4069,8 @@ export class AutomationsService {
       if (authorize && !(await authorize(cloneActivity(activity))))
         return { ok: false as const, error: 'Activity not found.' };
       await assertAutomationContext(activity, callerContext);
+      // CAN-6183: a cloud schedule runs where it is stored.
+      if (!firesLocally(activity)) return locationRefusal(activity);
       if (activity.sharedPipelineReview) {
         return {
           ok: false as const,
@@ -4072,7 +4235,7 @@ export class AutomationsService {
         let changed = false;
         try {
           for (const activity of file.activities) {
-            if (!activity.enabled) continue;
+            if (!activity.enabled || !firesLocally(activity)) continue;
             activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
             const scheduledFor = activity.nextRunAt;
             if (!scheduledFor || Date.parse(scheduledFor) > now.getTime()) {
@@ -4811,8 +4974,12 @@ export class AutomationsService {
         : undefined;
     // A converted install's package is verified before its run starts, as
     // its native prompt's was; the generated send step applies it (CAN-5479).
+    // Another schedule of its workflow runs with the owner's (CAN-6065).
     if (action.type === 'worktree_pipeline')
-      await verifyOwnedPipelinePackage(activity);
+      await verifyOwnedPipelinePackage(
+        (await this.ensureFile()).activities,
+        activity,
+      );
     switch (action.type) {
       case 'app_advisor_prompt': {
         if (!this.surfaces) {
@@ -4854,6 +5021,11 @@ export class AutomationsService {
             preferences.appAdvisorThinkingLevel,
             preferences.providerModelConfigDefaults,
           );
+        await assertAgentModelAdmission(model, {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: APP_ADVISOR_WORKTREE_ID,
+          executionHarness,
+        });
         // App Advisor runs Cursor on the managed runtime like a worktree chat;
         // gate before the window opens so a disconnected runtime fails here.
         if (
@@ -5020,6 +5192,10 @@ export class AutomationsService {
             undefined,
             preferences.providerModelConfigDefaults,
           );
+        await assertAgentModelAdmission(model, {
+          projectId: coworkWorkspaceId,
+          executionHarness,
+        });
         // Cowork runs Cursor on the managed runtime like a worktree chat;
         // gate before the Work Entry and prompt are persisted.
         if (
@@ -5190,6 +5366,10 @@ export class AutomationsService {
               undefined,
               preferences.providerModelConfigDefaults,
             );
+          await assertAgentModelAdmission(model, {
+            projectId: action.workspaceId,
+            executionHarness,
+          });
           // Only now, and only for a dispatch that actually resolved to Cursor.
           if (
             executionHarness === 'cursor' &&
@@ -6550,6 +6730,7 @@ export class AutomationsService {
     // never retain these as archived containers (they would be junk rows).
     if (workspaceType === 'single-repo') {
       await archiveSingleRepoWorktree({
+        archiveTrigger: 'internal-rollback',
         sourceAdmission: 'required',
         workspaceId,
         worktreeId,
@@ -6559,6 +6740,7 @@ export class AutomationsService {
       return;
     }
     await archiveMultiRepoWorktree({
+      archiveTrigger: 'internal-rollback',
       sourceAdmission: 'required',
       workspaceId,
       worktreeId,
@@ -6840,6 +7022,467 @@ export class AutomationsService {
       // Surface refresh failures must not interrupt an already-persisted run.
       logMainProcessError('Failed to notify automation surfaces', error);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Cloud workflow schedules (CAN-6183). The Run in control (CP-47) calls
+  // these; nothing else moves a schedule.
+  // -------------------------------------------------------------------------
+
+  /** Main's web core client for cloud schedules. */
+  setCloudScheduleRemote(remote: CloudScheduleRemote): void {
+    this.cloudRemote = remote;
+    this.cloudRecords.clear();
+    this.cloudRecordsReadAt = 0;
+  }
+
+  /** The server record of a cloud stub, as main last read it. */
+  cloudRecordFor(activity: ScheduledActivity): PipelineSchedule | undefined {
+    return cachedCloudRecord(activity);
+  }
+
+  /**
+   * Reads the server records of this desktop's cloud stubs again when the
+   * last read is a minute old, and republishes the list when one changed.
+   * Never rejects: a stub whose record is unread shows as stored.
+   */
+  refreshCloudRecords(): Promise<void> {
+    if (
+      this.cloudRecordsRead !== null ||
+      Date.now() - this.cloudRecordsReadAt < CLOUD_RECORDS_MAX_AGE_MS
+    )
+      return this.cloudRecordsRead ?? Promise.resolve();
+    const read = (async (): Promise<void> => {
+      const file = await this.ensureFile();
+      if (!file.activities.some((activity) => isCloudScheduleStub(activity)))
+        return;
+      const records = await this.cloudRemote.list();
+      const next = new Map(
+        records.map((record) => [record.scheduleId, record] as const),
+      );
+      const changed = !isDeepStrictEqual(next, this.cloudRecords);
+      this.cloudRecords.clear();
+      for (const [scheduleId, record] of next)
+        this.cloudRecords.set(scheduleId, record);
+      this.cloudRecordsReadAt = Date.now();
+      if (changed) await this.republish();
+    })()
+      .catch(() => {
+        // Offline or signed out: the stubs keep showing as stored.
+        this.cloudRecordsReadAt = Date.now();
+      })
+      .finally(() => {
+        this.cloudRecordsRead = null;
+      });
+    this.cloudRecordsRead = read;
+    return read;
+  }
+
+  /**
+   * Moves a local workflow schedule to the cloud: the record stops firing
+   * here (a pending stub) before the server holds it, then names the server
+   * record. A refusal puts the local record back; an answer that never came
+   * leaves the pending stub, which a second move or a move back resolves.
+   */
+  async moveScheduleToCloud(
+    id: string,
+    callerContext?: WorkspaceContext,
+  ): Promise<AutomationMutationResponse> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const index = file.activities.findIndex((entry) => entry.id === id);
+      const activity = file.activities[index];
+      if (!activity) return { ok: false, error: 'Activity not found.' };
+      await assertAutomationContext(activity, callerContext);
+      const pending = isCloudScheduleStub(activity)
+        ? activity.cloudSchedule
+        : undefined;
+      if (pending?.scheduleId !== undefined)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.alreadyCloud };
+      if (pending === undefined && !firesLocally(activity))
+        return locationRefusal(activity);
+      const refusal = this.cloudMoveRefusal(file, activity);
+      if (refusal !== null) return { ok: false, error: refusal };
+      const { action } = activity;
+      if (action.type !== 'worktree_pipeline')
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.notPipeline };
+      const destination = cloudScheduleDestination(action);
+      if (destination === null)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.noDestination };
+      const workflow = cloudScheduleWorkflow(action, (pipelineId) => {
+        const stored = pipelineStore.getStoredPipelineBySource(
+          'user',
+          pipelineId,
+        );
+        return (stored.success ? stored.data?.rawContent : undefined) ?? null;
+      });
+      if ('refusal' in workflow) return { ok: false, error: workflow.refusal };
+      const accountId = await this.cloudRemote.accountId();
+      if (accountId === null)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.signedOut };
+      if (pending !== undefined && pending.accountId !== accountId)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.otherAccount };
+      const localEnabled = pending?.localEnabled ?? activity.enabled;
+      const original = cloneActivity(activity);
+      const values = {
+        owner: activity.executionContext ?? 'personal',
+        name: activity.name,
+        workflow,
+        trigger: cloudScheduleTrigger(activity.schedule, hostTimeZone()),
+        runCondition: activity.ifCommand ?? null,
+        enabled: localEnabled,
+        inputs: { ...(action.inputs ?? {}) },
+        destination,
+      };
+
+      // The record stops firing here before the server can fire it.
+      activity.executionLocation = 'cloud';
+      activity.cloudSchedule = {
+        accountId,
+        movedAt: new Date().toISOString(),
+        localEnabled,
+      };
+      activity.enabled = false;
+      delete activity.nextRunAt;
+      await this.persistAndNotify(file);
+
+      let record: PipelineSchedule;
+      try {
+        record = await this.createOrAdoptCloudRecord(
+          activity.id,
+          action.pipelineId,
+          values,
+        );
+      } catch (error) {
+        if (error instanceof CloudScheduleRemoteError && error.definite) {
+          file.activities[index] = original;
+          await this.persistAndNotify(file);
+          return {
+            ok: false,
+            error:
+              error.payload?.message ?? CLOUD_SCHEDULE_MESSAGES.unreachable,
+          };
+        }
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.pending };
+      }
+      activity.cloudSchedule = {
+        ...activity.cloudSchedule,
+        scheduleId: record.scheduleId,
+      };
+      activity.updatedAt = new Date().toISOString();
+      this.cloudRecords.set(record.scheduleId, record);
+      await this.persistAndNotify(file);
+      return { ok: true, activity: cloneActivity(activity) };
+    });
+  }
+
+  /**
+   * Moves a cloud schedule back to this desktop: the server record is
+   * deleted first, and the stub turns into a local record from the values
+   * the delete answered, in this one mutation. Until the server confirms,
+   * nothing here changes, so the slot never fires in both places.
+   */
+  async moveScheduleToLocal(
+    id: string,
+    callerContext?: WorkspaceContext,
+  ): Promise<AutomationMutationResponse> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const index = file.activities.findIndex((entry) => entry.id === id);
+      const activity = file.activities[index];
+      if (!activity) return { ok: false, error: 'Activity not found.' };
+      await assertAutomationContext(activity, callerContext);
+      if (!isCloudScheduleStub(activity))
+        return {
+          ok: false,
+          error: firesLocally(activity)
+            ? CLOUD_SCHEDULE_MESSAGES.notStub
+            : CLOUD_SCHEDULE_MESSAGES.unknownLocation,
+        };
+      const stub = activity.cloudSchedule;
+      const accountId = await this.cloudRemote.accountId();
+      if (accountId === null)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.signedOut };
+      if (accountId !== stub.accountId)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.otherAccount };
+      // The key outlives this attempt, so a retry after a lost answer
+      // replays the deleted record instead of finding it gone.
+      let moveBackKey = stub.moveBackKey;
+      if (moveBackKey === undefined) {
+        moveBackKey = randomUUID();
+        activity.cloudSchedule = { ...stub, moveBackKey };
+        await this.persistAndNotify(file);
+      }
+      let record: PipelineSchedule | null;
+      try {
+        record = await this.deleteCloudRecordOf(activity, moveBackKey);
+      } catch (error) {
+        return {
+          ok: false,
+          error:
+            error instanceof CloudScheduleRemoteError && error.definite
+              ? (error.payload?.message ?? CLOUD_SCHEDULE_MESSAGES.unreachable)
+              : CLOUD_SCHEDULE_MESSAGES.unreachable,
+        };
+      }
+      // A record deleted elsewhere comes back off; one that never reached
+      // the server comes back as it was.
+      const local = localRecordFromCloud(
+        activity,
+        record,
+        stub.scheduleId === undefined ? stub.localEnabled : false,
+      );
+      local.updatedAt = new Date().toISOString();
+      local.nextRunAt = nextRunForEnabledActivity(local, file, new Date(), {
+        preserveExistingCronNextRun: false,
+      });
+      file.activities[index] = local;
+      if (stub.scheduleId !== undefined)
+        this.cloudRecords.delete(stub.scheduleId);
+      await this.persistAndNotify(file);
+      return { ok: true, activity: cloneActivity(local) };
+    });
+  }
+
+  /**
+   * Changes a cloud schedule where it is stored, at the revision the server
+   * holds now. The stub keeps the name for lists that show it unread.
+   */
+  async updateCloudSchedule(
+    id: string,
+    change: {
+      readonly name?: string;
+      readonly enabled?: boolean;
+      readonly schedule?: AutomationTrigger;
+      readonly ifCommand?: string | null;
+      readonly inputs?: Readonly<Record<string, string>>;
+    },
+    callerContext?: WorkspaceContext,
+  ): Promise<AutomationMutationResponse> {
+    if (change.schedule !== undefined) {
+      const scheduleError = validateAutomationTrigger(change.schedule);
+      if (scheduleError) return { ok: false, error: scheduleError };
+    }
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const activity = file.activities.find((entry) => entry.id === id);
+      if (!activity) return { ok: false, error: 'Activity not found.' };
+      await assertAutomationContext(activity, callerContext);
+      const scheduleId = activity.cloudSchedule?.scheduleId;
+      if (!isCloudScheduleStub(activity) || scheduleId === undefined)
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.notStub };
+      if (
+        (await this.cloudRemote.accountId()) !==
+        activity.cloudSchedule.accountId
+      )
+        return { ok: false, error: CLOUD_SCHEDULE_MESSAGES.otherAccount };
+      let record: PipelineSchedule;
+      try {
+        const current = await this.cloudRemote.get(scheduleId);
+        if (current === null)
+          return { ok: false, error: 'Activity not found.' };
+        const params: Omit<PipelineScheduleUpdateParams, '_meta'> = {
+          scheduleId,
+          expectedRevision: current.revision,
+          ...(change.name === undefined ? {} : { name: change.name.trim() }),
+          ...(change.enabled === undefined ? {} : { enabled: change.enabled }),
+          ...(change.schedule === undefined
+            ? {}
+            : {
+                trigger: cloudScheduleTrigger(
+                  change.schedule,
+                  current.trigger.timeZone,
+                ),
+              }),
+          ...(change.ifCommand === undefined
+            ? {}
+            : { runCondition: change.ifCommand?.trim() || null }),
+          ...(change.inputs === undefined
+            ? {}
+            : { inputs: { ...change.inputs } }),
+        };
+        record = await this.cloudRemote.update(params);
+      } catch (error) {
+        return {
+          ok: false,
+          error:
+            error instanceof CloudScheduleRemoteError && error.payload !== null
+              ? error.payload.message
+              : CLOUD_SCHEDULE_MESSAGES.unreachable,
+        };
+      }
+      this.cloudRecords.set(record.scheduleId, record);
+      if (activity.name !== record.name) {
+        activity.name = record.name;
+        activity.updatedAt = new Date().toISOString();
+      }
+      await this.persistAndNotify(file);
+      return { ok: true, activity: cloneActivity(activity) };
+    });
+  }
+
+  /**
+   * After a user pipeline is saved (P7): its cloud schedules take the new
+   * name and the saved workflow, uploaded again as their snapshot. Best
+   * effort: the save already happened, so a failure is only logged.
+   */
+  async syncCloudSchedulesAfterPipelineSave(
+    pipelineId: string,
+    name: string,
+  ): Promise<void> {
+    const file = await this.ensureFile();
+    const stubs = file.activities.filter(
+      (activity) =>
+        isCloudScheduleStub(activity) &&
+        activity.cloudSchedule.scheduleId !== undefined &&
+        activity.action.type === 'worktree_pipeline' &&
+        (activity.action.pipelineSource === 'user' ||
+          activity.action.pipelineSource === undefined) &&
+        activity.action.pipelineId === pipelineId,
+    );
+    if (stubs.length === 0) return;
+    const stored = pipelineStore.getStoredPipelineBySource('user', pipelineId);
+    if (!stored.success || !stored.data) return;
+    const document = stored.data.rawContent;
+    if (document === undefined) return;
+    for (const stub of stubs) {
+      const scheduleId = stub.cloudSchedule?.scheduleId;
+      if (scheduleId === undefined || stub.action.type !== 'worktree_pipeline')
+        continue;
+      try {
+        const current = await this.cloudRemote.get(scheduleId);
+        if (current === null || current.workflow.kind !== 'snapshot') continue;
+        const workflow = cloudScheduleWorkflow(stub.action, () => document);
+        if ('refusal' in workflow) continue;
+        const record = await this.cloudRemote.update({
+          scheduleId,
+          expectedRevision: current.revision,
+          ...(name.trim() === '' ? {} : { name: name.trim() }),
+          ...(workflow.kind === 'snapshot' &&
+          workflow.contentHash !== current.workflow.contentHash
+            ? { workflow }
+            : {}),
+        });
+        this.cloudRecords.set(record.scheduleId, record);
+      } catch (error) {
+        logMainProcessError('Failed to update a cloud schedule after a save', {
+          operation: 'sync-cloud-schedule',
+          kind:
+            error instanceof CloudScheduleRemoteError
+              ? (error.payload?.kind ?? 'unreachable')
+              : 'internal',
+        });
+      }
+    }
+    await this.republish();
+  }
+
+  /** Why `activity` can't move to the cloud, or null. */
+  private cloudMoveRefusal(
+    file: AutomationsFile,
+    activity: ScheduledActivity,
+  ): string | null {
+    if (activity.action.type !== 'worktree_pipeline')
+      return CLOUD_SCHEDULE_MESSAGES.notPipeline;
+    if (activity.sharedPipelineReview) return CLOUD_SCHEDULE_MESSAGES.review;
+    if (isActivityRunning(file, activity.id))
+      return CLOUD_SCHEDULE_MESSAGES.running;
+    if (activity.installedFrom?.capabilityPackage)
+      return CLOUD_SCHEDULE_MESSAGES.installed;
+    if (
+      ownsOrchestratorPromptPipeline(activity) ||
+      targetsAgentHiddenPipeline(activity)
+    )
+      return CLOUD_SCHEDULE_MESSAGES.orchestrator;
+    const pipelineId = scheduledUserPipelineId(activity);
+    if (
+      activity.agentAuthor !== undefined ||
+      activity.agentScheduledSend !== undefined ||
+      (pipelineId !== undefined &&
+        userPipelineMetadata(pipelineId).agentAuthor !== undefined)
+    )
+      return CLOUD_SCHEDULE_MESSAGES.agent;
+    return null;
+  }
+
+  /**
+   * Creates the server record of a move, or takes over the one an earlier
+   * move of the same record left (its answer was lost), with these values.
+   */
+  private async createOrAdoptCloudRecord(
+    sourceRecordId: string,
+    sourcePipelineId: string,
+    values: Omit<
+      Parameters<CloudScheduleRemote['create']>[0],
+      'sourceRecordId' | 'sourcePipelineId' | 'runCondition'
+    > & { readonly runCondition: string | null },
+  ): Promise<PipelineSchedule> {
+    const { runCondition, ...rest } = values;
+    try {
+      return await this.cloudRemote.create({
+        ...rest,
+        ...(runCondition === null ? {} : { runCondition }),
+        sourceRecordId,
+        sourcePipelineId,
+      });
+    } catch (error) {
+      const taken =
+        error instanceof CloudScheduleRemoteError &&
+        error.payload?.code === 'core.pipeline.schedule.sourceRecordTaken' &&
+        isRecord(error.payload.details) &&
+        typeof error.payload.details.scheduleId === 'string'
+          ? error.payload.details.scheduleId
+          : undefined;
+      if (taken === undefined) throw error;
+      const current = await this.cloudRemote.get(taken);
+      if (current === null) throw error;
+      return this.cloudRemote.update({
+        scheduleId: taken,
+        expectedRevision: current.revision,
+        ...rest,
+        runCondition,
+      });
+    }
+  }
+
+  /**
+   * Deletes the server record a stub stands for, finding a pending stub's
+   * by its record id; answers it as it was, or null when there is none.
+   */
+  private async deleteCloudRecordOf(
+    activity: ScheduledActivity,
+    idempotencyKey: string,
+  ): Promise<PipelineSchedule | null> {
+    const scheduleId =
+      activity.cloudSchedule?.scheduleId ??
+      (await this.cloudRemote.findBySourceRecord(activity.id))?.scheduleId;
+    return scheduleId === undefined
+      ? null
+      : this.cloudRemote.delete(scheduleId, idempotencyKey);
+  }
+
+  /**
+   * Before a record that doesn't fire here is deleted: a stub's server
+   * record goes first. Answers why the delete can't go ahead, or null.
+   */
+  private async deleteCloudRecord(
+    activity: ScheduledActivity,
+  ): Promise<string | null> {
+    if (firesLocally(activity)) return null;
+    if (!isCloudScheduleStub(activity))
+      return CLOUD_SCHEDULE_MESSAGES.unknownLocation;
+    const accountId = await this.cloudRemote.accountId();
+    if (accountId === null) return CLOUD_SCHEDULE_MESSAGES.signedOut;
+    if (accountId !== activity.cloudSchedule.accountId)
+      return CLOUD_SCHEDULE_MESSAGES.otherAccount;
+    try {
+      await this.deleteCloudRecordOf(activity, randomUUID());
+    } catch {
+      return CLOUD_SCHEDULE_MESSAGES.unreachable;
+    }
+    const scheduleId = activity.cloudSchedule.scheduleId;
+    if (scheduleId !== undefined) this.cloudRecords.delete(scheduleId);
+    return null;
   }
 
   private enqueueMutation<T>(fn: () => Promise<T>): Promise<T> {

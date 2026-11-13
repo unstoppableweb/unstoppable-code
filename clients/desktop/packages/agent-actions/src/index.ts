@@ -91,6 +91,7 @@ export {
   AGENT_ACTION_TOOL_KEYS,
   agentActionCodexToolName,
   agentActionInstructions,
+  delegateAgentActionInstructions,
   buildDeleteWatchersJsonSchema,
   buildDispatchActionJsonSchema,
   buildSearchActionsJsonSchema,
@@ -107,13 +108,43 @@ export {
   deleteWatchersDescription,
   deleteWatchersInputSchema,
   dispatchActionDescription,
+  executeFeedTool,
+  executeGetGitHubPullRequestStatus,
+  feedToolDescription,
+  feedToolJsonSchema,
   findUiOnlyActionField,
+  GET_GITHUB_PULL_REQUEST_STATUS_JSON_SCHEMA,
+  getGitHubPullRequestStatusDescription,
+  getGitHubPullRequestStatusInputSchema,
   GENERIC_UI_ONLY_ACTION_FIELDS,
   invalidAgentActionArguments,
   isCanonicalSetupWatcherEntry,
   MAX_ACTIVE_WATCHER_PAGE_SIZE,
   MAX_ACTIVE_WATCHER_QUERY_LENGTH,
   resolveSetupWatcherTrigger,
+  SCHEDULE_WAKEUP_FOLLOW_UP_MAX_LENGTH,
+  SCHEDULE_WAKEUP_JSON_SCHEMA,
+  SCHEDULE_WAKEUP_MAX_DELAY_SECONDS,
+  SCHEDULE_WAKEUP_MIN_DELAY_SECONDS,
+  scheduleWakeupDescription,
+  scheduleWakeupInputSchema,
+  AGENT_MEMORY_SCOPES,
+  READ_MEMORY_FILE_KEY_PATTERN,
+  READ_MEMORY_JSON_SCHEMA,
+  readMemoryDescription,
+  readMemoryInputSchema,
+  SAVE_MEMORY_JSON_SCHEMA,
+  SAVE_MEMORY_TEXT_MAX_LENGTH,
+  saveMemoryDescription,
+  saveMemoryInputSchema,
+  SEARCH_MEMORY_JSON_SCHEMA,
+  searchMemoryDescription,
+  searchMemoryInputSchema,
+  type AgentMemoryReach,
+  type AgentMemoryScope,
+  type ReadMemoryInput,
+  type SaveMemoryInput,
+  type SearchMemoryInput,
   SEARCH_ACTIONS_JSON_SCHEMA,
   searchActionsDescription,
   searchActionsInputSchema,
@@ -137,6 +168,9 @@ export {
   type AgentJsonSchema,
   type DeleteWatchersInput,
   type DispatchActionJsonSchemaOptions,
+  type AgentFeedToolKey,
+  type GetGitHubPullRequestStatusInput,
+  type ScheduleWakeupInput,
   type SearchActionsInput,
   type SearchWatchersInput,
   type SetupWatcherTargetInput,
@@ -170,6 +204,7 @@ export {
 export {
   createAgentActionSurface,
   type AgentActionSplitPort,
+  type AgentManagedDelegationTools,
   type AgentActionSurface,
   type AgentActionSurfaceOptions,
   type AgentActionWatcherPort,
@@ -203,8 +238,10 @@ export {
   PROJECT_ACTION_TYPES,
   PROJECT_DISCOVERY_TYPES,
   PROJECT_READ_TYPES,
+  PROJECT_WRITE_TYPES,
   type ProjectAction,
   type ProjectActionType,
+  type ProjectWriteAction,
 } from './families/projects';
 export {
   APP_ADVISOR_BOT_ID,
@@ -219,6 +256,8 @@ export type {
   AgentPipelineOriginChat,
   AgentProjectBotPort,
   AgentProjectOwner,
+  AgentProjectWriteAttempt,
+  AgentProjectWrites,
   PipelineTrustedCaller,
 } from './port/project-bot-port';
 export type {
@@ -262,6 +301,48 @@ export {
   type AgentWorktreeScope,
 } from './port/environment-port';
 export {
+  AgentPullRequestStatusError,
+  type AgentPullRequestChecksSummary,
+  type AgentPullRequestRef,
+  type AgentPullRequestStatus,
+  type AgentPullRequestStatusFailureCode,
+  type AgentPullRequestStatusPort,
+} from './port/pull-request-status-port';
+export type {
+  AgentDelegateOutputValue,
+  AgentDelegationListPage,
+  AgentDelegationMessageReceipt,
+  AgentDelegationModelsValue,
+  AgentDelegationSnapshotValue,
+  AgentManagedDelegationPort,
+} from './port/managed-delegation-port';
+export {
+  DELEGATE_TASK_JSON_SCHEMA,
+  executeManagedDelegationTool,
+  MANAGED_DELEGATION_JSON_SCHEMAS,
+  MANAGED_DELEGATION_PARENT_TOOL_KEYS,
+  MANAGED_DELEGATION_TOOL_KEYS,
+  managedDelegationInstructions,
+  managedDelegationToolDescription,
+  parseDelegateTaskInput,
+  unsupportedSpawnField,
+  type ManagedDelegationToolKey,
+} from './tools/managed-delegation';
+export {
+  createMemoryTools,
+  type AgentActionMemoryTools,
+  type AgentMemoryPort,
+  type AgentMemorySearchHit,
+} from './port/memory-port';
+export {
+  AgentFeedError,
+  type AgentFeedCommandResult,
+  type AgentFeedParams,
+  type AgentFeedPort,
+  type AgentFeedRefusal,
+  type AgentFeedSearchResult,
+} from './port/feed-port';
+export {
   createForkSplitPort,
   type AgentForkChatInput,
   type AgentForkChatReceipt,
@@ -271,10 +352,24 @@ export {
   createChatWatcherTools,
   type AgentArmChatWatcherInput,
   type AgentArmedChatWatcher,
+  type AgentArmPipelineWatcherInput,
+  type AgentArmProjectChatWatcherInput,
+  type AgentArmProjectNewChatWatcherInput,
+  type AgentArmScheduledWakeupInput,
+  type AgentArmedScheduledWakeup,
   type AgentChatWatcherPort,
   type AgentChatWatcherRecord,
   type AgentChatWatcherTarget,
+  type AgentPipelineTerminalStatus,
+  type AgentPipelineWatcherTarget,
+  type AgentProjectChatAddress,
+  type AgentProjectChatScope,
+  type AgentProjectChatWatcherRecord,
+  type AgentProjectNewChatWatcherRecord,
+  type AgentScheduledWakeupTarget,
+  type AgentScheduledWakeupWatcherRecord,
   type AgentWatcherDeleteStatus,
+  type AgentWatcherRecord,
 } from './port/watcher-port';
 export {
   createInMemoryAgentActionReceipts,
@@ -284,9 +379,20 @@ export {
   type AgentActionReceiptStore,
 } from './receipts';
 export {
+  agentActionCallEffect,
+  agentActionEffect,
+  delegatedChildAllows,
+  delegatedChildCapabilities,
+  NARROWEST_DELEGATED_CHILD_GRANT,
+  restrictAgentActionSurfaceForDelegatedChild,
+  type AgentActionEffect,
+  type DelegatedChildGrant,
+} from './delegated-child';
+export {
   agentActionFingerprint,
   agentActionIdempotencyKey,
   IDEMPOTENCY_CONFLICT_MESSAGE,
+  agentActionResult,
   agentActionToolResult,
   runIdempotentWrite,
   WRITE_IN_PROGRESS_MESSAGE,
@@ -400,8 +506,38 @@ export {
   pipelinesDispatchJsonSchema,
   type AppAdvisorPipelineRunAction,
   type PipelineRunAction,
+  type PipelineRunLocation,
   type PipelineRunWatcher,
 } from './families/pipelines';
+export {
+  CLOUD_PIPELINE_EXECUTION_TYPES,
+  CLOUD_RUN_CHAIN_UNSUPPORTED,
+  CLOUD_RUN_MATRIX_RETRY_UNSUPPORTED,
+  CLOUD_RUN_RETRY_UNSUPPORTED,
+  CLOUD_RUN_VARIANT_CANCEL_UNSUPPORTED,
+  cancelCloudRun,
+  cloudRunPauseKey,
+  getCloudRun,
+  listCloudRuns,
+  CLOUD_RUN_WATCH_TRACKED_MAX,
+  listCloudRunsStartedSince,
+  lookAtLaterCloudRuns,
+  lookAtWatchedCloudRun,
+  lookAtWatchedCloudRuns,
+  readCloudRun,
+  resumeCloudRun,
+  type CloudRunAccess,
+  type CloudRunTerminalStatus,
+  type CloudRunWatchFilter,
+  type CloudRunWatchLook,
+  createPipelineExecutionsActionFamily,
+  PIPELINE_EXECUTIONS_ACTION_TYPES,
+  pipelineExecutionActionSchema,
+  pipelineExecutionsDispatchJsonSchema,
+  type PipelineExecutionAction,
+  type PipelineExecutionsActionType,
+} from './families/pipeline-executions';
+export type { AgentPipelineExecutionsPort } from './port/pipeline-executions-port';
 export {
   PIPELINE_RUN_REJECTION_REASONS,
   type AgentPipelineRunExecution,
@@ -409,6 +545,23 @@ export {
   type AgentPipelineRunResult,
   type AgentPipelinesPort,
 } from './port/pipelines-port';
+
+export {
+  CHAT_CONTROL_ACTION_TYPES,
+  chatControlActionCatalog,
+  chatControlActionSchema,
+  chatControlDispatchJsonSchema,
+  createChatControlActionFamily,
+  type ChatControlAction,
+  type ChatControlActionType,
+} from './families/chat-control';
+export type {
+  AgentChatArchiveResult,
+  AgentChatCancelResult,
+  AgentChatControlPort,
+  AgentChatControlTarget,
+  AgentChatInterruptResult,
+} from './port/chat-control-port';
 
 export {
   createPullRequestActionFamily,
@@ -437,3 +590,12 @@ export {
   aiGatewayActionSchema,
   aiGatewayDispatchJsonSchema,
 } from './families/settings/ai-gateway';
+
+export {
+  CHAT_HISTORY_ACTION_TYPES,
+  chatHistoryActionSchema,
+  chatHistoryActionCatalog,
+  createChatHistoryActionFamily,
+  type ChatHistoryAction,
+  type AgentChatHistoryPort,
+} from './families/chat-history';

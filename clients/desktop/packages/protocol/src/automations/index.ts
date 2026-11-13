@@ -35,7 +35,11 @@ import {
   normalizeShareablePluginRef,
   type ShareablePluginRef,
 } from '../plugins';
-import { AGENT_MODEL_ID_PREFIX, serializedByteLength } from '../agents';
+import {
+  AGENT_MODEL_ID_PREFIX,
+  parseAgentRouteModelId,
+  serializedByteLength,
+} from '../agents';
 import {
   PIPELINE_PACKAGE_MAX_FILE_BYTES,
   isPipelineContentHash,
@@ -86,6 +90,23 @@ function validateSharedPromptReferences(
     }
   }
   return { ok: true, value: references };
+}
+
+/**
+ * Where an automation's schedule fires and its runs execute (CAN-6183,
+ * cloud pipelines decisions P3 and P6). `local` is this desktop; `cloud`
+ * means the schedule is stored and fired server-side and the desktop keeps a
+ * stub. Absent means `local`. A reader must keep a record or run whose
+ * location it doesn't know, and must never fire such a record locally.
+ */
+export const AUTOMATION_EXECUTION_LOCATIONS = ['local', 'cloud'] as const;
+export type AutomationExecutionLocation =
+  (typeof AUTOMATION_EXECUTION_LOCATIONS)[number];
+
+export function isAutomationExecutionLocation(
+  value: unknown,
+): value is AutomationExecutionLocation {
+  return AUTOMATION_EXECUTION_LOCATIONS.some((location) => location === value);
 }
 
 /**
@@ -347,16 +368,22 @@ export type SharedAutomationTrigger =
 export type SharedAutomationTriggerKind = SharedAutomationTrigger['kind'];
 
 /**
- * Portable model tuning. `model` must be a provider model id — a value with
- * the `agent_model_` prefix references a local custom Agent and is rejected.
+ * Portable model tuning. Agent routes require a hosted reference, never a
+ * machine-local Agent definition. Recipients resolve their own installed ID.
  */
 export interface SharedAutomationModelConfig {
   model?: string;
+  agent?: SharedAutomationAgentReference;
   thinkingLevel?: SharedAutomationThinkingLevel;
   /** Requested Codex speed. Takes precedence over the legacy `fastMode`. */
   speed?: CodexSpeed;
   /** Legacy projection: always `speed === 'fast'` when `speed` is present. */
   fastMode?: boolean;
+}
+
+export interface SharedAutomationAgentReference {
+  remoteId: string;
+  contentHash: string;
 }
 
 /**
@@ -781,6 +808,28 @@ function cronFieldGrammarError(
   return null;
 }
 
+const CRON_FIELD_COUNT_ERROR =
+  'Automation cron expression must have exactly five whitespace-separated fields.';
+
+/**
+ * Why a five-field cron expression is malformed, or null when its grammar is
+ * valid. Shared triggers and cloud workflow schedules (CAN-6183) accept the
+ * same grammar the desktop scheduler parses.
+ */
+export function automationCronExpressionError(
+  expression: string,
+): string | null {
+  const fields = expression.trim().split(/\s+/).filter(Boolean);
+  if (fields.length !== 5) return CRON_FIELD_COUNT_ERROR;
+  for (let index = 0; index < CRON_FIELD_SPECS.length; index++) {
+    const spec = CRON_FIELD_SPECS[index];
+    const grammarError = cronFieldGrammarError(fields[index], spec);
+    if (grammarError)
+      return `Invalid cron ${spec.name} field "${fields[index]}": ${grammarError}.`;
+  }
+  return null;
+}
+
 function validateTrigger(value: unknown): PartResult<SharedAutomationTrigger> {
   const trigger = asRecord(value);
   if (!trigger) {
@@ -802,26 +851,12 @@ function validateTrigger(value: unknown): PartResult<SharedAutomationTrigger> {
       return { ok: false, error: unexpected };
     }
     const expression = trigger.expression;
-    const fields =
+    const cronError =
       typeof expression === 'string'
-        ? expression.trim().split(/\s+/).filter(Boolean)
-        : [];
-    if (typeof expression !== 'string' || fields.length !== 5) {
-      return {
-        ok: false,
-        error:
-          'Automation cron expression must have exactly five whitespace-separated fields.',
-      };
-    }
-    for (let index = 0; index < CRON_FIELD_SPECS.length; index++) {
-      const spec = CRON_FIELD_SPECS[index];
-      const grammarError = cronFieldGrammarError(fields[index], spec);
-      if (grammarError) {
-        return {
-          ok: false,
-          error: `Invalid cron ${spec.name} field "${fields[index]}": ${grammarError}.`,
-        };
-      }
+        ? automationCronExpressionError(expression)
+        : CRON_FIELD_COUNT_ERROR;
+    if (typeof expression !== 'string' || cronError !== null) {
+      return { ok: false, error: cronError ?? CRON_FIELD_COUNT_ERROR };
     }
     return {
       ok: true,
@@ -861,7 +896,7 @@ function validateModelConfig(
   }
   const unexpected = unexpectedFieldError(
     config,
-    ['model', 'thinkingLevel', 'speed', 'fastMode'],
+    ['model', 'agent', 'thinkingLevel', 'speed', 'fastMode'],
     'the automation modelConfig',
   );
   if (unexpected) {
@@ -875,14 +910,42 @@ function validateModelConfig(
         error: 'Automation model must be a non-empty string.',
       };
     }
-    if (config.model.startsWith(AGENT_MODEL_ID_PREFIX)) {
+    if (
+      config.model.startsWith(AGENT_MODEL_ID_PREFIX) &&
+      !parseAgentRouteModelId(config.model)
+    ) {
       return {
         ok: false,
         error:
-          'Automation model must be a provider model, not a local custom Agent.',
+          'Choose a model for the shared Agent before sharing this automation.',
       };
     }
     result.model = config.model;
+  }
+  const route =
+    typeof config.model === 'string'
+      ? parseAgentRouteModelId(config.model)
+      : null;
+  if (route || config.agent !== undefined) {
+    const agent = asRecord(config.agent);
+    if (
+      !route ||
+      !agent ||
+      Object.keys(agent).some(
+        (key) => key !== 'remoteId' && key !== 'contentHash',
+      ) ||
+      typeof agent.remoteId !== 'string' ||
+      agent.remoteId.trim().length === 0 ||
+      agent.remoteId.length > 200 ||
+      !isPipelineContentHash(agent.contentHash)
+    ) {
+      return {
+        ok: false,
+        error:
+          'An Agent route requires a shared Agent reference and a chosen model.',
+      };
+    }
+    result.agent = { remoteId: agent.remoteId, contentHash: agent.contentHash };
   }
   if (config.thinkingLevel !== undefined) {
     const level = SHARED_AUTOMATION_THINKING_LEVELS.find(

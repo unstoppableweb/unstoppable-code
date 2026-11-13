@@ -6,7 +6,7 @@ import { revalidateQueuedHookWork } from './hook-recovery';
 import { validateId } from './validation';
 import { logMainProcessWarn } from './main-process-logging';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
-import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
+import type { ChildPipelineAuthorization } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 import {
   backgroundExecutionDeniedMessage,
   backgroundExecutionRetryMessage,
@@ -53,7 +53,7 @@ import {
   resolvePipelineInputs,
   type ExecutePipelineRequestOptions,
   type PipelineTriggerSource,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { getProjectPipelinesDirCandidates } from '../pipelines/config-paths';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import {

@@ -1,13 +1,13 @@
 import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import * as corePlatform from '@canopy/core-platform';
 import * as cliReads from '../worktree-cli-reads';
-import * as processLocks from '../../w5-host-cohort/process-file-lock';
+import * as processLocks from '@canopy/execution-engine/node/w5-host-cohort/process-file-lock';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { registerW5Host } from '../../w5-host-cohort';
+import { registerW5Host } from '@canopy/execution-engine/node/w5-host-cohort';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
@@ -32,7 +32,7 @@ import {
   createInitialState,
   normalizePipeline,
   saveExecutionState,
-} from '../../pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 
 function runGit(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' });

@@ -9,6 +9,9 @@ export interface CatalogSelectionRefs {
   mcpServerRefs: { serverId: string; configId: string }[];
 }
 
+/** The web core's source of the account's own and shared custom skills. */
+export const CLOUD_CUSTOM_SKILL_SOURCE_ID = 'cloud-custom';
+
 export const modelEntryId = (id: string): string => `model:${id}`;
 export const skillEntryId = (ref: {
   sourceId: string;

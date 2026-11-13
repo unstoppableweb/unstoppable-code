@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CanonicalMacSchema } from './security';
 import { DEVICE_PLATFORMS, DEVICE_KINDS } from '../device-relay/index';
+import { CanopyRetryDirectiveSchema } from '../canopy-core/errors';
 import {
   REMOTE_SURFACES,
   ACCOUNT_PROXY_SIGN_IN_STATE_PATTERN,
@@ -48,6 +49,17 @@ export const REMOTE_METHODS = {
    * answer with an unknown-method error.
    */
   pairRevoke: 'pair.revoke',
+  /**
+   * Controller → host: run one core operation the host lists in its hello
+   * `coreOperations`. Served before the protocol check: the operation's own
+   * version is the contract. Hosts released before it answer with an
+   * unknown-method error.
+   */
+  coreCall: 'core.call',
+  /** Controller → host: open a listed core stream; items come as `core.event`. */
+  coreSubscribe: 'core.subscribe',
+  /** Controller → host: close a stream opened with `core.subscribe`. */
+  coreUnsubscribe: 'core.unsubscribe',
 } as const;
 
 export const REMOTE_EVENTS = {
@@ -67,6 +79,8 @@ export const REMOTE_EVENTS = {
    * opened, closed, gained or lost focus.
    */
   appAdvisorWindowState: 'appAdvisor.windowState',
+  /** Host → controller: one frame of a core stream. */
+  coreEvent: 'core.event',
 } as const;
 
 /**
@@ -83,7 +97,7 @@ export const REMOTE_EVENTS = {
  * Version 1 is every release before this check. After a bump, run
  * `pnpm run remote-control:contract:write`; see docs/remote-control-protocol.md.
  */
-export const REMOTE_PROTOCOL_VERSION = 18;
+export const REMOTE_PROTOCOL_VERSION = 20;
 
 /** What a computer runs, as the other computer of a session sees it. */
 export const RemoteVersionSchema = z.object({
@@ -92,6 +106,20 @@ export const RemoteVersionSchema = z.object({
   appVersion: z.string().min(1).max(64),
 });
 export type RemoteVersion = z.infer<typeof RemoteVersionSchema>;
+
+/**
+ * Session transport features, offered in the controller's hello and
+ * accepted in the host's answer. `resume: 1` is session resume across relay
+ * drops (docs/remote-control-protocol.md, "Session resume"). Optional and
+ * stripped by older peers, so it needs no protocol bump.
+ */
+export const REMOTE_TRANSPORT_RESUME_VERSION = 1;
+export const RemoteTransportFeaturesSchema = z.object({
+  resume: z.number().int().positive().optional(),
+});
+export type RemoteTransportFeatures = z.infer<
+  typeof RemoteTransportFeaturesSchema
+>;
 
 /** Controller → host: the controller's version, checked before any call. */
 export const HelloParamsSchema = z.object({
@@ -102,6 +130,7 @@ export const HelloParamsSchema = z.object({
       minVersion: z.number().int().min(1),
     })
     .optional(),
+  transport: RemoteTransportFeaturesSchema.optional(),
 });
 export type HelloParams = z.infer<typeof HelloParamsSchema>;
 
@@ -187,12 +216,32 @@ export const FileReadResultSchema = z.object({
 });
 export type FileReadResult = z.infer<typeof FileReadResultSchema>;
 
+/**
+ * The core operations a host serves over any session, before the protocol
+ * check, and their versions. A paired computer on another protocol can still
+ * read and drive this computer's updates. Changes here are additive only:
+ * an operation leaves the list only when its version is retired.
+ */
+export const REMOTE_CORE_OPERATIONS = {
+  'core.update.status.get': 1,
+  'core.update.events': 1,
+  'core.update.check': 1,
+  'core.update.download': 1,
+  'core.update.apply': 1,
+  'core.update.apply.cancel': 1,
+} as const;
+export type RemoteCoreOperation = keyof typeof REMOTE_CORE_OPERATIONS;
+
 export const HelloResultSchema = z.object({
   name: z.string(),
   platform: z.enum(DEVICE_PLATFORMS),
   appVersion: z.string(),
   /** Missing from hosts that predate the version check. */
   version: RemoteVersionSchema.optional(),
+  /** Missing from hosts that serve no core operations over the session. */
+  coreOperations: z
+    .record(z.string().min(1).max(256), z.number().int().positive())
+    .optional(),
   features: z
     .object({
       controllerProfiles: z.boolean(),
@@ -202,8 +251,57 @@ export const HelloResultSchema = z.object({
       pairRevoke: z.boolean().optional(),
     })
     .optional(),
+  /** The transport features the host accepted from the hello's offer. */
+  transport: RemoteTransportFeaturesSchema.optional(),
 });
 export type HelloResult = z.infer<typeof HelloResultSchema>;
+
+const CoreOperationRefSchema = z.object({
+  operation: z.string().min(1).max(256),
+  version: z.number().int().positive(),
+});
+
+export const CoreCallParamsSchema = CoreOperationRefSchema.extend({
+  params: z.unknown(),
+});
+export type CoreCallParams = z.infer<typeof CoreCallParamsSchema>;
+
+/**
+ * A core operation's outcome. Errors travel as their typed payload, so a
+ * controller branches on `kind` and `code` as a local caller would.
+ */
+export const CoreCallResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), result: z.unknown() }),
+  z.object({
+    ok: z.literal(false),
+    error: z.object({
+      kind: z.string().min(1).max(64),
+      message: z.string().max(8192),
+      code: z.string().max(512).optional(),
+      details: z.unknown().optional(),
+      /** When and how to retry; hosts before it leave it out. */
+      retry: CanopyRetryDirectiveSchema.optional(),
+    }),
+  }),
+]);
+export type CoreCallResult = z.infer<typeof CoreCallResultSchema>;
+
+export const CoreSubscribeParamsSchema = CoreCallParamsSchema.extend({
+  /** Chosen by the controller; names the stream in every `core.event`. */
+  subscriptionKey: z.string().min(1).max(128),
+});
+export type CoreSubscribeParams = z.infer<typeof CoreSubscribeParamsSchema>;
+
+export const CoreUnsubscribeParamsSchema = z.object({
+  subscriptionKey: z.string().min(1).max(128),
+});
+
+/** One dispatcher frame: an item with its cursor, or the stream's end. */
+export const CoreEventParamsSchema = z.object({
+  subscriptionKey: z.string().min(1).max(128),
+  frame: z.unknown(),
+});
+export type CoreEventParams = z.infer<typeof CoreEventParamsSchema>;
 
 export const DialogOpenParamsSchema = z.object({
   title: z.string().max(200).optional(),

@@ -6,7 +6,7 @@ import {
   admittedStorageRowForPath,
   isAdmittedStorageCandidate,
 } from '@canopy/execution-engine/node/lib/admitted-storage-paths';
-import { writeFileAtomicallySync } from '../atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 
 // Reads the planning census, so the desktop public export excludes this suite.
 const MANIFEST = resolve(

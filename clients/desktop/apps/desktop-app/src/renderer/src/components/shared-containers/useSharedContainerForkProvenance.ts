@@ -13,6 +13,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { SharedContainerForkProvenance } from '@canopy/desktop-shared/types';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 export interface SharedContainerForkProvenanceState {
   readonly provenance: SharedContainerForkProvenance | null;
@@ -43,6 +44,12 @@ export function useSharedContainerForkProvenance(
       return;
     }
     const key = containerKey(projectId, worktreeId);
+    // Shared-container forks are local; a cloud task is never one.
+    if (isWebCoreScope(projectId)) {
+      setProvenance(null);
+      setSettledKey(key);
+      return;
+    }
     let canceled = false;
     void window.api.sharedContainers
       .readForkProvenance({ projectId, worktreeId })

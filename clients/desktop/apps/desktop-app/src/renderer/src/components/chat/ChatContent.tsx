@@ -7,6 +7,7 @@ import {
 import { estimateTranscriptWindowBytes } from '@canopy/agent-transcript/transcript-storage';
 import {
   loadChatTranscriptPage,
+  needsNewestTranscriptPage,
   TRANSCRIPT_PAGE_LOAD_ERROR,
 } from '@/stores/chat/transcript-pages';
 import { useChatTranscriptResidency } from '@/stores/chat/transcript-residency-host';
@@ -35,6 +36,7 @@ import { ComposerWorkDrawerProvider } from './composer-work-drawer-context';
 import { StaleTranscriptCatchUpControls } from './StaleTranscriptCatchUpControls';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { useTranscriptSearch } from '@/hooks/useTranscriptSearch';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { useContentSearch } from '@/hooks/useContentSearch';
 import { createDomSearchExecutor } from '@/lib/dom-search-highlight';
 import { getSavedChatScrollPosition } from '@/lib/tab-scroll-positions';
@@ -348,10 +350,10 @@ export function ChatContent({
     },
     [pageProjectId, pageScrollTarget, pageWorktreeId, pageChatId],
   );
-  const needsTurnPage =
-    transcript?.transcriptLoaded === false ||
-    (transcript?.transcriptWindow?.before !== undefined &&
-      transcript.transcriptWindow.view !== 'turns');
+  const needsTurnPage = needsNewestTranscriptPage(
+    transcript,
+    pageProjectId === undefined ? undefined : { projectId: pageProjectId },
+  );
   useEffect(() => {
     setTurnPageId(null);
     if (!pageInFlight.current) setPageLoading(false);
@@ -489,14 +491,24 @@ export function ChatContent({
   const feedbackProjectId = targetOverride?.projectId ?? selectedProjectId;
   const feedbackWorktreeId = targetOverride?.worktreeId ?? selectedWorktreeId;
   const feedbackChatId = targetOverride?.chatId ?? transcript?.id;
+  const { turnFeedback } = useScopeCapabilities({
+    projectId: feedbackProjectId ?? '',
+  });
   useEffect(() => {
+    if (turnFeedback !== true) return;
     if (!feedbackProjectId || !feedbackWorktreeId || !feedbackChatId) return;
     void loadTurnFeedback({
       projectId: feedbackProjectId,
       worktreeId: feedbackWorktreeId,
       chatId: feedbackChatId,
     });
-  }, [feedbackChatId, feedbackProjectId, feedbackWorktreeId, loadTurnFeedback]);
+  }, [
+    feedbackChatId,
+    feedbackProjectId,
+    feedbackWorktreeId,
+    loadTurnFeedback,
+    turnFeedback,
+  ]);
 
   // Restore highlights when this panel regains focus. The CSS Custom Highlight
   // registry is document-global and single-keyed, so a sibling chat panel's

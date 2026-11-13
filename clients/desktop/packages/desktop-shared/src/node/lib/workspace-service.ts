@@ -25,7 +25,10 @@ import {
   readCanopyJson,
   writeCanopyJson,
 } from './canopy-json';
-import { writeFileAtomically, type AtomicFileStorage } from './atomic-file';
+import {
+  writeFileAtomically,
+  type AtomicFileStorage,
+} from '@canopy/execution-engine/node/lib/atomic-file';
 import { assertImportFolderExists } from './import-folder';
 import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';

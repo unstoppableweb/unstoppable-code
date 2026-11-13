@@ -1,6 +1,6 @@
 import type { AssistantMode } from '@canopy/desktop-shared/types';
 import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
-import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
+import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
 import { buildAppAdvisorDynamicToolSpecs } from '../app-advisor/codex-dynamic-tools';
 import { buildPipelineEditorDynamicToolSpecs } from '../pipeline-editor/codex-dynamic-tools';
 import { buildCanopyDynamicToolSpecs } from './canopy-dynamic-tools';

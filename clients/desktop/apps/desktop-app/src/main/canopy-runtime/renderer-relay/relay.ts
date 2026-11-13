@@ -41,8 +41,10 @@ import {
 } from './surface-allowlist';
 
 export interface RendererRelayLimits {
-  /** UTF-8 bytes of a JSON-encoded request input or reply value. */
+  /** UTF-8 bytes of a JSON-encoded request input. */
   readonly maxFrameBytes: number;
+  /** UTF-8 bytes of a JSON-encoded reply value or stream frame. */
+  readonly maxReplyBytes: number;
   readonly maxConcurrentCalls: number;
   readonly maxOpenStreams: number;
   /** Bounds connection setup plus each request, stream open, and stream read. */
@@ -51,6 +53,7 @@ export interface RendererRelayLimits {
 
 export const RENDERER_RELAY_LIMITS: RendererRelayLimits = {
   maxFrameBytes: 1024 * 1024,
+  maxReplyBytes: 1024 * 1024,
   maxConcurrentCalls: 32,
   maxOpenStreams: 16,
   deadlineMs: 30_000,
@@ -92,6 +95,31 @@ export interface RendererRelayOptions {
    * authority that is not the local core. Admin methods stay refused.
    */
   readonly allows?: RendererRelayAllows;
+  /**
+   * Narrows what an allowed request may carry: a message refuses it as
+   * `invalid_argument` before it leaves main; `null` lets it through.
+   */
+  readonly refuseParams?: (
+    method: string,
+    params: Readonly<Record<string, unknown>>,
+  ) => string | null;
+  /**
+   * The params an allowed request is sent with, after `refuseParams`: drops
+   * what main cannot honour for the renderer.
+   */
+  readonly narrowParams?: (method: string, params: RelayParams) => RelayParams;
+  /**
+   * Refuses an allowed call with this payload, or lets it through with
+   * `null`. Unlike `allows` it is read on every call, never cached in a
+   * session's definitions, so it can follow a flag that changes.
+   */
+  readonly refuseCall?: (method: string) => CanopyErrorPayload | null;
+  /**
+   * The minor schema revision main asks for, by stream (protocol rule 5):
+   * a stream opens with `revision` only when the connection's manifest
+   * advertises that revision, as the web client's `withRevision` does.
+   */
+  readonly streamRevisions?: Readonly<Record<string, number>>;
   readonly host?: RendererRelayHostOptions;
   readonly clientVersion?: string;
   readonly limits?: Partial<RendererRelayLimits>;
@@ -169,6 +197,7 @@ class RelayFailure extends Error {
 const NEVER: CanopyRetryDirective = { kind: 'never' };
 /** Proposal only; the core's replies set the actual renewal timing. */
 const LEASE_RENEWAL_MS = 30_000;
+const UNSUBSCRIBE = 'core.events.unsubscribe';
 const failure = (
   kind: CanopyErrorKind,
   message: string,
@@ -270,6 +299,8 @@ class RelaySession {
   lease: CanopyClientLease<CanopyClient> | null = null;
   calls = 0;
   openingStreams = 0;
+  /** The client sends `core.events.unsubscribe` when a stream is released. */
+  unsubscribes = false;
   readonly streams = new Map<string, RelayStream>();
 
   constructor(
@@ -319,7 +350,10 @@ class RelaySession {
     const { connection } = this;
     if (!this.closed && connection?.releaseStream) {
       try {
-        connection.releaseStream(handle.openResult.subscriptionId, 'cancelled');
+        connection.releaseStream(
+          handle.openResult.subscriptionId,
+          this.unsubscribes ? 'unsubscribed' : 'cancelled',
+        );
       } catch {
         this.close();
       }
@@ -492,6 +526,10 @@ export function createRendererRelay(
       definitions: clientDefinitions(session.surface),
       signal,
     });
+    // The shared client's own rule: its definitions and the manifest list it.
+    session.unsubscribes =
+      hasOwn(clientDefinitions(session.surface).instructions, UNSUBSCRIBE) &&
+      client.manifest.has('operations', UNSUBSCRIBE);
     client.signal.addEventListener('abort', close, { once: true });
     signal.addEventListener(
       'abort',
@@ -595,6 +633,11 @@ export function createRendererRelay(
   const unavailable = (method: string): RelayFailure =>
     failure('capability_unavailable', `${method} is not available here.`);
 
+  function refuseCall(method: string): void {
+    const refusal = options.refuseCall?.(method) ?? null;
+    if (refusal !== null) throw new RelayFailure(refusal);
+  }
+
   function requestRecovery(method: string): CanopyRetryDirective {
     if (hasOwn(relayDefinitions.queries, method))
       return { kind: 'same_request' };
@@ -620,7 +663,12 @@ export function createRendererRelay(
         : null;
     if (!kind || !allows(session.surface, kind, method))
       throw unavailable(method);
-    const { params, metadata } = splitMetadata(rawParams, true);
+    refuseCall(method);
+    const split = splitMetadata(rawParams, true);
+    const refusal = options.refuseParams?.(method, split.params) ?? null;
+    if (refusal !== null) throw failure('invalid_argument', refusal);
+    const params = options.narrowParams?.(method, split.params) ?? split.params;
+    const { metadata } = split;
     const release = reserveCall(session);
     const callOptions = { metadata, signal: session.signal };
     // The slot is held until the client settles the call, at its deadline at the latest.
@@ -638,6 +686,23 @@ export function createRendererRelay(
     );
   }
 
+  /** The stream's params with the revision the manifest advertises, if any. */
+  function withStreamRevision(
+    client: CanopyClient,
+    method: string,
+    params: RelayParams,
+  ): RelayParams {
+    const revisions = options.streamRevisions;
+    const revision =
+      revisions !== undefined && hasOwn(revisions, method)
+        ? revisions[method]
+        : undefined;
+    const advertised = client.manifest.schemaRevisions?.get(method) ?? 1;
+    return revision !== undefined && advertised >= revision
+      ? { ...params, revision }
+      : params;
+  }
+
   /**
    * Reservations are held until the open settles, so abandoned opens stay
    * counted. An open that settles after its caller gave up is released on
@@ -653,6 +718,7 @@ export function createRendererRelay(
       !allows(session.surface, 'stream', method)
     )
       throw unavailable(method);
+    refuseCall(method);
     const { params, metadata } = splitMetadata(rawParams, false);
     if (session.streams.size + session.openingStreams >= limits.maxOpenStreams)
       throw failure('resource_exhausted', 'Too many open relay streams.', {
@@ -662,7 +728,9 @@ export function createRendererRelay(
     const releaseCall = reserveCall(session);
     session.openingStreams += 1;
     const opening = clientFor(session).then((client) =>
-      client.openStream(method, params, { metadata }),
+      client.openStream(method, withStreamRevision(client, method, params), {
+        metadata,
+      }),
     );
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -781,7 +849,7 @@ export function createRendererRelay(
       }
       const frame = result.value;
       const bytes = encodedBytes(frame);
-      if (bytes === null || bytes > limits.maxFrameBytes) {
+      if (bytes === null || bytes > limits.maxReplyBytes) {
         if (frame.kind === 'end') session.endStream(subscriptionId, stream);
         else session.cancelStream(subscriptionId, stream);
         throw failure(
@@ -863,7 +931,7 @@ export function createRendererRelay(
           request.kind === 'request' ? requestRecovery(request.method) : NEVER;
         if (session.closed && !closes) throw connectionClosed(recovery);
         const bytes = encodedBytes(value);
-        if (bytes === null || bytes > limits.maxFrameBytes)
+        if (bytes === null || bytes > limits.maxReplyBytes)
           throw failure(
             'resource_exhausted',
             'The relay reply exceeded the cap.',

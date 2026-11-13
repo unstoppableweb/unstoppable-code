@@ -37,6 +37,7 @@ import { Disclosure } from '../Disclosure';
 import { StatusLabel } from '../StatusLabel';
 import { Fact, FactList } from '../FactList';
 import { ThinkingSpinner } from '../ThinkingSpinner';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 /** Header status while the delegate's request waits in its parent's queue. */
 export const DELEGATED_AGENT_WAITING_ON_PARENT_LABEL = 'Waiting for the parent';
@@ -134,11 +135,18 @@ function DelegatedAgentChanges({
       {files.map((file) => (
         <Disclosure
           key={file.path}
-          label={`${file.path} · ${file.change}`}
+          label={
+            <>
+              <span className={REPLAY_BLOCK_CLASS}>{file.path}</span>
+              {` · ${file.change}`}
+            </>
+          }
           dataTestId="delegated-change"
         >
           {file.diff ? (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap">
+            <pre
+              className={`${REPLAY_BLOCK_CLASS} max-h-48 overflow-auto whitespace-pre-wrap`}
+            >
               {file.diff}
             </pre>
           ) : (
@@ -252,7 +260,8 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
           nested ? (
             <span
               data-testid="delegated-agent-lineage"
-              className="min-w-0 truncate fg-secondary"
+              // The parent's description is conversation content.
+              className={`${REPLAY_BLOCK_CLASS} min-w-0 truncate fg-secondary`}
               title={
                 snapshot.parentDelegationId
                   ? `Parent: ${snapshot.parentDescription ?? snapshot.parentDelegationId}`
@@ -349,9 +358,17 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
                   : 'Shared with parent'}
               </Fact>
               <Fact label="Permissions">
-                {snapshot.permissions?.writePaths.length
-                  ? `Read/search and edits within: ${snapshot.permissions.writePaths.join(', ')}. Parent approvals apply.`
-                  : 'Read and search'}
+                {snapshot.permissions?.writePaths.length ? (
+                  <>
+                    Read/search and edits within:{' '}
+                    <span className={REPLAY_BLOCK_CLASS}>
+                      {snapshot.permissions.writePaths.join(', ')}
+                    </span>
+                    . Parent approvals apply.
+                  </>
+                ) : (
+                  'Read and search'
+                )}
               </Fact>
               {hasDelegatedAgentCapabilityEntries(capabilities) ? (
                 <DelegatedAgentCapabilities summary={capabilities} />
@@ -360,7 +377,14 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
                 <Fact label="Command">
                   {snapshot.control.operation.replace('_', ' ')} ·{' '}
                   {snapshot.control.status}
-                  {snapshot.control.error ? `: ${snapshot.control.error}` : ''}
+                  {snapshot.control.error ? (
+                    <>
+                      :{' '}
+                      <span className={REPLAY_BLOCK_CLASS}>
+                        {snapshot.control.error}
+                      </span>
+                    </>
+                  ) : null}
                 </Fact>
               )}
               {!sameThinking && route?.requestedThinkingLevel && (
@@ -397,7 +421,11 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
             )}
             {snapshot.error && (
               <p>
-                <StatusLabel>{snapshot.error.message}</StatusLabel>
+                <StatusLabel>
+                  <span className={REPLAY_BLOCK_CLASS}>
+                    {snapshot.error.message}
+                  </span>
+                </StatusLabel>
               </p>
             )}
           </div>

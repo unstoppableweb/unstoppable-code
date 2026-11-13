@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, type JSX } from 'react';
+import { useMemo, type JSX, type ReactNode } from 'react';
 import {
   AnsiOutput,
+  Button,
   ExecutionActionButton,
   Notice,
   PauseResumeIcon,
@@ -33,12 +34,18 @@ import { Surface } from '@canopy/ui-shared/components';
 
 export interface PipelineRunDetailLog {
   /**
-   * Step output, oldest first. Today the web host splits the bounded ~2 KB
-   * `output_tail`; the shape is already a line array so a future scrollback
-   * transport drops in without a breaking change.
+   * Step output, oldest first. The Portal splits the bounded ~2 KB
+   * `output_tail`; a cloud run's host reads the whole log by position.
    */
   readonly lines: readonly string[];
+  /** Only the end of the output is shown. */
   readonly truncated?: boolean;
+  /** The host is reading more of this step's log. */
+  readonly loading?: boolean;
+  /** More lines follow than are shown; the host reads them on request. */
+  readonly onLoadMore?: () => void;
+  /** Why the log could not be read, in the host's words. */
+  readonly error?: string;
 }
 
 export interface PipelineRunDetailStepSelection {
@@ -84,14 +91,20 @@ export interface PipelineRunDetailProps {
   readonly resuming?: boolean;
   readonly mutationPending?: boolean;
   readonly errorMessage?: string;
+  /**
+   * Host facts drawn between the controls and the steps, such as who started
+   * the run, where it ran, why it paused and what it saved.
+   */
+  readonly children?: ReactNode;
 }
 
 /**
  * The shared pipeline run detail surface (CAN-3020).
  *
  * Props-only and host-agnostic — no store, no fetch, no `window.api`. The web
- * portal mounts it inside a full-viewport `DialogModal`; desktop keeps its own
- * modal until CAN-1965 migrates it.
+ * portal mounts it inside a full-viewport `DialogModal`, and so does a cloud
+ * run's detail (`CloudPipelineRunDetail`, CAN-6326) on desktop; desktop's own
+ * runs keep their modal until CAN-1965 migrates it.
  *
  * The job tree and the log pane are two INDEPENDENT scrollers at `md` and up.
  * `min-w-0` on the log column is mandatory: without it the flex item floors at
@@ -116,6 +129,7 @@ export function PipelineRunDetail({
   resuming = false,
   mutationPending = false,
   errorMessage,
+  children,
 }: PipelineRunDetailProps): JSX.Element {
   const groups = useMemo(
     () => buildPipelineRunDetailJobs(run.jobs),
@@ -208,6 +222,8 @@ export function PipelineRunDetail({
         </Notice>
       )}
 
+      {children}
+
       {showPauseForm && (
         <PipelineRunPauseForm
           checkpoints={checkpoints}
@@ -262,6 +278,11 @@ export function PipelineRunDetail({
               }
               lines={log.lines}
               className="min-h-24 flex-1"
+              placeholder={
+                log.loading === true
+                  ? 'Loading output…'
+                  : 'This step has no output yet.'
+              }
             />
             {log.truncated === true && (
               <p
@@ -270,6 +291,37 @@ export function PipelineRunDetail({
               >
                 Showing the end of this step&apos;s output.
               </p>
+            )}
+            {log.error !== undefined && (
+              <Notice
+                intent="destructive"
+                role="status"
+                data-testid="pipeline-run-detail-log-error"
+              >
+                {log.error}
+              </Notice>
+            )}
+            {log.loading === true && log.lines.length > 0 && (
+              <p
+                className="text-3xs fg-secondary"
+                role="status"
+                data-testid="pipeline-run-detail-log-loading"
+              >
+                Loading output…
+              </p>
+            )}
+            {log.onLoadMore !== undefined && (
+              <div className="flex justify-start">
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  disabled={log.loading === true}
+                  data-testid="pipeline-run-detail-log-more"
+                  onClick={log.onLoadMore}
+                >
+                  Load more output
+                </Button>
+              </div>
             )}
           </div>
         </div>

@@ -186,6 +186,10 @@ import { handleAppAdvisorDynamicToolCall } from '../app-advisor/codex-dynamic-to
 import { handlePipelineEditorDynamicToolCall } from '../pipeline-editor/codex-dynamic-tools';
 import { buildCodexSessionDynamicToolSpecs } from '../codex/session-dynamic-tools';
 import { sendToWindow } from '../lib/window-send';
+import {
+  isPromptSuggestionsEnabled,
+  sendPromptSuggestion,
+} from './prompt-suggestions';
 import { noteChatSessionEvent } from '../lib/transient-error-retry-service';
 import { getAttentionTracker } from '../services/attention-tracker';
 import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
@@ -220,6 +224,8 @@ import {
   loadWorktreeScriptOutput,
   saveLocalMemory,
   searchLocalMemory,
+  searchChats,
+  readChatExcerpt,
   requestAnswersFromRenderer,
   respondToFileCommentInSession,
 } from '../canopy-tools/session-runtime';
@@ -227,15 +233,15 @@ import { codexNativeMemoryThreadConfig } from '@canopy/execution-engine/node/lib
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import { requestShowFilesThroughLease } from '../canopy-tools/show-files-runtime';
 import { hasInterfaceTool } from './interface-tool-binding';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
-import type { CodexIngestionLagChange } from '@canopy/desktop-shared/node/codex-runtime/runtime-service';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { CodexIngestionLagChange } from '@canopy/execution-engine/node/codex-runtime/runtime-service';
 import type {
   CodexBackgroundSnapshot,
   CodexNativeBackgroundWork,
-} from '@canopy/desktop-shared/node/codex-runtime';
-import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '@canopy/desktop-shared/node/codex-runtime/thread-config';
-import { classifyCodexTransportError } from '@canopy/desktop-shared/node/codex-runtime/transport-errors';
+} from '@canopy/execution-engine/node/codex-runtime';
+import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '@canopy/execution-engine/node/codex-runtime/thread-config';
+import { classifyCodexTransportError } from '@canopy/execution-engine/node/codex-runtime/transport-errors';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   resolveCodexRuntimeEnvironmentProfile,
@@ -1044,6 +1050,40 @@ export class CodexProvider implements AgentProvider {
     >();
     let activeIngestionLagOwner: CodexIngestionLagOwner | null = null;
     const emitIngestionLag = this.emitIngestionLag;
+    // Next prompt suggestions (Labs): after a completed root turn a sent
+    // message started, ask Codex for the person's likely next message.
+    // Best effort: Codex refuses a sample once a newer turn has started, and
+    // any failure is dropped without affecting the turn.
+    const samplePromptSuggestion = (
+      terminal: Record<string, unknown>,
+      turnUserMessageId: string,
+    ): void => {
+      const event = isRecord(terminal.event) ? terminal.event : undefined;
+      const sampler = client;
+      if (
+        this.providerType !== 'codex' ||
+        !sampler ||
+        typeof event?.thread_id !== 'string' ||
+        typeof event.turn_id !== 'string' ||
+        !isPromptSuggestionsEnabled()
+      )
+        return;
+      void sampler
+        .samplePromptSuggestion({
+          threadId: event.thread_id,
+          turnId: event.turn_id,
+        })
+        .then((suggestion): void => {
+          if (suggestion === null || client !== sampler) return;
+          sendPromptSuggestion(
+            getWindow,
+            ingestionLagTarget,
+            suggestion,
+            turnUserMessageId,
+          );
+        })
+        .catch((): void => undefined);
+    };
     const emitIngestionLagObservation = (
       lag: ChatIngestionLag | null,
     ): void => {
@@ -1850,6 +1890,13 @@ export class CodexProvider implements AgentProvider {
           outcome: rawTerminalOutcome,
           endedAtMs: Date.now(),
         });
+        if (
+          rawTerminalOutcome === 'completed' &&
+          activeTurn.userMessageId !== undefined &&
+          trustedRun?.origin !== 'provider_owned'
+        ) {
+          samplePromptSuggestion(eventData, activeTurn.userMessageId);
+        }
       }
       // A proxy account's sign-in or limit is not the user's own, so it never
       // starts native account recovery (CAN-4020).
@@ -2956,6 +3003,20 @@ export class CodexProvider implements AgentProvider {
               sessionId: getResumeThreadId() ?? initialThreadId,
               provider: 'codex',
               ...request,
+            }),
+          searchChats: (request) =>
+            searchChats({
+              ...request,
+              projectId: opts.projectId,
+              worktreeId: opts.worktreeId,
+              chatId: opts.chatId,
+            }),
+          readChatExcerpt: (request) =>
+            readChatExcerpt({
+              ...request,
+              projectId: opts.projectId,
+              worktreeId: opts.worktreeId,
+              chatId: opts.chatId,
             }),
           searchLocalMemory: (request) =>
             searchLocalMemory({

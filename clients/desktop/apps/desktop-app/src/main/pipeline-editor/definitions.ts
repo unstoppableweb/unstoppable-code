@@ -1,5 +1,5 @@
 import { z } from 'zod/v4';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import {
   askUserQuestionJsonSchema,
   askUserQuestionSchema,

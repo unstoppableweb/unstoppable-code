@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import type { InstallReceipt } from '@canopy/execution-engine/lib/resource-context-policy';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
-import { saveStoredPipeline } from '@canopy/desktop-shared/pipelines/store';
+import { saveStoredPipeline } from '@canopy/execution-engine/pipelines/store';
 import type { PipelinePackageInstallRecordV1 } from '@canopy/execution-engine/types/pipeline';
 import {
   getDataDir,

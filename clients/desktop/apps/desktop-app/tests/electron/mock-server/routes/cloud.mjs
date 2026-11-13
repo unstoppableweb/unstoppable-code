@@ -58,6 +58,7 @@ const CLOUD_CAPABILITIES = [
   'model-routing-v1',
   'shared-containers-v1',
   'shared-container-dismissals-v1',
+  'shared-container-owner-departures-v1',
 ];
 
 /**
@@ -65,13 +66,19 @@ const CLOUD_CAPABILITIES = [
  * (CAN-4052): `cloud.withholdSharedContainerDismissalsCapability: true` drops
  * `shared-container-dismissals-v1` from every capability list the key reads,
  * so the desktop's unsupported-server fallback can be exercised end to end.
+ * `cloud.withholdSharedContainerOwnerDeparturesCapability: true` does the same
+ * for a Cloud deployed before owner departure notices (CAN-5120).
  */
 function withoutWithheldCapabilities(capabilities, cloudScenario) {
-  return cloudScenario?.withholdSharedContainerDismissalsCapability === true
-    ? capabilities.filter(
-        (capability) => capability !== 'shared-container-dismissals-v1',
-      )
-    : capabilities;
+  const withheld = new Set([
+    ...(cloudScenario?.withholdSharedContainerDismissalsCapability === true
+      ? ['shared-container-dismissals-v1']
+      : []),
+    ...(cloudScenario?.withholdSharedContainerOwnerDeparturesCapability === true
+      ? ['shared-container-owner-departures-v1']
+      : []),
+  ]);
+  return capabilities.filter((capability) => !withheld.has(capability));
 }
 
 /** The account `/api/v1/<ns>/account` reports unless a scenario renames it. */
@@ -3280,7 +3287,8 @@ export async function handleCloudRequest(request, response, url) {
     jsonResponse(
       response,
       200,
-      cloudScenario?.withholdSharedContainerDismissalsCapability === true
+      cloudScenario?.withholdSharedContainerDismissalsCapability === true ||
+        cloudScenario?.withholdSharedContainerOwnerDeparturesCapability === true
         ? {
             ...accountPayload,
             capabilities: withoutWithheldCapabilities(

@@ -46,6 +46,8 @@ import {
   resolveBrowserSearchEngine,
 } from '@canopy/desktop-shared/lib/browser-search-engines';
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { webCoreUnavailable } from '@/stores/chat/web-core/web-core-chat-backend';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -834,10 +836,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
     }
     let response: LoadWorktreeBrowserStateResponse;
     try {
-      response = await window.api.browser.loadWorktreeState({
-        projectId,
-        worktreeId,
-      });
+      // main keeps browser state for local worktrees only; a web core scope
+      // has none to restore (CAN-6175 D1).
+      response = isWebCoreScope(projectId)
+        ? { status: 'missing', state: null }
+        : await window.api.browser.loadWorktreeState({
+            projectId,
+            worktreeId,
+          });
     } catch (error) {
       // Corrupt/future persisted state (or IPC failure). Record the error so
       // Browser surfaces can show the recoverable-hydration-failure state; the
@@ -994,6 +1000,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
     worktreeId,
     options,
   ): Promise<BrowserSessionSnapshot> => {
+    if (isWebCoreScope(projectId)) throw webCoreUnavailable('The browser');
     const snapshot = await window.api.browser.create({
       projectId,
       worktreeId,
@@ -1009,7 +1016,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
   openBrowser: (projectId, worktreeId, options): PendingBrowserOpen | null => {
     // No placeholder for a session that can never be created here: its tab
     // could not render, and its rollback would need the blocked destroy.
-    if (!isInAppBrowserAvailable()) {
+    // A web core scope has no main-side browser sessions either.
+    if (!isInAppBrowserAvailable() || isWebCoreScope(projectId)) {
       return null;
     }
     const key = worktreeKey(projectId, worktreeId);

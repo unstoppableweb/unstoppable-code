@@ -4,6 +4,7 @@ import {
   MEMORY_SYNC_LIMITS,
   MEMORY_SYNC_PROTOCOL_HEADER,
   MEMORY_SYNC_PROTOCOL_VERSION,
+  MEMORY_SYNC_PURGE_CONFIRMATION,
   MEMORY_SYNC_ROUTES,
   MemoryChangesPageSchema,
   MemoryCommitRequestSchema,
@@ -17,11 +18,18 @@ import {
   MemoryLeaseRenewResponseSchema,
   MemoryNotesPushRequestSchema,
   MemoryNotesPushResponseSchema,
+  MemoryProjectSettingListResponseSchema,
+  MemoryProjectSettingRequestSchema,
+  MemoryProjectSettingResponseSchema,
+  MemoryPurgeRequestSchema,
+  MemoryRestoreRequestSchema,
+  MemoryRevisionListResponseSchema,
   MemoryScopeResolveRequestSchema,
   MemoryScopeResolveResponseSchema,
   MemorySnapshotPageSchema,
   MemorySyncErrorResponseSchema,
   MemorySyncSettingsResponseSchema,
+  MemorySyncSettingsUpdateRequestSchema,
   MemoryUsagePushRequestSchema,
   type MemoryChangesPage,
   type MemoryCommitRequest,
@@ -32,6 +40,7 @@ import {
   type MemoryLeaseFence,
   type MemoryNotesPushRequest,
   type MemoryNotesPushResponse,
+  type MemoryProjectSettingList,
   type MemoryScopeRef,
   type MemorySnapshotPage,
   type MemorySyncErrorCode,
@@ -213,6 +222,18 @@ export interface MemorySyncTransport {
   ): Promise<
     MemorySyncResult<z.output<typeof MemorySyncSettingsResponseSchema>>
   >;
+  /** The account's per-project modes (design §22). */
+  projectSettings(
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<MemoryProjectSettingList>>;
+  /** Sets "keep memory on this device" for one project, on every device. */
+  setProjectSetting(
+    projectId: string,
+    mode: 'sync' | 'device_only',
+    signal?: AbortSignal,
+  ): Promise<
+    MemorySyncResult<z.output<typeof MemoryProjectSettingResponseSchema>>
+  >;
   snapshotPage(
     scopeId: string,
     pageToken: string | null,
@@ -253,6 +274,29 @@ export interface MemorySyncTransport {
     request: z.output<typeof MemoryUsagePushRequestSchema>,
     signal?: AbortSignal,
   ): Promise<MemorySyncResult<unknown>>;
+  updateSettings(
+    request: z.output<typeof MemorySyncSettingsUpdateRequestSchema>,
+    signal?: AbortSignal,
+  ): Promise<
+    MemorySyncResult<z.output<typeof MemorySyncSettingsResponseSchema>>
+  >;
+  listRevisions(
+    scopeId: string,
+    before: number | null,
+    signal?: AbortSignal,
+  ): Promise<
+    MemorySyncResult<z.output<typeof MemoryRevisionListResponseSchema>>
+  >;
+  restore(
+    scopeId: string,
+    request: z.output<typeof MemoryRestoreRequestSchema>,
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<MemoryCommitResponse>>;
+  /**
+   * "Delete from the cloud": every scope and device of the account, and
+   * sync off. The device session ends with it.
+   */
+  purge(signal?: AbortSignal): Promise<MemorySyncResult<unknown>>;
 }
 
 /** A 204 has no body; any 2xx answer is the acknowledgement. */
@@ -362,7 +406,7 @@ export function createMemorySyncTransport(
           body: { scope, create },
           requestSchema: MemoryScopeResolveRequestSchema,
           responseSchema: MemoryScopeResolveResponseSchema,
-          write: create,
+          write: true,
           accept: (value) =>
             value.scope.accountId === accountId &&
             value.scope.kind === scope.kind &&
@@ -378,6 +422,30 @@ export function createMemorySyncTransport(
           path: MEMORY_SYNC_ROUTES.settings(),
           responseSchema: MemorySyncSettingsResponseSchema,
           write: false,
+        },
+        signal,
+      ),
+    projectSettings: (signal) =>
+      call(
+        {
+          method: 'GET',
+          path: MEMORY_SYNC_ROUTES.projectSettings(),
+          responseSchema: MemoryProjectSettingListResponseSchema,
+          write: false,
+        },
+        signal,
+      ),
+    setProjectSetting: (projectId, mode, signal) =>
+      call(
+        {
+          method: 'PUT',
+          path: MEMORY_SYNC_ROUTES.projectSetting(projectId),
+          body: { mode },
+          requestSchema: MemoryProjectSettingRequestSchema,
+          responseSchema: MemoryProjectSettingResponseSchema,
+          write: true,
+          accept: (value) =>
+            value.projectId === projectId && value.mode === mode,
         },
         signal,
       ),
@@ -493,5 +561,64 @@ export function createMemorySyncTransport(
         },
         signal,
       ),
+    updateSettings: (request, signal) =>
+      call(
+        {
+          method: 'PUT',
+          path: MEMORY_SYNC_ROUTES.settings(),
+          body: request,
+          requestSchema: MemorySyncSettingsUpdateRequestSchema,
+          responseSchema: MemorySyncSettingsResponseSchema,
+          write: true,
+        },
+        signal,
+      ),
+    listRevisions: (scopeId, before, signal) =>
+      call(
+        {
+          method: 'GET',
+          path: withQuery(MEMORY_SYNC_ROUTES.revisions(scopeId), {
+            before: before === null ? null : String(before),
+            limit: String(MEMORY_SYNC_LIMITS.historyPageMax),
+          }),
+          responseSchema: MemoryRevisionListResponseSchema,
+          write: false,
+        },
+        signal,
+      ),
+    restore: (scopeId, request, signal) =>
+      call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.restore(scopeId),
+          body: request,
+          requestSchema: MemoryRestoreRequestSchema,
+          responseSchema: MemoryCommitResponseSchema,
+          write: true,
+          maxResponseBytes: MEMORY_SYNC_LIMITS.revisionEntryOverheadMaxBytes,
+          timeoutMs: LONG_TIMEOUT_MS,
+          accept: (value) =>
+            value.revision.commitId === request.commitId &&
+            value.revision.parentRevision === request.baseRevision,
+        },
+        signal,
+      ),
+    purge: async (signal) => {
+      const purged = await call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.purge(),
+          body: { confirm: MEMORY_SYNC_PURGE_CONFIRMATION },
+          requestSchema: MemoryPurgeRequestSchema,
+          responseSchema: NoContentSchema,
+          write: true,
+          timeoutMs: LONG_TIMEOUT_MS,
+        },
+        signal,
+      );
+      // The purge deletes the account's devices, this session among them.
+      if (purged.ok) deviceSessionId = null;
+      return purged;
+    },
   };
 }

@@ -35,7 +35,8 @@ export type EffectiveRuleTarget =
   | { kind: 'command'; pattern: string; root: string }
   | { kind: 'mcp'; server: string; tool?: string; root: string }
   | { kind: 'tool'; toolName: string; root: string }
-  | { kind: 'network'; host: string };
+  | { kind: 'network'; host: string }
+  | { kind: 'browser-upload'; origin: string; path?: string; root: string };
 
 export interface EffectiveApprovalRule {
   tier: ApprovalRuleScope;
@@ -109,6 +110,34 @@ function effectiveRule(
           host: target.host.toLowerCase().replace(/\.+$/, ''),
         },
       };
+    case 'browser-upload': {
+      // The engine compares origins canonically and matches the path as
+      // written against files relative to the chat's worktree, so the path
+      // stays relative and only an identical one compares as equal.
+      const origin = target.origin.trim().toLowerCase().replace(/\/+$/, '');
+      const path =
+        target.path === undefined
+          ? undefined
+          : caseInsensitive
+            ? target.path.toLowerCase()
+            : target.path;
+      return {
+        ...base,
+        anchored: rule,
+        target: {
+          kind: 'browser-upload',
+          origin,
+          ...(path === undefined ? {} : { path }),
+          root,
+        },
+      };
+    }
+    default: {
+      // A new rule kind must be compared, not dropped: an unknown rule makes
+      // every chat's policy unknown, which refuses every agent message.
+      const unhandled: never = target;
+      return unhandled;
+    }
   }
 }
 

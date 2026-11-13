@@ -1,5 +1,8 @@
 import type { W5DurabilityPort } from '@canopy/core-runtime/node/w5/commit-log';
-import { syncDirectory, writeFileAtomically } from '../lib/atomic-file';
+import {
+  syncDirectory,
+  writeFileAtomically,
+} from '@canopy/execution-engine/node/lib/atomic-file';
 
 /**
  * The desktop's W5 durability: atomic-file's temp file, fsync,

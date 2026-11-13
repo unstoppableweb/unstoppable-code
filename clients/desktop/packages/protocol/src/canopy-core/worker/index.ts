@@ -22,7 +22,9 @@ export * from './pipeline-portable-launch';
 export * from './registry';
 export * from './script';
 export * from './terminal';
+export * from './visual';
 export * from './git-merge';
 export * from './git-local-mutations';
 
 export * from './git-worktree-writes';
+export * from './artifact';

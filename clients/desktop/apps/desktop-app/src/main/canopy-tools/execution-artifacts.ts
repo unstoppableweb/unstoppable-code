@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { isPathInsideExecutionsDir } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { isPathInsideExecutionsDir } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { isPathInside } from '../lib/path-safety';
 

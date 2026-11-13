@@ -8,7 +8,13 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from 'react';
+import { useStore } from 'zustand';
 import { useShallow } from 'zustand/shallow';
+import type { CoreCoworkTask } from '@canopy/app-state/core-cowork';
+import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
+import { retryCloudTask } from '@/cloud-chats/useCloudCoworkSidebar';
+import { markCloudTaskShown } from '@/cloud-chats/task-creation-timing';
+import { webCoreLocalId } from '@/lib/chat-authority';
 import { createWithEqualityFn } from 'zustand/traditional';
 import {
   isWorktreeDone,
@@ -418,6 +424,62 @@ function chatPreviewPopover(
  * its identity.
  */
 export function useDesktopWorktreeRowOverrides(
+  context: WorktreeRowSlotContext,
+): WorktreeRowOverrides | undefined {
+  const overrides = useLocalWorktreeRowOverrides(context);
+  const creation = useCloudTaskCreationOverrides(
+    context.workspace.localId,
+    context.worktree.localId,
+  );
+  return useMemo(
+    () => (creation === undefined ? overrides : { ...overrides, ...creation }),
+    [overrides, creation],
+  );
+}
+
+/**
+ * A cloud task this window opened before the web core created it
+ * (CAN-6098): its row reads as being created, or, once refused, why, with a
+ * retry under the same id. Other rows have none.
+ */
+function useCloudTaskCreationOverrides(
+  projectId: string,
+  worktreeId: string,
+): WorktreeRowOverrides | undefined {
+  const workspaceId = webCoreLocalId(projectId);
+  const taskId = webCoreLocalId(worktreeId);
+  const task = (
+    state: ReturnType<typeof cloudCoworkStore.getState>,
+  ): CoreCoworkTask | undefined =>
+    workspaceId === null || taskId === null
+      ? undefined
+      : state.tasksByProject[`web-core:${workspaceId}`]?.find(
+          (each) => each.worktreeId === taskId,
+        );
+  const creation = useStore(cloudCoworkStore, (state) => task(state)?.creation);
+  const reason = useStore(
+    cloudCoworkStore,
+    (state) => task(state)?.creationError,
+  );
+  useEffect(() => {
+    if (creation !== undefined && taskId !== null)
+      markCloudTaskShown(taskId, 'rowShown');
+  }, [creation, taskId]);
+  return useMemo((): WorktreeRowOverrides | undefined => {
+    if (creation === 'pending') return { setupPhase: 'creating' };
+    if (creation !== 'failed') return undefined;
+    return {
+      creationFailure: {
+        reason: reason ?? 'This task was not created.',
+        onRetry: (): void => {
+          retryCloudTask(projectId, worktreeId);
+        },
+      },
+    };
+  }, [creation, reason, projectId, worktreeId]);
+}
+
+function useLocalWorktreeRowOverrides(
   context: WorktreeRowSlotContext,
 ): WorktreeRowOverrides | undefined {
   const projectId = context.workspace.localId;

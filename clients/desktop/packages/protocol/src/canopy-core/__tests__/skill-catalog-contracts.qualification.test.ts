@@ -9,6 +9,7 @@ import {
   CatalogSkillReadResultSchema,
   CatalogSkillRefSchema,
   CatalogSkillRemoveParamsSchema,
+  CatalogSkillRowSchema,
   CatalogSkillUpdateParamsSchema,
   CatalogSkillUpdatesCheckParamsSchema,
 } from '../core';
@@ -161,6 +162,39 @@ describe('skill catalog contracts (CAN-4124)', () => {
     }
     expect(read('x'.repeat(262_143))).toBe(false);
     expect(save('é'.repeat(131_072))).toBe(false);
+  });
+
+  it('a skill row links its cloud copy by ids and hashes only (CAN-6176)', () => {
+    const row = {
+      entryId: 'skill:custom/helper',
+      sourceId: 'custom',
+      skillName: 'helper',
+      description: 'd',
+      source: 'Custom',
+      origin: 'custom',
+      installedAt: '',
+      updatedAt: '',
+      updateAvailable: false,
+      version: null,
+    };
+    const hash = 'a'.repeat(64);
+    const cloudShare = {
+      role: 'author',
+      remoteId: '11111111-2222-4333-8444-555555555555',
+      linkedContentHash: hash,
+      localContentHash: null,
+    };
+    const parse = (value: unknown): boolean =>
+      CatalogSkillRowSchema.safeParse({ ...row, cloudShare: value }).success;
+    expect(CatalogSkillRowSchema.safeParse(row).success).toBe(true);
+    expect(parse(cloudShare)).toBe(true);
+    expect(parse({ ...cloudShare, role: 'recipient' })).toBe(true);
+    expect(parse({ ...cloudShare, accessToken: 'secret' })).toBe(false);
+    expect(parse({ ...cloudShare, publicLink: 'https://x' })).toBe(false);
+    expect(parse({ ...cloudShare, linkedContentHash: 'sha256:' + hash })).toBe(
+      false,
+    );
+    expect(parse({ ...cloudShare, remoteId: '' })).toBe(false);
   });
 
   it('skill operations stay out of the composed registries', () => {

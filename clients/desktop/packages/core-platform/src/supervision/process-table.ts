@@ -15,6 +15,10 @@ const WINDOWS_CPU_UNITS_PER_SECOND = 10_000_000;
 // procfs reports CPU time in USER_HZ, which the kernel ABI fixes at 100.
 const LINUX_TICKS_PER_SECOND = 100;
 const LINUX_DEFAULT_PAGE_BYTES = 4096;
+// Bounds the file descriptors one read holds open across every /proc/PID.
+const LINUX_PROC_READ_CONCURRENCY = 16;
+// A process that exited between listing /proc and reading its stat file.
+const LINUX_EXITED_CODES: ReadonlySet<string> = new Set(['ENOENT', 'ESRCH']);
 const AT_PAGESZ = 6;
 const MAC_PS_ARGS = ['-axo', 'pid=,ppid=,pgid=,pcpu=,rss=,command='] as const;
 const WINDOWS_PROCESS_TABLE_SCRIPT = `
@@ -270,6 +274,36 @@ export function auxvPageSize(auxv: Uint8Array): number | null {
   return null;
 }
 
+function exitedBeforeRead(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    typeof error.code === 'string' &&
+    LINUX_EXITED_CODES.has(error.code)
+  );
+}
+
+/** Maps `items` in order with at most `limit` calls of `map` in flight. */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  map: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      const item = items[index];
+      if (item !== undefined) results[index] = await map(item);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+}
+
 function failureReason(error: unknown): string {
   if (isRecord(error) && typeof error.code === 'string')
     return `process table read failed (${error.code})`;
@@ -351,13 +385,17 @@ export function createProcessTableReader(
     const sampledAtMs = ops.now();
     const count = cpuCount();
     const samples = new Map<number, CpuSample>();
-    const entries = await Promise.all(
-      pids.map(async (name): Promise<PlatformProcessTableRow | null> => {
+    const entries = await mapBounded(
+      pids,
+      LINUX_PROC_READ_CONCURRENCY,
+      async (name): Promise<PlatformProcessTableRow | null> => {
         let stat: LinuxStat | null;
         try {
           stat = parseLinuxStat(await ops.readText(`/proc/${name}/stat`));
-        } catch {
-          return null;
+        } catch (error) {
+          // Any other failure, such as EMFILE, would silently undercount.
+          if (exitedBeforeRead(error)) return null;
+          throw error;
         }
         if (!stat) return null;
         const sample: CpuSample = {
@@ -379,7 +417,7 @@ export function createProcessTableReader(
           memoryRssBytes: stat.rssPages * pageSize,
           command: await linuxCommand(stat),
         };
-      }),
+      },
     );
     previous = samples;
     const rows: Rows = new Map();

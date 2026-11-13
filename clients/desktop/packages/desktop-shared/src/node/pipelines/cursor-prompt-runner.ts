@@ -9,7 +9,7 @@ import {
   appendCodexSchemaInstruction,
   buildCodexStructuredOutputRetryPrompt,
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
-} from '../../builtin-actions/agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import { validateAgainstSchema } from '../../lib/ajv-schema-validator';
 import { describeJsonParseFailure } from '@canopy/execution-engine/lib/redaction';
 import { stepTimedOutMessage } from '@canopy/execution-engine/node/pipelines/step-timeout';
@@ -47,7 +47,7 @@ import {
 import type {
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,
-} from './executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 
 export interface CursorPromptDriverOptions {
   launch: CursorLaunch;

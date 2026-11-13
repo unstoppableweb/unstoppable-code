@@ -16,7 +16,6 @@ import type {
   PipelineTrigger,
   Pipeline,
   PipelineInputValue,
-  PauseInputType,
   PipelineInputDef,
 } from '@canopy/pipeline-interop/document';
 export type {
@@ -566,6 +565,7 @@ export interface PipelineInlineModelAliasPreference {
 export interface PipelineAgentModelAliasPreference {
   mode: 'agent';
   agent_id: string;
+  base?: string;
 }
 
 /**
@@ -820,24 +820,11 @@ export type SaveModelAliasPreferencesResponse =
     }
   | { ok: false; reason: 'missing-locator' };
 
-export interface PauseInputField {
-  key: string;
-  label: string;
-  type: PauseInputType;
-  description?: string;
-  required?: boolean;
-  default?: PipelineScalar;
-  options?: string[];
-  min?: number;
-  max?: number;
-  multiline?: boolean;
-}
-
-export interface PauseInputRequest {
-  title?: string;
-  message?: string;
-  fields: PauseInputField[];
-}
+import type {
+  PauseInputField,
+  PauseInputRequest,
+} from '@canopy/pipeline-interop/pause-input-validation';
+export type { PauseInputField, PauseInputRequest };
 
 export interface ActionInputDef {
   description?: string;
@@ -1014,6 +1001,16 @@ export type PipelineStatusReasonKind =
   | 'app_shutdown'
   /** A remote owner's delegation lease lapsed or it stopped answering (CAN-6102). */
   | 'owner_lost'
+  /**
+   * The run was checkpointed on request, after its running steps had until
+   * a deadline to finish, so its host can roll over (CAN-6199).
+   */
+  | 'host_rollover'
+  /**
+   * The daemon core hosting the run was lost; its host ended the steps and
+   * checkpointed the run (CAN-6481).
+   */
+  | 'core_lost'
   | 'input_required'
   | 'action_paused'
   | 'provider_authentication_required'
@@ -1024,6 +1021,8 @@ export type PipelineStatusReasonCode =
   | 'provider_sign_in'
   | 'app_shutdown'
   | 'owner_lost'
+  | 'host_rollover'
+  | 'core_lost'
   | 'input_requested'
   | 'action_requested_pause'
   | 'authentication_failed'
@@ -1150,6 +1149,8 @@ export interface PipelinePauseResponse {
 export interface StepResult {
   status:
     | 'pending'
+    /** Held before it starts while its host's memory is tight (CAN-6325). */
+    | 'waiting_for_capacity'
     | 'running'
     | 'paused'
     | 'success'
@@ -1171,7 +1172,7 @@ export interface StepResult {
   agent_harness?: ModelHarness;
   agent_model?: string;
   agent_runtime_model?: string;
-  agent_model_config?: AgentModelConfig;
+  agent_model_config?: PipelineAgentModelConfig;
   model_alias?: string;
   model_alias_name?: string;
   model_alias_plugin_collection_ids?: string[];
@@ -1269,6 +1270,8 @@ export interface JobResult {
   status:
     | 'pending'
     | 'queued'
+    /** A step that would start next is held for memory (CAN-6325). */
+    | 'waiting_for_capacity'
     | 'running'
     | 'restarting'
     | 'paused'
@@ -1479,6 +1482,12 @@ export interface ExecutionState {
    * `owner_pid` with a different identity is a reused PID.
    */
   owner_start_identity?: string;
+  /**
+   * The delegation lease epoch of the cloud runner incarnation that owns the
+   * run (CAN-6198). Absent for a local owner. A write from an older epoch is
+   * refused; a run an older epoch recorded is this incarnation's to take.
+   */
+  owner_lease_epoch?: number;
   cwd: string;
   env: Record<string, string>;
   /**
@@ -1495,6 +1504,8 @@ export interface ExecutionState {
    * `canopy.pipeline_data_dir` values as the original run.
    */
   pipeline_assets?: PipelineAssetExecutionContext;
+  /** `ExecutionOptions.globalWorkspaceDir`, when its host named one (CAN-6317). */
+  global_workspace_dir?: string;
   /** False when `inputs` was backfilled from a legacy execution that never persisted it. */
   inputs_persisted?: boolean;
   event_name?: PipelineTriggerType;
@@ -2293,3 +2304,10 @@ export interface ListSharedTeamsRequest {
 
 export type ListSharedTeamsResponse = ProtocolListSharedTeamsResponse;
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
+
+/** Step identity augments, rather than replaces, the effective model options. */
+export interface PipelineAgentModelConfig extends AgentModelConfig {
+  agentId?: string;
+  baseModel?: string;
+  requestedModel?: string;
+}

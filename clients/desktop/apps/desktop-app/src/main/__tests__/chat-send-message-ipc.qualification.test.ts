@@ -1277,6 +1277,8 @@ function makeWindowAccessors(
     getAppAdvisorWindowState: () => ({ open: false, focused: false }),
     markAppAdvisorWindowRendererReady: () => ({ open: false, focused: false }),
     setAppAdvisorFloatingSize: () => ({ open: false, focused: false }),
+    setAppAdvisorDock: () =>
+      Promise.resolve({ state: { open: false, focused: false } }),
     sendAppAdvisorWindowCommand: sendAppAdvisorWindowCommandMock,
     sendChatWindowCommand: jest.fn(() => true),
     notifyStartupUnlocked: jest.fn(),

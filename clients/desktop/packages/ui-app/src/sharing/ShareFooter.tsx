@@ -9,6 +9,15 @@ export interface ShareFooterSecondaryAction {
   readonly testId: string;
 }
 
+/**
+ * A destructive action on the share itself (Stop sharing). It takes the
+ * footer's left side, and `leading` moves to the right before the primary.
+ */
+export interface ShareFooterDestructiveAction extends ShareFooterSecondaryAction {
+  /** The action's own work is running: the footer is locked. */
+  readonly busy?: boolean;
+}
+
 interface ShareFooterProps {
   onCancel: () => void;
   showCancel?: boolean;
@@ -30,6 +39,8 @@ interface ShareFooterProps {
    * Copy link button when the resource has a link.
    */
   leading?: ReactNode;
+  /** Rendered first on the left; pushes `leading` to the right group. */
+  destructiveAction?: ShareFooterDestructiveAction;
   testIdPrefix: string;
   submitTestId?: string;
 }
@@ -48,16 +59,38 @@ export function ShareFooter({
   loadingLabel,
   secondaryAction: secondary,
   leading,
+  destructiveAction: destructive,
   testIdPrefix,
   submitTestId,
 }: ShareFooterProps): JSX.Element {
+  const destructiveBusy = destructive?.busy === true;
   return (
     <Surface variant="section" boundary="top">
       <div
         className="flex items-center gap-2 px-6 py-3"
         data-testid={`${testIdPrefix}-footer`}
       >
-        <div className="flex min-w-0 flex-1 items-center">{leading}</div>
+        <div className="flex min-w-0 flex-1 items-center">
+          {destructive ? (
+            // The shared Button has no destructive outline variant; the
+            // ghost destructive one keeps the destructive ink without
+            // competing with the primary (CAN-5904).
+            <Button
+              type="button"
+              variant="ghost-destructive"
+              size="compact"
+              data-testid={destructive.testId}
+              onClick={destructive.onClick}
+              disabled={destructive.disabled === true || loading}
+              aria-busy={destructiveBusy}
+            >
+              {destructive.label}
+            </Button>
+          ) : (
+            leading
+          )}
+        </div>
+        {destructive && leading}
         {showCancel && (
           <Button
             type="button"
@@ -65,7 +98,7 @@ export function ShareFooter({
             size="compact"
             data-testid={cancelTestId}
             onClick={onCancel}
-            disabled={cancelDisabled || loading}
+            disabled={cancelDisabled || loading || destructiveBusy}
           >
             {cancelLabel}
           </Button>

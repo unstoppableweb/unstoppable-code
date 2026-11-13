@@ -105,6 +105,8 @@ export function runStatusGlyphState(
   switch (status) {
     case 'pending':
     case 'queued':
+    // Held for memory until it starts (CAN-6325).
+    case 'waiting_for_capacity':
       return 'queued';
     case 'running':
     case 'restarting':

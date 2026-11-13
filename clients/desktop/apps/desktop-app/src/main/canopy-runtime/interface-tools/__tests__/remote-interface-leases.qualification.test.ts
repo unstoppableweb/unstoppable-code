@@ -87,6 +87,16 @@ class FakeSession {
   get isClosed(): boolean {
     return this.closed;
   }
+  /** Never suspends: this relay-less session is active until it closes. */
+  get state(): 'active' | 'closed' {
+    return this.closed ? 'closed' : 'active';
+  }
+  onStateChange(): () => void {
+    return () => undefined;
+  }
+  readonly purpose = 'control';
+  /** The hello's resume negotiation; this session never resumes. */
+  setResumeNegotiated(): void {}
   onMessage(listener: (value: unknown) => void): () => void {
     this.messages.add(listener);
     return () => this.messages.delete(listener);
@@ -97,6 +107,9 @@ class FakeSession {
   }
   sendMessage(): boolean {
     return !this.closed;
+  }
+  closeAfterDelivery(reason: string): void {
+    this.close(reason);
   }
   close(reason: string): void {
     if (this.closed) return;

@@ -460,6 +460,16 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'daemon:route_select',
     contextKeys: ['route_family', 'route_host', 'route_reason'],
   },
+  'canopy.chat_storage_format4': {
+    kind: 'product',
+    posthogEvent: 'chat:storage_format4_update',
+    contextKeys: [
+      'format4_event',
+      'format4_reason',
+      'format4_attempt',
+      'format4_duration_bucket',
+    ],
+  },
 } as const satisfies Record<string, ProductOperationPolicy>;
 
 export type DesktopOperationName = keyof typeof DESKTOP_OPERATIONS;

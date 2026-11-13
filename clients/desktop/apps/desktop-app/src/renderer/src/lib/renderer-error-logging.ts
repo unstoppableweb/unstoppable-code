@@ -65,6 +65,16 @@ export function reportRendererConsoleError(
   console.error(`[renderer] ${message}`);
 }
 
+/**
+ * Log a promise rejection that nothing handled, as the window's
+ * `unhandledrejection` listener does.
+ */
+export function reportUnhandledRendererRejection(reason: unknown): void {
+  reportRendererConsoleError('Unhandled renderer promise rejection', {
+    reason: serializeUnknownForLogging(reason),
+  });
+}
+
 export function installRendererErrorLogging(): () => void {
   const handleError = (event: ErrorEvent): void => {
     reportRendererConsoleError('Unhandled renderer error', {
@@ -77,9 +87,7 @@ export function installRendererErrorLogging(): () => void {
   };
 
   const handleUnhandledRejection = (event: PromiseRejectionEvent): void => {
-    reportRendererConsoleError('Unhandled renderer promise rejection', {
-      reason: serializeUnknownForLogging(event.reason),
-    });
+    reportUnhandledRendererRejection(event.reason);
   };
 
   window.addEventListener('error', handleError);

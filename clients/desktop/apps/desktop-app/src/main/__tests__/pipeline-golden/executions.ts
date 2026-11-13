@@ -1,7 +1,7 @@
 // CAN-5061 execution golden helpers: shell-only pipelines, a stable state
 // projection and waits on the persisted execution record.
 import { readFile } from 'node:fs/promises';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 
 function yaml(...rows: string[]): string {

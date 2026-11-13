@@ -1,3 +1,8 @@
+import { createCoreWorktreeRecoveryAdapter } from './core-worktree-recovery-adapter';
+import {
+  createCoreMemoryChatsAdapter,
+  type CoreMemoryChatsHost,
+} from './core-memory-chats-adapter';
 import { createCoworkFolderAdapter } from './cowork-folder-adapter';
 import { createDesktopWorktreeGitAdapter } from './worker-git-worktree-adapter';
 import { CoreHelperRuns } from '@canopy/core-runtime/node/agent/helpers';
@@ -168,6 +173,8 @@ import {
 } from '../ledger/core-ledger-adapter';
 import type { LedgerService } from '../ledger/service';
 import { createCoreCostAdapter } from './core-cost-adapter';
+import { createCoreUpdateAdapter } from './core-update-adapter';
+import type { CoreUpdateHost } from '@canopy/core-runtime/update';
 import {
   createCoreSearchAdapter,
   type CoreSearchIndex,
@@ -187,6 +194,10 @@ import {
   type CoreMemoryHost,
 } from './core-memory-adapter';
 import {
+  createCoreMemoryMaintenanceAdapter,
+  type CoreMemoryMaintenanceHost,
+} from './core-memory-maintenance-adapter';
+import {
   createCoreArchiveAdapter,
   type CoreArchiveHost,
 } from './core-archive-adapter';
@@ -194,6 +205,10 @@ import {
   createCoreWatcherAdapter,
   type CoreWatcherHost,
 } from './core-watcher-adapter';
+import {
+  createCoreManagedDelegationAdapter,
+  type CoreManagedDelegationHost,
+} from './core-managed-delegation-adapter';
 import {
   createCoreDeferredToolsAdapter,
   type CoreDeferredToolsHost,
@@ -204,6 +219,10 @@ import {
 } from './core-chat-visual-stage-adapter';
 import { createCoreCatalogAdapter } from './core-catalog-adapter';
 import { createWorkerCatalogAdapter } from './worker-catalog-adapter';
+import {
+  createWorkerVisualAdapter,
+  type WorkerVisualHost,
+} from './worker-visual-adapter';
 import { createDesktopMaterializationResolver } from './catalog-materialization-host';
 import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import {
@@ -326,11 +345,13 @@ import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path'
 import type { FilesystemLinkResolved } from '@canopy/core-runtime/node';
 import type { FileBrowserRootsResult } from '../lib/file-browser-roots';
 import {
+  missingFileContent,
+  projectLegacyFileContent,
+} from '@canopy/desktop-shared/file-content-projection';
+import {
   createWorkerFilesystemReadAdapter,
   DEFAULT_FILE_READ_SERVICES,
   LEGACY_FILE_CONTENT_MAX_BYTES,
-  missingFileContent,
-  projectLegacyFileContent,
   resolveLegacyFileReadIdentity,
   type WorkerFilesystemReadServices,
 } from './worker-filesystem-read-adapter';
@@ -445,20 +466,29 @@ export interface CreateDesktopRuntimeOptions {
   /** Host behind `core.catalog.*`; tests may inject one. */
   catalogHost?: CoreCatalogHost;
   /** Namespace reads behind `core.config.get`; tests may inject them. */
-  configHost?: CoreConfigHost;
+  configHost?: Partial<CoreConfigHost>;
   /** Local memory behind `core.memory.*`; tests may inject one. */
   memoryHost?: CoreMemoryHost;
+  memoryChatsHost?: CoreMemoryChatsHost;
+  /** Consolidation, rebuild, snapshots and import behind `core.memory.*`; tests may inject one. */
+  memoryMaintenanceHost?: CoreMemoryMaintenanceHost;
   /** Archived containers behind the `core.archive` reads and lock; tests may inject one. */
   archiveHost?: CoreArchiveHost;
   /** Watcher service behind `core.initiatedWork.watcher.*`; tests may inject one. */
   watcherHost?: CoreWatcherHost;
+  /** Delegation broker behind `core.managedDelegation.*`; tests may inject one. */
+  managedDelegationHost?: CoreManagedDelegationHost;
   /** Catalog and reload lifecycle behind `core.agent.deferredTools.*`; tests may inject one. */
   deferredToolsHost?: CoreDeferredToolsHost;
   /** Staging writer behind `core.chat.visual.stage`; tests may inject one. */
   visualStageHost?: CoreChatVisualStageHost;
+  /** Render engine behind `worker.visual.render`; tests may inject one. */
+  visualRenderHost?: WorkerVisualHost;
   /** Worker host behind `worker.catalog.*` and the resolver behind materialization; tests may inject them. */
   workerCatalogHost?: WorkerCatalogHost;
   catalogMaterializationResolver?: CatalogMaterializationResolver;
+  /** Installer behind `core.update.*`; defaults to this process's updater. */
+  updateHost?: CoreUpdateHost;
   /** Read model for `core.observability.*`; tests may inject isolated stores. */
   observabilityReadModel?: ObservabilityReadModel;
   /** Host port for `core.workspace.instructions.*`; defaults to the desktop files. */
@@ -1383,6 +1413,12 @@ export function createDesktopRuntime(
         return service;
       }),
   );
+  const injectedUpdateHost = options.updateHost;
+  const updateAdapter = createCoreUpdateAdapter(
+    injectedUpdateHost
+      ? (): Promise<CoreUpdateHost> => Promise.resolve(injectedUpdateHost)
+      : undefined,
+  );
   const workspaceInstructionsAdapter = createCoreWorkspaceInstructionsAdapter(
     options.workspaceInstructionsHost,
   );
@@ -1398,14 +1434,31 @@ export function createDesktopRuntime(
     options.terminalSettingsStore,
   );
   const configAdapter = createCoreConfigAdapter(options.configHost);
-  const memoryAdapter = createCoreMemoryAdapter(options.memoryHost);
+  const memoryStoreAdapter = createCoreMemoryAdapter(options.memoryHost);
+  const memoryChatsAdapter = createCoreMemoryChatsAdapter(
+    options.memoryChatsHost,
+  );
+  const memoryAdapter: DesktopDomainAdapter = {
+    ...memoryStoreAdapter,
+    queries: { ...memoryStoreAdapter.queries, ...memoryChatsAdapter.queries },
+  };
+  const memoryMaintenanceAdapter = createCoreMemoryMaintenanceAdapter(
+    options.memoryMaintenanceHost,
+  );
   const archiveAdapter = createCoreArchiveAdapter(options.archiveHost);
+  const worktreeRecoveryAdapter = createCoreWorktreeRecoveryAdapter();
   const watcherAdapter = createCoreWatcherAdapter(options.watcherHost);
+  const managedDelegationAdapter = createCoreManagedDelegationAdapter(
+    options.managedDelegationHost,
+  );
   const deferredToolsAdapter = createCoreDeferredToolsAdapter(
     options.deferredToolsHost,
   );
   const visualStageAdapter = createCoreChatVisualStageAdapter(
     options.visualStageHost,
+  );
+  const visualRenderAdapter = createWorkerVisualAdapter(
+    options.visualRenderHost,
   );
   const observabilityReadModel = options.observabilityReadModel;
   const observabilityAdapter = createCoreObservabilityAdapter(
@@ -1607,15 +1660,23 @@ export function createDesktopRuntime(
     chatTransferAdapter,
     ledgerAdapter,
     costAdapter,
+    {
+      queries: updateAdapter.queries,
+      instructions: updateAdapter.instructions,
+    },
     summaryAdapter,
     coreSearchAdapter,
     terminalSettingsAdapter,
     configAdapter,
     memoryAdapter,
+    memoryMaintenanceAdapter,
     archiveAdapter,
+    worktreeRecoveryAdapter,
     watcherAdapter,
+    managedDelegationAdapter,
     deferredToolsAdapter,
     visualStageAdapter,
+    visualRenderAdapter,
     catalogAdapter,
     workspaceInstructionsAdapter,
     workspaceItemsAdapter,
@@ -1664,6 +1725,7 @@ export function createDesktopRuntime(
     ...operationAdapter.streams,
     ...executionAdapter.streams,
     ...observabilityAdapter.streams,
+    ...updateAdapter.streams,
   };
   for (const entry of adapters) {
     for (const name of Object.keys(entry.queries ?? {}))
@@ -1784,15 +1846,25 @@ export function createDesktopRuntime(
       ownedAdapter('core.chat.transfer', chatTransferAdapter),
       ownedAdapter('core.ledger', ledgerAdapter),
       ownedAdapter('core.cost', costAdapter),
+      owned(
+        'core.update',
+        updateAdapter.queries,
+        updateAdapter.instructions,
+        updateAdapter.streams,
+      ),
       ownedAdapter('core.summary', summaryAdapter),
       ownedAdapter('core.search', coreSearchAdapter),
       ownedAdapter('core.terminal.settings', terminalSettingsAdapter),
       ownedAdapter('core.config', configAdapter),
       ownedAdapter('core.memory', memoryAdapter),
+      ownedAdapter('core.memory.maintenance', memoryMaintenanceAdapter),
       ownedAdapter('core.archive', archiveAdapter),
+      ownedAdapter('core.worktree.recovery', worktreeRecoveryAdapter),
       ownedAdapter('core.initiatedWork.watcher', watcherAdapter),
+      ownedAdapter('core.managedDelegation', managedDelegationAdapter),
       ownedAdapter('core.agent.deferredTools', deferredToolsAdapter),
       ownedAdapter('core.chat.visual.stage', visualStageAdapter),
+      ownedAdapter('worker.visual', visualRenderAdapter),
       ownedAdapter('core.catalog', catalogAdapter),
       ownedAdapter('worker.catalog', workerCatalogAdapter),
       ownedAdapter('core.workspace.instructions', workspaceInstructionsAdapter),

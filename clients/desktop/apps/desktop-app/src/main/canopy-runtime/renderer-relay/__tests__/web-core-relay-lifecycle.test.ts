@@ -27,6 +27,8 @@ const UNLEASED_TTL_MS = 90_000;
 const LEASE_TTL_MS = 45_000;
 const MAX_IN_FLIGHT = 256;
 const EPOCH = 'epoch-1';
+/** The web core's largest file read (apps/web web-core/files.ts). */
+const WEB_CORE_MAX_READ_BYTES = 1024 * 1024;
 
 interface StubSubscription {
   sent: number;
@@ -45,11 +47,16 @@ interface StubConnection {
 /**
  * A web core behind the bridge: connection expiry and leases as the web core
  * keeps them, one stream (`core.chat.task.events`) holding at most
- * `MAX_IN_FLIGHT` unacknowledged items, and `core.events.ack`.
+ * `MAX_IN_FLIGHT` unacknowledged items, `core.events.ack`, and, unless it
+ * predates CAN-5970, `core.events.unsubscribe`.
  */
 class StubWebCore {
+  constructor(private readonly servesUnsubscribe = true) {}
+
   readonly connections = new Map<string, StubConnection>();
   readonly methods: string[] = [];
+  /** The params of each `worker.filesystem.file.read` the web core received. */
+  readonly fileReads: unknown[] = [];
   private opened = 0;
   private subscriptionCount = 0;
 
@@ -226,10 +233,12 @@ class StubWebCore {
           capabilities: {
             operations: [
               'core.workspace.list',
+              'worker.filesystem.file.read',
               'core.client.lease.acquire',
               'core.client.lease.renew',
               'core.client.lease.release',
               'core.events.ack',
+              ...(this.servesUnsubscribe ? ['core.events.unsubscribe'] : []),
             ],
             events: [],
             streams: ['core.chat.task.events'],
@@ -267,6 +276,22 @@ class StubWebCore {
         });
       case 'core.workspace.list':
         return result({ items: [], nextCursor: null });
+      case 'worker.filesystem.file.read':
+        this.fileReads.push(params);
+        return result({
+          fileRootId: 'workspace',
+          relativePath: 'image.png',
+          name: 'image.png',
+          contentKind: 'image',
+          encoding: 'base64',
+          content: Buffer.alloc(WEB_CORE_MAX_READ_BYTES).toString('base64'),
+          mediaType: 'image/png',
+          sizeBytes: WEB_CORE_MAX_READ_BYTES,
+          returnedBytes: WEB_CORE_MAX_READ_BYTES,
+          truncated: false,
+          modifiedAt: '2026-11-10T09:00:00.000Z',
+          version: 'v1',
+        });
       case 'core.chat.task.events': {
         this.subscriptionCount += 1;
         const subscriptionId = `sub-${this.subscriptionCount}`;
@@ -292,13 +317,19 @@ class StubWebCore {
         }
         return result({ acknowledgedCursor: cursor });
       }
-      default:
-        return {
-          jsonrpc: '2.0',
-          id,
-          error: { code: -32601, message: `${method} is not served.` },
-        };
+      case 'core.events.unsubscribe': {
+        if (!this.servesUnsubscribe) break;
+        const subscriptionId = String(Reflect.get(params, 'subscriptionId'));
+        return result({
+          unsubscribed: connection.subscriptions.delete(subscriptionId),
+        });
+      }
     }
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32601, message: `${method} is not served.` },
+    };
   }
 }
 
@@ -378,6 +409,13 @@ async function readItem(
   return reply.value;
 }
 
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let tries = 0; !condition(); tries += 1) {
+    if (tries > 100) throw new Error('condition never held');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 const relays: RendererRelay[] = [];
 afterEach(() => {
   relays.splice(0).forEach((relay) => relay.dispose());
@@ -423,6 +461,52 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
       });
   });
 
+  it('a file read at the web core read limit reaches the renderer whole (CAN-6175)', async () => {
+    const server = new StubWebCore();
+    const relay = webCoreRelay(server);
+    relays.push(relay);
+    const reply = await relay.invoke(mainWindowEvent(), {
+      kind: 'request',
+      method: 'worker.filesystem.file.read',
+      params: {
+        scope: { chatId: 'chat-1' },
+        fileRootId: 'workspace',
+        relativePath: 'image.png',
+        maxBytes: WEB_CORE_MAX_READ_BYTES,
+      },
+    });
+    expect(reply).toMatchObject({ ok: true });
+    const content: unknown =
+      reply.ok && typeof reply.value === 'object' && reply.value !== null
+        ? Reflect.get(reply.value, 'content')
+        : null;
+    // Base64 of 1 MiB is past the 1 MiB local relay reply cap.
+    expect(typeof content === 'string' && content.length).toBe(
+      Math.ceil(WEB_CORE_MAX_READ_BYTES / 3) * 4,
+    );
+  });
+
+  it('a renderer wake never reaches the web core: main has no wake proof, so the read stays non-waking (CAN-6114)', async () => {
+    const server = new StubWebCore();
+    const relay = webCoreRelay(server);
+    relays.push(relay);
+    const read = {
+      scope: { chatId: 'chat-1' },
+      fileRootId: 'workspace',
+      relativePath: 'image.png',
+      maxBytes: 1024,
+    };
+    await expect(
+      relay.invoke(mainWindowEvent(), {
+        kind: 'request',
+        method: 'worker.filesystem.file.read',
+        params: { ...read, wake: true },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(server.fileReads).toEqual([expect.objectContaining(read)]);
+    expect(server.fileReads[0]).not.toHaveProperty('wake');
+  });
+
   it('more than maxInFlight items flow through readStream without stalling', async () => {
     const server = new StubWebCore();
     const relay = webCoreRelay(server);
@@ -453,8 +537,45 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
     );
   }, 20_000);
 
-  it('closing one stream leaves a second stream delivering', async () => {
+  it('closing one stream drops it at the web core and leaves a second stream delivering (CAN-5970)', async () => {
     const server = new StubWebCore();
+    const relay = webCoreRelay(server);
+    relays.push(relay);
+    const event = mainWindowEvent();
+    const first = await openTaskStream(relay, event);
+    const second = await openTaskStream(relay, event);
+    server.emit('sub-1', 1);
+    await readItem(relay, event, first);
+
+    await expect(
+      relay.invoke(event, { kind: 'closeStream', subscriptionId: first }),
+    ).resolves.toEqual({ ok: true, value: null });
+    await waitFor(() => server.subscription('sub-1') === undefined);
+    expect(
+      server.methods.filter((method) => method === 'core.events.unsubscribe'),
+    ).toHaveLength(1);
+    server.emit('sub-2', 1);
+    await expect(readItem(relay, event, second)).resolves.toMatchObject({
+      kind: 'item',
+      cursor: { sequence: 1 },
+    });
+    // Host-only: the renderer cannot unsubscribe a stream itself.
+    await expect(
+      relay.invoke(event, {
+        kind: 'request',
+        method: 'core.events.unsubscribe',
+        params: { subscriptionId: 'sub-2' },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'capability_unavailable' },
+    });
+    expect(server.subscription('sub-2')).toBeDefined();
+    expect(server.openedConnections).toBe(1);
+  });
+
+  it('closing one stream on a web core without unsubscribe parks it and leaves a second stream delivering', async () => {
+    const server = new StubWebCore(false);
     const relay = webCoreRelay(server);
     relays.push(relay);
     const event = mainWindowEvent();

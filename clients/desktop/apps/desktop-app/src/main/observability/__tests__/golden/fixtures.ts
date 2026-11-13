@@ -14,7 +14,7 @@ import type {
   NormalizedJob,
   NormalizedStep,
   StepResult,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import type {
   AgentDelegationSnapshot,
   AgentDelegationTranscript,

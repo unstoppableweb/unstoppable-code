@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import {
   RemoteControlPairing,
@@ -12,7 +13,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
-import { describeError } from './remote-access-copy';
+import { ALLOW_INCOMING_LABEL, describeError } from './remote-access-copy';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 
 /** Main keeps discovery alive for about five minutes per request. */
@@ -164,8 +165,7 @@ export function PairComputerDialog({
           kind: 'choose',
           computers: state.discoverable,
           searching: !discovered,
-          emptyHint:
-            'On the other computer, open Settings → Remote access and turn on Allow other computers to control this one. Both computers must be signed in to the same account.',
+          emptyHint: `On the other computer, open Settings → ${REMOTE_CONTROL_LABEL} and turn on ${ALLOW_INCOMING_LABEL}. Both computers must be signed in to the same account.`,
           relayUnavailable: state.relayStatus === 'unavailable',
           disabled: busy,
           onChoose: pair,

@@ -11,6 +11,7 @@ import {
   PIPELINE_GRANTS,
   WORKER_CODE_GRAPH_GRANTS,
   WORKER_SCRIPT_GRANTS,
+  WORKER_VISUAL_GRANTS,
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
@@ -62,6 +63,8 @@ export const AGENT_CORE_TOOL_OPERATIONS = {
     'core.config.get': [CONFIG_GRANTS.read],
   },
   memory: {
+    'core.memory.chats.search': [MEMORY_GRANTS.read],
+    'core.memory.chats.excerpt': [MEMORY_GRANTS.read],
     'core.memory.search': [MEMORY_GRANTS.read],
     'core.memory.entry.get': [MEMORY_GRANTS.read],
     'core.memory.entry.append': [MEMORY_GRANTS.write],
@@ -85,6 +88,7 @@ export const AGENT_CORE_TOOL_OPERATIONS = {
   },
   visuals: {
     'core.chat.visual.stage': [CORE_CHAT_VISUAL_STAGE_GRANTS.write],
+    'worker.visual.render': [WORKER_VISUAL_GRANTS.render],
   },
   autoArchive: {
     'core.chat.update': ['core.chat.write'],

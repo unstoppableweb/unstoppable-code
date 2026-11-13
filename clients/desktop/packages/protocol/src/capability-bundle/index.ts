@@ -931,7 +931,7 @@ function isSafeRelativePosixPath(path: string): boolean {
  * Collision between a candidate destination and a previously accepted one.
  * `existing` is the case-preserved spelling of the accepted destination.
  */
-interface DestinationConflict {
+export interface DestinationConflict {
   kind:
     | 'duplicate' // Same destination (casefolded) accepted before.
     | 'directory-prefix' // Candidate is a directory prefix of `existing`.
@@ -949,7 +949,7 @@ interface DestinationConflict {
  * where `A/b` and `a/B` alias the same on-disk path, so case-only variants
  * must collide here rather than silently overwrite at bootstrap.
  */
-function createDestinationCollisionTracker(): {
+export function createDestinationCollisionTracker(): {
   add(destination: string): DestinationConflict | null;
 } {
   // Casefolded destination → case-preserved accepted destination.

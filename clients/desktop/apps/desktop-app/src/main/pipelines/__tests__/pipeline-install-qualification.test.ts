@@ -16,7 +16,7 @@ import {
   getStoredPipelineText,
   listStoredPipelines,
   saveStoredPipeline,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import type { InstallReceipt } from '@canopy/execution-engine/lib/resource-context-policy';
@@ -61,7 +61,7 @@ import {
   listPipelinePackageInstalls,
   upsertPipelinePackageInstall,
 } from '../pipeline-package-install-store';
-import * as pipelineStore from '@canopy/desktop-shared/pipelines/store';
+import * as pipelineStore from '@canopy/execution-engine/pipelines/store';
 import {
   beginPipelineInstallIntent,
   recoverInterruptedPipelineInstalls,

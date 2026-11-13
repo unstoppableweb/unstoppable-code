@@ -1,3 +1,5 @@
+import { broadcastOrgProjectOwnershipChanged } from './org-project-ownership-broadcast';
+import { getOrganizationAccessLossService } from '../services/organization-access-loss-service';
 import { registerPersonalOrganizationUpgradeHandlers } from './personal-organization-upgrade';
 import { getObservabilityService } from '../observability';
 import {
@@ -266,6 +268,9 @@ function parseCheckRepositoriesRequest(
   };
 }
 
+let stopMaterializationOwnershipBroadcast: (() => void) | undefined;
+let stopAccessLossOwnershipBroadcast: (() => void) | undefined;
+
 export function registerOrgProjectsHandlers(): void {
   registerPersonalOrganizationUpgradeHandlers();
   registerIpcHandler<[], OrgProjectLinksListResult>(
@@ -448,16 +453,15 @@ export function registerOrgProjectsHandlers(): void {
     async (_event, request: unknown): Promise<OrgProjectMoveBackResult> =>
       materialization.moveBackToPersonal(parseMoveBackRequest(request)),
   );
-  materialization.onOwnershipChanged((event): void => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed())
-        sendToWebContents(
-          window.webContents,
-          IPC_CHANNELS.orgProjectsOwnershipChanged,
-          event,
-        );
-    }
-  });
+  stopMaterializationOwnershipBroadcast?.();
+  stopAccessLossOwnershipBroadcast?.();
+  stopMaterializationOwnershipBroadcast = materialization.onOwnershipChanged(
+    broadcastOrgProjectOwnershipChanged,
+  );
+  stopAccessLossOwnershipBroadcast =
+    getOrganizationAccessLossService().onOwnershipChanged(
+      broadcastOrgProjectOwnershipChanged,
+    );
   const service = getOrgProjectCatalogService();
 
   service.subscribe((snapshot) => {

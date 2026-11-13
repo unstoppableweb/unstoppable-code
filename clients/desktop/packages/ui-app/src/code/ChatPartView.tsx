@@ -37,6 +37,7 @@ import {
   AutoRoutedModelPill,
   AnsweredQuestionsBlock,
   AskUserQuestionCard,
+  AskUserQuestionPreparingRow,
   CollapsibleBlock,
   CompactionInfoBlock,
   DeferredAccountProxySwitchPart,
@@ -93,7 +94,6 @@ import {
 } from './ChatToolResultPart';
 import { useClaudeModsSkippedHost } from '../capability/claude-mods/ClaudeModsSkippedHost';
 import { DeferredClaudeModsSkippedPart } from '../capability/claude-mods/DeferredClaudeModsSkippedPart';
-import { Notice } from '@canopy/ui-shared/components/Notice';
 
 /**
  * Renders one neutral {@link PortalChatPart} by dispatching on its typed `kind`
@@ -221,6 +221,8 @@ const AskUserQuestionInteractionContext =
 
 const NO_COMPOSER_QUESTIONS: readonly PortalAskUserQuestionState[] = [];
 const ComposerAskUserQuestionsContext = createContext(NO_COMPOSER_QUESTIONS);
+/** The host's composer asks every pending question, one at a time. */
+const ComposerAsksQuestionsContext = createContext(false);
 
 const EMPTY_WAITING_DELEGATION_IDS: ReadonlySet<string> = new Set();
 
@@ -238,6 +240,7 @@ export const ChatWaitingDelegationsContext = createContext<ReadonlySet<string>>(
 export function AskUserQuestionInteractionProvider({
   value,
   composerQuestions = NO_COMPOSER_QUESTIONS,
+  composerAsks = false,
   children,
 }: {
   value: AskUserQuestionInteraction | null;
@@ -246,12 +249,21 @@ export function AskUserQuestionInteractionProvider({
    * them matches renders nothing, as desktop's does while its composer asks.
    */
   composerQuestions?: readonly PortalAskUserQuestionState[];
+  /**
+   * The host's composer asks every pending question, one after another, so
+   * the transcript shows none of them (the question card is retired where
+   * the composer asks). A host whose composer can't ask leaves it off and
+   * keeps the card.
+   */
+  composerAsks?: boolean;
   children: ReactNode;
 }): JSX.Element {
   return (
     <AskUserQuestionInteractionContext.Provider value={value}>
       <ComposerAskUserQuestionsContext.Provider value={composerQuestions}>
-        {children}
+        <ComposerAsksQuestionsContext.Provider value={composerAsks}>
+          {children}
+        </ComposerAsksQuestionsContext.Provider>
       </ComposerAskUserQuestionsContext.Provider>
     </AskUserQuestionInteractionContext.Provider>
   );
@@ -421,23 +433,35 @@ function readDeliverable(data: Record<string, unknown>): DeliverableRef | null {
 // A Record over the union forces every `PortalChatPart` kind to be listed —
 // adding a new kind to the protocol fails to compile here (rather than silently
 // dropping coerced sub-blocks of the new kind). The Set is derived from it.
-const PART_KIND_FLAGS: Record<PortalChatPart['kind'], true> = {
-  mcp_activation: true,
-  text: true,
-  tool_use: true,
-  tool_result: true,
-  thinking: true,
-  attachment: true,
-  image: true,
-  agent: true,
-  turn_timer: true,
-  steering: true,
-  prompt_source: true,
-  compaction: true,
-  account_switch: true,
-  mods_skipped: true,
-};
-const PART_KINDS: ReadonlySet<string> = new Set(Object.keys(PART_KIND_FLAGS));
+/**
+ * How session replay treats each part kind (CAN-5975). `blocked`: the whole
+ * part is blocked. `content-blocked`: the part's components block their own
+ * content, so its toggles and buttons stay recorded. Every kind must be
+ * listed, so a new kind fails to compile until someone decides, and the
+ * replay privacy golden renders each one to check nothing it shows escapes.
+ */
+export const CHAT_PART_REPLAY_POLICY = {
+  mcp_activation: 'blocked',
+  text: 'blocked',
+  tool_use: 'content-blocked',
+  tool_result: 'content-blocked',
+  thinking: 'content-blocked',
+  attachment: 'content-blocked',
+  image: 'content-blocked',
+  agent: 'content-blocked',
+  turn_timer: 'content-blocked',
+  steering: 'blocked',
+  prompt_source: 'blocked',
+  compaction: 'content-blocked',
+  account_switch: 'blocked',
+  mods_skipped: 'blocked',
+} as const satisfies Record<
+  PortalChatPart['kind'],
+  'blocked' | 'content-blocked'
+>;
+const PART_KINDS: ReadonlySet<string> = new Set(
+  Object.keys(CHAT_PART_REPLAY_POLICY),
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -741,7 +765,19 @@ function NativeAgentPart({
   );
 }
 
-function ChatPartViewImpl({
+function ChatPartViewImpl(props: ChatPartViewProps): JSX.Element {
+  const content = <ChatPartContent {...props} />;
+  // A real box, not `display: contents`: replay sizes a blocked element's
+  // placeholder from its box, so the recorded layout keeps the part's size.
+  // `empty:hidden` keeps a part that renders nothing out of the layout's gaps.
+  return CHAT_PART_REPLAY_POLICY[props.part.kind] === 'blocked' ? (
+    <div className={`${REPLAY_BLOCK_CLASS} empty:hidden`}>{content}</div>
+  ) : (
+    content
+  );
+}
+
+function ChatPartContent({
   part,
   messageId,
   appIcon,
@@ -761,6 +797,7 @@ function ChatPartViewImpl({
   const data = partData(part);
   const askUserInteraction = useAskUserQuestionInteraction();
   const composerQuestions = useContext(ComposerAskUserQuestionsContext);
+  const composerAsks = useContext(ComposerAsksQuestionsContext);
   const outputReader = useContext(ToolOutputReaderContext);
   const turnSettled = useContext(ToolTurnSettledContext);
   const trustedMcpNamespace = useContext(ToolNamespaceContext);
@@ -831,7 +868,10 @@ function ChatPartViewImpl({
         // that the tool resolves to the `plan` family.
         if (plan) {
           return (
-            <div className={PLAN_PROSE_CLASSES} data-testid="chat-part-plan">
+            <div
+              className={`${REPLAY_BLOCK_CLASS} ${PLAN_PROSE_CLASSES}`}
+              data-testid="chat-part-plan"
+            >
               <Markdown options={PLAN_MARKDOWN_OPTIONS} streaming={live}>
                 {plan}
               </Markdown>
@@ -864,7 +904,11 @@ function ChatPartViewImpl({
           case 'awaiting': {
             const pending = presentation.record;
             // The composer asks it, so the row stays hidden, as on desktop.
-            if (!askUserInteraction || composerQuestions.includes(pending)) {
+            if (
+              !askUserInteraction ||
+              composerAsks ||
+              composerQuestions.includes(pending)
+            ) {
               return null;
             }
             const status = askUserInteraction.getRequestStatus?.(
@@ -897,16 +941,7 @@ function ChatPartViewImpl({
             );
           }
           case 'preparing':
-            return (
-              <Notice
-                intent="neutral"
-                icon={null}
-                role="none"
-                data-testid="ask-user-question-preparing"
-              >
-                Preparing question…
-              </Notice>
-            );
+            return <AskUserQuestionPreparingRow />;
           case 'answered':
             return (
               <>
@@ -1027,7 +1062,9 @@ function ChatPartViewImpl({
         );
       }
       return (
-        <div className="prose prose-sm dark:prose-invert max-w-none">
+        <div
+          className={`${REPLAY_BLOCK_CLASS} prose prose-sm dark:prose-invert max-w-none`}
+        >
           <Markdown
             options={TRANSCRIPT_MARKDOWN_OPTIONS}
             streaming={smoothStreaming && live === true}
@@ -1296,7 +1333,8 @@ function ChatPartViewImpl({
 
     default: {
       // Exhaustiveness guard: a new part kind must be handled explicitly here
-      // AND added to `PART_KIND_FLAGS` (which `coercePart` uses for sub-blocks).
+      // AND added to `CHAT_PART_REPLAY_POLICY` (which `coercePart` uses for
+      // sub-blocks).
       part.kind satisfies never;
       return null;
     }

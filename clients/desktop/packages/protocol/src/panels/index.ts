@@ -507,6 +507,16 @@ export interface ISerializedPanelEntry {
    * `title` type-only check.
    */
   readonly pinned?: boolean;
+  /**
+   * The chat tab (`chatTabId`) this content tab belongs to (additive field,
+   * doc 12 §4 additive-first rule — no version bump; files without it stay
+   * valid and the tab shows for every chat). While another chat of the same
+   * layout is selected, the tab is hidden but kept, so each chat keeps its
+   * own browser, file and plan tabs. Only content kinds use it; see
+   * `CHAT_SCOPED_PANEL_KINDS` in `@canopy/ui-app`. Validation rejects the
+   * file only on a WRONG TYPE, matching `title` and `pinned`.
+   */
+  readonly chatScope?: string;
 }
 
 /** Directions a leaf group can collapse toward, at outer or inner split edges. */
@@ -899,7 +909,9 @@ export function isSerializedPanelEntry(
     validInstance &&
     // Type-only check: a non-boolean `pinned` rejects the file, but its
     // absence is valid (unpinned).
-    isOptionalBoolean(value.pinned)
+    isOptionalBoolean(value.pinned) &&
+    // Type-only check, like `pinned`: absent means the tab is shared.
+    (value.chatScope === undefined || typeof value.chatScope === 'string')
   );
 }
 

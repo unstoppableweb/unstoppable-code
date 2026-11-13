@@ -14,6 +14,7 @@ import {
 } from '@/stores/composerRecoveryStore';
 import { useTransientRetryBannerStore } from '@/stores/transientRetryBannerStore';
 import { useIngestionLagStore } from '@/stores/ingestionLagStore';
+import { usePromptSuggestionStore } from '@/stores/promptSuggestionStore';
 import { invalidateAiCreditsAvailabilityCache } from '@/hooks/useAiCreditsAvailability';
 import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
 import {
@@ -25,6 +26,11 @@ import {
   refreshAiCreditsAfterChargedTurn,
 } from '@/hooks/useAiCreditsUsage';
 import { isRecord } from '@/stores/chat/utils';
+import {
+  chatBackends,
+  localChatBackend,
+  subscribeEachChatBackend,
+} from '@/stores/chat/backend';
 import type {
   ApprovalRequestEvent,
   ApprovalRuleAddedEvent,
@@ -46,7 +52,9 @@ import {
   isAiCreditsUsageLimitEventData,
   isChatIngestionLagEventData,
   isNoBillingSourceErrorEventData,
+  isPromptSuggestionEventData,
   isTransientRetryStateEventData,
+  PROMPT_SUGGESTION_EVENT_TYPE,
 } from '@canopy/desktop-shared/types';
 
 /**
@@ -175,7 +183,10 @@ export function useChatEventSubscriptions(): void {
   // once per animation frame through `chatStoreRenderView`; any other store
   // update, user input, the window hiding, and unsubscribe publish it sooner.
   useEffect(() => {
-    if (typeof window.api.chat.onStateChanged !== 'function') return;
+    const stateBackends = chatBackends().filter(
+      (backend) => typeof backend.chat.onStateChanged === 'function',
+    );
+    if (stateBackends.length === 0) return;
     const scheduler = windowFrameScheduler();
     const flush = (): void => chatStoreRenderView.flush();
     // Input commits pending content before the event reaches React's
@@ -191,20 +202,24 @@ export function useChatEventSubscriptions(): void {
     document.addEventListener('visibilitychange', flushWhenHidden);
     window.addEventListener('pointerdown', flushForInput, true);
     window.addEventListener('keydown', flushForInput, true);
-    const unsubscribe = window.api.chat.onStateChanged(
-      (event: ChatStateChangedEvent): void => {
-        const startedAt = performance.now();
-        const state = useChatStore.getState();
-        applyChatStateChangedForRender(event, {
-          apply: handleChatStateChanged,
-          runtimeByChatId: state.runtimeByChatId,
-          delegationStreamHints: state.delegationStreamHints,
-          view: chatStoreRenderView,
-          scheduler,
-        });
-        recordChatStateApplied(event, startedAt);
-      },
+    const onStateChanged = (event: ChatStateChangedEvent): void => {
+      const startedAt = performance.now();
+      const state = useChatStore.getState();
+      applyChatStateChangedForRender(event, {
+        apply: handleChatStateChanged,
+        runtimeByChatId: state.runtimeByChatId,
+        delegationStreamHints: state.delegationStreamHints,
+        view: chatStoreRenderView,
+        scheduler,
+      });
+      recordChatStateApplied(event, startedAt);
+    };
+    const unsubscribes = stateBackends.map((backend) =>
+      backend.chat.onStateChanged(onStateChanged),
     );
+    const unsubscribe = (): void => {
+      for (const each of unsubscribes) each();
+    };
     return (): void => {
       unsubscribe();
       flush();
@@ -215,13 +230,11 @@ export function useChatEventSubscriptions(): void {
   }, [handleChatStateChanged]);
 
   useEffect(() => {
-    if (!window.api.chat.onChatQueueUpdated) return;
-    const unsubscribe = window.api.chat.onChatQueueUpdated(
-      (event: ChatQueueUpdatedEvent) => {
+    return subscribeEachChatBackend((backend) =>
+      backend.chat.onChatQueueUpdated?.((event: ChatQueueUpdatedEvent) => {
         handleChatQueueUpdated(event);
-      },
+      }),
     );
-    return unsubscribe;
   }, [handleChatQueueUpdated]);
 
   useEffect(() => {
@@ -241,6 +254,26 @@ export function useChatEventSubscriptions(): void {
               chatId: event.chatId,
             },
             event.data.lag,
+          );
+        }
+        return;
+      }
+      if (
+        isRecord(event.data) &&
+        event.data.type === PROMPT_SUGGESTION_EVENT_TYPE
+      ) {
+        // Transient, like ingestion lag: never reaches the transcript.
+        if (isPromptSuggestionEventData(event.data)) {
+          usePromptSuggestionStore.getState().setSuggestion(
+            {
+              projectId: event.projectId,
+              worktreeId: event.worktreeId,
+              chatId: event.chatId,
+            },
+            {
+              text: event.data.text,
+              turnUserMessageId: event.data.turnUserMessageId,
+            },
           );
         }
         return;
@@ -387,8 +420,8 @@ export function useChatEventSubscriptions(): void {
         useTransientRetryBannerStore.getState().setState(target, event.data);
       }
     });
-    void window.api.chat
-      .getTransientRetrySnapshot()
+    void localChatBackend()
+      .chat.getTransientRetrySnapshot()
       .then((entries) => {
         if (!active) return;
         for (const entry of entries) {
@@ -413,7 +446,7 @@ export function useChatEventSubscriptions(): void {
   }, [handleChatEvent]);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onScheduledTerminalPrompt(
+    const unsubscribe = localChatBackend().chat.onScheduledTerminalPrompt(
       (event: ClaudeTerminalScheduledPromptEvent) => {
         handleScheduledTerminalPrompt(event);
       },
@@ -422,13 +455,13 @@ export function useChatEventSubscriptions(): void {
   }, [handleScheduledTerminalPrompt]);
 
   useEffect(() => {
-    return window.api.chat.onHookQueueRemoved((event) => {
+    return localChatBackend().chat.onHookQueueRemoved((event) => {
       useChatStore.getState().handleHookQueueRemoved(event);
     });
   }, []);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onHookTabStarted(
+    const unsubscribe = localChatBackend().chat.onHookTabStarted(
       (event: HookChatTabStartedEvent) => {
         handleHookTabStarted(event);
       },
@@ -437,8 +470,8 @@ export function useChatEventSubscriptions(): void {
   }, [handleHookTabStarted]);
 
   useEffect(() => {
-    if (!window.api.chat.onChatSessionImported) return;
-    return window.api.chat.onChatSessionImported(
+    if (!localChatBackend().chat.onChatSessionImported) return;
+    return localChatBackend().chat.onChatSessionImported(
       (event: ChatSessionImportedEvent) => {
         handleSessionImported(event);
       },
@@ -446,7 +479,7 @@ export function useChatEventSubscriptions(): void {
   }, [handleSessionImported]);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onMcpAskUser(
+    const unsubscribe = localChatBackend().chat.onMcpAskUser(
       (event: McpAskUserEvent) => {
         handleMcpAskUser(event);
       },
@@ -455,37 +488,38 @@ export function useChatEventSubscriptions(): void {
   }, [handleMcpAskUser]);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onMcpExpireAskUser((event) => {
+    const unsubscribe = localChatBackend().chat.onMcpExpireAskUser((event) => {
       useChatStore.getState().expireMcpQuestion(event.requestId);
     });
     return unsubscribe;
   }, []);
 
   useEffect(() => {
-    const unsubscribe = window.api.approvals.onRequest(
-      (event: ApprovalRequestEvent) => {
+    return subscribeEachChatBackend((backend) =>
+      backend.approvals.onRequest((event: ApprovalRequestEvent) => {
         handleApprovalRequest(event);
-      },
+      }),
     );
-    return unsubscribe;
   }, [handleApprovalRequest]);
 
   useEffect(() => {
-    const unsubscribe = window.api.approvals.onCancelled((event) => {
-      handleApprovalCancelled(event.requestId);
-    });
-    return unsubscribe;
+    return subscribeEachChatBackend((backend) =>
+      backend.approvals.onCancelled((event) => {
+        handleApprovalCancelled(event.requestId);
+      }),
+    );
   }, [handleApprovalCancelled]);
 
   useEffect(() => {
-    const unsubscribe = window.api.approvals.onAutoResolved((event) => {
-      handleApprovalAutoResolved(event);
-    });
-    return unsubscribe;
+    return subscribeEachChatBackend((backend) =>
+      backend.approvals.onAutoResolved((event) => {
+        handleApprovalAutoResolved(event);
+      }),
+    );
   }, [handleApprovalAutoResolved]);
 
   useEffect(() => {
-    const unsubscribe = window.api.approvals.onRuleAdded(
+    const unsubscribe = localChatBackend().approvals.onRuleAdded(
       (event: ApprovalRuleAddedEvent) => {
         handleApprovalRuleAdded(event);
       },
@@ -494,7 +528,7 @@ export function useChatEventSubscriptions(): void {
   }, [handleApprovalRuleAdded]);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onPlanExitRequest(
+    const unsubscribe = localChatBackend().chat.onPlanExitRequest(
       (event: PlanExitRequestEvent) => {
         handlePlanExitRequest(event);
       },
@@ -503,21 +537,22 @@ export function useChatEventSubscriptions(): void {
   }, [handlePlanExitRequest]);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onTabDescriptionUpdated(
-      (event: ChatTabDescriptionUpdatedEvent) => {
-        handleTabDescriptionUpdated(
-          event.projectId,
-          event.worktreeId,
-          event.chatId,
-          event.description,
-        );
-      },
+    return subscribeEachChatBackend((backend) =>
+      backend.chat.onTabDescriptionUpdated(
+        (event: ChatTabDescriptionUpdatedEvent) => {
+          handleTabDescriptionUpdated(
+            event.projectId,
+            event.worktreeId,
+            event.chatId,
+            event.description,
+          );
+        },
+      ),
     );
-    return unsubscribe;
   }, [handleTabDescriptionUpdated]);
 
   useEffect(() => {
-    const unsubscribe = window.api.chat.onDeferredToolsReloadEvent(
+    const unsubscribe = localChatBackend().chat.onDeferredToolsReloadEvent(
       (event: DeferredToolsReloadEvent) => {
         handleDeferredToolsReloadEvent(event);
       },

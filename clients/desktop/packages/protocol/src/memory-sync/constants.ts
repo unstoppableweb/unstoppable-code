@@ -25,6 +25,7 @@ function scopePath(scopeId: string): string {
 
 export const MEMORY_SYNC_ROUTES = {
   settings: (): string => `${MEMORY_SYNC_API_PREFIX}/settings`,
+  projectSettings: (): string => `${MEMORY_SYNC_API_PREFIX}/settings/projects`,
   projectSetting: (projectId: string): string =>
     `${MEMORY_SYNC_API_PREFIX}/settings/projects/${projectId}`,
   deviceRegister: (): string => `${MEMORY_SYNC_API_PREFIX}/devices/register`,

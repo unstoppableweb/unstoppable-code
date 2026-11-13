@@ -195,6 +195,7 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   // Terminals stay in the app; terminal acceptance opts in through Labs.
   'canopy-desktop-labs-daemon-terminals': 'offered',
   'canopy-desktop-labs-daemon-code-graph': 'offered',
+  'canopy-desktop-labs-orchestrator-page': 'offered',
   // The Labs page experiments are `offered` (off until switched on) in
   // production (CAN-3678). Pin them `on` so specs that drive these pages keep
   // them without per-spec seeding; labs-pages.spec.mjs sets them back to

@@ -199,6 +199,7 @@ function PlanFollowUpDialogs({
           existingShare={plan.share}
           onClose={actions.closeShareModal}
           onShare={actions.submitShare}
+          onUnshare={actions.submitUnshare}
         />
       )}
       {actions.shareGateModal}

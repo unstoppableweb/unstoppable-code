@@ -27,6 +27,7 @@ import {
   type AppAdvisorUiStateEnvelope,
   type AppAdvisorWindowOpenRequest,
   type AppAdvisorWindowBatchRemovalDialog,
+  type AppAdvisorDockResult,
   type AppAdvisorWindowState,
   type AppAdvisorWindowUiState,
   type OpenTurnFileRequest,
@@ -308,6 +309,14 @@ export interface AppAdvisorWindowAccessors extends AppAdvisorRendererToolSurface
   ) => AppAdvisorWindowState;
   /** Resizes the floating panel; the size is untrusted renderer input. */
   setAppAdvisorFloatingSize: (size: unknown) => AppAdvisorWindowState;
+  /**
+   * Places the docked Orchestrator page; the request is untrusted renderer
+   * input, accepted only from the main window's page.
+   */
+  setAppAdvisorDock: (
+    sender: WebContents,
+    request: unknown,
+  ) => Promise<AppAdvisorDockResult>;
   /**
    * Optional test/host override for applying one allowlisted artifact
    * destination. Production uses the built-in main-window focus + typed-action
@@ -1805,5 +1814,10 @@ export function registerAppAdvisorHandlers(
   registerIpcHandler<[unknown], AppAdvisorWindowState>(
     IPC_CHANNELS.appAdvisorWindowSetFloatingSize,
     (_event, size) => accessors.setAppAdvisorFloatingSize(size),
+  );
+
+  registerIpcHandler<[unknown], AppAdvisorDockResult>(
+    IPC_CHANNELS.appAdvisorWindowSetDock,
+    (event, request) => accessors.setAppAdvisorDock(event.sender, request),
   );
 }

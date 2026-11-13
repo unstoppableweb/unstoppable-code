@@ -1,3 +1,4 @@
+import { isAutomationExecutionLocation } from '@canopy/protocol/automations';
 import {
   appendFile,
   mkdir,
@@ -89,12 +90,12 @@ export function isAutomationRunArchiveRecord(
   ) {
     return false;
   }
+  // CAN-6183: a run from a location this desktop doesn't know is kept.
   if (
     value.executionLocation !== undefined &&
-    value.executionLocation !== 'local'
-  ) {
-    return false;
-  }
+    !isAutomationExecutionLocation(value.executionLocation)
+  )
+    delete value.executionLocation;
   if (
     value.durationMs !== undefined &&
     (typeof value.durationMs !== 'number' ||

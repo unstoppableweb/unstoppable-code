@@ -21,6 +21,7 @@ import {
   assertAbandonedArchivesMatch,
 } from './lifecycle-policy';
 import { durableJson, statIfPresent } from './filesystem';
+import { internalRootMigrationProgress } from './progress';
 import type { InternalRootFilesystemHost } from './filesystem-host';
 
 async function carriedJournals(
@@ -233,6 +234,8 @@ export async function relocateInternalRootJournals(
     internalRootJournalOwnedPaths(source, evidence),
     workingRoot,
     published,
+    undefined,
+    internalRootMigrationProgress,
   );
   for (const entry of original) {
     const { name } = entry;

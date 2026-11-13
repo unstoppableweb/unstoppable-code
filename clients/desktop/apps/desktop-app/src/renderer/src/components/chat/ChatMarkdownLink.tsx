@@ -58,8 +58,8 @@ export function ChatMarkdownLink({
     !/^[a-z][a-z0-9+-]*$/i.test(fileHref);
   // Local file links resolve through the scope's file roots, so they stay
   // active in read-only scopes too (the shared-container recipient opens the
-  // replica file beside the chat). Remote images are governed separately by
-  // `allowRemoteImages` in the block renderer, not by this link gate.
+  // replica file beside the chat). Remote images are not gated anywhere; they
+  // load as in any chat (CAN-4785).
   if (
     !target ||
     !href ||

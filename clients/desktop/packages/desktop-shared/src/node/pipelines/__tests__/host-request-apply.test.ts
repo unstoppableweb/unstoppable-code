@@ -3,14 +3,14 @@
 // enforcing the deadline and timeout finalizer as the executor does in process.
 import type { WorkerPipelineHostRequest } from '@canopy/protocol/canopy-core';
 import { buildPipelineHostIdempotencyKey } from '@canopy/execution-engine/pipelines/host-actions';
-import { hostArtifactsDir } from '../executor/host-action-runner';
+import { hostArtifactsDir } from '@canopy/execution-engine/node/pipelines/executor/host-action-runner';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
   PipelineHostActionRequest,
   PipelineHostActionResult,
   PipelineHostActions,
-} from '../executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   applyPortableHostRequest,
   type PortableHostRunContext,
@@ -18,7 +18,7 @@ import {
 import {
   hostRequestEnvelope,
   portableHostActionRequest,
-} from '../host-request-portable';
+} from '@canopy/execution-engine/node/pipelines/host-request-portable';
 
 const EXECUTIONS_DIR = '/data/pipeline-executions';
 

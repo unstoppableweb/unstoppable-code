@@ -9,7 +9,10 @@ import {
   type CorePullRequestListResult,
   type CorePullRequestUpdateParams,
 } from '@canopy/protocol/canopy-core';
-import { CanopyOperationError } from '../../runtime/errors';
+import {
+  CanopyOperationError,
+  canopyCapabilityUnavailableError,
+} from '../../runtime/errors';
 import {
   normalizePullRequestTitleQuery,
   PullRequestTitleQueryError,
@@ -546,7 +549,10 @@ export function createCorePullRequestInstructionHandlers(
   };
 
   const create = async (
-    params: CorePullRequestCreateParams,
+    params: CorePullRequestCreateParams & {
+      readonly title: string;
+      readonly body: string;
+    },
     repository: RecordedRepositoryRef,
     context: CanopyHandlerContext,
   ): Promise<PullRequestWriteReceipt> => {
@@ -656,6 +662,8 @@ export function createCorePullRequestInstructionHandlers(
           params.expectedRevision,
           params.expectedHeadSha,
           params.strategy,
+          params.expectedBaseBranch,
+          params.expectedHeadBranch,
         ]),
         identity.repository,
         async () => {
@@ -692,6 +700,19 @@ export function createCorePullRequestInstructionHandlers(
               'The pull request changed since the expected revision.',
               'pull-request',
             );
+          // As the cloud panel's merge refuses a moved branch (stale-state).
+          if (
+            (params.expectedBaseBranch !== undefined &&
+              current.baseBranch !== params.expectedBaseBranch) ||
+            (params.expectedHeadBranch !== undefined &&
+              current.headBranch !== params.expectedHeadBranch)
+          )
+            throw failure(
+              'conflict',
+              'core.pullRequest.merge.headMismatch',
+              'The pull request branches changed.',
+              'pull-request',
+            );
           let policy: Awaited<
             ReturnType<GitHubRequestHandle['getMergePolicy']>
           >;
@@ -709,7 +730,8 @@ export function createCorePullRequestInstructionHandlers(
               'The base branch requires a merge queue.',
               'pull-request',
             );
-          if (!policy.allowedStrategies.includes(params.strategy))
+          const strategy = params.strategy ?? policy.preferredStrategy;
+          if (!policy.allowedStrategies.includes(strategy))
             throw new CanopyOperationError({
               kind: 'capability_unavailable',
               message: 'The repository does not allow that merge strategy.',
@@ -745,7 +767,7 @@ export function createCorePullRequestInstructionHandlers(
               ref,
               {
                 expectedHeadSha: params.expectedHeadSha,
-                strategy: params.strategy,
+                strategy,
               },
               policy,
             );
@@ -818,6 +840,12 @@ export function createCorePullRequestInstructionHandlers(
     'core.pullRequest.create': async (params, context) => {
       if (params.integrationId !== GITHUB_INTEGRATION_ID)
         throw integrationUnavailable();
+      const { title } = params;
+      // Only the web core generates a title and body.
+      if (title === undefined)
+        throw canopyCapabilityUnavailableError(
+          "This core opens a pull request with the caller's title only.",
+        );
       const repository = parseRepositoryId(params.repositoryId);
       if (!repository) throw invalidId();
       if (isBlank(params.headBranch) || isBlank(params.baseBranch))
@@ -843,7 +871,12 @@ export function createCorePullRequestInstructionHandlers(
           params.draft,
         ]),
         repository,
-        () => create(params, repository, context),
+        () =>
+          create(
+            { ...params, title, body: params.body ?? '' },
+            repository,
+            context,
+          ),
       );
       return projectWritten(repository, written, context);
     },

@@ -157,6 +157,29 @@ import {
   withdrawProvisionalFirstSendFromTab,
   rejectUndispatchedProvisionalFirstSend,
 } from '../provisional-first-send';
+import {
+  chatBackendFor,
+  ignoreUnavailable,
+  isCapabilityUnavailable,
+} from '../backend';
+import { selectionSaveSettled } from '../web-core/selection-saves';
+import { taskCreationSettled } from '../web-core/task-creations';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
+import { WebCoreSendRefusedError } from '../web-core/send-refusal';
+
+/**
+ * Whether a cloud send failed because the web core refused it outright, or
+ * the window refused it before asking: either way nothing was posted. A
+ * send whose outcome is unknown is neither.
+ */
+function isWebCoreSendRefusal(error: unknown): boolean {
+  return (
+    error instanceof WebCoreSendRefusedError ||
+    (!(error instanceof CoreCoworkRequestError) &&
+      isCapabilityUnavailable(error))
+  );
+}
 
 const ACCEPTED_AGENT_SENDER_UNREACHABLE_MESSAGE =
   'The agent that sent this message can no longer reach this chat.';
@@ -412,7 +435,9 @@ async function prepareTerminalActivePlanInstruction(
   activePlan: ChatActivePlanContext,
 ): Promise<PendingSystemInstruction | undefined> {
   try {
-    const response = await window.api.chat.preparePlanFileSystemInstruction({
+    const response = await chatBackendFor(
+      scope,
+    ).chat.preparePlanFileSystemInstruction({
       projectId: scope.projectId,
       worktreeId: scope.worktreeId,
       planId: activePlan.planId,
@@ -2247,8 +2272,8 @@ export const createMessagingSlice: StateCreator<
       }
       const streamingProviderType = resolveTabProviderType(latestTabForSend);
       let authDependencyRefusalError: Error | undefined;
-      const hostQueueDispatch = window.api.chat
-        .sendMessage({
+      const hostQueueDispatch = chatBackendFor(sel)
+        .chat.sendMessage({
           ...(options?.assistantMode
             ? { assistantMode: options.assistantMode }
             : {}),
@@ -2660,6 +2685,7 @@ export const createMessagingSlice: StateCreator<
             : {}),
           lastTurnWasResumeAttempt,
           executionHarness: executionHarnessForMessage,
+          sendRefusal: undefined,
           cancelRequestedByUser: undefined,
           // A new turn supersedes any stopped turn's Resume offer (CAN-3137).
           stoppedTurnResume: undefined,
@@ -2716,7 +2742,9 @@ export const createMessagingSlice: StateCreator<
         await waitForChatScopeLive(sel.projectId, sel.worktreeId);
         return;
       }
-      const file = await window.api.chat.loadTabs(sel).catch(() => undefined);
+      const file = await chatBackendFor(sel)
+        .chat.loadTabs(sel)
+        .catch(() => undefined);
       const canonical = file?.tabs.find((entry) => entry.id === chatId);
       if (
         !canonical?.pendingPlanExit ||
@@ -2922,6 +2950,23 @@ export const createMessagingSlice: StateCreator<
           );
       }
 
+      if (isWebCoreScope(sel.projectId)) {
+        // A cloud task this window opened before the web core created it
+        // takes the send once it exists; one whose create failed hands the
+        // draft back (CAN-6098).
+        const created = await taskCreationSettled(sel).then(
+          () => true,
+          () => false,
+        );
+        if (!created) {
+          await rejectCancelledSend();
+          return;
+        }
+        // A cloud chat's turn runs with the selection the user just saved.
+        // A Stop while that save lands withdraws the send below (CAN-6335).
+        await selectionSaveSettled(chatId);
+      }
+
       // A picker change can start during cowork persistence, default lookup,
       // or Claude terminal handoff. Wait for the latest transition after all
       // of those awaits, then derive the payload from fresh tab state with no
@@ -3001,7 +3046,7 @@ export const createMessagingSlice: StateCreator<
       }
 
       hostDispatchStarted = true;
-      const sendResult = await window.api.chat.sendMessage({
+      const sendResult = await chatBackendFor(sel).chat.sendMessage({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
@@ -3244,6 +3289,40 @@ export const createMessagingSlice: StateCreator<
           return;
         }
       }
+      // A cloud send the web core refused was never posted. Once the
+      // composer has taken back the draft and its attachments, the message
+      // leaves the transcript and the tab says why, as the cloud chat page
+      // does (CAN-5972, CAN-6364). A composer that moved on can't take it
+      // back, so then the message stays below, failed, rather than be lost;
+      // and a send that may have landed always does, rather than invite a
+      // second one.
+      if (
+        isWebCoreScope(sel.projectId) &&
+        isWebCoreSendRefusal(err) &&
+        !cancelledSendNotified
+      ) {
+        cancelledSendNotified = true;
+        const restored = options?.onPreDispatchRejected?.() === true;
+        options?.onDispatchRejected?.();
+        if (restored) {
+          clearPendingUserPresentation(true);
+          await reconcileRejectedPlanExit();
+          const reason = extractIpcErrorMessage(err).trim();
+          set((state) =>
+            updateChatTab(state, key, chatId, (entry) => ({
+              ...entry,
+              ...(sendingLease ? {} : { status: tab.status, error: tab.error }),
+              messages: entry.messages.filter(
+                (message) =>
+                  message.id !== userMsg.id && message.id !== timerMsg.id,
+              ),
+              sendRefusal: reason,
+            })),
+          );
+          if (options?.throwOnDispatchFailure === true) throw err;
+          return;
+        }
+      }
       clearPendingUserPresentation();
       await reconcileRejectedPlanExit();
       // The refusal path above already rendered the recovery card and only
@@ -3332,7 +3411,8 @@ export const createMessagingSlice: StateCreator<
           worktreeChats: { ...state.worktreeChats, [key]: updated },
         };
       });
-      options?.onDispatchRejected?.();
+      // A refusal the composer could not take back has already told it.
+      if (!cancelledSendNotified) options?.onDispatchRejected?.();
       if (options?.throwOnDispatchFailure === true) {
         throw err;
       }
@@ -3367,6 +3447,17 @@ export const createMessagingSlice: StateCreator<
     return (
       get().worktreeChats[key]?.tabs.find((entry) => entry.id === target.chatId)
         ?.provisionalFirstSend?.userMessageId === input.userMessageId
+    );
+  },
+
+  dismissSendRefusal: (target): void => {
+    set((state) =>
+      updateChatTab(state, worktreeKey(target), target.chatId, (entry) => {
+        if (entry.sendRefusal === undefined) return entry;
+        const next = { ...entry };
+        delete next.sendRefusal;
+        return next;
+      }),
     );
   },
 
@@ -3505,7 +3596,9 @@ export const createMessagingSlice: StateCreator<
         // the hook starts on the chosen surface and its tab carries it.
         let updated: boolean;
         try {
-          ({ updated } = await window.api.chat.setQueuedHookChatInterfaceMode({
+          ({ updated } = await chatBackendFor(
+            sel,
+          ).chat.setQueuedHookChatInterfaceMode({
             projectId: sel.projectId,
             worktreeId: sel.worktreeId,
             chatId: tabId,
@@ -3692,7 +3785,7 @@ export const createMessagingSlice: StateCreator<
 
     let cancelResult: ChatCancelResult | undefined;
     try {
-      cancelResult = await window.api.chat.cancel({
+      cancelResult = await chatBackendFor(sel).chat.cancel({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
@@ -3706,6 +3799,8 @@ export const createMessagingSlice: StateCreator<
           ignoreNextCancellationTerminal: undefined,
         })),
       );
+      // An authority that serves no stop leaves the turn as it was.
+      if (isCapabilityUnavailable(error)) return;
       throw error;
     }
 
@@ -3778,7 +3873,7 @@ export const createMessagingSlice: StateCreator<
       ];
     let result: ChatResumeStoppedTurnResult;
     try {
-      result = await window.api.chat.resumeStoppedTurn({
+      result = await chatBackendFor(sel).chat.resumeStoppedTurn({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
@@ -3869,12 +3964,10 @@ export const createMessagingSlice: StateCreator<
     const { projectId, worktreeId, chatId } = target;
     const key = `${projectId}/${worktreeId}`;
 
-    const response = await window.api.chat.resetToPoint({
-      projectId,
-      worktreeId,
-      chatId,
-      userMessageId,
-    });
+    const response = await chatBackendFor({ projectId })
+      .chat.resetToPoint({ projectId, worktreeId, chatId, userMessageId })
+      .catch(ignoreUnavailable);
+    if (response === undefined) return;
 
     set((state) => {
       const currentWc = state.worktreeChats[key];
@@ -3995,8 +4088,8 @@ export const createMessagingSlice: StateCreator<
       if (rejectionReported) return;
       rejectionReported = true;
       // Lifecycle replies must reach main even while the view is refreshing.
-      void window.api.chat
-        .command(
+      void chatBackendFor(event)
+        .chat.command(
           createChatCommandEnvelope(
             { projectId: event.projectId, worktreeId: event.worktreeId },
             {

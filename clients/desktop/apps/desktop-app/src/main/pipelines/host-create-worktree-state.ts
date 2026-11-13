@@ -18,7 +18,7 @@ import * as path from 'node:path';
 import { z } from 'zod';
 import { PIPELINE_HOST_FAILURE_REASONS } from '@canopy/execution-engine/pipelines/host-actions';
 import type { CreateWorktreeInputs } from '@canopy/execution-engine/pipelines/host-create-worktree';
-import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { PipelineHostActionCaller } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { isRecord } from '../lib/type-guards';
 

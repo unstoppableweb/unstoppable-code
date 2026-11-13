@@ -33,6 +33,6 @@ export const APPROVAL_MODE_PROSE_LABELS: Record<ApprovalMode, string> = {
  */
 export const APPROVAL_MODE_DESCRIPTIONS: Record<ApprovalMode, string> = {
   ask: 'Ask before running tools',
-  auto: 'Edit project files without asking',
+  auto: 'Read and edit project files without asking',
   'full-access': 'Skip approvals and safety rules',
 };

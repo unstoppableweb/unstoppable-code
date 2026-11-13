@@ -1,5 +1,5 @@
-import type { CodexSpawnProfileRequest } from '@canopy/desktop-shared/node/codex-runtime';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { CodexSpawnProfileRequest } from '@canopy/execution-engine/node/codex-runtime';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
 import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-multi-agent';
 import { getCodexRuntimeService } from '../codex/runtime-service';
 

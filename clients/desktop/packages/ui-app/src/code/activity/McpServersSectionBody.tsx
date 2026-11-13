@@ -183,10 +183,10 @@ export function McpServersSectionBody({
               ? // Borderless in the card; it shows on hover or focus unless it
                 // is on (its state stays visible) or the pointer is touch.
                 proxyActive
-                ? 'bg-accent-subtle fg-accent'
+                ? 'bg-accent-subtle fg-accent-strong'
                 : 'fg-tertiary opacity-0 hover:bg-subtle hover:fg-primary focus-visible:opacity-100 group-hover/mcp-row:opacity-100 group-focus-within/mcp-row:opacity-100 pointer-coarse:opacity-100'
               : proxyActive
-                ? 'border-line-accent bg-accent-subtle fg-accent'
+                ? 'border-line-accent bg-accent-subtle fg-accent-strong'
                 : 'fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary';
             // In the card, a status earns space only when it needs the user.
             const compactStatusInk =

@@ -6,6 +6,7 @@ import {
   type CanopyStreamCursor,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionEventsItem,
+  type WorkerPipelineExecutionStartParams,
 } from '@canopy/protocol/canopy-core';
 
 import {
@@ -35,6 +36,18 @@ export const PIPELINE_EVENT_JOURNAL_MAX_ENTRIES = 2_048;
 export const PIPELINE_EVENT_JOURNAL_RETAIN_MS = 10 * 60_000;
 /** The most notifications one run keeps for a stream that has not opened yet (CAN-5868). */
 const UNDELIVERED_NOTIFICATIONS_MAX = 32;
+
+/** Arms `expire` to run after `ms` and returns its cancel. */
+export type PipelineEventJournalExpiry = (
+  expire: () => void,
+  ms: number,
+) => () => void;
+
+function expireOnTimer(expire: () => void, ms: number): () => void {
+  const timer = setTimeout(expire, ms);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+}
 
 export type PipelineEventJournalEntry =
   JournalEntry<WorkerPipelineExecutionEventsItem>;
@@ -73,7 +86,8 @@ interface Tracked {
   /** Set once the worker stopped following the run for good. */
   ended: { readonly error: CanopyErrorPayload | null } | null;
   readonly listeners: Set<PipelineEventJournalListener>;
-  expiry?: ReturnType<typeof setTimeout>;
+  /** Cancels the armed expiry. */
+  expiry?: () => void;
 }
 
 export interface PipelineEventJournalOptions {
@@ -81,6 +95,8 @@ export interface PipelineEventJournalOptions {
   readonly epoch?: string;
   readonly maxEntries?: number;
   readonly retainMs?: number;
+  /** Arms each journal's expiry. Default an unreferenced timer. */
+  readonly expireAfter?: PipelineEventJournalExpiry;
 }
 
 /** One cursor, as a key: the epoch and the sequence. */
@@ -128,9 +144,12 @@ export class PipelineEventJournal {
 
   private generation = 0;
 
-  private readonly maxEntries: number;
+  /** The most items one run's journal keeps; a replay is at most this long. */
+  public readonly maxEntries: number;
 
   private readonly retainMs: number;
+
+  private readonly expireAfter: PipelineEventJournalExpiry;
 
   private readonly runs = new Map<string, Tracked>();
 
@@ -141,6 +160,7 @@ export class PipelineEventJournal {
     this.epoch = options.epoch ?? crypto.randomUUID();
     this.maxEntries = options.maxEntries ?? PIPELINE_EVENT_JOURNAL_MAX_ENTRIES;
     this.retainMs = options.retainMs ?? PIPELINE_EVENT_JOURNAL_RETAIN_MS;
+    this.expireAfter = options.expireAfter ?? expireOnTimer;
   }
 
   /**
@@ -364,7 +384,7 @@ export class PipelineEventJournal {
   public close(): void {
     for (const tracked of this.runs.values()) {
       tracked.stop?.();
-      if (tracked.expiry !== undefined) clearTimeout(tracked.expiry);
+      tracked.expiry?.();
     }
     this.runs.clear();
     this.orphaned.clear();
@@ -372,7 +392,7 @@ export class PipelineEventJournal {
 
   /** The run runs again: its journal no longer expires. */
   private keep(tracked: Tracked): void {
-    if (tracked.expiry !== undefined) clearTimeout(tracked.expiry);
+    tracked.expiry?.();
     tracked.expiry = undefined;
   }
 
@@ -402,11 +422,10 @@ export class PipelineEventJournal {
    */
   private expireLater(executionId: string, tracked: Tracked): void {
     this.keep(tracked);
-    tracked.expiry = setTimeout(
+    tracked.expiry = this.expireAfter(
       () => this.retire(executionId, tracked),
       this.retainMs,
     );
-    tracked.expiry.unref?.();
   }
 
   /** Drops the run's journal; a stream still open on it needs a snapshot. */
@@ -466,6 +485,14 @@ export function withPipelineEventJournal(
     // A start it joins is already journaled.
     admitStart: (params, execution) =>
       worker.admitStart?.(params, execution) ?? Promise.resolve(null),
+    // An adopted run starts nothing; the resume that continues it is journaled.
+    ...(worker.adoptStart && {
+      adoptStart: async (
+        params: WorkerPipelineExecutionStartParams,
+        stored: WorkerPipelineExecution,
+      ): Promise<WorkerPipelineExecution> =>
+        (await worker.adoptStart?.(params, stored)) ?? stored,
+    }),
     async start(params, signal, secrets, execution) {
       const started = await worker.start(params, signal, secrets, execution);
       if (!isTerminalPipelineExecution(started))

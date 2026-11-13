@@ -12,6 +12,7 @@ import type {
   FileTreeRoot,
   FileTreeRootsResponse,
 } from '@canopy/desktop-shared/types';
+import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 
 /**
  * Cache entry for a full-worktree file index. Mention search is keyed by
@@ -463,12 +464,15 @@ export const useFileListStore = create<FileListState>((set, get) => ({
 
   fetchFileIndex: (projectId, worktreeId): Promise<void> =>
     loadFileIndex(getWorktreeCacheKey(projectId, worktreeId), () =>
-      window.api.getFileIndex({ projectId, worktreeId }),
+      workspaceFileSourceFor(worktreeId).getFileIndex({
+        projectId,
+        worktreeId,
+      }),
     ),
 
   fetchFileTreeIndex: (projectId, worktreeId): Promise<void> =>
     loadFileIndex(getFileTreeIndexCacheKey(projectId, worktreeId), () =>
-      window.api.getFileIndex({
+      workspaceFileSourceFor(worktreeId).getFileIndex({
         projectId,
         worktreeId,
         purpose: 'file-explorer',
@@ -499,7 +503,9 @@ export const useFileListStore = create<FileListState>((set, get) => ({
       }));
 
       try {
-        const incoming = await window.api.getFileTreeRoots({
+        const incoming = await workspaceFileSourceFor(
+          worktreeId,
+        ).getFileTreeRoots({
           projectId,
           worktreeId,
         });
@@ -605,7 +611,9 @@ export const useFileListStore = create<FileListState>((set, get) => ({
     }));
 
     try {
-      const incoming = await window.api.getFileTreeDirectory({
+      const incoming = await workspaceFileSourceFor(
+        worktreeId,
+      ).getFileTreeDirectory({
         projectId,
         worktreeId,
         repoId,

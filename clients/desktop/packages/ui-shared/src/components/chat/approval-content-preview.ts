@@ -93,7 +93,7 @@ function approvalAnnouncementContext(
     case 'network':
       return details.host;
     case 'tool':
-      return details.toolName;
+      return details.displayPath ?? details.path ?? details.toolName;
     case 'browser-upload':
       return `To ${details.origin}`;
     case 'browser-file-request':

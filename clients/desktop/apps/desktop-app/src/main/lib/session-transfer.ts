@@ -48,7 +48,7 @@ import {
   readCodexSpeedRecord,
   withCodexSpeed,
 } from '@canopy/execution-engine/lib/codex-speed';
-import { readCodexRolloutSeedItems } from '@canopy/desktop-shared/node/codex-runtime';
+import { readCodexRolloutSeedItems } from '@canopy/execution-engine/node/codex-runtime';
 import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
@@ -2197,11 +2197,13 @@ export async function importChatSession(
           })()
         : inspected.workspace.type === 'single-repo'
           ? archiveSingleRepoWorktree({
+              archiveTrigger: 'import',
               workspaceId: inspected.workspace.id,
               worktreeId: worktree.id,
               retainAsArchivedContainer: false,
             })
           : archiveMultiRepoWorktree({
+              archiveTrigger: 'import',
               workspaceId: inspected.workspace.id,
               worktreeId: worktree.id,
               retainAsArchivedContainer: false,

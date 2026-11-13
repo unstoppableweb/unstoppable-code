@@ -90,10 +90,16 @@ import { sanitizePluginSelectionsWithCachedSupport } from '../plugin-provider-su
 import type { PendingQuestion } from '../types';
 import type { ChatRevisionedSlice, ChatState } from '../state';
 import { pendingTabCreation } from '../pending-tab-creation';
+import {
+  isTaskBeingCreated,
+  taskCreationSettled,
+} from '../web-core/task-creations';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { pendingApprovalModeTransitions } from './approvals';
 import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import { chatHasLiveDelegates } from '../../delegationActivityStore';
 import { chatProviderBlocksClose } from '../../liveBackgroundTaskStore';
+import { chatBackendFor, chatBackends, localChatBackend } from '../backend';
 
 // ---------------------------------------------------------------------------
 // Module state (engine + tracker singletons, availability detection)
@@ -364,7 +370,7 @@ export async function persistUnreadWhenScopeLive(
 export function revisionedChatStateSupported(): boolean {
   return (
     availability !== 'unavailable' &&
-    typeof window.api.chat.getState === 'function'
+    typeof localChatBackend().chat.getState === 'function'
   );
 }
 
@@ -380,14 +386,15 @@ function getController(): RevisionedChatSync {
   controller = new RevisionedChatSync(
     {
       getState: (request): Promise<ChatStateSnapshot> => {
-        if (typeof window.api.chat.getState !== 'function') {
+        const { chat } = chatBackendFor(request);
+        if (typeof chat.getState !== 'function') {
           return Promise.reject(
             Object.assign(new Error('Revisioned chat state is unavailable.'), {
               code: 'unavailable',
             }),
           );
         }
-        return window.api.chat.getState(request);
+        return chat.getState(request);
       },
     },
     {
@@ -421,16 +428,18 @@ function getController(): RevisionedChatSync {
  */
 function declareChatStateScopes(scopes: ChatGetStateRequest[]): void {
   requestChatInterestRedeclare();
-  if (typeof window.api.chat.setStateScopes !== 'function') return;
-  const declaration: ChatStateScopesDeclaration =
-    scopes.length > MAX_DECLARED_CHAT_STATE_SCOPES
-      ? { kind: 'all' }
-      : { kind: 'scopes', scopes };
-  void Promise.resolve(window.api.chat.setStateScopes(declaration)).catch(
-    (): void => {
+  for (const backend of chatBackends()) {
+    const { chat } = backend;
+    if (typeof chat.setStateScopes !== 'function') continue;
+    const owned = scopes.filter((scope) => chatBackendFor(scope) === backend);
+    const declaration: ChatStateScopesDeclaration =
+      owned.length > MAX_DECLARED_CHAT_STATE_SCOPES
+        ? { kind: 'all' }
+        : { kind: 'scopes', scopes: owned };
+    void Promise.resolve(chat.setStateScopes(declaration)).catch((): void => {
       // Main fails open (every scope) when it rejects a declaration.
-    },
-  );
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -975,7 +984,7 @@ export const createRevisionedSlice: StateCreator<
     options,
   ): Promise<'installed' | 'unavailable' | 'failed'> => {
     if (availability === 'unavailable') return 'unavailable';
-    if (typeof window.api.chat.getState !== 'function') {
+    if (typeof chatBackendFor({ projectId }).chat.getState !== 'function') {
       availability = 'unavailable';
       return 'unavailable';
     }
@@ -1022,7 +1031,13 @@ export const createRevisionedSlice: StateCreator<
         set((state) => ({
           chatStateSync: {
             ...state.chatStateSync,
-            [key]: { phase: 'refresh_error', revision: null },
+            [key]: {
+              phase: 'refresh_error',
+              revision: null,
+              ...(error instanceof Error && error.message.length > 0
+                ? { reason: error.message }
+                : {}),
+            },
           },
         }));
         return 'failed';
@@ -1144,6 +1159,18 @@ export const createRevisionedSlice: StateCreator<
       const creationDisposition = await creation;
       if (creationDisposition !== 'accepted') return creationDisposition;
     }
+    // A cloud task this window opened before the web core created it takes
+    // its changes once it exists and its first read from the web core is
+    // live, as its sends do; one whose create failed drops them, and its
+    // creation notice says why (CAN-6098).
+    if (isWebCoreScope(scope.projectId) && isTaskBeingCreated(scope)) {
+      const created = await taskCreationSettled(scope).then(
+        () => true,
+        () => false,
+      );
+      if (!created) return 'transport_failed';
+      await waitForChatScopeLive(scope.projectId, scope.worktreeId);
+    }
     const sync = get().chatStateSync[key];
     if (sync?.phase === 'refreshing' || sync?.phase === 'refresh_error') {
       // Send and destructive actions are disabled while the scope refreshes
@@ -1181,12 +1208,12 @@ export const createRevisionedSlice: StateCreator<
     };
 
     try {
-      if (typeof window.api.chat.command !== 'function') {
+      if (typeof chatBackendFor(envelope).chat.command !== 'function') {
         throw Object.assign(new Error('Chat commands are unavailable.'), {
           code: 'unavailable',
         });
       }
-      const result = await window.api.chat.command(envelope);
+      const result = await chatBackendFor(envelope).chat.command(envelope);
       try {
         options?.onResult?.(result);
       } catch {
@@ -1202,13 +1229,17 @@ export const createRevisionedSlice: StateCreator<
         // Stale destructive command: never auto-retry; refresh the view.
         setNotice('conflict', CHAT_STATE_CONFLICT_NOTICE);
         getController().forceRefresh(scope.projectId, scope.worktreeId);
-      } else if (disposition === 'rejected') {
+      } else if (
+        disposition === 'rejected' &&
+        options?.callerReportsFailure !== true
+      ) {
         setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
       }
       return disposition;
     } catch {
       if (tracked) commandTracker.settleTransportFailure(envelope.commandId);
-      setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
+      if (options?.callerReportsFailure !== true)
+        setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
       return 'transport_failed';
     }
   },

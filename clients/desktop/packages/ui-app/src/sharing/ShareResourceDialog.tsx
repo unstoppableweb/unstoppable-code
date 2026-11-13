@@ -28,6 +28,7 @@ import { orgsWithoutActivePlanClause } from '@canopy/ui-shared/lib/org-lapse-sen
 import {
   Stack,
   Button,
+  ConfirmDialog,
   ErrorBanner,
   Notice,
   NoticeButton,
@@ -577,6 +578,35 @@ export interface ShareResourceDialogProps {
   /** Re-sharing updates this share in place. */
   readonly existingShare?: ShareResourceExistingShare;
   /**
+   * The existing share's audience can't change here: every other audience
+   * renders disabled with `hint` as its reason and under the selector, the
+   * team and organization pickers are read-only, and the reopened share
+   * offers no Update. Ignored without `existingShare`.
+   */
+  readonly audienceLocked?: { readonly hint: string };
+  /**
+   * The notice a reopened share opens on, over the automatic one. With it
+   * the dialog opens on the reopened view while `existingShare.link` is
+   * still resolving, with Copy link disabled until the link arrives, so the
+   * form never flashes Update.
+   */
+  readonly reopenedNotice?: ShareReopenedNotice;
+  /**
+   * Stop sharing on a reopened share: a destructive footer action that asks
+   * first, then runs `onStop`. A failure stays in the confirmation for a
+   * retry; success posts `toast` through `notify` and closes the dialog.
+   */
+  readonly stopSharing?: ShareStopSharing;
+  /**
+   * A reopened share whose last update failed: the footer's primary runs
+   * `onRetry` instead of Done. A failure stays in the dialog with the retry
+   * still offered; on success the host re-renders with the synced share.
+   */
+  readonly retry?: {
+    readonly label: string;
+    readonly onRetry: () => Promise<void>;
+  };
+  /**
    * The host's share operation keeps a team or organization share inside its
    * organization while workspace context policy applies, so it can't move to
    * the personal owner Public needs. Public then renders disabled with
@@ -665,6 +695,30 @@ export interface ShareResourceDialogProps {
   readonly onStateChange?: (state: ShareResourceDialogState) => void;
 }
 
+/** The host's notice for a reopened share. */
+export interface ShareReopenedNotice {
+  /** `attention` for a share whose last update didn't land. */
+  readonly tone: 'positive' | 'attention';
+  readonly title: string;
+  /** Lines under the title, e.g. what the audience can do. */
+  readonly details?: readonly string[];
+}
+
+/** Host copy and operation for Stop sharing. */
+export interface ShareStopSharing {
+  /** The footer action and the confirmation's action. */
+  readonly label: string;
+  readonly confirm: {
+    readonly title: string;
+    /** Who loses access and what is deleted. */
+    readonly body: string;
+    readonly busyLabel: string;
+  };
+  readonly onStop: () => Promise<void>;
+  /** Success toast; the dialog closes. */
+  readonly toast: string;
+}
+
 type DialogState =
   | { status: 'idle' }
   | { status: 'sharing' }
@@ -737,6 +791,10 @@ export function ShareResourceDialog({
   capabilityPackage,
   packageUnavailableNote = false,
   existingShare: rawExistingShare,
+  audienceLocked,
+  reopenedNotice,
+  stopSharing,
+  retry,
   marketplace,
   keepsOrganizationOwnership = false,
   preflight,
@@ -786,6 +844,7 @@ export function ShareResourceDialog({
   const publicOwnerLockedRef = useRef(publicOwnerLocked);
   publicOwnerLockedRef.current = publicOwnerLocked;
   const publicLockedHintId = useId();
+  const audienceLockedHintId = useId();
   const existingPersonalOrganization =
     personalOrganizationId !== null &&
     (rawExistingShare?.targetAudience ?? rawExistingShare?.audience) ===
@@ -820,6 +879,11 @@ export function ShareResourceDialog({
   const p = testIdPrefix;
   const [accountLoading, setAccountLoading] = useState(true);
   const [state, setState] = useState<DialogState>({ status: 'idle' });
+  const [confirmingStop, setConfirmingStop] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const [retryingSync, setRetryingSync] = useState(false);
+  const [retrySyncError, setRetrySyncError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [retryingPublic, setRetryingPublic] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -1088,7 +1152,9 @@ export function ShareResourceDialog({
     existingTargetAudience !== candidate &&
     !(candidate === 'organization' && existingPersonalOrganization);
   const offeredScopes = scopes;
-  const availability: Partial<Record<ShareAudience, boolean>> = {
+  const lockedAudience =
+    audienceLocked !== undefined ? existingShare?.audience : undefined;
+  const unlockedAvailability: Partial<Record<ShareAudience, boolean>> = {
     ...audienceAvailability,
     ...(publicOwnerLocked ? { public: false } : {}),
     team:
@@ -1102,6 +1168,17 @@ export function ShareResourceDialog({
         (hasOrganizationsCapability && !hasNoOrganization)) &&
       audienceAvailability?.organization !== false,
   };
+  // A locked share keeps only its own audience, usable even if the account
+  // lost it since: the view is read-only.
+  const availability: Partial<Record<ShareAudience, boolean>> =
+    lockedAudience === undefined
+      ? unlockedAvailability
+      : Object.fromEntries(
+          offeredScopes.map((audience) => [
+            audience,
+            audience === lockedAudience,
+          ]),
+        );
   // A legacy public link on a locked owner opens on its owner's audience,
   // never on the Public it can no longer keep.
   const initialAudience =
@@ -1436,7 +1513,12 @@ export function ShareResourceDialog({
   ]);
 
   const isBusy =
-    state.status === 'sharing' || retryingPublic || removingPublic || finishing;
+    state.status === 'sharing' ||
+    retryingPublic ||
+    removingPublic ||
+    finishing ||
+    stopping ||
+    retryingSync;
   // Hosts commonly cache the newly-created detail for public-link retry. Do
   // not let that post-submit metadata turn a create result into "Updated".
   // Async metadata loaded while the form is still idle can still establish
@@ -2264,12 +2346,19 @@ export function ShareResourceDialog({
     scopedReason ?? (organizationNeedsUpgrade ? upgradeReason : undefined);
   const unavailableReasons: Partial<
     Record<ShareAudience, { label: string; action?: TooltipLink }>
-  > = {
-    ...(teamReason !== undefined ? { team: teamReason } : {}),
-    ...(organizationReason !== undefined
-      ? { organization: organizationReason }
-      : {}),
-  };
+  > =
+    audienceLocked !== undefined && lockedAudience !== undefined
+      ? Object.fromEntries(
+          offeredScopes
+            .filter((audience) => audience !== lockedAudience)
+            .map((audience) => [audience, { label: audienceLocked.hint }]),
+        )
+      : {
+          ...(teamReason !== undefined ? { team: teamReason } : {}),
+          ...(organizationReason !== undefined
+            ? { organization: organizationReason }
+            : {}),
+        };
 
   const gate = ((): ReactNode => {
     // Only the first read replaces the form. Re-reading an account the dialog
@@ -2381,9 +2470,43 @@ export function ShareResourceDialog({
     preflightReady &&
     existingShare !== undefined &&
     scope === reopenedAudience &&
-    (existingShare.link !== undefined || canRemovePublicLink)
+    (existingShare.link !== undefined ||
+      canRemovePublicLink ||
+      reopenedNotice !== undefined)
       ? existingShare
       : undefined;
+  const audienceIsLocked = lockedAudience !== undefined;
+  const pickerDisabled = isBusy || committed || audienceIsLocked;
+
+  const handleStopSharing = async (): Promise<void> => {
+    if (stopSharing === undefined || stopping) return;
+    setStopping(true);
+    setStopError(null);
+    try {
+      await stopSharing.onStop();
+    } catch (error) {
+      setStopError(describeError(error));
+      setStopping(false);
+      return;
+    }
+    setStopping(false);
+    setConfirmingStop(false);
+    notifyRef.current({ tone: 'success', message: stopSharing.toast });
+    onClose();
+  };
+
+  const handleRetrySync = async (): Promise<void> => {
+    if (retry === undefined || retryingSync) return;
+    setRetryingSync(true);
+    setRetrySyncError(null);
+    try {
+      await retry.onRetry();
+    } catch (error) {
+      setRetrySyncError(describeError(error));
+    } finally {
+      setRetryingSync(false);
+    }
+  };
   const scopeSection = (
     <>
       <ShareAudienceSelector
@@ -2408,10 +2531,21 @@ export function ShareResourceDialog({
             : undefined
         }
         descriptions={descriptions}
-        {...(showPublicLockedHint || organizationSetupFailed
+        {...(showPublicLockedHint ||
+        organizationSetupFailed ||
+        audienceLocked !== undefined
           ? {
               hint: (
                 <>
+                  {audienceLocked !== undefined && audienceIsLocked && (
+                    <p
+                      id={audienceLockedHintId}
+                      className="text-xs fg-secondary"
+                      data-testid={`${p}-audience-locked-hint`}
+                    >
+                      {audienceLocked.hint}
+                    </p>
+                  )}
                   {showPublicLockedHint && (
                     <p
                       id={publicLockedHintId}
@@ -2429,9 +2563,20 @@ export function ShareResourceDialog({
         // Every offered scope stays visible; one the account can't use yet
         // is disabled, with its reason in the pill's tooltip.
         keepDisabledVisible
+        // A locked audience's hint is margin-free: the selector spaces it,
+        // and the selected pill carries the lock.
+        {...(audienceIsLocked ? { contentGap: 'inline', locked: true } : {})}
         unavailableReasons={unavailableReasons}
-        {...(showPublicLockedHint
-          ? { optionDescribedBy: { public: publicLockedHintId } }
+        {...(showPublicLockedHint || lockedAudience !== undefined
+          ? {
+              optionDescribedBy: {
+                ...(showPublicLockedHint ? { public: publicLockedHintId } : {}),
+                // The locked pill names why it can't change.
+                ...(lockedAudience !== undefined
+                  ? { [lockedAudience]: audienceLockedHintId }
+                  : {}),
+              },
+            }
           : {})}
         disabled={isBusy || committed}
         dataTestId={`${p}-scope`}
@@ -2490,7 +2635,7 @@ export function ShareResourceDialog({
           onSearchChange={teams.setSearch}
           loading={teams.loading}
           error={teams.error}
-          disabled={isBusy || committed}
+          disabled={pickerDisabled}
           items={mergeTarget(teams.items ?? [], selectedTeam, teams.search)}
           selectedId={selectedTeam?.id ?? null}
           onSelect={(item): void => {
@@ -2514,7 +2659,7 @@ export function ShareResourceDialog({
           onSearchChange={orgs.setSearch}
           loading={orgs.loading}
           error={orgs.error}
-          disabled={isBusy || committed}
+          disabled={pickerDisabled}
           items={mergeTarget(orgs.items ?? [], selectedOrg, orgs.search)}
           selectedId={selectedOrg?.id ?? null}
           onSelect={(item): void => {
@@ -2700,6 +2845,22 @@ export function ShareResourceDialog({
     state.status === 'success'
       ? completedLink
       : (completedLink ?? existingShare?.link);
+  // The reopened view's own actions: the retry primary replaces Done, and
+  // Update is never offered on a locked audience.
+  const offeredRetry = reopenedShare !== undefined ? retry : undefined;
+  const offeredStop = reopenedShare !== undefined ? stopSharing : undefined;
+  const linkPending =
+    reopenedShare !== undefined &&
+    reopenedNotice !== undefined &&
+    displayedLink === undefined;
+  const actionError =
+    removePublicError !== null &&
+    canRemovePublicLink &&
+    (state.status === 'success' || reopenedShare !== undefined)
+      ? removePublicError
+      : offeredRetry !== undefined && retrySyncError !== null
+        ? retrySyncError
+        : null;
 
   useEffect(() => {
     if (!creatingTeam && promotedTarget && accountReady) {
@@ -2795,17 +2956,17 @@ export function ShareResourceDialog({
                 state.status === 'success'
               ? state.status
               : 'idle',
-        committed: committed || reopenedShare !== undefined,
+        committed:
+          committed ||
+          (reopenedShare !== undefined && offeredRetry === undefined),
       }}
-      busy={removingPublic}
+      busy={removingPublic || stopping}
       {...(gate !== null ? { gate } : {})}
       {...(notesSection !== undefined ? { notes: notesSection } : {})}
       scope={scopeSection}
       content={contentSection}
       {...(state.status === 'error' ? { errorMessage: state.message } : {})}
-      {...(removePublicError !== null && removePublicLinkAction !== null
-        ? { actionErrorMessage: removePublicError }
-        : {})}
+      {...(actionError !== null ? { actionErrorMessage: actionError } : {})}
       {...(state.status === 'error' &&
       state.recovery === 'sign-in' &&
       onOpenAccountSettings !== undefined
@@ -2843,37 +3004,86 @@ export function ShareResourceDialog({
                 : {}),
             }),
           }
-        : reopenedShare !== undefined
+        : reopenedShare !== undefined && reopenedNotice !== undefined
           ? {
-              success: shareSuccessNotice({
-                noun: resourceNoun,
-                scope: reopenedShare.audience === 'public' ? 'public' : scope,
-                ...(targetName !== undefined ? { targetName } : {}),
-                isUpdate: false,
-                reopened: true,
-                ...(reopenedShare.link !== undefined
-                  ? { shareUrl: reopenedShare.link.url }
+              success: {
+                tone:
+                  reopenedNotice.tone === 'positive' ? 'success' : 'warning',
+                message: reopenedNotice.title,
+                ...(reopenedNotice.details !== undefined
+                  ? { details: reopenedNotice.details }
                   : {}),
-              }),
+                ...(reopenedShare.link !== undefined
+                  ? { link: reopenedShare.link.url }
+                  : {}),
+              },
             }
-          : {})}
+          : reopenedShare !== undefined
+            ? {
+                success: shareSuccessNotice({
+                  noun: resourceNoun,
+                  scope: reopenedShare.audience === 'public' ? 'public' : scope,
+                  ...(targetName !== undefined ? { targetName } : {}),
+                  isUpdate: false,
+                  reopened: true,
+                  ...(reopenedShare.link !== undefined
+                    ? { shareUrl: reopenedShare.link.url }
+                    : {}),
+                }),
+              }
+            : {})}
       {...(removePublicLinkAction !== null
         ? { successLinkAction: removePublicLinkAction }
         : {})}
       {...(retryPublicLink ? { onRetryPublic: handleRetryPublic } : {})}
       retryingPublic={retryingPublic}
       showSubmit={
-        !committed && accountReady && preflightReady && !needsSetupGate
+        offeredRetry !== undefined ||
+        (!committed &&
+          accountReady &&
+          preflightReady &&
+          !needsSetupGate &&
+          !(audienceIsLocked && reopenedShare !== undefined))
       }
-      submitLabel={isUpdate ? 'Update' : 'Share'}
-      sharingLabel={isUpdate ? copy.updating : copy.sharing}
-      submitDisabled={submitDisabled}
-      submitTestId={`${p}-submit`}
+      submitLabel={
+        offeredRetry !== undefined
+          ? offeredRetry.label
+          : isUpdate
+            ? 'Update'
+            : 'Share'
+      }
+      sharingLabel={
+        offeredRetry !== undefined
+          ? offeredRetry.label
+          : isUpdate
+            ? copy.updating
+            : copy.sharing
+      }
+      submitDisabled={offeredRetry !== undefined ? isBusy : submitDisabled}
+      submitBusy={retryingSync}
+      submitTestId={
+        offeredRetry !== undefined ? `${p}-retry-sync` : `${p}-submit`
+      }
       onSubmit={(): void => {
-        void handleShare();
+        void (offeredRetry !== undefined ? handleRetrySync() : handleShare());
       }}
+      {...(offeredStop !== undefined
+        ? {
+            destructiveAction: {
+              label: offeredStop.label,
+              onClick: (): void => {
+                setStopError(null);
+                setConfirmingStop(true);
+              },
+              disabled: isBusy,
+              busy: stopping,
+              testId: `${p}-stop-sharing`,
+            },
+          }
+        : {})}
       stage={pkg.progress}
       {...(displayedLink ? { link: displayedLink } : {})}
+      linkPending={linkPending}
       copyText={copyText}
       onLinkCopied={(): void => setCopied(true)}
     >
@@ -2894,6 +3104,28 @@ export function ShareResourceDialog({
             : {})}
           onCancel={(): void => setConfirmingRemovePublic(false)}
           onConfirm={handleRemovePublicLink}
+        />
+      )}
+      {confirmingStop && stopSharing !== undefined && (
+        <ConfirmDialog
+          title={stopSharing.confirm.title}
+          message={stopSharing.confirm.body}
+          confirmLabel={stopSharing.label}
+          busyLabel={stopSharing.confirm.busyLabel}
+          busy={stopping}
+          errorMessage={stopError}
+          destructive
+          onConfirm={(): void => {
+            void handleStopSharing();
+          }}
+          onCancel={(): void => {
+            setConfirmingStop(false);
+            setStopError(null);
+          }}
+          dataTestId={`${p}-stop-sharing-confirm`}
+          confirmTestId={`${p}-stop-sharing-confirm-action`}
+          cancelTestId={`${p}-stop-sharing-cancel`}
+          ownerDocument={ownerDocument}
         />
       )}
     </ShareDialogFrame>

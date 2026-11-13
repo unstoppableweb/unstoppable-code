@@ -1,3 +1,4 @@
+import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
 import { sourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import type { ScriptActionsAddMetadata } from '@canopy/protocol/script-actions';
 import { normalizeRepositoryCloneUrl } from '@canopy/protocol/portal';
@@ -357,6 +358,18 @@ async function createInitialWorktreeForTemporaryWorkspaceResponse(
   return { ...response, worktree };
 }
 
+/*
+ * The window's calls as owners, so App Advisor's actions in Electron main
+ * make the same ones (CAN-6003).
+ */
+
+export async function readWorkspaceSettingsDataForCaller(
+  request: WorkspaceSettingsDataRequest,
+): Promise<WorkspaceSettingsDataResponse> {
+  validateId(request.workspaceId, 'workspaceId');
+  return readWorkspaceSettingsData(request.workspaceId, request.worktreeId);
+}
+
 export function registerWorkspaceHandlers(
   getWindow: () => BrowserWindow | null,
   runtime: {
@@ -663,13 +676,8 @@ export function registerWorkspaceHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceReadSettingsData,
-    async (
-      _event,
-      request: WorkspaceSettingsDataRequest,
-    ): Promise<WorkspaceSettingsDataResponse> => {
-      validateId(request.workspaceId, 'workspaceId');
-      return readWorkspaceSettingsData(request.workspaceId, request.worktreeId);
-    },
+    (_event, request: WorkspaceSettingsDataRequest) =>
+      readWorkspaceSettingsDataForCaller(request),
   );
 
   registerIpcHandler(
@@ -1697,24 +1705,29 @@ export function registerWorkspaceHandlers(
       }
 
       const lifecycle = lifecycleCommands(event);
-      const response = await withTypedArchiveRefusal(request, () =>
-        lifecycle.archiveWorktree(request, () =>
-          archiveWorktree({
-            workspaceId: request.workspaceId,
-            worktreeId: request.worktreeId,
-            source: 'multi_repo',
-            expectedKind: 'multi-repo',
-            expectedCreatedAt: request.expectedCreatedAt,
-            expectedBranchName: request.expectedBranchName,
-            deleteBranch: request.deleteBranch,
-            lockAfterArchive: request.lockAfterArchive,
-            deleteWithoutRetentionIfMissing:
-              request.deleteWithoutRetentionIfMissing,
-            remainingWorktreeOrder: request.remainingWorktreeOrder,
-            expectedRemainingWorktreeOrder:
-              request.expectedRemainingWorktreeOrder,
-          }),
-        ),
+      const response = await withTypedArchiveRefusal(
+        { ...request, intent: worktreeRemovalIntent(request.lockAfterArchive) },
+        () =>
+          lifecycle.archiveWorktree(request, () =>
+            archiveWorktree(
+              {
+                workspaceId: request.workspaceId,
+                worktreeId: request.worktreeId,
+                source: 'multi_repo',
+                expectedKind: 'multi-repo',
+                expectedCreatedAt: request.expectedCreatedAt,
+                expectedBranchName: request.expectedBranchName,
+                deleteBranch: request.deleteBranch,
+                lockAfterArchive: request.lockAfterArchive,
+                deleteWithoutRetentionIfMissing:
+                  request.deleteWithoutRetentionIfMissing,
+                remainingWorktreeOrder: request.remainingWorktreeOrder,
+                expectedRemainingWorktreeOrder:
+                  request.expectedRemainingWorktreeOrder,
+              },
+              { telemetryParent: 'inherit' },
+            ),
+          ),
       );
       if (!response.refusal)
         removeCachedWorktreeDiffStats(request.workspaceId, request.worktreeId);

@@ -25,7 +25,7 @@ import {
   createDirectoryDurably,
   syncDirectory,
   writeFileAtomically,
-} from '../lib/atomic-file';
+} from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   errorCode,
   isProfileJsonTemporary,

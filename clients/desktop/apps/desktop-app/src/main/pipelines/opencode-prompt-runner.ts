@@ -6,7 +6,7 @@ import { runOpenCodePipelinePrompt } from '@canopy/desktop-shared/node/pipelines
 import type {
   OpenCodePromptRunnerRequest,
   OpenCodePromptRunnerResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { assertOpenCodeConnectionGeneration } from '../opencode/connection';
 import {
   createApprovalSession,

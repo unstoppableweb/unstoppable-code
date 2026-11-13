@@ -25,7 +25,7 @@ import type {
   PipelineHostActions,
   ResolvePipelineTargetRequest,
   ResolvePipelineTargetResult,
-} from './executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { extractEmbeddedResources } from './embedded-resources';
 import { cursorRuntimeInstalled } from '../cursor/runtime-status';
 import { resolveCursorLaunch } from '../cursor/runtime-launch';
@@ -49,8 +49,8 @@ import {
   createHeadlessMcpElicitationPolicy,
   isForeignThreadTokenUsageEvent,
   projectCodexRuntimeEvent,
-} from '../codex-runtime';
-import { resolvePlugins } from '../plugins/plugin-resolver';
+} from '@canopy/execution-engine/node/codex-runtime';
+import { resolvePlugins } from '@canopy/execution-engine/node/plugins/plugin-resolver';
 import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
@@ -60,7 +60,7 @@ import {
   buildCodexSystemPrompt,
   isRetryableCodexStructuredOutputError,
   parseStructuredResponseText,
-} from '../../builtin-actions/agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import { mapThinkingToReasoningEffort } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   SETUP_WITHDRAWN,
@@ -70,10 +70,10 @@ import {
 import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
-import type { JsonValue } from '../codex-runtime/generated/serde_json/JsonValue';
-import { isJsonValue } from '../codex-runtime/rollout-seed';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
+import { isJsonValue } from '@canopy/execution-engine/node/codex-runtime/rollout-seed';
 import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
-import { buildCodexPipelineThreadConfig } from './codex-preferences';
+import { buildCodexPipelineThreadConfig } from '@canopy/execution-engine/node/pipelines/codex-preferences';
 import {
   codexNativeMemoryThreadConfig,
   localMemoryEnabledFromEnv,

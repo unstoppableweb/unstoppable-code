@@ -22,7 +22,7 @@ import {
   getModelPreferenceThinkingLevels,
   isNativeModelPreferenceOption,
   thinkingLevelForChosenModel,
-} from './model-thinking-preference';
+} from '@canopy/desktop-shared/lib/model-thinking-preference';
 import { SettingsRow } from './SettingsLayout';
 
 interface ModelThinkingPreferenceRowProps {

@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises';
 import type { BrowserWindow } from 'electron';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import { toAdvisorJson as json } from './advisor-json';
 import type {
   AdvisorPipelineActionHost,

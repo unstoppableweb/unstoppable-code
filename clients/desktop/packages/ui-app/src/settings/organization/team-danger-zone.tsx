@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, type JSX } from 'react';
-import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_GROUP_CLASS,
   SETTINGS_CARD_ROW_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
-import { useSettingsClient } from '../host';
+import { SettingsConfirmDialog, useSettingsClient } from '../host';
 import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
 import { deleteOrganization } from './team-api';
 import type { SettingsFailure } from '../errors';
@@ -101,33 +101,18 @@ export function TeamDangerZone({
       ) : null}
 
       {confirmingDelete && (
-        <DialogModal
-          onClose={() => (deleting ? undefined : setConfirmingDelete(false))}
-          title="Delete this organization?"
-          subtitle={`“${detail.name}” will stop being available to you and everyone else in it. Billing and usage history is kept, and this cannot be reversed.`}
-          maxWidth="md"
+        <SettingsConfirmDialog
+          title={`Delete “${detail.name}”?`}
+          message="Shared worktrees, chats and Cowork entries are deleted. Members keep their local files, but this organization's projects move to their Personal space. This can't be undone."
+          confirmLabel="Delete organization"
+          busyLabel="Deleting…"
+          busy={deleting}
+          destructive
           dataTestId="team-delete-dialog"
-        >
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              variant="secondary"
-              size="compact"
-              onClick={() => setConfirmingDelete(false)}
-              disabled={deleting}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              size="compact"
-              onClick={() => void handleDelete()}
-              disabled={deleting}
-              data-testid="team-delete-confirm"
-            >
-              {deleting ? 'Deleting…' : 'Delete organization'}
-            </Button>
-          </div>
-        </DialogModal>
+          confirmTestId="team-delete-confirm"
+          onConfirm={() => void handleDelete()}
+          onCancel={() => setConfirmingDelete(false)}
+        />
       )}
     </section>
   );

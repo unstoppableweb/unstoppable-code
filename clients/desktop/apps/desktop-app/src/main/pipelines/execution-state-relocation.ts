@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
 
 function relocateValue(
   value: unknown,

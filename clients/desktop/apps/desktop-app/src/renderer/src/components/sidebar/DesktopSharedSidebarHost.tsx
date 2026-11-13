@@ -23,10 +23,12 @@ import type {
   CanopyCapabilities,
   CanopyClient,
   SessionViewModel,
+  WorktreeCreateResult,
 } from '@canopy/app-core';
 import {
   getWorktreeDeleteLabels,
   SidebarSurface,
+  snapshotWorkspaceMatchesContext,
   workspaceLayout,
   worktreeRemovalBlockedReason,
   type GetWorkEntryBatchRemovalFacts,
@@ -40,6 +42,7 @@ import {
   type WorktreeBatchRemovalOptions,
   type WorktreeBatchRemovalUiState,
   type WorktreeRemovalMode,
+  SidebarRailSkeleton,
 } from '@canopy/ui-app';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { useDesktopSidebarActivityHost } from './desktopSidebarActivityMode';
@@ -67,8 +70,8 @@ import {
 } from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useDesktopPendingProjects } from './desktopPendingProjects';
-import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { TeardownFailedError, useProjectsStore } from '@/stores/projectsStore';
 import { finishWorktreeArchive } from '@/components/worktree/finishWorktreeArchive';
@@ -76,7 +79,10 @@ import {
   WorktreeArchiveRefusalError,
   WorktreeRemovalRefusedError,
 } from '@/lib/worktreeRemovalAdmission';
-import { worktreeDiscardBatchPointer } from '@canopy/ui-shared/lib/worktree-discard-copy';
+import {
+  worktreeDiscardBatchPointer,
+  worktreeRecoveryBatchPointer,
+} from '@canopy/ui-shared/lib/worktree-discard-copy';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSidebarStore } from '@/stores/sidebarStore';
@@ -104,6 +110,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   ActionMenuRowStyle,
+  DelayedLoadingPlaceholder,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   type WorktreeMenuItem,
@@ -181,7 +188,17 @@ import {
 import { useCanopyProjectIdentityAvailable } from '@/hooks/useCanopyCloudConnected';
 import { openNewCoworkTaskFromSidebar } from '@/lib/openNewCoworkTaskFromSidebar';
 import { SidebarCoworkWorkspaceRow } from './SidebarCoworkWorkspaceRow';
-import { CloudCoworkSidebarRows } from '@/cloud-chats/CloudCoworkSidebarRows';
+import { CloudCoworkOfflineRow } from '@/cloud-chats/CloudCoworkOfflineRow';
+import {
+  CLOUD_PROJECT_DANGER_COPY,
+  cloudSidebarRowCapabilities,
+  type CloudSidebarRowKind,
+} from '@/cloud-chats/cloud-sidebar-capabilities';
+import { useCloudCoworkSidebar } from '@/cloud-chats/useCloudCoworkSidebar';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { appendCloudSidebarRows } from '@/cloud-chats/append-cloud-sidebar-rows';
+import { shouldPrefetchWorktreeChat } from '@/cloud-chats/cloud-sidebar-intent';
+import { routeSidebarReorder } from '@/cloud-chats/route-sidebar-reorder';
 import { StickyWorkspaceControls } from './SidebarWorkspacesSection';
 import {
   SidebarPinMenuItem,
@@ -590,6 +607,15 @@ export function routeDesktopSidebarSelection(
 ): void {
   if (!selection) return;
   if (selection.kind === 'worktree') {
+    // A cloud task opens through the cowork work-entry seam, which picks its
+    // page (CAN-6099; CAN-6175 moves it to the cowork page).
+    if (isWebCoreScope(selection.workspaceLocalId)) {
+      actions.openStandaloneChat(
+        selection.workspaceLocalId,
+        selection.worktreeLocalId,
+      );
+      return;
+    }
     actions.selectWorktree(
       selection.workspaceLocalId,
       selection.worktreeLocalId,
@@ -758,6 +784,10 @@ export const removeDesktopWorktreeInBatch = async (
     if (error instanceof TeardownFailedError) {
       throw new Error('Teardown script failed. Try again from the row menu.');
     }
+    if (error instanceof WorktreeArchiveRefusalError && error.recovery) {
+      if (error.recovery.destination.kind === 'journal-review') throw error;
+      throw new Error(worktreeRecoveryBatchPointer(error.recovery));
+    }
     const discard = await batchDiscardDescription(error, workspaceId);
     if (discard) throw new Error(worktreeDiscardBatchPointer(discard));
     throw error;
@@ -801,6 +831,26 @@ export const removeDesktopWorkEntryInBatch: RemoveWorkEntryInBatch = async (
   useStandaloneChatStore.getState().deleteWorkEntry(entryId, workspaceId, {
     lockAfterArchive: mode === 'archive',
   });
+
+/**
+ * The shared rows' Archive (CAN-5461): the whole Work Entry, locked, as the
+ * batch and the single-row confirm archive it. Production rows still archive
+ * through `SidebarCoworkWorkspaceRow`'s confirmation; this serves the shared
+ * rows wherever they render. A chat without a Work Entry fails rather than
+ * archiving nothing.
+ */
+export const archiveDesktopStandaloneChat = async (chat: {
+  readonly localId: string;
+  readonly projectLocalId: string;
+  readonly workEntryId?: string;
+}): Promise<void> => {
+  if (!chat.projectLocalId || !chat.workEntryId) {
+    throw new Error('This chat has no Work Entry to archive.');
+  }
+  await removeDesktopWorkEntryInBatch(chat.projectLocalId, chat.workEntryId, {
+    mode: 'archive',
+  });
+};
 
 /**
  * A Work Entry's batch facts, read live before each removal: gone when the
@@ -1245,7 +1295,7 @@ export function DesktopSharedSidebarHost({
   ): WorktreeRowNaming =>
     worktreeRowNamings[`${workspaceLocalId}/${worktreeLocalId}`] ??
     DEFAULT_ROW_NAMING;
-  const surfaceSnapshot = useMemo((): SessionViewModel | null => {
+  const localSurfaceSnapshot = useMemo((): SessionViewModel | null => {
     if (!snapshot) return snapshot;
     const projected = deferEmptyWorkspaces(
       overlaySidebarItemGroups(
@@ -1295,6 +1345,28 @@ export function DesktopSharedSidebarHost({
     chatsWorkspaceState.pending,
     scopingContext,
   ]);
+  const cloudSidebar = useCloudCoworkSidebar();
+  const cloudRows = cloudSidebar.status === 'online' ? cloudSidebar.rows : null;
+  const surfaceSnapshot = useMemo(
+    (): SessionViewModel | null =>
+      localSurfaceSnapshot && cloudRows
+        ? {
+            ...localSurfaceSnapshot,
+            ...appendCloudSidebarRows(localSurfaceSnapshot, cloudRows),
+          }
+        : localSurfaceSnapshot,
+    [localSurfaceSnapshot, cloudRows],
+  );
+  const cloudRowKind = useCallback(
+    (localId: string): CloudSidebarRowKind => {
+      const project = cloudRows?.workspaces.find(
+        (workspace) => workspace.localId === localId,
+      );
+      if (project === undefined) return 'task';
+      return project.type === 'cowork' ? 'cowork' : 'git';
+    },
+    [cloudRows],
+  );
   const visibleWorkspaceIds = useMemo((): ReadonlySet<string> => {
     const hidden = new Set(model.hiddenWorkspaceIds);
     return new Set(
@@ -1664,12 +1736,25 @@ export function DesktopSharedSidebarHost({
     void refresh();
   }, [projectsStructureKey, refresh]);
 
+  // On the Orchestrator page (docked in this window) its own sidebar row is
+  // the selection, so no project row is.
+  const appAdvisorDocked = useAppAdvisorStore(
+    (s) => s.open && s.layout === 'docked',
+  );
   const selection = useMemo<SidebarSelection>(() => {
+    if (appAdvisorDocked) return null;
     if (activePage === 'main') {
       return parseDesktopWorktreeSelection(model.selectedWorktreeKey);
     }
     if (activePage === 'chat' && activeWorkEntryId) {
-      return { kind: 'standalone-chat', standaloneChatId: activeWorkEntryId };
+      // A cloud task is a worktree row in the shared list (CAN-6099).
+      return isWebCoreScope(activeChatProjectId)
+        ? {
+            kind: 'worktree',
+            workspaceLocalId: activeChatProjectId,
+            worktreeLocalId: activeWorkEntryId,
+          }
+        : { kind: 'standalone-chat', standaloneChatId: activeWorkEntryId };
     }
     return activeChatProjectId
       ? { kind: 'workspace', workspaceLocalId: activeChatProjectId }
@@ -1678,6 +1763,7 @@ export function DesktopSharedSidebarHost({
     activeChatProjectId,
     activePage,
     activeWorkEntryId,
+    appAdvisorDocked,
     model.selectedWorktreeKey,
   ]);
   const selectionActions = useMemo<DesktopSelectionActions>(
@@ -1693,17 +1779,18 @@ export function DesktopSharedSidebarHost({
     }),
     [model.onSelectWorktree],
   );
-  // Rows the snapshot marks as cloud-backed, keyed `<workspace>/<worktree>`.
+  // Rows the list shows as cloud-backed, keyed `<workspace>/<worktree>`:
+  // the snapshot's own and the web core's appended to it.
   const cloudWorktreeKeys = useMemo(
     (): ReadonlySet<string> =>
       new Set(
-        (snapshot?.worktrees ?? [])
+        (surfaceSnapshot?.worktrees ?? [])
           .filter((worktree) => worktree.backend === 'cloud')
           .map(
             (worktree) => `${worktree.workspaceLocalId}/${worktree.localId}`,
           ),
       ),
-    [snapshot?.worktrees],
+    [surfaceSnapshot?.worktrees],
   );
   const isStoreWorktree = (workspaceId: string, worktreeId: string): boolean =>
     model.sortedProjects.some(
@@ -1733,8 +1820,41 @@ export function DesktopSharedSidebarHost({
       ),
     [snapshot?.worktrees, model.sortedProjects],
   );
+  const createLocalWorktree = async (
+    workspaceId: string,
+    groupId: string | undefined,
+  ): Promise<WorktreeCreateResult> => {
+    const created = groupId
+      ? await useProjectsStore.getState().createWorktree(workspaceId, {
+          sidebarItemGroupId: groupId,
+          onRegistered: (worktree): void =>
+            model.onSelectWorktree(workspaceId, worktree.id),
+        })
+      : await model.onCreateWorktree(workspaceId);
+    if (
+      !created &&
+      useProjectsStore.getState().pendingWorkspaceRepair?.workspaceId ===
+        workspaceId
+    )
+      return { status: 'pending' };
+    if (!created) {
+      const error = inlineFailureText(
+        useProjectsStore.getState().worktreeError,
+      );
+      if (error && summarizeCommandFailure(error).summary !== '')
+        throw new WorktreeCreationNoticeError(error);
+      throw new Error('Worktree could not be created. Try again.');
+    }
+    return { status: 'completed', worktreeId: created.id };
+  };
   const handleSelect = useCallback(
     (next: SidebarSelection): void => {
+      // Choosing a row leaves the Orchestrator page, even the row that was
+      // selected before it opened.
+      const appAdvisor = useAppAdvisorStore.getState();
+      if (appAdvisor.open && appAdvisor.layout === 'docked') {
+        appAdvisor.closeDialog();
+      }
       if (snapshot) {
         routeDesktopSidebarSelection(next, snapshot, selectionActions);
       }
@@ -1768,7 +1888,7 @@ export function DesktopSharedSidebarHost({
           )}
         </OrgProjectPlaceholderSection>
       )}
-      <CloudCoworkSidebarRows />
+      <CloudCoworkOfflineRow model={cloudSidebar} />
       <SharedContainerSidebarSection
         expanded={sharedWithMeExpanded}
         onExpandedChange={setSharedWithMeExpanded}
@@ -1782,7 +1902,12 @@ export function DesktopSharedSidebarHost({
         className="group/section min-h-px"
         data-testid="sidebar-section-code"
       >
-        <SidebarProjectsSkeleton />
+        <DelayedLoadingPlaceholder slowNote="Still loading projects…">
+          <SidebarRailSkeleton
+            testId="sidebar-section-code-loading"
+            rowStatusPlacement={earlyAccess ? 'leading' : 'trailing'}
+          />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }
@@ -1868,7 +1993,14 @@ export function DesktopSharedSidebarHost({
         onSelect={handleSelect}
         onWorktreeIntent={(projectId, worktreeId, phase, source): void => {
           // Cloud rows read through their own path, not the local chat store.
-          if (cloudWorktreeKeys.has(`${projectId}/${worktreeId}`)) return;
+          if (
+            !shouldPrefetchWorktreeChat(
+              projectId,
+              worktreeId,
+              cloudWorktreeKeys,
+            )
+          )
+            return;
           const target: ChatPrefetchTarget = {
             kind: 'worktree',
             projectId,
@@ -1883,9 +2015,26 @@ export function DesktopSharedSidebarHost({
           return true;
         }}
         onOpenWorkspaceSettingsOverride={(workspaceId) => {
+          // A cloud project opens the shared settings its capabilities allow.
+          if (isWebCoreScope(workspaceId)) return false;
           model.onOpenSettings(workspaceId);
           return true;
         }}
+        // Only cloud projects reach these: a local project's settings are
+        // the desktop's own modal, opened by the override above.
+        onUpdateWorkspace={async (workspaceId, patch) => {
+          if (!isWebCoreScope(workspaceId) || cloudSidebar.status !== 'online')
+            throw new Error("Couldn't save the project. Try again.");
+          await cloudSidebar.updateProject(workspaceId, patch);
+        }}
+        onDeleteWorkspace={async (workspaceId) => {
+          if (!isWebCoreScope(workspaceId) || cloudSidebar.status !== 'online')
+            throw new Error("Couldn't delete the project. Try again.");
+          await cloudSidebar.deleteProject(workspaceId);
+        }}
+        workspaceDangerCopy={(workspaceId) =>
+          isWebCoreScope(workspaceId) ? CLOUD_PROJECT_DANGER_COPY : undefined
+        }
         onConfirmWorktreeRemovalOverride={(
           workspaceId,
           worktreeId,
@@ -2131,13 +2280,15 @@ export function DesktopSharedSidebarHost({
         // Reorder persists through the store too, so such a row is not
         // sortable. Keyed by local id, as the surface resolves it.
         capabilitiesFor={(localId) =>
-          nonStoreWorktreeIds.has(localId)
-            ? {
-                ...capabilities,
-                worktreeReordering: false,
-                itemGrouping: false,
-              }
-            : capabilities
+          isWebCoreScope(localId)
+            ? cloudSidebarRowCapabilities(capabilities, cloudRowKind(localId))
+            : nonStoreWorktreeIds.has(localId)
+              ? {
+                  ...capabilities,
+                  worktreeReordering: false,
+                  itemGrouping: false,
+                }
+              : capabilities
         }
         itemGroupCommandsFor={(workspaceId) => {
           const project = model.sortedProjects.find(
@@ -2250,29 +2401,12 @@ export function DesktopSharedSidebarHost({
               'error',
             );
         }}
-        onCreateWorktree={async (workspaceId, groupId) => {
-          const created = groupId
-            ? await useProjectsStore.getState().createWorktree(workspaceId, {
-                sidebarItemGroupId: groupId,
-                onRegistered: (worktree): void =>
-                  model.onSelectWorktree(workspaceId, worktree.id),
-              })
-            : await model.onCreateWorktree(workspaceId);
-          if (
-            !created &&
-            useProjectsStore.getState().pendingWorkspaceRepair?.workspaceId ===
-              workspaceId
-          )
-            return { status: 'pending' };
-          if (!created) {
-            const error = inlineFailureText(
-              useProjectsStore.getState().worktreeError,
-            );
-            if (error && summarizeCommandFailure(error).summary !== '')
-              throw new WorktreeCreationNoticeError(error);
-            throw new Error('Worktree could not be created. Try again.');
-          }
-          return { status: 'completed', worktreeId: created.id };
+        onCreateWorktree={(workspaceId, groupId) => {
+          if (isWebCoreScope(workspaceId))
+            return cloudSidebar.status === 'online'
+              ? cloudSidebar.createTask(workspaceId)
+              : Promise.reject(new Error('Cloud chats are offline.'));
+          return createLocalWorktree(workspaceId, groupId);
         }}
         onCreateBranchWorktree={model.onCreateBranchWorktree}
         onArchiveWorktree={(workspaceId, worktreeId) => {
@@ -2283,6 +2417,7 @@ export function DesktopSharedSidebarHost({
         worktreeBatchBranchChoice
         onWorktreeBatchRemovalStateChange={setBatchRemovalState}
         onRemoveWorkEntryInBatch={removeDesktopWorkEntryInBatch}
+        onArchiveStandaloneChat={archiveDesktopStandaloneChat}
         getWorkEntryBatchRemovalFacts={desktopWorkEntryBatchRemovalFacts}
         getWorkEntryBulkState={desktopWorkEntryBulkState}
         onSetWorkEntryPinned={setDesktopWorkEntryPinned}
@@ -2326,6 +2461,11 @@ export function DesktopSharedSidebarHost({
           <StickyWorkspaceControls workspaceHeader={header} />
         )}
         onWorkspaceCollapsedChange={(workspaceId, collapsed) => {
+          if (isWebCoreScope(workspaceId)) {
+            if (cloudSidebar.status === 'online')
+              cloudSidebar.setCollapsed(workspaceId, collapsed);
+            return;
+          }
           // Read the store directly: the Chats catch-all is not in the
           // model's project lists, and its collapse persists the same way.
           const project = useProjectsStore
@@ -2334,7 +2474,28 @@ export function DesktopSharedSidebarHost({
           if (project?.collapsed !== collapsed)
             model.onToggleCollapsed(workspaceId);
         }}
-        onReorderWorkspaces={model.onReorderProjects}
+        onReorderWorkspaces={(activeId, overId) =>
+          routeSidebarReorder(activeId, overId, {
+            local: model.onReorderProjects,
+            ...(cloudSidebar.status === 'online'
+              ? {
+                  cloud: (active: string, over: string): void =>
+                    cloudSidebar.reorder(
+                      active,
+                      over,
+                      cloudSidebar.rows.workspaces
+                        .filter((workspace) =>
+                          snapshotWorkspaceMatchesContext(
+                            workspace,
+                            scopingContext,
+                          ),
+                        )
+                        .map((workspace) => workspace.localId),
+                    ),
+                }
+              : {}),
+          })
+        }
         onReorderWorktrees={model.onReorderWorktrees}
         branchGroupingEnabled={model.branchGroupingEnabled}
         onSetBranchGroupingOverride={model.onSetBranchGroupingOverride}
@@ -2640,14 +2801,17 @@ export function DesktopSharedSidebarHost({
         archivedCount={(workspaceId) =>
           desktopArchivedCount(model.sortedProjects, workspaceId)
         }
-        renderArchivedSection={(workspaceId) => (
-          <DesktopArchivedNavLink
-            workspaceId={workspaceId}
-            fallbackCount={
-              desktopArchivedCount(model.sortedProjects, workspaceId) ?? 0
-            }
-          />
-        )}
+        renderArchivedSection={(workspaceId) =>
+          // Archived local items only; a cloud project has none here.
+          isWebCoreScope(workspaceId) ? null : (
+            <DesktopArchivedNavLink
+              workspaceId={workspaceId}
+              fallbackCount={
+                desktopArchivedCount(model.sortedProjects, workspaceId) ?? 0
+              }
+            />
+          )
+        }
         archivedEntries={(workspaceId) =>
           loadedArchivedWorkspaces[workspaceId]
             ? (archivedByWorkspace[workspaceId] ?? []).map((entry) => ({

@@ -39,7 +39,11 @@ export function resolveComposerWorkflowGates(input: {
     providerType === 'opencode';
   if (!accountHarness) {
     return {
-      scheduledSends: interfaceMode !== 'claude-code',
+      // Scheduled sends run on the host's scheduler, which a scope without
+      // automations (a cloud chat) can't use.
+      scheduledSends:
+        interfaceMode !== 'claude-code' &&
+        input.capabilities.automations === true,
       planModeReadOnly: false,
     };
   }

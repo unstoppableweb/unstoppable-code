@@ -43,7 +43,7 @@ import {
   getStepLogFilePath,
   listExecutionSummariesWithStates,
   loadExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { validatePipelineRuntimeIdentifier } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {

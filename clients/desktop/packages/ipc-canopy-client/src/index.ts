@@ -2,6 +2,7 @@ export { createIpcCanopyClient } from './client';
 export type {
   IpcCanopyClient,
   IpcCanopyClientPorts,
+  ScopedFileOperations,
   StandaloneChatActiveWork,
   WorktreeStateForkRequest,
 } from './ports';
@@ -23,3 +24,4 @@ export {
   type CapabilityLimit,
 } from './capabilities';
 export type { WireFileTreeRoot } from './wire';
+export { languageForPath } from './projections';

@@ -7,7 +7,7 @@ import type {
   PipelineHostActionControls,
   PipelineHostActionResult,
   PipelineHostActions,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   fromPortableHostActionRequest,
   fromPortableHostResult,
@@ -18,7 +18,7 @@ import {
   toPortableHostResult,
   UNPORTABLE_HOST_RESULT,
   type SendHostPaths,
-} from '@canopy/desktop-shared/node/pipelines/host-request-portable';
+} from '@canopy/execution-engine/node/pipelines/host-request-portable';
 import {
   EVERY_PIPELINE_HOST_ACTION,
   PIPELINE_NEEDS_DESKTOP_MESSAGE,

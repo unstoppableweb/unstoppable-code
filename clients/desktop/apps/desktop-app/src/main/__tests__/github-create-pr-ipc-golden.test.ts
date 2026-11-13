@@ -699,6 +699,28 @@ describe('github:create-pr through core.pullRequest.create', () => {
     );
   });
 
+  it('refuses a create without a title as capability_unavailable: this core writes none', async () => {
+    await expect(
+      dispatcher.instruction(
+        'core.pullRequest.create',
+        {
+          integrationId: 'github',
+          repositoryId: 'ghrepo1.untitled',
+          baseBranch: 'main',
+          headBranch: 'feature-branch',
+          expectedHeadSha: 'a'.repeat(40),
+          draft: false,
+        },
+        {
+          caller: { ...DESKTOP_IPC_CALLER, grants: ['core.pullRequest.write'] },
+          metadata: { idempotencyKey: 'untitled' },
+        },
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+    expect(mockOctokit.repos.getBranch).not.toHaveBeenCalled();
+    expect(createRequests()).toEqual([]);
+  });
+
   it('refuses an untracked sender before the flow commits, pushes or calls GitHub', async () => {
     resolveIpcCaller = (): never => {
       throw canopyPermissionDeniedError('Untrusted desktop IPC sender.');

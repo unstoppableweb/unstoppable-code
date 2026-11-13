@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { FilePreviewResponse } from '@canopy/desktop-shared/types';
+import { cloudAttachmentPreview } from '@/cloud-chats/cloud-chat-attachments';
 
 export type FilePreviewState =
   | { readonly status: 'loading' }
@@ -18,6 +19,12 @@ export function useFilePreview(
   const [state, setState] = useState<FilePreviewState>({ status: 'loading' });
   useEffect(() => {
     if (!enabled) return undefined;
+    // A cloud chat's attachment is never read through main.
+    const cloud = cloudAttachmentPreview(absolutePath);
+    if (cloud !== undefined) {
+      setState({ status: 'ready', preview: cloud });
+      return undefined;
+    }
     let cancelled = false;
     setState({ status: 'loading' });
     void window.api

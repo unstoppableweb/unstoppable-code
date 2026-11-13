@@ -6,6 +6,7 @@ import {
   createCanopyDispatcher,
 } from '@canopy/core-runtime';
 import {
+  CatalogHostRefusedError,
   CatalogMutationRuns,
   createCoreCatalogHandlers,
   type CatalogSourceRecord,
@@ -16,6 +17,7 @@ import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 import {
   CORE_CATALOG_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_QUERY_DEFINITIONS,
+  CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
   emptyCatalogSelectionRefs,
@@ -28,6 +30,7 @@ import type {
   PluginInfo,
   PluginsCache,
 } from '@canopy/execution-engine/types/plugins';
+import { CanopyCloudClientError } from '../../canopy-cloud/client';
 import { cloneRepo } from '../../lib/git';
 import {
   resetPluginMutationQueueForTests,
@@ -243,6 +246,25 @@ function fakeDeps(): DesktopCatalogMutationDeps & {
       ),
       installPortalExternalPlugin: jest.fn(),
     },
+    cloud: {
+      addCloudPluginMarketplace: jest.fn(() =>
+        Promise.resolve({
+          marketplaceId: 'mkt-1',
+          sync: {
+            status: 'preview' as const,
+            revision: 'a'.repeat(40),
+            pluginKeys: ['tool'],
+          },
+        }),
+      ),
+      confirmCloudPluginMarketplace: jest.fn(() =>
+        Promise.resolve({
+          status: 'applied' as const,
+          revision: 'a'.repeat(40),
+          pluginKeys: ['tool'],
+        }),
+      ),
+    },
     runSerialized: runSerializedPluginMutation,
   };
   return state as unknown as DesktopCatalogMutationDeps & {
@@ -267,6 +289,7 @@ function compose(deps: DesktopCatalogMutationDeps) {
       instructions: {
         ...CORE_CATALOG_INSTRUCTION_DEFINITIONS,
         ...CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
+        ...CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
       },
       streams: {},
     },
@@ -337,6 +360,91 @@ describe('desktop catalog mutations (CAN-4123)', () => {
     });
     await expect(removal).resolves.toMatchObject({ sourceId: 'gh' });
     expect(deps.service.removeMarketplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes a GitHub plugin by adding its source to the cloud and confirming the preview (CAN-6176)', async () => {
+    cachedMarketplaces = [
+      ...cachedMarketplaces,
+      marketplace('gh', { plugins: [plugin('tool', { marketplaceId: 'gh' })] }),
+    ];
+    const target = {
+      entryId: 'plugin:gh/tool',
+      marketplaceId: 'gh',
+      pluginName: 'tool',
+      install: 'managed' as const,
+    };
+    const deps = fakeDeps();
+    const host = createDesktopCatalogMutationHost(baseHost(), deps);
+    if (host.publishPlugin === undefined) throw new Error('no publishPlugin');
+    const publish = host.publishPlugin.bind(host);
+
+    await expect(publish(target)).resolves.toEqual({
+      publicationId: 'mkt-1',
+      remoteEntryId: 'plugin:marketplace:mkt-1/tool',
+      revision: 'a'.repeat(40),
+    });
+    expect(deps.cloud.addCloudPluginMarketplace).toHaveBeenCalledWith(
+      'owner/gh',
+    );
+    expect(deps.cloud.confirmCloudPluginMarketplace).toHaveBeenCalledWith(
+      'mkt-1',
+      'a'.repeat(40),
+    );
+
+    // A source the account already applied is adopted without a second confirm.
+    jest.mocked(deps.cloud.addCloudPluginMarketplace).mockResolvedValueOnce({
+      marketplaceId: 'mkt-1',
+      sync: {
+        status: 'applied',
+        revision: 'b'.repeat(40),
+        pluginKeys: ['tool'],
+      },
+    });
+    await expect(publish(target)).resolves.toMatchObject({
+      revision: 'b'.repeat(40),
+    });
+    expect(deps.cloud.confirmCloudPluginMarketplace).toHaveBeenCalledTimes(1);
+
+    const refusal = async (promise: Promise<unknown>): Promise<string> => {
+      const error: unknown = await promise.catch((caught: unknown) => caught);
+      return error instanceof CatalogHostRefusedError ? error.refusal : 'none';
+    };
+    await expect(
+      refusal(
+        publish({
+          ...target,
+          entryId: 'plugin:builtin-id/p',
+          marketplaceId: 'builtin-id',
+          pluginName: 'p',
+        }),
+      ),
+    ).resolves.toBe('publish-source-unsupported');
+    expect(deps.cloud.addCloudPluginMarketplace).toHaveBeenCalledTimes(2);
+
+    jest
+      .mocked(deps.cloud.confirmCloudPluginMarketplace)
+      .mockRejectedValueOnce(
+        new CanopyCloudClientError('http-error', 'moved', 409),
+      );
+    await expect(refusal(publish(target))).resolves.toBe(
+      'publish-revision-moved',
+    );
+    jest
+      .mocked(deps.cloud.addCloudPluginMarketplace)
+      .mockRejectedValueOnce(
+        new CanopyCloudClientError('missing-api-key', 'Sign in.'),
+      );
+    await expect(refusal(publish(target))).resolves.toBe(
+      'publish-remote-unavailable',
+    );
+    jest
+      .mocked(deps.cloud.confirmCloudPluginMarketplace)
+      .mockResolvedValueOnce({
+        status: 'applied',
+        revision: 'a'.repeat(40),
+        pluginKeys: ['other'],
+      });
+    await expect(refusal(publish(target))).resolves.toBe('plugin-not-found');
   });
 
   it('installs once for a repeated key and replays after a lost reply', async () => {

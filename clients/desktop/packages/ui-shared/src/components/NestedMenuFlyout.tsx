@@ -16,6 +16,7 @@ import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
+  DropdownMenuItemTrailing,
   type DropdownMenuItemIconTone,
 } from './DropdownMenu';
 import { FLOATING_MENU_VIEWPORT_PADDING, FloatingMenu } from './FloatingMenu';
@@ -72,14 +73,21 @@ export interface NestedMenuFlyoutProps {
   /** False when row actions close the parent menu and restore its focus. */
   readonly closeOnSelect?: boolean;
   readonly leading?: ReactNode;
+  /**
+   * Quiet text before the chevron, such as how many entries the flyout
+   * holds. Not drawn in `disclosure`, whose chevron leads.
+   */
+  readonly trailing?: ReactNode;
   /** Ink of the leading slot; see {@link DropdownMenuItemIconTone}. */
   readonly leadingTone?: DropdownMenuItemIconTone;
   /**
    * `parent` matches the width of the menu the flyout opens from (the
    * model picker's 16rem), so a label truncates no differently in the
-   * flyout than in the list; `default` is the flyout's own 14rem.
+   * flyout than in the list; `compact` is the sidebar account menu's 14rem,
+   * so long labels truncate instead of widening the flyout; `default` sizes
+   * the flyout to its rows.
    */
-  readonly menuWidth?: 'default' | 'parent';
+  readonly menuWidth?: 'default' | 'parent' | 'compact';
   readonly menuWidthPx?: number;
   /**
    * `disclosure` reads as a quiet expander: supporting ink with the chevron
@@ -104,6 +112,7 @@ export function NestedMenuFlyout({
   children,
   closeOnSelect = true,
   leading,
+  trailing,
   leadingTone,
   menuWidth = 'default',
   menuWidthPx = DEFAULT_MENU_WIDTH_PX,
@@ -261,6 +270,9 @@ export function NestedMenuFlyout({
             <span className="truncate text-2xs fg-tertiary">{description}</span>
           ) : null}
         </span>
+        {!disclosure && trailing !== undefined ? (
+          <DropdownMenuItemTrailing>{trailing}</DropdownMenuItemTrailing>
+        ) : null}
         {disclosure ? null : (
           <ChevronRightMediumIcon
             size={16}
@@ -285,7 +297,7 @@ export function NestedMenuFlyout({
           open
           nested
           closeOnSelect={closeOnSelect}
-          sizing={menuWidth === 'parent' ? 'custom' : 'content'}
+          sizing={menuWidth === 'default' ? 'content' : 'custom'}
           focusOnOpen={focusOnOpen}
           onOpenChange={(nextOpen): void => {
             if (!nextOpen) setOpen(false);
@@ -307,7 +319,11 @@ export function NestedMenuFlyout({
           data-testid={menuTestId}
           aria-label={label}
           className={
-            menuWidth === 'parent' ? 'w-64 max-w-[calc(100vw-16px)]' : ''
+            menuWidth === 'parent'
+              ? 'w-64 max-w-[calc(100vw-16px)]'
+              : menuWidth === 'compact'
+                ? 'w-56 max-w-[calc(100vw-16px)]'
+                : ''
           }
         >
           {children}

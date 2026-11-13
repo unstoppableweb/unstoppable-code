@@ -156,6 +156,12 @@ export interface PanelGroupModel {
   readonly groupId: string;
   /** Tabs in display order. */
   readonly tabs: readonly PanelTabModel[];
+  /**
+   * Tabs that belong to a chat other than the selected one. The tab strip
+   * never shows them; their content stays mounted (hidden) so switching back
+   * to their chat keeps its state. Absent means none.
+   */
+  readonly hiddenTabs?: readonly PanelTabModel[];
   /** Selected tab of this group, or `null` for an empty group. */
   readonly activePanelId: string | null;
   /**

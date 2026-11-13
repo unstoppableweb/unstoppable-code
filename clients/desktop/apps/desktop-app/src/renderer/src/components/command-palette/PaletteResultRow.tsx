@@ -1,42 +1,40 @@
 import { Badge } from '@canopy/ui-shared/components/Badge';
-import { memo, type ComponentType, type JSX } from 'react';
+import { memo, type JSX } from 'react';
 import {
+  ArchiveIcon,
   Bot,
-  Archive,
   CalendarClock,
   ClipboardList,
   Eye,
   FileText,
   MessageSquare,
   Puzzle,
-  Settings2,
+  Settings,
   Sparkles,
   Terminal,
   Workflow,
-} from 'lucide-react';
-import { GitBranch } from '@canopy/ui-shared/icons/AppIcons';
+  GitBranch,
+  type AppIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import {
   POSTHOG_REPLAY_BLOCK_CLASS,
   POSTHOG_REPLAY_MASK_CLASS,
 } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { formatRelativeTime } from '@/lib/format';
 import {
   HighlightedSegments,
   rangesToIndices,
   splitMatchSegments,
 } from '@canopy/ui-shared';
-import { ListRow } from '@canopy/ui-shared/components';
-import { WORKTREE_STATUS_META } from '@/lib/worktree-status';
-import { ModelProviderIcon } from '@canopy/ui-shared/components';
-import type { UiAgentProvider } from '@/lib/providerLabels';
+import { ListRow, SearchPaletteRowContext } from '@canopy/ui-shared/components';
+import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import type { PaletteItem, PaletteItemKind } from './paletteItems';
 
-/** Raw Lucide entries retain their numeric sizing contract. */
-type KindIcon = ComponentType<{ size?: number }>;
-
-const KIND_ICON: Record<Exclude<PaletteItemKind, 'worktree'>, KindIcon> = {
+// One glyph per kind, at the default icon step like every menu row. Chats,
+// worktrees and archived containers draw their project's badge instead, as
+// the sidebar does.
+const KIND_ICON: Record<PaletteItemKind, AppIcon> = {
   command: Terminal,
-  archive: Archive,
+  archive: ArchiveIcon,
   chat: MessageSquare,
   'chat-content': FileText,
   plan: ClipboardList,
@@ -46,7 +44,8 @@ const KIND_ICON: Record<Exclude<PaletteItemKind, 'worktree'>, KindIcon> = {
   agent: Bot,
   plugin: Puzzle,
   skill: Sparkles,
-  setting: Settings2,
+  setting: Settings,
+  worktree: GitBranch,
 };
 
 interface PaletteResultRowProps {
@@ -59,6 +58,28 @@ interface PaletteResultRowProps {
   registerRef: (index: number, node: HTMLLIElement | null) => void;
 }
 
+function RowGlyph({ item }: { item: PaletteItem }): JSX.Element {
+  const testId = `command-palette-kind-${item.kind}`;
+  if (item.project) {
+    return (
+      <span
+        className={`${POSTHOG_REPLAY_BLOCK_CLASS} inline-flex`}
+        data-testid={testId}
+        aria-hidden
+      >
+        <ProjectIcon
+          kind={item.project.kind}
+          color={item.project.color}
+          temporary={item.project.temporary}
+          repoPath={item.project.repoPath}
+        />
+      </span>
+    );
+  }
+  const Icon = KIND_ICON[item.kind];
+  return <Icon data-testid={testId} aria-hidden />;
+}
+
 function PaletteResultRowInner({
   item,
   titleIndices,
@@ -68,43 +89,57 @@ function PaletteResultRowInner({
   onActivate,
   registerRef,
 }: PaletteResultRowProps): JSX.Element {
-  const Icon = item.kind === 'worktree' ? null : KIND_ICON[item.kind];
-  const dotClass =
-    item.worktreeStatus !== undefined
-      ? WORKTREE_STATUS_META[item.worktreeStatus].dotClass
-      : null;
-  const provider: UiAgentProvider | null =
-    item.providerType === 'claude' ||
-    item.providerType === 'codex' ||
-    item.providerType === 'ollama'
-      ? item.providerType
-      : null;
-  const titleSegments = splitMatchSegments(item.title, titleIndices);
   const commandTestId =
     item.kind === 'command' &&
     (item.navigation.commandKey === 'open-cost-panel' ||
       item.navigation.commandKey === 'open-session-breakdown')
       ? `command-palette-command-${item.navigation.commandKey}`
       : 'command-palette-result';
-  const subtitleSegments = item.subtitle
-    ? item.subtitleMatchRanges
-      ? splitMatchSegments(
-          item.subtitle,
-          rangesToIndices([...item.subtitleMatchRanges]),
-        )
-      : null
-    : null;
-
-  const subtitleClassName =
-    item.subtitleMatchRanges || item.subtitleReplayBlocked
-      ? POSTHOG_REPLAY_BLOCK_CLASS
-      : item.subtitleReplayMasked
-        ? POSTHOG_REPLAY_MASK_CLASS
-        : undefined;
-  const hasTrailing =
-    Boolean(item.statusBadge) ||
-    Boolean(item.shortcut) ||
-    item.timestamp !== undefined;
+  // A content hit (a transcript or plan snippet) leads with the matching
+  // line and names its chat or plan at the end. Session replay blocks the
+  // snippet: it quotes chat or plan text.
+  const contentHit = item.subtitle !== undefined && item.subtitleMatchRanges;
+  const primary = contentHit ? (
+    <span className={`${POSTHOG_REPLAY_BLOCK_CLASS} min-w-0 truncate`}>
+      <HighlightedSegments
+        segments={splitMatchSegments(
+          item.subtitle ?? '',
+          rangesToIndices([...(item.subtitleMatchRanges ?? [])]),
+        )}
+      />
+    </span>
+  ) : (
+    <span
+      className={
+        item.titleReplayMasked
+          ? `${POSTHOG_REPLAY_MASK_CLASS} min-w-0 truncate`
+          : 'min-w-0 truncate'
+      }
+    >
+      <HighlightedSegments
+        segments={splitMatchSegments(item.title, titleIndices)}
+      />
+    </span>
+  );
+  const context = item.shortcut ? (
+    <SearchPaletteRowContext data-testid="command-palette-shortcut">
+      {item.shortcut}
+    </SearchPaletteRowContext>
+  ) : contentHit ? (
+    <SearchPaletteRowContext>
+      <span
+        className={
+          item.titleReplayMasked ? POSTHOG_REPLAY_MASK_CLASS : undefined
+        }
+      >
+        {item.title}
+      </span>
+    </SearchPaletteRowContext>
+  ) : item.context ? (
+    <SearchPaletteRowContext data-testid="command-palette-context">
+      <span className={POSTHOG_REPLAY_MASK_CLASS}>{item.context}</span>
+    </SearchPaletteRowContext>
+  ) : null;
 
   return (
     <li
@@ -118,87 +153,22 @@ function PaletteResultRowInner({
         data-testid={commandTestId}
         onMouseEnter={(): void => onHover(index)}
         onClick={(): void => onActivate(item)}
-        icon={
-          Icon === null ? (
-            <GitBranch
-              size="sm"
-              data-testid={`command-palette-kind-${item.kind}`}
-              aria-hidden
-            />
-          ) : (
-            <Icon
-              size={16}
-              data-testid={`command-palette-kind-${item.kind}`}
-              aria-hidden
-            />
-          )
-        }
-        description={
-          item.subtitle ? (
-            // A tier-2 content snippet (`subtitleMatchRanges`) quotes chat
-            // transcript or plan text, and a flagged subtitle quotes a
-            // prompt: both are blocked in session replay.
-            <span className={subtitleClassName}>
-              {subtitleSegments ? (
-                <HighlightedSegments segments={subtitleSegments} />
-              ) : (
-                item.subtitle
-              )}
-            </span>
-          ) : undefined
-        }
+        icon={<RowGlyph item={item} />}
         trailing={
-          hasTrailing ? (
-            <span className="flex shrink-0 items-center gap-2">
+          item.statusBadge || context ? (
+            <span className="flex min-w-0 shrink-0 items-center gap-2">
               {item.statusBadge && (
                 <Badge data-testid="command-palette-status-badge">
                   {item.statusBadge}
                 </Badge>
               )}
-              {item.shortcut && (
-                <span
-                  data-testid="command-palette-shortcut"
-                  className="whitespace-nowrap tabular-nums fg-quaternary"
-                >
-                  {item.shortcut}
-                </span>
-              )}
-              {item.timestamp !== undefined && (
-                <span className="text-2xs fg-secondary">
-                  {formatRelativeTime(item.timestamp)}
-                </span>
-              )}
+              {context}
             </span>
           ) : undefined
         }
       >
         <span className="flex min-w-0 items-center gap-2">
-          {dotClass && (
-            <span
-              className={`h-2.5 w-2.5 shrink-0 rounded-full border ${dotClass}`}
-              data-testid="command-palette-worktree-status"
-              aria-hidden
-            />
-          )}
-          {provider && (
-            <ModelProviderIcon
-              size="md"
-              provider={provider}
-              tone="secondary"
-              className="shrink-0"
-              data-testid={`command-palette-provider-${provider}`}
-              aria-hidden
-            />
-          )}
-          <span
-            className={
-              item.titleReplayMasked
-                ? `${POSTHOG_REPLAY_MASK_CLASS} min-w-0 truncate`
-                : 'min-w-0 truncate'
-            }
-          >
-            <HighlightedSegments segments={titleSegments} />
-          </span>
+          {primary}
           {item.archived && (
             <span
               data-testid="command-palette-archive-badge"

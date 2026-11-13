@@ -4,7 +4,30 @@ import type {
   ApprovalOutcome,
   ApprovalSessionHandle,
 } from '../approvals/approval-service';
-import { approvalCheckForClaudeTool } from '../agents/claude-approval-adapter';
+import {
+  approvalCheckForClaudeTool,
+  guardMappedReadPath,
+} from '../agents/claude-approval-adapter';
+
+/**
+ * The raw path argument behind a read, read the way
+ * `openCodeNativeOperations` reads it: `read` takes `path`, then `filePath`,
+ * and `grep`/`glob` take `path` or search the cwd. Conflicting keys, or a key
+ * the mapper ignores for that tool, yield a non-string so the read prompts.
+ */
+function openCodeRawPaths(
+  toolName: string,
+  args: Record<string, unknown>,
+): unknown[] {
+  const { path, filePath } = args;
+  if (toolName === 'read') {
+    if (path !== undefined && filePath !== undefined && path !== filePath)
+      return [null];
+    return [path ?? filePath];
+  }
+  if (filePath !== undefined) return [null];
+  return path === undefined ? [] : [path];
+}
 
 export async function authorizeOpenCodeNativeTool(
   input: OpenCodeToolInput,
@@ -50,10 +73,14 @@ export async function authorizeOpenCodeNativeTool(
             },
             suggestedTarget: { kind: 'network', host: '*' },
           }
-        : approvalCheckForClaudeTool(
-            operation.tool,
-            operation.input,
-            operationCwd,
+        : // The mapper already resolved the native path, so judge the raw one.
+          guardMappedReadPath(
+            approvalCheckForClaudeTool(
+              operation.tool,
+              operation.input,
+              operationCwd,
+            ),
+            openCodeRawPaths(input.toolName, input.toolArgs),
           );
     if (normalized.failClosedReason)
       return { decision: 'deny', message: normalized.failClosedReason };

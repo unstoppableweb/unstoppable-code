@@ -1,4 +1,7 @@
-import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  resolveClientAppError,
+  reportClientAppError,
+} from '@canopy/desktop-instrumentation/client';
 import { createWorktreeCreationActions } from './projectsStore.worktreeCreation';
 import { toAppError } from '@canopy/protocol/app-errors';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
@@ -78,7 +81,11 @@ import {
   awaitPendingRemovalHoldForE2e,
   useArchivedContainersStore,
 } from './archivedContainersStore';
-import { requestLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
+import {
+  requestLoadedChangedFilesRefresh,
+  requestChangedFilesRefresh,
+  clearWorktreeActivity,
+} from './changedFilesRefreshRuntime';
 import { useFileListStore } from './fileListStore';
 import { shareUnchangedProjects } from './projects-structural-sharing';
 import { useGitHubStore } from './githubStore';
@@ -3059,6 +3066,17 @@ async function stopRunningHooks(
   );
 }
 
+function refreshRestoredWorktreeActivity(
+  projectId: string,
+  worktreeId: string,
+): void {
+  void requestChangedFilesRefresh(projectId, worktreeId).catch(
+    (error: unknown) => {
+      reportClientAppError(error);
+    },
+  );
+}
+
 /**
  * Marks the row busy, then runs main's read-only source admission before any
  * other removal effect (CAN-5333). A refusal unmarks the row and rejects.
@@ -3082,6 +3100,7 @@ async function markArchivingAndAdmitSource(
     set({ archivingWorktrees });
     throw error;
   }
+  clearWorktreeActivity(projectId, worktreeId);
 }
 
 function deselectIfSelectedWorktree(
@@ -3466,6 +3485,35 @@ function cleanupArchivedWorktreeRendererState(
   useHooksStore.getState().cleanupWorktree(projectId, worktreeId);
 }
 
+/** Recovery cleanup needs confirmed absence, not an optimistically hidden row. */
+export function cleanupUnlistedWorktreeRendererState(
+  projectId: string,
+  worktreeId: string,
+): boolean {
+  const get = useProjectsStore.getState;
+  const state = get();
+  if (
+    state.projectInventoryStatus !== 'ready' ||
+    !state.projectInventorySnapshot ||
+    state.failedWorkspaceIds.has(projectId)
+  )
+    return false;
+  const hasOwner = (projects: readonly SidebarItem[]): boolean =>
+    projects.some(
+      (project) =>
+        project.id === projectId &&
+        (project.type === 'cowork' ||
+          project.worktrees.some((row) => row.id === worktreeId)),
+    );
+  if (
+    hasOwner(state.projects) ||
+    hasOwner(state.projectInventorySnapshot.projects)
+  )
+    return false;
+  cleanupArchivedWorktreeRendererState(projectId, worktreeId, get);
+  return true;
+}
+
 function finalizeArchiveUiRemoval(
   snapshot: ArchiveUiSnapshot,
   get: () => ProjectsState,
@@ -3787,7 +3835,20 @@ async function performArchive(
           typedRefusal: true,
         });
   // Before warnings and finalization: the callers' catches roll the row back.
-  throwIfArchiveRefused(archiveResponse);
+  throwIfArchiveRefused(archiveResponse, {
+    ...(options?.expectedBranchName !== undefined
+      ? { expectedBranchName: options.expectedBranchName }
+      : {}),
+    ...(options?.deleteBranch !== undefined
+      ? { deleteBranch: options.deleteBranch }
+      : {}),
+    ...(options?.deleteWithoutRetentionIfMissing !== undefined
+      ? {
+          deleteWithoutRetentionIfMissing:
+            options.deleteWithoutRetentionIfMissing,
+        }
+      : {}),
+  });
 
   for (const warning of archiveResponse.warnings) {
     useGitHubStore.getState().addToast(warning, 'warning', undefined, {
@@ -5518,6 +5579,15 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               createAppliedProjectWorktreeHooksKey(projectId, worktreeId),
             ),
           });
+          if (
+            get().projects.some(
+              (project) =>
+                project.id === projectId &&
+                project.type !== 'cowork' &&
+                project.worktrees.some((row) => row.id === worktreeId),
+            )
+          )
+            refreshRestoredWorktreeActivity(projectId, worktreeId);
         }
       })();
 
@@ -5630,6 +5700,15 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               createAppliedProjectWorktreeHooksKey(projectId, worktreeId),
             ),
           });
+          if (
+            get().projects.some(
+              (project) =>
+                project.id === projectId &&
+                project.type !== 'cowork' &&
+                project.worktrees.some((row) => row.id === worktreeId),
+            )
+          )
+            refreshRestoredWorktreeActivity(projectId, worktreeId);
         }
       })();
 

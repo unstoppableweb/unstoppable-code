@@ -45,7 +45,13 @@ jest.mock('../../lib/plan-persistence', () => ({
     worktreeId: string,
     planId: string,
   ): Promise<object | null> =>
-    Promise.resolve(planId === 'plan-1' ? { id: planId } : null),
+    Promise.resolve(
+      planId === 'plan-1'
+        ? { id: planId }
+        : planId === 'plan-shared'
+          ? { id: planId, share: { remoteId: 'remote-1' } }
+          : null,
+    ),
 }));
 
 const mockOwnerCalls: unknown[] = [];
@@ -70,6 +76,10 @@ jest.mock('../../ipc/agent-models', () => ({
 jest.mock('../../ipc/plans', () => ({
   shareTrackedPlanForWindow: (request: unknown): object => {
     mockOwnerCalls.push(['plan', request]);
+    return Promise.resolve({ ok: true, value: null });
+  },
+  unshareTrackedPlanForWindow: (request: unknown): object => {
+    mockOwnerCalls.push(['unsharePlan', request]);
     return Promise.resolve({ ok: true, value: null });
   },
 }));
@@ -171,6 +181,9 @@ describe('App Advisor sharing action host (CAN-6003)', () => {
     const h = host();
     await expect(h.planExists('proj', 'wt', 'plan-1')).resolves.toBe(true);
     await expect(h.planExists('proj', 'wt', 'plan-x')).resolves.toBe(false);
+    await expect(h.planShared('proj', 'wt', 'plan-shared')).resolves.toBe(true);
+    await expect(h.planShared('proj', 'wt', 'plan-1')).resolves.toBe(false);
+    await expect(h.planShared('proj', 'wt', 'plan-x')).resolves.toBe(false);
     await expect(h.readChat(TARGET)).resolves.toEqual({ id: 'chat-1' });
     await expect(
       h.readChat({ ...TARGET, chatId: 'other' }),
@@ -205,16 +218,19 @@ describe('App Advisor sharing action host (CAN-6003)', () => {
     );
   });
 
-  it("shares, publishes and unshares through the window's agents:import-shared, agents:public-share:publish and runs:unshare owners, and announces agent changes", async () => {
+  it("shares, publishes and unshares through the window's agents:import-shared, agents:public-share:publish, tracked-plans:unshare and runs:unshare owners, and announces agent changes", async () => {
     const h = host();
+    const plan = { projectId: 'proj', worktreeId: 'wt', planId: 'plan-shared' };
     await h.importSharedAgent('agent-1');
     await h.publishAgentPublicShare('agent-1');
+    await h.unsharePlan(plan);
     await h.unshareRun(TARGET);
     h.announceAgentsChanged();
 
     expect(mockOwnerCalls).toEqual([
       ['import', { agentId: 'agent-1', installMissing: true }],
       ['publish', 'agent-1'],
+      ['unsharePlan', plan],
       ['unshareRun', TARGET],
     ]);
     expect(mockWindowSends).toEqual([IPC_CHANNELS.agentsChanged]);

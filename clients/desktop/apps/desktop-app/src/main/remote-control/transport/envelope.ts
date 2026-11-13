@@ -14,6 +14,13 @@ export const ENVELOPE_TYPES = {
   data: 0x20,
   /** Unauthenticated refusal during the handshake; never ends a live session. */
   abort: 0x30,
+  /**
+   * Session resume after a relay drop, sent only on sessions whose peers
+   * negotiated it: the controller's request and the host's answer, each
+   * authenticated with the session's resume key.
+   */
+  resume1: 0x40,
+  resume2: 0x41,
 } as const;
 
 export type EnvelopeType = keyof typeof ENVELOPE_TYPES;

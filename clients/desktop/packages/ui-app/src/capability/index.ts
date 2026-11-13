@@ -21,6 +21,7 @@ export {
   VIEW_SHARED_SKILL_LABEL,
   InstalledShareUpdateButton,
   installedShareProvenance,
+  installedShareUpdateAvailable,
   shareSourceHashChanged,
   sharedSkillDisplayNames,
   type InstalledShareSource,

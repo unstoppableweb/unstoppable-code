@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CORE_CATALOG_INSTRUCTION_DEFINITIONS,
+  CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_QUERY_DEFINITIONS,
   CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
@@ -17,11 +18,14 @@ import { createCanopyDispatcher } from '../../../runtime/dispatcher';
 import { OperationService } from '../../operations';
 import { OperationLedger } from '../../operations/ledger';
 import {
+  CatalogHostRefusedError,
   CatalogMutationRuns,
   CatalogSelectionUnavailableError,
   catalogContentRevision,
   createCoreCatalogHandlers,
   type CatalogPluginInstallOutcome,
+  type CatalogPublication,
+  type CatalogPublishPackage,
   type CatalogPluginTarget,
   type CatalogRefreshOutcome,
   type CatalogRefreshPlan,
@@ -115,6 +119,29 @@ class MemoryCatalogHost implements CoreCatalogHost {
     >[0][],
     refreshSources: 0,
     installPlugin: 0,
+    publishPlugin: 0,
+    publishSkill: [] as { entryId: string; pkg: CatalogPublishPackage }[],
+  };
+  publishOutcome: CatalogPublication | Error = {
+    publicationId: 'mkt-1',
+    remoteEntryId: 'plugin:marketplace:mkt-1/a',
+    revision: 'a'.repeat(40),
+  };
+  publishPlugin?: (target: CatalogPluginTarget) => Promise<CatalogPublication> =
+    () => {
+      this.calls.publishPlugin += 1;
+      return this.publishOutcome instanceof Error
+        ? Promise.reject(this.publishOutcome)
+        : Promise.resolve(this.publishOutcome);
+    };
+  publishSkill?: (
+    entryId: string,
+    pkg: CatalogPublishPackage,
+  ) => Promise<CatalogPublication> = (entryId, pkg) => {
+    this.calls.publishSkill.push({ entryId, pkg });
+    return this.publishOutcome instanceof Error
+      ? Promise.reject(this.publishOutcome)
+      : Promise.resolve(this.publishOutcome);
   };
 
   snapshot(): Promise<CatalogSnapshotRead> {
@@ -255,6 +282,7 @@ function compose() {
       instructions: {
         ...CORE_CATALOG_INSTRUCTION_DEFINITIONS,
         ...CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
+        ...CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
       },
       streams: {},
     },
@@ -709,6 +737,198 @@ describe('core.catalog handlers (CAN-4123)', () => {
     expect(record.error).toMatchObject({
       kind: 'unavailable',
       code: 'core.catalog.refreshUnavailable',
+    });
+  });
+
+  it('publishes a plugin once per key and refuses what cannot be published (CAN-6176)', async () => {
+    const dispatcher = compose();
+    const publish = (
+      key: string,
+      overrides: Record<string, unknown> = {},
+    ): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.entry.publish',
+        {
+          entryId: 'plugin:m/a',
+          kind: 'plugin',
+          expectedRevision: 0,
+          visibility: 'private',
+          teamId: null,
+          organizationId: null,
+          ...overrides,
+          _meta: keyed(key),
+        },
+        { caller: writer, metadata: keyed(key) },
+      );
+    const published = {
+      publicationId: 'mkt-1',
+      remoteEntryId: 'plugin:marketplace:mkt-1/a',
+      revision: 'a'.repeat(40),
+    };
+    await expect(Promise.all([publish('p1'), publish('p1')])).resolves.toEqual([
+      published,
+      published,
+    ]);
+    expect(host.calls.publishPlugin).toBe(1);
+
+    await expect(
+      publish('p2', { visibility: 'organization', organizationId: 'org' }),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'invalid_argument',
+        code: 'core.catalog.visibilityInvalid',
+      },
+    });
+    for (const [key, overrides, kind] of [
+      ['p3', { kind: 'skill', entryId: 'skill:s/x' }, 'invalid_argument'],
+      [
+        'p3b',
+        { package: { analysisId: 'a', selectedOptionalResourceIds: [] } },
+        'invalid_argument',
+      ],
+      ['p3c', { kind: 'model', entryId: 'model:m' }, 'capability_unavailable'],
+    ] as const)
+      await expect(publish(key, overrides)).rejects.toMatchObject({
+        payload: { kind },
+      });
+    await expect(publish('p4', { expectedRevision: 3 })).rejects.toMatchObject({
+      payload: { kind: 'conflict', code: 'core.catalog.revisionConflict' },
+    });
+    await expect(
+      publish('p5', { entryId: 'plugin:m/nope' }),
+    ).rejects.toMatchObject({
+      payload: { kind: 'not_found', code: 'core.catalog.entryNotFound' },
+    });
+    expect(host.calls.publishPlugin).toBe(1);
+
+    for (const [refusal, payload] of [
+      [
+        'publish-source-unsupported',
+        { kind: 'failed_precondition', code: 'core.catalog.entryReadOnly' },
+      ],
+      [
+        'publish-revision-moved',
+        { kind: 'conflict', code: 'core.catalog.revisionConflict' },
+      ],
+      [
+        'publish-remote-unavailable',
+        {
+          kind: 'unavailable',
+          code: 'core.catalog.remoteUnavailable',
+          // Recorded under its key: a retry with that key replays this failure.
+          retry: { kind: 'never' },
+        },
+      ],
+    ] as const) {
+      host.publishOutcome = new CatalogHostRefusedError(refusal);
+      await expect(publish(`r-${refusal}`)).rejects.toMatchObject({ payload });
+    }
+
+    host.publishPlugin = undefined;
+    await expect(publish('p6')).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
+    });
+  });
+
+  it('publishes a custom skill with its consented package once per key (CAN-6176)', async () => {
+    const dispatcher = compose();
+    host.entries.push({
+      entryId: 'skill:custom:app/helper',
+      kind: 'skill',
+      name: 'helper',
+      description: '',
+      source: 'user',
+      content: { kind: 'skill', entrypoint: null },
+      availability: 'available',
+      revision: 0,
+      createdAt: '2026-11-10T00:00:00.000Z',
+      updatedAt: '2026-11-10T00:00:00.000Z',
+    });
+    const pkg = {
+      analysisId: 'analysis-1',
+      selectedOptionalResourceIds: ['r'],
+    };
+    const published = {
+      publicationId: 'skill-remote-1',
+      remoteEntryId: 'skill:cloud-custom/skill-remote-1',
+      revision: 'b'.repeat(64),
+    };
+    host.publishOutcome = published;
+    const publish = (
+      key: string,
+      overrides: Record<string, unknown> = {},
+    ): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.entry.publish',
+        {
+          entryId: 'skill:custom:app/helper',
+          kind: 'skill',
+          expectedRevision: 0,
+          visibility: 'private',
+          teamId: null,
+          organizationId: null,
+          package: pkg,
+          ...overrides,
+          _meta: keyed(key),
+        },
+        { caller: writer, metadata: keyed(key) },
+      );
+    await expect(Promise.all([publish('s1'), publish('s1')])).resolves.toEqual([
+      published,
+      published,
+    ]);
+    expect(host.calls.publishSkill).toEqual([
+      { entryId: 'skill:custom:app/helper', pkg },
+    ]);
+
+    await expect(
+      publish('s2', { visibility: 'team', teamId: 'team' }),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.catalog.visibilityInvalid' },
+    });
+    await expect(publish('s3', { expectedRevision: 1 })).rejects.toMatchObject({
+      payload: { kind: 'conflict', code: 'core.catalog.revisionConflict' },
+    });
+    await expect(
+      publish('s4', { entryId: 'skill:custom:app/gone' }),
+    ).rejects.toMatchObject({
+      payload: { kind: 'not_found', code: 'core.catalog.entryNotFound' },
+    });
+    expect(host.calls.publishSkill).toHaveLength(1);
+
+    for (const [refusal, payload] of [
+      [
+        'publish-package-stale',
+        {
+          kind: 'conflict',
+          code: 'core.catalog.packageStale',
+          retry: { kind: 'after_refresh', resource: 'core.catalog.entry' },
+        },
+      ],
+      [
+        'publish-entry-not-found',
+        { kind: 'not_found', code: 'core.catalog.entryNotFound' },
+      ],
+      [
+        'publish-source-unsupported',
+        { kind: 'failed_precondition', code: 'core.catalog.entryReadOnly' },
+      ],
+      [
+        'publish-revision-moved',
+        { kind: 'conflict', code: 'core.catalog.revisionConflict' },
+      ],
+      [
+        'publish-remote-unavailable',
+        { kind: 'unavailable', code: 'core.catalog.remoteUnavailable' },
+      ],
+    ] as const) {
+      host.publishOutcome = new CatalogHostRefusedError(refusal);
+      await expect(publish(`r-${refusal}`)).rejects.toMatchObject({ payload });
+    }
+
+    host.publishSkill = undefined;
+    await expect(publish('s5')).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
     });
   });
 

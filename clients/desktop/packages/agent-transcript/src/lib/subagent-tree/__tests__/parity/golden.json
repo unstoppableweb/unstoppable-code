@@ -181,7 +181,7 @@
         },
         {
           "kind": "tool",
-          "label": "Run the date test npm test -- test/date.test.ts",
+          "label": "Run the date test · npm test -- test/date.test.ts",
           "family": "bash",
           "result": {
             "output": "FAIL test/date.test.ts\n  expected 2026-10-16, received 2026-10-15",
@@ -201,7 +201,7 @@
         },
         {
           "kind": "tool",
-          "label": "Read the dev log tail -n 20 logs/dev.log",
+          "label": "Read the dev log · tail -n 20 logs/dev.log",
           "family": "bash",
           "result": {
             "output": "GET /health 200 3ms",
@@ -307,7 +307,7 @@
       "019b4051-0000-7000-8000-00000000000a": [
         {
           "kind": "tool",
-          "label": "Run npm run lint",
+          "label": "Run a command · npm run lint",
           "family": "bash",
           "result": {
             "output": "0 problems",
@@ -322,7 +322,7 @@
       "019b4051-0000-7000-8000-00000000000b": [
         {
           "kind": "tool",
-          "label": "Run npm test",
+          "label": "Run a command · npm test",
           "family": "bash",
           "result": {
             "output": "1 failing: test/date.test.ts",
@@ -403,7 +403,7 @@
         },
         {
           "kind": "tool",
-          "label": "Run npm run docs:check",
+          "label": "Run a command · npm run docs:check",
           "family": "bash",
           "result": {
             "output": "All links resolve.",
@@ -423,7 +423,7 @@
         },
         {
           "kind": "tool",
-          "label": "Run npm run typecheck",
+          "label": "Run a command · npm run typecheck",
           "family": "bash",
           "result": {
             "output": "src/date.ts(4,7): error TS2322",

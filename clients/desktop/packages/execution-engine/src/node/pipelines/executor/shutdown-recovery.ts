@@ -90,7 +90,9 @@ export function pauseInterruptedExecution(
     )
       continue;
     const unfinished = Object.entries(job.steps).filter(([, step]) =>
-      ['pending', 'running', 'cancelled'].includes(step.status),
+      ['pending', 'waiting_for_capacity', 'running', 'cancelled'].includes(
+        step.status,
+      ),
     );
     for (const [, step] of unfinished) {
       step.status = 'pending';
@@ -100,7 +102,9 @@ export function pauseInterruptedExecution(
       step.error = undefined;
     }
     const first =
-      (job.status === 'pending' || job.status === 'queued') &&
+      (job.status === 'pending' ||
+        job.status === 'queued' ||
+        job.status === 'waiting_for_capacity') &&
       state.status_reasons.length > 0
         ? undefined
         : (unfinished[0] ?? Object.entries(job.steps).slice(-1)[0]);

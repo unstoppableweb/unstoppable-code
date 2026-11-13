@@ -20,16 +20,27 @@ const GLYPH_SIZE: Record<ButtonSize, IconSize> = {
 export interface CopyButtonProps {
   /** Text to write to the clipboard. */
   value: string;
-  /** Accessible name when not in the copied state. */
+  /**
+   * Accessible name when not in the copied state. An icon-only button
+   * defaults to `Copy`; a labeled button is named by its label.
+   */
   ariaLabel?: string;
   /** Referenced accessible name when not in the copied state. */
   ariaLabelledBy?: string;
-  /** Tooltip when not in the copied state. */
+  /**
+   * Tooltip when not in the copied state. An icon-only button defaults to
+   * `Copy`; a labeled button has none, so it never repeats its own text.
+   */
   title?: string;
   /** Button treatment. Defaults to the quiet ghost button. */
   variant?: ButtonVariant;
   /** Button size; the glyph follows it. Defaults to the small button. */
   size?: ButtonSize;
+  /**
+   * The glyph's step on the icon scale, when it should be smaller than the
+   * size's own (an inline copy beside a short value, such as a reference ID).
+   */
+  glyphSize?: IconSize;
   /** Optional label. With one, this is a labeled button; without, icon-only. */
   label?: string;
   /** Label and accessible name while the copied confirmation shows. */
@@ -57,11 +68,12 @@ export function CopyButton(props: CopyButtonProps): JSX.Element {
 
 function CopyButtonControl({
   value,
-  ariaLabel = 'Copy to clipboard',
+  ariaLabel,
   ariaLabelledBy,
-  title = 'Copy to clipboard',
+  title,
   variant = 'ghost',
   size = 'sm',
+  glyphSize: glyphSizeOverride,
   label,
   copiedLabel = 'Copied',
   className,
@@ -86,17 +98,28 @@ function CopyButtonControl({
     [copy, value],
   );
 
-  const glyphSize = GLYPH_SIZE[size];
+  const glyphSize = glyphSizeOverride ?? GLYPH_SIZE[size];
   const glyph = copied ? (
     <CheckIcon size={glyphSize} aria-hidden="true" />
   ) : (
     <CopyIcon size={glyphSize} />
   );
-  const name = copied ? copiedLabel : ariaLabel;
+  const iconOnly = label === undefined;
+  const iconName = copied ? copiedLabel : (ariaLabel ?? 'Copy');
+  // A labeled button is named by its own text unless the caller names it.
+  const labeledName =
+    ariaLabel === undefined ? undefined : copied ? copiedLabel : ariaLabel;
+  // A labeled button already shows its text, so it has no tooltip of its own.
+  const tooltip =
+    !iconOnly && title === undefined
+      ? null
+      : copied
+        ? copiedLabel
+        : (title ?? 'Copy');
 
   return (
-    <Tooltip label={copied ? copiedLabel : title}>
-      {label === undefined ? (
+    <Tooltip label={tooltip} disabled={tooltip === null}>
+      {iconOnly ? (
         <Button
           iconOnly
           variant={variant}
@@ -104,7 +127,7 @@ function CopyButtonControl({
           className={className}
           data-testid={dataTestId}
           onClick={handleClick}
-          aria-label={name}
+          aria-label={iconName}
           aria-labelledby={copied ? undefined : ariaLabelledBy}
         >
           {glyph}
@@ -116,7 +139,7 @@ function CopyButtonControl({
           className={className}
           data-testid={dataTestId}
           onClick={handleClick}
-          aria-label={name}
+          aria-label={labeledName}
           aria-labelledby={copied ? undefined : ariaLabelledBy}
         >
           {glyph}

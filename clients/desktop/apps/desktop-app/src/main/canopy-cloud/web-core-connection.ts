@@ -89,11 +89,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export const PARKED_SUBSCRIPTION_WARNING_AT = 16;
 
 /**
- * The connection with a local stream release. The web core has no
- * per-subscription cancel (K1) and serves no unsubscribe, so a stream the
- * renderer closes is parked: the relay stops delivering and acknowledging it,
- * and the core holds at most its `maxInFlight` undelivered pushes until the
- * connection ends. Other streams keep running.
+ * The connection with a local stream release. A web core that serves
+ * `core.events.unsubscribe` drops a stream the renderer closes (the shared
+ * client asks it, CAN-5970). One that predates it parks the stream: the relay
+ * stops delivering and acknowledging it, and the core holds at most its
+ * `maxInFlight` undelivered pushes until the connection ends. Other streams
+ * keep running either way.
  */
 function withParkedStreams(
   connection: CanopyFramedConnection,
@@ -108,7 +109,12 @@ function withParkedStreams(
     onChannel: (listener, options) => connection.onChannel(listener, options),
     close: (error) => connection.close(error),
     releaseStream: (subscriptionId, reason) => {
-      if (reason === 'ended' || parked.has(subscriptionId)) return;
+      if (
+        reason === 'ended' ||
+        reason === 'unsubscribed' ||
+        parked.has(subscriptionId)
+      )
+        return;
       parked.add(subscriptionId);
       if (parked.size === PARKED_SUBSCRIPTION_WARNING_AT)
         logMainProcessWarn(

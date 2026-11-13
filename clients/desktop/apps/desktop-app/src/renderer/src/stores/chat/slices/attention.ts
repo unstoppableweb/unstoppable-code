@@ -1,4 +1,5 @@
 import { useNavigationStore } from '../../navigationStore';
+import { isMainContentCoveredByAppAdvisorDock } from '../../appAdvisorDockCover';
 import { getCurrentChatPanelVisible } from '@/lib/worktree-layout-prefs';
 import { worktreeKey } from '../utils';
 import {
@@ -64,7 +65,8 @@ export const createAttentionSlice: StateCreator<
     if (
       !selected ||
       useNavigationStore.getState().activePage !== 'main' ||
-      !getCurrentChatPanelVisible()
+      !getCurrentChatPanelVisible() ||
+      isMainContentCoveredByAppAdvisorDock()
     ) {
       return;
     }

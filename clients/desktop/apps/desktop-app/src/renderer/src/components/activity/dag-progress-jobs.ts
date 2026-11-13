@@ -128,6 +128,7 @@ function getStepProgress(
 function toDagJobStatus(status: string | undefined): DagJobStatus | undefined {
   switch (status) {
     case 'queued':
+    case 'waiting_for_capacity':
       return 'pending';
     case 'pending':
     case 'running':

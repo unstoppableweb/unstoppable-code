@@ -1,8 +1,8 @@
 // Client-side HTTP binding conformance (doc 05): the real `connectCanopyHttp`
 // against a test-only server that speaks the web core's POST plus SSE
 // contract (`apps/web/src/app/api/cloud/core/connections`) and hands each
-// message to a framed server end. The web core's own routes, lease store and
-// pushes are covered by its PostgreSQL suite (`pnpm run test:web-core-integration`).
+// message to a framed server end. It stands in for the web core's routes and
+// Postgres lease store, which this fixture does not exercise.
 import {
   parseCanopyJsonRpcMessage,
   type CanopyJsonRpcMessage,
@@ -34,16 +34,24 @@ interface BridgedConnection {
 const sse = (id: number, message: CanopyJsonRpcMessage): string =>
   `id: ${id}\ndata: ${JSON.stringify(message)}\n\n`;
 
-/** One HTTP pair: `client` is `connectCanopyHttp`, `server` a framed end. */
-export async function createHttpFramedPair(
-  options: CanopyConformancePairOptions = {},
-): Promise<CanopyFramedPair> {
-  // Every pair option tunes the byte wire, auth or buffering HTTP lacks; fail
-  // closed rather than silently pass a case that set one.
-  if (Object.values(options).some((value) => value !== undefined))
-    throw new Error('HTTP pairs take no pair options.');
-  const inner = await createInMemoryFramedPair();
+export interface HttpTestServer {
+  /** A same-origin fetch serving `ENDPOINT` (`/api/cloud/core/connections`). */
+  readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
+  /** Ends a connection as a lapsed one ends; its next call answers 404. */
+  end(connectionId: string): void;
+  readonly connectionIds: () => readonly string[];
+}
+
+/**
+ * The web core's POST plus SSE contract over in-memory framed pairs: each
+ * opened connection hands its server end to `accept`, which refuses the open
+ * with 409 by returning false.
+ */
+export function createHttpTestServer(
+  accept: (server: CanopyFramedConnection) => boolean,
+): HttpTestServer {
   const connections = new Map<string, BridgedConnection>();
+  let opened = 0;
   const wakeAll = (bridged: BridgedConnection): void => {
     bridged.wake.forEach((wake) => wake());
     bridged.wake.clear();
@@ -59,13 +67,14 @@ export async function createHttpFramedPair(
     wakeAll(bridged);
   };
 
-  const bridge = (id: string): BridgedConnection => {
+  const bridge = (id: string, relay: CanopyFramedConnection): void => {
     const bridged: BridgedConnection = {
-      relay: inner.client,
+      relay,
       replies: new Map(),
       pushes: [],
       wake: new Set(),
     };
+    connections.set(id, bridged);
     void (async (): Promise<void> => {
       for (;;) {
         const message = await bridged.relay.receive().catch(() => null);
@@ -81,9 +90,8 @@ export async function createHttpFramedPair(
         wakeAll(bridged);
       }
       // The server end closed: the connection is gone, as a lapsed one is.
-      end(id, bridged);
+      if (connections.get(id) === bridged) end(id, bridged);
     })();
-    return bridged;
   };
 
   const events = (
@@ -113,11 +121,16 @@ export async function createHttpFramedPair(
   };
 
   const fetch = async (path: string, init?: RequestInit): Promise<Response> => {
-    if (path === ENDPOINT)
-      return connections.size > 0
-        ? Response.json({ error: 'one connection per pair' }, { status: 409 })
-        : (connections.set('c-1', bridge('c-1')),
-          Response.json({ connectionId: 'c-1' }, { status: 201 }));
+    if (path === ENDPOINT) {
+      const pair = await createInMemoryFramedPair();
+      if (!accept(pair.server)) {
+        pair.client.close();
+        return Response.json({ error: 'refused' }, { status: 409 });
+      }
+      const id = `c-${(opened += 1)}`;
+      bridge(id, pair.client);
+      return Response.json({ connectionId: id }, { status: 201 });
+    }
     const [id, leg] = path.slice(ENDPOINT.length + 1).split('/');
     const bridged = connections.get(id);
     if (!bridged) return gone();
@@ -148,11 +161,39 @@ export async function createHttpFramedPair(
     return answered ? Response.json(answered) : gone();
   };
 
-  const client = await connectCanopyHttp({ endpoint: ENDPOINT, fetch });
+  return {
+    fetch,
+    end: (id) => {
+      const bridged = connections.get(id);
+      if (bridged) end(id, bridged);
+    },
+    connectionIds: () => Array.from(connections.keys()),
+  };
+}
+
+/** One HTTP pair: `client` is `connectCanopyHttp`, `server` a framed end. */
+export async function createHttpFramedPair(
+  options: CanopyConformancePairOptions = {},
+): Promise<CanopyFramedPair> {
+  // Every pair option tunes the byte wire, auth or buffering HTTP lacks; fail
+  // closed rather than silently pass a case that set one.
+  if (Object.values(options).some((value) => value !== undefined))
+    throw new Error('HTTP pairs take no pair options.');
+  const servers: CanopyFramedConnection[] = [];
+  // One connection per pair: a second open is refused.
+  const http = createHttpTestServer(
+    (opened) => servers.length === 0 && servers.push(opened) > 0,
+  );
+  const client = await connectCanopyHttp({
+    endpoint: ENDPOINT,
+    fetch: http.fetch,
+  });
+  const [server] = servers;
+  if (!server) throw new Error('The HTTP pair did not open.');
   const clientWire = {
     write: (): never => {
       throw new Error('HTTP has no byte wire.');
     },
   };
-  return { client, server: inner.server, clientWire };
+  return { client, server, clientWire };
 }

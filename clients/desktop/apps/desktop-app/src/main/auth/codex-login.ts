@@ -5,7 +5,7 @@ import type {
   CodexLoginState,
   CodexLoginStartRequest,
 } from '@canopy/desktop-shared/types';
-import type { CodexAuthenticationSession } from '@canopy/desktop-shared/node/codex-runtime';
+import type { CodexAuthenticationSession } from '@canopy/execution-engine/node/codex-runtime';
 import { getCodexRuntimeService } from '../codex/runtime-service';
 import {
   getCodexAuthenticationActiveWorkCount,

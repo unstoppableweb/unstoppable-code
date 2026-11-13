@@ -1,7 +1,7 @@
 import type { ApprovalMode } from '@canopy/desktop-shared/types';
-import type { AskForApproval } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/AskForApproval';
-import type { SandboxMode } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/SandboxMode';
-import type { SandboxPolicy } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/SandboxPolicy';
+import type { AskForApproval } from '@canopy/execution-engine/node/codex-runtime/generated/v2/AskForApproval';
+import type { SandboxMode } from '@canopy/execution-engine/node/codex-runtime/generated/v2/SandboxMode';
+import type { SandboxPolicy } from '@canopy/execution-engine/node/codex-runtime/generated/v2/SandboxPolicy';
 
 /**
  * Maps a Canopy approval mode to the Codex app-server's `AskForApproval`

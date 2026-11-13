@@ -1,5 +1,9 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import callbackFs, {
+  type NoParamCallback,
+  type WriteFileOptions,
+} from 'node:fs';
 import { promisify } from 'node:util';
 import {
   mkdtemp,
@@ -677,6 +681,67 @@ it('refuses an omitted external checkout, and exposes recovery preimages before 
 });
 
 const windowsGitSpelling = process.platform === 'win32' ? it : it.skip;
+windowsGitSpelling.each([
+  'missing prunable',
+  'present prunable',
+  'missing locked',
+])(
+  'handles a %s worktree during Windows Git preparation without changing source records',
+  async (kind) => {
+    const common = join(oldRoot, 'repository');
+    const checkout = join(oldRoot, 'linked');
+    const stale = join(oldRoot, 'stale');
+    await repository(common);
+    await git(common, ['worktree', 'add', '-b', 'feature', checkout]);
+    await git(common, ['worktree', 'add', '-b', 'stale', stale]);
+    if (kind === 'missing locked')
+      await git(common, ['worktree', 'lock', stale]);
+    if (kind === 'present prunable') await rm(join(stale, '.git'));
+    else await rm(stale, { recursive: true });
+    const before = await git(common, ['worktree', 'list', '--porcelain', '-z']);
+    expect(before).toContain(
+      kind === 'missing locked' ? '\0locked\0' : '\0prunable ',
+    );
+    const retained = await treeSnapshot(oldRoot, true);
+    const stderr = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const preparation = prepareRelocationGit(git, [common, checkout], {
+        reportedMissingPrunable: new Set(),
+      });
+      if (kind === 'missing prunable') {
+        const plan = await preparation;
+        expect(plan.checkouts.map((row) => row.path)).toEqual([
+          common,
+          checkout,
+        ]);
+        expect(plan.backlinks.some((row) => row.path.startsWith(stale))).toBe(
+          false,
+        );
+        expect(
+          stderr.mock.calls.filter(
+            ([line]) =>
+              typeof line === 'string' &&
+              line.includes('skipping absent prunable Git worktree'),
+          ),
+        ).toHaveLength(1);
+      } else {
+        await expect(preparation).rejects.toMatchObject({
+          reason:
+            kind === 'missing locked'
+              ? 'symlink-checkout'
+              : 'uninventoried-git-checkout',
+        });
+      }
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(await git(common, ['worktree', 'list', '--porcelain', '-z'])).toBe(
+      before,
+    );
+    expect(await treeSnapshot(oldRoot, true)).toEqual(retained);
+  },
+);
+
 windowsGitSpelling(
   'canonicalizes Windows Git separators and drive case without duplicating inventoried checkouts',
   async () => {
@@ -746,6 +811,29 @@ it.each(['checkout', 'checkout ancestor', 'common directory'])(
   },
 );
 
+(process.platform === 'win32' ? it.skip : it)(
+  'preserves backlink permissions under a restrictive umask',
+  async () => {
+    const common = join(oldRoot, 'repository');
+    const checkout = join(dir, 'external');
+    await repository(common);
+    await git(common, ['worktree', 'add', '-b', 'feature', checkout]);
+    await fs.chmod(join(checkout, '.git'), 0o664);
+    const plan = await prepareRelocationGit(git, [common, checkout]);
+    await copyRoot();
+    const previous = process.umask(0o022);
+    try {
+      await repairRelocationGit(transition, plan, workingRoot);
+    } finally {
+      process.umask(previous);
+    }
+    expect((await lstat(join(checkout, '.git'))).mode & 0o777).toBe(0o664);
+    expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(
+      gitPathSpelling(newRoot),
+    );
+  },
+);
+
 it.each(['write', 'publish'])(
   'resumes mixed backlink images after an interrupted %s without truncation or repeated writes',
   async (failure) => {
@@ -763,9 +851,30 @@ it.each(['write', 'publish'])(
     await copyRoot();
     const retained = await treeSnapshot(oldRoot, true);
     const write = fs.writeFile;
+    const writeFd = callbackFs.writeFile;
     const publish = fs.rename;
     let count = 0;
-    if (failure === 'write')
+    if (failure === 'write' && process.platform !== 'win32')
+      jest
+        .spyOn(callbackFs, 'writeFile')
+        .mockImplementation(
+          (
+            path,
+            contents,
+            options: WriteFileOptions | NoParamCallback,
+            callback?: NoParamCallback,
+          ) => {
+            const done = typeof options === 'function' ? options : callback;
+            if (!done) throw new Error('Missing write callback');
+            const settings = typeof options === 'function' ? {} : options;
+            if (++count === 2)
+              writeFd(path, 'torn backlink', settings, (error) =>
+                done(error ?? new Error('interrupted backlink write')),
+              );
+            else writeFd(path, contents, settings, done);
+          },
+        );
+    else if (failure === 'write')
       jest
         .spyOn(fs, 'writeFile')
         .mockImplementation(async (path, contents, options) => {

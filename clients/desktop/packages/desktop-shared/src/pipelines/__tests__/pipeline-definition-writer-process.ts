@@ -1,4 +1,7 @@
-import { saveStoredPipeline, writeStoredPipeline } from '../store';
+import {
+  saveStoredPipeline,
+  writeStoredPipeline,
+} from '@canopy/execution-engine/pipelines/store';
 
 if (process.argv[2] === '--save-once') {
   process.once('message', () => {

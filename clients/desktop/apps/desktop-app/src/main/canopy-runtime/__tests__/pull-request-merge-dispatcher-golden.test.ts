@@ -9,9 +9,10 @@ jest.mock('../../lib/github-pr', () => ({
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  CanopyCallerDescriptor,
-  CorePullRequest,
+import {
+  CORE_PULL_REQUEST_REFRESH_INSTRUCTION_DEFINITIONS,
+  type CanopyCallerDescriptor,
+  type CorePullRequest,
 } from '@canopy/protocol/canopy-core';
 import {
   GitHubRequestError,
@@ -165,6 +166,25 @@ it('merges the exact head with an explicitly allowed nonpreferred strategy', asy
   );
   expect(resolveRepository).toHaveBeenCalledWith(repository, 'write');
 });
+it("merges without a strategy by the repository's preferred one", async () => {
+  policy = { ...policy, preferredStrategy: 'rebase' };
+  await expect(
+    runtime.instruction(
+      'core.pullRequest.merge',
+      {
+        pullRequestId,
+        expectedRevision: params.expectedRevision,
+        expectedHeadSha: head,
+      },
+      { caller, metadata: { idempotencyKey: 'preferred-key' } },
+    ),
+  ).resolves.toMatchObject({ state: 'merged' });
+  expect(merge).toHaveBeenCalledWith(
+    { ...github, number: 355 },
+    { expectedHeadSha: head, strategy: 'rebase' },
+    policy,
+  );
+});
 it.each([
   [{ headSha: 'd'.repeat(40) }, 'core.pullRequest.merge.headMismatch'],
   [
@@ -186,6 +206,33 @@ it.each([
     expect(merge).not.toHaveBeenCalled();
   },
 );
+it('honours pinned base and head branches: merges when they match, refuses and merges nothing when not', async () => {
+  const pinned = (pins: object, key: string): Promise<CorePullRequest> =>
+    runtime.instruction(
+      'core.pullRequest.merge',
+      { ...params, ...pins },
+      { caller, metadata: { idempotencyKey: key } },
+    );
+  for (const [pins, key] of [
+    [{ expectedBaseBranch: 'main' }, 'base-key'],
+    [{ expectedHeadBranch: 'other' }, 'head-key'],
+  ] as const) {
+    await expect(pinned(pins, key)).rejects.toMatchObject({
+      payload: {
+        kind: 'conflict',
+        code: 'core.pullRequest.merge.headMismatch',
+      },
+    });
+    expect(merge).not.toHaveBeenCalled();
+  }
+  await expect(
+    pinned(
+      { expectedBaseBranch: 'develop', expectedHeadBranch: 'feature' },
+      'pinned-key',
+    ),
+  ).resolves.toMatchObject({ state: 'merged' });
+  expect(merge).toHaveBeenCalledTimes(1);
+});
 it('refuses a queue-required base without enqueueing (legacy enqueue is CAN-5886)', async () => {
   policy = { ...policy, queueRequired: true };
   await expect(run()).rejects.toMatchObject({
@@ -388,6 +435,26 @@ it('does not replay a receipt after its origin changes to another GitHub reposit
     payload: { code: 'core.pullRequest.repositoryUnavailable' },
   });
   expect(merge).toHaveBeenCalledTimes(1);
+});
+
+it('refuses the web-core-only refresh as capability_unavailable, reading nothing', async () => {
+  const refresh =
+    CORE_PULL_REQUEST_REFRESH_INSTRUCTION_DEFINITIONS[
+      'core.pullRequest.refresh'
+    ];
+  const request = refresh.params.parse({
+    scope: { workspaceId: 'merge-workspace', worktreeId: 'merge-worktree' },
+  });
+  await expect(
+    // Not in the desktop registry, so its typed names do not include it.
+    runtime.instruction('core.pullRequest.refresh' as never, request as never, {
+      caller,
+    }),
+  ).rejects.toMatchObject({
+    payload: { kind: 'capability_unavailable', retry: { kind: 'never' } },
+  });
+  expect(read).not.toHaveBeenCalled();
+  expect(resolveRepository).not.toHaveBeenCalled();
 });
 
 describe('terminal writer refusals through the desktop request-use port', () => {

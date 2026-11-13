@@ -24,6 +24,7 @@ export type ButtonVariant =
   | 'ghost-destructive'
   | 'ghost-warning'
   | 'ghost-armed'
+  | 'tinted'
   | 'warning'
   | 'destructive';
 
@@ -84,6 +85,13 @@ interface CapsuleButtonBaseProps
    */
   quietWhenDisabled?: boolean;
   /**
+   * An `aria-disabled` button that shows a value the user cannot change here
+   * (a read-only status, CAN-5309): it skips the 60% dim and paints no hover
+   * fill. The caller sets the label ink that must read at AA. It still
+   * swallows clicks under a not-allowed cursor.
+   */
+  readOnlyAppearance?: boolean;
+  /**
    * How far the hit area reaches on a touch screen. `expanded` (the default)
    * grows it to 44px around the button. `contained` keeps it to the button's
    * own box, for a button packed against other controls or stacked rows
@@ -105,6 +113,7 @@ type CapsuleButtonProps = CapsuleButtonBaseProps &
         'aria-label': string;
         /** An icon-only control names its shortcut in its tooltip instead. */
         shortcut?: undefined;
+        leadingIcon?: undefined;
       }
     | {
         iconOnly?: false;
@@ -117,6 +126,13 @@ type CapsuleButtonProps = CapsuleButtonBaseProps &
          * tooltip.
          */
         shortcut?: string;
+        /**
+         * The label starts with an icon or status glyph. The glyph's own
+         * side bearing already reads as space, so the start padding is
+         * smaller: 8px on `compact` (12px at the end, as every label). Other
+         * sizes keep their padding for now.
+         */
+        leadingIcon?: boolean;
       }
   );
 
@@ -132,10 +148,12 @@ interface LinkButtonProps
   iconOnly?: false;
   iconShape?: undefined;
   shortcut?: undefined;
+  leadingIcon?: undefined;
   fillRow?: undefined;
   groupHover?: undefined;
   pressedHover?: undefined;
   quietWhenDisabled?: undefined;
+  readOnlyAppearance?: undefined;
   touchArea?: undefined;
 }
 
@@ -178,7 +196,11 @@ export const DROPDOWN_INVALID_CLASS =
 // `hover:` and `active:`, so each disabled class below outranks the hover or
 // press class for the same property. Loader-equipped busy buttons can opt
 // into retaining their variant paint; disabled semantics still block presses.
-const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 [-webkit-tap-highlight-color:transparent] shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:not-data-[busy-appearance=preserved]:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60`;
+const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 [-webkit-tap-highlight-color:transparent] shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:not-data-[busy-appearance=preserved]:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed`;
+const ARIA_DISABLED_DIM_CLASS_NAME =
+  'aria-disabled:not-data-[busy-appearance=preserved]:opacity-60';
+// A read-only value keeps its ink; only the hover fill is withheld.
+const READ_ONLY_CLASS_NAME = 'aria-disabled:hover:bg-transparent';
 
 // Disabled, the label takes the disabled ink; `quietWhenDisabled` keeps the
 // variant's ink at 80% instead.
@@ -215,7 +237,7 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // a dimmed icon, not a grey disc. Open (a menu) or pressed (a toggle), it
   // takes the full ink, and its small icons draw a 1.5px visible stroke.
   'ghost-quiet': `canopy-small-icon-stroke bg-transparent fg-tertiary hover:bg-subtle hover:fg-primary focus-visible:fg-primary not-disabled:aria-expanded:bg-subtle not-disabled:aria-expanded:fg-primary not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-tertiary`,
-  'ghost-accent': `bg-transparent fg-accent hover:bg-accent-subtle hover:fg-accent ${DISABLED_NO_FILL_CLASS_NAME}`,
+  'ghost-accent': `bg-transparent fg-accent hover:bg-accent-subtle hover:fg-accent-strong ${DISABLED_NO_FILL_CLASS_NAME}`,
   // A quiet destructive action beside other actions (Delete next to Edit),
   // where the filled `destructive` would outweigh the primary choice.
   'ghost-destructive': `bg-transparent fg-destructive hover:bg-destructive-subtle hover:fg-destructive ${DISABLED_NO_FILL_CLASS_NAME}`,
@@ -225,6 +247,11 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // Pending agent-armed intent: retain unread ink while hovered, without a destructive fill.
   'ghost-armed': `bg-transparent ${OPERATIONAL_STATUS_COLORS.unread.foreground} hover:bg-subtle ${DISABLED_NO_FILL_CLASS_NAME}`,
   'ghost-warning': `bg-transparent fg-warning hover:bg-warning-subtle hover:fg-warning ${DISABLED_NO_FILL_CLASS_NAME}`,
+  // A faint filled capsule, a step below `secondary`: the resting choices in
+  // a row whose open or selected one is `secondary` (the composer work
+  // pills). The translucent `--bg-subtle` fill and no edge, so switching to
+  // `secondary` (a ring, not a border) moves nothing.
+  tinted: `bg-subtle fg-secondary hover:bg-muted hover:fg-primary not-disabled:aria-pressed:bg-muted not-disabled:aria-pressed:fg-primary ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-subtle`,
   warning: `bg-warning-subtle fg-warning hover:bg-warning-subtle/80 active:bg-warning-subtle ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-warning-subtle`,
   destructive: `bg-destructive fg-emphasis hover:bg-destructive-hover ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-destructive`,
 };
@@ -292,6 +319,13 @@ const LABEL_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   field: 'px-2.5',
 };
 
+// A label that starts with an icon (`leadingIcon`): a smaller start, the
+// same end. Only `compact` has its own value so far.
+const LEADING_ICON_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
+  ...LABEL_SIZE_CLASS_NAMES,
+  compact: 'pl-2 pr-3',
+};
+
 // With a shortcut chip at the end, the end padding equals the chip's inset
 // from the top and bottom ((height - 18px chip) / 2), so the chip's capsule
 // stays concentric with the button's end cap.
@@ -336,12 +370,13 @@ const FILL_ROW_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   'ghost-quiet':
     'group-hover/checklist:bg-subtle group-hover/checklist:fg-primary',
   'ghost-accent':
-    'group-hover/checklist:bg-accent-subtle group-hover/checklist:fg-accent',
+    'group-hover/checklist:bg-accent-subtle group-hover/checklist:fg-accent-strong',
   'ghost-destructive':
     'group-hover/checklist:bg-destructive-subtle group-hover/checklist:fg-destructive',
   'ghost-warning':
     'group-hover/checklist:bg-warning-subtle group-hover/checklist:fg-warning',
   'ghost-armed': 'group-hover/checklist:bg-subtle',
+  tinted: 'group-hover/checklist:bg-muted group-hover/checklist:fg-primary',
   warning: 'group-hover/checklist:bg-warning-subtle/80',
   destructive: 'group-hover/checklist:bg-destructive-hover',
 };
@@ -366,6 +401,8 @@ const GROUP_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   'ghost-destructive': 'enabled:group-hover/gitaction:bg-destructive-subtle',
   'ghost-warning': 'enabled:group-hover/gitaction:bg-warning-subtle',
   'ghost-armed': 'enabled:group-hover/gitaction:bg-subtle',
+  tinted:
+    'enabled:group-hover/gitaction:bg-muted enabled:group-hover/gitaction:fg-primary',
   warning: 'enabled:group-hover/gitaction:bg-warning-subtle/80',
   destructive: 'enabled:group-hover/gitaction:bg-destructive-hover',
 };
@@ -386,6 +423,7 @@ const PRESSED_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   'ghost-destructive': 'enabled:aria-pressed:bg-destructive-subtle',
   'ghost-warning': 'enabled:aria-pressed:bg-warning-subtle',
   'ghost-armed': 'enabled:aria-pressed:bg-subtle',
+  tinted: 'enabled:aria-pressed:bg-muted enabled:aria-pressed:fg-primary',
   warning: 'enabled:aria-pressed:bg-warning-subtle/80',
   destructive: 'enabled:aria-pressed:bg-destructive-hover',
 };
@@ -424,19 +462,23 @@ export function buttonClassName({
   size = 'md',
   iconOnly = false,
   iconShape = 'default',
+  leadingIcon = false,
   groupHover = false,
   pressedHover = false,
   quietWhenDisabled = false,
+  readOnlyAppearance = false,
   touchArea = 'expanded',
   className = '',
 }: {
   variant?: ButtonVariant | ButtonLinkVariant;
   size?: ButtonSize;
   iconOnly?: boolean;
+  leadingIcon?: boolean;
   iconShape?: 'default' | 'nested';
   groupHover?: boolean;
   pressedHover?: boolean;
   quietWhenDisabled?: boolean;
+  readOnlyAppearance?: boolean;
   touchArea?: ButtonTouchArea;
   className?: string;
 } = {}): string {
@@ -450,9 +492,12 @@ export function buttonClassName({
     ? ICON_ONLY_SIZE_CLASS_NAMES[size]
     : iconShape === 'nested' && size === 'compact'
       ? 'px-2.5'
-      : LABEL_SIZE_CLASS_NAMES[size];
+      : leadingIcon
+        ? LEADING_ICON_SIZE_CLASS_NAMES[size]
+        : LABEL_SIZE_CLASS_NAMES[size];
   const states = [
     quietWhenDisabled ? QUIET_DISABLED_INK_CLASS_NAME : DISABLED_INK_CLASS_NAME,
+    readOnlyAppearance ? READ_ONLY_CLASS_NAME : ARIA_DISABLED_DIM_CLASS_NAME,
     groupHover ? GROUP_HOVER_CLASS_NAMES[variant] : '',
     pressedHover ? PRESSED_HOVER_CLASS_NAMES[variant] : '',
     touchArea === 'expanded' ? COARSE_HIT_Y_CLASS_NAMES[size] : '',
@@ -476,10 +521,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       size = 'md',
       iconOnly = false,
       iconShape = 'default',
+      leadingIcon = false,
       fillRow = false,
       groupHover = false,
       pressedHover = false,
       quietWhenDisabled = false,
+      readOnlyAppearance = false,
       busyAppearance = 'default',
       touchArea = 'expanded',
       type = 'button',
@@ -507,9 +554,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           size,
           iconOnly,
           iconShape,
+          leadingIcon,
           groupHover,
           pressedHover,
           quietWhenDisabled,
+          readOnlyAppearance,
           touchArea,
           className: fillRow
             ? `${FILL_ROW_CLASS_NAME} ${variant === 'link' ? '' : FILL_ROW_HOVER_CLASS_NAMES[variant]} ${placementClassName}`

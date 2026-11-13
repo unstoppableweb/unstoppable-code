@@ -357,6 +357,109 @@ describe('approval policy dominance', () => {
       },
     );
 
+    it('compares browser upload grants in every mode, in the root they upload from, and denies by origin and path', async () => {
+      const staging = grant({
+        kind: 'browser-upload',
+        origin: 'https://canopy.ud-staging.com',
+      });
+      const reports = grant({
+        kind: 'browser-upload',
+        origin: 'https://canopy.ud-staging.com',
+        path: 'reports/**',
+      });
+      const fullAccessIn = (
+        root: string,
+        rules: readonly ApprovalRule[],
+      ): ChatApprovalPolicy => ({
+        mode: 'full-access',
+        sessionRules: rules,
+        root,
+      });
+      // An upload rule once made every policy unknown, which refused every
+      // message between Full Access chats.
+      expect(
+        await within(
+          fullAccessIn('/ws/worktrees/b', [staging]),
+          fullAccessIn('/ws/worktrees/a', [staging]),
+        ),
+      ).toBe(true);
+      // No mode uploads without a rule, so Full Access does not cover a
+      // target's upload grant.
+      expect(
+        await within(
+          fullAccessIn('/ws/worktrees/b', [staging]),
+          fullAccessIn('/ws/worktrees/a', []),
+        ),
+      ).toBe(false);
+      expect(
+        await within(
+          askIn('/ws/worktrees/b', [reports]),
+          fullAccessIn('/ws/worktrees/a', [staging]),
+        ),
+      ).toBe(true);
+      // A grant uploads files from its own chat's worktree.
+      expect(
+        await within(
+          askIn('/ws/w1/repo-a', [staging]),
+          askIn('/ws/w1/repo-a', [staging]),
+        ),
+      ).toBe(true);
+      expect(
+        await within(
+          askIn('/ws/w1/repo-a', [reports]),
+          askIn('/ws/w1/repo-a', [staging]),
+        ),
+      ).toBe(true);
+      expect(
+        await within(
+          askIn('/ws/w1/repo-b', [staging]),
+          askIn('/ws/w1/repo-a', [staging]),
+        ),
+      ).toBe(false);
+      expect(
+        await within(
+          askIn('/ws/w1/repo-a', [staging]),
+          askIn('/ws/w1/repo-a', [reports]),
+        ),
+      ).toBe(false);
+      expect(
+        await within(
+          askIn('/ws/w1/repo-a', [staging]),
+          askIn('/ws/w1/repo-a', []),
+        ),
+      ).toBe(false);
+      const deny = (rule: ApprovalRule): ApprovalRule => ({
+        ...rule,
+        id: `deny-${rule.id}`,
+        behavior: 'deny',
+      });
+      // A path deny protects files of its own chat's worktree.
+      expect(
+        await within(
+          fullAccessIn('/ws/worktrees/a', [deny(reports)]),
+          fullAccessIn('/ws/worktrees/a', [deny(reports)]),
+        ),
+      ).toBe(true);
+      expect(
+        await within(
+          fullAccessIn('/ws/worktrees/b', [deny(reports)]),
+          fullAccessIn('/ws/worktrees/a', [deny(reports)]),
+        ),
+      ).toBe(false);
+      expect(
+        await within(
+          fullAccessIn('/ws/worktrees/b', [deny(staging)]),
+          fullAccessIn('/ws/worktrees/a', [deny(reports)]),
+        ),
+      ).toBe(true);
+      expect(
+        await within(
+          fullAccessIn('/ws/worktrees/b', [deny(reports)]),
+          fullAccessIn('/ws/worktrees/a', [deny(staging)]),
+        ),
+      ).toBe(false);
+    });
+
     it('fails closed when a chat holding a grant has no root', async () => {
       expect(
         await within(

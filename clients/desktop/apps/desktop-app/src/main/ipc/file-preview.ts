@@ -60,7 +60,7 @@ import {
 } from '@canopy/core-runtime/node';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { toLegacyFileSaveError } from '../canopy-runtime/worker-filesystem-mutation-adapter';
-import { canonicalFileContent } from '../canopy-runtime/worker-filesystem-read-adapter';
+import { canonicalFileContent } from '@canopy/desktop-shared/file-content-projection';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 import {

@@ -6,7 +6,7 @@ import {
   validateDependencyGraph,
   type ResourceContextInput,
 } from '@canopy/execution-engine/lib/resource-context-policy';
-import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
+import { getStoredPipelinePathWithSource } from '@canopy/execution-engine/pipelines/store';
 import {
   getSharedPipeline,
   getSharedPipelineForExecutionContext,
@@ -39,7 +39,7 @@ import type {
   ResolvePipelineTargetRequest,
   ResolvePipelineTargetResult,
   SpawnedProcessResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   createDesktopLifecycleHooks,
   createDesktopStepPostProcess,
@@ -74,7 +74,7 @@ import {
 import {
   PIPELINE_AGENT_SESSION_START_TIMEOUT_MS,
   runCodexPipelinePromptWith,
-} from '@canopy/desktop-shared/node/pipelines/codex-pipeline-prompt';
+} from '@canopy/execution-engine/node/pipelines/codex-pipeline-prompt';
 import { desktopCodexPipelinePromptPorts } from './codex-pipeline-prompt-ports';
 
 function parseTranscriptEvents(jsonl: string): unknown[] {

@@ -6,3 +6,5 @@ export * from './catalog-validation';
 export * from './automation-target';
 export * from './assets';
 export * from './portability';
+export * from './sandbox-size';
+export * from './agent-alias-model';

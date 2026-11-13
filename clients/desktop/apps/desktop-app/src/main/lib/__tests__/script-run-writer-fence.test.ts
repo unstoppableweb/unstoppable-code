@@ -34,4 +34,23 @@ describePosix('desktopScriptRunWriterFence', () => {
       }),
     ).resolves.toBe('gone');
   });
+
+  it('never kills a process the daemon left, and reports it gone once it exits (CAN-6482)', async () => {
+    const live = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+    const pid = live.pid;
+    if (pid === undefined) throw new Error('No sleep process.');
+    try {
+      await expect(
+        desktopScriptRunWriterFence.reapChild?.({ pid }),
+      ).resolves.toBe('unproven');
+      expect(live.exitCode).toBeNull();
+      expect(live.signalCode).toBeNull();
+    } finally {
+      live.kill('SIGKILL');
+    }
+    await new Promise((resolve) => live.once('exit', resolve));
+    await expect(
+      desktopScriptRunWriterFence.reapChild?.({ pid: await exitedChildPid() }),
+    ).resolves.toBe('gone');
+  });
 });

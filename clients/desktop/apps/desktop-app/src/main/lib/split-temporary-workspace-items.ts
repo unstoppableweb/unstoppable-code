@@ -22,12 +22,12 @@ import {
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   listExecutionSummaries,
   loadExecutionState,
   saveExecutionState,
-} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
 import { readChatTabsFile, readChatTabsFileForIndex } from './chat-tabs-reader';

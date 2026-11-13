@@ -1,9 +1,9 @@
 import type { BrowserWindow } from 'electron';
-import type { CodexRuntimeService } from '@canopy/desktop-shared/node/codex-runtime';
+import type { CodexRuntimeService } from '@canopy/execution-engine/node/codex-runtime';
 import {
   createCodexRuntimeService,
   resetCanonicalCodexHomeForTests,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 import {
   IPC_CHANNELS,
   type AgentProviderType,

@@ -60,6 +60,13 @@ import { isClaudeTerminalEligibleChatTab } from '@/lib/chat-provider';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { hasPendingUsageLimitResume } from '@/lib/scheduledUsageLimitResume';
+import {
+  liveReplyKey,
+  presentLiveReplies,
+  selectLiveChat,
+  useWebCoreLiveReplyStore,
+  type LiveChatState,
+} from '@/stores/chat/web-core/live-replies';
 import type { ActiveComposerView, ActiveTranscriptView } from './types';
 import { toActiveComposerView, toActiveTranscriptView } from './types';
 
@@ -151,6 +158,28 @@ export interface WorktreeChatTabSurfaceState {
   handleInterruptScheduledMessage: (automationId: string) => void;
 }
 
+function liveChatKey(
+  target: { projectId: string; worktreeId: string; chatId: string } | null,
+): string | null {
+  return target === null ? null : liveReplyKey(target);
+}
+
+/** The transcript with a web core chat's live reply after its committed rows. */
+function withLiveReplies(
+  transcript: ActiveTranscriptView | null,
+  live: LiveChatState,
+): ActiveTranscriptView | null {
+  if (transcript === null || live.replies.length === 0) return transcript;
+  const provisional = presentLiveReplies(
+    live.replies,
+    transcript.messages,
+    live.turnRuns,
+  );
+  return provisional.length === 0
+    ? transcript
+    : { ...transcript, messages: [...transcript.messages, ...provisional] };
+}
+
 /**
  * The full store derivation for ONE worktree chat tab's surface: transcript,
  * composer, interface-mode/Claude-terminal state, and the scheduled/queued
@@ -203,12 +232,20 @@ export function useWorktreeChatTabSurfaceState(
   const stagedSelectionCount = useChatStore(
     (s) => s.pendingEditorSelections[resolvedChatTabId]?.length ?? 0,
   );
-  const transcript = useChatTabRenderState(
+  const committedTranscript = useChatTabRenderState(
     chatTarget,
     useShallow(({ tab, runtime }): ActiveTranscriptView | null => {
       if (!tab || tab.kind === 'file') return null;
       return toActiveTranscriptView(tab, runtime);
     }),
+  );
+  // A web core chat's reply while its turn runs; none for any other chat.
+  const liveChat = useWebCoreLiveReplyStore((state) =>
+    selectLiveChat(state, liveChatKey(chatTarget)),
+  );
+  const transcript = useMemo(
+    () => withLiveReplies(committedTranscript, liveChat),
+    [committedTranscript, liveChat],
   );
   const composerTab = useChatTabRenderState(
     chatTarget,

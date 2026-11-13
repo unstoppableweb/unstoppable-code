@@ -1,5 +1,10 @@
 import { useMemo } from 'react';
-import type { ChatMessageLinkActions } from '@canopy/ui-shared/components';
+import type {
+  ChatMessageLinkActions,
+  ChatMessageLookUpSelection,
+} from '@canopy/ui-shared/components';
+import { isMacPlatform } from '@canopy/ui-shared/lib/shortcut-platform';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   isExternalBrowserOpenAvailable,
   isInAppBrowserAvailable,
@@ -38,4 +43,21 @@ export function useChatMessageLinkActions(
     }
     return actions;
   }, [projectId, worktreeId]);
+}
+
+function lookUpSelectionInFocusedWindow(): void {
+  // The menu has already closed, so a failed lookup has nowhere to show;
+  // record it rather than drop it.
+  void window.api.lookUpSelection().catch((error: unknown) => {
+    reportClientAppError(error);
+  });
+}
+
+/**
+ * The desktop chat message menu's Look up row: the macOS dictionary for the
+ * selection, which main shows in whichever of this renderer's windows has
+ * focus. Other platforms have no system lookup, so they get no row.
+ */
+export function chatMessageLookUpSelection(): ChatMessageLookUpSelection | null {
+  return isMacPlatform() ? lookUpSelectionInFocusedWindow : null;
 }

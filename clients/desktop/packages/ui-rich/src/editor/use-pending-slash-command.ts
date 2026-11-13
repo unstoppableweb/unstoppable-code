@@ -1,18 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SlashCommandOption, SlashCommandPreparation } from '../types';
 
+/**
+ * How a selection that had to be prepared ended: its text was inserted,
+ * preparing failed, or nothing was inserted because the surface moved on
+ * (`isStale`, an aborted `signal`, the gate unmounted) or `insert` declined.
+ */
+export type SlashCommandSelectionOutcome = 'inserted' | 'failed' | 'stale';
+
 export interface PendingSlashCommandGate {
   /** The selection whose preparation is in flight; drives busy-row UI. */
   pendingCommand: SlashCommandOption | null;
   /**
    * Run one selection through the gate. Only rows with neither
-   * `section: 'available'` nor `requiresResolution` insert synchronously.
+   * `section: 'available'` nor `requiresResolution` insert synchronously,
+   * and return `undefined`, as does a selection the gate ignores. A row that
+   * must be prepared returns a promise of how it ended, so the surface can
+   * show it busy and report a failure. `insert` returns `false` when it
+   * inserted nothing (the place it would insert at changed). An aborted
+   * `signal` ends the selection at once: it inserts nothing, and the next
+   * selection may run while the abandoned preparation finishes.
    */
   selectCommand: (
     cmd: SlashCommandOption,
-    insert: (cmd: SlashCommandOption) => void,
+    insert: (cmd: SlashCommandOption) => boolean | void,
     isStale?: () => boolean,
-  ) => void;
+    signal?: AbortSignal,
+  ) => Promise<SlashCommandSelectionOutcome> | undefined;
 }
 
 /**
@@ -70,37 +84,42 @@ export function usePendingSlashCommand(
   const selectCommand = useCallback(
     (
       cmd: SlashCommandOption,
-      insert: (cmd: SlashCommandOption) => void,
+      insert: (cmd: SlashCommandOption) => boolean | void,
       isStale?: () => boolean,
-    ): void => {
-      if (!mounted.current || pendingRef.current !== null) return;
+      signal?: AbortSignal,
+    ): Promise<SlashCommandSelectionOutcome> | undefined => {
+      if (!mounted.current || pendingRef.current !== null) return undefined;
+      if (signal?.aborted) return undefined;
       if (cmd.section !== 'available' && cmd.requiresResolution !== true) {
         insert(cmd);
-        return;
+        return undefined;
       }
-      if (prepare === undefined) return;
+      if (prepare === undefined) return undefined;
       const token = Symbol('pending-slash-command');
       pendingRef.current = token;
       setPendingCommand(cmd);
-      void Promise.resolve()
+      const release = (): void => {
+        if (mounted.current && pendingRef.current === token) {
+          pendingRef.current = null;
+          setPendingCommand(null);
+        }
+      };
+      // An abandoned selection frees the gate now: a preparation that hangs
+      // must not block the next one.
+      signal?.addEventListener('abort', release, { once: true });
+      return Promise.resolve()
         .then(() => prepare(cmd))
         .catch(() => false)
-        .then((ready) => {
+        .then((ready): SlashCommandSelectionOutcome => {
+          if (!mounted.current || pendingRef.current !== token) return 'stale';
           const prepared = preparedCommand(cmd, ready);
-          if (
-            mounted.current &&
-            pendingRef.current === token &&
-            prepared &&
-            !(isStale?.() ?? false)
-          ) {
-            insert(prepared);
-          }
+          if (!prepared) return 'failed';
+          if (isStale?.() ?? false) return 'stale';
+          return insert(prepared) === false ? 'stale' : 'inserted';
         })
         .finally(() => {
-          if (mounted.current && pendingRef.current === token) {
-            pendingRef.current = null;
-            setPendingCommand(null);
-          }
+          signal?.removeEventListener('abort', release);
+          release();
         });
     },
     [prepare],

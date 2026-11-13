@@ -11,9 +11,11 @@ import {
   applyW5Commit,
   isCleanApplyConflict,
   preflightW5CommitFiles,
+  type W5ApplyResult,
   type W5DurabilityPort,
   type W5RecoveryReport,
   type W5ProcessFileLock,
+  isTransientUnwrittenApplyFailure,
 } from './apply';
 import type {
   W5CommitLog,
@@ -28,6 +30,7 @@ import {
   W5ProcessFileLockTimeoutError,
 } from './errors';
 import { isRecord } from './is-record';
+import { W5_LAUNCH_HEAL_OPERATIONS } from './apply-evidence';
 import { fingerprintW5File } from './fingerprint';
 import type {
   W5CommitLogRequest,
@@ -471,6 +474,7 @@ export class W5CommitLogRequestHandler {
       root: this.data.root,
       durability: this.durability,
     });
+    this.keepTransientFailurePending(result.commitId, applied);
     if (
       isCleanApplyConflict(applied) &&
       request.receipt === undefined &&
@@ -513,11 +517,35 @@ export class W5CommitLogRequestHandler {
 
   private async finishPendingCommits(): Promise<void> {
     for (const pending of this.log.listPendingCommits()) {
-      await applyW5Commit(this.log, pending, {
+      const applied = await applyW5Commit(this.log, pending, {
         root: this.data.root,
         durability: this.durability,
       });
+      this.keepTransientFailurePending(pending.commitId, applied);
     }
+  }
+
+  /**
+   * CAN-5680: an unkeyed list write that stopped on a transient I/O error
+   * before writing anything stays pending instead of awaiting recovery, so
+   * the next write applies it first once the error clears. Keyed commits keep
+   * waiting for recovery: a replay must never report an outcome the files do
+   * not hold.
+   */
+  private keepTransientFailurePending(
+    commitId: number,
+    applied: W5ApplyResult,
+  ): void {
+    if (!isTransientUnwrittenApplyFailure(applied)) return;
+    const row = this.log
+      .listRecoveryRequiredCommits()
+      .find((entry) => entry.commitId === commitId);
+    if (
+      row &&
+      !row.hasReceipt &&
+      W5_LAUNCH_HEAL_OPERATIONS.includes(row.operation)
+    )
+      this.log.retryRecoveryRequiredCommit(commitId);
   }
 }
 

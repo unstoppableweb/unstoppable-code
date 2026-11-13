@@ -135,6 +135,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.workspace.repoRules.scan'
     | 'core.workspace.repoRules.preview'
     | 'core.workspace.repoRules.status'
+    | 'core.workspace.repoRules.check'
     | 'core.worktree.list'
     | 'core.worktree.get'
     | 'core.ledger.entries.search'
@@ -146,6 +147,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.update.status.get'
     | 'core.search.query'
     | 'core.annotation.document.get'
     | 'core.annotation.thread.get'
@@ -228,6 +230,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.update.status.get'
     | 'core.search.query'
     | 'core.annotation.document.get'
     | 'core.annotation.thread.get'
@@ -261,6 +264,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.workspace.repoRules.scan'
     | 'core.workspace.repoRules.preview'
     | 'core.workspace.repoRules.status'
+    | 'core.workspace.repoRules.check'
     | 'core.worktree.list'
     | 'core.worktree.get'
   >
@@ -1395,6 +1399,7 @@ describe('universal Canopy query registry', () => {
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.status',
+      'core.workspace.repoRules.check',
       'core.script.definition.list',
       'core.script.definition.get',
       'core.worktree.list',
@@ -1410,6 +1415,8 @@ describe('universal Canopy query registry', () => {
       'core.cost.scope.get',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
+      // CAN-5899.
+      'core.update.status.get',
       // CAN-4114.
       'core.summary.get',
       'core.search.query',
@@ -1552,6 +1559,7 @@ describe('universal Canopy query registry', () => {
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.status',
+      'core.workspace.repoRules.check',
     ] as const) {
       expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
         kind: 'query',
@@ -1937,6 +1945,37 @@ describe('universal Canopy query registry', () => {
     );
   });
 
+  it('keeps a root mountPath only when it is workspace-relative', () => {
+    const root = { fileRootId: 'repo-1', name: 'repo', kind: 'git-repo' };
+    for (const mountPath of ['', 'repos/repo-1', 'sibling']) {
+      expect(
+        WorkerFilesystemRootsListResultSchema.parse({
+          roots: [{ ...root, mountPath }],
+        }).roots[0],
+      ).toEqual({ ...root, mountPath });
+    }
+    // Missing means no translation: the root's paths are the workspace's.
+    expect(
+      WorkerFilesystemRootsListResultSchema.parse({ roots: [root] }).roots[0],
+    ).not.toHaveProperty('mountPath');
+    for (const mountPath of [
+      '/vercel/sandbox/repos/repo-1',
+      '../outside',
+      'repos/../..',
+      'repos/./repo-1',
+      'repos//repo-1',
+      'repos/repo-1/',
+      'C:\\repo',
+      7,
+    ]) {
+      expect(
+        WorkerFilesystemRootsListResultSchema.safeParse({
+          roots: [{ ...root, mountPath }],
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('retains additive fields at the result and row levels', () => {
     expect(
       WorkerFilesystemRootsListResultSchema.parse({
@@ -2221,11 +2260,13 @@ describe('common request and error contracts', () => {
       // CAN-4114.
       'core.summary.get',
       'core.terminal.settings.get',
+      'core.update.status.get',
       'core.workspace.get',
       'core.workspace.instructions.get',
       'core.workspace.item.get',
       'core.workspace.item.list',
       'core.workspace.list',
+      'core.workspace.repoRules.check',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.status',
@@ -2272,6 +2313,11 @@ describe('common request and error contracts', () => {
       // CAN-4114.
       'core.summary.regenerate',
       'core.terminal.settings.update',
+      // CAN-5899.
+      'core.update.apply',
+      'core.update.apply.cancel',
+      'core.update.check',
+      'core.update.download',
       'core.workspace.instructions.update',
       'core.workspace.item.delete',
       'core.workspace.item.import',
@@ -2319,12 +2365,14 @@ describe('common request and error contracts', () => {
       // CAN-4143.
       'worker.script.execute',
       'worker.script.execution.cancel',
+      'worker.script.execution.clear',
     ]);
     expect(Object.keys(CANOPY_STREAM_DEFINITIONS)).toEqual([
       'core.chat.events',
       'core.operation.events',
       'core.execution.status.events',
       'core.observability.audit.events',
+      'core.update.events',
       'worker.filesystem.watch',
       'worker.pipeline.execution.events',
       'worker.pipeline.hostRequests',
@@ -2367,6 +2415,7 @@ describe('common request and error contracts', () => {
       'core.client.lease.release',
       'core.client.capabilities.register',
       'core.events.ack',
+      'core.events.unsubscribe',
     ]);
     expect(Object.keys(CORE_TRANSPORT_STREAM_DEFINITIONS)).toEqual([
       'core.runtime.events',

@@ -59,7 +59,26 @@ export type ApprovalCheck =
       /** The host describes a network authority grant such as all hosts. */
       isGrant?: boolean;
     }
-  | { kind: 'tool'; toolName: string }
+  | {
+      /**
+       * A tool without `readPath` has no path semantics: only rules and the
+       * mode answer it, and Auto never allows it on its own.
+       */
+      kind: 'tool';
+      toolName: string;
+      /**
+       * Absolute target of a read tool (Read, NotebookRead, Glob, Grep), set
+       * by the adapter only when the provider named an absolute path with no
+       * `~` or `..` segment, or a Glob or Grep omitted `path` and targets the
+       * launch cwd.
+       */
+      readPath?: string;
+      /**
+       * Canonical `readPath`, filled in by the main process only and never by
+       * adapters. Auto read containment uses this field alone.
+       */
+      resolvedReadPath?: string;
+    }
   | {
       kind: 'browser-upload';
       /** Origin of the frame that owns the file input. */

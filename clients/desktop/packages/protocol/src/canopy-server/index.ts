@@ -58,6 +58,7 @@ export const CANOPY_SERVER_CAPABILITIES = [
   // hard-delete on dismiss. Optional, so an older server degrades to today's
   // irreversible remove instead of a restore the client cannot perform.
   'shared-container-dismissals-v1',
+  'shared-container-owner-departures-v1',
   // Organization projects (CAN-611): org-owned project catalog, instance
   // claims, and Personal catalog registration. Optional and minted per user
   // only while `canopy-shared-org-projects-enabled` evaluates true, so an
@@ -165,6 +166,11 @@ export interface ModelPolicyEnforcedPolicy {
 
 /** Hard wire bounds for org gateway configuration carried on account probes. */
 export const MODEL_GATEWAY_MAX_MODELS = 100;
+/**
+ * Sanity bound on one discovery result. Discovery lists every model a gateway
+ * offers; only the saved list is capped at {@link MODEL_GATEWAY_MAX_MODELS}.
+ */
+export const MODEL_GATEWAY_MAX_DISCOVERED_MODELS = 5000;
 export const MODEL_GATEWAY_MAX_DISPLAY_NAME_LENGTH = 64;
 export const MODEL_GATEWAY_MAX_ID_LENGTH = 256;
 export const MODEL_GATEWAY_MAX_LABEL_LENGTH = 256;

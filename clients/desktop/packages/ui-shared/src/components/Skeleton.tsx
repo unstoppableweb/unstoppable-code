@@ -137,6 +137,45 @@ function isWideField(element: Element): boolean {
   return element.getBoundingClientRect().width > CHIP_MAX_WIDTH_PX;
 }
 
+/** Leaves whose content is their own paint: never an empty slot. */
+const REPLACED_ELEMENTS = new Set([
+  'AUDIO',
+  'CANVAS',
+  'EMBED',
+  'IFRAME',
+  'IMG',
+  'INPUT',
+  'OBJECT',
+  'PICTURE',
+  'SELECT',
+  'TEXTAREA',
+  'VIDEO',
+]);
+
+function hasPaint(style: CSSStyleDeclaration): boolean {
+  const fill = style.backgroundColor;
+  return (
+    (fill !== 'transparent' && fill !== 'rgba(0, 0, 0, 0)') ||
+    style.backgroundImage !== 'none' ||
+    parseFloat(style.borderTopWidth) > 0 ||
+    parseFloat(style.borderLeftWidth) > 0
+  );
+}
+
+/**
+ * An empty, unpainted element: a slot that holds a status only sometimes,
+ * or a spacer. skullet writes a line of sample text into empty text
+ * elements to measure, which would draw a bar where the row shows nothing
+ * and join it to the line beside it.
+ */
+function isEmptySlot(element: Element): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  if (REPLACED_ELEMENTS.has(element.tagName)) return false;
+  if (element.childElementCount > 0) return false;
+  if ((element.textContent ?? '') !== '') return false;
+  return !hasPaint(getComputedStyle(element));
+}
+
 /** Where the sample copy keeps the test ids it was rendered with. */
 const SAMPLE_TEST_ID = 'data-skeleton-testid';
 
@@ -163,10 +202,12 @@ function markLowFidelityDetails(root: HTMLElement): void {
     if (element.hasAttribute(DROP_ATTRIBUTE)) continue;
     if (element.closest(`[${DROP_ATTRIBUTE}], [skullet-own]`)) continue;
     if (element.closest(`[${CHIP_ATTRIBUTE}]`)) continue;
-    if (isLowFidelityDetail(element)) {
-      element.setAttribute(DROP_ATTRIBUTE, '');
-    } else if (isWideField(element)) {
+    // An empty slot keeps its space: dropping it would move the text beside
+    // it off the line the loaded row draws it on.
+    if (isEmptySlot(element) || isWideField(element)) {
       element.setAttribute(SKULLET_IGNORE, '');
+    } else if (isLowFidelityDetail(element)) {
+      element.setAttribute(DROP_ATTRIBUTE, '');
     } else if (isChip(element)) {
       element.setAttribute(CHIP_ATTRIBUTE, '');
       element.setAttribute(SKULLET_BLOCK, '');
@@ -176,6 +217,11 @@ function markLowFidelityDetails(root: HTMLElement): void {
 
 /** Bars narrower than this (px) are slivers: a full stop, a lone glyph. */
 const SLIVER_MAX_WIDTH_PX = 8;
+/**
+ * A block this close to square (px) is a mark, not a sliver: a status dot in
+ * its own slot (a row's leading dot) stays as a small neutral dot.
+ */
+const MARK_SQUARENESS_PX = 1;
 /** Bars whose top and height agree within this (px) sit on one line. */
 const SAME_LINE_PX = 2;
 /** Only bars this short (px) are text; taller blocks are controls. */
@@ -214,7 +260,8 @@ function clipToWidth(element: HTMLElement, maxWidth: number): void {
 }
 
 /**
- * Simplifies what skullet drew: slivers go, and the text runs of one line
+ * Simplifies what skullet drew: slivers go (a status dot, being square,
+ * stays), and the text runs of one line
  * (same top and height, short enough to be text, and close together) merge
  * into one bar from the first's start to the last's end. Controls, and items
  * a wide gap apart, keep their own blocks.
@@ -238,7 +285,10 @@ function simplifyDrawnBars(layer: ShadowRoot): void {
       continue;
     }
     const bar = readBar(child);
-    if (bar.width < SLIVER_MAX_WIDTH_PX) {
+    if (
+      bar.width < SLIVER_MAX_WIDTH_PX &&
+      Math.abs(bar.width - bar.height) > MARK_SQUARENESS_PX
+    ) {
       child.remove();
       continue;
     }
@@ -323,8 +373,9 @@ function watchDrawnBars(root: HTMLElement): () => void {
 /**
  * A skeleton in the content's final layout, measured by skullet from the
  * content itself. It is low fidelity: one grey bar per line of text and one
- * grey block per control, without tints, separators, slivers, small icons or
- * indents. Give it plain sample data: a few short lines per item. Wrap it in
+ * grey block per control, without tints, separators, slivers, small icons
+ * beside text, empty slots or indents; a status dot in its own slot stays as
+ * a small dot. Give it plain sample data: a few short lines per item. Wrap it in
  * `DelayedLoadingPlaceholder` so fast loads never flash it. Once loaded, the content renders directly with no skullet
  * wrapper, so nothing observes it and no shape is written to storage.
  */

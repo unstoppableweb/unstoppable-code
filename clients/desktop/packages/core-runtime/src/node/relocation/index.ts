@@ -19,6 +19,7 @@ import { assertRelocationWorkingRoot } from './working-root';
 
 /** B's transaction supplies stopped-host proof, journal durability and W5 ownership. */
 export interface RelocationRepairContext {
+  readonly onProgress?: (detail: string) => void;
   readonly transition: RelocationTransition;
   /** Private sibling of the final root; all injected owners write here with final-path content. */
   readonly workingRoot: string;
@@ -59,12 +60,16 @@ export function createRelocationRepairStep(): (
         context.gitPlan.checkouts.map((row) =>
           movedOwnedPath(transition, row.path),
         ),
+        context.onProgress,
       );
     else
       await assertRelocationOwnedPathsSafe(
         transition,
         paths,
         context.workingRoot,
+        false,
+        undefined,
+        context.onProgress,
       );
     await context.recordAuthority(transition);
     await repairRelocationGit(

@@ -9,7 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
-import type * as ExecutionStateModule from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import type * as ExecutionStateModule from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 
 jest.mock('electron', () => ({
   app: { isPackaged: false, getPath: (): string => '/tmp' },
@@ -26,10 +26,10 @@ jest.mock('../../pipelines/execution-runtime', () => ({
 
 const mockLoads: string[] = [];
 jest.mock(
-  '@canopy/desktop-shared/node/pipelines/executor/execution-state',
+  '@canopy/execution-engine/node/pipelines/executor/execution-state',
   (): object => ({
     ...jest.requireActual<typeof ExecutionStateModule>(
-      '@canopy/desktop-shared/node/pipelines/executor/execution-state',
+      '@canopy/execution-engine/node/pipelines/executor/execution-state',
     ),
     loadExecutionState: (executionId: string, dir: string): object | null => {
       mockLoads.push(`${executionId}@${dir}`);

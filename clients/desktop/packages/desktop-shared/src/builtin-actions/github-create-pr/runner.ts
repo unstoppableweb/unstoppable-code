@@ -32,7 +32,7 @@ import {
   redactNormalizedPreservingFormat,
   parseAgentSecretValuesEnv,
   redactNormalizedText,
-} from '../agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import {
   hydrateModelRegistryFromEnv,
   resolveConfiguredModel,

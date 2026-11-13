@@ -1,3 +1,9 @@
+import { assertWorkingDirectoryAvailable } from '@canopy/desktop-shared/node/lib/working-directory';
+import {
+  subscribeWorkspaceTargetRemoval,
+  whenWorkspaceTargetRemovalSettled,
+} from '../lib/workspace-target-exclusion';
+import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
 import {
   BrowserWindow,
   type BrowserWindow as ElectronBrowserWindow,
@@ -27,10 +33,41 @@ import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/
 import { validateId } from '../lib/validation';
 import { recordWorktreeDiscovery } from '../lib/worktree-repair';
 import { registerIpcHandler } from './register';
-import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
+import {
+  detachedWorkCallback,
+  trackDetachedWork,
+} from '@canopy/desktop-shared/node/lib/detached-work';
 
-// In-flight discoveries keyed by "projectId/worktreeId" to prevent duplicates.
-const inflight = new Map<string, AbortController>();
+interface InflightDiscovery {
+  controller: AbortController;
+  removalAborted: boolean;
+  completeEmpty: () => void;
+}
+
+// Keep removal-aborted runs until settlement, even if the provider already exits.
+const inflight = new Map<string, InflightDiscovery>();
+subscribeWorkspaceTargetRemoval((projectId, worktreeId) => {
+  const prefix = `${projectId}/${worktreeId}`;
+  for (const [key, run] of inflight) {
+    if (
+      (key !== prefix && !key.startsWith(`${prefix}/`)) ||
+      run.controller.signal.aborted
+    )
+      continue;
+    run.removalAborted = true;
+    run.controller.abort();
+    // Do not hold the removing lifecycle's storage admission while waiting for it.
+    detachedWorkCallback(async () => {
+      await whenWorkspaceTargetRemovalSettled(projectId, worktreeId);
+      if (inflight.get(key) !== run) return;
+      try {
+        run.completeEmpty();
+      } finally {
+        if (inflight.get(key) === run) inflight.delete(key);
+      }
+    })();
+  }
+});
 
 async function resolveDiscoveryCwd(
   projectId: string,
@@ -78,6 +115,8 @@ export interface RunProviderDiscoveryOptions {
   strictEmptyMcpConfig?: boolean;
   safeProjectDiscovery?: boolean;
   signal: AbortSignal;
+  /** Real-row callers own membership admission; reserved scopes only probe cwd. */
+  canDiscover?: () => Promise<boolean>;
 }
 
 /**
@@ -88,7 +127,7 @@ export interface RunProviderDiscoveryOptions {
  */
 export async function runProviderDiscovery(
   options: RunProviderDiscoveryOptions,
-): Promise<WorktreeDiscovery> {
+): Promise<WorktreeDiscovery | null> {
   const {
     cwd,
     providerType,
@@ -101,8 +140,19 @@ export async function runProviderDiscovery(
     strictEmptyMcpConfig,
     safeProjectDiscovery,
     signal,
+    canDiscover,
   } = options;
 
+  const available = async (): Promise<boolean> => {
+    if (signal.aborted || (canDiscover && !(await canDiscover()))) return false;
+    try {
+      await assertWorkingDirectoryAvailable(cwd);
+    } catch {
+      return false;
+    }
+    return !signal.aborted;
+  };
+  if (!(await available())) return null;
   // Resolve plugin selections into provider-specific discovery inputs. One
   // overlay pass: effective selections are computed here (with all overlay
   // IO) and passed straight into resolvePlugins.
@@ -152,6 +202,7 @@ export async function runProviderDiscovery(
     }
   }
 
+  if (!(await available())) return null;
   const result =
     providerType === 'codex'
       ? await discoverCodexWorktreeEnvironment({
@@ -184,6 +235,7 @@ export async function runProviderDiscovery(
             : undefined,
         );
 
+  if (!(await available())) return null;
   return {
     slashCommands: result.slashCommands,
     mcpServers: result.mcpServers,
@@ -211,9 +263,34 @@ async function runDiscovery(
     : `${projectId}/${worktreeId}`;
 
   // Cancel any existing in-flight discovery for this key.
-  inflight.get(key)?.abort();
+  inflight.get(key)?.controller.abort();
   const ac = new AbortController();
-  inflight.set(key, ac);
+  const run: InflightDiscovery = {
+    controller: ac,
+    removalAborted: false,
+    completeEmpty: (): void => {
+      if (inflight.get(key) !== run) return;
+      emit(
+        getWindow,
+        {
+          projectId,
+          worktreeId,
+          chatId,
+          discovery: {
+            slashCommands: [],
+            mcpServers: [],
+            discoveredAt: new Date().toISOString(),
+            providerType,
+          },
+        },
+        requesterWindow,
+      );
+    },
+  };
+  inflight.set(key, run);
+  const finishWithoutDiscovery = (): void => {
+    if (!ac.signal.aborted) run.completeEmpty();
+  };
 
   // Signal loading to the renderer.
   emit(
@@ -238,9 +315,17 @@ async function runDiscovery(
       pluginSelections,
       applyGlobalDefaults: chatSurfaceUsesGlobalPluginDefaults(projectId),
       signal: ac.signal,
+      canDiscover: () => isWorktreeReadAvailable(projectId, worktreeId, cwd),
     });
 
     if (ac.signal.aborted) return;
+    if (
+      !discovery ||
+      !(await isWorktreeReadAvailable(projectId, worktreeId, cwd))
+    ) {
+      finishWithoutDiscovery();
+      return;
+    }
 
     // Only persist to the worktrees file for worktree-level discoveries
     // (no chatId, no repo scoping). Per-tab and repo-scoped discoveries are
@@ -261,6 +346,7 @@ async function runDiscovery(
         discovery: persistedDiscovery,
       });
     }
+    if (ac.signal.aborted || inflight.get(key) !== run) return;
     emit(
       getWindow,
       { projectId, worktreeId, chatId, discovery },
@@ -270,24 +356,10 @@ async function runDiscovery(
     if (!ac.signal.aborted) {
       // eslint-disable-next-line no-console
       console.warn('Worktree discovery failed:', err);
-      emit(
-        getWindow,
-        {
-          projectId,
-          worktreeId,
-          chatId,
-          discovery: {
-            slashCommands: [],
-            mcpServers: [],
-            discoveredAt: new Date().toISOString(),
-            providerType,
-          },
-        },
-        requesterWindow,
-      );
+      finishWithoutDiscovery();
     }
   } finally {
-    if (inflight.get(key) === ac) {
+    if (!run.removalAborted && inflight.get(key) === run) {
       inflight.delete(key);
     }
   }
@@ -316,8 +388,8 @@ export function triggerDiscovery(
 }
 
 export function cancelAllDiscoveries(): void {
-  for (const ac of Array.from(inflight.values())) {
-    ac.abort();
+  for (const run of Array.from(inflight.values())) {
+    run.controller.abort();
   }
   inflight.clear();
 }

@@ -1,10 +1,13 @@
 /**
- * Early access: App Advisor's renderer lives in a `WebContentsView` that this
- * host moves between two places without reloading it:
+ * App Advisor's renderer lives in a `WebContentsView` that this host moves
+ * between three places without reloading it:
  *
  * - `floating`: a panel inside the main Canopy window, in the bottom-right of
  *   its content area (rounded, kept above the window's other native views,
  *   following the window's resizes);
+ * - `docked`: the Orchestrator page in the main window's content area, beside
+ *   its sidebar, at the rectangle the main window's page reports (below the
+ *   window's other native views, like the page itself);
  * - `full`: the full App Advisor window (the shell), filling its content.
  *
  * The renderer stays the single App Advisor surface either way; only where
@@ -18,10 +21,13 @@
  * one out of sight first (see {@link AppAdvisorViewHost.showFloating}).
  */
 
-export type AppAdvisorViewPlacement = 'hidden' | 'floating' | 'full';
+export type AppAdvisorViewPlacement = 'hidden' | 'floating' | 'docked' | 'full';
 
-/** The layout the page renders: the floating panel or the full window. */
-export type AppAdvisorViewLayout = 'floating' | 'full';
+/**
+ * The layout the page renders: the floating panel, the docked page, or the
+ * full window.
+ */
+export type AppAdvisorViewLayout = 'floating' | 'docked' | 'full';
 
 /**
  * What {@link AppAdvisorViewHost.showFloating} did: showed the panel, was
@@ -120,6 +126,12 @@ export class AppAdvisorViewHost<
   /** Bumped by each move, so a superseded paint wait does not show it. */
   private generation = 0;
   private hostWindow: Window | null = null;
+  /** Where the docked page goes in the main window (DIP), when reported. */
+  private dockRect: HostRect | null = null;
+  /** False while a main-window overlay covers the docked page. */
+  private dockVisible = true;
+  /** Whether the view sits on top of its window's native views. */
+  private layer: 'top' | 'bottom' = 'top';
   private readonly fitToHost = (): void => this.fit();
   // The page's own focus events miss the host window losing focus (another
   // app comes forward), which App Advisor's read state depends on.
@@ -212,6 +224,35 @@ export class AppAdvisorViewHost<
     return 'shown';
   }
 
+  /**
+   * Shows the view as the docked page in the main window's content area. It
+   * stays hidden until the main window's page reports where that area is
+   * ({@link setDock}), and while an overlay covers it. False without a main
+   * window.
+   */
+  showDocked(): boolean {
+    const main = this.options.getMainWindow();
+    if (!main || main.isDestroyed()) return false;
+    this.generation += 1;
+    this.painting = false;
+    this.attach(main, 'bottom');
+    this.placementValue = 'docked';
+    this.layoutValue = 'docked';
+    this.fit();
+    this.options.onPlacementChange();
+    return true;
+  }
+
+  /**
+   * Where the docked page goes (DIP in the main window's content), or null
+   * once the main window's page left it, and whether it may show.
+   */
+  setDock(rect: HostRect | null, visible: boolean): void {
+    this.dockRect = rect;
+    this.dockVisible = visible;
+    if (this.placementValue === 'docked') this.fit();
+  }
+
   /** Moves the view into the full window. Showing that window is the caller's. */
   showFull(): void {
     if (this.options.shell.isDestroyed()) return;
@@ -235,9 +276,10 @@ export class AppAdvisorViewHost<
   hide(): void {
     this.generation += 1;
     this.painting = false;
-    const wasFloating = this.placementValue === 'floating';
+    const wasInMainWindow =
+      this.placementValue === 'floating' || this.placementValue === 'docked';
     this.placementValue = 'hidden';
-    if (wasFloating) {
+    if (wasInMainWindow) {
       const contents = this.options.view.webContents;
       const hadFocus = !contents.isDestroyed() && contents.isFocused();
       this.options.view.setVisible(false);
@@ -263,10 +305,21 @@ export class AppAdvisorViewHost<
   }
 
   isVisible(): boolean {
+    const window = this.hostWindow;
+    if (!window || window.isDestroyed() || this.options.shell.isDestroyed()) {
+      return false;
+    }
+    if (this.placementValue === 'docked') {
+      // Open while the page is docked, including while it waits for its
+      // rectangle or an overlay covers it. The main window's own visibility
+      // does not close it: the main window's page decides what it shows, and
+      // the page must stay up to report the rectangle the view waits for.
+      return true;
+    }
     if (this.placementValue === 'floating') {
       // Painting out of sight is not open yet: the main window would draw
       // the panel's shadow without it.
-      return !this.painting && this.hostWindow?.isVisible() === true;
+      return !this.painting && window.isVisible();
     }
     if (this.placementValue === 'full') {
       return this.options.shell.isVisible();
@@ -275,12 +328,18 @@ export class AppAdvisorViewHost<
   }
 
   isFocused(): boolean {
-    if (this.placementValue === 'hidden' || !this.hostWindow) return false;
+    const window = this.hostWindow;
+    if (
+      this.placementValue === 'hidden' ||
+      !window ||
+      window.isDestroyed() ||
+      this.options.shell.isDestroyed()
+    ) {
+      return false;
+    }
     const contents = this.options.view.webContents;
     return (
-      !contents.isDestroyed() &&
-      this.hostWindow.isFocused() &&
-      contents.isFocused()
+      !contents.isDestroyed() && window.isFocused() && contents.isFocused()
     );
   }
 
@@ -313,7 +372,13 @@ export class AppAdvisorViewHost<
     if (this.hostWindow === window) {
       if (layer === 'top') {
         window.contentView.addChildView(this.options.view);
+      } else if (this.layer === 'top') {
+        // From the floating panel to the docked page in the same window:
+        // under the window's other native views.
+        window.contentView.removeChildView(this.options.view);
+        window.contentView.addChildView(this.options.view, 0);
       }
+      this.layer = layer;
       return;
     }
     this.detach();
@@ -322,6 +387,7 @@ export class AppAdvisorViewHost<
     } else {
       window.contentView.addChildView(this.options.view, 0);
     }
+    this.layer = layer;
     window.on('resize', this.fitToHost);
     window.on('closed', this.onHostClosed);
     window.on('focus', this.onHostFocusChange);
@@ -387,6 +453,27 @@ export class AppAdvisorViewHost<
           height: content.height,
         };
       }
+      return;
+    }
+    if (this.layoutValue === 'docked') {
+      const rect = this.dockRect;
+      if (rect !== null) {
+        this.options.view.setBounds(rect);
+        // The page now paints the docked layout, so a later floating show
+        // waits for its panel frame again.
+        if (this.placementValue === 'docked') {
+          this.painted = {
+            layout: 'docked',
+            width: rect.width,
+            height: rect.height,
+          };
+        }
+      }
+      // Hidden here does not move the view: the main window's page shows a
+      // still frame in its place, or nothing once it left.
+      this.options.view.setVisible(
+        this.placementValue === 'docked' && rect !== null && this.dockVisible,
+      );
       return;
     }
     const panel = this.floatingRect(window);

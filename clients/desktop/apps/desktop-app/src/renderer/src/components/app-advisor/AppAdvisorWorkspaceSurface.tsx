@@ -57,6 +57,7 @@ import { AppAdvisorTitlebarCorner } from '@/components/app-advisor/AppAdvisorTit
 import { AppAdvisorTopBar } from '@/components/app-advisor/AppAdvisorTopBar';
 import { WorktreeGitActionError } from '@/components/github/WorktreeGitActionError';
 import { AppAdvisorFloatingSurface } from '@/components/app-advisor/AppAdvisorFloatingSurface';
+import { useAppAdvisorDockedBrowserFallback } from '@/components/app-advisor/useAppAdvisorDockedBrowserFallback';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { subscribeBrowserPanelActivation } from '@/lib/browserPanelActivation';
@@ -376,6 +377,10 @@ export function AppAdvisorWorkspaceSurface({
   // Early access: the window can be a small floating chat (see
   // `floating-layout.ts` in main); the full window keeps the nav and panels.
   const floating = useAppAdvisorStore((s) => s.layout === 'floating');
+  // Docked: the Orchestrator page in the main window's content area, beside
+  // the main sidebar, under the main window's top bar for it. It draws only
+  // the panel grid, in the main window's card layout.
+  const docked = useAppAdvisorStore((s) => s.layout === 'docked');
   // The archive views (the archived overview, its viewer, and the Empty
   // trash confirmation) only render in the full window, so one opened while
   // the person uses the floating panel expands App Advisor there. An open
@@ -413,7 +418,9 @@ export function AppAdvisorWorkspaceSurface({
       // layout opens, without popping it up or taking focus (CAN-1993).
       if (target.projectId !== APP_ADVISOR_PROJECT_ID) return;
       if (target.focus !== false && useAppAdvisorStore.getState().open) {
-        useAppAdvisorStore.getState().expandDialog();
+        // Browser panels show in the separate window, which hosts their
+        // native views.
+        useAppAdvisorStore.getState().openSeparateWindow();
         return;
       }
       // Floating mounts no grid, so load the entry's panel layout for the
@@ -423,6 +430,10 @@ export function AppAdvisorWorkspaceSurface({
       ).catch(() => undefined);
     });
   }, [floating]);
+
+  // Docked, the grid lands a browser panel, but its native view lives in the
+  // separate window: a browser the person asks to see moves App Advisor there.
+  useAppAdvisorDockedBrowserFallback(docked, activeWorkEntryId);
 
   // A file tab the person selects in the open chat while floating expands
   // App Advisor to the full layout, where its panel shows. A file an agent
@@ -486,6 +497,54 @@ export function AppAdvisorWorkspaceSurface({
           activeWorkEntryId={activeWorkEntryId}
           activeChatId={activeChatId}
         />
+      </div>
+    );
+  }
+  if (docked) {
+    // The main window's frame: the same inset cards as a worktree or cowork
+    // chat under its top bar (`data-main-frame='split'` in globals.css). The
+    // top bar, sidebar and window material are the main window's own.
+    return (
+      <div
+        className="relative flex h-full min-h-0 w-full flex-1 overflow-hidden"
+        data-testid="app-advisor-workspace-surface"
+        data-layout="docked"
+        data-window-layout="inset"
+      >
+        <main
+          className="relative flex min-w-0 flex-1 flex-col"
+          data-main-frame="split"
+          data-main-frame-under-host-bar=""
+        >
+          {ready && !containerViewerOpen && (
+            <WorktreeGitActionError
+              projectId={APP_ADVISOR_PROJECT_ID}
+              worktreeId={activeWorkEntryId}
+            />
+          )}
+          <section className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden">
+            {ready ? (
+              <>
+                <PanelGridSurface
+                  key={`${APP_ADVISOR_PROJECT_ID}/${activeWorkEntryId}`}
+                  projectId={APP_ADVISOR_PROJECT_ID}
+                  worktreeId={activeWorkEntryId}
+                  hostState={hostState}
+                  includeAuxWindowContent={true}
+                  onNewChatTab={handleTabStripNewChat}
+                />
+                <CoworkArchiveOverlay surface="app-advisor" />
+              </>
+            ) : (
+              <div
+                className="flex flex-1 items-center justify-center"
+                data-testid="app-advisor-workspace-loading"
+              >
+                <LoadingSpinner tone="secondary" />
+              </div>
+            )}
+          </section>
+        </main>
       </div>
     );
   }

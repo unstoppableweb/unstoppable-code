@@ -170,6 +170,29 @@ function failureReason(
 }
 
 /**
+ * Refusals the web core answers in words meant for the person. An error the
+ * client or transport raised itself, such as `internal`, can carry developer
+ * text, so it never reaches the composer.
+ */
+const EXPLAINED_REFUSALS: ReadonlySet<string> = new Set([
+  'invalid_argument',
+  'permission_denied',
+  'not_found',
+  'already_exists',
+  'conflict',
+  'failed_precondition',
+  'resource_exhausted',
+]);
+
+/** The web core's message for a refusal it answered, or null. */
+function refusalMessage(error: unknown): string | null {
+  if (!(error instanceof CanopyClientError)) return null;
+  if (!EXPLAINED_REFUSALS.has(error.payload.kind)) return null;
+  const message = error.payload.message.trim();
+  return message === '' ? null : message;
+}
+
+/**
  * One upload per call. Main accepts at most as many uploads as one message can
  * carry and sends at most three at a time, the web's per-user slots, so the
  * rest wait instead of failing; the web core caps the size of each.
@@ -220,7 +243,12 @@ export function createCloudChatAttachmentUpload(
         _meta: { idempotencyKey: randomUUID() },
       });
     } catch (error) {
-      return { ok: false, reason: failureReason(error) };
+      const reason = failureReason(error);
+      const message = refusalMessage(error);
+      // A refusal the web core explained keeps its words (CAN-6369).
+      return reason === 'rejected' && message !== null
+        ? { ok: false, reason, message }
+        : { ok: false, reason };
     }
     const parsed = CoreChatAttachmentUploadResultSchema.safeParse(value);
     if (!parsed.success) return { ok: false, reason: 'rejected' };

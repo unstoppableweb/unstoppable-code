@@ -5,6 +5,11 @@ import type {
   ListCuratedPipelinesResult,
 } from '@canopy/desktop-shared/types/curated-pipelines';
 import { ipcRenderer } from '../ipc-router';
+import type {
+  CloudPipelineRunStartResult,
+  PipelineCloudRunsAvailability,
+  PipelineRunLocationRequest,
+} from '@canopy/desktop-shared/types/pipeline-cloud-runs';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import type {
   ActionDefinition,
@@ -64,7 +69,7 @@ import type {
   StepLogReadOptions,
   StepLogReadResult,
   StepOutputEvent,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 
 type ResumePipelineOptions = Partial<
   Pick<
@@ -98,10 +103,22 @@ export interface PipelinesAPI {
     repoPath?: string,
   ): Promise<IPCResult<ActionDefinition | null>>;
   listActions(): Promise<IPCResult<string[]>>;
+  /**
+   * A run with a `targetId` (CAN-6187): main starts it in the cloud through
+   * the web core, or answers why not. It never runs on this computer.
+   */
   execute(
     pipeline: PipelineData['content'],
-    options: ExecutePipelineRequestOptions,
+    options: ExecutePipelineRequestOptions &
+      PipelineRunLocationRequest & { targetId: string },
+  ): Promise<CloudPipelineRunStartResult>;
+  // Last, so `Parameters<typeof execute>` reads the local run's options.
+  execute(
+    pipeline: PipelineData['content'],
+    options: ExecutePipelineRequestOptions & { targetId?: undefined },
   ): Promise<PipelineExecutionStartResult>;
+  /** Whether the Run dialog may offer "Run on: Cloud" (CAN-6085 axis). */
+  cloudRunsAvailability(): Promise<PipelineCloudRunsAvailability>;
   resume(
     executionId: string,
     options: ResumePipelineOptions,
@@ -709,8 +726,12 @@ export function createPipelinesAPI(): PipelinesAPI {
     resolveAction: (usesRef, repoPath) =>
       ipcRenderer.invoke(PIPELINE_CHANNELS.RESOLVE_ACTION, usesRef, repoPath),
     listActions: () => ipcRenderer.invoke(PIPELINE_CHANNELS.LIST_ACTIONS),
-    execute: (pipeline, options) =>
-      ipcRenderer.invoke(PIPELINE_CHANNELS.EXECUTE, pipeline, options),
+    execute: (
+      pipeline: PipelineData['content'],
+      options: ExecutePipelineRequestOptions & PipelineRunLocationRequest,
+    ) => ipcRenderer.invoke(PIPELINE_CHANNELS.EXECUTE, pipeline, options),
+    cloudRunsAvailability: () =>
+      ipcRenderer.invoke(PIPELINE_CHANNELS.CLOUD_RUNS_AVAILABILITY),
     resume: (executionId, options) =>
       ipcRenderer.invoke(PIPELINE_CHANNELS.RESUME, executionId, options),
     resumeAutomation: (executionId, options) =>

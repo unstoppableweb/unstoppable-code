@@ -91,7 +91,7 @@ export const STORAGE_OWNERSHIP = [
     "backupPolicy": "none",
     "admittedWriters": [
       "main/pipelines/pipeline-service",
-      "shared/pipelines/store"
+      "packages/execution-engine/src/pipelines/store.ts"
     ]
   },
   {
@@ -116,7 +116,7 @@ export const STORAGE_OWNERSHIP = [
     "schemaVersion": 2,
     "backupPolicy": "none",
     "admittedWriters": [
-      "shared/node/pipelines/plugin-collection-store"
+      "packages/execution-engine/src/node/pipelines/plugin-collection-store.ts"
     ]
   },
   {

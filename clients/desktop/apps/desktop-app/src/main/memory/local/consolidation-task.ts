@@ -4,6 +4,7 @@ import {
   withMemoryWriteLock,
 } from './edit-coordination';
 import { createHash } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import { access, readFile, readdir, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -22,6 +23,7 @@ import {
 import {
   logicalMemorySourcePath,
   promptEntryCostBytes,
+  promptEntryFitsBudget,
   type MemoryImportSourceTool,
 } from '@canopy/memory-consolidation/input-budget';
 import type {
@@ -49,9 +51,10 @@ import {
   type MemoryConsolidationResult,
 } from '@canopy/memory-consolidation/run';
 import {
+  isListedTopicName,
   memoryFileIdentity,
-  normalizeTopicName,
   topicIdentity,
+  type ScopeTopicInventory,
 } from '@canopy/memory-consolidation/topic-identity';
 import {
   finalizeObservedHelperTask,
@@ -329,6 +332,12 @@ async function inspectInputFiles(
 // cannot drift. 'stop' preserves FIFO semantics (everything behind the first
 // over-budget file stays pending); 'skip' lets lower-ranked files fill the
 // remaining room.
+// 'stop' holds the files behind one back because that file leads the next
+// run. A file no empty budget could hold leads nothing, so 'stop' passes it
+// over and reports it: it would otherwise hold every later file back
+// forever. Saved notes are clamped and import staging refuses such sources,
+// so this is reached only through a note an older build wrote or another
+// device pushed.
 async function selectFilesWithinBudget(options: {
   scopeDir: string;
   usage: Map<string, MemoryUsageEntry>;
@@ -363,7 +372,10 @@ async function selectFilesWithinBudget(options: {
     // Raw size is a lower bound on the serialized cost, so a candidate whose
     // stat size alone busts the budget can be rejected without reading it.
     if (includedBytes + candidate.totalBytes > options.budgetBytes) {
-      if (options.onOverBudget === 'stop') {
+      if (
+        options.onOverBudget === 'stop' &&
+        candidate.totalBytes <= options.budgetBytes
+      ) {
         omitRemaining(index);
         break;
       }
@@ -381,14 +393,15 @@ async function selectFilesWithinBudget(options: {
     }
     const costBytes = promptEntryCostBytes(file);
     if (includedBytes + costBytes > options.budgetBytes) {
-      if (options.onOverBudget === 'stop') {
-        omitted.fileCount += 1;
-        omitted.totalBytes += costBytes;
+      omitted.fileCount += 1;
+      omitted.totalBytes += costBytes;
+      if (
+        options.onOverBudget === 'stop' &&
+        promptEntryFitsBudget(file, options.budgetBytes)
+      ) {
         omitRemaining(index + 1);
         break;
       }
-      omitted.fileCount += 1;
-      omitted.totalBytes += costBytes;
       continue;
     }
     files.push(file);
@@ -446,11 +459,8 @@ async function readTopicFiles(
     }
     throw error;
   }
-  const eligibleNames = names.filter((name) => {
-    const stem = name.slice(0, -3);
-    // Skip names the store would never list (keeps parity with listTopics).
-    return normalizeTopicName(stem) === stem;
-  });
+  // Skip names the store would never list (keeps parity with listTopics).
+  const eligibleNames = names.filter(isListedTopicName);
   const inspected = await inspectInputFiles(
     scopeDir,
     eligibleNames.map((name) => ({
@@ -739,39 +749,39 @@ function consolidationModel(
   };
 }
 
-async function existingTopicIdentities(
+/**
+ * Every topic in a scope folder, in one read so the names and the identities
+ * are always the same listing. Identities cover every file or link, not only
+ * the names the store lists: on a case-insensitive filesystem a generated
+ * name replaces whatever entry shares its identity, and a directory cannot be
+ * replaced by a file rename.
+ */
+export async function readScopeTopicInventory(
   scopeDir: string,
-): Promise<ReadonlySet<string>> {
-  // Every file or link, not only the names the store lists: on a
-  // case-insensitive filesystem a generated name replaces whatever entry
-  // shares its identity. A directory cannot be replaced by a file rename.
+): Promise<ScopeTopicInventory> {
+  let entries: Dirent[];
   try {
-    return new Set(
-      (await readdir(join(scopeDir, 'topics'), { withFileTypes: true }))
-        .filter((entry) => !entry.isDirectory())
-        .map((entry) => topicIdentity(entry.name)),
-    );
+    entries = await readdir(join(scopeDir, 'topics'), { withFileTypes: true });
   } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return new Set();
+    if (isNodeError(error, 'ENOENT'))
+      return { names: [], identities: new Set() };
     throw error;
   }
-}
-
-async function existingTopicNames(scopeDir: string): Promise<string[]> {
-  try {
-    return (await readdir(join(scopeDir, 'topics'), { withFileTypes: true }))
+  return {
+    names: entries
       .filter(
         (entry) =>
           entry.isFile() &&
           isMemoryMarkdownFileName(entry.name) &&
-          normalizeTopicName(entry.name.slice(0, -3)) ===
-            entry.name.slice(0, -3),
+          isListedTopicName(entry.name),
       )
-      .map((entry) => entry.name);
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return [];
-    throw error;
-  }
+      .map((entry) => entry.name),
+    identities: new Set(
+      entries
+        .filter((entry) => !entry.isDirectory())
+        .map((entry) => topicIdentity(entry.name)),
+    ),
+  };
 }
 
 function isNodeError(error: unknown, code: string): boolean {
@@ -1437,8 +1447,7 @@ async function runConsolidation(
   return runMemoryConsolidation(input, {
     model: consolidationModel(options),
     ...(shouldContinue ? { shouldContinue } : {}),
-    listTopicIdentities: () => existingTopicIdentities(options.scopeDir),
-    listTopicNames: () => existingTopicNames(options.scopeDir),
+    listScopeTopics: () => readScopeTopicInventory(options.scopeDir),
     confirmPrunable: async (candidates) => {
       const local = await revalidatePruneCandidates(
         options.scopeDir,
@@ -1455,4 +1464,70 @@ async function runConsolidation(
     },
     now: () => options.now ?? new Date(),
   });
+}
+
+/** What a merge consolidation would write, from {@link previewMemoryMerge}. */
+export interface MemoryMergePreviewResult {
+  output: ConsolidationOutput | null;
+  /** Inbox and import file keys the output consumed. */
+  consumedFileKeys: string[];
+  model: { modelId: string; thinkingLevel?: string } | null;
+  reason?: string;
+}
+
+/**
+ * Runs consolidation over an input built elsewhere (the first-enable merge,
+ * design §17) and returns the plan instead of applying it. Nothing is
+ * written and nothing is pruned.
+ *
+ * `scopeTopics` is the whole document set the merge runs against, which the
+ * input's own topics are only the budgeted part of: a topic left out of the
+ * prompt exists without being replaceable, and the index may still link it.
+ */
+export async function previewMemoryMerge(
+  input: ConsolidationInput,
+  scopeTopics: ScopeTopicInventory,
+  options: RunConsolidationOptions,
+): Promise<MemoryMergePreviewResult> {
+  const captured: { plan: MemoryConsolidationApplyPlan | null } = {
+    plan: null,
+  };
+  const result = await runMemoryConsolidation(input, {
+    model: consolidationModel(options),
+    ...(options.shouldContinue
+      ? { shouldContinue: options.shouldContinue }
+      : {}),
+    listScopeTopics: () => Promise.resolve(scopeTopics),
+    confirmPrunable: () => Promise.resolve([]),
+    apply: (next) => {
+      captured.plan = next;
+      return Promise.resolve(true);
+    },
+    warn: (message, code) => {
+      process.emitWarning(message, { code });
+    },
+    now: () => options.now ?? new Date(),
+  });
+  const applied = captured.plan;
+  if (applied === null || !applied.writesDocuments) {
+    return {
+      output: null,
+      consumedFileKeys: [],
+      model: null,
+      reason: result.reason ?? result.status,
+    };
+  }
+  return {
+    output: applied.output,
+    consumedFileKeys: [
+      ...applied.consumedInboxFiles,
+      ...applied.consumedImportFiles,
+    ].map((file) => file.fileKey),
+    model: {
+      modelId: options.model,
+      ...(options.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: options.thinkingLevel }),
+    },
+  };
 }

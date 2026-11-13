@@ -392,7 +392,7 @@ exports[`worktree:list-branches keeps the failures of non-repository and unknown
   "outcome": {
     "error": {
       "code": "ENOENT",
-      "message": "spawn <git> ENOENT",
+      "message": "Folder <root>/data/workspaces/cowork-ws/worktrees/home no longer exists",
       "name": "Error",
     },
   },
@@ -405,7 +405,7 @@ exports[`worktree:list-branches keeps the failures of non-repository and unknown
   "outcome": {
     "error": {
       "code": "ENOENT",
-      "message": "spawn <git> ENOENT",
+      "message": "Folder <root>/data/workspaces/ghost-ws/worktrees/feature-01 no longer exists",
       "name": "Error",
     },
   },
@@ -602,7 +602,7 @@ exports[`worktree:list-branches resolves registry-backed chat scopes to the real
   "outcome": {
     "error": {
       "code": "ENOENT",
-      "message": "spawn <git> ENOENT",
+      "message": "Folder <root>/data/workspaces/fresh-ws/worktrees/feature-01/repos/member no longer exists",
       "name": "Error",
     },
   },
@@ -921,7 +921,7 @@ exports[`worktree:list-branches selects multi-repo checkouts by repository id: r
   "outcome": {
     "error": {
       "code": "ENOENT",
-      "message": "spawn <git> ENOENT",
+      "message": "Folder <root>/data/workspaces/multi-ws/worktrees/feature-01/repos/absent no longer exists",
       "name": "Error",
     },
   },

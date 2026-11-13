@@ -55,6 +55,8 @@ export interface CapabilityMarketplaceInventory {
   removeSharedResource: (kind: MarketplaceUnshareKind, id: string) => void;
   ownershipAccountReady: boolean;
   viewerId: string | null;
+  /** The account shared skills read through; null while signed out. */
+  skillCloudAccount: CanopyCloudAccountPublicState | null;
   ownedSharesLoading: boolean;
   /** Re-reads the viewer's own automation shares, e.g. from Retry. */
   refreshOwnedShares: () => void;
@@ -870,6 +872,7 @@ export function useCapabilityMarketplaceInventory(
     removeSharedResource,
     ownershipAccountReady: viewerId !== null,
     viewerId,
+    skillCloudAccount,
     ownedSharesLoading,
     refreshOwnedShares,
     installedInventory:

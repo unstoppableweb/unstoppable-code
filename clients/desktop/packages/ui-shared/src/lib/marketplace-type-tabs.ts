@@ -1,4 +1,4 @@
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
+import type { InstalledStatusFilterValue } from './installed-item-status';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_PLURAL } from '@canopy/protocol/workspace-templates';
 import { WORKFLOW_ITEM_LABEL_PLURAL } from './workflow-labels';
@@ -27,14 +27,14 @@ export interface MarketplaceBrowseNavigation {
   readonly query: string;
   readonly category?: string;
   readonly focusSection?: 'installed' | 'shared-by-me';
-  readonly installedStatusFilter?: InstalledItemStatus;
+  readonly installedStatusFilter?: InstalledStatusFilterValue;
   readonly installedExpanded?: boolean;
 }
 
 /** Compatibility inputs terminate here; new destinations describe Customize. */
 export function marketplaceManagementDestination(
   section: unknown = 'installed',
-  statusFilter?: InstalledItemStatus,
+  statusFilter?: InstalledStatusFilterValue,
 ): MarketplaceBrowseNavigation {
   const tab: MarketplaceTypeTabId =
     section === 'marketplaces' || section === 'marketplace'

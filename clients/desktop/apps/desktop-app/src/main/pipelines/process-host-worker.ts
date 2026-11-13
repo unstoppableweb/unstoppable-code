@@ -2,8 +2,8 @@ import {
   connectExecutionHostChannel,
   type ExecutionHostChannel,
 } from '@canopy/desktop-shared/node/execution-host/channel';
-import type { SpawnedProcessOutputGate } from '@canopy/desktop-shared/node/pipelines/executor/spawned-process';
-import { runSpawnedProcessLocally } from '@canopy/desktop-shared/node/pipelines/executor/spawned-process';
+import type { SpawnedProcessOutputGate } from '@canopy/execution-engine/node/pipelines/executor/spawned-process';
+import { runSpawnedProcessLocally } from '@canopy/execution-engine/node/pipelines/executor/spawned-process';
 import { e2eReplayGateFactory } from './e2e-replay-gate';
 import type {
   PipelineProcessHostRequest,

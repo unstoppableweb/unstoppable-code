@@ -1293,6 +1293,14 @@
       "class": "identity",
       "note": "Existing repository logo."
     },
+    "openrouter": {
+      "source": "lobehub",
+      "name": "openrouter",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "OpenRouter's current mark (LobeHub Icons, MIT), the shape openrouter.ai draws in its own header; Simple Icons 16.35.0 still has the retired arrows. Inset 2: the mark spans the full 24-unit width, so it is padded to Material's 20-unit live area, as Z.ai is."
+    },
     "orbit": {
       "source": "lucide",
       "name": "orbit",
@@ -1854,6 +1862,14 @@
       "class": "direct",
       "note": "Lucide users, 2px stroke. Replaces group; regular 20px, compact 14px."
     },
+    "vercel": {
+      "source": "simple-icons",
+      "name": "vercel",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Vercel mark (Simple Icons, CC0-1.0). Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area, as DeepSeek is."
+    },
     "vibeCoding": {
       "source": "lucide",
       "name": "wand-sparkles",
@@ -1939,6 +1955,20 @@
       "fill": 0,
       "class": "identity",
       "note": "Repository logo; OpenCode app icon from https://opencode.ai/favicon.svg."
+    },
+    "litellm": {
+      "source": "repo",
+      "name": "LiteLLMLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; LiteLLM monogram from BerriAI/litellm (MIT) commit 35e501974e227acccd203289737c6d31857e764c ui/litellm-dashboard/public/assets/logos/litellm_monogram.svg, svgo-optimized, in its brand blue with a white backing behind the cut-out train so it reads on dark backgrounds. AI gateway preset tile."
+    },
+    "requesty": {
+      "source": "repo",
+      "name": "RequestyLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; Requesty mark from requestyai/n8n-requesty (MIT) commit b46aff0f842d28665ebc16d8e6c978abfb827d89 icons/requesty.svg, bubble and prompt only, svgo-optimized. AI gateway preset tile."
     },
     "watching": {
       "source": "lucide",

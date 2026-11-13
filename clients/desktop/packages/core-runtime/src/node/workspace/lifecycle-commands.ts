@@ -322,6 +322,36 @@ function createRequest(
       ['temporary'],
       'Temporary projects are unavailable on this host.',
     );
+  // The web core's REST fields (CAN-6114): a desktop project is personal.
+  if (params.ownerOrganizationId !== undefined)
+    return unserved(
+      ['ownerOrganizationId'],
+      'An organization-owned project is unavailable on this host.',
+    );
+  if (params.firstWorkspaceOnly === true)
+    return unserved(
+      ['firstWorkspaceOnly'],
+      'The first-project create is unavailable on this host.',
+    );
+  // Revision 2's project id claim (CAN-6093): a desktop project's id is
+  // derived, so neither the revision nor the claim is served.
+  const claimFields = (['workspaceId', 'revision'] as const).filter(
+    (field) => params[field] !== undefined,
+  );
+  if (claimFields.length > 0)
+    return unserved(
+      claimFields,
+      'Choosing the project id is unavailable on this host.',
+    );
+  // The web core's project template seed (CAN-6111).
+  const blueprintFields = (
+    ['blueprintExternalId', 'blueprintContentHash', 'blueprintSeed'] as const
+  ).filter((field) => params[field] !== undefined);
+  if (blueprintFields.length > 0)
+    return unserved(
+      blueprintFields,
+      'A project created from a project template is unavailable on this host.',
+    );
   const { source } = params;
   switch (source.kind) {
     case 'empty':
@@ -397,6 +427,16 @@ function worktreeRequest(
     return unserved(
       fields,
       'An exact base commit or a target is unavailable on this host.',
+    );
+  // The web core's REST fields (CAN-6114): this host names its own worktree
+  // and starts no chat with it.
+  const web = (['worktreeId', 'firstChat', 'firstMessage'] as const).filter(
+    (field) => params[field] !== undefined,
+  );
+  if (web.length > 0)
+    return unserved(
+      web,
+      'A first chat or a caller-named worktree is unavailable on this host.',
     );
   return {
     kind: 'worktree',
@@ -532,6 +572,21 @@ export function createCoreWorkspaceLifecycleHandlers(
       ),
     'core.worktree.archive': (params, context) =>
       admitted('core.worktree.archive', context, () => {
+        // The cloud lifecycle route's archive bodies are the web core's (CAN-6110).
+        if (
+          [
+            params.wake,
+            params.cancelProvisioning,
+            params.choice,
+            params.continueArchive,
+            params.expectedArchiveAttempt,
+          ].some((value) => value !== undefined)
+        )
+          throw refused(
+            'capability_unavailable',
+            "This host can't wake, cancel or continue a cloud archive.",
+            'cloud-lifecycle-unavailable',
+          );
         // D-6(1): the desktop restores through the keyed container restore.
         if (!params.archived)
           throw refused(
@@ -581,6 +636,13 @@ export function createCoreWorkspaceLifecycleHandlers(
             'capability_unavailable',
             "This host can't delete remote branches.",
             'delete-remote-branches-unavailable',
+          );
+        // CAN-6109: only the web core keeps a whole project archived.
+        if (params.mode === 'archive')
+          throw refused(
+            'capability_unavailable',
+            "This host can't keep a project archived.",
+            'archive-mode-unavailable',
           );
         const wireCall = call(context);
         await host.deleteWorkspace(

@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
-import type { SlashCommandTriggerCharacter } from '@canopy/ui-rich';
 import { Surface, Button } from '@canopy/ui-shared/components';
 import { ChatPanel } from '../ChatPanel';
 import type { FileEditorSlot } from '../file/FileViewer';
@@ -165,9 +164,6 @@ export function CodeShell({
   rightPanelWidth = '20rem',
 }: CodeShellProps): JSX.Element {
   const [openFile, setOpenFile] = useState<PortalFileReadPayload | null>(null);
-  const slashTriggerCharacters = useMemo<
-    readonly SlashCommandTriggerCharacter[]
-  >(() => (providerType === 'codex' ? ['/', '$'] : ['/']), [providerType]);
 
   // Worktree localIds are workspace-scoped, so reset the open file whenever
   // EITHER the workspace or the worktree changes — otherwise switching to a
@@ -254,7 +250,6 @@ export function CodeShell({
         }
         onStop={onStop}
         providerType={providerType}
-        composer={{ slashTriggerCharacters }}
         appIcon={appIcon}
         emptyState={chatEmptyState}
       />

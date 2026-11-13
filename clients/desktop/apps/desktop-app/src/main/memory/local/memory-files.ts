@@ -9,6 +9,7 @@ import {
   lstat,
   mkdir,
   open,
+  readFile,
   readdir,
   realpath,
   rename,
@@ -16,7 +17,7 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
@@ -176,6 +177,7 @@ export interface MemoryFileTimes {
 
 const WRITE_TEMP_PREFIX = '.memory-write-';
 const WRITE_TEMP_PATTERN = /^\.memory-write-[0-9a-f-]{36}\.tmp$/;
+const RETIRE_TEMP_PATTERN = /^\.memory-retire-[0-9a-f-]{36}\.tmp$/;
 
 /**
  * A sibling temp file for a write into `directory`: a dot entry every reader
@@ -201,6 +203,8 @@ const WRITE_FOLDERS = [
  * Removes the temp files of writes that never finished: a writer that died
  * between writing its temp file and renaming it leaves one behind. Call it
  * holding the scope lock, so no live writer's temp file can be among them.
+ * A name a move retired (see {@link retireName}) goes only while another
+ * name holds its file; alone, it may hold an editor's save, and stays.
  * Folders that are links, or under one, are left alone.
  */
 export async function sweepAbandonedMemoryWrites(
@@ -218,12 +222,14 @@ export async function sweepAbandonedMemoryWrites(
       }
       throw error;
     }
-    for (const name of names.filter((entry) =>
-      WRITE_TEMP_PATTERN.test(entry),
+    for (const name of names.filter(
+      (entry) =>
+        WRITE_TEMP_PATTERN.test(entry) || RETIRE_TEMP_PATTERN.test(entry),
     )) {
       const path = join(directory, name);
       const info = await lstat(path).catch(() => null);
       if (info === null || info.isDirectory()) continue;
+      if (RETIRE_TEMP_PATTERN.test(name) && info.nlink < 2) continue;
       await assertMemoryScopeLockHeld();
       await unlink(path).catch(() => undefined);
     }
@@ -258,7 +264,7 @@ export async function writeMemoryFileAtomically(
 export function replaceMemoryFileIfUnchanged(
   scopeDir: string,
   filePath: string,
-  content: string,
+  content: string | Buffer,
   unchanged: () => Promise<boolean>,
 ): Promise<boolean> {
   return replaceThroughTempFile(
@@ -402,14 +408,6 @@ export async function writeNewMemoryFile(
   }
 }
 
-async function isSameFile(left: string, right: string): Promise<boolean> {
-  const [a, b] = await Promise.all([
-    lstat(left, { bigint: true }),
-    lstat(right, { bigint: true }),
-  ]);
-  return a.isFile() && a.dev === b.dev && a.ino === b.ino;
-}
-
 /**
  * {@link writeNewMemoryFile}, or with `replace` {@link writeMemoryFileAtomically},
  * for a file that must survive a crash before the caller drops the only other
@@ -419,7 +417,7 @@ async function isSameFile(left: string, right: string): Promise<boolean> {
 export async function writeMemoryFileDurably(
   scopeDir: string,
   filePath: string,
-  content: string,
+  content: string | Buffer,
   options: { replace: boolean; times?: MemoryFileTimes },
 ): Promise<void> {
   const directory = dirname(filePath);
@@ -450,64 +448,311 @@ export async function writeMemoryFileDurably(
   await flushDirectory(directory);
 }
 
+/** A move whose source changed after it was linked: nothing was moved. */
+class MemoryFileChangedError extends Error {
+  readonly code = 'ECHANGED';
+
+  constructor(readonly path: string) {
+    super(`${path} changed while it was moved`);
+    this.name = 'MemoryFileChangedError';
+  }
+}
+
+interface FileIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
+async function identityOf(path: string): Promise<FileIdentity | null> {
+  try {
+    const info = await lstat(path, { bigint: true });
+    return info.isFile() ? { dev: info.dev, ino: info.ino } : null;
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return null;
+    throw error;
+  }
+}
+
+function sameIdentity(
+  left: FileIdentity | null,
+  right: FileIdentity | null,
+): boolean {
+  return (
+    left !== null &&
+    right !== null &&
+    left.dev === right.dev &&
+    left.ino === right.ino
+  );
+}
+
+/**
+ * Whether two names reach one directory entry, as two spellings of a name
+ * do where the file system folds letter case or normalization: one file
+ * whose directory lists at most one of the names. Two hard links list both.
+ */
+async function isOneEntry(left: string, right: string): Promise<boolean> {
+  if (dirname(left) !== dirname(right)) return false;
+  if (!sameIdentity(await identityOf(left), await identityOf(right))) {
+    return false;
+  }
+  const names = await readdir(dirname(left));
+  return !(names.includes(basename(left)) && names.includes(basename(right)));
+}
+
+const RETIRE_TEMP_PREFIX = '.memory-retire-';
+
+/**
+ * Takes `path`'s name away from whatever file holds it now, atomically, and
+ * removes that file only when `moved` says it is the file the caller moved
+ * elsewhere. Any other file, one an editor saved there since, gets its name
+ * back. A name never loses a file nobody checked: the check runs on the
+ * file the rename took, which no one else can reach under its retired
+ * name. A crash in between leaves the retired name, a dot entry no reader
+ * or sweep touches, with the bytes it holds.
+ */
+async function retireName(
+  path: string,
+  moved: (retired: string) => Promise<boolean>,
+): Promise<'retired' | 'gone' | 'kept'> {
+  const retired = join(
+    dirname(path),
+    `${RETIRE_TEMP_PREFIX}${randomUUID()}.tmp`,
+  );
+  await assertMemoryScopeLockHeld();
+  try {
+    await rename(path, retired);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return 'gone';
+    throw error;
+  }
+  if (await moved(retired)) {
+    await unlink(retired);
+    return 'retired';
+  }
+  try {
+    await publishWithoutReplacing(retired, path, true);
+  } catch (error) {
+    if (!isNodeError(error, 'EEXIST')) throw error;
+    // A later save took the name meanwhile and supersedes this one, as an
+    // editor's own save replacing it would.
+    await unlink(retired);
+  }
+  return 'kept';
+}
+
+/** The bytes at `path`, or null when there is no file. */
+export async function readMemoryFileBytes(
+  path: string,
+): Promise<Buffer | null> {
+  try {
+    return await readFile(path);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT') || isNodeError(error, 'ENOTDIR')) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+// `fatal` rejects bytes that are not UTF-8 instead of replacing them with
+// U+FFFD; `ignoreBOM` keeps a leading BOM as a character, as decoding the
+// buffer itself does, so the text is the bytes' own decoding and nothing else.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/**
+ * A memory file as it is on disk. Only `bytes` identifies it: decoding
+ * replaces every byte that is not UTF-8 with U+FFFD, so two files can decode
+ * alike and the text can never prove a file unchanged. `text` is null for
+ * bytes that are not UTF-8 text, which memory sync cannot carry at all.
+ */
+export interface MemoryFileContent {
+  bytes: Buffer;
+  text: string | null;
+}
+
+/** The file at `path` as {@link MemoryFileContent}; null without a file. */
+export async function readMemoryFile(
+  path: string,
+): Promise<MemoryFileContent | null> {
+  const bytes = await readMemoryFileBytes(path);
+  if (bytes === null) return null;
+  try {
+    return { bytes, text: UTF8.decode(bytes) };
+  } catch {
+    return { bytes, text: null };
+  }
+}
+
+/** Whether two reads of a memory file found the same file, by its bytes. */
+export function sameMemoryFileContent(
+  left: MemoryFileContent | null,
+  right: MemoryFileContent | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.bytes.equals(right.bytes);
+}
+
+/** Whether `path` names the very file a move published under its new name. */
+type HoldsMovedFile = (path: string) => Promise<boolean>;
+
+/**
+ * Gives the file `source` names the name `destination`, which must be free,
+ * and tells that file apart from any other afterwards.
+ *
+ * The file is linked under a private name first, and its identity is read
+ * there: that name is one only this move knows, so the identity is the file
+ * the move took, never a save someone made under a public name since. The
+ * destination is then published from that private link, so the new name
+ * only ever holds that same file. An identity read back from the
+ * destination after publishing it would be whatever is there now, which an
+ * editor's save can be, and a cleanup bound to it would remove that save.
+ *
+ * Rejects with EEXIST once the destination is taken, unless it already is
+ * that very file, as a crash between linking and retiring leaves it.
+ */
+async function linkMovedFile(
+  source: string,
+  destination: string,
+): Promise<HoldsMovedFile> {
+  const staged = memoryWriteTempPath(dirname(destination));
+  await link(source, staged);
+  try {
+    const moved = await identityOf(staged);
+    const holds: HoldsMovedFile = async (path) =>
+      sameIdentity(await identityOf(path), moved);
+    try {
+      await publishWithoutReplacing(staged, destination, true);
+    } catch (error) {
+      if (!isNodeError(error, 'EEXIST') || !(await holds(destination))) {
+        throw error;
+      }
+    }
+    return holds;
+  } finally {
+    await unlink(staged).catch(() => undefined);
+  }
+}
+
+/**
+ * {@link linkMovedFile} where hard links are unavailable: the file is
+ * copied, and the copy is told apart by the bytes copied, read from the
+ * temp file before it is published (see {@link copyWithoutReplacing}).
+ */
+async function copyMovedFile(
+  scopeDir: string,
+  source: string,
+  destination: string,
+  times: MemoryFileTimes | undefined,
+): Promise<HoldsMovedFile> {
+  const copied = await copyWithoutReplacing(
+    scopeDir,
+    source,
+    destination,
+    times,
+  );
+  return async (path) =>
+    (await readMemoryFileBytes(path))?.equals(copied) === true;
+}
+
 /**
  * Moves a file in `scopeDir` to a name that must not exist yet. Unlike
  * rename, an existing destination (a note saved meanwhile under the same
  * name) is never replaced: the move rejects with EEXIST and changes nothing.
- * A destination that already is the source, as a crash between linking and
- * unlinking leaves it, only loses the old name. Where hard links are
- * unavailable the file is copied to a sibling temp file, which keeps `times`
- * (the source's own by default) and is published under the destination name
- * only once complete (see {@link publishWithoutReplacing}); the source goes
- * last. A source that is a link, or either end under one, is refused (see
+ * Node offers no rename that refuses an existing target (`renamex_np` with
+ * `RENAME_EXCL`, `renameat2` with `RENAME_NOREPLACE`), so the file is hard
+ * linked under the new name (see {@link linkMovedFile}) and the old name is
+ * then retired only while it still names that file and the new name still
+ * holds it (see {@link retireName}): an editor that saved over the source
+ * in between keeps its save there, and the move rejects with ECHANGED; one
+ * that took the destination keeps its save too, and the move rejects with
+ * EEXIST. Either changes nothing, so the caller reads it and decides again,
+ * and no save is removed for being under a name this move wrote. With
+ * `expectedBytes`, the moved file must also still hold exactly those bytes,
+ * the ones the caller read and decided on; raw bytes are the only content a
+ * move can be held to, since text decoded from a file it cannot decode is
+ * not the file (see {@link readMemoryFile}). Two spellings of one directory
+ * entry, as a
+ * case-insensitive file system has, are respelled by a rename, which
+ * removes no file. A destination that already is the source, as a crash
+ * between linking and retiring leaves it, only loses the old name. Where
+ * hard links are unavailable the file is copied instead (see
+ * {@link copyMovedFile}), which keeps `times`, the source's own by default.
+ * A source that is a link, or either end under one, is refused (see
  * {@link assertMemoryPathContained}).
  */
 export async function moveWithoutReplacing(
   scopeDir: string,
   source: string,
   destination: string,
-  times?: MemoryFileTimes,
+  options: { times?: MemoryFileTimes; expectedBytes?: Buffer } = {},
 ): Promise<void> {
   await assertMemoryPathContained(scopeDir, source);
   await assertMemoryPathContained(scopeDir, dirname(destination));
-  await assertMemoryScopeLockHeld();
-  try {
-    await link(source, destination);
-  } catch (error) {
-    if (isNodeError(error, 'EEXIST')) {
-      if (!(await isSameFile(source, destination))) throw error;
-    } else if (hardLinksUnsupported(error)) {
-      await copyWithoutReplacing(scopeDir, source, destination, times);
-    } else {
-      throw error;
+  const expected = options.expectedBytes ?? null;
+  const holdsExpected = async (path: string): Promise<boolean> =>
+    expected === null ||
+    (await readMemoryFileBytes(path))?.equals(expected) === true;
+  if (await isOneEntry(source, destination)) {
+    if (!(await holdsExpected(source))) {
+      throw new MemoryFileChangedError(source);
     }
+    await assertMemoryScopeLockHeld();
+    await rename(source, destination);
+    return;
   }
+  await assertMemoryScopeLockHeld();
+  let holds: HoldsMovedFile;
   try {
-    await unlink(source);
+    holds = await linkMovedFile(source, destination);
   } catch (error) {
-    // Already gone: the destination is now the only copy, so it stays.
-    if (isNodeError(error, 'ENOENT')) return;
+    if (!hardLinksUnsupported(error)) throw error;
+    holds = await copyMovedFile(scopeDir, source, destination, options.times);
+  }
+  // Set once the destination no longer holds the file moved: a save made
+  // there takes the name, so the move keeps the source and removes nothing.
+  let destinationTaken = false;
+  let retired: Awaited<ReturnType<typeof retireName>>;
+  try {
+    retired = await retireName(source, async (path) => {
+      if (!(await holds(path)) || !(await holdsExpected(path))) return false;
+      destinationTaken = !(await holds(destination));
+      return !destinationTaken;
+    });
+  } catch (error) {
     // Leave exactly one copy: the source, where it was.
-    await unlink(destination).catch(() => undefined);
+    await retireName(destination, holds).catch(() => undefined);
     throw error;
   }
+  if (retired === 'retired') return;
+  if (retired === 'gone') {
+    // The old name went while the file moved: the destination holds it, the
+    // only copy left, so it stays. Otherwise nothing of it is left to keep.
+    if (await holds(destination)) return;
+    throw new MemoryFileChangedError(source);
+  }
+  if (destinationTaken) throw new MemoryFileExistsError(destination);
+  await retireName(destination, holds);
+  throw new MemoryFileChangedError(source);
 }
 
+/** Copies `source` under `destination` without replacing; the bytes copied. */
 async function copyWithoutReplacing(
   scopeDir: string,
   source: string,
   destination: string,
   times: MemoryFileTimes | undefined,
-): Promise<void> {
+): Promise<Buffer> {
   const directory = dirname(destination);
   const temporaryPath = memoryWriteTempPath(directory);
   try {
     const kept = times ?? (await lstat(source));
     await copyFile(source, temporaryPath, constants.COPYFILE_EXCL);
     await utimes(temporaryPath, kept.atime, kept.mtime);
+    const copied = await readFile(temporaryPath);
     await assertMemoryPathContained(scopeDir, directory);
     await assertMemoryScopeLockHeld();
     await publishWithoutReplacing(temporaryPath, destination, false);
+    return copied;
   } catch (error) {
     await unlink(temporaryPath).catch(() => undefined);
     throw error;

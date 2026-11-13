@@ -304,13 +304,31 @@ function isLifecycleJournalEvidence(
     isArrayOf(value.ownedIdentities, isNullableString)
   );
 }
+function hasValidAbandonedCheckouts(value: Record<string, unknown>): boolean {
+  const { abandonedCheckouts, abandonedPaths, transition } = value;
+  if (abandonedCheckouts === undefined) return true;
+  if (!isTransition(transition) || !isArrayOf(abandonedPaths, isString))
+    return false;
+  const source = transition.from.canonicalDataRoot;
+  return isArrayOf(
+    abandonedCheckouts,
+    (path): path is string =>
+      isString(path) &&
+      isAbsolute(path) &&
+      resolve(path) === path &&
+      path !== source &&
+      isWithin(source, path) &&
+      abandonedPaths.includes(path),
+  );
+}
+
 function isRepairPlan(value: unknown): value is InternalRootRepairPlan {
   return (
     isRecord(value) &&
     hasOnlyKeys(
       value,
       ['transition', 'gitPlan', 'ownedPaths', 'workspaces'],
-      ['lifecycleJournals', 'abandonedPaths'],
+      ['lifecycleJournals', 'abandonedPaths', 'abandonedCheckouts'],
     ) &&
     (value.abandonedPaths === undefined ||
       isArrayOf(
@@ -318,6 +336,7 @@ function isRepairPlan(value: unknown): value is InternalRootRepairPlan {
         (path): path is string =>
           isString(path) && isAbsolute(path) && resolve(path) === path,
       )) &&
+    hasValidAbandonedCheckouts(value) &&
     isTransition(value.transition) &&
     isGitPlan(value.gitPlan) &&
     isArrayOf(value.ownedPaths, isString) &&

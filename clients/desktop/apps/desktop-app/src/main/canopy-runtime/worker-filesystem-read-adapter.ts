@@ -17,11 +17,7 @@ import type {
   WorkerFilesystemFileReadResult,
   WorkerFilesystemLinkResolveResult,
 } from '@canopy/protocol/canopy-core';
-import {
-  SHARED_CONTAINER_VIEWER_PROJECT_ID,
-  type FileContentCanonicalRead,
-  type FileContentResponse,
-} from '@canopy/desktop-shared/types';
+import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
   getFileBrowserRoots,
   type FileBrowserRootsResult,
@@ -237,60 +233,4 @@ export async function resolveLegacyFileReadIdentity(
   if (owner) return owner;
   // A root directory has no root-relative path of its own.
   throw filesystemFileReadError(isRoot ? 'notRegularFile' : 'outsideRoots');
-}
-
-export function missingFileContent(filename: string): FileContentResponse {
-  return {
-    kind: 'missing',
-    content: '',
-    filename,
-    sizeBytes: 0,
-    truncated: false,
-    modifiedAtMs: 0,
-  };
-}
-
-/** The legacy `file:read-content` response for one engine read. */
-export function projectLegacyFileContent(
-  read: FilesystemFileRead,
-): FileContentResponse {
-  const { result, modifiedAtMs } = read;
-  const common = {
-    filename: result.name,
-    sizeBytes: result.sizeBytes,
-    modifiedAtMs,
-  };
-  if (result.contentKind === 'image' && result.mediaType !== undefined)
-    return {
-      kind: 'image',
-      content: `data:${result.mediaType};base64,${result.content}`,
-      truncated: false,
-      ...common,
-    };
-  if (result.contentKind === 'image' || result.contentKind === 'unsupported')
-    return { kind: 'unsupported', content: '', truncated: false, ...common };
-  return {
-    kind: result.contentKind,
-    content: result.content,
-    truncated: result.truncated,
-    ...common,
-  };
-}
-
-/** The canonical read the Files panel consumes, without its content. */
-export function canonicalFileContent(
-  result: WorkerFilesystemFileReadResult,
-): FileContentCanonicalRead {
-  return {
-    fileRootId: result.fileRootId,
-    relativePath: result.relativePath,
-    name: result.name,
-    contentKind: result.contentKind,
-    sizeBytes: result.sizeBytes,
-    returnedBytes: result.returnedBytes,
-    truncated: result.truncated,
-    modifiedAt: result.modifiedAt,
-    version: result.version,
-    ...(result.mediaType !== undefined && { mediaType: result.mediaType }),
-  };
 }

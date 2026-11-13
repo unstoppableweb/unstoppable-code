@@ -106,6 +106,11 @@ export interface CreateSharedSkillRequest {
   capabilityPackage?: PipelinePackageRef;
   /** Committed capability-package upload that authorizes the link. */
   committedPackageUploadId?: string;
+  /**
+   * SHA-256 hex of the SKILL.md the caller checked. The bytes sent must match
+   * it, so a file edited after the check never uploads (CAN-6176).
+   */
+  expectedSourceSha256?: string;
 }
 
 /**
@@ -125,6 +130,8 @@ export interface UpdateSharedSkillRequest {
   committedPackageUploadId?: string;
   preservePackage?: boolean;
   revokePublicShare?: PublicShareVersion;
+  /** As on {@link CreateSharedSkillRequest}. */
+  expectedSourceSha256?: string;
 }
 
 /**

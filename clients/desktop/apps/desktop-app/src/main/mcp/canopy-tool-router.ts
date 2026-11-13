@@ -19,7 +19,7 @@ import {
   type AppAdvisorToolKey,
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import type { PipelineEditorToolKey } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import {
   type ChatModel,
   type ChatTabPluginSelections,
@@ -58,6 +58,8 @@ import {
   loadGitPreferences,
   saveLocalMemory,
   searchLocalMemory,
+  searchChats,
+  readChatExcerpt,
   readLocalMemory,
   getFileCommentsInSession,
   respondToFileCommentInSession,
@@ -851,6 +853,20 @@ export class CanopyToolRouter {
           sessionId: route.sdkSessionId,
           provider: route.providerType ?? 'claude',
           ...request,
+        }),
+      searchChats: (request) =>
+        searchChats({
+          ...request,
+          projectId: route.projectId,
+          worktreeId: route.worktreeId,
+          chatId: route.chatId,
+        }),
+      readChatExcerpt: (request) =>
+        readChatExcerpt({
+          ...request,
+          projectId: route.projectId,
+          worktreeId: route.worktreeId,
+          chatId: route.chatId,
         }),
       searchLocalMemory: (request) =>
         searchLocalMemory({

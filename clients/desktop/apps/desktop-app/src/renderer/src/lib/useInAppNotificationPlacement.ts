@@ -2,15 +2,16 @@ import type {
   InAppNotificationPlacement,
   InAppNotificationPreferences,
 } from '@canopy/desktop-shared/types';
+import { DEFAULT_IN_APP_NOTIFICATION_PLACEMENT } from '@canopy/ui-shared';
 import { useSyncExternalStore } from 'react';
 import {
   getInAppNotificationPlacement,
   subscribeToInAppNotificationPrefs,
 } from './osNotifications';
 
-/** The shared stack defaults to the top-right corner below the header. */
+/** The shared stack defaults to the bottom-right corner. */
 export function defaultInAppNotificationPlacement(): InAppNotificationPlacement {
-  return 'top-right';
+  return DEFAULT_IN_APP_NOTIFICATION_PLACEMENT;
 }
 
 /**

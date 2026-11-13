@@ -141,6 +141,29 @@ export async function assertLocalCollectionManagementContext(
   });
 }
 
+/**
+ * CAN-6065: binds `toLocalId` to the install receipt of `fromLocalId`, when
+ * a local copy takes over that install, so it keeps the provenance its
+ * context checks read. Receipts stay provenance, never grants; nothing to
+ * bind is a no-op.
+ */
+export async function bindResourceInstallLocalId(
+  family: Family,
+  fromLocalId: string,
+  toLocalId: string,
+): Promise<void> {
+  if (!resourceContextEnabled()) return;
+  const id = await accountId();
+  const binding = await createResourceInstallReceiptsStore(
+    id ?? 'signed-out',
+  ).findLocal(family, fromLocalId);
+  if (!binding) return;
+  await createResourceInstallReceiptsStore(binding.accountId).record({
+    ...binding.receipt,
+    localResourceIds: [toLocalId],
+  });
+}
+
 export async function recordResourceInstall(
   family: Family,
   detail: Detail,

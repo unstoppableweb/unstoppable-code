@@ -16,6 +16,7 @@ import { buildHandoffConversationText } from '../messages';
 import { worktreeKey } from '../utils';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatStaleSessionSlice } from '../state';
+import { chatBackendFor } from '../backend';
 
 /**
  * The replacement tab runs a NEW provider session, so the source chat's
@@ -124,7 +125,7 @@ export const createStaleSessionSlice: StateCreator<
         ? sourceTab.messages.slice(0, -1)
         : sourceTab.messages;
     const conversationText = buildHandoffConversationText(historyMessages);
-    const response = await window.api.chat.generateHandoffSummary({
+    const response = await chatBackendFor(sel).chat.generateHandoffSummary({
       projectId: sel.projectId,
       worktreeId: sel.worktreeId,
       conversationText,

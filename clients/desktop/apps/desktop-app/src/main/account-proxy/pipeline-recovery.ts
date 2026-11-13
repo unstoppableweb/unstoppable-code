@@ -5,7 +5,7 @@ import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-pr
 import {
   loadExecutionState,
   listExecutionSummaries,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import {
   canResumeAccountProxyChat,
   type AccountProxyPipelineInterruption,

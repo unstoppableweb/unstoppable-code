@@ -1,6 +1,5 @@
 import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
 import { browserHandoffs } from '../browser/browser-handoffs';
-import { agentHiddenOwnedPipelineIds } from '../automations/owned-pipeline';
 import type {
   BrowserSavePdfRequest,
   BrowserTransferStatus,
@@ -99,6 +98,7 @@ import {
   pipelineWriteErrorMessage,
   readDesktopPipeline,
 } from '../canopy-runtime/pipeline-definition-dispatch';
+import type { AgentPlace } from '../canopy-runtime/agent-place';
 import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import {
@@ -109,12 +109,12 @@ import {
   listExecutionSummaries,
   loadExecutionState,
   relativeToExecutionsDir,
-} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import type {
   ExecutionEvent,
   ExecutionRuntime as PipelineExecutionRuntime,
   StepOutputEvent,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { isPathInside } from '../lib/path-safety';
 import {
@@ -142,6 +142,10 @@ import {
   listHooks,
 } from '../services/hooks-service';
 import { PortalServiceError } from '../services/portal-service-error';
+import {
+  W5CommitLogError,
+  W5CommitRefusedError,
+} from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import {
   agentResourceActionFailure,
   dispatchAgentResourceAction,
@@ -177,6 +181,8 @@ const EXPECTED_SHARED_PIPELINE_UNAVAILABLE_CODES = new Set([
 /**
  * The frozen legacy desktop action family: every chat-surface action type
  * the desktop dispatches. It may shrink as families migrate, never grow.
+ * The pipeline execution actions moved to the shared pipeline-executions
+ * family (CAN-6339); their handlers here serve its desktop port.
  */
 export const DESKTOP_LEGACY_ACTION_TYPES = [
   'sidebar.item_groups.list',
@@ -206,16 +212,6 @@ export const DESKTOP_LEGACY_ACTION_TYPES = [
   'pipeline.update_shared',
   'pipeline.delete_shared',
   'pipeline.set_enabled',
-  // Kept as a compatibility alias for App Advisor parity; both list names are worktree-scoped here.
-  'pipeline.execution_list_for_worktree',
-  'pipeline.execution_list',
-  'pipeline.execution_get',
-  'pipeline.execution_cancel',
-  'pipeline.execution_resume',
-  'pipeline.execution_retry_matrix_job',
-  'pipeline.execution_cancel_matrix_variant',
-  'pipeline.execution_retry',
-  'pipeline.execution_chain',
   'worktree.get_settings',
   'worktree.list_scripts',
   'worktree.run_script',
@@ -872,6 +868,10 @@ function sourceWarning(
     : `Unavailable workflow source: ${source}`;
 }
 
+function agentPlace(runtime: WorktreeActionRuntime): AgentPlace {
+  return { workspaceId: runtime.projectId, worktreeId: runtime.worktreeId };
+}
+
 async function loadPipelineRows(
   runtime: WorktreeActionRuntime,
   sharedQuery?: string,
@@ -885,21 +885,17 @@ async function loadPipelineRows(
   // by worktree scope. The query also narrows the shared read.
   let listed: PipelineInfo[] = [];
   try {
+    // Core hides workflows Orchestrator automations own from this
+    // runtime's place (CAN-4551, CAN-6032).
     const listing = await listDesktopPipelines(
       {
         sources: ['bundled', 'user', 'curated', 'shared'],
         ...(sharedQuery?.trim() ? { query: sharedQuery } : {}),
       },
       PIPELINE_DEFINITION_AGENT_CALLER,
+      agentPlace(runtime),
     );
-    // Hidden like the Orchestrator automations that own them (CAN-4551).
-    const hiddenOwned = await agentHiddenOwnedPipelineIds(
-      listing.rows
-        .filter((info) => info.source === 'user')
-        .map((info) => info.id),
-      runtime,
-    );
-    listed = listing.rows.filter((info) => !hiddenOwned.has(info.id));
+    listed = listing.rows;
     for (const source of listing.unavailableSources) {
       if (source !== 'curated' && source !== 'shared') continue;
       const warning = sourceWarning(source, listing.sourceFailures[source]);
@@ -938,6 +934,7 @@ async function loadPipelineRows(
           info.id,
           {},
           PIPELINE_DEFINITION_AGENT_CALLER,
+          agentPlace(runtime),
         ).catch((): null => null),
       ),
     ...projectInfos.map(async (info) =>
@@ -1411,6 +1408,52 @@ function replayedExecutionArtifacts(
     : [pipelineExecutionArtifact(operation, state, runtime, repoId)];
 }
 
+/**
+ * A hook pause is stored on the worktree row, so a refused worktree-list
+ * write refuses it. Report that as a typed error, not an internal one
+ * (CAN-5680): a change still in progress can be retried; an earlier change
+ * awaiting recovery blocks every later write until it is recovered.
+ */
+function hookPauseStorageRefusal(
+  cause: unknown,
+): AppAdvisorActionResponse | undefined {
+  if (cause instanceof W5CommitRefusedError) {
+    if (cause.reason === 'in-progress')
+      return retryableError(
+        'in_progress',
+        'Another change to this worktree list is still saving. Try again in a moment.',
+      );
+    if (
+      cause.reason === 'unapplied-change' ||
+      cause.reason === 'recovery-required'
+    ) {
+      const commitId = cause.details.commitId;
+      return error(
+        'execution_failed',
+        `Hook pauses can't be saved: an earlier change to this project's worktree list${typeof commitId === 'number' ? ` (commit ${commitId})` : ''} has not finished saving and needs workspace recovery.`,
+      );
+    }
+    return retryableError('execution_failed', cause.message);
+  }
+  if (cause instanceof W5CommitLogError)
+    return retryableError(
+      'execution_failed',
+      "The project's records are unavailable. Try again in a moment.",
+    );
+  return undefined;
+}
+
+function retryableError(
+  code: AppAdvisorActionError['code'],
+  message: string,
+): AppAdvisorActionResponse {
+  return {
+    requestId: '',
+    ok: false,
+    error: { code, message, retryable: true },
+  };
+}
+
 async function setHookPaused(
   action: Extract<ScopedAction, { type: 'hook.pause' | 'hook.resume' }>,
   runtime: WorktreeActionRuntime,
@@ -1460,6 +1503,8 @@ async function setHookPaused(
     if (cause instanceof PortalServiceError && cause.code === 'not_found') {
       return error('not_found', cause.message);
     }
+    const refused = hookPauseStorageRefusal(cause);
+    if (refused) return refused;
     throw cause;
   }
   const getBroadcastWindow = runtime.getSendableWindow ?? runtime.getWindow;

@@ -41,6 +41,7 @@ export async function prepareBrowserTaskRetirement(
   owner: BrowserTaskOwner,
   resolveLegacyPartition: () => Promise<string | undefined> = () =>
     uniquelyOwnedLegacyPartition(repository, dataRoot, owner),
+  reusePending = true,
 ): Promise<string | null> {
   let slot = await repository.getTask(owner.scope);
   if (slot?.lifecycle === 'retired' && slot.ownerCreatedAt === owner.createdAt)
@@ -52,6 +53,11 @@ export async function prepareBrowserTaskRetirement(
       randomUUID(),
     );
   if (slot?.lifecycle === 'retirement_pending' && slot.retirementOperationId) {
+    if (!reusePending)
+      throw new BrowserProfileError(
+        'operation_conflict',
+        'Another operation is retiring this browser task.',
+      );
     const pending = (await repository.getRetirements()).find(
       (entry) => entry.operationId === slot.retirementOperationId,
     );

@@ -36,8 +36,8 @@ import {
   readdir,
   rm,
 } from 'node:fs/promises';
-import { installRestoredExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
-import { syncTreeDurably } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { installRestoredExecutionState } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import { syncTreeDurably } from '@canopy/execution-engine/node/lib/atomic-file';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import {
   resolvePersistedChatExecutionHarness,
@@ -48,6 +48,7 @@ import {
 import { withWorktreeRelocationInstruction } from '@canopy/desktop-shared/lib/pending-system-instructions';
 import {
   claudeProjectDirCandidates,
+  findClaudeCodeSessionTranscriptCandidates,
   getClaudeCodeProjectsDir,
   resolveClaudeCodeSessionTranscriptPath,
 } from './claude-project-paths';
@@ -195,11 +196,69 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * The Claude config folder the chat's own runtime reads at `cwd`. Managed
+ * Claude Code terminal chats (`claude-code`, `auto`) launch with the
+ * worktree's terminal environment; other chats with the workspace agent
+ * environment. Each runtime's CLAUDE_CONFIG_DIR wins, else its default.
+ */
+async function chatClaudeConfigDir(args: {
+  projectId: string;
+  worktreeId: string;
+  cwd: string;
+  tab: PersistedChatTab;
+}): Promise<string> {
+  const { resolveClaudeModConfigDirectory } =
+    await import('../agents/claude-mod-admission-launch');
+  if (
+    args.tab.interfaceMode === 'claude-code' ||
+    args.tab.interfaceMode === 'auto'
+  ) {
+    const { desktopTerminalEnvironmentFor } =
+      await import('../terminal/worker-terminal');
+    const terminalEnv = desktopTerminalEnvironmentFor(
+      args.projectId,
+      args.worktreeId,
+    );
+    return resolveClaudeModConfigDirectory({
+      cwd: args.cwd,
+      environment: false,
+      ...(terminalEnv.CLAUDE_CONFIG_DIR !== undefined
+        ? { claudeConfigDir: terminalEnv.CLAUDE_CONFIG_DIR }
+        : {}),
+      ...(terminalEnv.HOME ? { home: terminalEnv.HOME } : {}),
+    });
+  }
+  return resolveClaudeModConfigDirectory({
+    cwd: args.cwd,
+    environment: { runtime: 'agent', workspaceId: args.projectId },
+  });
+}
+
+/**
+ * A managed Claude Code terminal chat resumes only when the launcher's own
+ * transcript check finds the session; otherwise it starts a new one. Restore
+ * treats such a chat as resumable only if that check passes, so a transcript
+ * the launcher cannot see restores read-only instead (other chats: true).
+ */
+async function launcherCanResume(
+  tab: PersistedChatTab,
+  sessionId: string,
+  cwd: string,
+): Promise<boolean> {
+  if (tab.interfaceMode !== 'claude-code' && tab.interfaceMode !== 'auto')
+    return true;
+  return Boolean(await resolveClaudeCodeSessionTranscriptPath(sessionId, cwd));
+}
+
 async function installCapturedClaudeTranscript(args: {
   projectId: string;
   containerId: string;
   destinationId: string;
   tab: PersistedChatTab;
+  /** The Claude config folder the destination's provider reads; resolved
+   * from the chat's runtime environment when omitted. */
+  claudeConfigDir?: string;
 }): Promise<boolean> {
   const sessionId = args.tab.sdkSessionId;
   if (!sessionId || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return false;
@@ -217,10 +276,20 @@ async function installCapturedClaudeTranscript(args: {
       args.containerId,
       args.tab.selectedRepoId,
     );
-    const fallback = await resolveClaudeCodeSessionTranscriptPath(
-      sessionId,
-      originalCwd,
-    );
+    const fallback =
+      (
+        await findClaudeCodeSessionTranscriptCandidates(
+          sessionId,
+          originalCwd,
+          await chatClaudeConfigDir({
+            projectId: args.projectId,
+            worktreeId: args.containerId,
+            cwd: originalCwd,
+            tab: args.tab,
+          }),
+        )
+      ).paths[0] ??
+      (await resolveClaudeCodeSessionTranscriptPath(sessionId, originalCwd));
     if (!fallback) return false;
     source = fallback;
   }
@@ -231,8 +300,16 @@ async function installCapturedClaudeTranscript(args: {
   );
   const [projectDir] = await claudeProjectDirCandidates(cwd);
   if (!projectDir) return false;
+  const claudeConfigDir =
+    args.claudeConfigDir ??
+    (await chatClaudeConfigDir({
+      projectId: args.projectId,
+      worktreeId: args.destinationId,
+      cwd,
+      tab: args.tab,
+    }));
   const destination = join(
-    getClaudeCodeProjectsDir(),
+    getClaudeCodeProjectsDir(claudeConfigDir),
     projectDir,
     `${sessionId}.jsonl`,
   );
@@ -240,7 +317,48 @@ async function installCapturedClaudeTranscript(args: {
   if (!(await pathExists(destination))) {
     await copyFile(source, destination);
   }
-  return true;
+  return launcherCanResume(args.tab, sessionId, cwd);
+}
+
+/** Whether a Work Entry Claude tab can resume its session in place: the
+ * transcript is already in the destination's project directory, or a captured
+ * or original-cwd copy installs there. */
+async function ensureWorkEntryClaudeTranscript(args: {
+  projectId: string;
+  containerId: string;
+  destinationId: string;
+  tab: PersistedChatTab;
+}): Promise<boolean> {
+  const sessionId = args.tab.sdkSessionId;
+  if (!sessionId || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return false;
+  const cwd = resolveWorktreeCwd(
+    args.projectId,
+    args.destinationId,
+    args.tab.selectedRepoId,
+  );
+  // The provider reads the folder its runtime environment selects
+  // (CLAUDE_CONFIG_DIR), not necessarily this process's.
+  const claudeConfigDir = await chatClaudeConfigDir({
+    projectId: args.projectId,
+    worktreeId: args.destinationId,
+    cwd,
+    tab: args.tab,
+  });
+  // Only the destination's own project directory proves resume works; a copy
+  // under an older cwd slug must still be installed there.
+  for (const projectDir of await claudeProjectDirCandidates(cwd)) {
+    if (
+      await pathExists(
+        join(
+          getClaudeCodeProjectsDir(claudeConfigDir),
+          projectDir,
+          `${sessionId}.jsonl`,
+        ),
+      )
+    )
+      return launcherCanResume(args.tab, sessionId, cwd);
+  }
+  return installCapturedClaudeTranscript({ ...args, claudeConfigDir });
 }
 
 async function installCapturedCodexRollouts(args: {
@@ -294,25 +412,22 @@ async function restoreTabs(args: {
   workEntry: boolean;
   warnings: string[];
   portableWarnings?: boolean;
-  now?: number;
 }): Promise<Awaited<ReturnType<typeof readArchivedContainerChats>>> {
   const chats = await readArchivedContainerChats(
     args.manifest.projectId,
     args.manifest.id,
   );
-  const now = args.now ?? Date.now();
   const restoredTabs: PersistedChatTab[] = [];
   for (const tab of chats.tabs) {
-    if (!tabIsFresh(tab, now)) {
-      restoredTabs.push(makeReadOnly(tab));
-      continue;
-    }
+    // Restoring a container makes its live chats usable again. Age alone
+    // does not prove a provider session is unavailable; try its saved data
+    // below and retain the recovery path when that data cannot be installed.
     if (!tab.sdkSessionId) {
       restoredTabs.push(
         withRestoredWorkingDirectory({
           manifest: args.manifest,
           destinationId: args.destinationId,
-          tab,
+          tab: { ...tab, readOnly: false },
         }),
       );
       continue;
@@ -377,7 +492,12 @@ async function restoreTabs(args: {
       continue;
     }
 
-    if (args.workEntry) {
+    // Other harnesses keep their native session in place; only Claude has a
+    // transcript to verify.
+    if (
+      args.workEntry &&
+      resolvePersistedChatExecutionHarness(tab) !== 'claude'
+    ) {
       restoredTabs.push(
         withRestoredWorkingDirectory({
           manifest: args.manifest,
@@ -388,6 +508,32 @@ async function restoreTabs(args: {
       continue;
     }
     try {
+      if (args.workEntry) {
+        // A Work Entry keeps its Claude session in place; it stays editable
+        // only while that session's transcript still exists.
+        if (
+          await ensureWorkEntryClaudeTranscript({
+            projectId: args.manifest.projectId,
+            containerId: args.manifest.id,
+            destinationId: args.destinationId,
+            tab,
+          })
+        ) {
+          restoredTabs.push(
+            withRestoredWorkingDirectory({
+              manifest: args.manifest,
+              destinationId: args.destinationId,
+              tab: { ...tab, readOnly: false },
+            }),
+          );
+        } else {
+          args.warnings.push(
+            `Claude provider data for chat ${tab.id} was not found; restored read-only.`,
+          );
+          restoredTabs.push(makeReadOnly(tab));
+        }
+        continue;
+      }
       if (
         await installCapturedClaudeTranscript({
           projectId: args.manifest.projectId,
@@ -479,7 +625,7 @@ async function installChatPayloads(args: {
 }): Promise<void> {
   const now = Date.now();
   const [chats, archives] = await settleAll([
-    restoreTabs({ ...args, now }),
+    restoreTabs(args),
     readArchivedContainerChatArchives(
       args.manifest.projectId,
       args.manifest.id,
@@ -923,6 +1069,7 @@ async function createRestoredWorktree(
   });
   if (created.needsRepair === true) {
     await archiveMultiRepoWorktree({
+      archiveTrigger: 'restore',
       workspaceId: manifest.projectId,
       worktreeId: created.id,
       expectedCreatedAt: created.createdAt,
@@ -1076,12 +1223,14 @@ async function rollbackRestoredWorktree(
   const rollback =
     manifest.workspaceType === 'single-repo'
       ? archiveSingleRepoWorktree({
+          archiveTrigger: 'restore',
           workspaceId: manifest.projectId,
           worktreeId: destinationId,
           retainAsArchivedContainer: false,
           deleteBranch: false,
         })
       : archiveMultiRepoWorktree({
+          archiveTrigger: 'restore',
           workspaceId: manifest.projectId,
           worktreeId: destinationId,
           retainAsArchivedContainer: false,

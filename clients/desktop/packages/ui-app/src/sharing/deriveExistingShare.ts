@@ -46,8 +46,14 @@ export interface ExistingShareFacts {
   readonly link?: ShareDialogLink | null;
 }
 
-const TEAM_FALLBACK_NAME = 'Shared team';
-const ORGANIZATION_FALLBACK_NAME = 'Shared organization';
+/**
+ * Names for an existing share's team or organization the account can't name
+ * (deleted, left, or a stale account cache).
+ */
+export const SHARED_TEAM_FALLBACK_NAME = 'Shared team';
+export const SHARED_ORGANIZATION_FALLBACK_NAME = 'Shared organization';
+const TEAM_FALLBACK_NAME = SHARED_TEAM_FALLBACK_NAME;
+const ORGANIZATION_FALLBACK_NAME = SHARED_ORGANIZATION_FALLBACK_NAME;
 
 function ownerAudience(
   owner: ExistingShareOwner | null | undefined,

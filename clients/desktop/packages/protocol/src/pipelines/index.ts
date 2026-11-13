@@ -167,16 +167,6 @@ export interface PipelineIndexEntry {
   revision?: number;
 }
 
-/** CAN-5782: why a workflow page can have only one schedule. */
-export const WORKFLOW_SINGLE_SCHEDULE_REASONS = [
-  'orchestrator_prompt',
-  'agent_grant',
-  'installed_package',
-] as const;
-
-export type WorkflowSingleScheduleReason =
-  (typeof WORKFLOW_SINGLE_SCHEDULE_REASONS)[number];
-
 /** Where a schedule's `worktree_pipeline` run goes; mirrors the automation's. */
 export type WorkflowScheduleTarget =
   | { kind: 'global' }
@@ -204,8 +194,12 @@ export interface WorkflowScheduleValues {
  * present with zero schedules. Desktop-local: never sent off this machine.
  */
 export interface PipelineWorkflowPageInfo {
-  /** Present when the pipeline can have only one schedule. */
-  singleSchedule?: { reason: WorkflowSingleScheduleReason };
+  /**
+   * CAN-6065: an agent wrote the pipeline and its runs keep the agent's
+   * grant, whichever of its schedules starts them. A save of its steps drops
+   * the grant.
+   */
+  agentGranted?: true;
   /** Present when the page has no schedules and kept the last one's values. */
   lastScheduleValues?: WorkflowScheduleValues;
 }

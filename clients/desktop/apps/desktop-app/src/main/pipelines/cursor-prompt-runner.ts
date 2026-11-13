@@ -7,7 +7,7 @@ import {
 import type {
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   cursorBaseEnvironment,
   getManagedCursorRuntime,

@@ -30,7 +30,7 @@
 
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { writeFileAtomically } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
   isPermanentSharedItemSubscriptionError,

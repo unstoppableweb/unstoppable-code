@@ -10,8 +10,11 @@ import {
   useGitHubStarPrompt,
   usePlanModeSuggestion,
   useComposerHintActivity,
+  type ComposerMenuCommandOutcome,
+  type ComposerMenuPick,
 } from '@canopy/ui-app';
 import { getPlanModeHintStore } from '@/lib/planModeHint';
+import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import {
   subscribePlanWorkflowRequests,
   takePlanWorkflowRequest,
@@ -33,9 +36,22 @@ import {
   useAnimatedComposerBox,
   useOneLineComposer,
   VOICE_TAKE_EDITOR_CONTAINER_CLASS,
+  offeredPromptSuggestion,
+  promptSuggestionKeyAction,
+  PromptSuggestionKeyHint,
 } from '@canopy/ui-shared';
+import { PROMPT_SUGGESTIONS_EXPERIMENT_ID } from '@canopy/desktop-shared/lib/labs-experiments';
+import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
+import {
+  usePromptSuggestionEntry,
+  usePromptSuggestionStore,
+} from '@/stores/promptSuggestionStore';
 import { isClaudeTurnLimitMessage } from '@canopy/agent-transcript';
-import { ComposerWorkDrawer, LifetimeLimitNotice } from '@canopy/ui-app';
+import {
+  ComposerWorkDrawer,
+  LifetimeLimitNotice,
+  PortalModelPicker,
+} from '@canopy/ui-app';
 import { deriveChatWorkflowCapabilities } from '@canopy/app-core';
 import {
   ComposerTipArbiterProvider,
@@ -152,7 +168,19 @@ import {
 import { inheritedDefaultLayers } from '@/lib/chatPluginEditing';
 import { brandText, getBrandSourceRepository } from '@/lib/brand';
 import { isCoworkChatTarget } from '@/lib/cowork';
-import { ipcCanopyClient } from '@/client/ipc-canopy-client';
+import { isWebCoreScope, webCoreLocalId } from '@/lib/chat-authority';
+import { CloudChatPluginsPicker } from '@/cloud-chats/CloudChatPluginsPicker';
+import { CloudTaskCreationNotice } from '@/cloud-chats/CloudTaskCreationNotice';
+import { loadWebCoreModels, webCoreChatId } from '@/stores/chat/web-core';
+import { useWebCoreFastModeStore } from '@/stores/chat/web-core/fast-mode';
+import type { CodexSpeed } from '@canopy/protocol/automations';
+import {
+  useWebCoreModelCatalogStore,
+  webCoreModelLabel,
+  webCoreModelList,
+  webCoreModelOption,
+  webCoreThinkingLevels,
+} from '@/stores/chat/web-core/model-catalog';
 import { resolveComposerWorkflowGates } from './composer-workflow-gates';
 import {
   isChatAttachmentShortcutTarget,
@@ -188,6 +216,7 @@ import {
   useRetainFileIndex,
   withRetainedFileIndex,
 } from '@/stores/fileListStore';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { useShallow } from 'zustand/react/shallow';
 import {
   DEFAULT_APPROVAL_DEFAULTS,
@@ -336,7 +365,6 @@ import { UsageIndicator } from './UsageIndicator';
 import { getSlashCommandInsertText } from '@/hooks/useSlashCommands';
 import { useInvocableInventory } from '@/hooks/useInvocableInventory';
 import {
-  INVENTORY_ENABLE_ERROR_COPY,
   buildSlashInventoryCommands,
   flattenCollectionRefs,
   runInventorySelection,
@@ -437,6 +465,7 @@ import type { ActiveComposerView } from './types';
 import { computeColsRowsForPixels } from '@/lib/terminal-dimensions';
 import {
   DISCARD_CHAT_DRAFT_EVENT,
+  SAVE_CHAT_DRAFTS_EVENT,
   saveDraftForExistingTab,
 } from '@/lib/chatDrafts';
 import { readTryItDraft, saveTryItDraft } from '@/lib/tryItDraftStorage';
@@ -475,12 +504,14 @@ import {
   ComposerDrawer,
   ComposerNoticeStack,
   MessageEditCancelSave,
+  PendingTurnSettingsHint,
   useCompactQueue,
 } from '@canopy/ui-shared/components';
 import { canContinueOnOtherHarness } from '@/lib/chatProviderLock';
 import { hasPendingQuestionForChat } from '@/stores/chat/pending-questions';
 import { isTabAiCreditsRouted } from '@/stores/chat/tab-utils';
 import { tabRequestedCodexSpeed } from '@/stores/chat/codex-speed';
+import { usePendingTurnSettings } from './usePendingTurnSettings';
 import { useContextualCodexSpeedControl } from '@/hooks/useContextualCodexSpeedControl';
 import { useCodexSpeedDowngrade } from '@/hooks/useCodexSpeedDowngrade';
 import { getDocument } from '@canopy/ui-shared/panels';
@@ -492,11 +523,13 @@ import { useObservabilityStore } from '@/stores/observabilityStore';
 import { selectProviderUsageLimitResumeAt } from '@/lib/claudeUsageLimitResume';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ScheduleMessageModal } from './ScheduleMessageModal';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   ATTACHMENT_IMPORT_ERROR_MESSAGE,
   addPendingAttachmentsAndRefreshIndex,
   createClipboardAttachments,
   importChatAttachments,
+  importWebCoreChatFiles,
 } from '@/lib/chatAttachments';
 import { stageLinearTicketAttachment } from '@/lib/linearTicketStaging';
 import { ComposerPlusMenu } from '@/components/shared/ComposerPlusMenu';
@@ -988,12 +1021,17 @@ function ChatInputContent({
 
   useLayoutEffect(() => {
     if (isEditingQueued) return undefined;
-    return (): void => {
+    const saveDraft = (): void => {
       saveDraftForExistingTab(
         useChatStore.getState(),
         prevTabIdRef.current,
         getDraftForSave(prevTabIdRef.current, editor.children),
       );
+    };
+    document.addEventListener(SAVE_CHAT_DRAFTS_EVENT, saveDraft);
+    return (): void => {
+      document.removeEventListener(SAVE_CHAT_DRAFTS_EVENT, saveDraft);
+      saveDraft();
     };
   }, [editor, getDraftForSave, isEditingQueued, useChatStore]);
 
@@ -1030,6 +1068,7 @@ function ChatInputContent({
   const hostVisible = usePanelHostState().visible !== false;
 
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const dismissSendRefusal = useChatStore((s) => s.dismissSendRefusal);
   const cancelSession = useChatStore((s) => s.cancelSession);
   const resumeStoppedTurn = useChatStore((s) => s.resumeStoppedTurn);
   // Escape-to-cancel confirmation (ECW-8986): the arming hook may live in a
@@ -1067,6 +1106,14 @@ function ChatInputContent({
   const continueTabOnProvider = useChatStore((s) => s.continueTabOnProvider);
   const setSelectedRepoId = useChatStore((s) => s.setSelectedRepoId);
   const selectedWorktree = useChatStore((s) => s.selectedWorktree);
+  // What this chat's scope serves (CAN-6175 D4): a cloud tab hides the
+  // controls its web core refuses.
+  const scopeCapabilities = useScopeCapabilities({
+    projectId: targetOverride?.projectId ?? selectedWorktree?.projectId ?? '',
+  });
+  const canChangePluginSelections =
+    scopeCapabilities.chatPluginSelections === true;
+  const canAttachFiles = scopeCapabilities.chatAttachments === true;
   const modelChangeKey = ((): string | undefined => {
     const selection = targetOverride ?? selectedWorktree;
     const chatId = targetOverride?.chatId ?? tab?.id;
@@ -1335,7 +1382,8 @@ function ChatInputContent({
   const canUsePlanMode = Boolean(
     !hidePlanMode &&
     selectedWorktree &&
-    !isCoworkChatTarget(selectedWorktree.projectId),
+    !isCoworkChatTarget(selectedWorktree.projectId) &&
+    scopeCapabilities.chatWorkflows?.planMode === true,
   );
   const planMode = canUsePlanMode ? (tab?.planMode ?? false) : false;
   // Unlike plan mode, the approval-mode picker is available on every chat
@@ -2127,9 +2175,99 @@ function ChatInputContent({
   // The exact speed requested for this chat's next turn (never a claim about
   // the turn in flight); the legacy boolean never outranks it.
   const storedSpeed = tab ? tabRequestedCodexSpeed(tab) : 'standard';
-  const supportsFastMode = effectiveProviderType
-    ? modelConfigForProviderSupportsFastMode(effectiveProviderType)
-    : false;
+  // A cloud chat's model is listed by its web core catalog, not the desktop
+  // model registry: its thinking levels come from there (CAN-6175 R5).
+  const webCoreProjectId =
+    composerProjectId !== undefined && isWebCoreScope(composerProjectId)
+      ? composerProjectId
+      : undefined;
+  // Why the web core refused this cloud chat's last send (CAN-6364).
+  const sendRefusalTarget = useMemo(
+    () =>
+      webCoreProjectId !== undefined &&
+      composerWorktreeId !== undefined &&
+      tabId
+        ? {
+            projectId: webCoreProjectId,
+            worktreeId: composerWorktreeId,
+            chatId: tabId,
+          }
+        : null,
+    [composerWorktreeId, tabId, webCoreProjectId],
+  );
+  const sendRefusal = useChatStore((s) =>
+    sendRefusalTarget === null
+      ? undefined
+      : s.worktreeChats[
+          `${sendRefusalTarget.projectId}/${sendRefusalTarget.worktreeId}`
+        ]?.tabs.find((entry) => entry.id === sendRefusalTarget.chatId)
+          ?.sendRefusal,
+  );
+  // A cloud chat's skills, plugins and MCP servers are its web core
+  // catalog's, in the picker the web's cloud chats use (CAN-6175 R5).
+  // A tab this window created keeps the id it minted, which the web core
+  // backend maps to the chat's own once it sends the creation: read on every
+  // render, since the tab itself doesn't change when that happens.
+  const cloudTabId = webCoreProjectId === undefined ? undefined : tab?.id;
+  const cloudChatId =
+    cloudTabId === undefined ? null : webCoreChatId(cloudTabId);
+  const cloudPluginsTarget = useMemo(() => {
+    if (webCoreProjectId === undefined || cloudTabId === undefined) return null;
+    const workspaceId = webCoreLocalId(webCoreProjectId);
+    const worktreeId =
+      composerWorktreeId === undefined
+        ? null
+        : webCoreLocalId(composerWorktreeId);
+    return workspaceId === null || worktreeId === null || cloudChatId === null
+      ? null
+      : { key: cloudTabId, workspaceId, worktreeId, chatId: cloudChatId };
+  }, [cloudChatId, cloudTabId, composerWorktreeId, webCoreProjectId]);
+  useEffect(() => {
+    if (webCoreProjectId !== undefined)
+      void loadWebCoreModels(webCoreProjectId);
+  }, [webCoreProjectId]);
+  const webCoreModels = useWebCoreModelCatalogStore(
+    useShallow((state) =>
+      webCoreProjectId === undefined
+        ? undefined
+        : webCoreModelList(state, webCoreProjectId),
+    ),
+  );
+  const webCoreLabel = useWebCoreModelCatalogStore((state) =>
+    webCoreProjectId === undefined
+      ? undefined
+      : webCoreModelLabel(state, webCoreProjectId, model),
+  );
+  const webCoreLevels = useWebCoreModelCatalogStore(
+    useShallow((state) =>
+      webCoreProjectId === undefined
+        ? undefined
+        : webCoreThinkingLevels(state, webCoreProjectId, model),
+    ),
+  );
+  // A cloud chat's fast mode runs where its model's catalog says so, and is
+  // the window's choice for its sends (CAN-6322).
+  const webCoreModelRunsFast = useWebCoreModelCatalogStore((state) =>
+    webCoreProjectId === undefined
+      ? false
+      : webCoreModelOption(state, webCoreProjectId, model)?.supportsFastMode ===
+        true,
+  );
+  const webCoreFastMode = useWebCoreFastModeStore((state) =>
+    tab ? state.byChat[tab.id] === true : false,
+  );
+  const supportsFastMode =
+    scopeCapabilities.chatFastMode === true &&
+    (webCoreProjectId !== undefined
+      ? webCoreModelRunsFast
+      : effectiveProviderType
+        ? modelConfigForProviderSupportsFastMode(effectiveProviderType)
+        : false);
+  // The Codex speed route is this computer's: a cloud chat never reads it.
+  const localSpeedControl = supportsFastMode && webCoreProjectId === undefined;
+  // A cloud model that runs fast mode without effort levels gets the
+  // speed-only panel.
+  const cloudSpeedOnly = supportsFastMode && webCoreProjectId !== undefined;
   // Thinking controls follow the captured (locked) or effective execution
   // harness — a Codex-harnessed gateway/Ollama model shows Codex effort
   // semantics — while billing, fast-mode, and source-specific affordances
@@ -2145,12 +2283,17 @@ function ChatInputContent({
   // on: an AI-Credits-routed chat displays and cycles the gateway-advertised
   // set, not the model's native tiers.
   const aiCreditsRouted = tab ? isTabAiCreditsRouted(tab) : false;
-  const supportedThinkingLevels = getEffectiveSupportedThinkingLevelsForModel(
-    model,
-    aiCreditsRouted,
-    effectiveProviderType ?? 'claude',
-    thinkingHarness,
-  );
+  const supportedThinkingLevels =
+    webCoreLevels ??
+    getEffectiveSupportedThinkingLevelsForModel(
+      model,
+      aiCreditsRouted,
+      effectiveProviderType ?? 'claude',
+      thinkingHarness,
+    );
+  const effortVisible =
+    supportedThinkingLevels.length > 0 &&
+    scopeCapabilities.chatThinkingLevel === true;
   // Tiers the model does not support display as the nearest lower supported
   // tier (e.g. `ultra` on non-Ultra models) while the canonical stored value
   // is preserved until the user cycles. Gateway-advertised supported levels
@@ -2165,7 +2308,7 @@ function ChatInputContent({
   // Speed availability follows this chat's actual route: its model, Auto
   // routing, captured harness, and billing lane. Only Codex chats read it.
   const speedControl = useContextualCodexSpeedControl({
-    enabled: supportsFastMode,
+    enabled: localSpeedControl,
     context:
       tab && composerProjectId && composerWorktreeId
         ? {
@@ -2189,13 +2332,25 @@ function ChatInputContent({
   });
   // A model that cannot run Ultra fast steps the chat down to Fast (or
   // Regular) rather than holding a choice its next turn would be refused.
-  const requestedSpeed = useCodexSpeedDowngrade({
-    enabled: supportsFastMode,
+  const localRequestedSpeed = useCodexSpeedDowngrade({
+    enabled: localSpeedControl,
     speed: storedSpeed,
     control: speedControl,
     apply: (next): void => void setSpeed(next, targetOverride),
   });
-  const nextSpeed = nextCodexSpeed(requestedSpeed, speedControl.states);
+  // A cloud chat offers Regular and Fast.
+  const requestedSpeed: CodexSpeed =
+    webCoreProjectId === undefined
+      ? localRequestedSpeed
+      : webCoreFastMode
+        ? 'fast'
+        : 'standard';
+  const nextSpeed: CodexSpeed =
+    webCoreProjectId === undefined
+      ? nextCodexSpeed(requestedSpeed, speedControl.states)
+      : requestedSpeed === 'fast'
+        ? 'standard'
+        : 'fast';
   // Speed applies to the next turn; an active turn is never interrupted.
   // Regular → Fast → Ultra fast, where the route offers it.
   const cycleSpeed = useCallback((): void => {
@@ -2329,6 +2484,18 @@ function ChatInputContent({
   // spinner).
   const composerTurn = useComposerTurnActivity(composerChatTarget, tab?.status);
   const isStreaming = composerTurn.activity !== 'idle' && !pendingExit;
+  // A model or thinking-level change made mid-turn on a session that applies
+  // setters only from its next turn (OpenCode) shows as pending beside the
+  // controls until that turn ends.
+  const pendingTurnSettingsState = usePendingTurnSettings({
+    projectId: targetOverride?.projectId ?? selectedWorktree?.projectId,
+    worktreeId: targetOverride?.worktreeId ?? selectedWorktree?.worktreeId,
+    chatId: tab?.id,
+    turnActive: isStreaming,
+    model,
+    thinkingLevel,
+    supportedThinkingLevels,
+  });
   const handleCancelRunningChat = useCallback((): void => {
     void cancelSession(targetOverride);
   }, [cancelSession, targetOverride]);
@@ -2390,6 +2557,10 @@ function ChatInputContent({
   const [pluginsModalInheritedLayers, setPluginsModalInheritedLayers] =
     useState<InheritedPluginLayers | null>(null);
   const openPluginsModal = useCallback(async (): Promise<void> => {
+    if (webCoreProjectId !== undefined) {
+      if (cloudPluginsTarget !== null) setPluginsModalOpen(true);
+      return;
+    }
     // Retries a failed startup hydration and waits before mounting the picker.
     // Opening against an unhydrated empty overlay would render globally
     // supplied plugins unchecked and make unchecking them a silent no-op.
@@ -2432,10 +2603,12 @@ function ChatInputContent({
     setPluginsModalOpen(true);
   }, [
     addToast,
+    cloudPluginsTarget,
     globalOverlayEligible,
     overlayProjectId,
     overlayWorktreeId,
     tabInheritsProjectDefaults,
+    webCoreProjectId,
   ]);
   const [linearPickerOpen, setLinearPickerOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
@@ -2672,7 +2845,9 @@ function ChatInputContent({
   });
 
   const fileTypeaheadEnabled =
-    Boolean(selectedWorktree) && !disableFileTypeahead;
+    Boolean(selectedWorktree) &&
+    !disableFileTypeahead &&
+    scopeCapabilities.chatFileMentions === true;
   const fileListKey =
     fileTypeaheadEnabled && selectedWorktree
       ? getWorktreeCacheKey(
@@ -2987,6 +3162,31 @@ function ChatInputContent({
         bannerTarget.chatId,
       ),
   );
+  // Next prompt suggestions (Labs): only a native session composer, whose
+  // chat main sends them for, offers one.
+  const promptSuggestionsEnabled = useLabsExperimentEnabled(
+    PROMPT_SUGGESTIONS_EXPERIMENT_ID,
+  );
+  const promptSuggestionTarget = promptSuggestionsEnabled
+    ? sessionChatTarget
+    : null;
+  const promptSuggestionEntry = usePromptSuggestionEntry(
+    promptSuggestionTarget,
+  );
+  // A suggestion follows the turn it came from; a later send makes it stale.
+  const latestUserMessageId = useChatStore((s): string | undefined => {
+    if (!promptSuggestionTarget || !promptSuggestionEntry) return undefined;
+    const messages = s.worktreeChats[
+      `${promptSuggestionTarget.projectId}/${promptSuggestionTarget.worktreeId}`
+    ]?.tabs.find(
+      (candidate) => candidate.id === promptSuggestionTarget.chatId,
+    )?.messages;
+    if (!messages) return undefined;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === 'user') return messages[index].id;
+    }
+    return undefined;
+  });
   // A newly displayed approval card takes focus only from the body or this
   // composer with no draft (`approval-focus-policy.ts`), evaluated now.
   const canApprovalTakeComposerFocus = useCallback((): boolean => {
@@ -3297,9 +3497,14 @@ function ChatInputContent({
         providerType: effectiveProviderType,
         interfaceMode: tab?.interfaceMode ?? 'canopy',
         projectId: workflowGateProjectId,
-        capabilities: ipcCanopyClient.capabilities,
+        capabilities: scopeCapabilities,
       }),
-    [effectiveProviderType, tab?.interfaceMode, workflowGateProjectId],
+    [
+      effectiveProviderType,
+      scopeCapabilities,
+      tab?.interfaceMode,
+      workflowGateProjectId,
+    ],
   );
   const supportsScheduledSends = workflowGates.scheduledSends;
 
@@ -3410,7 +3615,7 @@ function ChatInputContent({
   const showInterruptedTurnResume =
     !isEditingQueued &&
     shouldShowInterruptedTurnResume({
-      capabilities: ipcCanopyClient.capabilities,
+      capabilities: scopeCapabilities,
       target: sessionChatTarget,
       userMessageId: interruptedTurnResumeUserMessageId,
       session: interruptedTurnResumeSession,
@@ -4347,6 +4552,8 @@ function ChatInputContent({
             }
           : null);
       if (!destination) return false;
+      // The local core holds no cloud chat's selection; its catalog does.
+      if (isWebCoreScope(destination.projectId)) return true;
       return queueDesktopTryItSelectionUpdate(
         destination,
         async (): Promise<boolean> => {
@@ -4428,8 +4635,17 @@ function ChatInputContent({
     ],
   );
 
+  // A cloud chat's attachments upload before they join the message, so it
+  // waits for them, as the web composer does (CAN-6175 R6).
+  const [cloudUploadsByTab, setCloudUploadsByTab] = useState<
+    Readonly<Record<string, number>>
+  >({});
+  const cloudUploading =
+    tabId !== undefined && (cloudUploadsByTab[tabId] ?? 0) > 0;
+
   const handleSend = useCallback(() => {
     if (!editingState && tab?.firstSendPreparing) return;
+    if (cloudUploading) return;
     // Slate mutates the editor tree before React commits the corresponding
     // `value` update. A queued-message Save can therefore run in the same
     // interaction window as the final edit and must read the live tree rather
@@ -4725,7 +4941,8 @@ function ChatInputContent({
           chatStore.removePendingEditorSelection(tabId, selectionId);
         }
       };
-      const restoreRejectedDraft = (): void => {
+      /** Puts the submitted draft back; `false` when the composer moved on. */
+      const restoreRejectedDraft = (): boolean => {
         restoreReservedInputs();
         if (
           !canRestoreComposerDraft({
@@ -4735,7 +4952,7 @@ function ChatInputContent({
             currentRevision: draftRevisionRef.current,
           })
         ) {
-          return;
+          return false;
         }
         restoreEditorContent(editor, submittedEditorValue);
         const restoredValue = structuredClone(editor.children);
@@ -4744,6 +4961,7 @@ function ChatInputContent({
           useChatStore.getState().saveTabDraft(tabId, restoredValue);
         }
         focusEditor(editor);
+        return true;
       };
       const clearAcceptedSavedDraft = (): void => {
         if (!tabId) return;
@@ -4873,14 +5091,14 @@ function ChatInputContent({
             restoreReservedInputs();
           }
         };
-        const rejectNativePreDispatch = (): void => {
+        const rejectNativePreDispatch = (): boolean => {
           // A newer send only supersedes editor recovery, never ownership of
           // the rejected send's already-reserved attachments and selections.
           restoreReservedInputs();
-          if (!isCurrentRecovery()) return;
+          if (!isCurrentRecovery()) return false;
           // The existing rejection path restores the whole draft itself.
           releaseRecovery();
-          restoreRejectedDraft();
+          return restoreRejectedDraft();
         };
         try {
           await sendMessage(
@@ -4932,6 +5150,7 @@ function ChatInputContent({
       () => submittingDraftRevisionsRef.current.delete(submittedDraftRevision),
     );
   }, [
+    cloudUploading,
     questionPromptOpen,
     questionPrompt.busy,
     questionPrompt.disconnected,
@@ -5285,11 +5504,66 @@ function ChatInputContent({
   const editingAddAttachmentsRef = useRef(editingState?.onAddAttachments);
   editingAddAttachmentsRef.current = editingState?.onAddAttachments;
 
+  // A cloud chat's files upload to this composer's chat as they are attached
+  // (CAN-6175 R6); nothing reads them from a path. Files left out say why
+  // beside the composer, as the web composer does.
+  const [attachmentProblems, setAttachmentProblems] = useState<
+    readonly string[]
+  >([]);
+  useEffect(() => {
+    setAttachmentProblems([]);
+  }, [tabId]);
+  const attachWebCoreFiles = useCallback(
+    (
+      target: { projectId: string; worktreeId: string },
+      files: readonly File[] | null,
+      isCurrent: () => boolean,
+    ): void => {
+      if (!tabId) return;
+      const chatTarget = { ...target, chatId: tabId };
+      setAttachmentProblems([]);
+      const countUpload = (by: number): void =>
+        setCloudUploadsByTab((current) => ({
+          ...current,
+          [tabId]: (current[tabId] ?? 0) + by,
+        }));
+      countUpload(1);
+      void importWebCoreChatFiles(chatTarget, files, isCurrent)
+        .then(({ attachments, problems }) => {
+          if (!isCurrent()) return;
+          // A slower earlier batch adds to a later one's reasons.
+          if (problems.length > 0)
+            setAttachmentProblems((current) => [
+              ...new Set([...current, ...problems]),
+            ]);
+          addPendingAttachmentsAndRefreshIndex(
+            target,
+            attachments,
+            editingAddAttachmentsRef.current,
+            chatTarget,
+          );
+        })
+        .catch((error: unknown) => {
+          reportClientAppError(error);
+          if (isCurrent())
+            setAttachmentProblems((current) => [
+              ...new Set([...current, ATTACHMENT_IMPORT_ERROR_MESSAGE]),
+            ]);
+        })
+        .finally(() => countUpload(-1));
+    },
+    [tabId],
+  );
+
   const handleImportAttachments = useCallback(async () => {
     if (filesGuestGate.interceptAttachment() || readOnly) return;
     const isCurrent = filesGuestGate.captureAccess();
     const attachmentTarget = targetOverride ?? selectedWorktree;
     if (!attachmentTarget) return;
+    if (isWebCoreScope(attachmentTarget.projectId)) {
+      attachWebCoreFiles(attachmentTarget, null, isCurrent);
+      return;
+    }
     const attachments = await importChatAttachments(
       attachmentTarget,
       [],
@@ -5303,7 +5577,13 @@ function ChatInputContent({
       editingAddAttachmentsRef.current,
       targetOverride,
     );
-  }, [filesGuestGate, readOnly, selectedWorktree, targetOverride]);
+  }, [
+    attachWebCoreFiles,
+    filesGuestGate,
+    readOnly,
+    selectedWorktree,
+    targetOverride,
+  ]);
 
   // ⌘/Ctrl+U (ECW-7984): the global shortcut handler identifies the active
   // chat explicitly so a split layout with multiple visible composers opens
@@ -5323,6 +5603,7 @@ function ChatInputContent({
     const handler = (event: Event): void => {
       const detail: unknown = 'detail' in event ? event.detail : null;
       if (
+        !canAttachFiles ||
         !isComposerVisible() ||
         !isChatAttachmentShortcutTarget(detail, attachmentTarget)
       ) {
@@ -5335,6 +5616,7 @@ function ChatInputContent({
       document.removeEventListener(OPEN_CHAT_ATTACHMENTS_EVENT, handler);
     };
   }, [
+    canAttachFiles,
     handleImportAttachments,
     isComposerVisible,
     selectedWorktree,
@@ -5361,7 +5643,9 @@ function ChatInputContent({
 
   useComposerActions(
     composerShortcutTarget,
-    { plugins: () => void openPluginsModal() },
+    canChangePluginSelections
+      ? { plugins: (): void => void openPluginsModal() }
+      : {},
     !readOnly && editingState === undefined,
   );
 
@@ -5410,6 +5694,10 @@ function ChatInputContent({
       const items = event.clipboardData?.items;
       if (!items || !Array.from(items).some((item) => item.kind === 'file'))
         return;
+      if (!canAttachFiles) {
+        event.preventDefault();
+        return;
+      }
       if (filesGuestGate.interceptAttachment()) {
         event.preventDefault();
         event.stopPropagation();
@@ -5419,6 +5707,15 @@ function ChatInputContent({
       const isCurrent = filesGuestGate.captureAccess();
       const attachmentTarget = targetOverride ?? selectedWorktree;
       if (!attachmentTarget) return;
+      if (isWebCoreScope(attachmentTarget.projectId)) {
+        event.preventDefault();
+        attachWebCoreFiles(
+          attachmentTarget,
+          Array.from(items).flatMap((item) => item.getAsFile() ?? []),
+          isCurrent,
+        );
+        return;
+      }
 
       const filePaths: string[] = [];
       const blobFiles: File[] = [];
@@ -5465,7 +5762,14 @@ function ChatInputContent({
           });
         });
     },
-    [filesGuestGate, readOnly, addToast, selectedWorktree, targetOverride],
+    [
+      attachWebCoreFiles,
+      filesGuestGate,
+      readOnly,
+      addToast,
+      selectedWorktree,
+      targetOverride,
+    ],
   );
 
   const dropContainerRef = useRef<HTMLDivElement>(null);
@@ -5480,13 +5784,18 @@ function ChatInputContent({
   const fileDrop = useChatFileDrop({
     boxRef: dropContainerRef,
     rootRef: composerRootRef,
-    enabled: filesGuestGate.status !== 'signed-in' || !readOnly,
+    enabled:
+      canAttachFiles && (filesGuestGate.status !== 'signed-in' || !readOnly),
     ownBoxOnly: isEditingQueued,
     onDropFiles: (files): void => {
       if (filesGuestGate.interceptAttachment() || readOnly) return;
       const isCurrent = filesGuestGate.captureAccess();
       const wt = targetOverrideRef.current ?? selectedWorktreeRef.current;
       if (!wt) return;
+      if (isWebCoreScope(wt.projectId)) {
+        attachWebCoreFiles(wt, files, isCurrent);
+        return;
+      }
 
       const filePaths: string[] = [];
       const blobFiles: File[] = [];
@@ -5802,7 +6111,7 @@ function ChatInputContent({
         : 'claude'),
     interfaceMode: tab?.interfaceMode ?? 'canopy',
     target: 'worktree',
-    capabilities: ipcCanopyClient.capabilities,
+    capabilities: scopeCapabilities,
   });
   const planApprovalOptions: readonly PlanApprovalOption[] = [
     {
@@ -5964,31 +6273,52 @@ function ChatInputContent({
     ],
   );
 
+  // A row that must be enabled first returns its outcome to the composer
+  // menu, which shows the row enabling and reports a failure in place.
+  // Dismissing the menu aborts `pick.signal`: the enable still runs to its
+  // end, but inserts nothing.
   const handleSelectCommand = useCallback(
-    async (cmd: SlashCommandData): Promise<void> => {
-      const insertSelection = (selected: typeof cmd): void => {
-        composerMenu.consumeTrigger();
+    (
+      cmd: SlashCommandData,
+      pick?: ComposerMenuPick,
+    ): Promise<ComposerMenuCommandOutcome> | undefined => {
+      // Replaces the trigger the command was picked from; while the menu
+      // holds an enabling pick, an edited trigger inserts nothing and this
+      // reports `false`.
+      const insertSelection = (selected: typeof cmd): boolean => {
+        if (!composerMenu.consumeTrigger()) return false;
         Transforms.insertText(editor, getSlashCommandInsertText(selected));
+        return true;
       };
       if (
         ('disabledReason' in cmd && cmd.disabledReason !== undefined) ||
         readOnly
       )
-        return;
+        return undefined;
       const action = getComposerAction(cmd);
       if (action) {
         const handlers: ComposerActionHandlers = {
-          plugins: () => {
-            void openPluginsModal();
-          },
-          attach: () => {
-            void handleImportAttachments();
-          },
+          ...(canChangePluginSelections
+            ? {
+                plugins: (): void => {
+                  void openPluginsModal();
+                },
+              }
+            : {}),
+          ...(canAttachFiles
+            ? {
+                attach: (): void => {
+                  void handleImportAttachments();
+                },
+              }
+            : {}),
           model: () => {
             if (composerShortcutTarget)
               requestModelPickerOpen(composerShortcutTarget);
           },
-          thinking: handleCycleThinkingLevel,
+          ...(scopeCapabilities.chatThinkingLevel === true
+            ? { thinking: handleCycleThinkingLevel }
+            : {}),
           ...(pendingExit && planPipelineAllowed
             ? { pipeline: () => setPipelineModalOpen(true) }
             : {}),
@@ -6007,7 +6337,7 @@ function ChatInputContent({
           onUnavailable: () =>
             addToast('This action is unavailable in this composer.', 'error'),
         });
-        return;
+        return undefined;
       }
       const insertDiscovered = (): void => {
         insertSelection(cmd);
@@ -6021,12 +6351,21 @@ function ChatInputContent({
       // resolved id alone. Other discovered rows fall straight through.
       if (!inventoryRowNeedsResolution(cmd)) {
         insertDiscovered();
-        return;
+        return undefined;
       }
 
-      const showEnableError = (): void =>
-        addToast(INVENTORY_ENABLE_ERROR_COPY, 'error', undefined, {
-          category: 'Chat',
+      const entry = cmd.inventoryEntry;
+      // Every enable failure is logged into the app diagnostics
+      // (`app-events`) with the chat, project and worktree the removed toast
+      // carried. The open menu shows it in place, and its banner records the
+      // surfaced error; a pick the person dismissed shows nothing, since a
+      // failed on-screen action does not toast (feedback.md, legacy error
+      // ratchet).
+      const reportEnableFailure = (status: string): void =>
+        reportRendererConsoleError('Composer menu could not enable a command', {
+          status,
+          menuDismissed: pick?.signal.aborted ?? false,
+          ...(entry ? { entryId: entry.id } : {}),
           ...(slashCommandTarget
             ? {
                 projectId: slashCommandTarget.projectId,
@@ -6035,59 +6374,75 @@ function ChatInputContent({
             : {}),
           ...(tab ? { chatId: tab.id } : {}),
         });
-
-      const entry = cmd.inventoryEntry;
       if (!entry || !slashCommandTarget || !tab || !inventoryProviderType) {
-        showEnableError();
-        return;
+        // Nothing to enable here, so the menu offers no Try again.
+        reportEnableFailure('unavailable');
+        return Promise.resolve('unavailable');
       }
+      const target = slashCommandTarget;
+      const providerType = inventoryProviderType;
 
-      // The chat's checkout: Claude Code plugins installed for one
-      // repository are inherited (and numbered) only there.
-      const projectPath = await window.api
-        .getWorktreePath({
-          projectId: slashCommandTarget.projectId,
-          worktreeId: slashCommandTarget.worktreeId,
-          repoId: selectedRepoId,
-        })
-        .catch((): string => '');
-      await runInventorySelection({
-        entry,
-        providerType: inventoryProviderType,
-        currentSelections: effectivePluginSelections ?? createEmptySelections(),
-        ...(tabDisabledGlobalPluginSelections
-          ? { chatTombstones: tabDisabledGlobalPluginSelections }
-          : {}),
-        ...(projectPath ? { projectPath } : {}),
-        deps: {
-          prepareCodexCompatibilityPlugin: (marketplaceId, pluginName) =>
-            window.plugins.prepareCodexCompatibilityPlugin(
-              marketplaceId,
-              pluginName,
-            ),
-          resolveSelection: (request) =>
-            window.invocableInventory.resolveSelection(request),
-          applySelections: (next) =>
-            setPluginSelections(
-              stripAgentOnlyChatPluginSelections(
-                next,
-                agentPluginSelections,
-                pluginSelections,
+      let inserted = false;
+      const enableAndInsert = async (): Promise<ComposerMenuCommandOutcome> => {
+        // The chat's checkout: Claude Code plugins installed for one
+        // repository are inherited (and numbered) only there.
+        const projectPath = await window.api
+          .getWorktreePath({
+            projectId: target.projectId,
+            worktreeId: target.worktreeId,
+            repoId: selectedRepoId,
+          })
+          .catch((): string => '');
+        const outcome = await runInventorySelection({
+          entry,
+          providerType,
+          currentSelections:
+            effectivePluginSelections ?? createEmptySelections(),
+          ...(tabDisabledGlobalPluginSelections
+            ? { chatTombstones: tabDisabledGlobalPluginSelections }
+            : {}),
+          ...(projectPath ? { projectPath } : {}),
+          deps: {
+            prepareCodexCompatibilityPlugin: (marketplaceId, pluginName) =>
+              window.plugins.prepareCodexCompatibilityPlugin(
+                marketplaceId,
+                pluginName,
               ),
-              targetOverride,
-            ),
-          insertResolvedText: (insertText) => {
-            // Reuse the trigger-range replacement with the resolved value.
-            insertSelection({ ...cmd, insertText });
-            syncEditorValue();
-            focusEditor(editor);
+            resolveSelection: (request) =>
+              window.invocableInventory.resolveSelection(request),
+            applySelections: (next) =>
+              setPluginSelections(
+                stripAgentOnlyChatPluginSelections(
+                  next,
+                  agentPluginSelections,
+                  pluginSelections,
+                ),
+                targetOverride,
+              ),
+            insertResolvedText: (insertText) => {
+              // The person dismissed the menu: the enable stands, but the
+              // command is not inserted.
+              if (pick?.signal.aborted) return;
+              // Reuse the trigger-range replacement with the resolved value.
+              if (!insertSelection({ ...cmd, insertText })) return;
+              inserted = true;
+              syncEditorValue();
+              focusEditor(editor);
+            },
+            // The outcome below reports a failure.
+            onError: () => undefined,
+            refreshInventory: () => {
+              void invocableInventory.refresh();
+            },
           },
-          onError: showEnableError,
-          refreshInventory: () => {
-            void invocableInventory.refresh();
-          },
-        },
-      });
+        });
+        if (outcome !== 'inserted') {
+          reportEnableFailure(outcome);
+          return 'failed';
+        }
+        return inserted ? 'done' : 'skipped';
+      };
+      return enableAndInsert();
     },
     [
       readOnly,
@@ -6121,9 +6476,11 @@ function ChatInputContent({
   );
 
   const handleCommandSelect = useCallback(
-    (cmd: SlashCommandData) => {
-      void handleSelectCommand(cmd);
-    },
+    (
+      cmd: SlashCommandData,
+      pick: ComposerMenuPick,
+    ): Promise<ComposerMenuCommandOutcome> | undefined =>
+      handleSelectCommand(cmd, pick),
     [handleSelectCommand],
   );
 
@@ -6137,11 +6494,62 @@ function ChatInputContent({
     [confirmComposerTurn, verifyStreamingTabs],
   );
 
+  // Offered only where the default placeholder would show, so it never hides
+  // a question, plan, approval or other prompt the composer is waiting on.
+  const promptSuggestion = offeredPromptSuggestion({
+    suggestion: promptSuggestionEntry?.suggestion,
+    dismissed: promptSuggestionEntry?.dismissed ?? false,
+    latestUserMessageId,
+    // Untrimmed: Slate hides the placeholder for any text, whitespace too, and
+    // Tab must not insert a suggestion the person can no longer see.
+    draftEmpty:
+      serializedDraft.text.length === 0 &&
+      serializedDraft.fileReferences.length === 0 &&
+      pendingAttachments.length === 0,
+    showsDefaultPlaceholder:
+      !voiceRecording &&
+      voice.state === 'idle' &&
+      !questionPromptOpen &&
+      !planCardOpen &&
+      !isEditingQueued &&
+      !isTerminalMode &&
+      !pendingExit &&
+      !approvalPending &&
+      !isStreaming &&
+      !isAccountHarness &&
+      !readOnly &&
+      !sandbox,
+  });
+
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     // The `!` typeahead runs before send: Enter/Tab pick a script while it is
     // open, and an unmatched draft still sends raw.
     if (scriptTypeahead.handleKeyDown(e)) return;
     if (composerMenu.handleKeyDown(e)) return;
+    // Menus had the key first, so their Tab and Escape still work. With no
+    // suggestion offered, Tab keeps moving focus.
+    const suggestionAction = promptSuggestionKeyAction(
+      {
+        key: e.key,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        isComposing: e.nativeEvent.isComposing,
+      },
+      promptSuggestion !== null && promptSuggestionTarget !== null,
+    );
+    if (suggestionAction === 'accept' && promptSuggestion !== null) {
+      e.preventDefault();
+      dictationInputModeRef.current = 'typed';
+      Transforms.insertText(editor, promptSuggestion);
+      return;
+    }
+    if (suggestionAction === 'dismiss' && promptSuggestionTarget !== null) {
+      e.preventDefault();
+      usePromptSuggestionStore.getState().dismiss(promptSuggestionTarget);
+      return;
+    }
     // Cancel an active dictation session when the user hits Escape, and keep
     // any keystroke from staying marked as voice input.
     if (e.key === 'Escape' && voice.state !== 'idle') {
@@ -6403,7 +6811,10 @@ function ChatInputContent({
                         ? 'Type to queue a follow-up message…'
                         : isAccountHarness
                           ? 'Send a message'
-                          : chatPlaceholder
+                          : (promptSuggestion ?? chatPlaceholder)
+      }
+      placeholderSuffix={
+        promptSuggestion !== null ? <PromptSuggestionKeyHint /> : undefined
       }
     />
   );
@@ -6456,8 +6867,14 @@ function ChatInputContent({
           />
           <ComposerPlusMenu
             key={modelChangeKey}
-            onPickAttachment={(): void => void handleImportAttachments()}
-            onPickLinear={() => setLinearPickerOpen(true)}
+            {...(canAttachFiles
+              ? {
+                  onPickAttachment: (): void => void handleImportAttachments(),
+                }
+              : {})}
+            {...(scopeCapabilities.chatInterfaceModes === true
+              ? { onPickLinear: (): void => setLinearPickerOpen(true) }
+              : {})}
             disabled={isTerminalMode || sandbox}
             dataTestIdPrefix="chat-input"
             // The pickers' spacing: clear of the composer, like the
@@ -6465,25 +6882,46 @@ function ChatInputContent({
             gap={FLOATING_PICKER_GAP}
             triggerRef={plusTriggerRef}
             capsuleTrigger
+            // A chat scope that serves no attachments, plugins, files or
+            // composer actions shows no `+`; each key a backend turns on
+            // brings its row, and the `+`, back.
+            hideTriggerWhenEmpty
             controller={composerMenu}
-            searchFiles={searchComposerFiles}
-            onSelectFile={(file) =>
-              composerMenu.insertFile(file, fileRepos.length)
-            }
+            {...(fileTypeaheadEnabled
+              ? {
+                  searchFiles: searchComposerFiles,
+                  onSelectFile: (
+                    file: Parameters<typeof composerMenu.insertFile>[0],
+                  ): void => composerMenu.insertFile(file, fileRepos.length),
+                }
+              : {})}
+            multiRepo={fileRepos.length > 1}
             commands={composerCommands}
             pluginSelections={effectivePluginSelections}
             providerScope={effectiveProviderType ?? 'mixed'}
-            onSelectPlugin={(ref, { label, enabled }) => {
-              // The mention pill lands regardless of enablement state so
-              // an already-enabled plugin can still be called out inline.
-              composerMenu.insertPlugin({ ...ref, label });
-              syncEditorValue();
-              if (!enabled) void enablePluginsForChat([ref]);
-            }}
+            // The inline pick lists this computer's marketplaces and writes
+            // the local core's selection: a cloud chat picks from its catalog.
+            {...(canChangePluginSelections && webCoreProjectId === undefined
+              ? {
+                  onSelectPlugin: (
+                    ref: { marketplaceId: string; pluginName: string },
+                    { label, enabled }: { label: string; enabled: boolean },
+                  ): void => {
+                    // The mention pill lands regardless of enablement state
+                    // so an already-enabled plugin can still be called out
+                    // inline.
+                    composerMenu.insertPlugin({ ...ref, label });
+                    syncEditorValue();
+                    if (!enabled) void enablePluginsForChat([ref]);
+                  },
+                }
+              : {})}
             onSelectCommand={handleCommandSelect}
             isRefreshing={isRefreshing || fileIndexLoading}
             additionalItems={buildChatComposerPlusItems({
-              onOpenPlugins: (): void => void openPluginsModal(),
+              ...(canChangePluginSelections
+                ? { onOpenPlugins: (): void => void openPluginsModal() }
+                : {}),
               hasPluginSelections,
               ...(canUsePlanMode
                 ? {
@@ -6630,14 +7068,17 @@ function ChatInputContent({
               disabled={
                 !serializedDraft.text.trim() ||
                 isResourceGuardBlocked ||
-                tab?.firstSendPreparing === true
+                tab?.firstSendPreparing === true ||
+                cloudUploading
               }
               pending={pendingModelChange !== undefined}
               {...(isResourceGuardBlocked
                 ? {
                     blockedReason: resourceGuardMessage ?? 'Send message',
                   }
-                : {})}
+                : cloudUploading
+                  ? { blockedReason: 'Attachments are uploading' }
+                  : {})}
             />
           </>
         )
@@ -6684,6 +7125,44 @@ function ChatInputContent({
           corners, and collapses when none render. Every notice is the shared
           `Notice` primitive. */}
       <ComposerNoticeStack data-testid="chat-input-notices">
+        {/* A cloud task the web core refused to create says why first, with
+            Try again (CAN-6098). */}
+        {webCoreProjectId !== undefined && composerWorktreeId !== undefined ? (
+          <CloudTaskCreationNotice
+            projectId={webCoreProjectId}
+            worktreeId={composerWorktreeId}
+          />
+        ) : null}
+        {/* A cloud send the web core refused: the draft is back above, and
+            this says why (CAN-6364), as the cloud chat page does. */}
+        {!isEditingQueued &&
+        sendRefusalTarget !== null &&
+        sendRefusal !== undefined ? (
+          <Notice
+            intent="destructive"
+            data-testid="chat-input-send-refused"
+            onDismiss={(): void => dismissSendRefusal(sendRefusalTarget)}
+            dismissLabel="Dismiss"
+          >
+            {sendRefusal
+              ? `Your message wasn't sent: ${sendRefusal}`
+              : "Your message wasn't sent."}
+          </Notice>
+        ) : null}
+        {!isEditingQueued && attachmentProblems.length > 0 ? (
+          <Notice
+            intent="attention"
+            data-testid="chat-input-attachment-problems"
+            onDismiss={(): void => setAttachmentProblems([])}
+            dismissLabel="Dismiss"
+          >
+            {attachmentProblems.map((problem) => (
+              <span key={problem} className="block">
+                {problem}
+              </span>
+            ))}
+          </Notice>
+        ) : null}
         {/* A Home first send whose model was refused (CAN-5021). First in
             the stack: it says why the prompt above never sent. Only the
             chat the user is looking at takes focus. */}
@@ -6793,7 +7272,7 @@ function ChatInputContent({
                 void resumeInterruptedTurn(
                   sessionChatTarget,
                   interruptedTurnResumeUserMessageId,
-                  ipcCanopyClient.capabilities,
+                  scopeCapabilities,
                 );
               }}
               onDismiss={(): void => {
@@ -6951,7 +7430,9 @@ function ChatInputContent({
             <ModelGatewayKeyBanner
               selectedGatewayOrganizationId={selectedGatewayOrganizationId}
             />
-            <ApprovalsUpgradeNotice />
+            {scopeCapabilities.chatApprovalMode === true && (
+              <ApprovalsUpgradeNotice />
+            )}
             {/* An org whose trial ended stops funding its members the moment it
                 lapses (CAN-2311). Names the specific org, and stays silent when
                 a healthy org or a personal balance still covers the turn.
@@ -7295,63 +7776,92 @@ function ChatInputContent({
                 className="flex min-w-0 items-center"
                 aria-busy={pendingModelChange !== undefined}
               >
-                <ModelPicker
-                  browserLayout="harnesses"
-                  currentModel={
-                    pendingModelChange?.model ?? model ?? fallbackModel
-                  }
-                  executionHarness={draftExecutionHarness}
-                  onModelChange={handleModelChange}
-                  {...(inheritedDefaultModel ? { inheritedDefaultModel } : {})}
-                  allowCursor={allowCursor}
-                  allowCopilot={allowCursor}
-                  allowOpenCode={allowCursor}
-                  {...(tab?.id ? { recoveryChatKey: tab.id } : {})}
-                  onRecoveryCommit={handleRecoveryCommit}
-                  {...(creditsScope ? { aiCreditsScope: creditsScope } : {})}
-                  lockedProvider={lockedProvider}
-                  lockedHarness={lockedHarness}
-                  executionHarnessExplicitlyChosen={
-                    tab?.executionHarnessExplicitlyChosen
-                  }
-                  lockedProviderBehavior={
-                    continueEligibility?.ok === true ? 'continue' : 'disabled'
-                  }
-                  {...(continueEligibility &&
-                  continueEligibility.ok === false &&
-                  continueEligibility.code !== 'not-continuable'
-                    ? { lockedProviderReason: continueEligibility.reason }
-                    : {})}
-                  providerAvailability={providerAvailability}
-                  {...(autoPickerOption ? { auto: autoPickerOption } : {})}
-                  {...(canStartNewChatWithModel
-                    ? { onStartNewChat: handleStartNewChatWithModel }
-                    : {})}
-                  {...(billingControl ? { billing: billingControl } : {})}
-                  capsule
-                  // The menu sits over the row, left-aligned to the box.
-                  allowTriggerShrink
-                  foldTriggerIconWhenTight
-                  foldTriggerIconOnTruncate
-                  hideTriggerChevron
-                  menuAlignRef={dropContainerRef}
-                  menuAlignEdge="left"
-                  // The composer already makes the chip's job plain.
-                  triggerTooltip={null}
-                  disabled={isTerminalMode || tab?.firstSendPreparing === true}
-                  openSignal={modelPickerOpenSignal}
-                  onRestoreFocus={(): void => {
-                    requestAnimationFrame(() => focusEditor(editor));
-                  }}
-                />
+                {webCoreModels !== undefined ? (
+                  // A cloud chat lists its web core catalog in the shared
+                  // picker the web's cloud chats use (CAN-6175 R5).
+                  <PortalModelPicker
+                    statusRow
+                    catalog={webCoreModels}
+                    {...(model === undefined ? {} : { currentModel: model })}
+                    {...(webCoreLabel === undefined
+                      ? {}
+                      : { currentModelLabel: webCoreLabel })}
+                    menuAlignRef={dropContainerRef}
+                    triggerTooltip={null}
+                    disabled={
+                      isTerminalMode || tab?.firstSendPreparing === true
+                    }
+                    openSignal={modelPickerOpenSignal}
+                    onSelect={(modelId): void => {
+                      void setModelAndWait(modelId, targetOverride);
+                    }}
+                  />
+                ) : (
+                  <ModelPicker
+                    browserLayout="harnesses"
+                    currentModel={
+                      pendingModelChange?.model ?? model ?? fallbackModel
+                    }
+                    executionHarness={draftExecutionHarness}
+                    onModelChange={handleModelChange}
+                    {...(inheritedDefaultModel
+                      ? { inheritedDefaultModel }
+                      : {})}
+                    allowCursor={allowCursor}
+                    allowCopilot={allowCursor}
+                    allowOpenCode={allowCursor}
+                    {...(tab?.id ? { recoveryChatKey: tab.id } : {})}
+                    onRecoveryCommit={handleRecoveryCommit}
+                    {...(creditsScope ? { aiCreditsScope: creditsScope } : {})}
+                    lockedProvider={lockedProvider}
+                    lockedHarness={lockedHarness}
+                    executionHarnessExplicitlyChosen={
+                      tab?.executionHarnessExplicitlyChosen
+                    }
+                    lockedProviderBehavior={
+                      continueEligibility?.ok === true ? 'continue' : 'disabled'
+                    }
+                    {...(continueEligibility &&
+                    continueEligibility.ok === false &&
+                    continueEligibility.code !== 'not-continuable'
+                      ? { lockedProviderReason: continueEligibility.reason }
+                      : {})}
+                    providerAvailability={providerAvailability}
+                    {...(autoPickerOption ? { auto: autoPickerOption } : {})}
+                    {...(canStartNewChatWithModel
+                      ? { onStartNewChat: handleStartNewChatWithModel }
+                      : {})}
+                    {...(billingControl ? { billing: billingControl } : {})}
+                    capsule
+                    // The menu sits over the row, left-aligned to the box.
+                    allowTriggerShrink
+                    foldTriggerIconWhenTight
+                    foldTriggerIconOnTruncate
+                    hideTriggerChevron
+                    menuAlignRef={dropContainerRef}
+                    menuAlignEdge="left"
+                    // The composer already makes the chip's job plain.
+                    triggerTooltip={null}
+                    disabled={
+                      isTerminalMode || tab?.firstSendPreparing === true
+                    }
+                    openSignal={modelPickerOpenSignal}
+                    onRestoreFocus={(): void => {
+                      requestAnimationFrame(() => focusEditor(editor));
+                    }}
+                  />
+                )}
               </div>
               {/* Tri-state contract: a model that declares an explicit empty
               supported set does not think at all, so the control is hidden
               entirely (matching the web composer's gating). An absent
               declaration already resolved to the provider fallback above. */}
-              {supportedThinkingLevels.length > 0 ? (
+              {effortVisible || cloudSpeedOnly ? (
                 <ThinkingLevelPanelPicker
                   testId="chat-input-thinking-level-button"
+                  // A cloud model may run fast mode without effort levels,
+                  // as on the web (CAN-6322).
+                  speedOnly={!effortVisible}
                   // Every level the model declares, None and Low included;
                   // a stored level it lacks shows as its nearest lower one.
                   value={
@@ -7386,6 +7896,13 @@ function ChatInputContent({
                     : {})}
                 />
               ) : null}
+              {pendingTurnSettingsState ? (
+                // The row's own gap is zero (each control pads itself), so
+                // the cue carries its lead-in on a wrapper, never the badge.
+                <span className="flex shrink-0 pl-2">
+                  <PendingTurnSettingsHint pending={pendingTurnSettingsState} />
+                </span>
+              ) : null}
               {/* Multi-repo projects: the folder the chat runs in, beside
                   effort. Its name truncates with the model's as the row
                   narrows. */}
@@ -7404,66 +7921,72 @@ function ChatInputContent({
           end={
             <ComposerAccessUsage
               access={
-                <ApprovalModePicker
-                  mode={approvalMode}
-                  onChange={handleApprovalModeChange}
-                  disabled={isTerminalMode}
-                  hideTriggerIcon
-                  hideTriggerChevron
-                  menuAlignRef={dropContainerRef}
-                  menuAlignEdge="right"
-                />
+                scopeCapabilities.chatApprovalMode === true ? (
+                  <ApprovalModePicker
+                    mode={approvalMode}
+                    onChange={handleApprovalModeChange}
+                    disabled={isTerminalMode}
+                    hideTriggerIcon
+                    hideTriggerChevron
+                    menuAlignRef={dropContainerRef}
+                    menuAlignEdge="right"
+                  />
+                ) : null
               }
               usage={
-                <UsageIndicator
-                  usage={tabUsage}
-                  isCodex={isCodex}
-                  isCursor={effectiveProviderType === 'cursor'}
-                  executionHarness={
-                    lockedHarness ??
-                    draftExecutionHarness ??
-                    (effectiveProviderType === 'opencode'
-                      ? 'opencode'
-                      : undefined)
-                  }
-                  model={model}
-                  {...(effectiveProviderType
-                    ? { providerType: effectiveProviderType }
-                    : {})}
-                  aiCreditsRouted={aiCreditsRouted}
-                  aiCreditsBilled={billingResolution.framework === 'ai-credits'}
-                  subscriptionBillingOverride={
-                    tab?.subscriptionBillingOverride === true
-                  }
-                  accountProxyRouted={tab?.accountProxyRouted}
-                  alignRef={dropContainerRef}
-                  {...(tab
-                    ? {
-                        creditTarget: {
-                          ...(composerProjectId !== undefined
-                            ? { projectId: composerProjectId }
-                            : {}),
-                          ...(composerWorktreeId !== undefined
-                            ? { worktreeId: composerWorktreeId }
-                            : {}),
-                          chatId: tab.id,
-                        },
-                      }
-                    : {})}
-                  turnActive={isStreaming}
-                  {...(tab?.modelConfig?.contextWindow !== undefined
-                    ? { contextWindowSetting: tab.modelConfig.contextWindow }
-                    : {})}
-                  {...(composerProjectId && composerWorktreeId && tab
-                    ? {
-                        contextTarget: {
-                          projectId: composerProjectId,
-                          worktreeId: composerWorktreeId,
-                          chatId: tab.id,
-                        },
-                      }
-                    : {})}
-                />
+                scopeCapabilities.chatContextUsage === true ? (
+                  <UsageIndicator
+                    usage={tabUsage}
+                    isCodex={isCodex}
+                    isCursor={effectiveProviderType === 'cursor'}
+                    executionHarness={
+                      lockedHarness ??
+                      draftExecutionHarness ??
+                      (effectiveProviderType === 'opencode'
+                        ? 'opencode'
+                        : undefined)
+                    }
+                    model={model}
+                    {...(effectiveProviderType
+                      ? { providerType: effectiveProviderType }
+                      : {})}
+                    aiCreditsRouted={aiCreditsRouted}
+                    aiCreditsBilled={
+                      billingResolution.framework === 'ai-credits'
+                    }
+                    subscriptionBillingOverride={
+                      tab?.subscriptionBillingOverride === true
+                    }
+                    accountProxyRouted={tab?.accountProxyRouted}
+                    alignRef={dropContainerRef}
+                    {...(tab
+                      ? {
+                          creditTarget: {
+                            ...(composerProjectId !== undefined
+                              ? { projectId: composerProjectId }
+                              : {}),
+                            ...(composerWorktreeId !== undefined
+                              ? { worktreeId: composerWorktreeId }
+                              : {}),
+                            chatId: tab.id,
+                          },
+                        }
+                      : {})}
+                    turnActive={isStreaming}
+                    {...(tab?.modelConfig?.contextWindow !== undefined
+                      ? { contextWindowSetting: tab.modelConfig.contextWindow }
+                      : {})}
+                    {...(composerProjectId && composerWorktreeId && tab
+                      ? {
+                          contextTarget: {
+                            projectId: composerProjectId,
+                            worktreeId: composerWorktreeId,
+                            chatId: tab.id,
+                          },
+                        }
+                      : {})}
+                  />
+                ) : null
               }
             />
           }
@@ -7479,7 +8002,15 @@ function ChatInputContent({
         />
       )}
 
-      {pluginsModalOpen && (
+      {pluginsModalOpen && cloudPluginsTarget !== null && (
+        <CloudChatPluginsPicker
+          target={cloudPluginsTarget}
+          onClose={(): void => setPluginsModalOpen(false)}
+          returnFocusRef={plusTriggerRef}
+        />
+      )}
+
+      {pluginsModalOpen && webCoreProjectId === undefined && (
         <ChatPluginsModal
           initial={
             pluginsModalInheritedLayers

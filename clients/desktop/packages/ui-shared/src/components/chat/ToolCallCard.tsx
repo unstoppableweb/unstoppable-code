@@ -2,7 +2,7 @@ import { Stack } from '../Stack';
 import { TURN_OUTCOME_UNKNOWN_IMPACT } from './turn-outcome-label';
 import { useState, type JSX, type ReactNode } from 'react';
 import { z } from 'zod';
-import { MODEL_GATEWAY_MAX_MODELS } from '@canopy/protocol/canopy-server';
+import { MODEL_GATEWAY_MAX_DISCOVERED_MODELS } from '@canopy/protocol/canopy-server';
 import {
   readToolInterruption,
   type ToolInterruption,
@@ -22,6 +22,7 @@ import {
 } from './tool-approval-wait';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
 import { StatusLabel } from '../StatusLabel';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   classifyToolDenial,
   stripHookErrorPrefix,
@@ -34,9 +35,11 @@ import {
   type PortalChatToolFamily,
 } from './tool-display-info';
 
-/** Command and output under an opened clean step: quiet, borderless code. */
-const CLEAN_OUTPUT_CLASS =
-  'max-h-75 overflow-auto whitespace-pre-wrap break-words rounded-md bg-fg-primary/[0.04] px-2.5 py-1.5 font-mono text-xs fg-secondary';
+/**
+ * Command and output under an opened step: the well, in the reply's code
+ * block fill and 12px corner, with no border or heading.
+ */
+const CLEAN_OUTPUT_CLASS = `${REPLAY_BLOCK_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-fg-primary/[0.06] px-3 py-2 font-mono text-xs fg-secondary`;
 
 /**
  * Result shape carried by a tool call. Mirrors the desktop `ToolResult` shape
@@ -65,7 +68,7 @@ const gatewayConnectResult = z.object({
   ok: z.literal(true),
   result: z.object({
     status: z.literal('connected'),
-    models: z.array(z.unknown()).max(MODEL_GATEWAY_MAX_MODELS),
+    models: z.array(z.unknown()).max(MODEL_GATEWAY_MAX_DISCOVERED_MODELS),
   }),
 });
 
@@ -172,7 +175,7 @@ export function ToolCallResultSection({
       </div>
       {children ?? (
         <pre
-          className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
+          className={`${REPLAY_BLOCK_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
             result.kind === 'error' ? 'fg-destructive/80' : 'fg-secondary'
           }`}
         >
@@ -402,6 +405,8 @@ export function ToolCallCard({
   // Clean chat look: the shared step row, with readable details when opened.
   const clean = useCleanChatLook();
   if (clean) {
+    // The row can cut even a short command (a long description, a narrow
+    // column), so the opened body always keeps it whole.
     const shownInput =
       input != null ? readableToolInput(toolName, input) : undefined;
     return (
@@ -421,21 +426,36 @@ export function ToolCallCard({
             prioritizeDetail
             icon={statusIcon}
             step
-            label={label ?? toolName}
+            label={
+              <span className={REPLAY_BLOCK_CLASS}>{label ?? toolName}</span>
+            }
             detail={
-              denial != null ? (
-                <span data-testid="tool-call-blocked">
-                  {toolDenialDetail(denial)}
-                </span>
-              ) : isWaiting ? (
+              isWaiting ? (
                 // A label without a verb ("Fetch", an app tool) still says
                 // why it is not running.
                 <span data-testid="tool-call-waiting">
                   {TOOL_APPROVAL_WAITING_LABEL}
                 </span>
-              ) : (
-                (interruptionDetail ?? gatewayDetail)
-              )
+              ) : denial == null && interruption == null ? (
+                gatewayDetail
+              ) : undefined
+            }
+            // Blocked and interrupted say so at the row's end, in the
+            // detail's grey; Failed stays after the words.
+            className="w-full"
+            trailing={
+              denial != null ? (
+                <span
+                  className="ml-auto shrink-0 pl-2 fg-tertiary"
+                  data-testid="tool-call-blocked"
+                >
+                  {toolDenialDetail(denial)}
+                </span>
+              ) : interruptionDetail != null ? (
+                <span className="ml-auto shrink-0 pl-2 fg-tertiary">
+                  {interruptionDetail}
+                </span>
+              ) : undefined
             }
             running={isPending}
             failed={isError}
@@ -514,7 +534,9 @@ export function ToolCallCard({
             {isOpen ? <MinusIcon /> : <PlusIcon />}
           </span>
         </span>
-        <span className="min-w-0 truncate">{label ?? toolName}</span>
+        <span className={`${REPLAY_BLOCK_CLASS} min-w-0 truncate`}>
+          {label ?? toolName}
+        </span>
         {gatewayDetail ? (
           <span className="fg-tertiary">{gatewayDetail}</span>
         ) : null}
@@ -560,7 +582,9 @@ export function ToolCallCard({
             {expandedAction ?? expandedSlot ?? (
               <>
                 {input != null && input.length > 0 && (
-                  <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">
+                  <pre
+                    className={`${REPLAY_BLOCK_CLASS} max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary`}
+                  >
                     {input}
                   </pre>
                 )}

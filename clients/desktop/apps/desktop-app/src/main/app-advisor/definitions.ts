@@ -1,4 +1,9 @@
 import {
+  CHAT_HISTORY_ACTION_TYPES,
+  chatHistoryActionSchema,
+  type ChatHistoryAction,
+} from '@canopy/agent-actions/families/chat-history';
+import {
   scriptPreferencesActionSchema,
   scriptPreferencesDispatchJsonSchema,
 } from '@canopy/agent-actions/families/settings/script-preferences';
@@ -37,6 +42,7 @@ import {
   projectBrowserPointerViewportAction,
 } from '@canopy/agent-actions/families/browser/command';
 import { editorSetupActionSchema } from '@canopy/agent-actions/families/editor-setup/actions';
+import { cloudChatActionSchema } from '@canopy/agent-actions/families/cloud-chats/actions';
 import {
   appAdvisorPipelineRunActionSchema,
   type AppAdvisorPipelineRunAction,
@@ -115,7 +121,7 @@ import type {
   AutomationCreateRequest,
   AutomationUpdateRequest,
 } from '@canopy/desktop-shared/types';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
@@ -325,11 +331,15 @@ export const APP_ADVISOR_UPDATE_LEDGER_ENTRY_DESCRIPTION =
 
 export const getCurrentUiStateSchema = z.object({});
 
-export type AppAdvisorDispatchAction = AppAdvisorAction | TranscriptReadAction;
+export type AppAdvisorDispatchAction =
+  | AppAdvisorAction
+  | TranscriptReadAction
+  | ChatHistoryAction;
 
 const appAdvisorActionTypes = [
   ...APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
   ...TRANSCRIPT_READ_ACTION_TYPES,
+  ...CHAT_HISTORY_ACTION_TYPES,
 ];
 const appAdvisorActionTypeSchema = z.enum(appAdvisorActionTypes);
 const visibleAppAdvisorActionTypes = APP_ADVISOR_ACTION_CATALOG.filter(
@@ -362,6 +372,7 @@ export const searchActionsToolShape = {
     .union([
       z.enum(visibleAppAdvisorActionTypes),
       z.enum(TRANSCRIPT_READ_ACTION_TYPES),
+      z.enum(CHAT_HISTORY_ACTION_TYPES),
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
@@ -840,6 +851,40 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     type: z.literal('collections.delete'),
     id: z.string().min(1),
   }),
+  // CAN-6003 part B: reachable for the first time, strictly (S6).
+  z.strictObject({
+    type: z.literal('collections.share'),
+    id: z.string().min(1),
+    shareScope: z.enum(['team', 'organization']),
+    teamId: z.string().min(1).optional(),
+    organizationId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Organization id for organization scope; omit to use the organization selected in the sidebar context switcher.',
+      ),
+  }),
+  z.strictObject({
+    type: z.literal('collections.list_shared'),
+    query: z.string().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    cursor: z.string().optional(),
+    createdBy: z.enum(['me', 'anyone']).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('collections.import_shared'),
+    collectionId: z.string().min(1),
+  }),
+  z.strictObject({
+    type: z.literal('collections.update_shared'),
+    collectionId: z.string().min(1),
+    id: z.string().min(1),
+  }),
+  z.strictObject({
+    type: z.literal('collections.delete_shared'),
+    collectionId: z.string().min(1),
+  }),
   z.strictObject({
     type: z.literal('plugins.list_marketplaces'),
     query: z.string().optional(),
@@ -1048,8 +1093,15 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     mode: z.enum(NAVIGATION_MODES),
   }),
   z.object({ type: z.literal('settings.open_memory_folder') }),
-  z.object({ type: z.literal('memory.import_external') }),
-  z.object({ type: z.literal('memory.consolidate_now') }),
+  // The project whose memory joins the user's; never the selected one.
+  z.object({
+    type: z.literal('memory.import_external'),
+    workspaceId: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal('memory.consolidate_now'),
+    workspaceId: z.string().min(1).optional(),
+  }),
   // The renderer validator requires workspaceId exactly when scope is
   // workspace; the discriminated union allows one member per type.
   z.object({
@@ -1071,6 +1123,7 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('navigation.open_import_projects') }),
   editorSetupActionSchema,
+  ...cloudChatActionSchema.options,
   ...scriptPreferencesActionSchema.options,
   z.object({
     type: z.literal('navigation.open_command_palette'),
@@ -2287,6 +2340,12 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
       ),
   }),
   z.object({
+    type: z.literal('plan.unshare'),
+    projectId: z.string(),
+    worktreeId: z.string(),
+    planId: z.string(),
+  }),
+  z.object({
     type: z.literal('runs.share'),
     projectId: z.string(),
     worktreeId: z.string(),
@@ -2383,6 +2442,7 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     pipelineId: z.string().optional(),
     status: pipelineExecutionStatusSchema.optional(),
     limit: z.number().int().min(1).optional(),
+    runOn: z.enum(['local', 'cloud']).optional(),
   }),
   z.object({
     type: z.literal('pipeline.execution_get'),
@@ -2799,6 +2859,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
 > = z.union([
   appAdvisorActionSchema,
   transcriptReadActionSchema,
+  chatHistoryActionSchema,
   installedItemActionSchema,
   experimentActionSchema,
   settingsActionSchema,
@@ -2875,6 +2936,7 @@ export const searchActionsJsonSchema: JsonValue = {
       enum: [
         ...visibleAppAdvisorActionTypes,
         ...TRANSCRIPT_READ_ACTION_TYPES,
+        ...CHAT_HISTORY_ACTION_TYPES,
         ...INSTALLED_ITEM_ACTION_TYPES,
         ...EXPERIMENT_ACTION_TYPES,
         ...SETTINGS_ACTION_TYPES,

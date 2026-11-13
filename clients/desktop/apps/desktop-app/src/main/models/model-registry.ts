@@ -7,6 +7,7 @@ import {
   getCursorModelEntries,
   getCopilotModelEntries,
   getOpenCodeModelEntries,
+  hasDiscoveredAccountModelCatalog,
   initCursorModels,
   CODEX_MODELS,
   buildModelHarnessAssignmentSnapshot,
@@ -291,9 +292,15 @@ function buildSnapshotFromOllamaModels(
   const aiGatewayCatalogStatus = getAiGatewayCatalogStatus();
 
   return {
-    cursor: getCursorModelEntries(),
-    copilot: getCopilotModelEntries(),
-    opencode: getOpenCodeModelEntries(),
+    ...(hasDiscoveredAccountModelCatalog('cursor') && {
+      cursor: getCursorModelEntries(),
+    }),
+    ...(hasDiscoveredAccountModelCatalog('copilot') && {
+      copilot: getCopilotModelEntries(),
+    }),
+    ...(hasDiscoveredAccountModelCatalog('opencode') && {
+      opencode: getOpenCodeModelEntries(),
+    }),
     claude: claudeEntries,
     codex: codexEntries,
     ollama: ollamaModels,

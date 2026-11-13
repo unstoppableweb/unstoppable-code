@@ -18,7 +18,7 @@ import {
   redactNormalizedText,
   resolvePrompt,
   serializeTranscript,
-} from '../agent-prompt/logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import { brandEnvName, getBrandEnv } from '@canopy/execution-engine/brand/env';
 
 interface PromptDescriptor {

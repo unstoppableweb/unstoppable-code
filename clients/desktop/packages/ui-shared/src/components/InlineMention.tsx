@@ -52,13 +52,13 @@ const CHIP_SHAPE_CLASS =
  * A chip that opens what it names: accent ink on the accent tint. Links,
  * pull requests, issues, and files in prose share it.
  */
-export const INLINE_CHIP_CLASS = `${CHIP_SHAPE_CLASS} focus-ring cursor-pointer bg-accent-subtle fg-accent transition-colors hover:bg-accent-subtle/80`;
+export const INLINE_CHIP_CLASS = `${CHIP_SHAPE_CLASS} focus-ring cursor-pointer bg-accent-subtle fg-accent-strong transition-colors hover:bg-accent-subtle/80`;
 
 /**
  * A mention token in the composer: the accent chip's look without its
  * pointer and hover, since the editor owns clicks and selection there.
  */
-export const INLINE_TOKEN_CHIP_CLASS = `${CHIP_SHAPE_CLASS} bg-accent-subtle fg-accent`;
+export const INLINE_TOKEN_CHIP_CLASS = `${CHIP_SHAPE_CLASS} bg-accent-subtle fg-accent-strong`;
 
 /** A chip that names something without opening it: neutral fill. */
 export const INLINE_STATIC_CHIP_CLASS = `${CHIP_SHAPE_CLASS} bg-muted fg-primary`;

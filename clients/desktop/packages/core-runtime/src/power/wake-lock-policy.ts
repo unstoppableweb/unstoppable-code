@@ -4,8 +4,15 @@ import type {
   PlatformPowerServices,
 } from '../platform/platform-services';
 
-/** Work that keeps the computer awake while it runs. */
-export type WakeLockHolderKind = 'chat' | 'delegation' | 'pipeline';
+/**
+ * Work that keeps the computer awake while it runs. `remote-session`: this
+ * computer is hosting a Remote Control session for another device.
+ */
+export type WakeLockHolderKind =
+  | 'chat'
+  | 'delegation'
+  | 'pipeline'
+  | 'remote-session';
 
 export const WAKE_LOCK_HOLDER_REASONS: Readonly<
   Record<WakeLockHolderKind, string>
@@ -13,6 +20,7 @@ export const WAKE_LOCK_HOLDER_REASONS: Readonly<
   chat: 'agent chat turn',
   delegation: 'delegated task',
   pipeline: 'pipeline execution',
+  'remote-session': 'remote control session',
 };
 
 export function wakeLockHolderKey(

@@ -7,7 +7,6 @@ import {
   type AgentSentReceivingContext,
 } from '@canopy/ui-shared';
 import {
-  ChatMessageAttachments,
   ChatMessageMedia,
   useChatMessageAttachmentSplit,
 } from './ChatMessageAttachments';
@@ -602,16 +601,7 @@ function ChatMessageViewImpl({
                     key={message.chatId}
                     media={attachmentSplit.media}
                     onMediaFailed={attachmentSplit.onMediaFailed}
-                  />
-                ),
-              }
-            : {})}
-          {...(attachmentSplit.files.length > 0
-            ? {
-                footer: (
-                  <ChatMessageAttachments
-                    key={message.chatId}
-                    attachments={attachmentSplit.files}
+                    alone={body.trim() === ''}
                   />
                 ),
               }
@@ -672,7 +662,7 @@ function ChatMessageViewImpl({
             ChatMessageItem. Keep a space before the interpolation: Tailwind
             does not extract a class that touches `${`. */}
         <div
-          className={`min-w-0 max-w-full flex flex-col gap-1 text-s fg-primary has-[[data-testid=chat-visual-block]]:w-full has-[[data-chat-notice]]:w-full ${
+          className={`min-w-0 max-w-full flex flex-col gap-1 text-s fg-primary has-[[data-testid=chat-visual-block]]:w-full has-[[data-chat-notice]]:w-full has-[[data-step-row]]:w-full ${
             hasAgentPart ? 'w-full' : ''
           }`}
         >

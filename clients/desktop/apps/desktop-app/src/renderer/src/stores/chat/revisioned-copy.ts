@@ -13,6 +13,9 @@ export const CHAT_STATE_REFRESH_ERROR_HEADING =
 export const CHAT_STATE_REFRESH_ERROR_HELPER =
   'Your last loaded transcript is still shown. Try again to load the latest state.';
 
+/** Heading when a task's chats never loaded, so there is no transcript to keep. */
+export const CHAT_STATE_LOAD_ERROR_HEADING = 'Couldn’t load this task’s chats';
+
 /** Inline error action label. */
 export const CHAT_STATE_REFRESH_RETRY_LABEL = 'Try again';
 

@@ -1,8 +1,10 @@
-import { app, type WebContents } from 'electron';
+import { app, webContents, type WebContents } from 'electron';
 import { is } from '@electron-toolkit/utils';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { restoreStartupEnvironmentForRelaunch } from '@canopy/execution-engine/pipelines/config-paths';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { UnsavedCloseGuard } from '../lifecycle/unsaved-close-guard';
+import { lookUpSelection } from '../lib/look-up-selection';
 import { registerIpcHandler } from './register';
 
 export interface AppWindowUnsavedCloseOptions {
@@ -70,6 +72,17 @@ export function registerAppWindowHandlers(
 
     return true;
   });
+
+  registerIpcHandler<[], void>(
+    IPC_CHANNELS.appWindowLookUpSelection,
+    (event) => {
+      lookUpSelection(
+        event.sender,
+        webContents.getFocusedWebContents(),
+        hostPlatformOperatingSystem(),
+      );
+    },
+  );
 
   registerIpcHandler<[], void>(IPC_CHANNELS.appStartupUnlocked, () => {
     onStartupUnlocked();

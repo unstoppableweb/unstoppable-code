@@ -9,12 +9,19 @@ import type { CanopyCapabilities, CanopyClient } from '@canopy/app-core';
 import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import { createIpcCanopyClient } from '@canopy/ipc-canopy-client';
+import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
+import {
+  cloudTerminalsEnabled,
+  webCoreScopeCapabilities,
+} from '@/lib/web-core-scope-capabilities';
 import { recordTerminalOutputApplied } from '@/lib/renderer-diagnostics/recorder';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { createDesktopFeedbackReportClient } from './feedback-report-client';
@@ -73,6 +80,7 @@ export function createDesktopCapabilities(
     // Try it setup may open account OAuth in the in-app pane; the host also
     // requires the in-app browser itself, which a remote window lacks.
     embeddedOAuthBrowser: true,
+    inAppBrowserPanel: true,
     repoRulesImport: true,
     scriptActions: true,
     // Tip dismissals live in the desktop preferences (CAN-4904).
@@ -88,6 +96,7 @@ export function createDesktopCapabilities(
     marketplaceSources: true,
     marketplaceSourcePluginInstall: true,
     marketplaceSourceAdd: true,
+    cloudCapabilityLinks: true,
     // Payment forms stay in the browser; hosted settings hand off to it.
     inlineCheckout: false,
     // Hosted account and organization settings run through main's settings
@@ -103,6 +112,24 @@ export function createDesktopCapabilities(
     overviewNotifications: true,
     sidebarActivityMode: true,
     chatDrafts: true,
+    // Local chats run in the local core, which serves each of these. A cloud
+    // chat scope answers them from `webCoreScopeCapabilities` instead.
+    chatApprovalMode: true,
+    chatThinkingLevel: true,
+    chatFastMode: true,
+    chatTabFork: true,
+    chatRootTabLifecycle: true,
+    chatPluginSelections: true,
+    chatQueueEdits: true,
+    chatResetToPoint: true,
+    chatAttachments: true,
+    chatFileMentions: true,
+    chatInterfaceModes: true,
+    chatContextUsage: true,
+    chatSessionTransfer: true,
+    chatTranscriptSearch: true,
+    chatReadState: true,
+    chatArchives: true,
     chatVisuals: true,
     // Main grants sanitized writes only to trusted application documents.
     imageClipboard: true,
@@ -129,6 +156,8 @@ export function createDesktopCapabilities(
     },
     panelLayoutControls: false,
     itemGrouping: false,
+    // `work-entries:delete` archives a Work Entry locked (CAN-5461).
+    standaloneChatArchive: true,
     workspaceRemoval: 'delete',
     // `worktree.create` / `worktree.update` run over IPC. Row identity and
     // activity sections keep the shared defaults, so neither is set.
@@ -165,6 +194,7 @@ export function createDesktopCapabilities(
     lifecycleJournalQuarantine: true,
     // `worktree:discard-describe` / `worktree:discard` (CAN-5334).
     worktreeDiscard: true,
+    worktreeRecovery: true,
     // `workspace:delete-discard-describe` and the supersede field (CAN-5337).
     projectDeletionDiscard: true,
     // Observed cost reads over the `cost:*` IPC.
@@ -299,6 +329,7 @@ export function createDesktopCanopyClient(
       await forkOpenWorktreeState(request);
     },
     resolveLocalFileRoot: (rootId) => localFileRootOverrides.get(rootId),
+    scopedFiles: scopedFileOperationsFor,
     logError: (message, details) => {
       reportRendererConsoleError(message, details);
     },
@@ -318,6 +349,16 @@ export function createDesktopCanopyClient(
     ...(settings ? { settings } : {}),
   });
   return Object.assign(client, {
+    // A cloud chat scope answers from the web core's set (CAN-6175 D4). The
+    // flags are read at call time; `useScopeCapabilities` re-renders on them.
+    capabilitiesFor: (localId: string): CanopyCapabilities =>
+      isWebCoreScope(localId)
+        ? webCoreScopeCapabilities(client.capabilities, {
+            durableTerminals: cloudTerminalsEnabled(
+              useFeatureFlagsStore.getState().isEnabled,
+            ),
+          })
+        : client.capabilities,
     // Older hosts have no bridge; blocked remote lists mean no arms.
     listWorkEntryAutoDelete: () =>
       window.api.workEntryAutoDelete?.list() ?? Promise.resolve([]),
@@ -329,6 +370,7 @@ export function createDesktopCanopyClient(
       window.api.workEntryAutoDelete.resolveBranch(request),
   } satisfies Pick<
     CanopyClient,
+    | 'capabilitiesFor'
     | 'listWorkEntryAutoDelete'
     | 'subscribeWorkEntryAutoDelete'
     | 'disarmWorkEntryAutoDelete'

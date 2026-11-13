@@ -3,6 +3,17 @@ import { join } from 'node:path';
 import { LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN } from '@canopy/protocol/portal/lifecycle-journal';
 import { z } from 'zod';
 
+export const archiveTriggerSchema = z.enum([
+  'manual',
+  'auto-delete',
+  'agent',
+  'project-deletion',
+  'restore',
+  'split',
+  'import',
+  'internal-rollback',
+]);
+export type ArchiveTrigger = z.infer<typeof archiveTriggerSchema>;
 const operationSchema = z.enum([
   'workspace-delete',
   'worktree-archive',
@@ -12,6 +23,7 @@ export const journalSchema = z.object({
   version: z.literal(1),
   operationId: z.string().uuid(),
   operation: operationSchema,
+  trigger: archiveTriggerSchema.optional(),
   /** Set on a child of {@link runStepFreeChildLifecycles}, which may resume it. */
   parentOperation: operationSchema.optional(),
   workspaceId: z.string(),
@@ -23,6 +35,9 @@ export const journalSchema = z.object({
     z.object({
       phase: z.string(),
       state: z.enum(['pending', 'done', 'failed']),
+      /** Privacy-safe failure classification; raw step errors stay local. */
+      code: z.string().optional(),
+      error: z.string().optional(),
       /** Taken by {@link resumableDestructiveStep} while it was step-free. */
       resumable: z.literal(true).optional(),
     }),

@@ -56,6 +56,19 @@ export interface CatalogPluginTarget {
   install: 'managed' | 'external' | 'none';
 }
 
+/** Where a published plugin landed in the account's cloud catalog (CAN-6176). */
+export interface CatalogPublication {
+  publicationId: string;
+  remoteEntryId: string;
+  revision: string;
+}
+
+/** The package a person agreed to upload with a skill (CAN-6176). */
+export interface CatalogPublishPackage {
+  analysisId: string;
+  selectedOptionalResourceIds: readonly string[];
+}
+
 /** What an install did for each requested provider. */
 export interface CatalogPluginInstallOutcome {
   installed: ('claude' | 'codex')[];
@@ -98,6 +111,21 @@ export interface CoreCatalogHost {
     target: CatalogPluginTarget,
     providers: readonly ('claude' | 'codex')[],
   ): Promise<CatalogPluginInstallOutcome>;
+  /**
+   * Adds the plugin's public marketplace to the signed-in account's own
+   * cloud marketplaces and confirms its first sync (CAN-6176). Absent on a
+   * host with no cloud account, which then answers capability_unavailable.
+   */
+  publishPlugin?(target: CatalogPluginTarget): Promise<CatalogPublication>;
+  /**
+   * Uploads a custom skill and its consented package as the signed-in
+   * account's private cloud copy, or updates the copy it is linked to
+   * (CAN-6176). Refuses a package analysed over other content.
+   */
+  publishSkill?(
+    entryId: string,
+    pkg: CatalogPublishPackage,
+  ): Promise<CatalogPublication>;
 }
 
 function defineCause(error: Error, cause: unknown): void {
@@ -140,6 +168,11 @@ export type CatalogHostRefusal =
   | 'plugin-source-rejected'
   | 'plugin-uninstall-pending'
   | 'plugin-install-failed'
+  | 'publish-source-unsupported'
+  | 'publish-remote-unavailable'
+  | 'publish-revision-moved'
+  | 'publish-entry-not-found'
+  | 'publish-package-stale'
   | 'workspace-revision-conflict'
   | 'workspace-not-found'
   | 'workspace-unavailable'

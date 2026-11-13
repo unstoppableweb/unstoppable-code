@@ -9,6 +9,7 @@ import {
   ChatCopyAction,
   ChatDetailProvider,
   ChatLookProvider,
+  ShimmerCopies,
   StepBadgeLine,
   StepRow,
   StepTenseProvider,
@@ -99,6 +100,12 @@ function LookColumn({ look }: { readonly look: ChatLook }): JSX.Element {
           label="Reading file.ts"
           icon={<PlanModeIcon size="sm" />}
         />
+        {/* The bare shimmer: an element of its own with the strong class,
+            and ShimmerCopies drawing its words. */}
+        <span className="min-w-0 truncate canopy-text-shimmer-strong">
+          Waiting for the build to finish
+          <ShimmerCopies>Waiting for the build to finish</ShimmerCopies>
+        </span>
         <TurnTimer
           startedAt={TURN_START}
           finishedAt={TURN_END}
@@ -237,7 +244,7 @@ const RESUME_REASONS: readonly {
 
 function TenseReadout(): JSX.Element {
   const tense = useStepTense();
-  return <Readout>{`useStepTense: ${tense}`}</Readout>;
+  return <Readout>{`useStepTense: ${tense ?? 'none'}`}</Readout>;
 }
 
 function BadgeReadout(): JSX.Element {

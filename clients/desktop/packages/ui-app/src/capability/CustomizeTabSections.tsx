@@ -1,5 +1,4 @@
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import { MARKETPLACE_SHARE_BLOCKED_REASONS } from '@canopy/protocol/sharing';
 import { MCP_MANAGEMENT_REASONS } from '@canopy/ui-shared/lib/mcp-card-display';
 import {
@@ -57,6 +56,7 @@ import {
   isBundledSkill,
   isPluginServerResult,
   installedStatusFilterEmptyText,
+  type InstalledStatusFilterValue,
   mcpEntryPluginLink,
   pipelineFiltersActive,
   removalBusyLabel,
@@ -76,6 +76,7 @@ import {
 import {
   buildCustomizeTabModel,
   customizeTabHasInstalledStatuses,
+  effectiveInstalledStatusFilter,
   extendInstalledStatusSnapshot,
   NO_INSTALLED_STATUS_MEMBERS,
   statusEntryIdOf,
@@ -170,8 +171,11 @@ export interface CustomizeTabSectionsProps {
   /** Plugin shares eligible for Shared by me on the MCP servers tab. */
   readonly mcpSharedEntryIds?: ReadonlySet<string>;
   readonly entryStatus?: PluginsEntryStatusBinding;
-  /** Narrows Installed; ignored on tabs whose rows carry no status. */
-  readonly installedStatusFilter?: InstalledItemStatus;
+  /**
+   * Narrows Installed; ignored on tabs whose rows carry no status, and
+   * `update-available` on tabs that do not offer it.
+   */
+  readonly installedStatusFilter?: InstalledStatusFilterValue;
   readonly installedStatusInventory?: CustomizeInventoryState;
   /**
    * Host-held membership snapshot. Without it the list keeps its own, which
@@ -420,10 +424,11 @@ export function CustomizeTabSections(
     controlledInstalledExpanded === true ||
     (expansion.scope === expansionScope && expansion.expanded);
 
-  const statusFilter =
-    installedStatusFilter !== undefined && customizeTabHasInstalledStatuses(tab)
-      ? installedStatusFilter
-      : undefined;
+  const statusFilter = effectiveInstalledStatusFilter(
+    tab,
+    installedStatusFilter,
+    supportedUpdateKinds,
+  );
   // Applying a status filter expands Installed: a filter that only changed a
   // hidden count would not be discoverable (CAN-4838).
   const [appliedFilter, setAppliedFilter] = useState(statusFilter);
@@ -462,6 +467,7 @@ export function CustomizeTabSections(
         statusFilter,
         entries,
         entryStatus?.states,
+        supportedUpdateKinds,
       )
     : baseMembers;
   const snapshotChanged =
@@ -502,8 +508,11 @@ export function CustomizeTabSections(
         entries,
         query,
         searchMatchedEntryIds,
+        // Update available reads the entries alone, never the statuses.
         installedInventory:
-          statusFilter !== undefined && installedInventory === 'ready'
+          statusFilter !== undefined &&
+          statusFilter !== 'update-available' &&
+          installedInventory === 'ready'
             ? (installedStatusInventory ?? 'unavailable')
             : installedInventory,
         ownershipAvailable,

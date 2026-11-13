@@ -409,6 +409,28 @@ describe('CAN-4106 workspace instructions IPC golden', () => {
       telemetry: mockedTelemetry.mock.calls,
     }).toMatchSnapshot();
   });
+
+  it("refuses the web core's revision 2, which desktop does not advertise, before writing (CAN-6093)", async () => {
+    await expect(
+      runtime.instruction(
+        'core.workspace.instructions.update',
+        { workspaceId: 'local-ws', content: '# Revision', revision: 2 },
+        {
+          caller: {
+            ...desktopCaller('local-desktop-user'),
+            grants: ['core.workspace.write'],
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { reason: 'unserved', unsupported: ['revision'] },
+      },
+    });
+    expect(await load({ workspaceId: 'local-ws' })).toEqual({ result: '' });
+    expect(mockedTelemetry).not.toHaveBeenCalled();
+  });
 });
 
 describe('CAN-4106 workspace instructions Portal golden', () => {

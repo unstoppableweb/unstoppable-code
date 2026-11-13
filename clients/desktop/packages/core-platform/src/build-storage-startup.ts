@@ -13,6 +13,8 @@ import {
   readWindowsAclSync,
 } from './secure-files/windows-acl';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
+import { isDevelopmentOrTestBuild } from '@canopy/core-runtime/node/build-identity';
+import { matchesInternalRootNodeIdentity } from '@canopy/core-runtime/node/internal-root-migration';
 import {
   observeStoragePathSync,
   type StoragePathObservation,
@@ -100,6 +102,12 @@ export type InternalRootStartupReader = (options: {
   readonly identity: BrandBuildIdentity;
   readonly observation?: InternalRootStartupObservation;
   readonly onValidatedSource?: (source: string) => void;
+  readonly onCompletedMigration?: (migration: {
+    source: string;
+    destination: string;
+    transactionId: string;
+    completedAtMs: number;
+  }) => void;
 }) => InternalRootStartupState;
 
 /** The validator belongs to B; this adapter supplies only synchronous filesystem facts. */
@@ -107,6 +115,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
   home: suppliedHome,
   identity,
   onValidatedSource,
+  onCompletedMigration,
   observation = {
     os: hostOperatingSystem(),
     getuid: () => process.getuid?.(),
@@ -173,14 +182,31 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           observation.os === 'win32'
             ? `${root.dev}:${root.ino}`
             : `${published.dev}:${published.ino}`;
-        return root.isDirectory() &&
+        const complete =
+          root.isDirectory() &&
           !root.isSymbolicLink() &&
           realpathSync.native(destination) === destination &&
-          (observation.os !== 'win32' ||
-            privateStartupNode(destination, root, 'directory', observation)) &&
-          publicationIdentity === journal.publicationIdentity
-          ? 'complete'
-          : 'incomplete';
+          (observation.os === 'win32'
+            ? privateStartupNode(destination, root, 'directory', observation)
+            : published.uid === observation.getuid()) &&
+          matchesInternalRootNodeIdentity(
+            publicationIdentity,
+            journal.publicationIdentity,
+            observation.os,
+          )
+            ? 'complete'
+            : 'incomplete';
+        if (complete === 'complete') {
+          onCompletedMigration?.({
+            source: journal.identity.source,
+            destination: journal.identity.destination,
+            transactionId: journal.transactionId,
+            // Completion is the journal's last write; ordinary root/chat writes
+            // do not advance this cutoff. Rebuild requires a stopped host.
+            completedAtMs: Number(stat.mtimeMs),
+          });
+        }
+        return complete;
       }
       const names = readdirSync(coordination);
       if (
@@ -271,7 +297,11 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
         !('principal' in record) ||
         record.principal !== principal ||
         !('publicationIdentity' in record) ||
-        record.publicationIdentity !== `${root.dev}:${root.ino}` ||
+        !matchesInternalRootNodeIdentity(
+          `${root.dev}:${root.ino}`,
+          record.publicationIdentity,
+          observation.os,
+        ) ||
         assertOwnedStorageDirectory(destination).kind !== 'directory' ||
         !privateStartupNode(destination, root, 'directory', observation)
       )
@@ -282,8 +312,14 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
     }
   }
   // A standalone destination is an independently created internal installation.
+  // Only an absent or truly empty predecessor has no history to migrate. Check
+  // this after migration/startup-choice evidence, without creating either root.
   // If predecessor history also exists, neither is automatically merged/adopted.
-  if (assertOwnedStorageDirectory(source).kind === 'missing') return 'fresh';
+  if (
+    assertOwnedStorageDirectory(source).kind === 'missing' ||
+    readdirSync(source).length === 0
+  )
+    return 'fresh';
   if (
     identity.brandId === 'unstoppable-code' &&
     assertOwnedStorageDirectory(join(source, 'secure-storage')).kind !==
@@ -336,10 +372,18 @@ export function assertHostBuildStorageStartup(options: {
     assertBuildStorageStartup({
       build: 'internal',
       internalState,
-      migrationCommand: `node --import tsx apps/desktop-app/scripts/internal-root-migration.ts --brand=${identity.brandId} --apply${identity.brandId === 'unstoppable-code' ? ' --declare-internal' : ''}`,
+      ...(isDevelopmentOrTestBuild()
+        ? {
+            migrationCommand: `node --import tsx apps/desktop-app/scripts/internal-root-migration.ts --brand=${identity.brandId} --apply${identity.brandId === 'unstoppable-code' ? ' --declare-internal' : ''}`,
+          }
+        : {}),
     });
   } catch (error) {
-    if (customSource && error instanceof BuildStorageStartupRefused)
+    if (
+      customSource &&
+      error instanceof BuildStorageStartupRefused &&
+      isDevelopmentOrTestBuild()
+    )
       throw new BuildStorageStartupRefused(
         error.reason,
         `${error.message} This transaction used an explicit source; append the original --source-dir option when resuming.`,

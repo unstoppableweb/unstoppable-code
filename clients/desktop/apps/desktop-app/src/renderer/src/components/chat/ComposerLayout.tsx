@@ -22,7 +22,8 @@ import type { ComposerAction } from '@/lib/composerCommands';
 export * from '@canopy/ui-shared/components/ComposerLayout';
 
 export interface ChatComposerPlusItemsOptions {
-  onOpenPlugins: () => void;
+  /** Opens the plugins dialog, when the chat's selections can change. */
+  onOpenPlugins?: () => void;
   hasPluginSelections: boolean;
   /** Plan mode, when the chat's harness supports it. */
   plan?: {
@@ -58,16 +59,17 @@ export function buildChatComposerPlusItems({
   onSchedule,
   interfaceModes,
 }: ChatComposerPlusItemsOptions): ComposerPlusMenuItem[] {
-  const items: ComposerPlusMenuItem[] = [
-    {
+  const items: ComposerPlusMenuItem[] = [];
+  if (onOpenPlugins) {
+    items.push({
       id: 'plugins',
       label: 'Plugins',
       icon: <PluginsIcon size="sm" />,
       onSelect: onOpenPlugins,
       ariaChecked: hasPluginSelections,
       dataTestId: 'chat-plugins-button',
-    },
-  ];
+    });
+  }
   if (plan) {
     items.push({
       id: 'plan-mode',

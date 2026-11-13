@@ -29,6 +29,7 @@ export const WORKSPACE_MANIFEST_KEYS = [
   'alwaysShow',
   'owner',
   'ownershipTransfer',
+  'detachedOwner',
   'recommendedPluginOptOutKeys',
   'temporary',
   'planDetection',

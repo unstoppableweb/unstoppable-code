@@ -1,6 +1,7 @@
 import { memo, useId, type JSX } from 'react';
 import { DownloadIcon, FileIcon } from '../../icons';
 import { Button } from '../Button';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 export interface FileDeliverableCardProps {
   readonly filename: string;
@@ -71,20 +72,25 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
   onDownload,
   onOpen,
 }: FileDeliverableCardProps): JSX.Element {
+  // Session replay records attributes, so the name and description live
+  // only in blocked text and the controls name them through
+  // aria-describedby.
+  const nameId = useId();
   const descriptionId = useId();
   const details = (
     <>
       <FileIcon size="xl" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span
-          className="block truncate text-xs font-medium fg-primary"
+          id={nameId}
+          className={`${REPLAY_BLOCK_CLASS} block truncate text-xs font-medium fg-primary`}
           title={pathLabel ?? filename}
         >
           {filename}
         </span>
         <span
           id={descriptionId}
-          className="block truncate text-2xs fg-secondary"
+          className={`${REPLAY_BLOCK_CLASS} block truncate text-2xs fg-secondary`}
         >
           {description ?? fileType(filename)}
           {sizeBytes !== undefined ? ` · ${formatFileSize(sizeBytes)}` : ''}
@@ -108,8 +114,8 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
         <button
           type="button"
           onClick={busy ? undefined : onOpen}
-          aria-label={`Open ${filename}`}
-          aria-describedby={descriptionId}
+          aria-label="Open file"
+          aria-describedby={`${nameId} ${descriptionId}`}
           aria-busy={busy}
           aria-disabled={busy}
           className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-secondary"
@@ -126,7 +132,8 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
           variant="secondary"
           size="compact"
           onClick={onDownload}
-          aria-label={`Download ${filename}`}
+          aria-label="Download file"
+          aria-describedby={nameId}
         >
           <DownloadIcon size="sm" aria-hidden="true" />
           Download

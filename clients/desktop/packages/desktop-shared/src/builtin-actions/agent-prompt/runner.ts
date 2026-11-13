@@ -58,7 +58,7 @@ import {
   redactNormalizedText,
   resolvePrompt,
   validateStructuredOutputInputs,
-} from './logic';
+} from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 
 type AgentActionMode = 'start' | 'resume';
 

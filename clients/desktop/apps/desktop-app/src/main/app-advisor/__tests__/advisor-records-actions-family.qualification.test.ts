@@ -107,6 +107,9 @@ function archived(archiveId: string, locked: boolean): ArchiveContainerSummary {
   return {
     archiveId,
     kind: 'worktree',
+    workspaceId: 'ws',
+    workspaceName: 'Website',
+    revision: null,
     name: `Archive ${archiveId}`,
     branchName: null,
     archivedAt: '2026-11-02T00:00:00.000Z',

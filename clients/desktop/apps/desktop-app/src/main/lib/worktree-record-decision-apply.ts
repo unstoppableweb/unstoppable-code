@@ -12,6 +12,7 @@ import type {
   WorkspaceConfigFile,
   WorkspaceIndexEntry,
   WorkspaceOwnerBinding,
+  WorkspaceDetachedOwner,
   WorkspaceOwnershipTransfer,
   WorkspaceRepoData,
   WorktreeChatBadgeChatRef,
@@ -1219,12 +1220,16 @@ export function applyWorkspaceIndexDecisionTo(
 export function applyWorkspaceOwnerDecisionTo(
   decision: WorkspaceOwnerDecision,
 ): {
+  detachedOwner?: WorkspaceDetachedOwner;
   owner?: WorkspaceOwnerBinding;
   ownershipTransfer?: WorkspaceOwnershipTransfer;
 } {
   return {
     owner: decision.owner,
     ownershipTransfer: decision.ownershipTransfer,
+    ...(Object.prototype.hasOwnProperty.call(decision, 'detachedOwner')
+      ? { detachedOwner: decision.detachedOwner }
+      : {}),
   };
 }
 

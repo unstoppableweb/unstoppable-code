@@ -2,7 +2,7 @@ import type { AgentDelegationUsage } from '@canopy/protocol/delegation';
 import {
   projectCodexRuntimeEvent,
   type CodexRuntimeEvent,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;

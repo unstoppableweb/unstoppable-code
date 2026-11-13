@@ -1,6 +1,10 @@
 'use client';
 
-import { Stack } from '@canopy/ui-shared/components';
+import {
+  CapabilityTileLayoutProvider,
+  Stack,
+} from '@canopy/ui-shared/components';
+import { StepRow } from '@canopy/ui-shared/components/chat';
 import {
   memo,
   useEffect,
@@ -9,13 +13,13 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { ChevronDownIcon, ChevronRightIcon } from '@canopy/ui-shared/icons';
+import { AgentIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 export interface AgentActivitySectionProps {
   /**
-   * Create/update artifact cards. They are compact, so the section packs more
-   * per row as its container grows.
+   * Create/update artifacts (`CapabilityTile`s). The section draws them as
+   * rows under its header.
    */
   readonly artifactItems?: readonly ReactNode[];
   /** Pipeline run rows, full width below the artifact cards. */
@@ -51,45 +55,45 @@ export const AgentActivitySection = memo(function AgentActivitySection({
   const itemCount =
     artifactItems.length + pipelineRunItems.length + githubRunItems.length;
   if (itemCount === 0) return null;
+  // The section reads as part of the turn (AA1): its header is a step row,
+  // its items are rows under the header's words, and nothing draws a card.
+  // A live turn's section is pinned below the transcript, so it keeps that
+  // dock's top hairline.
   return (
     <section
-      // The box's 20px corners are its 12px cards' corners plus the 8px
-      // inset, so the two curves stay concentric.
       className={
         variant === 'active'
-          ? '@container mx-auto w-full max-w-[var(--chat-composer-shell-width)] chat-width-transition shrink-0 border-t bg-base px-4 py-2'
-          : '@container rounded-2xl border bg-fg-primary/[0.02] p-2'
+          ? 'mx-auto w-full max-w-[var(--chat-composer-shell-width)] chat-width-transition shrink-0 border-t bg-base px-4 py-2'
+          : 'flex flex-col px-3'
       }
       data-testid={`agent-activity-${variant}`}
     >
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} agent activity`}
-        >
-          {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
-          <span className="text-s font-medium fg-primary">Agent activity</span>
-          <span className="text-xs fg-secondary">
-            {itemCount} {itemCount === 1 ? 'item' : 'items'}
-          </span>
-        </button>
-      </div>
+      <StepRow
+        icon={<AgentIcon size="sm" />}
+        label="Agent activity"
+        detail={`· ${String(itemCount)} ${itemCount === 1 ? 'item' : 'items'}`}
+        expandable
+        chevronAtRest
+        isOpen={expanded}
+        onToggle={(): void => setExpanded((value) => !value)}
+        ariaLabel={`${expanded ? 'Collapse' : 'Expand'} agent activity`}
+      />
       {expanded ? (
         // The items are conversation content (artifacts, runs): blocked from
         // session replay. The header stays recorded.
         <div
-          className={`${REPLAY_BLOCK_CLASS} mt-2 grid grid-cols-1 content-start gap-2 ${variant === 'active' ? 'max-h-[min(240px,35vh)]' : 'max-h-80'} overflow-y-auto`}
+          className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-2 ${variant === 'active' ? 'max-h-[min(240px,35vh)] overflow-y-auto' : ''}`}
           data-testid="agent-activity-items"
         >
           {artifactItems.length > 0 ? (
+            // Under the header's words: each row's icon on its text line.
             <div
-              className="grid grid-cols-1 gap-2 @[400px]:grid-cols-2 @[640px]:grid-cols-3 @[880px]:grid-cols-4 @[1120px]:grid-cols-5 @[1360px]:grid-cols-6"
+              className="flex flex-col pl-5.5"
               data-testid="agent-activity-artifact-items"
             >
-              {artifactItems}
+              <CapabilityTileLayoutProvider layout="row">
+                {artifactItems}
+              </CapabilityTileLayoutProvider>
             </div>
           ) : null}
           {pipelineRunItems.length > 0 ? (

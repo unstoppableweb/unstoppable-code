@@ -1,4 +1,6 @@
+import { AGENT_MODEL_PREFIX } from '@canopy/protocol/agents';
 import type { Pipeline, ShellType, Step } from './document';
+import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 import { normalizePipelineScopes } from './scope';
 
 /*
@@ -15,13 +17,15 @@ import { normalizePipelineScopes } from './scope';
  * - The parity matrix refusals (R4, R5, R7, R8, R11), which the host would
  *   run but the cloud must not.
  *
- * Unlike the host, preflight lists every refused step, not the first. Model
- * and harness checks against the cloud catalog (R1 to R3, R9) are CP-26's.
+ * Unlike the host, preflight lists every refused step, not the first. A
+ * step whose model a cloud run can't use (R1 to R3, and the run owner's model
+ * policy) is not refused here: `cloud-model-preflight` lists it with the
+ * cloud models the user may confirm instead (CAN-6174). R9 (Claude terminal
+ * mode) is a chat setting that pipeline steps can't select.
  */
 
 export const CLOUD_RUN_REFUSAL_REASONS = [
   // Pipeline host gaps, named as `DAEMON_PIPELINE_REFUSAL_REASONS` names them.
-  'tsx_runtime',
   'child_pipeline',
   'model_action',
   'dynamic_action',
@@ -37,6 +41,7 @@ export const CLOUD_RUN_REFUSAL_REASONS = [
   'desktop_path',
   'windows_shell',
   'local_state',
+  'local_runtime',
   'run_scope',
 ] as const;
 
@@ -62,8 +67,9 @@ export interface CloudRunRefusal {
  * no inputs: `portable`, or the host's refusal reason. Taken from
  * `classifyDaemonPipeline` over the bundled manifests; the
  * `cloud-preflight-host-parity` golden fails when the two disagree or a
- * bundled action is missing here. Composite actions pass their model through
- * an expression, which the host refuses as `dynamic_model` (G4).
+ * bundled action is missing here. Composite actions pass their model to the
+ * model step inside them as `${{ inputs.model }}`, which the host resolves
+ * from the step's own `model` (G4).
  */
 export const CLOUD_RUN_BUNDLED_ACTIONS: Readonly<
   Record<string, 'portable' | CloudRunRefusalReason>
@@ -71,56 +77,56 @@ export const CLOUD_RUN_BUNDLED_ACTIONS: Readonly<
   'agent-loop': 'portable',
   'agent-prompt': 'portable',
   'agent-resume': 'portable',
-  coder: 'dynamic_model',
+  coder: 'portable',
   'comms-setup': 'portable',
-  'complexity-assessor': 'dynamic_model',
+  'complexity-assessor': 'portable',
   condenser: 'portable',
-  'context-discovery': 'dynamic_model',
+  'context-discovery': 'portable',
   'create-bot-entry': 'portable',
   'create-project-entry': 'portable',
   'create-worktree': 'portable',
   'discover-review-tracks': 'portable',
-  discovery: 'dynamic_model',
+  discovery: 'portable',
   'gather-linear-context': 'portable',
   'git-commit-push': 'model_action',
   'git-workspace-details': 'portable',
   'github-create-pr': 'model_action',
   'github-fetch-branch-pr': 'portable',
   'github-post-review-comment': 'portable',
-  'greenfield-detection': 'dynamic_model',
+  'greenfield-detection': 'portable',
   'hello-world-js': 'portable',
   'hello-world-py': 'portable',
-  'hello-world-ts': 'tsx_runtime',
-  'historical-context': 'dynamic_model',
+  'hello-world-ts': 'portable',
+  'historical-context': 'portable',
   'http-request': 'portable',
   memory: 'portable',
   'memory-read': 'portable',
   'memory-write': 'portable',
   'move-to-group': 'portable',
   notify: 'portable',
-  'parallel-agents': 'model_action',
-  'phase-compaction': 'dynamic_model',
+  'parallel-agents': 'portable',
+  'phase-compaction': 'portable',
   'pipeline-report': 'portable',
   'plan-path-validation': 'portable',
-  'plan-validation': 'dynamic_model',
+  'plan-validation': 'portable',
   'plan-with-review': 'portable',
-  planner: 'dynamic_model',
-  'qa-fixer': 'dynamic_model',
-  'qa-reviewer': 'dynamic_model',
+  planner: 'portable',
+  'qa-fixer': 'portable',
+  'qa-reviewer': 'portable',
   'quality-gate': 'portable',
   'read-linear-ticket': 'portable',
   'request-input': 'portable',
-  'requirements-from-task': 'dynamic_model',
-  'requirements-interactive': 'dynamic_model',
+  'requirements-from-task': 'portable',
+  'requirements-interactive': 'portable',
   router: 'portable',
   'run-pipeline': 'child_pipeline',
   'send-agent-message': 'portable',
-  'spec-critic': 'dynamic_model',
-  'spec-gatherer': 'dynamic_model',
-  'spec-quick': 'dynamic_model',
-  'spec-researcher': 'dynamic_model',
-  'spec-validation': 'dynamic_model',
-  'spec-writer': 'dynamic_model',
+  'spec-critic': 'portable',
+  'spec-gatherer': 'portable',
+  'spec-quick': 'portable',
+  'spec-researcher': 'portable',
+  'spec-validation': 'portable',
+  'spec-writer': 'portable',
   'wait-for-agent-reply': 'portable',
 };
 
@@ -136,7 +142,69 @@ export const CLOUD_RUN_PORTABLE_MODEL_ACTIONS: ReadonlySet<string> = new Set([
   'quality-gate',
   'router',
   'condenser',
+  'parallel-agents',
 ]);
+
+/**
+ * The bundled composite actions whose one model step runs the composite's
+ * `model` input, with the portable model action that step runs and whether
+ * it takes the composite step's `permission_preset` (the others fix their
+ * own). A step of one is checked as a step of that action. The host parity
+ * golden reads them from the manifests.
+ */
+export const CLOUD_RUN_COMPOSITE_MODEL_ACTIONS: Readonly<
+  Record<
+    string,
+    { readonly action: string; readonly forwardsPermissionPreset: boolean }
+  >
+> = {
+  coder: { action: 'agent-prompt', forwardsPermissionPreset: true },
+  'complexity-assessor': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'context-discovery': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  discovery: { action: 'agent-prompt', forwardsPermissionPreset: true },
+  'greenfield-detection': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'historical-context': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'phase-compaction': { action: 'condenser', forwardsPermissionPreset: false },
+  planner: { action: 'agent-prompt', forwardsPermissionPreset: false },
+  'plan-validation': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'qa-fixer': { action: 'agent-prompt', forwardsPermissionPreset: true },
+  'qa-reviewer': { action: 'agent-prompt', forwardsPermissionPreset: false },
+  'requirements-from-task': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: true,
+  },
+  'requirements-interactive': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'spec-critic': { action: 'agent-prompt', forwardsPermissionPreset: false },
+  'spec-gatherer': { action: 'agent-prompt', forwardsPermissionPreset: false },
+  'spec-quick': { action: 'agent-prompt', forwardsPermissionPreset: false },
+  'spec-researcher': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'spec-validation': {
+    action: 'agent-prompt',
+    forwardsPermissionPreset: false,
+  },
+  'spec-writer': { action: 'agent-prompt', forwardsPermissionPreset: false },
+};
 
 /** The bundled host actions (`runs.using: host`) the owner settles. */
 export const CLOUD_RUN_HOST_ACTIONS: ReadonlySet<string> = new Set([
@@ -170,6 +238,17 @@ const BOT_TARGET_ACTIONS: ReadonlySet<string> = new Set([
   'wait-for-agent-reply',
 ]);
 
+/**
+ * The input that names each memory action's file (CAN-6317). A cloud run
+ * keeps these files with the pipeline's data only when they stay in the
+ * run's folder; one on the author's computer can't be reached (R5).
+ */
+const MEMORY_PATH_INPUTS: Readonly<Record<string, string>> = {
+  memory: 'db_path',
+  'memory-read': 'file',
+  'memory-write': 'file',
+};
+
 /** `send-agent-message` inputs naming desktop task files (R11). */
 const SEND_DESKTOP_FILE_INPUTS = [
   'attachment_paths',
@@ -186,17 +265,28 @@ const WINDOWS_SHELLS: ReadonlySet<ShellType> = new Set([
   'cmd',
 ]);
 
+/**
+ * What each refusal tells the user: the reason, then the supported
+ * alternative for the pipeline host gaps (CAN-6316), as the parity matrix
+ * lists them.
+ */
 const MESSAGES: Readonly<Record<CloudRunRefusalReason, string>> = {
-  tsx_runtime: "Cloud runs can't run TypeScript (tsx) steps yet.",
-  child_pipeline: "Cloud runs can't start child workflows yet.",
-  model_action: "Cloud runs can't run this agent action yet.",
-  dynamic_action: "Cloud runs can't run an action chosen by an expression yet.",
-  dynamic_model: "Cloud runs can't use a model chosen by an expression yet.",
-  model_alias: "Cloud runs can't use this workflow's model aliases yet.",
-  plugin_collections: "Cloud runs can't use plugin collections yet.",
-  host_paths: 'This message attaches files from your computer.',
+  child_pipeline:
+    "Cloud runs can't start another workflow yet. Copy its jobs into this workflow, or run the workflow on This computer.",
+  model_action:
+    'Cloud runs start agents only through the bundled agent actions. Use agent-prompt for this step, or run the workflow on This computer.',
+  dynamic_action:
+    "An expression can't choose a step's action. Name the action in uses, and choose between steps with if.",
+  dynamic_model:
+    "Cloud runs can't use a model chosen by an expression. Name the model in this step.",
+  model_alias:
+    "Cloud runs can't use a model alias that names an Agent or has no default model. Name the model in this step, or run the workflow on This computer.",
+  plugin_collections:
+    "Cloud runs can't load this plugin collection. Remove it, or run the workflow on This computer.",
+  host_paths:
+    "Cloud runs can't attach files to a message yet. Put the text in text or text_file, or run the workflow on This computer.",
   host_inputs:
-    "Cloud runs can't send a message with its own model or plugin collection yet.",
+    "Cloud runs can't send a message with its own model or plugin collection yet. Remove its model and plugin collection, or run the workflow on This computer.",
   unresolved_action: "Cloud runs can't find this action.",
   action_scope:
     'This action runs only in a folder or worktree, and cloud runs are global for now.',
@@ -205,9 +295,28 @@ const MESSAGES: Readonly<Record<CloudRunRefusalReason, string>> = {
   windows_shell: "Cloud runs use Linux, which doesn't have this shell.",
   local_state:
     'Files listed in local_state stay on the computer that owns them.',
+  local_runtime:
+    "This workflow needs Ollama, which runs on your computer and can't be reached from the cloud.",
   run_scope:
     "This workflow doesn't run as a global workflow, which cloud runs need for now.",
 };
+
+/** R11: files from a desktop task's attachments folder, which never leave it. */
+const DESKTOP_FILES_MESSAGE =
+  'This message attaches files from your computer. Put the text in text or text_file, or run the workflow on This computer.';
+
+/**
+ * The bundled actions that commit, push or open a pull request (G3): they
+ * need the run's GitHub credentials, which cloud runs don't broker until
+ * CP-30.
+ */
+const REPOSITORY_ACTIONS: ReadonlySet<string> = new Set([
+  'git-commit-push',
+  'github-create-pr',
+]);
+
+const REPOSITORY_ACTION_MESSAGE =
+  "Cloud runs can't commit, push or open pull requests yet. Run the workflow on This computer.";
 
 const BUILTIN_PREFIX = 'builtin/';
 
@@ -266,6 +375,7 @@ type Refuse = (
   reason: CloudRunRefusalReason,
   parityId: string,
   at?: At,
+  message?: string,
 ) => void;
 
 function checkHostAction(name: string, at: StepAt, refuse: Refuse): void {
@@ -275,29 +385,109 @@ function checkHostAction(name: string, at: StepAt, refuse: Refuse): void {
     refuse('orchestrator', 'R4', at);
   if (name !== 'send-agent-message') return;
   if (SEND_DESKTOP_FILE_INPUTS.some((key) => input[key] !== undefined))
-    refuse('host_paths', 'R11', at);
+    refuse('host_paths', 'R11', at, DESKTOP_FILES_MESSAGE);
   else if (input.attachments !== undefined) refuse('host_paths', 'G6', at);
   if (SEND_APP_RESOLVED_INPUTS.some((key) => input[key] !== undefined))
-    refuse('host_inputs', 'CP-24', at);
+    refuse('host_inputs', 'CP-32', at);
 }
 
+/**
+ * What a cloud run resolves a step's model alias to (CAN-6439): its inline
+ * default's base model and the plugin collection it adds. `undefined` when
+ * `model` names no alias of the workflow; `null` for an alias a cloud run
+ * can't resolve: one that names an Agent, whose definition lives on a
+ * computer, or one with no default, which only a desktop preference fills.
+ * The web core resolves the rest before the run starts.
+ */
+export function cloudModelAliasOf(
+  pipeline: Pick<Pipeline, 'model_aliases'>,
+  model: string,
+):
+  | { readonly base: string; readonly pluginCollectionId?: string }
+  | null
+  | undefined {
+  const alias = pipeline.model_aliases?.find(
+    // Normalization trims alias ids, which the executor then resolves.
+    (candidate) => candidate.id.trim() === model.trim(),
+  );
+  if (alias === undefined) return undefined;
+  const defaults = alias.defaults;
+  if (defaults === undefined || 'agent_id' in defaults) return null;
+  const written = String(defaults.base).trim();
+  // A built-in `$` alias names its model, as pipeline normalization
+  // resolves it, so the host resolves the alias to a model it knows.
+  const base = Object.prototype.hasOwnProperty.call(
+    STATIC_MODEL_REFERENCE_ALIASES,
+    written,
+  )
+    ? (STATIC_MODEL_REFERENCE_ALIASES[written] ?? written)
+    : written;
+  if (base === '' || base.startsWith(AGENT_MODEL_PREFIX)) return null;
+  const collection = defaults.plugin_collection_id?.trim();
+  return {
+    base,
+    ...(collection !== undefined &&
+      collection !== '' && {
+        pluginCollectionId: collection,
+      }),
+  };
+}
+
+/**
+ * The model actions that take a model alias or a plugin collection of their
+ * own on the pipeline host (`DAEMON_ALIAS_MODEL_ACTIONS`, CAN-5832); the host
+ * parity golden keeps them equal.
+ */
+export const CLOUD_RUN_ALIAS_MODEL_ACTIONS: ReadonlySet<string> = new Set([
+  'agent-prompt',
+  'agent-resume',
+]);
+
+/** A step's alias or collection on a model action the host doesn't take them on. */
+const ALIAS_ACTION_MESSAGE =
+  'Cloud runs use model aliases only in agent-prompt and agent-resume steps. Name the model in this step, or run the workflow on This computer.';
+const COLLECTION_ACTION_MESSAGE =
+  'Cloud runs load a plugin collection only in agent-prompt and agent-resume steps. Remove it from this step, or run the workflow on This computer.';
+/** A step's collection the workflow doesn't declare, which fails at start on desktop too. */
+const UNDECLARED_COLLECTION_MESSAGE =
+  "This step names a plugin collection the workflow doesn't declare. Add it to plugin_collections, or remove it from this step.";
+
+/**
+ * A model step's checks, as the host makes them. Plugin collections and
+ * inline model aliases are the web core's to resolve before the run starts
+ * (CAN-6439); the host takes them on agent-prompt and agent-resume steps
+ * only, a composite's through the model step inside it.
+ * `cloud-model-preflight` lists a step that loads a collection on a Codex
+ * model, which the host refuses (CAN-6012).
+ */
 function checkModelAction(
   pipeline: Pipeline,
   at: StepAt,
   refuse: Refuse,
+  action: string,
+  composite: boolean,
 ): void {
   const input = at.step.with ?? {};
-  if (
-    (pipeline.plugin_collections?.length ?? 0) > 0 ||
-    input.plugin_collection_id !== undefined
-  ) {
-    refuse('plugin_collections', 'CP-25', at);
+  const model = input.model === undefined ? '' : String(input.model);
+  // A composite's own plugin collection reaches none of its steps.
+  const collection = composite ? undefined : input.plugin_collection_id;
+  if (collection !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
+    refuse('plugin_collections', 'CP-25', at, COLLECTION_ACTION_MESSAGE);
+  else if (
+    collection !== undefined &&
+    !pipeline.plugin_collections?.some(
+      ({ id }) => id.trim() === String(collection).trim(),
+    )
+  )
+    refuse('plugin_collections', 'CP-25', at, UNDECLARED_COLLECTION_MESSAGE);
+  if (isExpression(model)) {
+    refuse('dynamic_model', 'G4', at);
     return;
   }
-  const model = input.model === undefined ? '' : String(input.model);
-  if (isExpression(model)) refuse('dynamic_model', 'G4', at);
-  else if (pipeline.model_aliases?.some((alias) => alias.id === model.trim()))
-    refuse('model_alias', 'CP-24', at);
+  const alias = cloudModelAliasOf(pipeline, model);
+  if (alias === null) refuse('model_alias', 'CP-25', at);
+  else if (alias !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
+    refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
 }
 
 function checkStep(
@@ -315,7 +505,6 @@ function checkStep(
   const uses = step.uses;
   if (uses === undefined) {
     if (step.log_format_hint === 'agent') refuse('model_action', 'G3', at);
-    else if (shell === 'tsx') refuse('tsx_runtime', 'G1', at);
     return;
   }
   if (isExpression(uses)) {
@@ -334,23 +523,54 @@ function checkStep(
     return;
   }
   if (verdict !== 'portable') {
-    refuse(verdict, parityIdOf(verdict), at);
+    refuse(
+      verdict,
+      parityIdOf(verdict),
+      at,
+      verdict === 'model_action' && REPOSITORY_ACTIONS.has(name)
+        ? REPOSITORY_ACTION_MESSAGE
+        : undefined,
+    );
     return;
   }
   if (CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL.has(name)) {
     refuse('action_scope', 'CP-29', at);
     return;
   }
+  const memoryPathInput = Object.prototype.hasOwnProperty.call(
+    MEMORY_PATH_INPUTS,
+    name,
+  )
+    ? MEMORY_PATH_INPUTS[name]
+    : undefined;
+  if (
+    memoryPathInput !== undefined &&
+    isDesktopPath(step.with?.[memoryPathInput])
+  ) {
+    refuse('desktop_path', 'R5', at);
+    return;
+  }
   if (CLOUD_RUN_HOST_ACTIONS.has(name)) checkHostAction(name, at, refuse);
   else if (CLOUD_RUN_PORTABLE_MODEL_ACTIONS.has(name))
-    checkModelAction(pipeline, at, refuse);
+    checkModelAction(pipeline, at, refuse, name, false);
+  else if (
+    Object.prototype.hasOwnProperty.call(
+      CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
+      name,
+    )
+  )
+    checkModelAction(
+      pipeline,
+      at,
+      refuse,
+      CLOUD_RUN_COMPOSITE_MODEL_ACTIONS[name]?.action ?? '',
+      true,
+    );
   else if (step.log_format_hint === 'agent') refuse('model_action', 'G3', at);
 }
 
 function parityIdOf(reason: CloudRunRefusalReason): string {
   switch (reason) {
-    case 'tsx_runtime':
-      return 'G1';
     case 'child_pipeline':
       return 'G2';
     case 'model_action':
@@ -372,11 +592,11 @@ export function preflightCloudRun(
   pipeline: Pipeline,
 ): readonly CloudRunRefusal[] {
   const refusals: CloudRunRefusal[] = [];
-  const refuse: Refuse = (reason, parityId, at) => {
+  const refuse: Refuse = (reason, parityId, at, message) => {
     refusals.push({
       reason,
       parityId,
-      message: MESSAGES[reason],
+      message: message ?? MESSAGES[reason],
       ...(at === undefined ? {} : { jobId: at.jobId }),
       ...(at === undefined || !('step' in at)
         ? {}
@@ -389,6 +609,13 @@ export function preflightCloudRun(
   if (!normalizePipelineScopes(pipeline.scope, 'scope').includes('global'))
     refuse('run_scope', 'CP-29');
   if ((pipeline.local_state?.length ?? 0) > 0) refuse('local_state', 'R8');
+  if (
+    Array.isArray(pipeline.dependencies) &&
+    pipeline.dependencies.some(
+      (dependency) => dependency.kind === 'local_runtime',
+    )
+  )
+    refuse('local_runtime', 'R3');
   if (isDesktopPath(pipeline.defaults?.run?.working_directory))
     refuse('desktop_path', 'R5');
   for (const [jobId, job] of Object.entries(pipeline.jobs)) {

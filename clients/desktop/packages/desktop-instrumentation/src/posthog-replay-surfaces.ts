@@ -83,7 +83,7 @@ export const NAVIGATION_PAGE_REPLAY_PRIVACY = Object.freeze({
   overview: 'reviewed',
   home: 'reviewed',
   chat: 'reviewed',
-  // The page's transcript wrapper mounts with the block (CAN-5975 narrows it).
+  // Legacy id; `navigate` opens the cowork page instead (CAN-6175).
   'cloud-chat': 'reviewed',
   pipelines: 'reviewed',
   plugins: 'reviewed',

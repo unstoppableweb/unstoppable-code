@@ -24,9 +24,9 @@ import {
   FakeRunner,
   routeFixture,
 } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
-import { CodexHostToolDispatcher } from '@canopy/desktop-shared/node/codex-runtime/host-tools';
-import type { CodexHostToolPolicy } from '@canopy/desktop-shared/node/codex-runtime/thread-handle';
-import type { DynamicToolCallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallResponse';
+import { CodexHostToolDispatcher } from '@canopy/execution-engine/node/codex-runtime/host-tools';
+import type { CodexHostToolPolicy } from '@canopy/execution-engine/node/codex-runtime/thread-handle';
+import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { CursorCapabilityProjection } from '@canopy/desktop-shared/lib/cursor-capabilities';
 import {
   DelegationParent,

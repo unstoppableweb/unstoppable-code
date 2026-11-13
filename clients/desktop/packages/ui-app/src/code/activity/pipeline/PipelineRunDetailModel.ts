@@ -171,6 +171,7 @@ export function pipelineRunDetailStatusTone(status: string): {
     case 'skipped':
     case 'pending':
     case 'queued':
+    case 'waiting_for_capacity':
       return { tone: 'neutral', muted: true };
     default:
       return { tone: 'neutral', muted: false };

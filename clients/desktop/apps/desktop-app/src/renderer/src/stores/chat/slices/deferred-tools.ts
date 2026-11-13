@@ -33,6 +33,7 @@ import {
   selectChildToolLiveness,
   useLiveBackgroundTaskStore,
 } from '../../liveBackgroundTaskStore';
+import { chatBackendFor } from '../backend';
 
 function deferredReloadKey(scope: DeferredToolsReloadScopeKey): string {
   return `${scope.projectId}/${scope.worktreeId}`;
@@ -73,7 +74,7 @@ export const createDeferredToolsSlice: StateCreator<
   const buildSurface = (): DeferredToolsReloadStoreSurface => ({
     api: {
       cancelDeferredToolsReload: (req) =>
-        window.api.chat.cancelDeferredToolsReload(req),
+        chatBackendFor(req.scope).chat.cancelDeferredToolsReload(req),
     },
     isRevisionedScope: (scope): boolean =>
       isScopeRevisionedLive(get(), scope.projectId, scope.worktreeId),

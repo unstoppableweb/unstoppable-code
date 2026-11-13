@@ -1,5 +1,6 @@
 import { THINKING_LEVELS } from '@canopy/protocol/thinking';
 import type { AgentActionBrand } from '../../brand';
+import { AGENT_EXECUTION_HARNESSES } from '../../execution-harness';
 import type { AgentActionCatalogEntry } from '../../catalog/types';
 import type { AgentJson } from '../../response';
 import type { AgentChatCreatePlacement } from '../../surface/capabilities';
@@ -133,13 +134,19 @@ export function environmentActionCatalog(
           type: 'string',
           required: false,
           description:
-            'Model id from models.list. Defaults to the default model.',
+            'Model id from models.list. Use agent_model_<id>@<model-id> to override any Agent default; normal compatibility, policy and approval apply. Omit to use the destination default.',
         },
         {
           name: 'thinkingLevel',
           type: 'string',
           required: false,
           description: `Thinking level the model supports: ${THINKING_LEVELS.join(', ')}.`,
+        },
+        {
+          name: 'executionHarness',
+          type: 'string',
+          required: false,
+          description: `Execution harness for the new chat (${AGENT_EXECUTION_HARNESSES.join(', ')}): the model's own, or one of its harnessChoices in models.list, such as opencode for an app-managed model. Omit to use the model's own harness.`,
         },
         {
           name: 'title',
@@ -206,10 +213,19 @@ export function environmentActionCatalog(
     {
       type: 'models.list',
       category: 'models',
-      summary: 'List the models new chats can use and the default model.',
+      summary:
+        'List the models new chats can use, the default model, and each model’s other execution harnesses (harnessChoices) for chat.create. Any Agent supports agent_model_<id>@<model-id> to override its default, subject to compatibility, policy and approval.',
       fields: [],
       example: { type: 'models.list' },
-      keywords: ['models', 'model', 'list', 'thinking', 'default'],
+      keywords: [
+        'models',
+        'model',
+        'list',
+        'thinking',
+        'default',
+        'harness',
+        'opencode',
+      ],
     },
   ];
 }
@@ -268,6 +284,10 @@ export function environmentDispatchJsonSchema(
         : {}),
       model: id,
       thinkingLevel: { type: 'string', enum: [...THINKING_LEVELS] },
+      executionHarness: {
+        type: 'string',
+        enum: [...AGENT_EXECUTION_HARNESSES],
+      },
       title: label,
       watchers: {
         type: 'array',

@@ -457,7 +457,7 @@ export function createBackgroundCapabilityResolver(
       normalizePipelinePluginCollectionPreferences,
       normalizePipelineModelAliasPreferences,
     } =
-      await import('@canopy/desktop-shared/node/pipelines/plugin-collection-store');
+      await import('@canopy/execution-engine/node/pipelines/plugin-collection-store');
     const locator = location?.preferencesResolved
       ? undefined
       : location?.pipelinePreferenceLocator;

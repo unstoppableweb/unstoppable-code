@@ -9,12 +9,15 @@ import {
   type ChatModel,
 } from '@canopy/desktop-shared/types';
 import {
+  accountUsesDeviceModelGateway,
   gatewayRequirementForOwner,
   isModelExcludedByGatewayRequirement,
   isOrgGatewayRouteUsableByOwner,
   listOrgGatewayModelsForOrganization,
+  localModelGatewayProjection,
   resolveModelGatewayIndex,
   soleEnforcingOrganizationId,
+  type PersonalModelGatewayProjection,
   type OrganizationModelGateway,
   type ModelGatewayIndex,
   type ModelGatewayRequirement,
@@ -27,10 +30,12 @@ import {
   toPublicCanopyCloudAccountState,
 } from './canopy-cloud-account-store';
 import { updateOrgGatewayModelCatalog } from './model-config';
+import { hasModelGatewayCredential } from './model-gateway-credential-store';
 import { getModelGatewayMarkerFilePath } from './paths';
 import { writeFileAtomically } from './atomic-file';
 import { shouldRecordUnknownEnforcementOwner } from '../agents/work-owner';
 import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import { readLocalModelGateway } from './local-model-gateway-store';
 
 interface ModelGatewayMarkerFile {
   version: 1;
@@ -56,7 +61,49 @@ export type ModelGatewayAccountUpdate =
     };
 
 let currentIndex: ModelGatewayIndex = resolveModelGatewayIndex(null);
+
+/** Log a device gateway read failure once until a read succeeds again. */
+let localProjectionFailureLogged = false;
+
+export type LocalModelGatewayProjectionRead =
+  | { ok: true; projection: PersonalModelGatewayProjection | null }
+  | { ok: false };
+
+/**
+ * The device gateway's routable projection, or `ok: false` when the device
+ * store can't be read. Policy callers keep the last known only-mode on
+ * failure instead of reading it as no device gateway.
+ */
+export async function readLocalModelGatewayProjectionStatus(): Promise<LocalModelGatewayProjectionRead> {
+  try {
+    const projection = localModelGatewayProjection(
+      await readLocalModelGateway(),
+    );
+    localProjectionFailureLogged = false;
+    return { ok: true, projection };
+  } catch (error) {
+    if (!localProjectionFailureLogged) {
+      localProjectionFailureLogged = true;
+      // eslint-disable-next-line no-console
+      console.warn('[model-gateway] device AI gateway read failed:', error);
+    }
+    return { ok: false };
+  }
+}
+
+/**
+ * The device gateway's routable projection, or null. For routing only: a
+ * read failure is no device gateway, so it never grants a route.
+ */
+export async function readLocalModelGatewayProjection(): Promise<PersonalModelGatewayProjection | null> {
+  const read = await readLocalModelGatewayProjectionStatus();
+  return read.ok ? read.projection : null;
+}
 let markerCache: ModelGatewayMarkerFile | null = null;
+/** The personal organization this computer has a gateway key for, if any. */
+let personalKeyOrganizationId: string | undefined;
+/** Latest key refresh; an older one that finishes later is dropped. */
+let personalKeyRefresh = 0;
 let markerWriteQueue: Promise<void> = Promise.resolve();
 const UNKNOWN_OWNER_DIAGNOSTIC_INTERVAL_MS = 5 * 60 * 1000;
 const unknownOwnerDiagnostics = new Map<string, number>();
@@ -260,9 +307,18 @@ function catalogGateways(
   }> = [];
   index.byOrganization.forEach((gateway, organizationId) => {
     if (gateway.unavailable || !gateway.baseUrl) return;
+    const personal = organizationId === index.personalOrganizationId;
+    // Without a key here, a personal gateway isn't set up on this computer.
+    // "Use only my AI gateway" keeps its models: that choice must still block.
+    if (
+      personal &&
+      !gateway.enforced &&
+      personalKeyOrganizationId !== organizationId
+    )
+      return;
     gateways.push({
       organizationId,
-      personal: organizationId === index.personalOrganizationId,
+      personal,
       organizationName: gateway.organizationName,
       baseUrl: gateway.baseUrl,
       models: gateway.models,
@@ -283,8 +339,9 @@ export function setCurrentModelGatewayAccount(
     | 'personalModelGateway'
     | 'personalModelGatewayEnforcementUnavailable'
   > | null,
+  localGateway: PersonalModelGatewayProjection | null = null,
 ): ModelGatewayAccountUpdate {
-  const next = resolveModelGatewayIndex(account);
+  const next = resolveModelGatewayIndex(account, localGateway);
   const allOrganizationIds = new Set<string>();
   currentIndex.byOrganization.forEach((_gateway, organizationId) =>
     allOrganizationIds.add(organizationId),
@@ -338,6 +395,27 @@ export function setCurrentModelGatewayAccount(
       : { changed: false, changedOrganizationIds: [], catalogChanged };
 }
 
+/**
+ * Re-reads whether this computer has a key for the personal gateway. Returns
+ * true when that changed, so the caller can republish the model registry.
+ */
+export async function refreshPersonalGatewayKey(): Promise<boolean> {
+  const refresh = ++personalKeyRefresh;
+  const organizationId = currentIndex.personalOrganizationId;
+  let next: string | undefined;
+  try {
+    if (organizationId && (await hasModelGatewayCredential(organizationId)))
+      next = organizationId;
+  } catch {
+    // Unreadable secure storage holds no usable key.
+  }
+  if (refresh !== personalKeyRefresh || next === personalKeyOrganizationId)
+    return false;
+  personalKeyOrganizationId = next;
+  updateOrgGatewayModelCatalog(catalogGateways(currentIndex));
+  return true;
+}
+
 export async function getModelGatewayRequirementForOwner(
   owner: WorkOwner | undefined,
   callSite = 'unknown',
@@ -347,19 +425,29 @@ export async function getModelGatewayRequirementForOwner(
   const result = await readCanopyCloudAccountWithStatus();
   if (result.status === 'ok') {
     const account = toPublicCanopyCloudAccountState(result.entry);
-    const index = resolveModelGatewayIndex(account);
-    // Only the account applier advances the shared index: an admission read
-    // must not consume the diff before session invalidation processes it.
-    writeMarker(markerForAccount(account, index));
-    return gatewayRequirementForOwner(index, enforcementOwner);
+    const local = await readLocalModelGatewayProjectionStatus();
+    // An unreadable device gateway matters only while it routes Personal
+    // work; then the marker's only-mode decides, and is not rewritten.
+    if (local.ok || !accountUsesDeviceModelGateway(account)) {
+      const index = resolveModelGatewayIndex(
+        account,
+        local.ok ? local.projection : null,
+      );
+      // Only the account applier advances the shared index: an admission read
+      // must not consume the diff before session invalidation processes it.
+      writeMarker(markerForAccount(account, index));
+      return gatewayRequirementForOwner(index, enforcementOwner);
+    }
+    recordDiagnostic('model_gateway_read_failed', 'device-gateway-read-error');
+  } else {
+    recordDiagnostic(
+      'model_gateway_read_failed',
+      result.status === 'unavailable'
+        ? 'safe-storage-unavailable'
+        : 'account-read-error',
+      result.status === 'error' ? result.error : undefined,
+    );
   }
-  recordDiagnostic(
-    'model_gateway_read_failed',
-    result.status === 'unavailable'
-      ? 'safe-storage-unavailable'
-      : 'account-read-error',
-    result.status === 'error' ? result.error : undefined,
-  );
   const marker = await readMarker();
   return requirementFromMarker(marker, enforcementOwner);
 }
@@ -506,6 +594,8 @@ export async function resolveHelperModelForEnforcedGateway(
 export function resetModelGatewayStateForTests(): void {
   currentIndex = resolveModelGatewayIndex(null);
   markerCache = null;
+  personalKeyOrganizationId = undefined;
+  personalKeyRefresh = 0;
   markerWriteQueue = Promise.resolve();
   unknownOwnerDiagnostics.clear();
 }

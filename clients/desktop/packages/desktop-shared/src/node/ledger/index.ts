@@ -3,8 +3,9 @@
  *
  * A durable single-writer SQLite store over `node:sqlite`, used by the desktop
  * storage worker behind the `core.ledger.*` handlers. Wire contracts come from
- * `@canopy/protocol/canopy-core`; this module adds storage, pure policy,
- * literal search, signed cursors and the typed store error.
+ * `@canopy/protocol/canopy-core`, and so does the pure policy every writer
+ * applies; this module adds storage, literal search, signed cursors and the
+ * typed store error.
  */
 export { LedgerRepository } from './repository';
 export type { LedgerRollupsInput, LedgerRollupsScopeRequest } from './rollups';
@@ -17,30 +18,6 @@ export {
   isLedgerStoreError,
   type LedgerStoreErrorOptions,
 } from './errors';
-export {
-  LEDGER_ADD_AUTHOR_KINDS,
-  LEDGER_DEFAULT_STATUS_BY_TYPE,
-  LEDGER_MUTABLE_ENTRY_FIELDS,
-  LEDGER_SUMMARY_AUTHOR_KIND,
-  canLedgerActorAuthor,
-  canLedgerActorOwn,
-  checkLedgerAttribution,
-  checkLedgerCreation,
-  defaultLedgerStatus,
-  evaluateLedgerUpdate,
-  isLedgerEntryOpen,
-  isLedgerPolicyViolation,
-  resolveLedgerInitialStatus,
-  sameLedgerActor,
-  type LedgerCreationPolicyInput,
-  type LedgerEntryCreationPath,
-  type LedgerOwnerChange,
-  type LedgerPolicyViolation,
-  type LedgerStatusChange,
-  type LedgerUpdateDecision,
-  type LedgerUpdatePolicyInput,
-  type LedgerUpdateRejection,
-} from './policy';
 export {
   LEDGER_SCOPE_LIFECYCLE_TRANSITIONS,
   canPurgeLedgerScope,

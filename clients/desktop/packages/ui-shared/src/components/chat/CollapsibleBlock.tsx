@@ -4,6 +4,14 @@ import { Stack } from '../Stack';
 import { useCleanChatLook } from '../chat-look';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
 import { LightbulbIcon } from '../../icons/AppIcons';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
+
+/** A headline drawn from the thoughts is their content: replay blocks it. */
+function blockedHeadline(headline: string | undefined): ReactNode {
+  return headline === undefined ? undefined : (
+    <span className={REPLAY_BLOCK_CLASS}>{headline}</span>
+  );
+}
 
 export interface CollapsibleBlockProps {
   forceExpanded?: boolean;
@@ -65,10 +73,12 @@ export function CollapsibleBlock({
       <div data-chat-disclosure="">
         <StepRow
           step
-          icon={icon}
+          // Thinking always shows its lightbulb, as in the classic row; other
+          // blocks (a tool result, a generic part) pass their own icon.
+          icon={icon ?? <LightbulbIcon />}
           label={
             running
-              ? (thinkingHeadline(content) ?? label)
+              ? (blockedHeadline(thinkingHeadline(content)) ?? label)
               : (doneLabel ?? label)
           }
           running={running}
@@ -78,7 +88,7 @@ export function CollapsibleBlock({
         />
         {isOpen && (
           <div
-            className={`${STEP_ROW_BODY_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-words fg-tertiary`}
+            className={`${REPLAY_BLOCK_CLASS} ${STEP_ROW_BODY_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-words fg-tertiary`}
             data-chat-reveal-body=""
           >
             {content}
@@ -109,7 +119,9 @@ export function CollapsibleBlock({
         <span className="truncate">
           {label}
           {!isOpen && resolvedPreview && (
-            <span className="ml-2 text-2xs fg-secondary">
+            <span
+              className={`${REPLAY_BLOCK_CLASS} ml-2 text-2xs fg-secondary`}
+            >
               {resolvedPreview}
             </span>
           )}
@@ -117,7 +129,9 @@ export function CollapsibleBlock({
       </button>
       {isOpen && (
         <div className="pl-5.5">
-          <pre className="max-h-75 overflow-auto whitespace-pre-wrap break-all rounded border bg-fg-primary/[0.02] px-2.5 py-2 text-xs fg-secondary">
+          <pre
+            className={`${REPLAY_BLOCK_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-all rounded border bg-fg-primary/[0.02] px-2.5 py-2 text-xs fg-secondary`}
+          >
             {content}
           </pre>
         </div>

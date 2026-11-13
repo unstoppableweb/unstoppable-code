@@ -1,3 +1,4 @@
+import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
@@ -24,17 +25,17 @@ import {
 import {
   classifyDaemonPipeline,
   DAEMON_PIPELINE_REFUSAL_REASONS,
+  resolveDaemonPipelineInputs,
   type DaemonModelAliasResolution,
-} from '@canopy/desktop-shared/node/pipelines/daemon-eligibility';
-import { resolveExecutionModelAliasPreferences } from '@canopy/desktop-shared/node/pipelines/executor/model-alias-preferences';
-import { resolveExecutionPluginCollections } from '@canopy/desktop-shared/node/pipelines/executor/plugin-collection-resolution';
+} from '@canopy/execution-engine/node/pipelines/daemon-eligibility';
+import { resolveExecutionModelAliasPreferences } from '@canopy/execution-engine/node/pipelines/executor/model-alias-preferences';
+import { resolveExecutionPluginCollections } from '@canopy/execution-engine/node/pipelines/executor/plugin-collection-resolution';
 import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import {
   getSecretValues,
-  pipelinePluginSelectionsSelectMcpServers,
   resolvePipelineModelAliasTarget,
-} from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
+} from '@canopy/execution-engine/node/pipelines/executor/step-runner';
 import {
   DAEMON_PIPELINE_PLATFORMS,
   daemonPipelineProcessEnvironment,
@@ -43,7 +44,7 @@ import {
 import type {
   ExecutionOptions,
   PipelineStepNotification,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import type {
   ExecutionState,
   Pipeline,
@@ -73,6 +74,14 @@ import {
   type DaemonPipelineEventsFrame,
   type DaemonPipelineEventsSubscription,
 } from './daemon-pipeline-execution';
+import {
+  catchUpDaemonCommitHooks,
+  clearDaemonCommitHooksPending,
+  hasDaemonCommitHooksPending,
+  hasDaemonCommitSteps,
+  markDaemonCommitHooksPending,
+  type DaemonCommitHookScope,
+} from './daemon-pipeline-commit-hooks';
 import {
   ensureDaemonPipelineOwnerSettlement,
   expectDaemonPipelineHostSteps,
@@ -219,6 +228,8 @@ function modelStepLaunch(
     // folder of the same bundle (CAN-5832).
     bundledResourcesDir: path.dirname(getBundledSkillsDir()),
     modelCatalog: buildModelRegistrySnapshot(),
+    // Electron main runs `git-commit-push`'s precommit-failure hook (CAN-6012 D3).
+    precommitHooks: 'owner',
     ...(codexEnvironment && {
       codexEnvironment: {
         environment: definedEntries(codexEnvironment.environment),
@@ -269,8 +280,7 @@ async function resolveLaunchModelAliases(
       (agentId) =>
         resolveAgent ? resolveAgent(agentId, scope) : Promise.resolve(null),
     ).catch(() => null);
-    // Standalone MCP servers stay in process (CAN-5832 D9, CAN-6011).
-    if (!target || target.mcpServers) continue;
+    if (!target) continue;
     resolutions[alias.id] = { base: target.base, plugins: target.plugins };
     agents ||= target.agent;
   }
@@ -284,9 +294,9 @@ interface LaunchPluginCollections {
 
 /**
  * Resolves the run's collections with the executor's own function; null
- * when that fails (the run then fails at start in process, as before) or a
- * snapshot names a standalone MCP server, whose configuration can hold a
- * credential and stays in the app (CAN-5832 D9, CAN-6011).
+ * when that fails (the run then fails at start in process, as before). A
+ * collection's standalone MCP servers go as references: an SDK step drops
+ * them in process too (CAN-6011, CAN-6277).
  */
 async function resolveLaunchPluginCollections(
   pipeline: Pipeline,
@@ -300,12 +310,7 @@ async function resolveLaunchPluginCollections(
       resolveExecutionPluginCollections(normalizePipeline(pipeline), options),
     )
     .catch(() => null);
-  if (!resolved) return null;
-  return Object.values(resolved.snapshots).some((snapshot) =>
-    pipelinePluginSelectionsSelectMcpServers(snapshot.selections),
-  )
-    ? null
-    : { snapshots: resolved.snapshots };
+  return resolved ? { snapshots: resolved.snapshots } : null;
 }
 
 export async function buildDaemonPipelineLaunch(
@@ -367,6 +372,12 @@ export async function buildDaemonPipelineLaunch(
       ...(collections && {
         pluginCollections: new Set(Object.keys(collections.snapshots)),
       }),
+      // A step's model may name a run input (CAN-6012).
+      ...(ownerPossible && {
+        inputs: resolveDaemonPipelineInputs(pipeline, options.inputs),
+      }),
+      // An action's model preference variable comes from the run's env (CAN-6012).
+      ...(ownerPossible && options.env && { env: options.env }),
     },
     {
       hostSteps:
@@ -375,6 +386,7 @@ export async function buildDaemonPipelineLaunch(
           ? 'owner'
           : 'refuse',
       modelSteps: ownerPossible ? 'claude_codex' : 'refuse',
+      commitHooks: ownerPossible ? 'owner' : 'refuse',
     },
   );
   if (!classification.eligible)
@@ -503,6 +515,61 @@ async function daemonPipelineNotifications(): Promise<
       getMainWindow,
     );
   };
+}
+
+/**
+ * A followed run's `git-commit-push` hook scope (CAN-6012 D3): its stored
+ * worktree, the one its notifications use. A run without one runs no hook.
+ */
+async function daemonCommitHooks(state: ExecutionState): Promise<
+  | {
+      readonly scope: DaemonCommitHookScope;
+      readonly getWindow: () => BrowserWindow | null;
+    }
+  | undefined
+> {
+  if (!state.project_id || !state.worktree_id) return undefined;
+  const { getMainWindow } = await import('../lib/main-window-focus');
+  return {
+    scope: { projectId: state.project_id, worktreeId: state.worktree_id },
+    getWindow: getMainWindow,
+  };
+}
+
+/**
+ * Runs the precommit-failure hook for commit results of daemon runs this app
+ * sent that settled while nothing followed them (CAN-6012 D3): at startup,
+ * after the surviving runs are followed again, and before a recovery control
+ * takes a run over in the app.
+ */
+export async function catchUpDaemonCommitHooksFor(
+  executionIds: readonly string[],
+  executionsDir: string,
+): Promise<readonly string[]> {
+  return catchUpDaemonCommitHooks({
+    executionIds,
+    executionsDir,
+    load: (executionId) => loadExecutionState(executionId, executionsDir),
+    scopeOf: daemonCommitHooks,
+  });
+}
+
+export const DAEMON_COMMIT_HOOK_TAKEOVER_REFUSED_MESSAGE =
+  'This workflow run still has commit hooks to check. Try again in a moment.';
+
+/**
+ * Before the app takes a daemon run over (resume or retry in process), every
+ * commit result the daemon left unclaimed is drained; a drain that fails
+ * refuses the takeover, so in-process hooks never run beside unclaimed ones.
+ */
+export async function drainDaemonCommitHooksBeforeTakeover(
+  executionId: string,
+  executionsDir: string,
+  drain: typeof catchUpDaemonCommitHooksFor = catchUpDaemonCommitHooksFor,
+): Promise<void> {
+  const failed = await drain([executionId], executionsDir);
+  if (failed.length > 0)
+    throw new Error(DAEMON_COMMIT_HOOK_TAKEOVER_REFUSED_MESSAGE);
 }
 
 /** Opens a run's `worker.pipeline.execution.events` on the daemon. */
@@ -662,18 +729,36 @@ async function startPipelineRoute(
           },
         },
       );
+    // Startup catches up on a commit step that settles while nothing
+    // follows the run (CAN-6012 D3); a run that falls back is the app's.
+    const commitHooksPending =
+      launch.pipelineLaunch.precommitHooks === 'owner' &&
+      hasDaemonCommitSteps(launch.pipelineLaunch.pipeline);
+    if (commitHooksPending)
+      await markDaemonCommitHooksPending(
+        options.runtime.executionsDir,
+        params.executionId,
+      );
+    const fallBack = async (): Promise<{ kind: 'in_process' }> => {
+      if (commitHooksPending)
+        await clearDaemonCommitHooksPending(
+          options.runtime.executionsDir,
+          params.executionId,
+        );
+      return { kind: 'in_process' };
+    };
     try {
       await send(session);
     } catch (error) {
       if (clientErrorCode(error) === 'worker.pipeline.hostUnavailable') {
         getElectronDaemonHealth().noteFallback('pipelines', 'host_unavailable');
         note('host_unavailable');
-        return { kind: 'in_process' };
+        return fallBack();
       }
       // The daemon saw no owner subscription and ran nothing (CAN-5771).
       if (clientErrorCode(error) === 'worker.pipeline.ownerUnavailable') {
         note('owner_unavailable');
-        return { kind: 'in_process' };
+        return fallBack();
       }
       const dropped =
         session.signal.aborted && !owner.signal.aborted
@@ -719,6 +804,7 @@ async function startPipelineRoute(
         host.deliverDaemonPipelineEvent(event, { executionsDir }),
       deliverOutput: (event): void => host.deliverDaemonPipelineOutput(event),
       deliverNotification: notifications(state),
+      commitHooks: await daemonCommitHooks(state),
       sweep: async (id): Promise<void> => {
         await dispatch.sweepOrphanedPipelinesThroughLocalWorker([id]);
       },
@@ -833,6 +919,10 @@ export async function followSurvivingDaemonRuns(
         host.deliverDaemonPipelineEvent(event, { executionsDir }),
       deliverOutput: (event): void => host.deliverDaemonPipelineOutput(event),
       deliverNotification: notifications(state),
+      // Only a run this app marked is its to hook (CAN-6012 D3).
+      ...((await hasDaemonCommitHooksPending(executionsDir, executionId)) && {
+        commitHooks: await daemonCommitHooks(state),
+      }),
       sweep: async (id): Promise<void> => {
         await dispatch.sweepOrphanedPipelinesThroughLocalWorker([id]);
       },

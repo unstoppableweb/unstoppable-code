@@ -114,6 +114,13 @@ import {
   useWorkspaceLayoutModeStore,
 } from '@/stores/workspaceLayoutModeStore';
 import { maybeOpenStartPage } from './start-page';
+import { webCorePanelLayouts } from './panel-layout-storage';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import {
+  ensureScopePanelRules,
+  layoutScopeServesPanelKind,
+  removeScopeUnavailablePanels,
+} from './scope-panel-kinds';
 import {
   advancePanelHydrationGeneration,
   isPanelHydrationGenerationCurrent,
@@ -469,12 +476,10 @@ function saveNow(worktreeKey: string): Promise<void> {
   }
   const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
   const hasUserChanges = customizedKeys.has(worktreeKey);
-  const promise = window.api.panelLayout.saveWorktreeLayout({
-    projectId,
-    worktreeId,
-    layout: file,
-    hasUserChanges,
-  });
+  const request = { projectId, worktreeId, layout: file, hasUserChanges };
+  const promise = isWebCoreScope(projectId)
+    ? Promise.resolve(webCorePanelLayouts.saveLayout(request))
+    : window.api.panelLayout.saveWorktreeLayout(request);
   inFlightSaves.set(worktreeKey, promise);
   void promise.then(
     () => {
@@ -991,6 +996,7 @@ async function applySavedDefaultLayout(worktreeKey: string): Promise<boolean> {
  */
 export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
   installSaveSubscription();
+  ensureScopePanelRules();
 
   const inFlight = ensurePromises.get(worktreeKey);
   if (inFlight !== undefined) {
@@ -1001,7 +1007,10 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
   const promise = (async (): Promise<void> => {
     const mode = await useWorkspaceLayoutModeStore.getState().load(worktreeKey);
     if (!isPanelHydrationGenerationCurrent(worktreeKey, generation)) return;
-    if (mode === 'minimal') {
+    if (
+      mode === 'minimal' &&
+      layoutScopeServesPanelKind(worktreeKey, 'terminal')
+    ) {
       const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
       await ensureTerminalWorktreeHydrated(projectId, worktreeId).catch(
         () => undefined,
@@ -1032,10 +1041,12 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
     > | null = null;
     try {
       const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
-      const response = await window.api.panelLayout.loadWorktreeLayout({
-        projectId,
-        worktreeId,
-      });
+      const response = isWebCoreScope(projectId)
+        ? webCorePanelLayouts.loadLayout({ projectId, worktreeId })
+        : await window.api.panelLayout.loadWorktreeLayout({
+            projectId,
+            worktreeId,
+          });
       if (!isPanelHydrationGenerationCurrent(worktreeKey, generation)) return;
       if (
         response.layout !== null &&
@@ -1124,6 +1135,7 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
         }
       }
     }
+    removeScopeUnavailablePanels(worktreeKey);
     hydratedKeys.add(worktreeKey);
     rememberLayoutDimensions(worktreeKey);
     void maybeOpenStartPage(worktreeKey, generation, !restored, (operation) =>

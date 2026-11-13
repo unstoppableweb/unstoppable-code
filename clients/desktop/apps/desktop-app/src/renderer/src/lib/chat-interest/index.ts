@@ -15,7 +15,9 @@ import type {
   ChatInterestChatRef,
   ChatInterestDeclaration,
 } from '@canopy/desktop-shared/types';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
+import { followWebCoreLiveChats } from '@/stores/chat/web-core';
 import { useChatStore } from '@/stores/chatStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -100,9 +102,31 @@ function withoutObservabilityEntries(
   return legacy;
 }
 
-async function sendChatInterest(
+/**
+ * Splits a declaration by authority: web core chats follow their live reply
+ * through the web core backend, and only local chats are declared to main,
+ * which must never see a web core id (CAN-6175 D1).
+ */
+function localChatInterest(
   declaration: ChatInterestDeclaration,
+): ChatInterestDeclaration {
+  const isLocal = (ref: ChatInterestChatRef): boolean =>
+    !isWebCoreScope(ref.projectId);
+  followWebCoreLiveChats(declaration.focused.filter((ref) => !isLocal(ref)));
+  return {
+    ...declaration,
+    focused: declaration.focused.filter(isLocal),
+    warm: declaration.warm.filter(isLocal),
+    ...(declaration.focusedRuns === undefined
+      ? {}
+      : { focusedRuns: declaration.focusedRuns.filter(isLocal) }),
+  };
+}
+
+async function sendChatInterest(
+  interest: ChatInterestDeclaration,
 ): Promise<void> {
+  const declaration = localChatInterest(interest);
   // Older preloads have no `setInterest`; such a window never declares.
   const chatApi = window.api?.chat;
   if (typeof chatApi?.setInterest !== 'function') return;

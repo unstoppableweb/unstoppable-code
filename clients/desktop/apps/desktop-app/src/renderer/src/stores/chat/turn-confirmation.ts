@@ -5,6 +5,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { chatScopeKey } from './revisioned-sync';
 import { chatStoreApi } from './store-ref';
+import { chatBackendFor } from './backend';
 
 export type CanonicalTurnState = 'active' | 'inactive' | 'unknown';
 
@@ -45,7 +46,7 @@ export interface ConfirmCanonicalTurnDeps {
 }
 
 const defaultDeps = (): ConfirmCanonicalTurnDeps => ({
-  getState: (request) => window.api.chat.getState(request),
+  getState: (request) => chatBackendFor(request).chat.getState(request),
   appliedRevision: (projectId, worktreeId) =>
     chatStoreApi().getState().chatStateSync[chatScopeKey(projectId, worktreeId)]
       ?.revision ?? null,

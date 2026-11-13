@@ -16,7 +16,6 @@ import {
   AppearanceSelect,
   ArchivedChatsCard,
   AutomationPipelineTargetFields,
-  BackgroundServiceNotice,
   DropdownMenuItemIcon,
   DropdownMenuLinkItem,
   UnifiedTable,
@@ -840,30 +839,6 @@ function PipelineTargetSheet(): JSX.Element {
   );
 }
 
-function BackgroundServiceSheet(): JSX.Element {
-  return (
-    <SpecimenPanel title="BackgroundServiceNotice">
-      <SpecimenGrid min={360}>
-        <SpecimenCell label="Idle">
-          <div className="w-full">
-            <BackgroundServiceNotice retry="idle" onRetry={noop} />
-          </div>
-        </SpecimenCell>
-        <SpecimenCell label="Trying again (busy)">
-          <div className="w-full">
-            <BackgroundServiceNotice retry="running" onRetry={noop} />
-          </div>
-        </SpecimenCell>
-        <SpecimenCell label="Still failing">
-          <div className="w-full">
-            <BackgroundServiceNotice retry="failed" onRetry={noop} />
-          </div>
-        </SpecimenCell>
-      </SpecimenGrid>
-    </SpecimenPanel>
-  );
-}
-
 export function SharedASpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-8">
@@ -876,7 +851,6 @@ export function SharedASpecimen(): JSX.Element {
       <AppearanceSheet />
       <ArchivedChatsSheet />
       <PipelineTargetSheet />
-      <BackgroundServiceSheet />
     </div>
   );
 }

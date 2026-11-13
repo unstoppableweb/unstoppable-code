@@ -2,12 +2,14 @@
 // repository-rule composition before CAN-4905 routed them through
 // `core.workspace.repoRules.*`. Real data root, workspace records, Git
 // checkouts and policy file; only IPC registration is mocked.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -75,7 +77,9 @@ jest.mock('../ipc/register', () => ({
 }));
 
 import { registerRepoRulesHandlers } from '../ipc/repo-rules';
+import { GIT_ELIGIBILITY_KEYS } from '../repo-rules/eligibility';
 import { composeWorktreeRepoRules } from '../repo-rules/host';
+import { selectSessionInstructions } from '../repo-rules/session';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -122,6 +126,16 @@ let repo: string;
 let memberRepo: string;
 let checkout: string;
 let originalDataDir: string | undefined;
+let globalConfig: string;
+let home: string;
+// Session reads read the user's Git config; the golden supplies its own.
+const GIT_ENV = [
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_NOSYSTEM',
+  'XDG_CONFIG_HOME',
+  'HOME',
+] as const;
+const originalGitEnv = new Map<string, string | undefined>();
 let runtime: DesktopCanopyDispatcher;
 let caller: CanopyCallerDescriptor;
 
@@ -174,6 +188,15 @@ beforeAll(() => {
   memberRepo = join(dir, 'member');
   originalDataDir = process.env.CANOPY_DATA_DIR;
   process.env.CANOPY_DATA_DIR = dataDir;
+  globalConfig = join(dir, 'gitconfig');
+  home = join(dir, 'home');
+  mkdirSync(home);
+  writeFileSync(globalConfig, '');
+  for (const name of GIT_ENV) originalGitEnv.set(name, process.env[name]);
+  process.env.GIT_CONFIG_GLOBAL = globalConfig;
+  process.env.GIT_CONFIG_NOSYSTEM = '1';
+  process.env.XDG_CONFIG_HOME = join(dir, 'xdg');
+  process.env.HOME = home;
   initRepo(repo, SOURCE_RULES);
   initRepo(memberRepo, {
     '.cursor/rules/member.mdc': '---\nalwaysApply: true\n---\nMember body.',
@@ -274,6 +297,10 @@ afterAll(async () => {
   await runtime.shutdown();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;
+  for (const [name, value] of originalGitEnv) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -765,5 +792,278 @@ describe('CAN-4905 repo-rules IPC golden', () => {
         disabledRuleIds: Array.from({ length: 201 }, (_, i) => `r${i}`),
       }),
     }).toMatchSnapshot();
+  });
+});
+
+describe('CAN-6352 Git config includes in session reads', () => {
+  const ALWAYS = 'Always rule body.';
+  const CHECKOUT_ONLY = 'Checkout-only body.';
+  // A value for each eligibility key, so a key added to the reader is covered.
+  const ELIGIBILITY_VALUES: Record<string, string> = {
+    'core.excludesfile': 'excludes',
+    'core.ignorecase': 'true',
+    'extensions.objectformat': 'sha1',
+    'extensions.worktreeconfig': 'false',
+  };
+  const written: string[] = [];
+
+  function write(path: string, text: string): void {
+    const file = join(dir, path);
+    mkdirSync(join(file, '..'), { recursive: true });
+    writeFileSync(file, text);
+    written.push(file);
+  }
+
+  function composeWith(config: string): Promise<string> {
+    writeFileSync(globalConfig, config);
+    return composeWorktreeRepoRules(RULES_WS, WORKTREE, checkout);
+  }
+
+  // Jest's process.env is the test's own; child processes need it passed.
+  /** Real Git under the same config: does it ignore the checkout-only rule? */
+  function gitIgnoresCheckoutRule(): boolean {
+    const result = spawnSync(
+      'git',
+      ['-C', checkout, 'check-ignore', '-q', '.cursor/rules/checkout.mdc'],
+      { env: { ...process.env }, stdio: 'pipe' },
+    );
+    if (result.status !== 0 && result.status !== 1)
+      throw new Error(`git check-ignore failed: ${String(result.stderr)}`);
+    return result.status === 0;
+  }
+
+  beforeEach(async () => {
+    const result = await scanned({ workspaceId: RULES_WS });
+    const applied = await apply({
+      workspaceId: RULES_WS,
+      enabled: true,
+      scanId: result.scanId,
+      disabledRuleIds: [],
+    });
+    expect('result' in applied).toBe(true);
+  });
+
+  afterEach(() => {
+    writeFileSync(globalConfig, '');
+    for (const file of written.splice(0)) rmSync(file, { force: true });
+  });
+
+  it('composes the reviewed rules under an empty Git config', async () => {
+    const composed = await composeWith('');
+    expect(composed).toContain(ALWAYS);
+    expect(composed).toContain(CHECKOUT_ONLY);
+  });
+
+  it('leaves out an includeIf target that sets no eligibility key, whatever its condition', async () => {
+    const baseline = await composeWith('');
+    write(
+      'identity',
+      '[user]\n\temail = work@example.com\n\tsigningkey = ABC\n',
+    );
+    for (const condition of [
+      `gitdir:${dir}/elsewhere/`,
+      'gitdir/i:~/',
+      'onbranch:main',
+      'hasconfig:remote.*.url:https://example.com/**',
+    ]) {
+      expect(
+        await composeWith(`[includeIf "${condition}"]\n\tpath = identity\n`),
+      ).toBe(baseline);
+    }
+  });
+
+  it.each(GIT_ELIGIBILITY_KEYS)(
+    'fails closed on an includeIf target that sets %s',
+    async (key) => {
+      const [section, name] = key.split('.');
+      const value = ELIGIBILITY_VALUES[key];
+      if (!section || !name || value === undefined)
+        throw new Error(`no golden value for ${key}`);
+      write('conditional', `[${section}]\n\t${name} = ${value}\n`);
+      expect(
+        await composeWith(
+          `[includeIf "gitdir:${dir}/elsewhere/"]\n\tpath = conditional\n`,
+        ),
+      ).toBe('');
+    },
+  );
+
+  it('follows a plain include relative to the including file, as Git does', async () => {
+    write('excludes', '.cursor/rules/checkout.mdc\n');
+    write('extra', `[core]\n\texcludesfile = ${join(dir, 'excludes')}\n`);
+    const composed = await composeWith('[include]\n\tpath = extra\n');
+    expect(gitIgnoresCheckoutRule()).toBe(true);
+    expect(composed).toContain(ALWAYS);
+    expect(composed).not.toContain(CHECKOUT_ONLY);
+  });
+
+  it('expands ~/ and nested relative includes, as Git does', async () => {
+    write('excludes', '.cursor/rules/checkout.mdc\n');
+    write(
+      'home/dotfiles/ignore-rules',
+      `[core]\n\texcludesfile = ${join(dir, 'excludes')}\n`,
+    );
+    write('home/dotfiles/main', '[include]\n\tpath = ignore-rules\n');
+    const composed = await composeWith('[include]\n\tpath = ~/dotfiles/main\n');
+    expect(gitIgnoresCheckoutRule()).toBe(true);
+    expect(composed).toContain(ALWAYS);
+    expect(composed).not.toContain(CHECKOUT_ONLY);
+  });
+
+  it('skips a missing include file, as Git does', async () => {
+    const baseline = await composeWith('');
+    expect(await composeWith('[include]\n\tpath = no-such-file\n')).toBe(
+      baseline,
+    );
+    expect(gitIgnoresCheckoutRule()).toBe(false);
+  });
+
+  it("fails closed on an include cycle at Git's depth limit", async () => {
+    write('cycle-a', '[include]\n\tpath = cycle-b\n');
+    write('cycle-b', '[include]\n\tpath = cycle-a\n');
+    expect(await composeWith('[include]\n\tpath = cycle-a\n')).toBe('');
+    // Git refuses the same config.
+    expect(
+      spawnSync('git', ['-C', checkout, 'config', '--get', 'core.ignorecase'], {
+        env: { ...process.env },
+      }).status,
+    ).toBe(128);
+  });
+
+  it('fails closed on an included file over the size bound', async () => {
+    write('huge', `[core]\n${'# padding\n'.repeat(8_000)}`);
+    expect(await composeWith('[include]\n\tpath = huge\n')).toBe('');
+  });
+});
+
+describe('CAN-6368 blocked session reads', () => {
+  // Check reaches core.workspace.repoRules.check, one bounded session read of
+  // the source checkouts; status (core.workspace.repoRules.status) keeps
+  // reading only the saved policy.
+  const BLOCKING_INCLUDE = `[includeIf "gitdir:/elsewhere/"]\n\tpath = blocking\n`;
+  const check = (request: unknown): Promise<Outcome> =>
+    ipc(IPC_CHANNELS.repoRulesCheck, request);
+
+  function resultOf(outcome: Outcome): unknown {
+    if (!('result' in outcome)) throw new Error(JSON.stringify(outcome));
+    return outcome.result;
+  }
+
+  async function enable(): Promise<void> {
+    const result = await scanned({ workspaceId: RULES_WS });
+    const applied = await apply({
+      workspaceId: RULES_WS,
+      enabled: true,
+      scanId: result.scanId,
+      disabledRuleIds: [],
+    });
+    expect('result' in applied).toBe(true);
+  }
+
+  afterEach(() => {
+    writeFileSync(globalConfig, '');
+    rmSync(join(dir, 'blocking'), { force: true });
+  });
+
+  it('check reports a blocked repository and its reason, and status reads only the policy', async () => {
+    await enable();
+    const clear = await check({ workspaceId: RULES_WS });
+    writeFileSync(join(dir, 'blocking'), '[core]\n\texcludesfile = excludes\n');
+    writeFileSync(globalConfig, BLOCKING_INCLUDE);
+    const blocked = await check({ workspaceId: RULES_WS });
+    const statusWhileBlocked = await status({ workspaceId: RULES_WS });
+    const composed = await composeWorktreeRepoRules(
+      RULES_WS,
+      WORKTREE,
+      checkout,
+    );
+    writeFileSync(globalConfig, '');
+    const fixed = await check({ workspaceId: RULES_WS });
+    expect({ clear, blocked, composed, fixed }).toEqual({
+      clear: { result: { blocked: [] } },
+      blocked: {
+        result: {
+          blocked: [{ repoId: '__single_repo__', reason: 'unsupported-git' }],
+        },
+      },
+      composed: '',
+      fixed: { result: { blocked: [] } },
+    });
+    // Status still returns the saved policy only, with no checkout read.
+    const policy = resultOf(statusWhileBlocked);
+    expect(policy).toHaveProperty('enabled', true);
+    expect(
+      typeof policy === 'object' && policy !== null
+        ? Object.keys(policy).sort()
+        : policy,
+    ).toEqual(['disabledRuleIds', 'enabled', 'reviewedAt', 'revision']);
+  });
+
+  it('check reports a missing checkout as a reason, and status and turn-off still work', async () => {
+    await enable();
+    renameSync(repo, `${repo}.away`);
+    try {
+      const gone = await check({ workspaceId: RULES_WS });
+      const statusGone = await status({ workspaceId: RULES_WS });
+      const turnedOff = await apply({ workspaceId: RULES_WS, enabled: false });
+      expect(gone).toEqual({
+        result: {
+          blocked: [{ repoId: '__single_repo__', reason: 'missing-checkout' }],
+        },
+      });
+      expect(resultOf(statusGone)).toHaveProperty('enabled', true);
+      expect(resultOf(turnedOff)).toHaveProperty('enabled', false);
+    } finally {
+      renameSync(`${repo}.away`, repo);
+    }
+  });
+
+  // Root ignores directory permissions, so the unreadable root can't be built.
+  const unlessRoot = process.getuid?.() === 0 ? it.skip : it;
+  unlessRoot(
+    'check reports an unreadable checkout as blocked, not as an error',
+    async () => {
+      await enable();
+      const record = join(workspaceDir(RULES_WS), 'workspace.json');
+      const saved = readFileSync(record, 'utf8');
+      const sealed = join(dir, 'sealed');
+      mkdirSync(join(sealed, 'repo'), { recursive: true });
+      writeJson(record, {
+        version: 1,
+        type: 'single-repo',
+        repoPath: join(sealed, 'repo'),
+        repos: [],
+      });
+      chmodSync(sealed, 0o000);
+      try {
+        expect(await check({ workspaceId: RULES_WS })).toEqual({
+          result: {
+            blocked: [{ repoId: '__single_repo__', reason: 'unavailable' }],
+          },
+        });
+      } finally {
+        chmodSync(sealed, 0o700);
+        writeFileSync(record, saved);
+      }
+    },
+  );
+
+  // Rules compose in process for each chat:send-message turn
+  // (IPC_CHANNELS.chatSendMessage) through selectSessionInstructions.
+  it('starts the chat without rules and records why when composing fails', async () => {
+    await enable();
+    const errors: unknown[] = [];
+    const instructions = await selectSessionInstructions({
+      provider: 'claude',
+      isInteractiveCode: true,
+      resumed: false,
+      currentGlobal: 'Global instructions.',
+      // The workspace's records are gone: resolving its checkout rejects.
+      compose: () =>
+        composeWorktreeRepoRules(RULES_WS, 'no-such-worktree', checkout),
+      onComposeError: (error) => errors.push(error),
+    });
+    expect(instructions).toBe('Global instructions.');
+    expect(errors).toHaveLength(1);
   });
 });

@@ -1,3 +1,4 @@
+import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
 import { portalSnapshotWorkBudget } from '../portal/portal-snapshot-work-budget';
 import {
   getWorktreeDiffStatsOnly,
@@ -288,7 +289,9 @@ export function refreshWorktreeDiffStats(
     worktreeId,
     readDiffStats,
   )
-    .then((stats) => {
+    .then(async (stats) => {
+      if (!(await isWorktreeReadAvailable(workspaceId, worktreeId)))
+        return entries.get(cacheKey);
       if ((generations.get(cacheKey) ?? 0) !== generation) {
         return entries.get(cacheKey);
       }

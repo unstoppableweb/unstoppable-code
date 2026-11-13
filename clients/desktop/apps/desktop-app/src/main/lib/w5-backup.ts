@@ -21,7 +21,7 @@ import type {
   W5BackupPosition,
   W5Resource,
 } from '@canopy/desktop-shared/node/w5-commit-log';
-import { syncDirectory } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { syncDirectory } from '@canopy/execution-engine/node/lib/atomic-file';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import type { W5CommitLogHost } from '../w5-commit-log/commit-log-host';
 import { getDataDir, getWorkspacesRootDir } from './paths';

@@ -2,16 +2,18 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type * as CliRuntimeModule from '../cli-runtime';
-import type { CodexPromptRunnerRequest } from '../executor/types';
+import type { CodexPromptRunnerRequest } from '@canopy/execution-engine/node/pipelines/executor/types';
 
 const mockCreateCodexRuntimeService = jest.fn<unknown, [unknown]>(() => {
   throw new Error('The fixture stops at runtime creation.');
 });
 
 jest.mock(
-  '../../codex-runtime',
+  '@canopy/execution-engine/node/codex-runtime',
   (): Record<string, unknown> => ({
-    ...jest.requireActual<Record<string, unknown>>('../../codex-runtime'),
+    ...jest.requireActual<Record<string, unknown>>(
+      '@canopy/execution-engine/node/codex-runtime',
+    ),
     createCodexRuntimeService: (options: unknown): unknown =>
       mockCreateCodexRuntimeService(options),
   }),

@@ -32,10 +32,10 @@ import {
   type ClaudeWorkerRunResult,
 } from './claude-worker-session-service';
 import type { ClaudeTerminalPermission } from './claude-terminal-settings';
-import { READ_ONLY_TOOLS } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
+import { READ_ONLY_TOOLS } from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
 import { codexRuntimeForWorkerRun } from '../codex/runtime-service';
-import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
+import { isJsonValue } from '@canopy/execution-engine/node/codex-runtime';
 import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import { createHash } from 'node:crypto';
 import {
@@ -47,7 +47,7 @@ import {
 import { prepareCodexReportOnlyThread } from './codex-report-only';
 import { codexNativeMemoryThreadConfig } from '@canopy/execution-engine/node/lib/native-memory';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
 import {
   runWithTransientAgentRetry,
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
@@ -55,7 +55,7 @@ import {
 import type {
   CodexSpawnProfileRequest,
   CodexThreadHandle,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-runner';
 import {
   DEFAULT_CODEX_SPEED,

@@ -477,11 +477,13 @@ function focusSaveOrHeader(
 }
 
 /**
- * Shown when the file changed on disk while the buffer has unsaved edits and
- * the versions cannot be compared passage by passage (otherwise
- * {@link FileOverlapNotice} owns recovery). Neither action overwrites the
- * disk version: Keep my edits leaves the save baseline stale, so the existing
- * save-conflict check still applies.
+ * Shown when the document changed while the buffer has unsaved edits and the
+ * versions cannot be compared passage by passage (otherwise
+ * {@link FileOverlapNotice} owns recovery). Keeping the newer version
+ * replaces the buffer now. Keep mine changes nothing until the user saves,
+ * and it leaves the save baseline stale, so that save meets the existing
+ * save-conflict check before anything is replaced. With a clean buffer the
+ * notice only offers Show latest.
  */
 function FileExternalChangeNotice({
   session,
@@ -501,10 +503,24 @@ function FileExternalChangeNotice({
     if (!noticeRef.current?.contains(document.activeElement)) return;
     focusSaveOrHeader(focusFallbackRef);
   };
-  const changedBy =
-    appName && change.source === 'agent-edit'
-      ? `${appName} changed this document`
-      : 'This document changed';
+  // An empty brand reads as unattributed, matching FileSaveConflictNotice.
+  const attributed = Boolean(appName) && change.source === 'agent-edit';
+  // Neither dirty choice is primary: each discards what the other keeps, so
+  // there is no recommended action. A deliberate exception, for this notice
+  // only, to the inline-notice rule in docs/ux-writing/errors.md.
+  const changedBy = attributed
+    ? `${appName} also changed this document.`
+    : 'This document also changed.';
+  const message = session.dirty
+    ? `${changedBy} The version you don't keep is replaced.`
+    : attributed
+      ? `${appName} changed this document.`
+      : 'This document changed.';
+  const showLabel = !session.dirty
+    ? 'Show latest'
+    : attributed
+      ? `Keep ${appName}'s`
+      : 'Keep latest';
 
   return (
     <Surface variant="section" boundary="bottom">
@@ -529,11 +545,11 @@ function FileExternalChangeNotice({
                     dismissExternalChange(session.key);
                   }}
                 >
-                  Keep my edits
+                  Keep mine
                 </NoticeButton>
               )}
               <NoticeButton
-                variant="primary"
+                variant={session.dirty ? undefined : 'primary'}
                 data-testid="file-external-change-show-latest"
                 disabled={change.reloading || session.status === 'saving'}
                 onClick={(): void => {
@@ -552,14 +568,12 @@ function FileExternalChangeNotice({
                   });
                 }}
               >
-                Show latest
+                {showLabel}
               </NoticeButton>
             </>
           }
         >
-          {session.dirty
-            ? `${changedBy} while you have unsaved edits, and the changes can't be combined automatically. Show latest replaces your edits. Keep my edits keeps them.`
-            : `${changedBy}. Show latest loads the current version.`}
+          {message}
         </Notice>
       </div>
     </Surface>
@@ -620,7 +634,7 @@ function FileSaveConflictNotice({
       ?.focus();
   }, [busy, conflict.focusRequest, handledFocusRequestRef]);
 
-  const attributed = appName !== undefined && conflict.source === 'agent-edit';
+  const attributed = Boolean(appName) && conflict.source === 'agent-edit';
   const showLabel = attributed
     ? `Show ${appName}'s version`
     : 'Show latest version';

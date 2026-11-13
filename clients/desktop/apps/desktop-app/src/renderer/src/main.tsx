@@ -62,6 +62,7 @@ import {
 } from './lib/markdown-math-preference';
 import { DesktopFileSessionRuntime } from './components/chat/DesktopFileSessionRuntime';
 import { ipcCanopyClient } from './client/ipc-canopy-client';
+import { installWebCoreAgentTasksPublisher } from './cloud-chats/web-core-agent-tasks-publisher';
 import { LifecycleJournalQuarantineHost } from '@canopy/ui-app/lifecycle-journal';
 import { DesktopWorktreeDiscardHost } from './components/worktree/DesktopWorktreeDiscardHost';
 import { DesktopProjectDeletionDiscardHost } from './components/worktree/DesktopProjectDeletionDiscardHost';
@@ -211,6 +212,8 @@ function installRendererRuntime(): void {
   // so hot-reloaded modules don't double-subscribe (see store implementation).
   initClaudeTerminalSubscriptions();
   initTerminalActivitySubscriptions();
+  // Cloud chats' agent tasks reach the activity tray (CAN-6175 R2b).
+  installWebCoreAgentTasksPublisher();
   import.meta.hot?.dispose(() => {
     unsubscribeFromModelRegistry();
     uninstallRendererErrorLogging();

@@ -17,6 +17,7 @@ import { WORKER_GIT_GRANTS } from './git';
 import {
   WorkerGitCheckoutScopeSchema,
   WorkerGitExpectedHeadSchema,
+  WorkerGitObjectIdSchema,
 } from './git-branch-writes';
 
 // Mutations are idempotency `none`: a failed or unknown outcome is retried
@@ -83,6 +84,8 @@ export const WorkerGitPullParamsSchema = z.strictObject({
   branch: z.string(),
   strategy: z.enum(WORKER_GIT_PULL_STRATEGIES),
   expected: WorkerGitExpectedHeadSchema.optional(),
+  /** The commit `HEAD` must be at right before the pull; another refuses it. */
+  expectedHeadSha: z.string().optional(),
 });
 
 export type WorkerGitPullParams = z.output<typeof WorkerGitPullParamsSchema>;
@@ -153,15 +156,27 @@ export const WORKER_GIT_COMMIT_ERROR_CODES = [
 export type WorkerGitCommitErrorCode =
   (typeof WORKER_GIT_COMMIT_ERROR_CODES)[number];
 
+/**
+ * The minor schema revision `worker.git.commit` serves (protocol rule 5,
+ * CAN-6093): revision 2 adds the new head to the result. A client asks for
+ * it with `revision` only when the runtime advertises it.
+ */
+export const WORKER_GIT_COMMIT_SCHEMA_REVISION = 2;
+
 export const WorkerGitCommitParamsSchema = z.strictObject({
   scope: WorkerGitCheckoutScopeSchema,
-  message: z.string().min(1).max(100_000),
+  /** Absent or blank, a core that can write one does; otherwise refused. */
+  message: z.string().max(100_000).optional(),
   /** The paths to commit; absent stages and commits every change (`add -A`). */
   paths: z.array(z.string()).optional(),
   /** The commit `HEAD` must be at right before the commit. */
   expectedHeadSha: z.string(),
+  /** The branch the caller saw checked out; another refuses the commit. */
+  expected: WorkerGitExpectedHeadSchema.optional(),
   amend: z.boolean().optional(),
   sign: z.boolean().optional(),
+  /** Revision 2 output, sent only when the runtime advertises it. */
+  revision: z.literal(WORKER_GIT_COMMIT_SCHEMA_REVISION).optional(),
 });
 
 export type WorkerGitCommitParams = z.output<
@@ -177,6 +192,16 @@ export const WorkerGitOperationHandleSchema = z.strictObject({
 
 export type WorkerGitOperationHandle = z.output<
   typeof WorkerGitOperationHandleSchema
+>;
+
+/** A commit's handle; revision 2 adds the commit it made, once completed. */
+export const WorkerGitCommitResultSchema =
+  WorkerGitOperationHandleSchema.extend({
+    headSha: WorkerGitObjectIdSchema.optional(),
+  });
+
+export type WorkerGitCommitResult = z.output<
+  typeof WorkerGitCommitResultSchema
 >;
 
 export const WorkerGitCommitErrorSchema = CanopyErrorPayloadSchema.extend({
@@ -202,8 +227,11 @@ export const WorkerGitPushParamsSchema = z.strictObject({
   branch: z.string(),
   /** The commit the local branch must be at right before the push. */
   expectedLocalHeadSha: z.string(),
-  /** The commit the remote branch must be at; null when it must not exist. */
-  expectedRemoteHeadSha: z.string().nullable(),
+  /**
+   * The commit the remote branch must be at; null when it must not exist.
+   * Absent, the remote branch is not checked.
+   */
+  expectedRemoteHeadSha: z.string().nullable().optional(),
   setUpstream: z.boolean().optional(),
 });
 
@@ -226,7 +254,7 @@ export const WORKER_GIT_COMMIT_PUSH_INSTRUCTION_DEFINITIONS =
       version: 1,
       placement: 'target-selectable',
       params: WorkerGitCommitParamsSchema,
-      result: WorkerGitOperationHandleSchema,
+      result: WorkerGitCommitResultSchema,
       error: WorkerGitCommitErrorSchema,
       idempotency: 'keyed',
       requiredGrants: [WORKER_GIT_GRANTS.write],

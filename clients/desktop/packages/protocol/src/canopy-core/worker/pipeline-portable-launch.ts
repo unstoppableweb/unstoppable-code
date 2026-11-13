@@ -4,6 +4,7 @@ import { CanopyJsonValueSchema } from '../errors';
 import {
   CanopyChildEnvironmentSchema,
   type WorkerPipelineHostLaunch,
+  WorkerPipelineLaunchEventSchema,
   WorkerPipelineLaunchInputsSchema,
   WorkerPipelineLaunchSnapshotSchema,
   WorkerPipelineModelAliasResolutionsSchema,
@@ -51,6 +52,12 @@ export const WorkerPipelinePortableLaunchSchema = z.strictObject({
     snapshot: WorkerPipelineLaunchSnapshotSchema,
   }),
   inputs: WorkerPipelineLaunchInputsSchema.optional(),
+  /**
+   * The run's trigger event, as the host-local launch carries it (CAN-6327):
+   * a cloud plan or a desktop tracked plan's text, or a task's. Absent for
+   * `dispatch`.
+   */
+  event: WorkerPipelineLaunchEventSchema.optional(),
   /**
    * `ExecutionOptions.env`, layered over the runner's own base environment.
    * Not secret: secret values cross only by reference in `secrets`.
@@ -114,14 +121,19 @@ export const WORKER_PIPELINE_PORTABLE_LAUNCH_HOST_MEMBERS = Object.freeze({
   assetsDir: 'A host path: the runner unpacks the pinned package.',
   assetPaths: 'Host paths: the runner unpacks the pinned package.',
   executionCheckoutRoot: 'A host path under the runner data root.',
+  globalWorkspaceDir:
+    "A host path: the runner names the pipeline's kept workspace under its data root.",
   secretEnv: 'Secret values: they cross only by reference in `secrets`.',
   target: 'Carries the worktree path; the runner derives it from runScope.',
   pipelinePreferenceLocator:
     'A file locator is a host path; the pin identifies the definition.',
   nodeProcess: 'The runner stages its own Node runtime for `node` steps.',
+  tsxRuntime: 'The runner stages its own tsx CLI for `tsx` steps.',
   providerBinaries: 'The runner stages its own provider CLIs.',
   bundledResourcesDir:
     'A host path: the runner stages its own bundled resources and their builtin:app skills.',
   codexEnvironment:
     "The primary's Codex app-server environment; the runner builds its own.",
+  precommitHooks:
+    'Electron main runs the precommit-failure hook; a cloud run refuses git-commit-push until CP-30.',
 } as const satisfies Record<WorkerPipelineHostOnlyLaunchMember, string>);

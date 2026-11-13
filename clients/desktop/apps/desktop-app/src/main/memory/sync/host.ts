@@ -4,6 +4,7 @@ import { app, powerMonitor } from 'electron';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
+import type { MemoryScopeRef } from '@canopy/protocol/memory-sync';
 import {
   MEMORY_SYNC_ACCOUNT_HEADER,
   MEMORY_SYNC_CAPABILITY,
@@ -22,7 +23,11 @@ import {
   type CanopyCloudAccountEntry,
 } from '../../lib/canopy-cloud-account-store';
 import { readInstallationGeneration } from '../../lib/installation-generation';
-import { logMainProcessWarn } from '../../lib/main-process-logging';
+import { onWorkspaceMemoryBindingChanged } from '../../lib/workspace-memory-binding-events';
+import {
+  logMainProcessDebug,
+  logMainProcessWarn,
+} from '../../lib/main-process-logging';
 import { getMemoryReplicasRootDir } from '../../lib/paths';
 import { parseSseEvents } from '../../plans/plan-realtime-subscription';
 import { readPortalStateStore } from '../../portal/portal-state-store';
@@ -40,9 +45,15 @@ import {
   MemorySyncEngine,
   type MemorySyncDevice,
   type MemorySyncEngineStatus,
+  type MemorySyncMetric,
   type MemorySyncProblem,
 } from './engine';
 import { createMemoryReplicaHooks } from './note-hooks';
+import type * as ProjectBindings from './project-bindings';
+import {
+  ProjectMemoryScopeDirectory,
+  type ProjectMemoryScopeTarget,
+} from './project-scopes';
 import {
   MemoryReplicaRegistry,
   createMemoryReplicaLocator,
@@ -260,14 +271,76 @@ export function openMemorySyncNudgeStream(
   };
 }
 
+/**
+ * One content-free log line per measure (design §20): sync delay, merge
+ * outcomes, desktop consolidation runs, first enables and replica problems.
+ * Desktop sends no diagnostic operations anywhere, so these stay local.
+ */
+function emitMetric(context: Record<string, string | number>): void {
+  logMainProcessDebug('Memory sync metric', context);
+}
+
+function recordMetric(metric: MemorySyncMetric): void {
+  switch (metric.kind) {
+    case 'delay':
+      emitMetric({
+        metric: 'sync_delay',
+        delay_ms: Math.round(metric.delayMs),
+      });
+      return;
+    case 'merge':
+      emitMetric({
+        metric: 'merge',
+        outcome: metric.outcome,
+        count: metric.count,
+      });
+      return;
+    case 'consolidation':
+      emitMetric({
+        metric: 'consolidation_run',
+        holder: 'desktop',
+        status: metric.status,
+        duration_ms: Math.round(metric.durationMs),
+      });
+      return;
+    case 'first_enable':
+      emitMetric({
+        metric: 'first_enable',
+        mode: metric.mode,
+        outcome: metric.outcome,
+      });
+      return;
+  }
+}
+
 function recordProblem(problem: MemorySyncProblem): void {
   logMainProcessWarn('Memory sync problem', {
     kind: problem.kind,
     code: problem.code,
   });
+  emitMetric({ metric: 'replica_problem', kind: problem.kind });
 }
 
 const USER_SCOPE: LocalMemoryScopeRequest = { scope: 'user' };
+
+function workspaceScope(workspaceId: string): LocalMemoryScopeRequest {
+  return { scope: 'workspace', workspaceId };
+}
+
+/**
+ * The workspaces whose memory may have moved to another folder: every
+ * workspace bound to a project of the account the resolver uses.
+ */
+function boundWorkspaceIds(): string[] {
+  const accountId = resolvableAccountId();
+  if (accountId === null) return [];
+  return projectDirectory
+    .workspaceIds()
+    .filter(
+      (workspaceId) =>
+        projectDirectory.projectFor(accountId, workspaceId) !== null,
+    );
+}
 
 /**
  * A replica was registered or removed, so a scope may resolve to another
@@ -276,9 +349,61 @@ const USER_SCOPE: LocalMemoryScopeRequest = { scope: 'user' };
 function onReplicasChanged(): void {
   retargetLocalMemoryWatches(localMemoryScopeDir);
   broadcastLocalMemoryChanged(USER_SCOPE);
+  for (const workspaceId of boundWorkspaceIds()) {
+    broadcastLocalMemoryChanged(workspaceScope(workspaceId));
+  }
+  notifyProjectMemoryChanged();
+}
+
+/** A workspace's binding or private memory changed: its folder may move. */
+function onProjectBindingsChanged(
+  workspaceIds: readonly string[],
+  projectIds: readonly string[],
+): void {
+  engine?.projectEligibilityChanged(projectIds);
+  retargetLocalMemoryWatches(localMemoryScopeDir);
+  for (const workspaceId of workspaceIds) {
+    broadcastLocalMemoryChanged(workspaceScope(workspaceId));
+  }
+  notifyProjectMemoryChanged();
 }
 
 const registry = new MemoryReplicaRegistry(onReplicasChanged);
+
+// Loaded on demand: the workspace files' readers stay off this module's
+// graph, which main loads early.
+function projectBindings(): Promise<typeof ProjectBindings> {
+  return import('./project-bindings');
+}
+const projectDirectory = new ProjectMemoryScopeDirectory(
+  onProjectBindingsChanged,
+);
+
+/** Reads every workspace's binding again; rejects when the index is unreadable. */
+async function refreshProjectBindings(): Promise<void> {
+  const { readWorkspaceMemoryBindings } = await projectBindings();
+  projectDirectory.replaceAll(await readWorkspaceMemoryBindings());
+}
+
+/**
+ * A workspace's binding or private memory was written: the project it was
+ * bound to stops sending at once, before its file is read again.
+ */
+function refreshWorkspaceBinding(workspaceId: string): void {
+  const projectId = projectDirectory.boundProjectIdOf(workspaceId);
+  if (projectId !== null) engine?.projectEligibilityChanged([projectId]);
+  void projectBindings()
+    .then(({ readWorkspaceMemoryBinding }) =>
+      readWorkspaceMemoryBinding(workspaceId),
+    )
+    .then(
+      (entry) => {
+        projectDirectory.update(workspaceId, entry);
+      },
+      () => undefined,
+    );
+}
+const changeListeners = new Set<() => void>();
 let started = false;
 let attached = false;
 let engine: MemorySyncEngine | null = null;
@@ -304,6 +429,28 @@ async function readEligibleAccountId(): Promise<string | null> {
   return result?.status === 'ok' ? memorySyncAccountId(result.entry) : null;
 }
 
+function notifyChange(): void {
+  for (const listener of changeListeners) listener();
+}
+
+/**
+ * Calls `listener` whenever memory sync's state may have changed: the
+ * signed-in account, the engine and every pass. Returns the stop function.
+ */
+export function onMemorySyncChange(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return (): void => {
+    changeListeners.delete(listener);
+  };
+}
+
+/** The engine of the signed-in account, while it is still the one signed in. */
+export function currentMemorySyncEngine(): MemorySyncEngine | null {
+  return engine !== null && resolvableAccountId() === engine.accountId
+    ? engine
+    : null;
+}
+
 /**
  * Installs the replica locator and note hooks, so the local store reads and
  * writes the account's replicas while an engine runs.
@@ -311,7 +458,9 @@ async function readEligibleAccountId(): Promise<string | null> {
 function attachReplicas(): void {
   attached = true;
   setLocalMemoryReplicaLocator(
-    createMemoryReplicaLocator(registry, resolvableAccountId),
+    createMemoryReplicaLocator(registry, resolvableAccountId, (account, id) =>
+      projectDirectory.projectFor(account, id),
+    ),
   );
   setLocalMemoryReplicaHooks(createMemoryReplicaHooks(registry));
 }
@@ -335,30 +484,111 @@ async function stopEngine(): Promise<void> {
   engine = null;
   if (current === null) return;
   registry.unregisterAccount(current.accountId);
+  notifyProjectMemoryChanged();
   await current.stop();
+}
+
+let ambiguousProjectCount = 0;
+
+/**
+ * Two workspaces bound to one project keep both from syncing (fail closed);
+ * says so once each time the number of such projects changes.
+ */
+function reportAmbiguousProjects(accountId: string): void {
+  const count = projectDirectory.ambiguousProjects(accountId).length;
+  if (count === ambiguousProjectCount) return;
+  ambiguousProjectCount = count;
+  if (count > 0) {
+    recordProblem({ kind: 'project_scopes', code: 'ambiguous_binding' });
+  }
+}
+
+/**
+ * The local scope a cloud scope is this device's memory for: the user scope,
+ * or the one workspace bound to the project for the account; null when no
+ * workspace maps to it, which keeps the project from syncing.
+ */
+function localScopeFor(
+  accountId: string,
+  scope: MemoryScopeRef,
+): LocalMemoryScopeRequest | null {
+  if (scope.kind === 'user') return USER_SCOPE;
+  const workspaceId = projectDirectory.workspaceFor(accountId, scope.projectId);
+  return workspaceId === null ? null : workspaceScope(workspaceId);
+}
+
+/**
+ * E2E-only: Electron flows start sync without the 15 second launch quiet
+ * period and push without the debounce. Gated on the build-time
+ * `__CANOPY_E2E__`, so production builds drop it (check:no-e2e-seams).
+ */
+function engineTiming(): {
+  launchQuietMs: number;
+  pushDebounceMs: number;
+} | null {
+  if (__CANOPY_E2E__) {
+    return process.env.CANOPY_E2E_MEMORY_SYNC_IMMEDIATE === '1'
+      ? { launchQuietMs: 0, pushDebounceMs: 50 }
+      : null;
+  }
+  return null;
 }
 
 async function startEngine(accountId: string): Promise<void> {
   const device = await readDevice();
+  const timing = engineTiming();
   attachReplicas();
   const next = new MemorySyncEngine({
+    ...(timing === null ? {} : { timing }),
     accountId,
     replicasRoot: getMemoryReplicasRootDir(),
     transport: createMemorySyncTransport(accountId, cloudHttp),
     device,
     registry,
-    deviceLocalDir: (scope): string | null =>
-      scope.kind === 'user' ? deviceLocalMemoryScopeDir(USER_SCOPE) : null,
+    projectScopes: async (): Promise<readonly ProjectMemoryScopeTarget[]> => {
+      await refreshProjectBindings();
+      reportAmbiguousProjects(accountId);
+      return projectDirectory.targets(accountId);
+    },
+    projectScope: async (
+      projectId: string,
+    ): Promise<ProjectMemoryScopeTarget | null> => {
+      const workspaceId = projectDirectory.workspaceFor(accountId, projectId);
+      if (workspaceId === null) return null;
+      const { readWorkspaceMemoryBinding } = await projectBindings();
+      projectDirectory.update(
+        workspaceId,
+        await readWorkspaceMemoryBinding(workspaceId),
+      );
+      return (
+        projectDirectory
+          .targets(accountId)
+          .find((target) => target.scope.projectId === projectId) ?? null
+      );
+    },
+    accountEligible: (): boolean =>
+      started && engine === next && resolvableAccountId() === accountId,
+    deviceLocalDir: (scope): string | null => {
+      const local = localScopeFor(accountId, scope);
+      return local === null ? null : deviceLocalMemoryScopeDir(local);
+    },
     onScopeChanged: (scope): void => {
-      if (scope.kind === 'user') broadcastLocalMemoryChanged(USER_SCOPE);
+      const local = localScopeFor(accountId, scope);
+      if (local !== null) broadcastLocalMemoryChanged(local);
     },
     requestConsolidation: (scope, delayMs): void => {
-      if (scope.kind !== 'user') return;
+      const local = localScopeFor(accountId, scope);
+      if (local === null) return;
       // Loaded on demand: the scheduler's session imports stay off this
       // module's graph, and main has already loaded it by the time a run ends.
       void import('../local/consolidation-scheduler')
         .then((scheduler) =>
-          scheduler.retryLocalMemoryConsolidation({}, delayMs),
+          scheduler.retryLocalMemoryConsolidation(
+            local.scope === 'workspace'
+              ? { workspaceId: local.workspaceId }
+              : {},
+            delayMs,
+          ),
         )
         .catch((error: unknown) => {
           logMainProcessWarn('Memory consolidation could not be rearmed', {
@@ -367,8 +597,12 @@ async function startEngine(accountId: string): Promise<void> {
         });
     },
     recordProblem,
+    recordMetric,
+    onStatusChanged: notifyChange,
+    onProjectModesChanged: notifyProjectMemoryChanged,
   });
   engine = next;
+  notifyProjectMemoryChanged();
   await next.loadReplicas();
   next.start();
   stream = openMemorySyncNudgeStream(accountId, () => {
@@ -388,6 +622,7 @@ async function reconcileNow(): Promise<void> {
       });
     });
   }
+  notifyChange();
 }
 
 function reconcile(): Promise<void> {
@@ -411,8 +646,10 @@ export function startMemorySync(): void {
   powerMonitor.on('resume', onResume);
   unsubscribers = [
     subscribeCanopyCloudAccountChanges(() => {
+      notifyChange();
       void reconcile();
     }),
+    onWorkspaceMemoryBindingChanged(refreshWorkspaceBinding),
     (): void => {
       powerMonitor.removeListener('resume', onResume);
     },
@@ -426,6 +663,172 @@ export async function stopMemorySync(): Promise<void> {
   for (const unsubscribe of unsubscribers) unsubscribe();
   unsubscribers = [];
   await reconcile().catch(() => undefined);
+}
+
+/**
+ * A bound workspace's project memory, as the "keep memory on this device"
+ * switch shows it (design §22). `mode` is the account's choice for the
+ * project, which every device honors, or its default for projects; null
+ * while this launch has not read the account's choices. `state` is what the
+ * memory does on this device now. `changeable` is false while the
+ * workspace's private memory decides (the organization may manage it), or
+ * its binding was detached or its project moved.
+ */
+export interface WorkspaceProjectMemory {
+  workspaceId: string;
+  projectId: string;
+  mode: 'sync' | 'device_only' | null;
+  state: 'sync' | 'device_only' | 'stopped';
+  reason: 'private_memory' | 'detached' | 'moved' | 'kept_on_device' | null;
+  changeable: boolean;
+}
+
+export type WorkspaceProjectMemoryModeResult =
+  | { ok: true; memory: WorkspaceProjectMemory }
+  | {
+      ok: false;
+      reason:
+        | 'off'
+        | 'not_bound'
+        | 'private_memory'
+        | 'not_syncing'
+        | 'sync_disabled'
+        | 'failed';
+    };
+
+const projectMemoryListeners = new Set<() => void>();
+
+function notifyProjectMemoryChanged(): void {
+  for (const listener of projectMemoryListeners) listener();
+  // A project's memory is part of memory sync's state, so whatever shows
+  // that state hears about a binding, Private memory or mode change too.
+  notifyChange();
+}
+
+/**
+ * Runs `listener` whenever a {@link workspaceProjectMemory} answer may have
+ * changed: a binding or private memory choice, the account's per-project
+ * modes, the signed-in account or the engine. Returns the stop function.
+ */
+export function onWorkspaceProjectMemoryChange(
+  listener: () => void,
+): () => void {
+  projectMemoryListeners.add(listener);
+  return (): void => {
+    projectMemoryListeners.delete(listener);
+  };
+}
+
+function syncingEngine(): MemorySyncEngine | null {
+  const accountId = resolvableAccountId();
+  return started && engine !== null && accountId === engine.accountId
+    ? engine
+    : null;
+}
+
+/**
+ * The project memory of a workspace bound to a cloud project of the
+ * signed-in account; null while sync is off, signed out, or the workspace
+ * maps to no project scope. Synchronous and free of I/O.
+ */
+export function workspaceProjectMemory(
+  workspaceId: string,
+): WorkspaceProjectMemory | null {
+  const current = syncingEngine();
+  if (current === null) return null;
+  const target = projectDirectory
+    .targets(current.accountId)
+    .find((entry) => entry.workspaceId === workspaceId);
+  if (target === undefined) return null;
+  const mode = current.projectMode(target.scope.projectId);
+  const keptHere = target.mode === 'sync' && mode === 'device_only';
+  return {
+    workspaceId,
+    projectId: target.scope.projectId,
+    mode,
+    state: keptHere ? 'device_only' : target.mode,
+    reason: keptHere ? 'kept_on_device' : target.reason,
+    changeable: target.mode === 'sync',
+  };
+}
+
+/**
+ * Every workspace bound to a cloud project of the signed-in account, with
+ * its project memory as {@link workspaceProjectMemory} answers it. Empty
+ * while sync is off or signed out. Synchronous and free of I/O: the
+ * bindings are the ones the last pass or binding event read.
+ */
+export function listWorkspaceProjectMemory(): WorkspaceProjectMemory[] {
+  const current = syncingEngine();
+  if (current === null) return [];
+  return projectDirectory
+    .targets(current.accountId)
+    .flatMap(({ workspaceId }) => {
+      const memory = workspaceProjectMemory(workspaceId);
+      return memory === null ? [] : [memory];
+    });
+}
+
+/**
+ * The project scope a workspace is bound to, its binding read again, or
+ * null when no single workspace of the signed-in account maps to one. The
+ * caller addresses a project scope by its workspace, so the project a
+ * control acts on is always the one the workspace names now.
+ */
+export async function freshWorkspaceProjectScope(
+  workspaceId: string,
+): Promise<MemoryScopeRef | null> {
+  if (syncingEngine() === null) return null;
+  const { readWorkspaceMemoryBinding } = await projectBindings();
+  projectDirectory.update(
+    workspaceId,
+    await readWorkspaceMemoryBinding(workspaceId),
+  );
+  const current = syncingEngine();
+  if (current === null) return null;
+  return (
+    projectDirectory
+      .targets(current.accountId)
+      .find((entry) => entry.workspaceId === workspaceId)?.scope ?? null
+  );
+}
+
+/**
+ * Sets "keep memory on this device" (`device_only`) or sync for the cloud
+ * project a workspace is bound to, for the signed-in account on every
+ * device. Reads the workspace's binding fresh first, and refuses while sync
+ * is off, the workspace is bound to no project of the account, its private
+ * memory decides, or its binding no longer syncs.
+ */
+export async function setWorkspaceProjectMemoryMode(
+  workspaceId: string,
+  mode: 'sync' | 'device_only',
+): Promise<WorkspaceProjectMemoryModeResult> {
+  if (syncingEngine() === null) return { ok: false, reason: 'off' };
+  const { readWorkspaceMemoryBinding } = await projectBindings();
+  projectDirectory.update(
+    workspaceId,
+    await readWorkspaceMemoryBinding(workspaceId),
+  );
+  const current = syncingEngine();
+  if (current === null) return { ok: false, reason: 'off' };
+  const target = projectDirectory
+    .targets(current.accountId)
+    .find((entry) => entry.workspaceId === workspaceId);
+  if (target === undefined) return { ok: false, reason: 'not_bound' };
+  if (target.reason === 'private_memory') {
+    return { ok: false, reason: 'private_memory' };
+  }
+  if (target.mode !== 'sync') return { ok: false, reason: 'not_syncing' };
+  const result = await current.setProjectMode(target.scope.projectId, mode);
+  if (!result.ok) {
+    return {
+      ok: false,
+      reason: result.failure.kind === 'paused' ? 'sync_disabled' : 'failed',
+    };
+  }
+  const memory = workspaceProjectMemory(workspaceId);
+  return memory === null ? { ok: false, reason: 'off' } : { ok: true, memory };
 }
 
 export const memorySyncHostTestExports = {

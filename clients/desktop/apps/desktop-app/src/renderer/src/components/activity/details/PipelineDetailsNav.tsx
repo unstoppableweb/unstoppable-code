@@ -6,6 +6,7 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import {
   getPresentJobStatuses,
+  presentedJobStatus,
   type JobStatus,
   type JobStatusCount,
 } from '@/lib/pipelineDetailsView';
@@ -125,9 +126,10 @@ export function PipelineDetailsNav({
     if (statusFilter === 'all') return true;
     const group = state.job_groups[id];
     return (
-      group?.status === statusFilter ||
+      presentedJobStatus(group?.status) === statusFilter ||
       group?.variant_job_ids.some(
-        (physicalId) => state.jobs[physicalId]?.status === statusFilter,
+        (physicalId) =>
+          presentedJobStatus(state.jobs[physicalId]?.status) === statusFilter,
       )
     );
   });
@@ -270,12 +272,15 @@ function PipelineNavJob({
     () =>
       statusFilter === 'all'
         ? children
-        : children.filter((child) => child.result?.status === statusFilter),
+        : children.filter(
+            (child) =>
+              presentedJobStatus(child.result?.status) === statusFilter,
+          ),
     [children, statusFilter],
   );
   const filterRevealsChildren =
     statusFilter !== 'all' &&
-    group?.status !== statusFilter &&
+    presentedJobStatus(group?.status) !== statusFilter &&
     filteredChildren.length > 0;
 
   const [userExpanded, setUserExpanded] = useState(false);

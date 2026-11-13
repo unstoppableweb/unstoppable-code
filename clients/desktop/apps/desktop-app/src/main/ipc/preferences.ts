@@ -521,6 +521,300 @@ function rendererCodeCacheSchemeLoadFields(): Pick<
   };
 }
 
+/**
+ * The window's preferences save: commits a patch with every side effect and
+ * broadcast that follow it. `precondition` runs inside the serialized commit
+ * with the stored preferences and may throw to refuse the patch before
+ * anything is written (CAN-6004).
+ */
+export async function savePreferencesPatch(
+  preferences: Partial<PreferencesData>,
+  options?: PreferencesProjectionOptions,
+  precondition?: (latest: PreferencesData) => void,
+): Promise<PreferencesSaveResult | PreferencesData> {
+  if (Object.prototype.hasOwnProperty.call(preferences, 'approvalDefaults')) {
+    throw new Error(
+      'Approval defaults must be saved with setApprovalDefaultPreference.',
+    );
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(preferences, 'claudeModAdmissions') ||
+    Object.prototype.hasOwnProperty.call(preferences, 'claudeModsDisabled')
+  ) {
+    throw new Error(
+      'Claude Mod consent and the kill switch must be changed with the typed Claude Mod admission service.',
+    );
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(preferences, 'accountProxyConnection')
+  ) {
+    throw new Error(
+      'The account proxy connection must be changed with accountProxy.connect.',
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(preferences, 'copilotAccount')) {
+    throw new Error(
+      'The Copilot account must be changed with copilotConnection.connect.',
+    );
+  }
+  // Main owns native account tracking (CAN-4200); a renderer copy can be
+  // older than main's latest record, so it never overwrites it.
+  const rendererPatch = { ...preferences };
+  // Main's Copilot connection owns the flag with its account pin (CAN-4880).
+  // Only the dedicated updateSuggestions command changes the master/dismissals.
+  // A generic Settings snapshot may predate a toggle in another window.
+  delete rendererPatch.suggestions;
+  // An older controller sends this exact one-key intent. A multi-field
+  // snapshot may be stale and cannot change the committed master.
+  const legacySuggestionIntent =
+    Object.keys(preferences).length === 1 &&
+    typeof preferences.repeatTaskAutomationSuggestionsEnabled === 'boolean';
+  if (!legacySuggestionIntent)
+    delete rendererPatch.repeatTaskAutomationSuggestionsEnabled;
+  delete rendererPatch.copilotEnabled;
+  delete rendererPatch.disabledInstalledItems;
+  delete rendererPatch.parkedCodexPlugins;
+  delete rendererPatch.pendingInstalledItemUninstalls;
+  delete rendererPatch.nativeProviderAccounts;
+  // Rule mutations belong to the approval authority, not renderer snapshots.
+  delete rendererPatch.globalApprovalRules;
+  // Follows the proxy's own strategy, which accountProxy.setRoutingStrategy
+  // changes first.
+  delete rendererPatch.accountProxyLocalRoutingStrategy;
+  // Shells and presets belong to core.terminal.settings (CAN-4148). An
+  // older controller sends this exact two-key intent; a wider snapshot may
+  // be stale and never changes them.
+  applyTerminalSettingsSaveRule(preferences, rendererPatch);
+  // Global plugin defaults also change through core.catalog (CAN-4123).
+  // Every writer sends them as a one-key save; a wider snapshot may hold
+  // a copy read before that change and never puts it back (CAN-5766).
+  applyGlobalPluginDefaultsSaveRule(preferences, rendererPatch);
+  const previous = await readPreferencesFile();
+  const previousCodeGraph = getCodeGraphPreferencesSnapshot();
+  const proxy = getMcpHttpProxyService();
+  if (
+    typeof preferences.mcpProxyPort === 'number' &&
+    preferences.mcpProxyPort !== previous.mcpProxyPort
+  ) {
+    try {
+      await proxy.assertPortAvailable(preferences.mcpProxyPort);
+    } catch {
+      throw new Error('MCP proxy port is already in use. Choose another port.');
+    }
+  }
+  let defaultBrowserRegistration: Promise<unknown> | undefined;
+  const { previous: committedPrevious, next: normalized } =
+    await updatePreferencesFileWithPrevious(
+      // Usage data merges per key: a partial patch must not turn the
+      // flows it omits back on through their defaults.
+      (latest) => {
+        precondition?.(latest);
+        return rendererPatch.usageData
+          ? {
+              ...rendererPatch,
+              usageData: {
+                ...latest.usageData,
+                ...rendererPatch.usageData,
+              },
+            }
+          : rendererPatch;
+      },
+      (committed) => {
+        // Apply in commit order: an older overlapping save must not
+        // re-enable diagnostics after a newer save turned them off.
+        getMemoryDiagnosticsService().setEnabled(
+          committed.memoryDiagnosticsEnabled,
+        );
+        // Apply inside the serialized commit so an older save that
+        // finishes its side effects later cannot overwrite a newer value.
+        setAppAdvisorProjectAgentAccess(committed.appAdvisorProjectAgentAccess);
+        // The full merged-and-normalized object, never the partial patch,
+        // applied in commit order like the values above. Applied on every
+        // commit: a commit proves the stored file is real again, which
+        // also ends a fail-closed startup read of unreadable preferences.
+        getUsageDataPolicy().setPreferences(committed.usageData);
+        if ('useAsSystemDefaultBrowser' in preferences) {
+          defaultBrowserRegistration = enqueueDefaultBrowserRegistration(
+            committed.useAsSystemDefaultBrowser === true,
+          );
+        }
+      },
+    );
+  const saveGeneration = ++preferencesSaveGeneration;
+  // updateManagedDelegationPolicy changes the process-authoritative
+  // admission state synchronously before its cancellation promise can
+  // yield. Start it immediately after commit so no profile sync,
+  // broadcast, or other side effect can leave old sessions launchable.
+  const pendingManagedDelegationPolicyUpdate =
+    beginManagedDelegationPolicyUpdate(normalized, preferences);
+  if ('managedDelegationLifetimeLimit' in preferences)
+    notifyManagedDelegationLifetimePreferencesChanged();
+  if (
+    committedPrevious.personalWorkspaceCatalogSync !==
+    normalized.personalWorkspaceCatalogSync
+  ) {
+    trackDetachedWork(() =>
+      (async (): Promise<void> => {
+        try {
+          await personalCatalogPreferenceChanged();
+        } catch (error) {
+          logMainProcessWarn(
+            '[preferences] Personal catalog follow-up failed after preference commit',
+            error,
+          );
+        }
+      })(),
+    );
+  }
+  if (committedPrevious.uiScale !== normalized.uiScale) {
+    // Interface scale is a uniform zoom owned by main (`lib/ui-zoom.ts`).
+    // Fan the new factor out to every open window (main, App Advisor,
+    // panel pull-outs) right after the write commits, ahead of the slower
+    // side effects and the renderer broadcast below, so the slider feels
+    // immediate.
+    applyUiZoomToAllWindows(uiScaleToZoomFactor(normalized.uiScale));
+  }
+  setRemoteControlEnabled(normalized.remoteControlEnabled === true);
+  if (
+    committedPrevious.copilotEnabled !== normalized.copilotEnabled ||
+    JSON.stringify(committedPrevious.copilotAccount) !==
+      JSON.stringify(normalized.copilotAccount)
+  ) {
+    const { revokeCopilotRuntimes } = await import('../copilot/connection');
+    await revokeCopilotRuntimes();
+    broadcastModelRegistryUpdated();
+    notifyPortalStructureChanged();
+  }
+  if (
+    committedPrevious.accountProxyEnabled !== normalized.accountProxyEnabled ||
+    committedPrevious.accountProxyKeepChatOnOneAccount !==
+      normalized.accountProxyKeepChatOnOneAccount ||
+    committedPrevious.accountProxyRouteClaude !==
+      normalized.accountProxyRouteClaude ||
+    committedPrevious.accountProxyRouteCodex !==
+      normalized.accountProxyRouteCodex ||
+    committedPrevious.accountProxyLocalStartWithApp !==
+      normalized.accountProxyLocalStartWithApp
+  ) {
+    const { notifyAccountProxyPreferencesChanged } =
+      await import('./account-proxy');
+    notifyAccountProxyPreferencesChanged();
+  }
+  if (committedPrevious.opencodeEnabled !== normalized.opencodeEnabled) {
+    const { revokeOpenCodeRuntimes } = await import('../opencode/connection');
+    await revokeOpenCodeRuntimes();
+    broadcastModelRegistryUpdated();
+    notifyPortalStructureChanged();
+  }
+  if (committedPrevious.cursorEnabled !== normalized.cursorEnabled) {
+    // Preferences can be changed without using the Connect/Disconnect UI
+    // — `harnesses-settings.spec.mjs` exercises exactly this generic
+    // `preferencesSave` path with `{ cursorEnabled: false }`. Both
+    // directions refresh and notify below; only disabling additionally
+    // withdraws the cached selectable models, since enabling here (with
+    // no accompanying sign-in) has no catalog to populate.
+    if (!normalized.cursorEnabled) {
+      // Drain pending discovery before withdrawing its selectable models.
+      const { invalidateCursorModels } = await import('../cursor/models');
+      await invalidateCursorModels();
+      initCursorModels([]);
+    }
+    // Portal projects `providerAvailability.cursor` from the cached
+    // preflight; refresh it so the broadcast that follows does not
+    // re-project a stale hint in either direction.
+    await refreshCursorRuntimeAvailability();
+    broadcastModelRegistryUpdated();
+    // `broadcastModelRegistryUpdated` above only reaches desktop
+    // renderer windows. An already-open Portal session projects
+    // `providerAvailability.cursor` from the same cached preflight, so
+    // it needs this separate push too, matching the Connect/Disconnect
+    // handlers in `ipc/cursor-connection.ts`.
+    notifyPortalStructureChanged();
+  }
+  if (
+    'globalPluginSelections' in rendererPatch &&
+    !pluginSelectionsEqual(
+      committedPrevious.globalPluginSelections,
+      normalized.globalPluginSelections,
+    )
+  ) {
+    // Sessions on overlay-participating chat surfaces lazily recreate on
+    // their next send; new sends and terminals resolve against the
+    // updated global defaults when they start.
+    bumpGlobalPluginDefaultsRevision();
+    // The installed-item statuses derive from these selections, so the
+    // synced snapshot the web settings read must follow (CAN-6037).
+    notifyDesktopInventoryChanged(['installed_items']);
+  }
+  recordOnboardingProfileTelemetry({
+    previous: committedPrevious,
+    next: normalized,
+  });
+  try {
+    await syncOnboardingProfilePreferences(normalized, preferences);
+  } catch (error) {
+    // The local preference write has already committed. Cloud profile sync
+    // is best-effort and must never make a successful onboarding step look
+    // failed or roll back the user's local answer.
+    // eslint-disable-next-line no-console
+    console.warn('Failed to sync onboarding profile to the cloud:', error);
+  }
+  // Apply the persisted native appearance before any asynchronous
+  // reconciliation or renderer broadcast. This keeps macOS window
+  // materials and renderer `prefers-color-scheme` updates pinned to an
+  // explicit Light/Dark choice throughout the save.
+  nativeTheme.themeSource = getNativeThemeSource(normalized.colorMode);
+  setCodeGraphPreferences(normalized.codeGraph);
+  if (
+    !pendingManagedDelegationPolicyUpdate &&
+    saveGeneration === preferencesSaveGeneration
+  ) {
+    broadcastPreferencesSynced(preferencesSaveResult(normalized));
+  }
+  if (
+    normalized.codeGraph !== undefined &&
+    !hasSameEffectiveCodeGraphPreference(
+      previousCodeGraph,
+      normalized.codeGraph,
+    )
+  ) {
+    try {
+      await reconcileCodeGraphAvailability();
+      cancelCodeGraphReconciliationRetry();
+    } catch (error) {
+      // The preference is already persisted, cached, and broadcast. Keep
+      // reconciliation best-effort so a transient workspace read failure
+      // cannot make that successful save appear to fail or skip the
+      // remaining preference side effects.
+      // eslint-disable-next-line no-console
+      console.error('Failed to reconcile Code Graph availability:', error);
+      scheduleCodeGraphReconciliationRetry();
+    }
+  }
+  await applyPreferenceSideEffects(
+    normalized,
+    preferences,
+    pendingManagedDelegationPolicyUpdate,
+    defaultBrowserRegistration,
+  );
+  const latest =
+    pendingManagedDelegationPolicyUpdate ||
+    saveGeneration !== preferencesSaveGeneration
+      ? await latestPreferencesSaveResult()
+      : preferencesSaveResult(normalized);
+  const saved: PreferencesSaveResult = latest;
+  if (
+    pendingManagedDelegationPolicyUpdate &&
+    pendingManagedDelegationPolicyUpdate.generation ===
+      managedDelegationPolicyGeneration
+  ) {
+    // The effective mode and final revocation status must travel together
+    // so every renderer reflects the process-authoritative result.
+    broadcastPreferencesSynced(saved);
+  }
+  return options?.view === 'persisted' ? normalized : saved;
+}
+
 export function registerPreferenceHandlers(): void {
   managedDelegationRevocationIncomplete = false;
   preferencesSaveGeneration = 0;
@@ -610,305 +904,11 @@ export function registerPreferenceHandlers(): void {
 
   registerIpcHandler(
     IPC_CHANNELS.preferencesSave,
-    async (
+    (
       _event,
       preferences: Partial<PreferencesData>,
       options?: PreferencesProjectionOptions,
-    ) => {
-      if (
-        Object.prototype.hasOwnProperty.call(preferences, 'approvalDefaults')
-      ) {
-        throw new Error(
-          'Approval defaults must be saved with setApprovalDefaultPreference.',
-        );
-      }
-      if (
-        Object.prototype.hasOwnProperty.call(
-          preferences,
-          'claudeModAdmissions',
-        ) ||
-        Object.prototype.hasOwnProperty.call(preferences, 'claudeModsDisabled')
-      ) {
-        throw new Error(
-          'Claude Mod consent and the kill switch must be changed with the typed Claude Mod admission service.',
-        );
-      }
-      if (
-        Object.prototype.hasOwnProperty.call(
-          preferences,
-          'accountProxyConnection',
-        )
-      ) {
-        throw new Error(
-          'The account proxy connection must be changed with accountProxy.connect.',
-        );
-      }
-      if (Object.prototype.hasOwnProperty.call(preferences, 'copilotAccount')) {
-        throw new Error(
-          'The Copilot account must be changed with copilotConnection.connect.',
-        );
-      }
-      // Main owns native account tracking (CAN-4200); a renderer copy can be
-      // older than main's latest record, so it never overwrites it.
-      const rendererPatch = { ...preferences };
-      // Main's Copilot connection owns the flag with its account pin (CAN-4880).
-      // Only the dedicated updateSuggestions command changes the master/dismissals.
-      // A generic Settings snapshot may predate a toggle in another window.
-      delete rendererPatch.suggestions;
-      // An older controller sends this exact one-key intent. A multi-field
-      // snapshot may be stale and cannot change the committed master.
-      const legacySuggestionIntent =
-        Object.keys(preferences).length === 1 &&
-        typeof preferences.repeatTaskAutomationSuggestionsEnabled === 'boolean';
-      if (!legacySuggestionIntent)
-        delete rendererPatch.repeatTaskAutomationSuggestionsEnabled;
-      delete rendererPatch.copilotEnabled;
-      delete rendererPatch.disabledInstalledItems;
-      delete rendererPatch.parkedCodexPlugins;
-      delete rendererPatch.pendingInstalledItemUninstalls;
-      delete rendererPatch.nativeProviderAccounts;
-      // Rule mutations belong to the approval authority, not renderer snapshots.
-      delete rendererPatch.globalApprovalRules;
-      // Follows the proxy's own strategy, which accountProxy.setRoutingStrategy
-      // changes first.
-      delete rendererPatch.accountProxyLocalRoutingStrategy;
-      // Shells and presets belong to core.terminal.settings (CAN-4148). An
-      // older controller sends this exact two-key intent; a wider snapshot may
-      // be stale and never changes them.
-      applyTerminalSettingsSaveRule(preferences, rendererPatch);
-      // Global plugin defaults also change through core.catalog (CAN-4123).
-      // Every writer sends them as a one-key save; a wider snapshot may hold
-      // a copy read before that change and never puts it back (CAN-5766).
-      applyGlobalPluginDefaultsSaveRule(preferences, rendererPatch);
-      const previous = await readPreferencesFile();
-      const previousCodeGraph = getCodeGraphPreferencesSnapshot();
-      const proxy = getMcpHttpProxyService();
-      if (
-        typeof preferences.mcpProxyPort === 'number' &&
-        preferences.mcpProxyPort !== previous.mcpProxyPort
-      ) {
-        try {
-          await proxy.assertPortAvailable(preferences.mcpProxyPort);
-        } catch {
-          throw new Error(
-            'MCP proxy port is already in use. Choose another port.',
-          );
-        }
-      }
-      let defaultBrowserRegistration: Promise<unknown> | undefined;
-      const { previous: committedPrevious, next: normalized } =
-        await updatePreferencesFileWithPrevious(
-          // Usage data merges per key: a partial patch must not turn the
-          // flows it omits back on through their defaults.
-          (latest) =>
-            rendererPatch.usageData
-              ? {
-                  ...rendererPatch,
-                  usageData: {
-                    ...latest.usageData,
-                    ...rendererPatch.usageData,
-                  },
-                }
-              : rendererPatch,
-          (committed) => {
-            // Apply in commit order: an older overlapping save must not
-            // re-enable diagnostics after a newer save turned them off.
-            getMemoryDiagnosticsService().setEnabled(
-              committed.memoryDiagnosticsEnabled,
-            );
-            // Apply inside the serialized commit so an older save that
-            // finishes its side effects later cannot overwrite a newer value.
-            setAppAdvisorProjectAgentAccess(
-              committed.appAdvisorProjectAgentAccess,
-            );
-            // The full merged-and-normalized object, never the partial patch,
-            // applied in commit order like the values above. Applied on every
-            // commit: a commit proves the stored file is real again, which
-            // also ends a fail-closed startup read of unreadable preferences.
-            getUsageDataPolicy().setPreferences(committed.usageData);
-            if ('useAsSystemDefaultBrowser' in preferences) {
-              defaultBrowserRegistration = enqueueDefaultBrowserRegistration(
-                committed.useAsSystemDefaultBrowser === true,
-              );
-            }
-          },
-        );
-      const saveGeneration = ++preferencesSaveGeneration;
-      // updateManagedDelegationPolicy changes the process-authoritative
-      // admission state synchronously before its cancellation promise can
-      // yield. Start it immediately after commit so no profile sync,
-      // broadcast, or other side effect can leave old sessions launchable.
-      const pendingManagedDelegationPolicyUpdate =
-        beginManagedDelegationPolicyUpdate(normalized, preferences);
-      if ('managedDelegationLifetimeLimit' in preferences)
-        notifyManagedDelegationLifetimePreferencesChanged();
-      if (
-        committedPrevious.personalWorkspaceCatalogSync !==
-        normalized.personalWorkspaceCatalogSync
-      ) {
-        trackDetachedWork(() =>
-          (async (): Promise<void> => {
-            try {
-              await personalCatalogPreferenceChanged();
-            } catch (error) {
-              logMainProcessWarn(
-                '[preferences] Personal catalog follow-up failed after preference commit',
-                error,
-              );
-            }
-          })(),
-        );
-      }
-      if (committedPrevious.uiScale !== normalized.uiScale) {
-        // Interface scale is a uniform zoom owned by main (`lib/ui-zoom.ts`).
-        // Fan the new factor out to every open window (main, App Advisor,
-        // panel pull-outs) right after the write commits, ahead of the slower
-        // side effects and the renderer broadcast below, so the slider feels
-        // immediate.
-        applyUiZoomToAllWindows(uiScaleToZoomFactor(normalized.uiScale));
-      }
-      setRemoteControlEnabled(normalized.remoteControlEnabled === true);
-      if (
-        committedPrevious.copilotEnabled !== normalized.copilotEnabled ||
-        JSON.stringify(committedPrevious.copilotAccount) !==
-          JSON.stringify(normalized.copilotAccount)
-      ) {
-        const { revokeCopilotRuntimes } = await import('../copilot/connection');
-        await revokeCopilotRuntimes();
-        broadcastModelRegistryUpdated();
-        notifyPortalStructureChanged();
-      }
-      if (
-        committedPrevious.accountProxyEnabled !==
-          normalized.accountProxyEnabled ||
-        committedPrevious.accountProxyKeepChatOnOneAccount !==
-          normalized.accountProxyKeepChatOnOneAccount ||
-        committedPrevious.accountProxyRouteClaude !==
-          normalized.accountProxyRouteClaude ||
-        committedPrevious.accountProxyRouteCodex !==
-          normalized.accountProxyRouteCodex ||
-        committedPrevious.accountProxyLocalStartWithApp !==
-          normalized.accountProxyLocalStartWithApp
-      ) {
-        const { notifyAccountProxyPreferencesChanged } =
-          await import('./account-proxy');
-        notifyAccountProxyPreferencesChanged();
-      }
-      if (committedPrevious.opencodeEnabled !== normalized.opencodeEnabled) {
-        const { revokeOpenCodeRuntimes } =
-          await import('../opencode/connection');
-        await revokeOpenCodeRuntimes();
-        broadcastModelRegistryUpdated();
-        notifyPortalStructureChanged();
-      }
-      if (committedPrevious.cursorEnabled !== normalized.cursorEnabled) {
-        // Preferences can be changed without using the Connect/Disconnect UI
-        // — `harnesses-settings.spec.mjs` exercises exactly this generic
-        // `preferencesSave` path with `{ cursorEnabled: false }`. Both
-        // directions refresh and notify below; only disabling additionally
-        // withdraws the cached selectable models, since enabling here (with
-        // no accompanying sign-in) has no catalog to populate.
-        if (!normalized.cursorEnabled) {
-          // Drain pending discovery before withdrawing its selectable models.
-          const { invalidateCursorModels } = await import('../cursor/models');
-          await invalidateCursorModels();
-          initCursorModels([]);
-        }
-        // Portal projects `providerAvailability.cursor` from the cached
-        // preflight; refresh it so the broadcast that follows does not
-        // re-project a stale hint in either direction.
-        await refreshCursorRuntimeAvailability();
-        broadcastModelRegistryUpdated();
-        // `broadcastModelRegistryUpdated` above only reaches desktop
-        // renderer windows. An already-open Portal session projects
-        // `providerAvailability.cursor` from the same cached preflight, so
-        // it needs this separate push too, matching the Connect/Disconnect
-        // handlers in `ipc/cursor-connection.ts`.
-        notifyPortalStructureChanged();
-      }
-      if (
-        'globalPluginSelections' in rendererPatch &&
-        !pluginSelectionsEqual(
-          committedPrevious.globalPluginSelections,
-          normalized.globalPluginSelections,
-        )
-      ) {
-        // Sessions on overlay-participating chat surfaces lazily recreate on
-        // their next send; new sends and terminals resolve against the
-        // updated global defaults when they start.
-        bumpGlobalPluginDefaultsRevision();
-        // The installed-item statuses derive from these selections, so the
-        // synced snapshot the web settings read must follow (CAN-6037).
-        notifyDesktopInventoryChanged(['installed_items']);
-      }
-      recordOnboardingProfileTelemetry({
-        previous: committedPrevious,
-        next: normalized,
-      });
-      try {
-        await syncOnboardingProfilePreferences(normalized, preferences);
-      } catch (error) {
-        // The local preference write has already committed. Cloud profile sync
-        // is best-effort and must never make a successful onboarding step look
-        // failed or roll back the user's local answer.
-        // eslint-disable-next-line no-console
-        console.warn('Failed to sync onboarding profile to the cloud:', error);
-      }
-      // Apply the persisted native appearance before any asynchronous
-      // reconciliation or renderer broadcast. This keeps macOS window
-      // materials and renderer `prefers-color-scheme` updates pinned to an
-      // explicit Light/Dark choice throughout the save.
-      nativeTheme.themeSource = getNativeThemeSource(normalized.colorMode);
-      setCodeGraphPreferences(normalized.codeGraph);
-      if (
-        !pendingManagedDelegationPolicyUpdate &&
-        saveGeneration === preferencesSaveGeneration
-      ) {
-        broadcastPreferencesSynced(preferencesSaveResult(normalized));
-      }
-      if (
-        normalized.codeGraph !== undefined &&
-        !hasSameEffectiveCodeGraphPreference(
-          previousCodeGraph,
-          normalized.codeGraph,
-        )
-      ) {
-        try {
-          await reconcileCodeGraphAvailability();
-          cancelCodeGraphReconciliationRetry();
-        } catch (error) {
-          // The preference is already persisted, cached, and broadcast. Keep
-          // reconciliation best-effort so a transient workspace read failure
-          // cannot make that successful save appear to fail or skip the
-          // remaining preference side effects.
-          // eslint-disable-next-line no-console
-          console.error('Failed to reconcile Code Graph availability:', error);
-          scheduleCodeGraphReconciliationRetry();
-        }
-      }
-      await applyPreferenceSideEffects(
-        normalized,
-        preferences,
-        pendingManagedDelegationPolicyUpdate,
-        defaultBrowserRegistration,
-      );
-      const latest =
-        pendingManagedDelegationPolicyUpdate ||
-        saveGeneration !== preferencesSaveGeneration
-          ? await latestPreferencesSaveResult()
-          : preferencesSaveResult(normalized);
-      const saved: PreferencesSaveResult = latest;
-      if (
-        pendingManagedDelegationPolicyUpdate &&
-        pendingManagedDelegationPolicyUpdate.generation ===
-          managedDelegationPolicyGeneration
-      ) {
-        // The effective mode and final revocation status must travel together
-        // so every renderer reflects the process-authoritative result.
-        broadcastPreferencesSynced(saved);
-      }
-      return options?.view === 'persisted' ? normalized : saved;
-    },
+    ) => savePreferencesPatch(preferences, options),
   );
 
   registerIpcHandler(

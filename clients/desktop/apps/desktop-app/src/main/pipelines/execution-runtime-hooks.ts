@@ -4,7 +4,7 @@ import type {
   ExecutionLifecycleHooks,
   PipelineStepNotification,
   StepPostProcessContext,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { getExecutionAccounting } from '../execution-accounting';
 import {
   finishPipelineExecutionTelemetry,
@@ -39,7 +39,7 @@ export function createDesktopLifecycleHooks(): ExecutionLifecycleHooks {
   };
 }
 
-interface GitCommitPushRepoOutput {
+export interface GitCommitPushRepoOutput {
   repoId?: string;
   repoName?: string;
   repoPath?: string;
@@ -50,26 +50,67 @@ interface GitCommitPushRepoOutput {
   commitMessage?: string;
 }
 
-function parseGitCommitPushResults(
-  outputs: Record<string, string>,
-): GitCommitPushRepoOutput[] {
-  const rawResults = outputs.results_json;
+/** A `git-commit-push` step's per-repo results; null when they are absent or unreadable. */
+export function readGitCommitPushResults(
+  outputs: Readonly<Record<string, string>> | undefined,
+): GitCommitPushRepoOutput[] | null {
+  const rawResults = outputs?.results_json;
   if (!rawResults) {
-    return [];
+    return null;
   }
 
   try {
     const parsed: unknown = JSON.parse(rawResults);
     if (!Array.isArray(parsed)) {
-      return [];
+      return null;
     }
     return parsed.filter(
       (entry): entry is GitCommitPushRepoOutput =>
         typeof entry === 'object' && entry !== null,
     );
   } catch {
-    return [];
+    return null;
   }
+}
+
+/** Runs the worktree's precommit-failure hook for each repo whose commit failed. */
+export async function firePrecommitFailureHooks(args: {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly results: readonly GitCommitPushRepoOutput[];
+  readonly getWindow?: () => BrowserWindow | null;
+}): Promise<void> {
+  const failedCommitResults = args.results.filter(
+    (result) =>
+      result.status === 'failed' &&
+      result.failurePhase === 'commit' &&
+      typeof result.repoPath === 'string' &&
+      typeof result.repoName === 'string',
+  );
+
+  if (failedCommitResults.length === 0) {
+    return;
+  }
+
+  const { triggerWorktreePrecommitFailureHook } =
+    await import('../lib/worktree-precommit-failure-hook');
+
+  await Promise.all(
+    failedCommitResults.map((result) =>
+      triggerWorktreePrecommitFailureHook({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        repo: {
+          repoPath: result.repoPath ?? '',
+          repoId: result.repoId,
+          repoName: result.repoName ?? '',
+        },
+        error: result.precommitFailureError ?? result.error ?? '',
+        commitMessage: result.commitMessage,
+        getWindow: args.getWindow,
+      }).catch(() => {}),
+    ),
+  );
 }
 
 /**
@@ -118,36 +159,11 @@ export function createDesktopStepPostProcess(
       return;
     }
 
-    const failedCommitResults = parseGitCommitPushResults(ctx.outputs).filter(
-      (result) =>
-        result.status === 'failed' &&
-        result.failurePhase === 'commit' &&
-        typeof result.repoPath === 'string' &&
-        typeof result.repoName === 'string',
-    );
-
-    if (failedCommitResults.length === 0) {
-      return;
-    }
-
-    const { triggerWorktreePrecommitFailureHook } =
-      await import('../lib/worktree-precommit-failure-hook');
-
-    await Promise.all(
-      failedCommitResults.map((result) =>
-        triggerWorktreePrecommitFailureHook({
-          projectId: ctx.projectId ?? '',
-          worktreeId: ctx.worktreeId ?? '',
-          repo: {
-            repoPath: result.repoPath ?? '',
-            repoId: result.repoId,
-            repoName: result.repoName ?? '',
-          },
-          error: result.precommitFailureError ?? result.error ?? '',
-          commitMessage: result.commitMessage,
-          getWindow,
-        }).catch(() => {}),
-      ),
-    );
+    await firePrecommitFailureHooks({
+      projectId: ctx.projectId,
+      worktreeId: ctx.worktreeId,
+      results: readGitCommitPushResults(ctx.outputs) ?? [],
+      getWindow,
+    });
   };
 }

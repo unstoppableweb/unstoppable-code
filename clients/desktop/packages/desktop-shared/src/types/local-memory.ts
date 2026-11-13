@@ -9,6 +9,10 @@ export interface SearchHit {
   scope: 'user' | 'workspace';
   snippet: string;
   heading?: string;
+  /** Rebuild source retained after consolidation; ranked after live memory. */
+  archived?: boolean;
+  /** Original creation time, or preserved file mtime for legacy notes/imports. */
+  savedAt?: string;
 }
 
 export type LocalMemoryScopeRequest =
@@ -26,6 +30,8 @@ export interface LocalMemoryFileSummary {
   excerpt?: string;
   /** The chat that saved an inbox note, from its front matter. */
   source?: { provider: string; chatId: string };
+  /** The computer a synced inbox note was saved on, from its front matter. */
+  deviceLabel?: string;
   /**
    * Times agents used this file (searches, reads and injected recall), while
    * usage tracking is intact for the scope. Absent when usage is unknown.

@@ -7,6 +7,7 @@ import {
   type ExecutionRegistrationHandle,
 } from '@canopy/core-runtime';
 import type { CoreExecutionStatus } from '@canopy/protocol/canopy-core';
+import type { ExecutionMemoryReading } from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   IPC_CHANNELS,
   type ResourceGroupId,
@@ -367,6 +368,19 @@ export class ResourceMonitorService {
     registration: ResourceProcessRegistration,
   ): ResourceRegistrationHandle {
     return this.register(registration);
+  }
+
+  /**
+   * The memory a workflow step may still take before it waits (CAN-6325):
+   * the memory guard's headroom, counting the daemon as start admission
+   * does, so a step waits where a new workflow would be refused. Undefined
+   * while the guard is off, and steps start as they always have.
+   */
+  async readMemory(): Promise<ExecutionMemoryReading | undefined> {
+    // With the guard off nothing is read, so steps start without a sample.
+    if (!getPerformanceLimits().memoryPressureGuardEnabled) return undefined;
+    await this.accounting.currentSnapshot();
+    return this.accounting.memoryHeadroom();
   }
 
   async assertCanStartChatTurn(): Promise<void> {

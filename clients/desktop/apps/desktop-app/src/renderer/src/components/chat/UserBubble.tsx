@@ -4,7 +4,6 @@ import type { InvocableMentionIndex } from '@/lib/invocableMentionIndex';
 import { buildPluginMentionIndex } from '@/lib/pluginMentionIndex';
 import type { AppliedOrgMemoryTurn } from '@/stores/chatStore';
 import {
-  MicIcon,
   UserBubble as SharedUserBubble,
   SteeringTitle,
   steeringRequestPresentation,
@@ -33,7 +32,6 @@ import {
 import { ChatBlockRenderer } from './ChatBlockRenderer';
 import { CollapsibleUserMessageContent } from './CollapsibleUserMessageContent';
 import { MemoryUsedButton } from './MemoryUsedDialog';
-import { MessageAttachments } from './MessageAttachments';
 import { MessageImages } from './MessageImages';
 import { MutedUserBubblesContext } from './muted-user-bubbles-context';
 import { ResetToPointDialog } from './ResetToPointDialog';
@@ -75,12 +73,10 @@ export const UserBubble = memo(function UserBubble({
   const receivingContext = useAgentSentReceivingContext(explicitContext);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const mutedBubble = useContext(MutedUserBubblesContext);
-  // Early access shows sent images inside the bubble as the pictures
-  // themselves; other files keep their chips under it.
-
-  const { images, filePaths } = useSentAttachments(
-    message.attachmentPaths,
-    true,
+  // Everything sent with the message is a tile inside the bubble.
+  const attachments = useSentAttachments(message.attachmentPaths);
+  const hasBody = message.blocks.some(
+    (block) => block.type !== 'text' || block.text.trim() !== '',
   );
   // Early access: Copy and Revert sit on the bubble's corner at every width,
   // so a narrow bubble (the App Advisor panel) reserves no room for them.
@@ -172,12 +168,6 @@ export const UserBubble = memo(function UserBubble({
   }, []);
 
   const handleRevertClick = onResetToPoint ? handleResetClick : undefined;
-  const leading =
-    message.inputMode === 'voice' ? (
-      <span title="Dictated with voice" aria-label="Dictated with voice">
-        <MicIcon size="sm" />
-      </span>
-    ) : undefined;
   // Only an input the provider consumed inside a running turn is steering. A
   // steer picked up after its turn settled starts a brand new turn, so it is
   // an ordinary prompt and anchors its own turn group.
@@ -239,7 +229,6 @@ export const UserBubble = memo(function UserBubble({
         onNavigate={onJumpToMessage}
         contextMenu={contextMenuTarget}
         actionsOnCorner={true}
-        leading={leading}
         variant={
           message.watcherFired || steeringRequest?.variant === 'info'
             ? 'info'
@@ -261,13 +250,14 @@ export const UserBubble = memo(function UserBubble({
             statusHeader
           )
         }
-        media={images.length > 0 ? <MessageImages images={images} /> : null}
+        media={
+          attachments.length > 0 ? (
+            <MessageImages attachments={attachments} alone={!hasBody} />
+          ) : null
+        }
         footerGap="tight"
         footer={
-          <>
-            <MessageAttachments attachmentPaths={filePaths} />
-            {appliedMemory ? <MemoryUsedButton memory={appliedMemory} /> : null}
-          </>
+          appliedMemory ? <MemoryUsedButton memory={appliedMemory} /> : null
         }
       >
         <div data-chat-message-id={message.id}>

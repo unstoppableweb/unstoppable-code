@@ -37,6 +37,12 @@ import {
   PIPELINE_DETAIL_PANEL_UI_STATE_KEY_PREFIX,
 } from './pipelineDetailUiState';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { parseInstalledStatusFilter } from '@canopy/ui-shared/lib/installed-item-status';
+import {
+  MEMORY_SYNC_SETTINGS_UI_STATE_KEY,
+  readMemorySyncSettingsState,
+  readMemorySyncViewState,
+} from './memory-sync-ui-state';
 import {
   normalizeManagedDelegationLifetimeLimit,
   normalizeManagedDelegationMaxDepth,
@@ -669,6 +675,21 @@ export function buildCurrentUiStateSnapshot(
     };
   }
 
+  const memorySync = readMemorySyncSettingsState(
+    slices[MEMORY_SYNC_SETTINGS_UI_STATE_KEY],
+  );
+  if (memorySync !== undefined) {
+    snapshot.settings = {
+      ...(snapshot.settings ?? {
+        open: nav.settingsOpen,
+        section: nav.settingsInitialSection,
+      }),
+      memorySync,
+    };
+  }
+  const memorySyncView = readMemorySyncViewState(slices);
+  if (memorySyncView !== undefined) snapshot.memorySyncView = memorySyncView;
+
   const managedDelegationSlice = readObject(
     slices['settings.managedDelegation'],
   );
@@ -977,6 +998,18 @@ export function buildCurrentUiStateSnapshot(
       };
     }
   }
+
+  const cloudChatOpen = readObject(slices['cloudChat.open']);
+  const cloudChatId = readString(cloudChatOpen?.chatId);
+  const cloudProjectId = readString(cloudChatOpen?.projectId);
+  if (cloudChatId && cloudProjectId)
+    snapshot.cloudChat = {
+      open: {
+        chatId: cloudChatId,
+        projectId: cloudProjectId,
+        title: readString(cloudChatOpen?.title) ?? '',
+      },
+    };
 
   const homeSurface = readObject(slices['home.surface']);
   const homeControls = readObject(slices['home.controls']);
@@ -3566,9 +3599,9 @@ function readPluginsPageUiState(
     'blueprint',
   ] as const;
   const customizeTab = customizeTabs.find((tab) => tab === source.customizeTab);
-  const installedStatusFilters = ['active', 'available', 'disabled'] as const;
-  const installedStatusFilter = installedStatusFilters.find(
-    (status) => status === source.installedStatusFilter,
+  // The page's own parser, so Update available (CAN-5309) is reported too.
+  const installedStatusFilter = parseInstalledStatusFilter(
+    source.installedStatusFilter,
   );
   const selectedEntryId = readString(source.selectedEntryId);
   const detailHistoryDepth = readCount(source.detailHistoryDepth);

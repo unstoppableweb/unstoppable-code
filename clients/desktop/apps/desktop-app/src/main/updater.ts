@@ -145,6 +145,17 @@ let stableFeedConfigured = false;
  * install before the renderer has had a chance to report.
  */
 let rendererBusy = true;
+const stateListeners = new Set<() => void>();
+
+function notifyStateListeners(): void {
+  for (const listener of [...stateListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      logMainProcessError('Update state listener failed', error);
+    }
+  }
+}
 
 type GitHubReleaseAssetInfo = {
   name?: string;
@@ -356,6 +367,7 @@ function setState(nextState: UpdateState, event?: UpdateEvent): void {
     nextState = { ...nextState, installPending: false };
   }
   updateState = nextState;
+  notifyStateListeners();
   if (event) {
     sendToRenderer(event);
   }
@@ -373,6 +385,7 @@ function setInstallPending(pending: boolean): void {
     return;
   }
   updateState = { ...updateState, installPending: pending };
+  notifyStateListeners();
   sendToRenderer({ type: 'install-pending', pending });
   if (!pending) {
     clearDeferredInstallIdleTimer();
@@ -1252,18 +1265,26 @@ export async function checkForVersion(
   return checkInFlight;
 }
 
-export async function downloadUpdate(): Promise<void> {
+/**
+ * Throws the refusal `downloadUpdate` would reject with, synchronously, so a
+ * caller can refuse before it starts a download it does not wait for.
+ */
+export function assertDownloadAllowed(): void {
   ensureDistributionAllowsUpdates();
   refuseLinuxInstall();
-  if (updateState.phase === 'downloaded') {
-    return;
-  }
-
   if (
+    updateState.phase !== 'downloaded' &&
     updateState.phase !== 'available' &&
     updateState.phase !== 'downloading'
   ) {
     throw new Error('No update is available to download.');
+  }
+}
+
+export async function downloadUpdate(): Promise<void> {
+  assertDownloadAllowed();
+  if (updateState.phase === 'downloaded') {
+    return;
   }
 
   if (downloadInFlight) {
@@ -1306,13 +1327,17 @@ export async function downloadUpdate(): Promise<void> {
   return downloadInFlight;
 }
 
-export async function installUpdate(): Promise<void> {
+/** Throws, with the message people see, when an install cannot start now. */
+export function assertInstallAllowed(): void {
   ensureDistributionAllowsUpdates();
   refuseLinuxInstall();
   if (updateState.phase !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');
   }
+}
 
+export async function installUpdate(): Promise<void> {
+  assertInstallAllowed();
   await runInstallUpdate();
 }
 
@@ -1331,6 +1356,44 @@ export function cancelScheduledUpdate(): void {
   setInstallPending(false);
 }
 
+/** Listens for every change to the update state, including install-pending. */
+export function onUpdateStateChange(listener: () => void): () => void {
+  stateListeners.add(listener);
+  return (): void => {
+    stateListeners.delete(listener);
+  };
+}
+
+/** Whether the main window reported running work, as deferred installs see it. */
+export function isRendererBusy(): boolean {
+  return rendererBusy;
+}
+
+/** Whether this build installs its own updates, and why not when it can't. */
+export function getUpdateInstallSupport():
+  | { supported: true }
+  | { supported: false; reason: string; message: string } {
+  if (IS_SOURCE_BUILD)
+    return {
+      supported: false,
+      reason: 'source_build',
+      message: SOURCE_BUILD_UPDATE_ERROR,
+    };
+  if (!app.isPackaged)
+    return {
+      supported: false,
+      reason: 'not_packaged',
+      message: UNPACKAGED_BUILD_ERROR,
+    };
+  if (hostPlatformOperatingSystem() === 'linux')
+    return {
+      supported: false,
+      reason: 'linux_package_manager',
+      message: linuxUpdateCopy(BRAND, RELEASE_FLAVOR).manual,
+    };
+  return { supported: true };
+}
+
 export function reportRendererBusyState(busy: boolean): void {
   if (getWindowRef === null) {
     return;
@@ -1339,6 +1402,7 @@ export function reportRendererBusyState(busy: boolean): void {
     return;
   }
   rendererBusy = busy;
+  notifyStateListeners();
   maybeRunDeferredInstall();
 }
 

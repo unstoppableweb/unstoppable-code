@@ -8,18 +8,18 @@ import type {
 import {
   Badge,
   Button,
-  buttonClassName,
   ExecutionActionButton,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { SHARE_ATTRIBUTION_SHARER_PREFIX } from '../sharing/share-install-copy';
 import { normalizeShareContentHash } from './share-content-hash';
 
 /** An installed shared skill never follows its source (CAN-5018). */
 export const INSTALLED_SHARE_COPY_LABEL = 'One-time copy';
-/** The source's content differs from the copy that was installed. */
-export const INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL = 'Update available';
+export { INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL };
 export const VIEW_SHARED_SKILL_LABEL = 'View shared skill';
 /** Opens the reviewed in-place replacement of a shared copy (CAN-5306). */
 const INSTALLED_SHARE_UPDATE_LABEL = 'Update';
@@ -86,6 +86,18 @@ export function shareSourceHashChanged(
   return installed !== source;
 }
 
+/**
+ * Whether a receipted shared copy has an update: the source's hash differs
+ * from the receipt's. The installed detail badge and the Customize row both
+ * use this rule (CAN-5309); scope gates only the Update action, never this.
+ */
+export function installedShareUpdateAvailable(
+  origin: Pick<SharedSkillInstallOrigin, 'contentHash'>,
+  sourceContentHash: string | undefined,
+): boolean {
+  return shareSourceHashChanged(origin.contentHash, sourceContentHash);
+}
+
 function present(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -130,9 +142,8 @@ function SourceLink({ source }: { source: InstalledShareSource }): JSX.Element {
   }
   const { onNavigate } = source;
   return (
-    <a
+    <TextLink
       href={source.href}
-      className={buttonClassName({ variant: 'link' })}
       data-testid="installed-share-source-link"
       onClick={
         onNavigate
@@ -154,7 +165,7 @@ function SourceLink({ source }: { source: InstalledShareSource }): JSX.Element {
       }
     >
       {VIEW_SHARED_SKILL_LABEL}
-    </a>
+    </TextLink>
   );
 }
 

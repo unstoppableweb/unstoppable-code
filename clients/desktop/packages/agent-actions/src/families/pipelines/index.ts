@@ -14,6 +14,7 @@ import type {
 } from '../../port/pipelines-port';
 import type { AgentActionReceiptStore } from '../../receipts';
 import type { AgentActionErrorCode, AgentJson } from '../../response';
+import type { AgentActionHostCapabilities } from '../../surface/capabilities';
 import {
   defineAgentActionFamily,
   type AgentActionCall,
@@ -22,7 +23,12 @@ import {
 } from '../../surface/family';
 import type { AgentActionToolResult } from '../../tools/definition';
 import { PIPELINES_ACTION_TYPES, pipelineRunActionSchema } from './actions';
-import { pipelinesActionCatalog, pipelinesDispatchJsonSchema } from './catalog';
+import {
+  cloudPipelinesDispatchJsonSchema,
+  pipelineRunsCloudOnly,
+  pipelinesActionCatalogFor,
+  pipelinesDispatchJsonSchema,
+} from './catalog';
 
 export {
   APP_ADVISOR_PIPELINE_RUN_TARGET_MESSAGE,
@@ -37,11 +43,13 @@ export {
   pipelineRunWatcherSchema,
   type AppAdvisorPipelineRunAction,
   type PipelineRunAction,
+  type PipelineRunLocation,
   type PipelineRunWatcher,
 } from './actions';
 export {
   appAdvisorPipelinesActionCatalog,
   pipelinesActionCatalog,
+  pipelinesActionCatalogFor,
   pipelinesDispatchJsonSchema,
 } from './catalog';
 
@@ -73,6 +81,9 @@ function runResultJson(
       worktreeId: execution.worktreeId ?? null,
       eventName: execution.eventName,
       startedAt: execution.startedAt,
+      ...(execution.location !== undefined
+        ? { location: execution.location }
+        : {}),
     },
     ...(result.agentArtifacts !== undefined
       ? { agentArtifacts: result.agentArtifacts }
@@ -122,19 +133,24 @@ function pipelineRunResponse(
  * call returns its recorded run; a rejection is not recorded, and a call
  * whose earlier attempt may have started a run refuses instead of starting
  * another. A new tool call starts a new run. Runs
- * are not counted against the agent action limits.
+ * are not counted against the agent action limits. A host that starts runs
+ * only in the cloud (`pipelineRunLocations`) advertises the cloud row.
  */
 export function createPipelinesActionFamily<H>(options: {
   port: AgentPipelinesPort<H>;
   receipts: AgentActionReceiptStore<H>;
+  capabilities?: Pick<AgentActionHostCapabilities, 'pipelineRunLocations'>;
 }): AgentActionFamily<H> {
+  const capabilities = options.capabilities ?? {};
   return defineAgentActionFamily({
     id: 'pipelines',
     types: PIPELINES_ACTION_TYPES,
     actionSchema: pipelineRunActionSchema,
     supportedTypes: () => PIPELINES_ACTION_TYPES,
-    catalog: pipelinesActionCatalog,
-    dispatchJsonSchema: pipelinesDispatchJsonSchema,
+    catalog: () => pipelinesActionCatalogFor(capabilities),
+    dispatchJsonSchema: pipelineRunsCloudOnly(capabilities)
+      ? cloudPipelinesDispatchJsonSchema
+      : pipelinesDispatchJsonSchema,
     dispatch: async (action, call): Promise<AgentActionDispatchOutput> => {
       try {
         return await runIdempotentWrite({

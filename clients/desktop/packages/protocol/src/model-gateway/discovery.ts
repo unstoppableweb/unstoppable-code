@@ -1,11 +1,34 @@
 import { z } from 'zod';
 import {
   MODEL_GATEWAY_MAX_ID_LENGTH,
+  MODEL_GATEWAY_MAX_DISCOVERED_MODELS,
   MODEL_GATEWAY_MAX_LABEL_LENGTH,
-  MODEL_GATEWAY_MAX_MODELS,
   normalizeModelGatewayBaseUrl,
   type ModelGatewayModel,
 } from '../canopy-server';
+import { matchAiGatewayPreset } from './presets';
+
+/** Largest `/v1/models` body either probe reads; large catalogs exceed 1 MiB. */
+export const MODEL_GATEWAY_DISCOVERY_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Headers for `GET {baseUrl}/v1/models`, given the normalized base URL.
+ * Anthropic-format endpoints require `anthropic-version`; OpenAI-format
+ * gateways such as OpenRouter answer it with a truncated Anthropic page, so
+ * it is omitted for them.
+ */
+export function gatewayDiscoveryHeaders(
+  baseUrl: string,
+  apiKey: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${apiKey}`,
+    'x-api-key': apiKey,
+  };
+  if (matchAiGatewayPreset(baseUrl)?.discoveryFormat !== 'openai')
+    headers['anthropic-version'] = '2023-06-01';
+  return headers;
+}
 
 export const discoveredGatewayModelSchema = z.strictObject({
   id: z.string().min(1).max(MODEL_GATEWAY_MAX_ID_LENGTH),
@@ -17,6 +40,8 @@ export const discoveredGatewayModelSchema = z.strictObject({
     .max(Number.MAX_SAFE_INTEGER)
     .optional(),
   anthropic: z.boolean(),
+  /** Absent when the gateway doesn't say whether the weights are published. */
+  openWeights: z.boolean().optional(),
 });
 export type DiscoveredGatewayModel = z.output<
   typeof discoveredGatewayModelSchema
@@ -25,7 +50,9 @@ export const aiGatewayConnectionResultSchema = z.discriminatedUnion('status', [
   z.strictObject({
     status: z.literal('connected'),
     baseUrl: z.string(),
-    models: z.array(discoveredGatewayModelSchema).max(MODEL_GATEWAY_MAX_MODELS),
+    models: z
+      .array(discoveredGatewayModelSchema)
+      .max(MODEL_GATEWAY_MAX_DISCOVERED_MODELS),
   }),
   z.strictObject({
     status: z.enum([
@@ -42,11 +69,38 @@ export type AiGatewayConnectionResult = z.output<
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+/**
+ * Whether the gateway says the model's weights are published: Requesty's
+ * `open_weights`, Vercel's `open-weights` tag, or OpenRouter's Hugging Face
+ * ID. Undefined when the row carries none of them (LiteLLM, custom).
+ */
+function openWeightsOf(row: Record<string, unknown>): boolean | undefined {
+  if (typeof row.open_weights === 'boolean') return row.open_weights;
+  if (Array.isArray(row.tags)) return row.tags.includes('open-weights');
+  if ('hugging_face_id' in row)
+    return (
+      typeof row.hugging_face_id === 'string' &&
+      row.hugging_face_id.trim().length > 0
+    );
+  return undefined;
+}
 function bounded(value: unknown, max: number): value is string {
   return (
     typeof value === 'string' && value.trim().length > 0 && value.length <= max
   );
 }
+
+// The non-chat types Vercel AI Gateway lists in `/v1/models`.
+const NON_CHAT_MODEL_TYPES: ReadonlySet<string> = new Set([
+  'embedding',
+  'evaluation',
+  'image',
+  'realtime',
+  'reranking',
+  'speech',
+  'transcription',
+  'video',
+]);
 
 /** Provider metadata is untrusted data, never markup or agent instructions. */
 export function parseGatewayModelList(
@@ -62,6 +116,9 @@ export function parseGatewayModelList(
   const ids = new Set<string>();
   for (const row of rows) {
     if (!record(row)) continue;
+    // Drop only types known not to chat; other gateways use their own type names for chat models.
+    if (typeof row.type === 'string' && NON_CHAT_MODEL_TYPES.has(row.type))
+      continue;
     const info = record(row.model_info) ? row.model_info : {};
     const id = row.id ?? row.model_name ?? row.name;
     if (!bounded(id, MODEL_GATEWAY_MAX_ID_LENGTH) || ids.has(id)) continue;
@@ -79,6 +136,7 @@ export function parseGatewayModelList(
         ? rawContext
         : undefined;
     ids.add(id);
+    const openWeights = openWeightsOf(row);
     models.push({
       id,
       label,
@@ -86,8 +144,11 @@ export function parseGatewayModelList(
       anthropic:
         (row.type === 'model' && typeof row.display_name === 'string') ||
         /(^|[/.-])claude/i.test(id),
+      ...(openWeights === undefined ? {} : { openWeights }),
     });
-    if (models.length === MODEL_GATEWAY_MAX_MODELS) break;
+    // A sanity bound well past any catalog seen (Requesty lists ~755); the
+    // 4 MiB body cap binds first. Rows past it are dropped silently.
+    if (models.length === MODEL_GATEWAY_MAX_DISCOVERED_MODELS) break;
   }
   return models;
 }
@@ -102,6 +163,44 @@ export function suggestGatewayModel(
     (model) => model.gatewayId === discovered.id,
   );
   if (configured) return configured;
+  return suggestNewGatewayModel(
+    discovered,
+    new Set(existing.map((model) => model.id)),
+    new Set(existing.map((model) => model.label.toLowerCase())),
+    ownerId,
+  );
+}
+
+/**
+ * Suggested settings for each discovered model `existing` doesn't have yet,
+ * with IDs and labels unique among themselves as well as `existing`. Linear
+ * in the list, so a whole discovered catalog stays cheap.
+ */
+export function suggestNewGatewayModels(
+  discovered: readonly DiscoveredGatewayModel[],
+  existing: readonly ModelGatewayModel[],
+  ownerId: string,
+): ModelGatewayModel[] {
+  const configured = new Set(existing.map((model) => model.gatewayId));
+  const ids = new Set(existing.map((model) => model.id));
+  const labels = new Set(existing.map((model) => model.label.toLowerCase()));
+  const suggestions: ModelGatewayModel[] = [];
+  for (const model of discovered) {
+    if (configured.has(model.id)) continue;
+    const suggestion = suggestNewGatewayModel(model, ids, labels, ownerId);
+    ids.add(suggestion.id);
+    labels.add(suggestion.label.toLowerCase());
+    suggestions.push(suggestion);
+  }
+  return suggestions;
+}
+
+function suggestNewGatewayModel(
+  discovered: DiscoveredGatewayModel,
+  ids: ReadonlySet<string>,
+  labels: ReadonlySet<string>,
+  ownerId: string,
+): ModelGatewayModel {
   const slug =
     discovered.label
       .toLowerCase()
@@ -109,8 +208,6 @@ export function suggestGatewayModel(
       .replace(/^-+|-+$/g, '') || 'model';
   const prefix = `${ownerId}-`;
   const stem = `${prefix}${slug}`.slice(0, MODEL_GATEWAY_MAX_ID_LENGTH);
-  const ids = new Set(existing.map((model) => model.id));
-  const labels = new Set(existing.map((model) => model.label.toLowerCase()));
   let id = stem;
   let label = discovered.label;
   for (

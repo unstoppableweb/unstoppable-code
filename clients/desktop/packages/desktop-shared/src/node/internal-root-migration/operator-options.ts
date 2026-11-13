@@ -1,6 +1,9 @@
+import { isAbsolute, resolve } from 'node:path';
+
 export function selectInternalRootArchiveAbandonments(
   requested: readonly string[],
   frozen?: readonly string[],
+  kind = 'Archive',
 ): readonly string[] {
   if (frozen === undefined) return requested;
   const names = [...new Set(frozen)];
@@ -10,7 +13,7 @@ export function selectInternalRootArchiveAbandonments(
       requested.some((name) => !names.includes(name)))
   )
     throw new Error(
-      `Archive abandonment is already frozen by the existing apply. Preserve both roots; inventory and resume must use all original opt-ins (${names.join(', ') || 'none'}) or no archive flags.`,
+      `${kind} abandonment is already frozen by the existing apply. Preserve both roots; inventory and resume must use all original opt-ins (${names.join(', ') || 'none'}) or no abandonment flags.`,
     );
   return names;
 }
@@ -20,15 +23,28 @@ export function parseInternalRootMigrationOptions(args: readonly string[]): {
   readonly apply: boolean;
   readonly declareInternal: boolean;
   readonly rebuild: boolean;
+  readonly restart: boolean;
   readonly skipMigration: boolean;
   readonly sourceDirectory?: string;
   readonly abandonArchives: readonly string[];
+  readonly abandonCommits: readonly number[];
+  readonly abandonCheckouts: readonly string[];
 } {
   const abandonArchives: string[] = [];
+  const commitNames: string[] = [];
+  const abandonCheckouts: string[] = [];
   const remaining: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--abandon-archive') {
+    if (arg === '--abandon-commit') {
+      commitNames.push(args[++i] ?? '');
+    } else if (arg?.startsWith('--abandon-commit=')) {
+      commitNames.push(arg.slice('--abandon-commit='.length));
+    } else if (arg === '--abandon-checkout') {
+      abandonCheckouts.push(args[++i] ?? '');
+    } else if (arg?.startsWith('--abandon-checkout=')) {
+      abandonCheckouts.push(arg.slice('--abandon-checkout='.length));
+    } else if (arg === '--abandon-archive') {
       abandonArchives.push(args[++i] ?? '');
     } else if (arg?.startsWith('--abandon-archive=')) {
       abandonArchives.push(arg.slice('--abandon-archive='.length));
@@ -42,11 +58,21 @@ export function parseInternalRootMigrationOptions(args: readonly string[]): {
     '--declare-internal',
     '--inventory',
     '--rebuild',
+    '--restart',
     '--skip-migration',
   ];
   const sources = args.filter((arg) => arg.startsWith('--source-dir='));
   const skipMigration = args.includes('--skip-migration');
   if (
+    commitNames.some(
+      (name) =>
+        !/^[1-9][0-9]*$/.test(name) || !Number.isSafeInteger(Number(name)),
+    ) ||
+    new Set(commitNames).size !== commitNames.length ||
+    abandonCheckouts.some(
+      (path) => !isAbsolute(path) || resolve(path) !== path,
+    ) ||
+    new Set(abandonCheckouts).size !== abandonCheckouts.length ||
     abandonArchives.some(
       (name) => !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(name),
     ) ||
@@ -59,29 +85,37 @@ export function parseInternalRootMigrationOptions(args: readonly string[]): {
     sources.length > 1 ||
     sources.some((arg) => arg === '--source-dir=') ||
     (skipMigration &&
-      (abandonArchives.length > 0 ||
+      (commitNames.length > 0 ||
+        abandonArchives.length > 0 ||
+        abandonCheckouts.length > 0 ||
         sources.length > 0 ||
         args.some((arg) =>
           [
             '--apply',
             '--inventory',
             '--rebuild',
+            '--restart',
             '--declare-internal',
           ].includes(arg),
         ))) ||
     (args.includes('--apply') && args.includes('--inventory')) ||
-    (args.includes('--rebuild') && !args.includes('--apply'))
+    (args.includes('--rebuild') && !args.includes('--apply')) ||
+    (args.includes('--restart') &&
+      (!args.includes('--apply') || args.includes('--rebuild')))
   )
     throw new Error(
-      'Usage: node --import tsx apps/desktop-app/scripts/internal-root-migration.ts --brand=canopy|unstoppable-code [--inventory | --apply | --skip-migration] [--source-dir=<absolute-directory>] [--declare-internal] [--rebuild] [--abandon-archive <workspace/worktree>]...',
+      'Usage: node --import tsx apps/desktop-app/scripts/internal-root-migration.ts --brand=canopy|unstoppable-code [--inventory | --apply | --skip-migration] [--source-dir=<absolute-directory>] [--declare-internal] [--rebuild | --restart] [--abandon-archive <workspace/worktree>]... [--abandon-commit <id>]... [--abandon-checkout <absolute-path>]...',
     );
   return {
     brandId: args.includes('--brand=canopy') ? 'canopy' : 'unstoppable-code',
     apply: args.includes('--apply'),
     declareInternal: args.includes('--declare-internal'),
     rebuild: args.includes('--rebuild'),
+    restart: args.includes('--restart'),
     skipMigration,
     abandonArchives,
+    abandonCommits: commitNames.map(Number),
+    abandonCheckouts,
     ...(sources[0] === undefined
       ? {}
       : { sourceDirectory: sources[0].slice('--source-dir='.length) }),

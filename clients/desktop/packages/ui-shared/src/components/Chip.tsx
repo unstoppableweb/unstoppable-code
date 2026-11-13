@@ -50,7 +50,7 @@ export interface ChipProps {
 const ROOT_CLASS =
   'inline-flex h-6 min-w-0 max-w-full shrink-0 select-none items-center gap-1 rounded-md text-xs';
 const FILL_CLASS = 'bg-subtle fg-primary';
-const SELECTED_FILL_CLASS = 'bg-accent-subtle fg-accent';
+const SELECTED_FILL_CLASS = 'bg-accent-subtle fg-accent-strong';
 // Hover is instant (no color transition) and a press dims and shrinks the
 // chip, like `Button`. Both follow the chip's own action button, never the
 // whole chip: a bare `hover:` would also light the chip while the pointer is

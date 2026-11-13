@@ -4,6 +4,7 @@ import {
   hostPlatformOperatingSystem,
   hostPlatformServices,
 } from '@canopy/core-platform';
+import { createCanopyStartupClaimPort } from '@canopy/core-transport/node';
 import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
 import {
   isW5MaintenanceHostHeld,
@@ -24,7 +25,29 @@ export function createW5RecoveryMaintenanceContext(
   } = {},
 ): W5MaintenanceContext {
   const platform = hostPlatformServices(
-    createPlatformEndpointServices(hostPlatformOperatingSystem()),
+    createPlatformEndpointServices(hostPlatformOperatingSystem(), {
+      validateStartupClaim: async (claim): Promise<boolean> => {
+        const self = await platform.supervision.inspectProcess({
+          pid: process.pid,
+        });
+        if (self.state !== 'running' || claim.dataRoot !== dataRoot)
+          return false;
+        const claims = createCanopyStartupClaimPort({
+          dataRoot,
+          owner: { pid: process.pid, startIdentity: self.startIdentity },
+          inspectProcess: async (pid, signal) => {
+            const found = await platform.supervision.inspectProcess({
+              pid,
+              signal,
+            });
+            return found.state === 'running'
+              ? { kind: 'alive', startIdentity: found.startIdentity }
+              : { kind: found.state === 'absent' ? 'dead' : 'unknown' };
+          },
+        });
+        return claims.verify(claim);
+      },
+    }),
     { windowsProcessPath: options.windowsProcessPath },
   );
   const host: W5CommitLogHost = new W5CommitLogHost({

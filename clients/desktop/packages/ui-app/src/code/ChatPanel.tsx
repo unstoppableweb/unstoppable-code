@@ -57,7 +57,7 @@ import {
   AgentSentReceivingContextProvider,
   type AgentSentReceivingContext,
 } from '@canopy/ui-shared';
-import { ChatComposer, type ChatComposerProps } from './ChatComposer';
+import { ChatComposer } from './ChatComposer';
 import { QueuedEditComposerSlot } from './composer/QueuedEditComposerSlot';
 import {
   QueuedMessageComposer,
@@ -191,13 +191,6 @@ export interface ChatPanelProps {
   /** Host-owned action rendered beside the latest transcript turn. */
   readonly renderLatestTurnAction?: ChatTranscriptProps['renderLatestTurnAction'];
   /**
-   * Optional composer typeahead providers, forwarded verbatim to
-   * {@link ChatComposer}. Omit to render a plain rich editor; supply
-   * `slashCommands` and/or `fileSearch` to enable the slash-command and/or
-   * `@`-mention menus respectively.
-   */
-  readonly composer?: ChatComposerTypeaheadProps;
-  /**
    * Optional host transcript renderer. Desktop uses this parity bridge while
    * its interactive workflow/ask-user/queued-message blocks are still richer
    * than the neutral transcript. The shared panel remains the store-backed
@@ -298,23 +291,6 @@ export interface ChatTranscriptHostControls {
   readonly deliveringMessages: ChatTranscriptProps['deliveringMessages'];
 }
 
-/**
- * The subset of {@link ChatComposerProps} a host supplies to drive typeaheads.
- * When a new typeahead prop is added to {@link ChatComposerProps}, add its key
- * here too — the `Pick` will not include it automatically, and the omission is
- * not a type error.
- */
-export type ChatComposerTypeaheadProps = Pick<
-  ChatComposerProps,
-  | 'slashCommands'
-  | 'slashDiscovering'
-  | 'slashTriggerCharacters'
-  | 'onRefreshSlashCommands'
-  | 'fileSearch'
-  | 'fileTypeaheadMultiRepo'
-  | 'fileTypeaheadLoading'
->;
-
 export function ChatPanel({
   chatId,
   receivingContext: explicitContext,
@@ -331,7 +307,6 @@ export function ChatPanel({
   firstSendStartingEnabled = true,
   worktreeSetup,
   renderLatestTurnAction,
-  composer,
   liveRunKeys,
   renderTranscript,
   renderComposer,
@@ -1241,13 +1216,6 @@ export function ChatPanel({
                     cycleThinkingLevel(chatId, providerType)
                   }
                   providerType={providerType}
-                  slashCommands={composer?.slashCommands}
-                  slashDiscovering={composer?.slashDiscovering}
-                  slashTriggerCharacters={composer?.slashTriggerCharacters}
-                  onRefreshSlashCommands={composer?.onRefreshSlashCommands}
-                  fileSearch={composer?.fileSearch}
-                  fileTypeaheadMultiRepo={composer?.fileTypeaheadMultiRepo}
-                  fileTypeaheadLoading={composer?.fileTypeaheadLoading}
                 />
               )}
             </QueuedEditComposerSlot>

@@ -13,9 +13,9 @@ import {
   getCanonicalAppAdvisorToolKey,
   isAppAdvisorLedgerToolKey,
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
-import type { DynamicToolCallParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallParams';
-import type { DynamicToolCallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallResponse';
-import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
+import type { DynamicToolCallParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallParams';
+import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
+import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
 import { defineCodexFunctionToolSpec } from '../codex/dynamic-tool-spec';
 import {
   APP_ADVISOR_ADD_LEDGER_ENTRY_DESCRIPTION,

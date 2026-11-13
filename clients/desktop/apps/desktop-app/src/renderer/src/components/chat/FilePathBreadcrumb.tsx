@@ -25,7 +25,7 @@ import {
 import { FolderIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isCoworkWorkspaceFileTreeRoot } from '@/components/activity/files-tree-tab-state';
-import { FileTypeIcon } from '@/components/shared/file-icons';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { Button, FloatingMenu } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { useChatStore } from '@/stores/chatStore';
@@ -187,8 +187,7 @@ function BreadcrumbDirectory({
           >
             <FileTypeIcon
               filename={child.name}
-              size={18}
-              boxSize={14}
+              size="sm"
               className="shrink-0"
             />
             <span className="min-w-0 truncate">{child.name}</span>

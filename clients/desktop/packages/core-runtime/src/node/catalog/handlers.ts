@@ -2,9 +2,12 @@ import {
   type CORE_CATALOG_INSTRUCTION_DEFINITIONS,
   type CORE_CATALOG_QUERY_DEFINITIONS,
   CATALOG_REFRESH_MAX_SOURCES,
+  CORE_CATALOG_PUBLISH_CODES,
+  type CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_CODES,
   type CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
   type CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
+  CatalogEntryPublishResultSchema,
   CatalogPluginInstallResultSchema,
   CatalogSelectionUpdateResultSchema,
   CatalogSourceDeleteResultSchema,
@@ -31,6 +34,7 @@ import {
   CatalogSelectionNotFoundError,
   CatalogSelectionUnavailableError,
   type CatalogHostRefusal,
+  type CatalogPublication,
   type CatalogSelectionRead,
   type CatalogSelectionScope,
   type CatalogSnapshotRead,
@@ -47,6 +51,7 @@ export const CORE_CATALOG_SERVED_KINDS = [
 ] as const;
 export const CORE_CATALOG_SELECTION_RESOURCE = 'core.catalog.selection';
 export const CORE_CATALOG_SOURCE_RESOURCE = 'core.catalog.source';
+export const CORE_CATALOG_ENTRY_RESOURCE = 'core.catalog.entry';
 
 /** The refresh classification recorded when the refresh was admitted. */
 const RecordedRefreshAcknowledgementSchema =
@@ -71,7 +76,8 @@ type CatalogQueryDefinitions = typeof CORE_CATALOG_QUERY_DEFINITIONS &
   typeof CORE_CATALOG_SOURCE_QUERY_DEFINITIONS;
 type CatalogInstructionDefinitions =
   typeof CORE_CATALOG_INSTRUCTION_DEFINITIONS &
-    typeof CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS;
+    typeof CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS &
+    typeof CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS;
 
 export interface CoreCatalogHandlers {
   queries: CanopyDispatcherHandlerMap<CatalogQueryDefinitions>;
@@ -772,6 +778,130 @@ export function createCoreCatalogHandlers(options: {
                 (provider) => !installed.includes(provider),
               ),
             };
+          },
+        }),
+      'core.catalog.entry.publish': async (params, context) =>
+        runs.run({
+          kind: 'core.catalog.entry.publish',
+          context,
+          params,
+          codes: CORE_CATALOG_PUBLISH_CODES,
+          keyReused: keyReusedConflict,
+          decode: (outcome) => {
+            const parsed = CatalogEntryPublishResultSchema.safeParse(outcome);
+            return parsed.success ? parsed.data : null;
+          },
+          effect: async () => {
+            if (
+              params.visibility !== 'private' ||
+              params.teamId !== null ||
+              params.organizationId !== null
+            )
+              throw fail(
+                'invalid_argument',
+                'Only a private copy can be published from here.',
+                { code: 'core.catalog.visibilityInvalid' },
+              );
+            const noun = params.kind === 'skill' ? 'skill' : 'plugin';
+            const publishPlugin = host.publishPlugin?.bind(host);
+            const publishSkill = host.publishSkill?.bind(host);
+            const pkg = params.package;
+            const publish: (() => Promise<CatalogPublication>) | null =
+              params.kind === 'plugin' &&
+              pkg === undefined &&
+              publishPlugin !== undefined
+                ? async () => {
+                    const target = await host.findPlugin(params.entryId);
+                    if (target === null)
+                      throw new CatalogHostRefusedError('plugin-not-found');
+                    return publishPlugin(target);
+                  }
+                : params.kind === 'skill' &&
+                    pkg !== undefined &&
+                    publishSkill !== undefined
+                  ? () => publishSkill(params.entryId, pkg)
+                  : null;
+            if (publish === null)
+              throw params.kind === 'skill' && pkg === undefined
+                ? fail(
+                    'invalid_argument',
+                    'A skill is published with the package the person agreed to.',
+                  )
+                : params.kind === 'plugin' && pkg !== undefined
+                  ? fail(
+                      'invalid_argument',
+                      'A plugin is published without a package.',
+                    )
+                  : fail(
+                      'capability_unavailable',
+                      'This entry cannot be published to the cloud from here.',
+                    );
+            const notFound = (cause?: unknown): CanopyOperationError =>
+              fail('not_found', `This ${noun} is not in the catalog.`, {
+                code: 'core.catalog.entryNotFound',
+                cause,
+              });
+            const moved = (cause?: unknown): CanopyOperationError =>
+              fail('conflict', `This ${noun} changed since it was read.`, {
+                code: 'core.catalog.revisionConflict',
+                retry: {
+                  kind: 'after_refresh',
+                  resource: CORE_CATALOG_ENTRY_RESOURCE,
+                },
+                cause,
+              });
+            const entry = (await readSnapshot(host)).entries.find(
+              (candidate) =>
+                candidate.entryId === params.entryId &&
+                candidate.kind === params.kind,
+            );
+            if (entry === undefined) throw notFound();
+            if (entry.revision !== params.expectedRevision) throw moved();
+            try {
+              const published = await publish();
+              return {
+                publicationId: published.publicationId,
+                remoteEntryId: published.remoteEntryId,
+                revision: published.revision,
+              };
+            } catch (error) {
+              throw (
+                refusalError(error, {
+                  'plugin-not-found': notFound,
+                  'publish-entry-not-found': notFound,
+                  'publish-source-unsupported': (cause) =>
+                    fail(
+                      'failed_precondition',
+                      params.kind === 'skill'
+                        ? 'Only a custom skill can be added to the cloud from here.'
+                        : "This plugin's marketplace has no public source the cloud can fetch.",
+                      { code: 'core.catalog.entryReadOnly', cause },
+                    ),
+                  'publish-revision-moved': moved,
+                  'publish-package-stale': (cause) =>
+                    fail(
+                      'conflict',
+                      'This skill changed after its files were checked. Check them again.',
+                      {
+                        code: 'core.catalog.packageStale',
+                        retry: {
+                          kind: 'after_refresh',
+                          resource: CORE_CATALOG_ENTRY_RESOURCE,
+                        },
+                        cause,
+                      },
+                    ),
+                  'publish-remote-unavailable': (cause) =>
+                    fail(
+                      'unavailable',
+                      'The cloud catalog cannot be reached right now.',
+                      // The run records this failure under its key, so only
+                      // a new request (and key) reaches the cloud again.
+                      { code: 'core.catalog.remoteUnavailable', cause },
+                    ),
+                }) ?? error
+              );
+            }
           },
         }),
     },

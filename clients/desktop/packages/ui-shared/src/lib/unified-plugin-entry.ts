@@ -298,6 +298,11 @@ export interface UnifiedPluginEntry {
    * when the receipt names nobody. Display evidence only, never authorization.
    */
   installedFrom?: UnifiedEntryInstalledFrom;
+  /**
+   * A receipted shared copy whose source hash differs from the installed
+   * receipt (CAN-5309); separate from the GitHub `updateAvailable`.
+   */
+  shareUpdateAvailable?: boolean;
   /** When the viewer last edited a custom item (ISO); drives "Created by you · Edited {date}". */
   editedAt?: string;
   /** Explicit creator identity match, never inferred from organization ownership. */

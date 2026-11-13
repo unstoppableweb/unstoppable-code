@@ -4,10 +4,12 @@ import {
   MEMORY_SYNC_LIMITS,
   MemoryNoteFileKeySchema,
   isMemoryDocumentPath,
+  isMemoryNoteOriginBlocked,
   memorySyncJsonBytes,
   type MemoryNote,
   type MemoryNoteOp,
   type MemoryNoteOpResult,
+  type MemoryOriginPolicy,
   type MemorySyncOutboxFile,
   type MemorySyncStateFile,
 } from '@canopy/protocol/memory-sync';
@@ -719,14 +721,10 @@ function nextBatch(
   return batch;
 }
 
-function isHeldBack(
-  op: MemoryNoteOp,
-  blockedOrganizationIds: ReadonlySet<string>,
-): boolean {
+function isHeldBack(op: MemoryNoteOp, origins: MemoryOriginPolicy): boolean {
   return (
     op.op !== 'tombstone' &&
-    op.note.origin.organizationId !== null &&
-    blockedOrganizationIds.has(op.note.origin.organizationId)
+    isMemoryNoteOriginBlocked(origins, op.note.origin.organizationId)
   );
 }
 
@@ -742,11 +740,13 @@ function isHeldBack(
  * {@link finishLocalDeletes}), so a held note an edit cut short is written
  * in its note's place, and before `sync-state.json` is written. An edit's
  * replacement still unwritten then is not sent. The batch is marked sent
- * before the caller sends it.
+ * before the caller sends it; `maySend`, asked under the lock first, keeps
+ * every operation queued and unsent when it answers false.
  */
 export function takeMemoryPushBatch(
   scopeDir: string,
   blockedOrganizationIds: ReadonlySet<string>,
+  maySend?: () => Promise<boolean>,
 ): Promise<MemoryPushBatch> {
   return withMemoryWriteLock(scopeDir, async () => {
     const state = await readMemorySyncState(scopeDir);
@@ -760,12 +760,13 @@ export function takeMemoryPushBatch(
       localOnly,
     );
     const unwritten = pendingReplacements(outbox);
-    const held =
-      state.binding.kind === 'user'
-        ? outbox.entries.filter((entry) =>
-            isHeldBack(entry.op, blockedOrganizationIds),
-          )
-        : [];
+    const origins: MemoryOriginPolicy = {
+      scopeKind: state.binding.kind,
+      blockedOriginOrganizationIds: blockedOrganizationIds,
+    };
+    const held = outbox.entries.filter((entry) =>
+      isHeldBack(entry.op, origins),
+    );
     for (const entry of held) {
       const { op } = entry;
       if (
@@ -790,7 +791,11 @@ export function takeMemoryPushBatch(
         held.includes(entry) ? retirementOf(outbox, entry, entry.op) : [entry],
       );
     }
-    const batch = nextBatch(outbox.entries, unwritten);
+    const next = nextBatch(outbox.entries, unwritten);
+    const batch =
+      next.length === 0 || maySend === undefined || (await maySend())
+        ? next
+        : [];
     const unsent = batch.filter((entry) => !entry.sent);
     for (const entry of unsent) entry.sent = true;
     if (held.length > 0 || unsent.length > 0 || outbox.upgraded || finished) {
@@ -1115,10 +1120,13 @@ export interface MemoryUsagePush {
  * and not yet answered goes again as it was; otherwise up to
  * `usageDeltasMax` deltas move out of the counts into it, marked sent before
  * the caller sends them, and uses counted from then on wait for the next.
+ * `maySend`, asked under the lock first, leaves every count unsent when it
+ * answers false.
  */
 export function takeMemoryUsagePush(
   scopeDir: string,
   binding: MemoryReplicaBinding,
+  maySend?: () => Promise<boolean>,
 ): Promise<MemoryUsagePush | null> {
   return withMemoryWriteLock(scopeDir, async () => {
     const outbox = await readOutbox(scopeDir, binding);
@@ -1127,7 +1135,10 @@ export function takeMemoryUsagePush(
       const deltas = inFlight.deltas.filter(({ fileKey }) =>
         isUsageFileKey(fileKey),
       );
-      if (deltas.length > 0) return { seq: inFlight.seq, deltas };
+      if (deltas.length > 0) {
+        if (maySend !== undefined && !(await maySend())) return null;
+        return { seq: inFlight.seq, deltas };
+      }
     }
     const { usage } = outbox.file;
     const deltas: MemoryUsageDelta[] = [];
@@ -1144,6 +1155,9 @@ export function takeMemoryUsagePush(
       else delete usage[fileKey];
     }
     const push = deltas.length > 0 ? { seq: outbox.nextSeq, deltas } : null;
+    if (push !== null && maySend !== undefined && !(await maySend())) {
+      return null;
+    }
     if (push !== null) outbox.nextSeq += 1;
     if (push !== null || inFlight !== undefined) {
       const file = withoutUsageSent(outbox.file);

@@ -2,7 +2,7 @@ import type {
   SpawnedProcessResult,
   SpawnedProcessRunOptions,
   SpawnedProcessSpec,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 
 export interface PipelineProcessHostRunRequest {
   type: 'run';

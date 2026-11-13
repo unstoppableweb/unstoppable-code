@@ -23,12 +23,12 @@ import {
 import {
   GOLDEN_BUNDLED_PIPELINE_ID,
   GOLDEN_INVALID_PIPELINE_YAML,
-} from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
+} from '@canopy/execution-engine/node/pipelines/__tests__/golden-fixtures';
 import {
   deleteStoredPipeline,
   getStoredPipelineText,
   listStoredPipelines,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   sharedPipelineReadError,

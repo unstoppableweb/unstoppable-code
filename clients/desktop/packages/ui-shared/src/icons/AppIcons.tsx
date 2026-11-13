@@ -105,6 +105,8 @@ import {
   IconCrossSmall,
   IconCursorClick,
   IconDeepseek,
+  IconOpenrouter,
+  IconVercel,
   IconDevices,
   IconDifference,
   IconDollar,
@@ -480,6 +482,8 @@ export const CursorIcon = /* @__PURE__ */ adaptLogo(CursorLogo, 'CursorLogo');
 // route, and binding them added ~10.7 KB gzip of first-load JS to each one. The
 // External agents page imports them directly from `@canopy/ui-shared/icons`.
 export const DeepSeekIcon = /* @__PURE__ */ createAppIcon(IconDeepseek);
+export const OpenRouterIcon = /* @__PURE__ */ createAppIcon(IconOpenrouter);
+export const VercelIcon = /* @__PURE__ */ createAppIcon(IconVercel);
 export const MiniMaxIcon = /* @__PURE__ */ createAppIcon(IconMinimax);
 export const MoonshotIcon = /* @__PURE__ */ createAppIcon(IconKimi);
 export const ZaiIcon = /* @__PURE__ */ createAppIcon(IconZai);

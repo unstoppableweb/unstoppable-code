@@ -10,7 +10,7 @@ import type {
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
-import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,

@@ -3,8 +3,8 @@ import {
   childPipelineAuthorization,
   type ChildPipelineAuthorization,
   type ResolveChildPipelineArgs,
-} from './pipelines/executor/child-pipeline-resolver';
-import { getStoredPipelineBySource } from '../pipelines/store';
+} from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
+import { getStoredPipelineBySource } from '@canopy/execution-engine/pipelines/store';
 import type { ChatTabPluginSelections } from '../types';
 import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import type {
@@ -61,7 +61,7 @@ import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import {
   resolveAction,
   resolveActionRuntime,
-} from './pipelines/action-resolver';
+} from '@canopy/execution-engine/node/pipelines/action-resolver';
 import {
   decideResourceContext,
   type ResourceContextInput,

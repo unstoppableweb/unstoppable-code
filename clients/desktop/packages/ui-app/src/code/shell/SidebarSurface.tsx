@@ -56,6 +56,7 @@ import {
   type WorktreeMenuItem,
   type WorktreeSetupPhase,
   DeferredWorkspaceSettingsDialog,
+  type WorkspaceSettingsDangerCopy,
   WorktreeActionsMenu,
   worktreeActionsMenuButtonCount,
   type WorktreeDirectAction,
@@ -101,7 +102,10 @@ import { CreateWorkspaceDialog } from './CreateWorkspaceDialog';
 import { SidebarPipelineStatusPopover } from './SidebarPipelineStatusPopover';
 import { SidebarTerminalStatusPopover } from './SidebarTerminalStatusPopover';
 import { SortableWorkspacesSidebar } from './SortableWorkspacesSidebar';
-import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
+import {
+  SidebarChatsSkeleton,
+  SidebarProjectsSkeleton,
+} from './SidebarProjectsSkeleton';
 import { newWorktreeIdsAfterSnapshot } from './workspace-sections-model';
 import {
   StandaloneChatsSidebarSection,
@@ -109,6 +113,7 @@ import {
 } from './StandaloneChatsSidebarSection';
 import type {
   WorkEntryNotificationHandlers,
+  StandaloneChatsSidebarChat,
   StandaloneChatsSidebarRowsState,
   StandaloneChatsSidebarSnapshot,
 } from './StandaloneChatsSidebarSection';
@@ -421,6 +426,8 @@ export interface SidebarSurfaceProps {
    */
   readonly dataOwnerId?: string;
   readonly contentState: 'waiting' | 'loading' | 'empty' | 'ready';
+  /** Reserve Chats while loading, before the host has rows or callbacks. */
+  readonly loadingChatsSection?: boolean;
   /**
    * Header chrome presentation. `'full'` (the default) renders the command
    * entry points — the New Task button and the More menu — alongside the
@@ -455,6 +462,16 @@ export interface SidebarSurfaceProps {
     groupId: string,
   ) => void;
   readonly onGroupError?: (workspaceLocalId: string, error: unknown) => void;
+  /**
+   * Archives a standalone chat's whole Work Entry, locked and restorable on
+   * desktop (CAN-5461). Offered only for rows whose owning project's
+   * capabilities include `standaloneChatArchive` and whose commands are
+   * enabled; never in a read-only list or for a cloud project. Settle once
+   * the removal is confirmed or failed; the host reports failures.
+   */
+  readonly onArchiveStandaloneChat?: (
+    chat: StandaloneChatsSidebarChat & { readonly projectLocalId: string },
+  ) => void | Promise<void>;
   readonly onCreateBranchWorktree?: (
     workspaceLocalId: string,
     baseWorktreeLocalId: string,
@@ -884,6 +901,10 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
     patch: { name?: string; color?: string },
   ) => Promise<void>;
+  /** The settings dialog's removal copy for a row whose host words it. */
+  readonly workspaceDangerCopy?: (
+    workspaceLocalId: string,
+  ) => WorkspaceSettingsDangerCopy | undefined;
   readonly onLoadScripts?: (
     workspaceLocalId: string,
   ) => Promise<Record<string, string> | null>;
@@ -940,6 +961,12 @@ export interface SidebarSurfaceProps {
   readonly isWorkspaceCommandDisabled?: (workspaceLocalId: string) => boolean;
   /** Host-identified recipient placeholders rendered outside Projects. */
   readonly sharedWorkspaceIds?: ReadonlySet<string>;
+  /**
+   * Notices about shares that ended, at the top of Shared with you. Present
+   * (not nullish) keeps the section even with nothing else in it, and before
+   * the rows are ready: they do not depend on any workspace.
+   */
+  readonly sharedWithMeNotices?: ReactNode;
   /** Host-withheld rows that remain mounted elsewhere, such as an active revoked chat. */
   readonly hiddenWorktreeIds?: ReadonlySet<string>;
   /** Optional host policy for adding or suppressing row-menu entries. */
@@ -2242,6 +2269,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     initialTab?: string;
     content: string;
     scripts: Record<string, string>;
+    /** The row's `workspaceSettings` is `'details'`: name, colour, removal. */
+    detailsOnly?: true;
   } | null>(null);
   const [pendingWorkspaceMetadata, setPendingWorkspaceMetadata] = useState<
     Readonly<
@@ -2661,6 +2690,20 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     if (
       props.onOpenWorkspaceSettingsOverride?.(workspaceId, initialTab) === true
     ) {
+      return;
+    }
+    if (capabilitiesOf(workspaceId).workspaceSettings === 'details') {
+      const workspace = snapshot.workspaces.find(
+        (item) => item.localId === workspaceId,
+      );
+      if (workspace)
+        setSettingsDialog({
+          workspace,
+          initialTab,
+          content: '',
+          scripts: {},
+          detailsOnly: true,
+        });
       return;
     }
     if (!props.onLoadClaudeMd || !props.onLoadScripts) return;
@@ -3444,6 +3487,39 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     : scopedSnapshot.worktrees;
   const hiddenWorkspacesToggleId =
     testIds?.hiddenWorkspacesToggle ?? 'portal-hidden-workspaces-toggle';
+  // Archive is judged per chat by its owning project, so a fallback row never
+  // borrows another project's capability (CAN-5461).
+  const canArchiveStandaloneChat = (chat: {
+    readonly projectLocalId: string;
+  }): boolean => {
+    const owner = scopedSnapshot.workspaces.find(
+      (workspace) => workspace.localId === chat.projectLocalId,
+    );
+    return (
+      owner !== undefined &&
+      owner.type === 'cowork' &&
+      owner.backend !== 'cloud' &&
+      owner.sharedFrom !== true &&
+      !props.sharedWorkspaceIds?.has(chat.projectLocalId) &&
+      !props.isWorkspaceCommandDisabled?.(chat.projectLocalId) &&
+      (props.capabilitiesFor?.(chat.projectLocalId) ?? capabilities)
+        .standaloneChatArchive === true
+    );
+  };
+  const standaloneChatArchiveProps = (
+    readOnly: boolean,
+  ): {
+    readonly onArchiveChat?: SidebarSurfaceProps['onArchiveStandaloneChat'];
+    readonly canArchiveChat?: (chat: {
+      readonly projectLocalId: string;
+    }) => boolean;
+  } =>
+    readOnly || props.onArchiveStandaloneChat === undefined
+      ? {}
+      : {
+          onArchiveChat: props.onArchiveStandaloneChat,
+          canArchiveChat: canArchiveStandaloneChat,
+        };
 
   const renderWorkspaceList = (
     listWorkspaces: typeof sections,
@@ -3722,6 +3798,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 snapshot={scopedSnapshot}
                 workspace={workspace}
                 workEntryMultiSelect={workEntryMultiSelect}
+                {...standaloneChatArchiveProps(readOnly)}
                 itemGroupCommands={
                   !readOnly &&
                   !props.isWorkspaceCommandDisabled?.(workspace.localId) &&
@@ -3887,6 +3964,12 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
   // the only route to a first chat, on desktop and portal alike (CAN-3537).
   // An elected cloud owner keeps its header while empty, creatable or not:
   // the server elected it as this account's home for chats.
+  const hostKeepsChatsSection =
+    props.renderChatsSectionRows !== undefined ||
+    props.onCreateChatsSectionChat !== undefined;
+  const chatsSectionLoading =
+    contentState === 'loading' &&
+    (props.loadingChatsSection ?? hostKeepsChatsSection);
   const chatsSectionVisible =
     cloudChatsWorkspace !== undefined ||
     (defaultChatsWorkspace !== undefined &&
@@ -4021,6 +4104,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             props.onGroupError?.(chatsOwner.localId, error)
           }
           headerPresentation="section"
+          {...standaloneChatArchiveProps(cloudChatsWorkspace !== undefined)}
           workEntryNotifications={workEntryNotifications}
           selectionActions={selectionActionsFor('chats')}
           onEnterSelection={
@@ -4341,6 +4425,20 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
   // the search overlay sit outside it.
   const workspaceTree = (
     <>
+      {chatsSectionLoading && (
+        // Reserve the section before the snapshot supplies its rows and actions.
+        <>
+          {props.scrollOwner === 'host' ? null : (
+            <div aria-hidden="true" className="h-1" />
+          )}
+          <SidebarChatsSkeleton
+            rowStatusPlacement={props.chatsRowStatusPlacement}
+          />
+          {!props.renderProjectsBand && (
+            <div aria-hidden="true" className="h-3" />
+          )}
+        </>
+      )}
       {contentState === 'ready' && chatsSection}
       {contentState === 'ready' &&
         chatsSection &&
@@ -4351,7 +4449,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           // own gap.
           <div aria-hidden="true" className="h-3" />
         )}
-      {contentState === 'ready' && sharedSections.length > 0 && (
+      {((contentState === 'ready' && sharedSections.length > 0) ||
+        props.sharedWithMeNotices) && (
         <section
           data-testid="portal-shared-with-me-section"
           aria-labelledby="portal-shared-with-me-heading"
@@ -4368,16 +4467,19 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               {SHARED_WITH_YOU_SECTION_LABEL}
             </Heading>
           </div>
-          <Stack gap="tight">
-            {renderWorkspaceList(
-              sharedSections,
-              {
-                root: 'portal-shared-with-me-list',
-                hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
-              },
-              true,
-            )}
-          </Stack>
+          {props.sharedWithMeNotices}
+          {contentState === 'ready' && sharedSections.length > 0 && (
+            <Stack gap="tight">
+              {renderWorkspaceList(
+                sharedSections,
+                {
+                  root: 'portal-shared-with-me-list',
+                  hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
+                },
+                true,
+              )}
+            </Stack>
+          )}
         </section>
       )}
       {/* A host rail seats the header inside its own sticky band, HERE
@@ -4396,7 +4498,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         {props.workspacesSectionCollapsible &&
         workspacesSectionCollapsed ? null : contentState ===
           'waiting' ? null : contentState === 'loading' ? (
-          <SidebarProjectsSkeleton testId={testIds?.loading} />
+          <SidebarProjectsSkeleton
+            testId={testIds?.loading}
+            rowStatusPlacement={props.chatsRowStatusPlacement}
+          />
         ) : contentState === 'empty' &&
           (props.pendingProjects?.length ?? 0) === 0 ? (
           <div className="px-2">
@@ -4440,6 +4545,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             {showStandaloneChats && (
               <StandaloneChatsSidebarSection
                 snapshot={scopedSnapshot}
+                {...standaloneChatArchiveProps(false)}
                 selectedStandaloneChatId={
                   selection?.kind === 'standalone-chat'
                     ? selection.standaloneChatId
@@ -4970,8 +5076,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       {bulk.dialog}
       {settingsDialog &&
         settingsWorkspace &&
-        props.onSaveClaudeMd &&
-        props.onSaveScripts &&
+        (settingsDialog.detailsOnly === true ||
+          (props.onSaveClaudeMd && props.onSaveScripts)) &&
         props.onUpdateWorkspace && (
           <DeferredWorkspaceSettingsDialog
             workspaceName={settingsWorkspace.name}
@@ -4982,9 +5088,21 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               content: settingsDialog.content,
               scripts: settingsDialog.scripts,
             }}
-            tabs={['details', 'claude-md', 'scripts', 'danger']}
+            tabs={
+              settingsDialog.detailsOnly === true
+                ? ['details', 'danger']
+                : ['details', 'claude-md', 'scripts', 'danger']
+            }
             tabLabels={{ 'claude-md': 'Instructions' }}
+            {...(props.workspaceDangerCopy === undefined
+              ? {}
+              : {
+                  dangerCopy: props.workspaceDangerCopy(
+                    settingsWorkspace.localId,
+                  ),
+                })}
             extraTabs={
+              settingsDialog.detailsOnly !== true &&
               (props.renderWorkspaceRepositoriesAccessory ||
                 settingsWorkspace.type === 'multi-repo') &&
               settingsWorkspace.owner?.type === 'organization'

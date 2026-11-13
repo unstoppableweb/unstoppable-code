@@ -1,4 +1,5 @@
 import { saveCurrentLayoutAsDefault } from '@/lib/panels/default-layout-save';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import {
   DEFAULT_EXTRAS_GROUP_ID,
   DEFAULT_TERMINAL_GROUP_ID,
@@ -59,6 +60,8 @@ export function WorkspaceLayoutControls({
   const layout = usePanelLayoutStore(
     useShallow((state) => state.layouts[worktreeKey]),
   );
+  // The drawer's toggle starts a terminal, which a scope without one hides.
+  const { terminalPty } = useScopeCapabilities({ projectId });
   const [menuOpen, setMenuOpen] = useState(false);
   const [conversionBusy, setConversionBusy] = useState(false);
   const [chatWidth, setChatWidth] = useState<'default' | 'full'>('default');
@@ -300,29 +303,31 @@ export function WorkspaceLayoutControls({
           data-highlight-pressed={true}
         >
           {null}
-          <span className="relative inline-flex">
-            <TitlebarIconButton
-              data-testid="workspace-layout-terminal-toggle"
-              icon={BottombarHiddenBottomWideIcon}
-              onClick={toggleTerminal}
-              aria-label={terminalLabel}
-              aria-pressed={terminalVisible}
-              title={terminalLabel}
-            />
-            {terminal && terminal.collapsed && terminalNeedsAttention && (
-              <span
-                data-testid="workspace-layout-terminal-attention"
-                className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-warning"
-                role="status"
-                title="Terminal running or has unread output"
-                aria-label="Terminal running or has unread output"
-              >
-                <span className="sr-only">
-                  Terminal running or has unread output
+          {terminalPty === true && (
+            <span className="relative inline-flex">
+              <TitlebarIconButton
+                data-testid="workspace-layout-terminal-toggle"
+                icon={BottombarHiddenBottomWideIcon}
+                onClick={toggleTerminal}
+                aria-label={terminalLabel}
+                aria-pressed={terminalVisible}
+                title={terminalLabel}
+              />
+              {terminal && terminal.collapsed && terminalNeedsAttention && (
+                <span
+                  data-testid="workspace-layout-terminal-attention"
+                  className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-warning"
+                  role="status"
+                  title="Terminal running or has unread output"
+                  aria-label="Terminal running or has unread output"
+                >
+                  <span className="sr-only">
+                    Terminal running or has unread output
+                  </span>
                 </span>
-              </span>
-            )}
-          </span>
+              )}
+            </span>
+          )}
           {sidePanelToggle}
         </span>
       </span>

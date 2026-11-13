@@ -1,5 +1,8 @@
 import { useId, type JSX } from 'react';
+import type { CanopyCapabilities } from '@canopy/app-core';
 import {
+  ChoiceList,
+  ChoiceListRow,
   Notice,
   NoticeButton,
   SegmentedControl,
@@ -28,7 +31,36 @@ export const PIPELINE_RUN_CONTEXT_COPY = {
   retry: 'Try again',
   ownerStale: 'Choose an available owner.',
   ownerPlaceholder: 'Choose an owner',
+  runOn: 'Run on',
+  thisComputer: 'This computer',
+  thisComputerDetail: "Runs with this computer's tools and settings.",
+  cloud: 'Cloud',
+  cloudDetail: 'Runs in the cloud, even while this computer is off.',
+  cloudSourceUnavailable:
+    'Only shared and curated workflows can run in the cloud for now.',
+  cloudDestinationUnavailable: `Cloud runs can only use ${NO_PROJECT_LABEL} for now. Choose ${NO_PROJECT_LABEL}, or run on this computer.`,
 } as const;
+
+/**
+ * Where a run executes (CAN-6187, decision P6): on this computer or in the
+ * cloud. Its own field, apart from where the run goes ({@link
+ * PipelineRunLocation}) and from a run chat.
+ */
+export type PipelineRunOn = 'local' | 'cloud';
+
+export interface PipelineRunOnField {
+  /**
+   * The CAN-6085 axis: the field shows only while the host's web core
+   * reports cloud runs available.
+   */
+  readonly capabilities: Pick<CanopyCapabilities, 'pipelineCloudRuns'>;
+  readonly value: PipelineRunOn;
+  readonly onChange: (value: PipelineRunOn) => void;
+  /** Why this workflow can't run in the cloud at all; Cloud can't be chosen. */
+  readonly cloudUnavailableReason?: string;
+  /** Why the chosen Cloud can't run with the chosen destination. */
+  readonly cloudBlockedReason?: string;
+}
 
 /** The owner field's state, as the host resolved it. */
 export type PipelineRunOwnerField =
@@ -55,6 +87,8 @@ export interface PipelineRunLocationField {
 export interface PipelineRunContextFieldsProps {
   /** Shown only for a pipeline that can run with or without a project. */
   readonly location?: PipelineRunLocationField;
+  /** Shown only where the host can run workflows in the cloud. */
+  readonly runOn?: PipelineRunOnField;
   /** Shown only for a run with no project. */
   readonly owner?: PipelineRunOwnerField;
   readonly disabled?: boolean;
@@ -62,12 +96,15 @@ export interface PipelineRunContextFieldsProps {
 
 export function PipelineRunContextFields({
   location,
+  runOn: runOnField,
   owner,
   disabled = false,
 }: PipelineRunContextFieldsProps): JSX.Element | null {
   const ownerLabelId = useId();
   const ownerHelperId = useId();
-  if (!location && !owner) return null;
+  const runOn =
+    runOnField?.capabilities.pipelineCloudRuns === true ? runOnField : null;
+  if (!location && !runOn && !owner) return null;
   return (
     <div
       className="flex flex-col gap-4"
@@ -111,6 +148,11 @@ export function PipelineRunContextFields({
           ) : null}
         </div>
       ) : null}
+      {runOn ? <RunOnControl runOn={runOn} disabled={disabled} /> : null}
+      {/*
+       * CAN-3379 (#5803): the run-chat destination goes here, after where
+       * the run goes and where it executes, as its own field.
+       */}
       {owner ? (
         <div className="flex flex-col gap-1.5">
           <span id={ownerLabelId} className="text-s font-medium fg-primary">
@@ -126,6 +168,74 @@ export function PipelineRunContextFields({
             {PIPELINE_RUN_CONTEXT_COPY.ownerHelper}
           </p>
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RunOnControl({
+  runOn,
+  disabled,
+}: {
+  runOn: PipelineRunOnField;
+  disabled: boolean;
+}): JSX.Element {
+  const labelId = useId();
+  const unavailable = runOn.cloudUnavailableReason;
+  const value: PipelineRunOn =
+    unavailable === undefined ? runOn.value : 'local';
+  const blocked = value === 'cloud' ? runOn.cloudBlockedReason : undefined;
+  const choose = (next: PipelineRunOn): void => {
+    // A radio row: pressing the chosen row changes nothing.
+    if (next !== value) runOn.onChange(next);
+  };
+  // Radio rows, not a segmented control: Cloud can be unavailable with a
+  // reason (docs/design/forms.md).
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span id={labelId} className="text-s font-medium fg-primary">
+        {PIPELINE_RUN_CONTEXT_COPY.runOn}
+      </span>
+      <ChoiceList
+        kind="radio"
+        aria-label={PIPELINE_RUN_CONTEXT_COPY.runOn}
+        data-testid="pipeline-run-on"
+      >
+        <ChoiceListRow
+          kind="radio"
+          selected={value === 'local'}
+          disabled={disabled}
+          onClick={(): void => choose('local')}
+          data-testid="pipeline-run-on-local"
+        >
+          <span className="block">
+            {PIPELINE_RUN_CONTEXT_COPY.thisComputer}
+          </span>
+          <span className="block text-xs fg-secondary">
+            {PIPELINE_RUN_CONTEXT_COPY.thisComputerDetail}
+          </span>
+        </ChoiceListRow>
+        <ChoiceListRow
+          kind="radio"
+          selected={value === 'cloud'}
+          disabled={disabled || unavailable !== undefined}
+          onClick={(): void => choose('cloud')}
+          data-testid="pipeline-run-on-cloud"
+        >
+          <span className="block">{PIPELINE_RUN_CONTEXT_COPY.cloud}</span>
+          <span className="block text-xs fg-secondary">
+            {unavailable ?? PIPELINE_RUN_CONTEXT_COPY.cloudDetail}
+          </span>
+        </ChoiceListRow>
+      </ChoiceList>
+      {blocked !== undefined ? (
+        <FieldError
+          id="pipeline-run-on-blocked"
+          announce
+          data-testid="pipeline-run-on-blocked"
+        >
+          {blocked}
+        </FieldError>
       ) : null}
     </div>
   );

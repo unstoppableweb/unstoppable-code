@@ -51,10 +51,10 @@ import {
   type WorktreeCompatibilitySymlink,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { getActiveChatIds } from '../agents/session-manager';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
-import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { listExecutionSummaries } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import {
   createWorktree,
   getCurrentBranch,

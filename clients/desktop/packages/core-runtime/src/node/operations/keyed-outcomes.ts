@@ -10,10 +10,16 @@ export const MAX_KEYED_OUTCOMES = 512;
  * key and parameters returns the first outcome, joining it while it runs,
  * instead of running the script again; other parameters are refused. Kept in
  * memory: across a restart the core's dispatch record resolves the outcome.
+ * A rejection `forget` accepts is dropped once it settles, so a retry with
+ * the same key runs again instead of replaying it.
  */
 export class KeyedOutcomes<T> {
   constructor(
-    private readonly options: { reusedError: () => Error; max?: number },
+    private readonly options: {
+      reusedError: () => Error;
+      max?: number;
+      forget?: (error: unknown) => boolean;
+    },
   ) {}
 
   private readonly outcomes = new Map<
@@ -40,7 +46,13 @@ export class KeyedOutcomes<T> {
     }
     const outcome = start();
     this.outcomes.set(id, { fingerprint, outcome });
-    outcome.catch(() => undefined);
+    outcome.catch((error: unknown) => {
+      if (
+        this.options.forget?.(error) &&
+        this.outcomes.get(id)?.outcome === outcome
+      )
+        this.outcomes.delete(id);
+    });
     while (this.outcomes.size > (this.options.max ?? MAX_KEYED_OUTCOMES)) {
       const oldest = this.outcomes.keys().next().value;
       if (oldest === undefined) break;

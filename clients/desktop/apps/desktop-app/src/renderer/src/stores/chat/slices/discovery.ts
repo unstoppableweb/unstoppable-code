@@ -43,6 +43,12 @@ import { getWorktreeChatContext, updateCapturedChatTab } from '../context';
 import { isClaudeTerminalEligibleChatTab } from '@/lib/chat-provider';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatDiscoverySlice } from '../state';
+import {
+  chatBackendFor,
+  isCapabilityUnavailable,
+  reportUnlessUnavailable,
+} from '../backend';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 export const createDiscoverySlice: StateCreator<
   ChatState,
@@ -185,12 +191,18 @@ export const createDiscoverySlice: StateCreator<
       ),
     );
     if (!nextSelections) return;
-    await window.api.chat.updatePlugins({
-      projectId,
-      worktreeId,
-      chatId: activeTab.id,
-      pluginSelections: nextSelections,
-    });
+    try {
+      await chatBackendFor({ projectId }).chat.updatePlugins({
+        projectId,
+        worktreeId,
+        chatId: activeTab.id,
+        pluginSelections: nextSelections,
+      });
+    } catch (error: unknown) {
+      // An authority that serves no plugin selections keeps the tab's.
+      if (isCapabilityUnavailable(error)) return;
+      throw error;
+    }
     set((state) => {
       const currentWc = state.worktreeChats[key];
       if (!currentWc) return state;
@@ -243,6 +255,9 @@ export const createDiscoverySlice: StateCreator<
     const modelDefaults = await get().ensureModelDefaultsLoaded();
     const sel = get().selectedWorktree;
     if (!sel) return;
+    // A cloud chat runs the model, thinking level and plugins its web core
+    // holds; this computer's defaults never stand in for them (CAN-6365).
+    if (isWebCoreScope(sel.projectId)) return;
 
     const key = worktreeKey(sel);
     const wc = get().worktreeChats[key];
@@ -693,7 +708,7 @@ export const createDiscoverySlice: StateCreator<
             ),
           );
           if (!nextSelections) return;
-          await window.api.chat.updatePlugins({
+          await chatBackendFor(sel).chat.updatePlugins({
             projectId: sel.projectId,
             worktreeId: sel.worktreeId,
             chatId,
@@ -724,7 +739,7 @@ export const createDiscoverySlice: StateCreator<
       // These special surfaces cannot receive Try it drafts. Preserve their
       // existing copy semantics instead of broadening this staging fix.
       if (!options?.runtimeAlreadyUpdated) {
-        await window.api.chat.updatePlugins({
+        await chatBackendFor(sel).chat.updatePlugins({
           projectId: sel.projectId,
           worktreeId: sel.worktreeId,
           chatId,
@@ -750,7 +765,7 @@ export const createDiscoverySlice: StateCreator<
           wc.tabs.find((t) => t.id === chatId),
         ),
       });
-    })();
+    })().catch(reportUnlessUnavailable);
     return effectiveSelections;
   },
 });

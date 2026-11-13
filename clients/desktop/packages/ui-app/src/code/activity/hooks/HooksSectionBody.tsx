@@ -412,8 +412,7 @@ export function HooksSectionBody({
                   // pipeline labels name the pipeline and stay recorded.
                   <Surface
                     key={`${action.type}-${index}`}
-                    variant="group"
-                    size="small"
+                    variant="inset"
                     className="overflow-hidden"
                   >
                     <pre

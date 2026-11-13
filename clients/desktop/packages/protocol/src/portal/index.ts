@@ -1,3 +1,4 @@
+import type { WorktreeRecoveryRequest } from './worktree-recovery';
 import type { CoworkFolderMissing } from '../canopy-core/core/workspace/cowork-folder';
 export * from './w5-recovery';
 import type { W5RecoveryStatus } from './w5-recovery';
@@ -1773,6 +1774,10 @@ export const PORTAL_CAPABILITY_COLLECTION_MUTATIONS =
 /** Revision-guarded shared updates, independent of local collection editing. */
 export const PORTAL_CAPABILITY_COLLECTION_UPDATES =
   'collection_updates_v1' as const;
+/** Incarnation-bound, settled recovery actions (CAN-6389), not just display data. */
+export const PORTAL_CAPABILITY_WORKTREE_RECOVERY =
+  'worktree_recovery_v1' as const;
+
 /** Desktop serves `portal.worktree.discard.describe` and `.discard` (CAN-5334). */
 export const PORTAL_CAPABILITY_WORKTREE_DISCARD =
   'worktree_discard_v1' as const;
@@ -4736,6 +4741,15 @@ export interface PortalPipelineRunPayload {
   planId?: string;
   /** Local id of an already-fetched shared pipeline source, when applicable. */
   sharedPipeline?: { serverId: string; remoteId: string };
+  /**
+   * Where the run executes (CAN-6187, decision P6), apart from the task it
+   * goes to. Absent runs on the desktop; the cloud target
+   * (`CLOUD_PIPELINE_RUN_TARGET_ID`) asks for a cloud run. A desktop never
+   * runs a targeted command itself: a cloud run can't go to a task yet
+   * (CP-36), so it refuses it. Older desktops ignore the field, which is why
+   * it bumped `REMOTE_PROTOCOL_VERSION`.
+   */
+  targetId?: string;
   /** Trigger context used by task- and plan-ready pipeline modes. */
   eventName?: 'task_ready' | 'plan_ready';
   eventData?: {
@@ -5647,6 +5661,11 @@ export interface PortalTaskRefsListResult {
  * the portal localIds (1:1 with the desktop ids).
  */
 export interface PortalWorktreeArchivePayload {
+  /** Only recovery-aware callers send this; binds retries to the refused incarnation. */
+  recovery?: WorktreeRecoveryRequest;
+  expectedBranchName?: string;
+  deleteBranch?: boolean;
+  deleteWithoutRetentionIfMissing?: boolean;
   /** Absent means archive; delete requires host retention support. */
   mode?: 'archive' | 'delete';
   workspaceId: string;
@@ -7878,6 +7897,10 @@ export interface PortalStandaloneChatSummary extends PortalStandaloneWorkEntryFi
   steeringCapabilities?: ChatSteeringCapabilities;
   /** True while a turn runs in this chat; absent on older hosts. */
   turnActive?: boolean;
+  /** See {@link PortalChatSummaryEntity.settingApplication}. */
+  settingApplication?: PortalChatSettingApplication;
+  /** See {@link PortalChatSummaryEntity.turnSettings}. */
+  turnSettings?: PortalChatTurnSettings;
   /** See {@link PortalChatSummaryEntity.lastTurnEnd}. */
   lastTurnEnd?: PortalChatTurnEnd;
   /**
@@ -8304,6 +8327,23 @@ export interface PortalChatTurnEnd {
   outcome: 'completed' | 'failed' | 'cancelled';
   /** ISO-8601 time the turn ended. */
   endedAt: string;
+}
+
+/**
+ * When a chat's live session applies a model or thinking-level change: at
+ * once (`live`), or only from the next turn it starts (`next_turn`), so a
+ * running turn keeps the settings it started with. Mirrors the desktop's
+ * `ChatSessionSettingApplication`.
+ */
+export interface PortalChatSettingApplication {
+  model: 'live' | 'next_turn';
+  thinkingLevel: 'live' | 'next_turn';
+}
+
+/** The model and thinking level a running turn applied. */
+export interface PortalChatTurnSettings {
+  model?: string;
+  thinkingLevel?: PortalChatThinkingLevel;
 }
 
 /**
@@ -9592,6 +9632,20 @@ export interface PortalChatSummaryEntity {
    * Omitted when the turn is idle or the desktop predates this field.
    */
   turnElapsedMs?: number;
+  /**
+   * How the chat's live session applies a model or thinking-level change:
+   * at once, or only from its next turn. Sent with `turnActive` for sessions
+   * that declare it; omitted for sessions that apply changes live and by
+   * desktops that predate this field.
+   */
+  settingApplication?: PortalChatSettingApplication;
+  /**
+   * The model and thinking level the running turn applied, while a turn runs
+   * on a session with a `settingApplication`. A composer whose selection
+   * differs shows that change as pending until the next turn. Omitted when
+   * idle or by desktops that predate this field.
+   */
+  turnSettings?: PortalChatTurnSettings;
   /**
    * The chat's canonical turn phase (turn-state phase 41a). `background`
    * means only background work runs: no turn, so the composer is open and

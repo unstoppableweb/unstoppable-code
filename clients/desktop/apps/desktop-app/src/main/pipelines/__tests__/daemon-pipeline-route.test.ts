@@ -80,9 +80,9 @@ jest.mock('../../ipc/os-notifications', () => ({
     mockShowOsNotification(...args),
 }));
 const mockExecutePipeline = jest.fn();
-jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
+jest.mock('@canopy/execution-engine/node/pipelines/executor', () => ({
   ...jest.requireActual<object>(
-    '@canopy/desktop-shared/node/pipelines/executor',
+    '@canopy/execution-engine/node/pipelines/executor',
   ),
   executePipeline: (...args: unknown[]): unknown =>
     mockExecutePipeline(...args),
@@ -90,9 +90,23 @@ jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  DAEMON_COMMIT_HOOK_SKIP_OUTPUTS_UNAVAILABLE,
+  DaemonCommitHookFollower,
+  catchUpDaemonCommitHooks,
+  daemonCommitHookKey,
+  daemonCommitHooksDone,
+  daemonCommitHookMarkerPath,
+  daemonCommitHooksPendingPath,
+  markDaemonCommitHooksPending,
+  runDaemonCommitHooks,
+} from '../daemon-pipeline-commit-hooks';
+import { scanInterruptedWork } from '../../lib/interrupted-work-scan-worker';
+import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import { createMatrixPhysicalJobId } from '@canopy/execution-engine/pipelines/matrix';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { CanopyClientError } from '@canopy/core-client';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import {
@@ -101,14 +115,14 @@ import {
   saveExecutionState,
   type ExecutionHandle,
   type ExecutionOptions,
-} from '@canopy/desktop-shared/node/pipelines/executor';
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { setLoginShellProbe } from '@canopy/execution-engine/node/pipelines/config-paths';
-import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
+import { recoverOrphanedPipelineExecutions } from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
 import type {
   ExecutionRuntime,
   PipelineAgentModelAliasResolution,
   PipelinePluginCollectionResolution,
-} from '@canopy/desktop-shared/node/pipelines/executor/types';
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import type {
   ExecutionState,
   Pipeline,
@@ -130,6 +144,8 @@ import {
   registerDaemonPipelineExecution,
 } from '../daemon-pipeline-execution';
 import {
+  DAEMON_COMMIT_HOOK_TAKEOVER_REFUSED_MESSAGE,
+  drainDaemonCommitHooksBeforeTakeover,
   followSurvivingDaemonRuns,
   isDaemonPipelineRouteEligible,
   selectDaemonPipeline,
@@ -928,6 +944,388 @@ describe('daemon pipeline route (CAN-5086)', () => {
     expect(launch).not.toHaveProperty('codexEnvironment');
   });
 
+  it('git-commit-push goes to the daemon saying Electron main runs its hook (CAN-6012 D3)', async () => {
+    initClaudeModels([{ id: DEFAULT_CLAUDE_MODEL, label: 'Claude' }]);
+    const commit: Pipeline = {
+      name: 'Route',
+      on: 'dispatch',
+      jobs: {
+        j: {
+          steps: [
+            {
+              id: 'commit',
+              uses: 'builtin/git-commit-push',
+              with: { commit_model: DEFAULT_CLAUDE_MODEL },
+            },
+          ],
+        },
+      },
+    };
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    await routed(commit);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    expect(sentLaunch(daemon)).toMatchObject({
+      ownerBound: true,
+      precommitHooks: 'owner',
+    });
+    // Startup catches up on this run's commit results if nothing follows it.
+    const [sent] = daemon.instructions;
+    const sentId = readField(sent?.params, 'executionId');
+    if (typeof sentId !== 'string') throw new Error('No execution id.');
+    expect(
+      existsSync(
+        daemonCommitHooksPendingPath(executionRuntime.executionsDir, sentId),
+      ),
+    ).toBe(true);
+
+    // Without the owner, nothing runs the hook: the run stays in process,
+    // with no mark for startup.
+    mockExecutePipeline.mockClear();
+    mockOwnerPossible.mockReturnValue(false);
+    await routed(commit);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
+    const call: unknown = mockExecutePipeline.mock.calls[0];
+    const options = readField(call, '1');
+    const inAppId = readField(options, 'executionId');
+    if (typeof inAppId !== 'string') throw new Error('No execution id.');
+    expect(
+      existsSync(
+        daemonCommitHooksPendingPath(executionRuntime.executionsDir, inAppId),
+      ),
+    ).toBe(false);
+  });
+
+  it('catches up at startup on commit results of daemon runs nothing followed (CAN-6012 D3)', async () => {
+    const executionsDir = executionRuntime.executionsDir;
+    const pipeline: Pipeline = {
+      name: 'Route',
+      on: 'dispatch',
+      jobs: {
+        j: { steps: [{ id: 'commit', uses: 'builtin/git-commit-push' }] },
+      },
+    };
+    const stored = async (
+      executionId: string,
+      status: 'paused' | 'success' | 'running',
+      pending: boolean,
+    ): Promise<void> => {
+      const state = createInitialState(
+        normalizePipeline(pipeline),
+        { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+        executionId,
+      );
+      state.status = status;
+      state.project_id = 'project';
+      state.worktree_id = 'task';
+      Object.assign(state.jobs.j?.steps.commit ?? {}, {
+        status: 'failure',
+        outputs: {
+          results_json: JSON.stringify([
+            { repoName: executionId, repoPath: root, status: 'failed' },
+          ]),
+        },
+        started_at: '2026-11-10T10:00:00.000Z',
+        completed_at: '2026-11-10T10:01:00.000Z',
+      });
+      await saveExecutionState(state, executionsDir);
+      if (pending)
+        await markDaemonCommitHooksPending(executionsDir, executionId);
+    };
+    // Paused when the app quit before its follower's scan claimed the
+    // result; ended with its result already claimed; still running in the
+    // daemon, so its follower scans it; and a run that stayed in the app,
+    // whose in-process hook already ran.
+    await stored('run-paused', 'paused', true);
+    await stored('run-claimed', 'success', true);
+    await stored('run-running', 'running', true);
+    await stored('run-in-app', 'success', false);
+    const fired: string[] = [];
+    const ports = {
+      fire: ({
+        results,
+      }: {
+        readonly results: readonly { readonly repoName?: string }[];
+      }): Promise<void> => {
+        fired.push(results[0]?.repoName ?? '');
+        return Promise.resolve();
+      },
+      warn: (): void => undefined,
+    };
+    const claimed = await loadExecutionState('run-claimed', executionsDir);
+    if (!claimed) throw new Error('No state.');
+    await runDaemonCommitHooks({
+      state: claimed,
+      executionsDir,
+      scope: { projectId: 'project', worktreeId: 'task' },
+      handled: new Set(),
+      ports,
+    });
+    expect(fired).toEqual(['run-claimed']);
+
+    const scan = await scanInterruptedWork([], executionsDir);
+    expect([...scan.daemonCommitHookIds].sort()).toEqual([
+      'run-claimed',
+      'run-paused',
+      'run-running',
+    ]);
+    const catchUp = (): Promise<readonly string[]> =>
+      catchUpDaemonCommitHooks({
+        // A mark whose run left no state is only cleared.
+        executionIds: [...scan.daemonCommitHookIds, 'run-gone'],
+        executionsDir,
+        load: (executionId) => loadExecutionState(executionId, executionsDir),
+        scopeOf: (state) =>
+          Promise.resolve(
+            state.project_id && state.worktree_id
+              ? {
+                  scope: {
+                    projectId: state.project_id,
+                    worktreeId: state.worktree_id,
+                  },
+                }
+              : undefined,
+          ),
+        ports,
+      });
+    await markDaemonCommitHooksPending(executionsDir, 'run-gone');
+    await catchUp();
+    await catchUp();
+    expect(fired).toEqual(['run-claimed', 'run-paused']);
+    const pending = (executionId: string): boolean =>
+      existsSync(daemonCommitHooksPendingPath(executionsDir, executionId));
+    expect(pending('run-paused')).toBe(false);
+    expect(pending('run-claimed')).toBe(false);
+    expect(pending('run-gone')).toBe(false);
+    expect(pending('run-running')).toBe(true);
+
+    // A state that cannot be read keeps its mark for the next start.
+    await markDaemonCommitHooksPending(executionsDir, 'run-unreadable');
+    const warnedIds: string[] = [];
+    const undrained = await catchUpDaemonCommitHooks({
+      executionIds: ['run-unreadable'],
+      executionsDir,
+      load: () =>
+        Promise.reject(Object.assign(new Error('EIO'), { code: 'EIO' })),
+      scopeOf: () =>
+        Promise.resolve({
+          scope: { projectId: 'project', worktreeId: 'task' },
+        }),
+      ports: {
+        ...ports,
+        warn: (_message, details): void => {
+          warnedIds.push(details.executionId ?? '');
+        },
+      },
+    });
+    expect(pending('run-unreadable')).toBe(true);
+    expect(warnedIds).toEqual(['run-unreadable']);
+    expect(undrained).toEqual(['run-unreadable']);
+
+    // The app never takes over a run it could not drain: in-process hooks
+    // would otherwise run beside the daemon's unclaimed ones.
+    const drained: string[][] = [];
+    const drain = (ids: readonly string[]): Promise<readonly string[]> => {
+      drained.push([...ids]);
+      return Promise.resolve(ids.filter((id) => id === 'run-unreadable'));
+    };
+    await expect(
+      drainDaemonCommitHooksBeforeTakeover(
+        'run-unreadable',
+        executionsDir,
+        drain,
+      ),
+    ).rejects.toThrow(DAEMON_COMMIT_HOOK_TAKEOVER_REFUSED_MESSAGE);
+    await expect(
+      drainDaemonCommitHooksBeforeTakeover('run-paused', executionsDir, drain),
+    ).resolves.toBeUndefined();
+    expect(drained).toEqual([['run-unreadable'], ['run-paused']]);
+  });
+
+  it("keeps a run's pending mark until every scan's claim and hook have finished (CAN-6012 D3)", async () => {
+    const executionsDir = executionRuntime.executionsDir;
+    const pipeline: Pipeline = {
+      name: 'Route',
+      on: 'dispatch',
+      jobs: {
+        j: { steps: [{ id: 'commit', uses: 'builtin/git-commit-push' }] },
+      },
+    };
+    const state = createInitialState(
+      normalizePipeline(pipeline),
+      { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+      'run-overlap',
+    );
+    state.status = 'failure';
+    Object.assign(state.jobs.j?.steps.commit ?? {}, {
+      status: 'failure',
+      outputs: {
+        results_json: JSON.stringify([
+          { repoName: 'repo', repoPath: root, status: 'failed' },
+        ]),
+      },
+      started_at: '2026-11-10T10:00:00.000Z',
+      completed_at: '2026-11-10T10:00:30.000Z',
+    });
+    await markDaemonCommitHooksPending(executionsDir, state.id);
+    const pending = (): boolean =>
+      existsSync(daemonCommitHooksPendingPath(executionsDir, state.id));
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fired = 0;
+    const warned: Record<string, string>[] = [];
+    const follower = new DaemonCommitHookFollower({
+      executionId: state.id,
+      executionsDir,
+      scope: { projectId: 'project', worktreeId: 'task' },
+      ports: {
+        fire: async (): Promise<void> => {
+          fired += 1;
+          await blocked;
+        },
+        warn: (_message, details): void => {
+          warned.push(details);
+        },
+      },
+    });
+    // Two reloads of the ended state: the second waits for the first, so
+    // the mark stays while the first hook is still running.
+    const first = follower.scan(state);
+    const second = follower.scan(state);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fired).toBe(1);
+    expect(pending()).toBe(true);
+    release();
+    await Promise.all([first, second]);
+    expect(fired).toBe(1);
+    expect(pending()).toBe(false);
+    expect(warned).toEqual([]);
+
+    // A claim that fails is not remembered: the mark stays, and a later
+    // scan claims the result and fires it.
+    const retried = createInitialState(
+      normalizePipeline(pipeline),
+      { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+      'run-claim-fails',
+    );
+    retried.status = 'failure';
+    Object.assign(retried.jobs.j?.steps.commit ?? {}, {
+      ...structuredClone(state.jobs.j?.steps.commit),
+    });
+    await markDaemonCommitHooksPending(executionsDir, retried.id);
+    const markerDir = dirname(
+      daemonCommitHookMarkerPath(
+        executionsDir,
+        retried.id,
+        daemonCommitHookKey(retried.id, 'j', 'commit', {
+          started_at: '2026-11-10T10:00:00.000Z',
+          completed_at: '2026-11-10T10:00:30.000Z',
+        }),
+      ),
+    );
+    // A file where the claim's folder goes makes the claim fail.
+    writeFileSync(markerDir, '');
+    const retryFollower = new DaemonCommitHookFollower({
+      executionId: retried.id,
+      executionsDir,
+      scope: { projectId: 'project', worktreeId: 'task' },
+      ports: {
+        fire: (): Promise<void> => {
+          fired += 1;
+          return Promise.resolve();
+        },
+        warn: (_message, details): void => {
+          warned.push(details);
+        },
+      },
+    });
+    await retryFollower.scan(retried);
+    expect(fired).toBe(1);
+    expect(warned).toEqual([{ executionId: retried.id }]);
+    expect(
+      existsSync(daemonCommitHooksPendingPath(executionsDir, retried.id)),
+    ).toBe(true);
+    rmSync(markerDir);
+    await retryFollower.scan(retried);
+    expect(fired).toBe(2);
+    expect(
+      existsSync(daemonCommitHooksPendingPath(executionsDir, retried.id)),
+    ).toBe(false);
+  });
+
+  it('never fires again for a run the app takes over (CAN-6012 D3)', async () => {
+    // A paused daemon run resumes in the app, whose post-process fires its
+    // later results with no marker. The daemon's results are claimed when
+    // the follower's final scan sees the pause, or by the drain before the
+    // takeover; then the mark is gone and no later start replays anything.
+    const executionsDir = executionRuntime.executionsDir;
+    const pipeline: Pipeline = {
+      name: 'Route',
+      on: 'dispatch',
+      jobs: {
+        j: { steps: [{ id: 'commit', uses: 'builtin/git-commit-push' }] },
+      },
+    };
+    const state = createInitialState(
+      normalizePipeline(pipeline),
+      { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+      'run-taken-over',
+    );
+    state.status = 'paused';
+    state.project_id = 'project';
+    state.worktree_id = 'task';
+    const failed = (repoName: string, minute: string): object => ({
+      status: 'failure',
+      outputs: {
+        results_json: JSON.stringify([
+          { repoName, repoPath: root, status: 'failed' },
+        ]),
+      },
+      started_at: `2026-11-10T10:${minute}:00.000Z`,
+      completed_at: `2026-11-10T10:${minute}:30.000Z`,
+    });
+    Object.assign(state.jobs.j?.steps.commit ?? {}, failed('daemon', '00'));
+    await saveExecutionState(state, executionsDir);
+    await markDaemonCommitHooksPending(executionsDir, state.id);
+    expect(daemonCommitHooksDone(state)).toBe(true);
+    const fired: string[] = [];
+    const catchUp = (
+      executionIds: readonly string[],
+    ): Promise<readonly string[]> =>
+      catchUpDaemonCommitHooks({
+        executionIds,
+        executionsDir,
+        load: (executionId) => loadExecutionState(executionId, executionsDir),
+        scopeOf: () =>
+          Promise.resolve({
+            scope: { projectId: 'project', worktreeId: 'task' },
+          }),
+        ports: {
+          fire: ({ results }): Promise<void> => {
+            fired.push(results[0]?.repoName ?? '');
+            return Promise.resolve();
+          },
+          warn: (): void => undefined,
+        },
+      });
+    // The drain before the takeover claims the daemon's result.
+    await catchUp([state.id]);
+    expect(fired).toEqual(['daemon']);
+    expect(
+      existsSync(daemonCommitHooksPendingPath(executionsDir, state.id)),
+    ).toBe(false);
+    // The resumed run's own result, fired by the in-process post-process.
+    Object.assign(state.jobs.j?.steps.commit ?? {}, failed('in-app', '05'));
+    state.status = 'success';
+    await saveExecutionState(state, executionsDir);
+    // The next start, and a drain for any run that never left the app.
+    await catchUp([state.id]);
+    expect(fired).toEqual(['daemon']);
+  });
+
   it('a production build never hands a daemon model step the mock LLM route, whatever its environment sets (CAN-5095)', async () => {
     // Jest compiles __CANOPY_E2E__ as release builds do: absent.
     process.env.CANOPY_MOCK_LLM_BASE_URL = 'http://127.0.0.1:4011';
@@ -1034,16 +1432,27 @@ describe('daemon pipeline route (CAN-5086)', () => {
     expect(resolverPreferences[0]).toMatchObject(
       draft.pluginCollectionPreferences,
     );
-    // A Codex step with a collection, a snapshot that names a standalone MCP
-    // server, and one that misses a required default run in process.
-    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    // A snapshot that names a standalone MCP server goes as references: an
+    // SDK step drops the server in process too (CAN-6011).
     mcp = true;
     await routed(collectionPipeline(), 'user', draft);
+    expect(daemon.instructions).toHaveLength(2);
+    expect(
+      readField(
+        readField(daemon.instructions[1]?.options, 'execution'),
+        'pipelineLaunch',
+      ),
+    ).toMatchObject({
+      pluginCollectionSnapshots: { review: { selections: selections(true) } },
+    });
     mcp = false;
+    // A Codex step with a collection, and a snapshot that misses a required
+    // default, run in process.
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
     required = true;
     await routed(collectionPipeline(), 'user', draft);
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(3);
-    expect(daemon.instructions).toHaveLength(1);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
+    expect(daemon.instructions).toHaveLength(2);
     // A collection id with spaces around it, named through an alias, is
     // snapshotted under the trimmed id the executor looks it up by.
     required = false;
@@ -1077,11 +1486,11 @@ describe('daemon pipeline route (CAN-5086)', () => {
       'user',
       draft,
     );
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(3);
-    expect(daemon.instructions).toHaveLength(2);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
+    expect(daemon.instructions).toHaveLength(3);
     expect(
       readField(
-        readField(daemon.instructions[1]?.options, 'execution'),
+        readField(daemon.instructions[2]?.options, 'execution'),
         'pipelineLaunch',
       ),
     ).toMatchObject({
@@ -1182,12 +1591,44 @@ describe('daemon pipeline route (CAN-5086)', () => {
         executionContext: 'personal',
       },
     ]);
-    // An Agent that names a standalone MCP server (CAN-5832 D9, CAN-6011),
-    // or one that is not available, runs in process.
+    // An Agent that names a standalone MCP server goes to the daemon, whose
+    // step drops the server as an SDK step in process does (CAN-6011). One
+    // that is not available runs in process.
     await routed(aliasPipeline('agent_model_mcp'), 'user', preferences);
+    expect(daemon.instructions).toHaveLength(2);
+    expect(
+      readField(
+        readField(daemon.instructions[1]?.options, 'execution'),
+        'pipelineLaunch',
+      ),
+    ).toMatchObject({
+      modelAliasResolutions: {
+        reviewer: { base: DEFAULT_CLAUDE_MODEL, plugins: true },
+      },
+    });
     await routed(aliasPipeline('agent_model_missing'), 'user', preferences);
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
-    expect(daemon.instructions).toHaveLength(1);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
+    expect(daemon.instructions).toHaveLength(2);
+    const resolveAgent = jest.spyOn(
+      executionRuntime,
+      'resolvePipelineAgentModelAlias',
+    );
+    await routed(aliasPipeline('agent_model_reviewer'), 'user', {
+      modelAliasPreferences: {
+        fast: { mode: 'inline', base: DEFAULT_CLAUDE_MODEL },
+        reviewer: {
+          mode: 'agent',
+          agent_id: 'agent_model_reviewer',
+          base: DEFAULT_CLAUDE_MODEL,
+        },
+      },
+    });
+    expect(resolveAgent).toHaveBeenCalledWith(
+      `agent_model_reviewer@${DEFAULT_CLAUDE_MODEL}`,
+      expect.any(Object),
+    );
+    expect(daemon.instructions).toHaveLength(3);
+    resolveAgent.mockRestore();
   });
 
   it("a Codex step's launch carries the run's Codex environment (CAN-5095)", async () => {
@@ -1207,6 +1648,255 @@ describe('daemon pipeline route (CAN-5086)', () => {
         },
       },
     });
+  });
+
+  it('a step whose model names a run input goes to the daemon by the model the input names (CAN-6012)', async () => {
+    initCodexModels([{ id: DEFAULT_CODEX_MODEL, label: 'Codex' }]);
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    const pipeline: Pipeline = {
+      name: 'Route',
+      on: { dispatch: { inputs: { model: { type: 'string' } } } },
+      jobs: {
+        j: {
+          steps: [
+            {
+              id: 'ask',
+              uses: 'builtin/agent-prompt',
+              with: { prompt: 'x', model: '${{ inputs.model }}' },
+            },
+          ],
+        },
+      },
+    };
+    await routed(pipeline, 'user', { inputs: { model: DEFAULT_CODEX_MODEL } });
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    expect(daemon.instructions[0]?.options).toMatchObject({
+      execution: {
+        pipelineLaunch: {
+          ownerBound: true,
+          inputs: { model: DEFAULT_CODEX_MODEL },
+          codexEnvironment: {
+            logicalWorkspaceEnvironmentId: 'pipeline:default',
+          },
+        },
+      },
+    });
+    // A missing input, an undeclared one or a provider the daemon does not
+    // run keeps the run in process.
+    const refused: Record<string, string>[] = [
+      {},
+      { other: DEFAULT_CODEX_MODEL },
+      { model: 'cursor-default' },
+    ];
+    for (const inputs of refused) await routed(pipeline, 'user', { inputs });
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(3);
+    expect(daemon.instructions).toHaveLength(1);
+  });
+
+  it('runs a daemon git-commit-push hook once per step result, from the stored outputs (CAN-6012)', async () => {
+    const pipeline: Pipeline = {
+      name: 'Route',
+      on: 'dispatch',
+      jobs: {
+        j: {
+          steps: [
+            { id: 'commit', uses: 'builtin/git-commit-push' },
+            { id: 'unread', uses: 'builtin/git-commit-push' },
+            { id: 'later', uses: 'builtin/git-commit-push' },
+            { id: 'echo', run: 'echo out' },
+          ],
+        },
+      },
+    };
+    const state = createInitialState(
+      normalizePipeline(pipeline),
+      { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+      'run-hooks',
+    );
+    const job = state.jobs.j;
+    if (!job) throw new Error('No job.');
+    const failed = JSON.stringify([
+      {
+        repoName: 'repo',
+        repoPath: root,
+        status: 'failed',
+        failurePhase: 'commit',
+        precommitFailureError: 'lint failed',
+        commitMessage: 'Fix',
+      },
+      { repoName: 'other', repoPath: root, status: 'committed' },
+    ]);
+    const first = {
+      started_at: '2026-11-10T10:00:00.000Z',
+      completed_at: '2026-11-10T10:01:00.000Z',
+    };
+    Object.assign(job.steps.commit ?? {}, {
+      status: 'failure',
+      outputs: { results_json: failed },
+      ...first,
+    });
+    // Settled, but its outputs are gone: a fixed reason, never a guess.
+    Object.assign(job.steps.unread ?? {}, { status: 'failure', outputs: {} });
+    // Still running, and a step of another action: neither fires.
+    Object.assign(job.steps.later ?? {}, {
+      status: 'running',
+      outputs: { results_json: failed },
+    });
+    Object.assign(job.steps.echo ?? {}, { status: 'success' });
+    const fired: unknown[] = [];
+    const warned: Record<string, string>[] = [];
+    const ports = {
+      fire: (args: unknown): Promise<void> => {
+        fired.push(args);
+        return Promise.resolve();
+      },
+      warn: (_message: string, details: Record<string, string>): void => {
+        warned.push(details);
+      },
+    };
+    const run = (handled: Set<string>): Promise<void> =>
+      runDaemonCommitHooks({
+        state,
+        executionsDir: executionRuntime.executionsDir,
+        scope: { projectId: 'project', worktreeId: 'task' },
+        handled,
+        ports,
+      });
+    const follower = new Set<string>();
+    await run(follower);
+    expect(fired).toEqual([
+      {
+        projectId: 'project',
+        worktreeId: 'task',
+        results: [
+          expect.objectContaining({ repoName: 'repo', status: 'failed' }),
+          expect.objectContaining({ repoName: 'other' }),
+        ],
+      },
+    ]);
+    expect(warned).toEqual([
+      {
+        code: DAEMON_COMMIT_HOOK_SKIP_OUTPUTS_UNAVAILABLE,
+        executionId: state.id,
+        jobId: 'j',
+        stepId: 'unread',
+      },
+    ]);
+    // The same follower, a re-followed run and an app restart (a new
+    // follower) all find the attempt handled.
+    await run(follower);
+    await run(new Set());
+    expect(fired).toHaveLength(1);
+    expect(warned).toHaveLength(1);
+    // A retry archives the attempt and runs the step again: the archived
+    // copy keeps its key, and only the new result fires, once.
+    job.retry_history = [
+      { attempt: 0, status: 'failure', steps: structuredClone(job.steps) },
+    ];
+    job.retry_count = 1;
+    Object.assign(job.steps.commit ?? {}, {
+      started_at: '2026-11-10T10:05:00.000Z',
+      completed_at: '2026-11-10T10:06:00.000Z',
+    });
+    await run(new Set());
+    await run(new Set());
+    expect(fired).toHaveLength(2);
+    expect(warned).toHaveLength(1);
+    // The marker lives in the run's main-owned host directory, keyed without user text.
+    expect(
+      existsSync(
+        daemonCommitHookMarkerPath(
+          executionRuntime.executionsDir,
+          state.id,
+          daemonCommitHookKey(state.id, 'j', 'commit', first),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('finds daemon git-commit-push results a retry or iteration archived, and matrix variants (CAN-6012)', async () => {
+    const pipeline: Pipeline = {
+      name: 'Route',
+      on: 'dispatch',
+      jobs: {
+        j: { steps: [{ id: 'commit', uses: 'builtin/git-commit-push' }] },
+      },
+    };
+    const state = createInitialState(
+      normalizePipeline(pipeline),
+      { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+      'run-archived',
+    );
+    const job = state.jobs.j;
+    if (!job?.steps.commit) throw new Error('No job.');
+    const failedAt = (minute: number): typeof job.steps.commit => ({
+      ...structuredClone(job.steps.commit),
+      status: 'failure',
+      outputs: {
+        results_json: JSON.stringify([
+          {
+            repoName: `repo-${String(minute)}`,
+            repoPath: root,
+            status: 'failed',
+          },
+        ]),
+      },
+      started_at: `2026-11-10T10:${String(minute).padStart(2, '0')}:00.000Z`,
+      completed_at: `2026-11-10T10:${String(minute).padStart(2, '0')}:30.000Z`,
+    });
+    // The follower was away while the executor archived three results: an
+    // iteration of the current attempt, and an earlier attempt with one of
+    // its own iterations. The current attempt is still running.
+    job.iteration_history = [
+      { iteration: 1, status: 'restarting', steps: { commit: failedAt(3) } },
+    ];
+    job.retry_history = [
+      {
+        attempt: 0,
+        status: 'failure',
+        steps: { commit: failedAt(2) },
+        iteration_history: [
+          {
+            iteration: 1,
+            status: 'restarting',
+            steps: { commit: failedAt(1) },
+          },
+        ],
+      },
+    ];
+    // A matrix variant runs under its physical id, which only the
+    // materialized definitions name.
+    const variant = createMatrixPhysicalJobId('j', 0);
+    const definition = state.job_definitions.j;
+    if (!definition) throw new Error('No definition.');
+    state.job_definitions[variant] = structuredClone(definition);
+    state.jobs[variant] = {
+      ...structuredClone(job),
+      steps: { commit: failedAt(4) },
+      retry_history: [],
+      iteration_history: [],
+    };
+    expect(state.pipeline_snapshot.jobs[variant]).toBeUndefined();
+    const fired: string[] = [];
+    const run = (): Promise<void> =>
+      runDaemonCommitHooks({
+        state,
+        executionsDir: executionRuntime.executionsDir,
+        scope: { projectId: 'project', worktreeId: 'task' },
+        handled: new Set(),
+        ports: {
+          fire: ({ results }): Promise<void> => {
+            fired.push(results[0]?.repoName ?? '');
+            return Promise.resolve();
+          },
+          warn: (): void => undefined,
+        },
+      });
+    await run();
+    await run();
+    expect(fired.sort()).toEqual(['repo-1', 'repo-2', 'repo-3', 'repo-4']);
   });
 
   it("a run's owner requests are answered until it settles, and other runs' are refused (CAN-5095)", async () => {
@@ -1534,6 +2224,89 @@ describe('daemon pipeline route (CAN-5086)', () => {
       );
       // Resumed, not restarted: only its outcome is delivered.
       expect(events).toEqual(['execution.completed']);
+    } finally {
+      keepAwake.mockRestore();
+      owner.kill('SIGKILL');
+    }
+  }, 30_000);
+
+  it('after a restart, hooks the commit results only of surviving daemon runs this app marked (CAN-6012 D3)', async () => {
+    // A run another process owns (the CLI, say) has no mark: its results
+    // are never this app's to hook, though its state names a worktree.
+    const owner = spawn('sleep', ['30'], { stdio: 'ignore' });
+    const keepAwake = jest
+      .spyOn(getExecutionAccounting(), 'keepAwake')
+      .mockReturnValue(() => undefined);
+    const executionsDir = executionRuntime.executionsDir;
+    const result = {
+      started_at: '2026-11-10T10:00:00.000Z',
+      completed_at: '2026-11-10T10:00:30.000Z',
+    };
+    const commitRun = (): ExecutionState => {
+      const state = createInitialState(
+        normalizePipeline({
+          name: 'Route',
+          on: 'dispatch',
+          jobs: {
+            j: { steps: [{ id: 'commit', uses: 'builtin/git-commit-push' }] },
+          },
+        }),
+        { cwd: root, pipelineId: 'pipeline', runtime: executionRuntime },
+        randomUUID(),
+      );
+      state.status = 'running';
+      state.project_id = 'project';
+      state.worktree_id = 'task';
+      state.owner_pid = owner.pid;
+      // Committed, so the hook itself has nothing to do; its claim shows
+      // whether the result was taken as this app's.
+      Object.assign(state.jobs.j?.steps.commit ?? {}, {
+        status: 'success',
+        outputs: {
+          results_json: JSON.stringify([
+            {
+              repoName: 'repo',
+              repoPath: root,
+              status: 'committed_and_pushed',
+            },
+          ]),
+        },
+        ...result,
+      });
+      return state;
+    };
+    const claimed = (state: ExecutionState): boolean =>
+      existsSync(
+        daemonCommitHookMarkerPath(
+          executionsDir,
+          state.id,
+          daemonCommitHookKey(state.id, 'j', 'commit', result),
+        ),
+      );
+    try {
+      const marked = commitRun();
+      const unmarked = commitRun();
+      for (const state of [marked, unmarked])
+        await saveExecutionState(state, executionsDir);
+      await markDaemonCommitHooksPending(executionsDir, marked.id);
+      await followSurvivingDaemonRuns([marked.id, unmarked.id], executionsDir);
+      for (const state of [marked, unmarked]) {
+        const handle = getActivePipelineExecutionHandles().find(
+          (candidate) => candidate.id === state.id,
+        );
+        if (!handle) throw new Error('The surviving run was not followed.');
+        writeFileSync(
+          join(executionsDir, `${state.id}.json`),
+          JSON.stringify({ ...state, status: 'success' }),
+        );
+        await handle.waitForCompletion();
+      }
+      await waitFor(() => claimed(marked));
+      expect(claimed(unmarked)).toBe(false);
+      await waitFor(
+        () =>
+          !existsSync(daemonCommitHooksPendingPath(executionsDir, marked.id)),
+      );
     } finally {
       keepAwake.mockRestore();
       owner.kill('SIGKILL');

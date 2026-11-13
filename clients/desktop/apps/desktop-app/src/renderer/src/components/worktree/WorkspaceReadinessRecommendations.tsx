@@ -297,7 +297,7 @@ export function WorkspaceReadinessRecommendations({
           className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
             ready
               ? 'bg-success-subtle fg-success'
-              : 'bg-accent-subtle fg-accent'
+              : 'bg-accent-subtle fg-accent-strong'
           }`}
         >
           {ready ? <CheckIcon size="sm" /> : <WrenchIcon size="sm" />}

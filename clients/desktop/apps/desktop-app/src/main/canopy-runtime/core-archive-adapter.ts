@@ -20,6 +20,8 @@ import type { DesktopDomainAdapter } from './desktop-runtime';
 /** The archive owners behind `core.archive.*`; tests inject them. */
 export interface CoreArchiveHost {
   list(workspaceId: string): Promise<ArchivedContainerSummary[]>;
+  /** The project's name, or null when the index has no such project. */
+  workspaceName(workspaceId: string): Promise<string | null>;
   /** The chat among the container's chats and archived chats, or null. */
   readChat(
     workspaceId: string,
@@ -38,6 +40,12 @@ const desktopArchiveHost: CoreArchiveHost = {
     (await import('../lib/archived-containers')).listArchivedContainers(
       workspaceId,
     ),
+  workspaceName: async (workspaceId) =>
+    (
+      await (
+        await import('../lib/sidebar-items')
+      ).readWorkspaceIndexEntry(workspaceId)
+    )?.name ?? null,
   readChat: async (workspaceId, archiveId, chatId) => {
     const { readArchivedContainerChats, readArchivedContainerChatArchives } =
       await import('../lib/archived-containers');
@@ -88,7 +96,19 @@ function ownAuthority(context: CanopyHandlerContext): void {
     });
 }
 
-function validWorkspaceId(workspaceId: string): string {
+/** A field only the web core serves (CAN-6109), refused before any read. */
+function notServed(field: string, message: string): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'capability_unavailable',
+    message,
+    details: { unsupported: [field] },
+    retry: { kind: 'never' },
+  });
+}
+
+function validWorkspaceId(workspaceId: string | undefined): string {
+  if (workspaceId === undefined)
+    throw notServed('workspaceId', 'This desktop lists one project at a time.');
   try {
     validateId(workspaceId, 'workspaceId');
   } catch {
@@ -102,12 +122,26 @@ function validWorkspaceId(workspaceId: string): string {
   return workspaceId;
 }
 
+/** Its project's name, or its id when the index no longer has it. */
+async function nameOf(
+  host: CoreArchiveHost,
+  workspaceId: string,
+): Promise<string> {
+  return (await host.workspaceName(workspaceId)) ?? workspaceId;
+}
+
 export function toArchiveContainerSummary(
   container: ArchivedContainerSummary,
+  workspaceId: string,
+  workspaceName: string,
 ): ArchiveContainerSummary {
   return {
     archiveId: container.id,
     kind: container.kind,
+    workspaceId,
+    workspaceName,
+    // Electron main keeps no per-container revision.
+    revision: null,
     name: container.name,
     branchName: container.branchName ?? null,
     archivedAt: container.archivedAt,
@@ -158,11 +192,16 @@ export function createCoreArchiveAdapter(
     queries: {
       'core.archive.container.list': async (params, context) => {
         ownAuthority(context);
+        const workspaceId = validWorkspaceId(params.workspaceId);
+        const [containers, workspaceName] = await Promise.all([
+          host.list(workspaceId),
+          nameOf(host, workspaceId),
+        ]);
         return {
-          workspaceId: params.workspaceId,
-          containers: (
-            await host.list(validWorkspaceId(params.workspaceId))
-          ).map(toArchiveContainerSummary),
+          workspaceId,
+          containers: containers.map((container) =>
+            toArchiveContainerSummary(container, workspaceId, workspaceName),
+          ),
         };
       },
       'core.archive.chat.get': async (
@@ -197,6 +236,11 @@ export function createCoreArchiveAdapter(
     instructions: {
       'core.archive.container.update': (params, context) => {
         ownAuthority(context);
+        if (params.expectedRevision !== undefined)
+          throw notServed(
+            'expectedRevision',
+            'This desktop keeps no revision per archived container.',
+          );
         return updates.run(context, params, async () => {
           await containerOf(host, params.workspaceId, params.archiveId);
           return {
@@ -206,6 +250,8 @@ export function createCoreArchiveAdapter(
                 params.archiveId,
                 params.locked,
               ),
+              params.workspaceId,
+              await nameOf(host, params.workspaceId),
             ),
           };
         });

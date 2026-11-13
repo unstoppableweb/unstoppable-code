@@ -30,6 +30,12 @@ export interface UseSuggestedPromptsOptions {
    */
   holdAcrossMounts?: boolean;
   /**
+   * Whether prompts may come from this computer's MCP servers. A cloud chat
+   * runs elsewhere, so it takes the surface's pool without reading them
+   * (CAN-6175). Defaults to true.
+   */
+  localInventory?: boolean;
+  /**
    * The project's own starter prompts (CAN-2964 §8.1). `undefined`/`null`
    * means "never set" and falls back to the surface's generic pool; an
    * explicit `[]` deliberately shows no generic starters. Editing the set
@@ -93,8 +99,11 @@ export function useSuggestedPrompts(
     holdAcrossMounts,
     starterPrompts,
     seedingBlueprintStarterPrompts,
+    localInventory = true,
   } = options;
-  const { servers, loading } = useDetectedMcpServers(selections);
+  const { servers, loading } = useDetectedMcpServers(
+    localInventory ? selections : null,
+  );
 
   const selectionsKey = useMemo(
     () => (selections === null ? null : JSON.stringify(selections)),
@@ -142,7 +151,8 @@ export function useSuggestedPrompts(
     }
   }, [loading, selectionsKey]);
   const inventoryReady =
-    selectionsKey !== null && fetchedForKey === selectionsKey;
+    selectionsKey !== null &&
+    (!localInventory || fetchedForKey === selectionsKey);
 
   const eligible = useMemo(() => eligibleCuratedServers(servers), [servers]);
   // Keys only: display names feed synthesized prompt text but a cosmetic

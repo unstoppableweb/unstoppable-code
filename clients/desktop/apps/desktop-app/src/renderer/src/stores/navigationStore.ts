@@ -18,7 +18,7 @@ import {
 // re-exports the alias from this module for backwards-compatible imports.
 import { NAVIGATION_PAGE_MAP } from '@canopy/desktop-shared/types';
 import { localAgentEntryId } from '@canopy/protocol/unified-entry';
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
+import type { InstalledStatusFilterValue } from '@canopy/ui-shared/lib/installed-item-status';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from './featureFlagsStore';
 import type {
@@ -106,7 +106,7 @@ export interface CapabilityMarketplaceReturnTarget {
   tab: CapabilityMarketplaceTabId;
   category?: string;
   focusSection?: 'installed' | 'shared-by-me';
-  installedStatusFilter?: InstalledItemStatus;
+  installedStatusFilter?: InstalledStatusFilterValue;
   installedExpanded?: boolean;
   pipelineFilters?: PipelineFilterValues;
   source?: MarketplaceSourceReturnContext;
@@ -385,7 +385,7 @@ export type PluginsNavigationIntent =
        * Opens Installed with the Customize status filter applied (Settings'
        * Active summary opens it on Active, CAN-4255; any status, CAN-4838).
        */
-      statusFilter?: InstalledItemStatus;
+      statusFilter?: InstalledStatusFilterValue;
     }
   /**
    * Open a unified discovery entry's detail surface by entry id (e.g.
@@ -575,6 +575,12 @@ interface NavigationState {
    * place instead (see {@link desktopSectionRoot}).
    */
   sectionRootRequest: number;
+  /**
+   * Counts page requests: every write that names a page, including the page
+   * already open. A request is navigation even when the page stays, which
+   * the docked Orchestrator page leaves on (`lib/appAdvisorDockLeave.ts`).
+   */
+  pageRequestSeq: number;
   /** Curated catalog key consumed after the lazy Pipelines page mounts. */
   pendingCuratedPipelinePreviewKey?: string;
   pendingPipelineDispatch?: PipelineDispatchDeepLink;
@@ -1065,7 +1071,12 @@ function withWorkflowEditClearing(
   return (rawSet, get, api) => {
     const set = (update: NavigationUpdate): void => {
       rawSet((state) => {
-        const next = typeof update === 'function' ? update(state) : update;
+        const requested = typeof update === 'function' ? update(state) : update;
+        if (requested === state) return state;
+        const next =
+          requested.activePage === undefined
+            ? requested
+            : { ...requested, pageRequestSeq: state.pageRequestSeq + 1 };
         if (
           next.activePage === undefined ||
           next.activePage === state.activePage ||
@@ -1134,6 +1145,7 @@ export const useNavigationStore = create<NavigationState>(
   withWorkflowEditClearing((set, get) => ({
     // Overview is a Labs page experiment, off by default (CAN-3678).
     activePage: 'home',
+    pageRequestSeq: 0,
     workflowEditReplaceCount: 0,
     sectionRootRequest: 0,
     pluginsBrowseSectionId: null,
@@ -1190,6 +1202,12 @@ export const useNavigationStore = create<NavigationState>(
           kind: 'marketplace-browse',
           ...marketplaceManagementDestination('mcp'),
         });
+        return;
+      }
+      // CAN-6175 R2b: cloud tasks open on the cowork page; the retired cloud
+      // chat page's id still arrives from older controllers.
+      if (requestedPage === 'cloud-chat') {
+        get().navigate('chat');
         return;
       }
       const apply = (): void => {

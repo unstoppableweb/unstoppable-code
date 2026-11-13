@@ -17,7 +17,7 @@ export const ACCOUNT_CARD_CLASS = 'rounded-lg border bg-card p-5';
  * (Change account / Login / Manage / Connect / Set up).
  */
 export const ACCOUNT_BUTTON_PRIMARY =
-  'rounded-md border bg-secondary px-3 py-1 text-xs font-medium fg-primary transition-colors hover:bg-accent-subtle hover:fg-accent disabled:cursor-not-allowed disabled:opacity-60';
+  'rounded-md border bg-secondary px-3 py-1 text-xs font-medium fg-primary transition-colors hover:bg-accent-subtle hover:fg-accent-strong disabled:cursor-not-allowed disabled:opacity-60';
 
 /**
  * Secondary / destructive tile action (Disconnect): a quiet outline button with

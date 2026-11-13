@@ -84,7 +84,7 @@ import { useBrowserLoading, useBrowserStore } from '@/stores/browserStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { useWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
-import { FileTypeIcon } from '@/components/shared/file-icons';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { resolveChatTabProvider } from '@/lib/providerUi';
 import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { usePanelWorktreeSelection } from '@/lib/panels/panel-worktree-context';
@@ -549,8 +549,7 @@ function FilePanelTabIcon({
   return (
     <FileTypeIcon
       filename={tab?.title ?? fallbackTitle}
-      size={20}
-      boxSize={14}
+      size="sm"
       className="shrink-0"
     />
   );

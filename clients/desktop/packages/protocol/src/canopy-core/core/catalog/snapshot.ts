@@ -28,6 +28,54 @@ const ProviderSupportSchema = z.strictObject({
   codex: z.boolean(),
 });
 
+/** The agent harnesses a chat can run (CAN-6034). */
+export const CATALOG_HARNESS_IDS = [
+  'claude',
+  'codex',
+  'ollama',
+  'copilot',
+  'opencode',
+] as const;
+
+export type CatalogHarnessId = (typeof CATALOG_HARNESS_IDS)[number];
+
+/** A skill or command a plugin brings to one harness. */
+export const CatalogPluginMemberSchema = z.strictObject({
+  kind: z.enum(['skill', 'command']),
+  name: z.string().max(512),
+  description: z.string().max(4096),
+});
+
+/**
+ * What one harness gets from a plugin. `supported`: the plugin has content
+ * that harness can load. `enabled`: false when the person turned off that
+ * harness's compatibility mode for the plugin. `installed`: the content that
+ * harness loads is present on the serving host; the web core reports it true
+ * for the harnesses it runs, because the cloud runtime installs a plugin on
+ * demand. `members`: the skills and commands that harness sees.
+ */
+export const CatalogPluginHarnessSchema = z.strictObject({
+  supported: z.boolean(),
+  enabled: z.boolean(),
+  installed: z.boolean(),
+  members: z.array(CatalogPluginMemberSchema).max(1024),
+});
+
+export type CatalogPluginHarness = z.output<typeof CatalogPluginHarnessSchema>;
+
+/** One entry per harness, so a client never reads a missing one as unknown. */
+export const CatalogPluginHarnessesSchema = z.strictObject({
+  claude: CatalogPluginHarnessSchema,
+  codex: CatalogPluginHarnessSchema,
+  ollama: CatalogPluginHarnessSchema,
+  copilot: CatalogPluginHarnessSchema,
+  opencode: CatalogPluginHarnessSchema,
+});
+
+export type CatalogPluginHarnesses = z.output<
+  typeof CatalogPluginHarnessesSchema
+>;
+
 /**
  * The selection ref an entry id was built from, so a client can write a
  * selection without splitting the id (a ref part may hold `/`).
@@ -62,6 +110,8 @@ export const CatalogEntryContentSchema = z.discriminatedUnion('kind', [
       dependencies: z.array(IdSchema),
       providerSupport: ProviderSupportSchema.optional(),
     }),
+    /** Per-harness support, install state and members (CAN-6034). */
+    harnesses: CatalogPluginHarnessesSchema.optional(),
     selectionRef: PluginSelectionRefSchema.optional(),
   }),
   z.strictObject({
@@ -76,6 +126,8 @@ export const CatalogEntryContentSchema = z.discriminatedUnion('kind', [
       .optional(),
     /** Null enables every tool; `[]` disables them all. */
     enabledTools: z.array(z.string().max(256)).nullable().optional(),
+    /** The server configuration's own name, when the catalog lists one per configuration. */
+    configName: z.string().max(512).optional(),
     selectionRef: McpServerSelectionRefSchema.optional(),
   }),
   z.strictObject({
@@ -113,6 +165,11 @@ export const CatalogEntrySchema = z.strictObject({
   kind: CatalogEntryKindSchema,
   name: z.string().min(1).max(512),
   description: z.string().max(4096),
+  /**
+   * What the entry comes from, as a person reads it: a skill's source, a
+   * plugin's marketplace, an MCP configuration's server.
+   */
+  sourceLabel: z.string().max(512).optional(),
   source: z.enum(['bundled', 'user', 'workspace', 'plugin', 'remote']),
   content: CatalogEntryContentSchema,
   availability: z.enum([

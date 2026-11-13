@@ -1,5 +1,5 @@
 import type { OwnedChatPipelineState } from '@canopy/desktop-shared/lib/chat-automation-conversion';
-import { loadPipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+import { loadPipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import type {
   AutomationAction,
   ScheduledActivity,
@@ -177,7 +177,9 @@ export async function agentHiddenOwnedPipelineIds(
         import('./service'),
         import('./owned-chat-projection'),
       ]);
-    const { activities } = await getAutomationsService().list();
+    // Every stored owner (CAN-6065): one the selected context leaves out
+    // still hides its pipeline.
+    const activities = await getAutomationsService().allActivities();
     for (const activity of activities) {
       const pipelineId = ownedPipelineId(activity);
       if (

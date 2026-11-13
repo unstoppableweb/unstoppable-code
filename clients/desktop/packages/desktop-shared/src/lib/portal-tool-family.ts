@@ -195,6 +195,8 @@ export function getPortalChatToolFamily(
     canopyKey === 'get_github_pull_request_status' ||
     canopyKey === 'save_memory' ||
     canopyKey === 'search_memory' ||
+    canopyKey === 'search_chats' ||
+    canopyKey === 'read_chat_excerpt' ||
     canopyKey === 'read_memory' ||
     canopyKey === 'set_auto_archive' ||
     canopyKey === 'set_work_entry_auto_delete' ||

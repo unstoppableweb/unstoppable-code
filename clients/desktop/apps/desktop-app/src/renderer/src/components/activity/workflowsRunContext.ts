@@ -5,6 +5,7 @@ import type {
 import {
   PIPELINE_RUN_CONTEXT_COPY,
   type PipelineRunLocation,
+  type PipelineRunOn,
   type PipelineRunOwnerField,
 } from '@canopy/ui-app/workflows';
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
@@ -18,6 +19,8 @@ export type PipelineRunDestination =
   | {
       kind: 'global';
       requestedOwner?: string;
+      /** Who owns the run, saved or chosen; a cloud run always names it. */
+      owner: string;
       /** The owner the run is filed under, for the started toast. */
       ownerLabel: string;
       /** The owner differs from the selected navigation context. */
@@ -47,6 +50,7 @@ export function resolveWorkflowsRunContext({
   pipeline,
   taskScope,
   chosenLocation,
+  runOn = 'local',
   choices,
   selection,
   rereadPipeline,
@@ -55,6 +59,8 @@ export function resolveWorkflowsRunContext({
   /** The selected task's scope; absent with no selected task. */
   taskScope: PipelineExecutionScope | undefined;
   chosenLocation: PipelineRunLocation | undefined;
+  /** Where the run executes; a cloud run takes No project only (CP-36). */
+  runOn?: PipelineRunOn;
   choices: PipelineRunOwnerChoices;
   selection: {
     value: string | null;
@@ -73,11 +79,13 @@ export function resolveWorkflowsRunContext({
     taskScope ?? 'worktree',
   );
   const currentTaskUnavailable = taskScope === undefined || !supportsTask;
+  // With a task selected that can run it, a run on this computer goes there
+  // unless the person picks No project (CAN-6406).
   const location: PipelineRunLocation = !supportsGlobal
     ? 'current-task'
     : currentTaskUnavailable
       ? 'global'
-      : (chosenLocation ?? 'global');
+      : (chosenLocation ?? (runOn === 'cloud' ? 'global' : 'current-task'));
   const base = {
     location,
     showLocation: supportsGlobal && supportsTask,

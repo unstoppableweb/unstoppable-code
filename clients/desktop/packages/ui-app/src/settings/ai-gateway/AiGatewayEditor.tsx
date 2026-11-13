@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type JSX } from 'react';
+import { useRef, useState, type JSX, type RefObject } from 'react';
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
@@ -11,6 +11,7 @@ import {
   ErrorBanner,
   Heading,
   InlineTextInput,
+  ModelProviderIcon,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
@@ -18,16 +19,25 @@ import {
   type ModelGatewayModel,
 } from '@canopy/protocol/canopy-server';
 import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
-import { useSettingsAiGatewayConnectionKey, useSettingsPrivacy } from '../host';
+import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
+import {
+  SettingsConfirmDialog,
+  useSettingsAiGatewayConnectionKey,
+  useSettingsPrivacy,
+} from '../host';
 import { useSettingsErrorCopy, type SettingsFailure } from '../errors';
 import { joinClassNames } from '../organization/settings/join-class-names';
 import { GatewayModelList } from './gateway-model-list';
 import { AiGatewaySetup } from './AiGatewaySetup';
 import { AiGatewayRefreshDialog } from './AiGatewayRefreshDialog';
 import { EditGatewayModelDialog } from './EditGatewayModelDialog';
-import { CloudChatsKeySection } from './CloudChatsKeySection';
+import {
+  CloudChatsKeySection,
+  useCloudChatsKeysAvailable,
+} from './CloudChatsKeySection';
 import {
   aiGatewayLabel,
+  CLEARED_GATEWAY_PATCH,
   type AiGatewayEditorAdapter,
   type AiGatewayEditorConfig,
   type AiGatewayEditorPatch,
@@ -59,9 +69,16 @@ export function AiGatewayEditor({
   initial,
 }: AiGatewayEditorProps): JSX.Element {
   const [config, setConfig] = useState<AiGatewayEditorConfig | null>(initial);
+  // Removing the gateway takes its Remove button away, so focus lands here.
+  const setupRef = useRef<HTMLElement | null>(null);
   if (!isAiGatewayConfigured(config)) {
     return (
-      <section className={SETTINGS_CARD_CLASS} data-testid="ai-gateway-empty">
+      <section
+        ref={setupRef}
+        tabIndex={-1}
+        className={SETTINGS_CARD_CLASS}
+        data-testid="ai-gateway-empty"
+      >
         <div className={joinClassNames(SETTINGS_CARD_GROUP_CLASS, 'px-4')}>
           <AiGatewaySetup
             adapter={adapter}
@@ -78,6 +95,7 @@ export function AiGatewayEditor({
       adapter={adapter}
       config={config}
       onConfigChange={setConfig}
+      setupRef={setupRef}
     />
   );
 }
@@ -86,12 +104,15 @@ interface ConfiguredAiGatewayProps {
   readonly adapter: AiGatewayEditorAdapter;
   readonly config: AiGatewayEditorConfig & { baseUrl: string };
   readonly onConfigChange: (config: AiGatewayEditorConfig) => void;
+  /** The setup card shown once the gateway is removed. */
+  readonly setupRef: RefObject<HTMLElement | null>;
 }
 
 function ConfiguredAiGateway({
   adapter,
   config,
   onConfigChange,
+  setupRef,
 }: ConfiguredAiGatewayProps): JSX.Element {
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
   const { maskClassName } = useSettingsPrivacy();
@@ -104,7 +125,9 @@ function ConfiguredAiGateway({
   const [keyRevision, setKeyRevision] = useState(0);
   const [refreshOpen, setRefreshOpen] = useState(false);
   const [editing, setEditing] = useState<ModelGatewayModel | null>(null);
-  const [cloudKeys, setCloudKeys] = useState(false);
+  // Known even while the gateway is off, when the section below isn't shown.
+  const cloudKeys = useCloudChatsKeysAvailable(adapter.organizationId);
+  const [removeOpen, setRemoveOpen] = useState(false);
 
   // Every patch is built from the server's last answer, and one runs at a
   // time, so a second edit can't send a value the first already replaced.
@@ -113,7 +136,10 @@ function ConfiguredAiGateway({
   const savingRef = useRef(false);
   const nameInFlightRef = useRef<string | null>(null);
 
-  const apply = async (patch: AiGatewayEditorPatch): Promise<boolean> => {
+  const apply = async (
+    patch: AiGatewayEditorPatch,
+    action = 'update your AI gateway',
+  ): Promise<boolean> => {
     if (savingRef.current) return false;
     savingRef.current = true;
     setSaving(true);
@@ -126,7 +152,7 @@ function ConfiguredAiGateway({
     } catch (err) {
       setError(
         errorCopy.actionFailure(err, {
-          action: 'update your AI gateway',
+          action,
           known: AI_GATEWAY_KNOWN_ERRORS,
         }),
       );
@@ -149,15 +175,27 @@ function ConfiguredAiGateway({
   };
 
   const label = aiGatewayLabel(config, adapter.fallbackName);
+  const preset = matchAiGatewayPreset(config.baseUrl);
   const lastModel = config.enabled && config.models.length === 1;
 
   return (
     <div className="flex flex-col gap-10" data-testid="ai-gateway-configured">
       <section className={SETTINGS_CARD_CLASS}>
         <div className="flex items-center justify-between gap-3">
-          <Heading level={2} variant="section">
-            <span className={maskClassName}>{label}</span>
-          </Heading>
+          <div className="flex min-w-0 items-center gap-2">
+            {preset ? (
+              <ModelProviderIcon
+                provider={preset.id}
+                size="md"
+                aria-hidden="true"
+                className="shrink-0 fg-primary"
+                data-testid="ai-gateway-configured-mark"
+              />
+            ) : null}
+            <Heading level={2} variant="section">
+              <span className={maskClassName}>{label}</span>
+            </Heading>
+          </div>
           {personal ? (
             <ToggleSwitch
               label="AI gateway"
@@ -168,7 +206,11 @@ function ConfiguredAiGateway({
             />
           ) : null}
         </div>
-        <ErrorBanner error={error?.copy} details={error?.details} />
+        {/* The remove dialog shows its own failure. */}
+        <ErrorBanner
+          error={removeOpen ? undefined : error?.copy}
+          details={error?.details}
+        />
         <div className={SETTINGS_CARD_GROUP_CLASS}>
           <div className={SETTINGS_CARD_ROW_CLASS}>
             <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -183,15 +225,19 @@ function ConfiguredAiGateway({
                   onCommit={(value) => void submitName(value)}
                 />
               </div>
-              <p
-                className={joinClassNames(
-                  'truncate font-mono text-xs fg-secondary',
-                  maskClassName,
-                )}
-                data-testid="ai-gateway-url"
-              >
-                {config.baseUrl}
-              </p>
+              {/* A preset's mark and name already say which gateway it
+                  is; only a custom URL needs the URL to tell. */}
+              {preset ? null : (
+                <p
+                  className={joinClassNames(
+                    'truncate font-mono text-xs fg-secondary',
+                    maskClassName,
+                  )}
+                  data-testid="ai-gateway-url"
+                >
+                  {config.baseUrl}
+                </p>
+              )}
             </div>
           </div>
           {KeyRow ? (
@@ -209,9 +255,9 @@ function ConfiguredAiGateway({
                 label={personal ? 'API key' : 'Your API key'}
               />
             </div>
-          ) : cloudKeys && config.enabled ? null : (
-            // Once cloud chats take a key below, this pointer would send
-            // members to the desktop app for a key they can save here.
+          ) : cloudKeys !== false ? null : (
+            // Where cloud chats take a key, this pointer would send members
+            // to the desktop app for a key they can save here.
             <div className={SETTINGS_CARD_ROW_CLASS}>
               <p
                 className="text-s fg-secondary"
@@ -243,7 +289,6 @@ function ConfiguredAiGateway({
           organizationId={adapter.organizationId}
           baseUrl={config.baseUrl}
           revision={keyRevision}
-          onAvailabilityChange={setCloudKeys}
         />
       ) : null}
 
@@ -263,6 +308,11 @@ function ConfiguredAiGateway({
             Refresh models
           </Button>
         </div>
+        <p className="text-s fg-secondary" data-testid="ai-gateway-models-use">
+          {cloudKeys === true && config.enabled
+            ? 'Used by the desktop app, and by cloud chats once a key is saved.'
+            : 'Used by the desktop app.'}
+        </p>
         <div className={SETTINGS_CARD_GROUP_CLASS}>
           <GatewayModelList
             models={config.models}
@@ -284,9 +334,20 @@ function ConfiguredAiGateway({
         <section className={SETTINGS_CARD_CLASS}>
           <div className={SETTINGS_CARD_GROUP_CLASS}>
             <div className={SETTINGS_CARD_ROW_CLASS}>
-              <span className="text-s font-medium fg-primary">
-                Use only my AI gateway
-              </span>
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <span className="text-s font-medium fg-primary">
+                  Use only my AI gateway
+                </span>
+                {/* Where keys stay on this computer, its own key row says so. */}
+                {KeyRow ? null : (
+                  <p
+                    className="text-xs text-pretty fg-secondary"
+                    data-testid="ai-gateway-only-desktop-note"
+                  >
+                    Also applies to the desktop app, which needs its own key.
+                  </p>
+                )}
+              </div>
               <ToggleSwitch
                 label="Use only my AI gateway"
                 checked={config.onlyThisGateway}
@@ -297,6 +358,65 @@ function ConfiguredAiGateway({
             </div>
           </div>
         </section>
+      ) : null}
+
+      <section className={SETTINGS_CARD_CLASS}>
+        <div className={SETTINGS_CARD_GROUP_CLASS}>
+          <div className={SETTINGS_CARD_ROW_CLASS}>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="text-s font-medium fg-primary">
+                Remove AI gateway
+              </span>
+              <p className="text-xs text-pretty fg-secondary">
+                {personal
+                  ? 'Deletes its URL, models and saved API keys.'
+                  : 'Deletes its URL, models and saved API keys. Members lose access to it.'}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              size="compact"
+              disabled={saving}
+              data-testid="ai-gateway-remove"
+              onClick={() => {
+                setError(null);
+                setRemoveOpen(true);
+              }}
+            >
+              Remove
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {removeOpen ? (
+        <SettingsConfirmDialog
+          destructive
+          title="Remove this AI gateway?"
+          message={
+            personal
+              ? 'Its URL, models and saved API keys are deleted. Chats using its models will need another model.'
+              : 'Its URL, models and saved API keys are deleted. Chats using its models will need another model. Members lose access to it.'
+          }
+          confirmLabel="Remove AI gateway"
+          busyLabel="Removing…"
+          busy={saving}
+          dataTestId="ai-gateway-remove-confirm"
+          errorMessage={error?.copy}
+          errorDetails={error?.details}
+          restoreFocusRef={setupRef}
+          onCancel={() => {
+            // A failed removal's error belongs to the dialog, not the card.
+            setError(null);
+            setRemoveOpen(false);
+          }}
+          onConfirm={() =>
+            // On success the editor drops back to setup and unmounts this
+            // dialog; on failure it stays open with the reason.
+            void apply(CLEARED_GATEWAY_PATCH, 'remove your AI gateway')
+          }
+        />
       ) : null}
 
       {refreshOpen ? (

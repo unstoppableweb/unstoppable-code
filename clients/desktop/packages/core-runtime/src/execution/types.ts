@@ -137,6 +137,19 @@ export interface ExecutionAccountingSnapshot<
   error?: string;
 }
 
+/**
+ * What memory-guarded work may still take before critical pressure refuses
+ * it (CAN-6325), from one sample.
+ */
+export interface ExecutionMemoryHeadroom {
+  /** The critical threshold less the memory the guard counts; 0 or less is tight. */
+  readonly availableBytes: number;
+  /** The critical threshold. */
+  readonly totalBytes: number;
+  /** The sample's time, in epoch milliseconds. */
+  readonly sampledAt: number;
+}
+
 /** Limits the host reads from its preferences at each decision. */
 export interface ExecutionAccountingLimits {
   readonly maxActive: Readonly<Partial<Record<ExecutionFamily, number | null>>>;

@@ -163,6 +163,16 @@ export class PromotionRetry {
     return this.failures === 0 || this.due(now);
   }
 
+  /** Failed attempts since the last success or reset. */
+  public failureCount(): number {
+    return this.failures;
+  }
+
+  /** Every retry is spent; only a reset (or a new process) tries again. */
+  public exhausted(): boolean {
+    return this.failures > (this.options.limit ?? 5);
+  }
+
   public due(now: number = Date.now()): boolean {
     return (
       this.failures > 0 &&

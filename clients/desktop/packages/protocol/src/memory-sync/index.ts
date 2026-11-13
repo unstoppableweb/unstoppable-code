@@ -4,6 +4,7 @@ export * from './identifiers';
 export * from './cursor';
 export * from './errors';
 export * from './records';
+export * from './origin-policy';
 export * from './requests';
 export * from './local-replica';
 export * from './projects';

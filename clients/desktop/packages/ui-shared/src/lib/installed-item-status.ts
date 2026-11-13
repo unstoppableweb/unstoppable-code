@@ -18,6 +18,7 @@ import type {
   UnifiedEntryConnection,
 } from './unified-plugin-entry';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/protocol/plugins';
+import { INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL } from './installed-share-copy';
 
 /**
  * Installed-item status (CAN-4255): the shared copy, the snapshot-to-entry
@@ -159,18 +160,52 @@ export const INSTALLED_STATUS_FILTER_ANY_LABEL = 'Any status';
 export const INSTALLED_ITEM_STATUS_DESCRIPTION_LINE =
   'Active items are added to every new chat. Available ones load when you or an agent need them. Disabled ones stay installed but are hidden.';
 
+/**
+ * A Customize status filter value: a status, or the rows with an update
+ * (CAN-5309). Updates are not a status, so the protocol's
+ * `InstalledItemStatus` stays three values.
+ */
+export type InstalledStatusFilterValue =
+  | InstalledItemStatus
+  | 'update-available';
+
+const INSTALLED_STATUS_FILTER_VALUES: readonly InstalledStatusFilterValue[] = [
+  ...INSTALLED_ITEM_STATUS_ORDER,
+  'update-available',
+];
+
+/**
+ * A persisted or URL filter value. Anything else, including a value a newer
+ * build saved, reads as Any.
+ */
+export function parseInstalledStatusFilter(
+  value: unknown,
+): InstalledStatusFilterValue | undefined {
+  return INSTALLED_STATUS_FILTER_VALUES.find((filter) => filter === value);
+}
+
+// Shown under the dropdown's Update available option; specific to that
+// option, so it stays beside it rather than in the UX writing rules.
+export const INSTALLED_STATUS_FILTER_UPDATE_AVAILABLE_DESCRIPTION =
+  'The source changed since it was installed.';
+
 export function installedStatusFilterEmptyText(
-  status: InstalledItemStatus,
+  status: InstalledStatusFilterValue,
 ): string {
+  // "Nothing is update available." does not read, so updates get their own
+  // sentence.
+  if (status === 'update-available') return 'No updates are available.';
   return `Nothing is ${INSTALLED_ITEM_STATUS_COPY[status].label.toLowerCase()}.`;
 }
 
 export function installedStatusFilterLabel(
-  status: InstalledItemStatus | null,
+  status: InstalledStatusFilterValue | null,
 ): string {
-  return status === null
-    ? INSTALLED_STATUS_FILTER_ANY_LABEL
-    : INSTALLED_ITEM_STATUS_COPY[status].label;
+  if (status === null) return INSTALLED_STATUS_FILTER_ANY_LABEL;
+  if (status === 'update-available') {
+    return INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL;
+  }
+  return INSTALLED_ITEM_STATUS_COPY[status].label;
 }
 
 /** Stable key for any status target, including server-wide MCP rows. */

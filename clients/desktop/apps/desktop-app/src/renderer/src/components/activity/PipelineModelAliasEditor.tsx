@@ -1,3 +1,10 @@
+import {
+  getRendererModelFactsVersion,
+  subscribeRendererModelFacts,
+} from '@/stores/modelPolicyRuntime';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
+import { AgentAliasModelFields } from '@canopy/ui-shared/components';
+import { resolvePipelineModelAliasLenient } from '@canopy/pipeline-interop';
 // ---------------------------------------------------------------------------
 // Per-alias editor used by `PipelineModelAliasesSection`.
 //
@@ -9,7 +16,7 @@
 // reset tombstone contract).
 // ---------------------------------------------------------------------------
 
-import { useMemo, useState, type JSX } from 'react';
+import { useMemo, useState, useSyncExternalStore, type JSX } from 'react';
 import type {
   PipelineModelAlias,
   PipelineModelAliasPreference,
@@ -55,15 +62,15 @@ export function PipelineModelAliasEditor({
   onChange,
   readonly = false,
 }: PipelineModelAliasEditorProps): JSX.Element {
+  useSyncExternalStore(
+    subscribeRendererModelFacts,
+    getRendererModelFactsVersion,
+    getRendererModelFactsVersion,
+  );
   const [expanded, setExpanded] = useState(false);
   const agents = useAgentsStore((s) => s.agents);
   const availableAgentIds = useMemo(
-    () =>
-      new Set(
-        agents
-          .filter((agent) => getAgentModelAvailability(agent.id).available)
-          .map((agent) => agent.id),
-      ),
+    () => new Set(agents.map((agent) => agent.id)),
     [agents],
   );
 
@@ -74,13 +81,12 @@ export function PipelineModelAliasEditor({
     [alias, preference],
   );
 
-  const validationError = useMemo(() => {
-    const ctx = {
-      pluginCollectionIds: new Set(pluginCollections.map((c) => c.id)),
-      availableAgentIds,
-    };
-    return validateEffectiveAliasPreference(effective, ctx);
-  }, [effective, pluginCollections, availableAgentIds]);
+  const validationError = validateEffectiveAliasPreference(effective, {
+    pluginCollectionIds: new Set(pluginCollections.map((c) => c.id)),
+    availableAgentIds,
+    isAgentRouteAvailable: (route: string): boolean =>
+      getAgentModelAvailability(route).available,
+  });
 
   const currentMode: 'inline' | 'agent' | null = effective.preference
     ? effective.preference.mode
@@ -93,7 +99,13 @@ export function PipelineModelAliasEditor({
       : !effective.preference
         ? 'mode'
         : effective.preference.mode === 'agent'
-          ? 'agent'
+          ? !effective.preference.agent_id ||
+            !availableAgentIds.has(
+              parseAgentRouteModelId(effective.preference.agent_id)?.agentId ??
+                effective.preference.agent_id,
+            )
+            ? 'agent'
+            : 'base'
           : !effective.preference.base ||
               effective.preference.base.trim() === ''
             ? 'base'
@@ -108,7 +120,9 @@ export function PipelineModelAliasEditor({
       return `${alias.id} · Required`;
     }
     if (effective.preference.mode === 'agent') {
-      return `${alias.id} · ${effective.preference.agent_id || 'Agent'}`;
+      const embedded = parseAgentRouteModelId(effective.preference.agent_id);
+      const base = effective.preference.base ?? embedded?.baseModel;
+      return `${alias.id} · ${embedded?.agentId ?? (effective.preference.agent_id || 'Agent')}${base ? ` · ${getModelDisplayName(resolvePipelineModelAliasLenient(base))}` : ''}`;
     }
     const base = effective.preference.base;
     return `${alias.id} · ${base ? getModelDisplayName(base) : 'No base model'}`;
@@ -143,10 +157,18 @@ export function PipelineModelAliasEditor({
     const agentId =
       effective.preference?.mode === 'agent'
         ? effective.preference.agent_id
-        : agents.find((agent) => availableAgentIds.has(agent.id))?.id ||
+        : agents.find((agent) => getAgentModelAvailability(agent.id).available)
+            ?.id ||
           agents[0]?.id ||
           '';
-    onChange({ mode: 'agent', agent_id: agentId });
+    onChange({
+      mode: 'agent',
+      agent_id: agentId,
+      ...(effective.preference?.mode === 'agent' &&
+      effective.preference.base !== undefined
+        ? { base: effective.preference.base }
+        : {}),
+    });
   }
 
   function updateInline(patch: {
@@ -305,41 +327,36 @@ export function PipelineModelAliasEditor({
           </Stack>
         )}
 
-        {currentMode === 'agent' && (
-          <DialogFormField
-            label="Agent"
-            description="Uses the agent base model, instructions, and plugins at run time."
-            error={errorFor('agent')}
-            errorId={errorId}
-          >
-            {agents.length === 0 ? (
-              <p className="text-xs fg-secondary italic">
-                No local agents available
-              </p>
-            ) : (
-              <SettingsSelect
-                aria-label="Agent"
-                aria-invalid={errorFor('agent') ? true : undefined}
-                aria-describedby={errorFor('agent') ? errorId : undefined}
-                value={
-                  effective.preference?.mode === 'agent'
-                    ? effective.preference.agent_id
-                    : ''
-                }
-                onValueChange={(next) =>
-                  onChange({ mode: 'agent', agent_id: next })
-                }
-                options={agents.map((agent) => ({
-                  value: agent.id,
-                  label: `${agent.name} (${agent.id})${
-                    availableAgentIds.has(agent.id) ? '' : ' - unavailable'
-                  }`,
-                }))}
-                placeholder="Select an agent"
-                disabled={readonly}
+        {currentMode === 'agent' && effective.preference?.mode === 'agent' && (
+          <AgentAliasModelFields
+            value={effective.preference}
+            agents={agents}
+            onChange={(next) => onChange({ mode: 'agent', ...next })}
+            disabled={readonly}
+            agentError={errorFor('agent')}
+            modelError={errorFor('base')}
+            renderModelPicker={({
+              value,
+              onChange: changeModel,
+              disabled,
+              placeholderLabel,
+              ...control
+            }) => (
+              <ModelPicker
+                triggerControlProps={control}
+                currentModel={resolvePipelineModelAliasLenient(value)}
+                onModelChange={changeModel}
+                allowWorkspaceDefault={false}
+                hideAgents
+                allowCursor
+                allowCopilot
+                allowOpenCode
+                placeholderLabel={placeholderLabel}
+                triggerTooltip="Model for this agent alias"
+                disabled={disabled}
               />
             )}
-          </DialogFormField>
+          />
         )}
 
         {currentMode === null && (

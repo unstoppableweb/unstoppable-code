@@ -196,22 +196,6 @@ export const USER_BUBBLE_FIXTURES: readonly UserBubbleFixture[] = [
     },
   },
   {
-    id: 'voice',
-    title: 'Voice-dictated (corner badge with hairline ring)',
-    message: {
-      id: 'change-review-user-voice',
-      role: 'user',
-      blocks: [
-        {
-          type: 'text',
-          text: 'Add a loading spinner to the settings page while preferences load.',
-        },
-      ],
-      timestamp: CHANGE_REVIEW_FIXED_NOW,
-      inputMode: 'voice',
-    },
-  },
-  {
     id: 'info',
     title: 'Watcher-fired (info tint, same hairline)',
     message: {

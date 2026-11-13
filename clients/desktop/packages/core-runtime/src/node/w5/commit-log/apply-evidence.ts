@@ -31,6 +31,32 @@ export function isCleanConflictEvidence(
   );
 }
 
+/** An OS error a write can hit and later succeed past, once space or handles free up. */
+const TRANSIENT_WRITE_ERROR =
+  /^(?:ENOSPC|EDQUOT|EIO|EMFILE|ENFILE|EAGAIN|EBUSY): /;
+
+/**
+ * Persisted evidence of an apply that stopped on a transient I/O error before
+ * it wrote any file and found no conflict (CAN-5680). Nothing reached the
+ * files, so applying the commit again is the same as its first attempt.
+ */
+export function isTransientUnwrittenFailureEvidence(
+  value: unknown,
+): value is { conflicts: []; written: []; error: string } {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every(
+      (key) => key === 'conflicts' || key === 'written' || key === 'error',
+    ) &&
+    Array.isArray(value.conflicts) &&
+    value.conflicts.length === 0 &&
+    Array.isArray(value.written) &&
+    value.written.length === 0 &&
+    typeof value.error === 'string' &&
+    TRANSIENT_WRITE_ERROR.test(value.error)
+  );
+}
+
 /** Only the unscoped list repository uses this operation; it never reserves effects. */
 export const W5_LAUNCH_HEAL_OPERATIONS: readonly string[] = [
   'w5.worktree_list.write',

@@ -6,7 +6,18 @@ import type {
   StepResult,
 } from '@canopy/execution-engine/types/pipeline';
 
-export type JobStatus = JobResult['status'];
+/**
+ * A job status as the details view shows it. A job held for memory
+ * (`waiting_for_capacity`, CAN-6325) shows as queued until the view renders
+ * the hold on its own.
+ */
+export type JobStatus = Exclude<JobResult['status'], 'waiting_for_capacity'>;
+
+export function presentedJobStatus(
+  status: JobResult['status'] | undefined,
+): JobStatus | undefined {
+  return status === 'waiting_for_capacity' ? 'queued' : status;
+}
 
 /**
  * Canonical display order for job statuses in the pipeline details view.
@@ -47,7 +58,8 @@ export interface JobStatusCount {
 export function getPresentJobStatuses(state: ExecutionState): JobStatusCount[] {
   const counts = new Map<JobStatus, number>();
   for (const job of Object.values(state.jobs)) {
-    counts.set(job.status, (counts.get(job.status) ?? 0) + 1);
+    const status = presentedJobStatus(job.status) ?? 'pending';
+    counts.set(status, (counts.get(status) ?? 0) + 1);
   }
   for (const group of Object.values(state.job_groups ?? {})) {
     if (group.expansion === 'failure') {

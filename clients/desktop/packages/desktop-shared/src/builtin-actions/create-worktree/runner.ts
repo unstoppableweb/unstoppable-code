@@ -5,7 +5,7 @@ import { getCanopyDataDir } from '../../canopy-paths';
 import {
   registerW5Host,
   W5HostCohortRefusedError,
-} from '../../node/w5-host-cohort';
+} from '@canopy/execution-engine/node/w5-host-cohort';
 import { getWorkspaceItem } from '../../node/lib/workspace-service';
 import {
   createMultiRepoWorktree,

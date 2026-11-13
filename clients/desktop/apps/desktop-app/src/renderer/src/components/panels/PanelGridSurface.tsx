@@ -64,6 +64,10 @@ import {
   requestSelectedTerminalPanelFocus,
 } from '@/lib/panels/terminal-panel-activation';
 import { initTerminalPanelSync } from '@/lib/panels/terminal-panel-sync';
+import { panelKindsUnavailableFor } from '@/lib/panels/scope-panel-kinds';
+import { webCoreLocalId } from '@/lib/chat-authority';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 import { installPanelTestApi } from '@/lib/panels/test-api';
 import { pt } from '@/lib/platform-text';
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
@@ -118,6 +122,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
@@ -256,8 +261,33 @@ export function PanelGridSurface({
     (state) => state.resolved[`${projectId}:${worktreeId}`],
   );
   const [startPageRoots, setStartPageRoots] = useState<FileTreeRoot[]>([]);
+  const scopeCapabilities = useScopeCapabilities({ projectId });
+  // Start pages are files and URLs in a local project's own folder; a cloud
+  // chat's files are in its sandbox.
+  const scopeHasLocalFiles =
+    scopeCapabilities.fileSystemAccess !== 'none' &&
+    workspaceFileSourceFor(worktreeId).onThisComputer;
+  // A cloud task's first chat is the task: closing it would archive the
+  // whole task, so a scope that can't close it keeps its tab.
+  const rootChatTabKept = scopeCapabilities.chatRootTabLifecycle !== true;
+  const rootChatId = webCoreLocalId(worktreeId);
+  const withRootChatTabKept = useCallback(
+    (
+      canClose: ((tab: PanelTabModel) => boolean) | undefined,
+    ): ((tab: PanelTabModel) => boolean) | undefined =>
+      rootChatTabKept && rootChatId !== null
+        ? (tab): boolean =>
+            !(
+              tab.kind === 'chat' &&
+              (tab.instance?.chatTabId === worktreeId ||
+                tab.instance?.chatTabId === rootChatId)
+            ) &&
+            (canClose?.(tab) ?? true)
+        : canClose,
+    [rootChatId, rootChatTabKept, worktreeId],
+  );
   useEffect(() => {
-    if (!startPageEnabled || readOnly) return;
+    if (!startPageEnabled || readOnly || !scopeHasLocalFiles) return;
     let canceled = false;
     void Promise.all([
       window.api.getFileTreeRoots({ projectId, worktreeId }),
@@ -270,7 +300,7 @@ export function PanelGridSurface({
     return (): void => {
       canceled = true;
     };
-  }, [projectId, readOnly, startPageEnabled, worktreeId]);
+  }, [projectId, readOnly, scopeHasLocalFiles, startPageEnabled, worktreeId]);
 
   const startPageForTab = useCallback(
     (tab: PanelTabModel): ProjectStartPage | null => {
@@ -303,6 +333,10 @@ export function PanelGridSurface({
     [projectId, projectType, startPageRoots, worktreeId, worktreeKey],
   );
   // Shared-container viewers retain Activity panels because they have no card.
+  const unavailableForScope = useMemo(
+    () => panelKindsUnavailableFor(scopeCapabilities),
+    [scopeCapabilities],
+  );
   const activityIsCard =
     useLabsExperimentEnabled('activity-card') &&
     !isSharedContainerViewerLayout(worktreeKey);
@@ -312,12 +346,17 @@ export function PanelGridSurface({
     const kinds = readOnly
       ? sharedContainerExcludedPanelKinds(readOnlyRunAllowed)
       : addMenuExcludeKinds;
-    const unavailable: PanelKind[] = isInAppBrowserAvailable()
-      ? []
-      : ['browser'];
+    const unavailable: PanelKind[] = [...unavailableForScope];
+    if (!isInAppBrowserAvailable()) unavailable.push('browser');
     if (activityIsCard) unavailable.push('activity-section');
     return unavailable.length > 0 ? [...(kinds ?? []), ...unavailable] : kinds;
-  }, [activityIsCard, addMenuExcludeKinds, readOnly, readOnlyRunAllowed]);
+  }, [
+    activityIsCard,
+    addMenuExcludeKinds,
+    readOnly,
+    readOnlyRunAllowed,
+    unavailableForScope,
+  ]);
   const modeEntry = useWorkspaceLayoutModeStore(
     useShallow((state) => state.entries[worktreeKey]),
   );
@@ -334,16 +373,42 @@ export function PanelGridSurface({
   // it, and it holds a New tab for when it is shown again, so its starting
   // point reads as a tab like any other. Added without activating, so the
   // hidden Side Panel stays hidden. Not in a read-only shared container,
-  // which refuses the New tab panel.
-  const sidePanelEmpty = usePanelLayoutStore(
-    (state) =>
-      !readOnly &&
-      state.layouts[worktreeKey]?.groups[DEFAULT_EXTRAS_GROUP_ID]?.tabs
-        .length === 0,
+  // which refuses the New tab panel. Each chat has its own Side Panel tabs,
+  // so it counts the tabs shown for the selected chat; a chat without any
+  // gets its New tab without hiding the panel the user had open.
+  const { sidePanelEmpty, sidePanelChatTabId } = usePanelLayoutStore(
+    useShallow((state) => {
+      const layout = state.layouts[worktreeKey];
+      const group = layout?.viewModel.groups.find(
+        (candidate) => candidate.groupId === DEFAULT_EXTRAS_GROUP_ID,
+      );
+      return {
+        sidePanelEmpty: !readOnly && group?.tabs.length === 0,
+        sidePanelChatTabId: layout?.chatScope?.activeChatTabId ?? null,
+      };
+    }),
   );
+  const sidePanelChatRef = useRef<{
+    readonly worktreeKey: string;
+    readonly chatTabId: string | null;
+  } | null>(null);
   useEffect(() => {
+    const previous = sidePanelChatRef.current;
+    sidePanelChatRef.current = { worktreeKey, chatTabId: sidePanelChatTabId };
     if (!sidePanelEmpty) return;
     const store = usePanelLayoutStore.getState();
+    const switchedChat =
+      previous !== null &&
+      previous.worktreeKey === worktreeKey &&
+      previous.chatTabId !== sidePanelChatTabId;
+    if (switchedChat) {
+      store.addTab(worktreeKey, DEFAULT_EXTRAS_GROUP_ID, 'new-tab', {
+        instance: { newTabId: crypto.randomUUID() },
+        title: 'New tab',
+        activate: false,
+      });
+      return;
+    }
     // A maximized group refuses to collapse; restore it first, as the Side
     // Panel toggle does.
     const maximizedGroupId = store.layouts[worktreeKey]?.maximizedGroupId;
@@ -364,7 +429,7 @@ export function PanelGridSurface({
         title: 'New tab',
         activate: false,
       });
-  }, [sidePanelEmpty, worktreeKey]);
+  }, [sidePanelChatTabId, sidePanelEmpty, worktreeKey]);
   useEffect(() => {
     ensureEarlyAccessPanelRulesSync();
     void useWorkspaceLayoutModeStore.getState().load(worktreeKey);
@@ -612,23 +677,25 @@ export function PanelGridSurface({
       // it, which is a write the read-only scope refuses. File tabs the
       // recipient opened share the chat panel kind and stay closable; main
       // accepts their discard on the viewer scope.
-      canCloseTab: readOnly
-        ? (tab: PanelTabModel): boolean =>
-            (tab.kind !== 'chat' ||
-              useChatStore
-                .getState()
-                .worktreeChats[
-                  `${projectId}/${worktreeId}`
-                ]?.tabs.find((chatTab) => chatTab.id === tab.instance?.chatTabId)
-                ?.kind === 'file') &&
-            (!minimal || canCloseMinimalTab(tab))
-        : minimal
+      canCloseTab: withRootChatTabKept(
+        readOnly
           ? (tab: PanelTabModel): boolean =>
-              canCloseMinimalTab(tab) && !isBusyChatPanel(tab, busyChatIds)
-          : busyChatIds.size > 0
+              (tab.kind !== 'chat' ||
+                useChatStore
+                  .getState()
+                  .worktreeChats[
+                    `${projectId}/${worktreeId}`
+                  ]?.tabs.find((chatTab) => chatTab.id === tab.instance?.chatTabId)
+                  ?.kind === 'file') &&
+              (!minimal || canCloseMinimalTab(tab))
+          : minimal
             ? (tab: PanelTabModel): boolean =>
-                !isBusyChatPanel(tab, busyChatIds)
-            : undefined,
+                canCloseMinimalTab(tab) && !isBusyChatPanel(tab, busyChatIds)
+            : busyChatIds.size > 0
+              ? (tab: PanelTabModel): boolean =>
+                  !isBusyChatPanel(tab, busyChatIds)
+              : undefined,
+      ),
       // No pop-out in read-only scopes: an auxiliary window renders outside
       // the access provider, so it would lose the read-only gating.
       canPopOutPanel: minimal || readOnly ? undefined : canDesktopPanelPopOut,

@@ -131,12 +131,12 @@ export function useGroupToolCalls(): boolean {
 }
 
 /**
- * Clean step rows use the same badge lines at every chat detail level.
- * Detail controls grouping, not the presentation of an individual step.
+ * Code badges in step rows are retired: a step reads what it did, then
+ * its command or file as plain text in the row's lighter ink, no chip. Kept
+ * as a switch so the badge components stay in one place.
  */
 export function useStepBadgeRows(): boolean {
-  const clean = useContext(ChatLookContext) === 'clean';
-  return clean;
+  return false;
 }
 
 /** Set by a step row around the words of its badge line. */
@@ -199,7 +199,9 @@ export type StepTense =
   | 'interrupted'
   | 'waiting';
 
-const StepTenseContext = createContext<StepTense>('done');
+// No tense outside a step (a drawer listing an agent's steps): labels then
+// read without claiming the step ran or is running.
+const StepTenseContext = createContext<StepTense | null>(null);
 
 export function StepTenseProvider({
   value,
@@ -215,6 +217,6 @@ export function StepTenseProvider({
   );
 }
 
-export function useStepTense(): StepTense {
+export function useStepTense(): StepTense | null {
   return useContext(StepTenseContext);
 }

@@ -9,8 +9,11 @@ import { SettingsRow } from './SettingsLayout';
 /** A member's own connection key, using the same presentation as gateway settings. */
 export function ModelGatewayCredentialSection({
   gateway,
+  personal = false,
 }: {
   readonly gateway: OrgModelGateway;
+  /** Your own gateway: its models show here only once this computer has its key. */
+  readonly personal?: boolean;
 }): JSX.Element {
   const [ready, setReady] = useState(false);
   const title = /\bgateway$/i.test(gateway.organizationName.trim())
@@ -33,7 +36,11 @@ export function ModelGatewayCredentialSection({
             />
           </span>
         }
-        description={`${gateway.modelIds.length} ${gateway.modelIds.length === 1 ? 'model' : 'models'}`}
+        description={
+          personal && !ready
+            ? `Add your key to use ${gateway.organizationName} on this computer.`
+            : `${gateway.modelIds.length} ${gateway.modelIds.length === 1 ? 'model' : 'models'}`
+        }
         control={
           <DesktopAiGatewayConnectionKey
             organizationId={gateway.organizationId}

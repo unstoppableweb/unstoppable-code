@@ -2,9 +2,11 @@
   "name": "@canopy/execution-engine",
   "version": "0.0.0",
   "private": true,
-  "description": "Worker-eligible local execution engine extracted from desktop-shared: storage and process primitives today, the pipeline executor and its daemon host body as CAN-5918 lands.",
+  "description": "Worker-eligible local execution engine extracted from desktop-shared: the pipeline executor, its daemon host body, the Codex runtime and their storage and process primitives.",
   "license": "MIT",
   "exports": {
+    "./node/codex-runtime/connection": null,
+    "./node/codex-runtime/connection*": null,
     "./*": "./src/*"
   },
   "dependencies": {
@@ -16,6 +18,12 @@
     "@canopy/pipeline-interop": "workspace:*",
     "@canopy/plugin-interop": "workspace:*",
     "@canopy/protocol": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "js-yaml": "^4.1.1",
+    "ws": "^8.20.0",
     "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

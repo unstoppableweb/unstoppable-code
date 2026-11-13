@@ -38,7 +38,7 @@ import {
   type WorktreeCompatibilitySymlink,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
   allocateAdhocDestinationWorktreeId,
   assertNoActiveWorktreeWork,

@@ -16,6 +16,7 @@ import {
 } from './w5-workspace-command-host';
 import { WorkspaceConfigUnreadableError } from './workspace-persistence';
 import { applyWorkspaceOwnershipDecision } from './workspace-ownership-decision-port';
+import { notifyWorkspaceMemoryBindingChanged } from './workspace-memory-binding-events';
 import type { OrganizationPrivateMemoryStatus } from './worktree-record-decisions';
 
 export {
@@ -66,7 +67,11 @@ export async function updateWorkspacePrivateMemory(
   updateCommand ??= createDesktopWorkspacePrivateMemoryCommand(
     desktopW5WorkspaceCommandHost<WorkspacePrivateMemorySource>(),
   );
-  return updateCommand(request);
+  try {
+    return await updateCommand(request);
+  } finally {
+    notifyWorkspaceMemoryBindingChanged(request.workspaceId);
+  }
 }
 
 export interface OrganizationPrivateMemoryRecord {
@@ -103,6 +108,8 @@ export async function recordOrganizationPrivateMemory(
     if (error instanceof WorkspaceConfigUnreadableError) status = 'refused';
     else throw error;
   }
+  if (status === 'recorded')
+    notifyWorkspaceMemoryBindingChanged(record.workspaceId);
   if (status === 'refused')
     throw new WorkspacePrivateMemoryRefusedError(
       'configuration-unavailable',

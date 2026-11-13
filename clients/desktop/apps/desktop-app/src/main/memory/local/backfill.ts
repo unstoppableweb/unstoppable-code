@@ -139,7 +139,7 @@ async function renameNote(
       attempt === 1 ? name : `${stem}-${attempt}.md`,
     );
     try {
-      await moveWithoutReplacing(scopeDir, source, target, times);
+      await moveWithoutReplacing(scopeDir, source, target, { times });
       return;
     } catch (error) {
       if (!isNodeError(error, 'EEXIST')) throw error;

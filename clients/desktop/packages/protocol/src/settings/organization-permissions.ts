@@ -82,15 +82,19 @@ export function canEditMemorySettings(role: OrganizationRole): boolean {
 }
 
 /**
- * Change a member's role / assign-transfer OWNER. OWNER only — admins cannot
- * grant or revoke roles. The target role must not exceed the actor's own rank
- * (always true for an OWNER actor, but kept explicit for safety).
+ * Role transitions: Owners may assign any role; Admins may change non-owners
+ * between Member and Admin. Identity and last-owner checks belong at the
+ * authoritative mutation boundary, separately from this role matrix.
  */
 export function canAssignRole(
   actorRole: OrganizationRole,
-  targetRole: OrganizationRole,
+  currentRole: OrganizationRole,
+  newRole: OrganizationRole,
 ): boolean {
-  return actorRole === 'OWNER' && roleRank(targetRole) <= roleRank(actorRole);
+  return (
+    actorRole === 'OWNER' ||
+    (actorRole === 'ADMIN' && currentRole !== 'OWNER' && newRole !== 'OWNER')
+  );
 }
 
 /**

@@ -24,6 +24,19 @@ export type WorkflowRunKind = WorkflowKind;
 /** Where a run that belongs to no project shows it ran. */
 export const NO_PROJECT_LABEL = 'No project';
 
+/**
+ * Which execution target a pipeline run ran on (CAN-6326): this computer or
+ * the cloud, as the Run dialog's "Run on" names them.
+ */
+export type WorkflowRunLocation = 'local' | 'cloud';
+
+export const WORKFLOW_RUN_LOCATION_LABELS: Readonly<
+  Record<WorkflowRunLocation, string>
+> = {
+  local: 'This computer',
+  cloud: 'Cloud',
+};
+
 export const WORKFLOW_RUN_KINDS: readonly WorkflowRunKind[] = [
   'automation',
   'pipeline',
@@ -99,6 +112,7 @@ export type WorkflowRunStarter =
   | 'schedule'
   | 'catch-up'
   | 'run-now'
+  | 'automation'
   | 'manual'
   | 'plan-approved'
   | 'task-ready'
@@ -112,6 +126,7 @@ export const WORKFLOW_RUN_STARTERS: readonly WorkflowRunStarter[] = [
   'schedule',
   'catch-up',
   'run-now',
+  'automation',
   'manual',
   'plan-approved',
   'task-ready',
@@ -128,6 +143,9 @@ export const WORKFLOW_RUN_STARTER_LABELS: Readonly<
   schedule: 'Schedule',
   'catch-up': 'Catch-up',
   'run-now': 'Run now',
+  // A pipeline run an automation started, when its summary doesn't say
+  // whether a schedule or Run now did (the automation run's own row does).
+  automation: 'Automation',
   manual: 'Manual',
   'plan-approved': 'Plan approved',
   'task-ready': 'Task ready',
@@ -187,6 +205,11 @@ interface WorkflowRunRowBase {
   readonly name: string;
   readonly status: WorkflowRunStatus;
   readonly starter?: WorkflowRunStarter;
+  /**
+   * Where a pipeline run ran. Hosts set it only while the feed can list cloud
+   * runs, so a feed of one location doesn't say so on every row.
+   */
+  readonly location?: WorkflowRunLocation;
   /** Project and place, such as `storefront · new worktree`. */
   readonly where?: string;
   /** Epoch milliseconds. */
@@ -366,6 +389,18 @@ export function workflowRunDurationLabel(row: WorkflowRunRow): string {
   if (row.status === 'canceled') return 'canceled';
   if (row.status === 'waiting') return 'waiting';
   return '';
+}
+
+/** The Where cell: the run's location, then its project and place. */
+export function workflowRunWhereLabel(row: WorkflowRunRow): string {
+  return [
+    row.location === undefined
+      ? undefined
+      : WORKFLOW_RUN_LOCATION_LABELS[row.location],
+    row.where,
+  ]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join(' · ');
 }
 
 /** The action drawn as the row's button, if any. */

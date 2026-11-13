@@ -27,9 +27,8 @@ export const APP_ERROR_CATALOG = {
   'app.runtime_unreachable': {
     kind: 'defect',
     copy: {
-      title: "Couldn't reach the agent runtime.",
-      description:
-        "Agents on it can't start. Try again, or report this if it continues.",
+      title: "Couldn't connect to the agent runtime.",
+      description: 'Retry, or switch to another model.',
     },
     summary: 'Bundled agent runtime unreachable',
   },
@@ -99,6 +98,39 @@ export const APP_ERROR_CATALOG = {
     },
     summary: 'State changed',
     status: 409,
+  },
+  'external.worktree_recovery_required': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't remove this worktree.",
+      description: 'The previous removal needs review.',
+    },
+    summary: 'Worktree recovery required',
+  },
+  'external.worktree_recovery_retryable': {
+    kind: 'external',
+    recovery: 'try_again',
+    copy: {
+      title: "Couldn't remove this worktree.",
+      description: "The previous removal didn't finish.",
+    },
+    summary: 'Worktree recovery retryable',
+  },
+  'external.worktree_recovery_cleanup': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't remove this worktree.",
+      description: "The archive was saved, but cleanup didn't finish.",
+    },
+    summary: 'Worktree recovery cleanup',
+  },
+  'external.worktree_recovery_unreadable': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: { title: "Couldn't check the previous removal." },
+    summary: 'Worktree recovery unreadable',
   },
   'external.disk_full': {
     kind: 'external',

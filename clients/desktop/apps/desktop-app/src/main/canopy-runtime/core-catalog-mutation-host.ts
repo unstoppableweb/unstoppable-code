@@ -12,6 +12,8 @@ import type {
   PluginsCache,
 } from '@canopy/execution-engine/types/plugins';
 import type { PortalMarketplaceMutationResult } from '@canopy/protocol/portal';
+import { CanopyCloudClientError } from '../canopy-cloud/client';
+import type * as CloudMarketplaces from '../canopy-cloud/plugin-marketplaces';
 import { UnsafeExternalPluginUrlError } from '../plugins/external-plugin-url';
 import type * as PluginHandlers from '../plugins/plugin-handlers';
 import type * as PluginService from '../plugins/plugin-service';
@@ -35,6 +37,10 @@ export interface DesktopCatalogMutationDeps {
     | 'installPortalExternalPlugin'
   >;
   runSerialized: <T>(operation: () => Promise<T>) => Promise<T>;
+  cloud: Pick<
+    typeof CloudMarketplaces,
+    'addCloudPluginMarketplace' | 'confirmCloudPluginMarketplace'
+  >;
 }
 
 const defaultDeps: DesktopCatalogMutationDeps = {
@@ -84,6 +90,16 @@ const defaultDeps: DesktopCatalogMutationDeps = {
       (
         await import('../services/plugin-catalog-service')
       ).installPortalExternalPlugin(marketplaceId, pluginName),
+  },
+  cloud: {
+    addCloudPluginMarketplace: async (source) =>
+      (
+        await import('../canopy-cloud/plugin-marketplaces')
+      ).addCloudPluginMarketplace(source),
+    confirmCloudPluginMarketplace: async (marketplaceId, expectedRevision) =>
+      (
+        await import('../canopy-cloud/plugin-marketplaces')
+      ).confirmCloudPluginMarketplace(marketplaceId, expectedRevision),
   },
   runSerialized: async (operation) =>
     (
@@ -351,6 +367,77 @@ export function createDesktopCatalogMutationHost(
     findPlugin: async (entryId) =>
       (await findCachedPlugin(entryId)) ??
       deps.runSerialized(() => findCachedPlugin(entryId)),
+    publishPlugin: async (target) => {
+      const cache = await deps.service.loadMarketplacesCacheOnly();
+      const marketplace = cache.success
+        ? cache.data?.marketplaces.find(
+            (candidate) => candidate.id === target.marketplaceId,
+          )
+        : undefined;
+      if (marketplace === undefined)
+        throw new CatalogHostRefusedError('plugin-not-found');
+      // Only a public GitHub marketplace is a source the cloud can fetch.
+      const repository =
+        marketplace.builtIn !== true &&
+        marketplace.curated !== true &&
+        marketplace.sourceType === 'github'
+          ? parseGitHubRepo(marketplace.sourceUrl)
+          : null;
+      if (repository === null)
+        throw new CatalogHostRefusedError('publish-source-unsupported');
+      const refusal = (error: unknown): CatalogHostRefusedError =>
+        new CatalogHostRefusedError(
+          error instanceof CanopyCloudClientError && error.status === 409
+            ? 'publish-revision-moved'
+            : error instanceof CanopyCloudClientError && error.status === 400
+              ? 'publish-source-unsupported'
+              : 'publish-remote-unavailable',
+          error,
+        );
+      let added: Awaited<
+        ReturnType<
+          DesktopCatalogMutationDeps['cloud']['addCloudPluginMarketplace']
+        >
+      >;
+      try {
+        added = await deps.cloud.addCloudPluginMarketplace(repository);
+      } catch (error) {
+        throw refusal(error);
+      }
+      let sync = added.sync;
+      if (sync.status === 'preview') {
+        try {
+          sync = await deps.cloud.confirmCloudPluginMarketplace(
+            added.marketplaceId,
+            sync.revision,
+          );
+        } catch (error) {
+          throw refusal(error);
+        }
+      }
+      if (sync.status !== 'applied')
+        throw new CatalogHostRefusedError('publish-revision-moved');
+      const pluginKey =
+        sync.pluginKeys.find((key) => key === target.pluginName) ??
+        sync.pluginKeys.find(
+          (key) => key.toLowerCase() === target.pluginName.toLowerCase(),
+        );
+      if (pluginKey === undefined)
+        throw new CatalogHostRefusedError('plugin-not-found');
+      return {
+        publicationId: added.marketplaceId,
+        remoteEntryId: pluginEntryId({
+          marketplaceId: `marketplace:${added.marketplaceId}`,
+          pluginName: pluginKey,
+        }),
+        revision: sync.revision,
+      };
+    },
+    publishSkill: async (entryId, pkg) =>
+      (await import('../skills/publish-skill-to-cloud')).publishSkillToCloud(
+        entryId,
+        pkg,
+      ),
     installPlugin: async (target, providers) => {
       let outcome: PluginCatalogService.PortalPluginInstallOutcome;
       try {

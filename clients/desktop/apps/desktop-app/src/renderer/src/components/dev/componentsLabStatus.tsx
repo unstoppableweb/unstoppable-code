@@ -29,7 +29,7 @@ import {
   preloadSmoothMarkdown,
 } from '@canopy/ui-shared/components';
 import type { SkillUpdateAction } from '@canopy/ui-shared/lib';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   APPLE_APP_STORE_BADGE_DATA_URI,
   GOOGLE_PLAY_BADGE_DATA_URI,
@@ -560,7 +560,7 @@ function StreamingReply({ run }: { readonly run: number }): JSX.Element {
     void preloadSmoothMarkdown().then(() => setReady(true));
   }, []);
   return (
-    <div className={`w-full text-s ${POSTHOG_REPLAY_BLOCK_CLASS}`}>
+    <div className={`w-full text-s ${REPLAY_BLOCK_CLASS}`}>
       {ready ? (
         <Markdown key={run} streaming={!done}>
           {text}

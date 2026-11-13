@@ -26,7 +26,7 @@ import {
 } from './hook-log-store';
 import { getHookInvocationDir } from './paths';
 import { runShellScript } from './script-runner';
-import type { PipelineTriggerSource } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { PipelineTriggerSource } from '@canopy/execution-engine/node/pipelines/executor';
 import type {
   HookFirePreparation,
   HookFireResult,

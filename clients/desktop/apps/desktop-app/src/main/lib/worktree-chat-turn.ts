@@ -1,3 +1,4 @@
+import { prepareRootMigrationChatNotice } from './root-migration-chat-notice';
 import { assertCoworkChatRootPresent } from './cowork-folder-guard';
 import { detectAiCreditsNoBillingSource } from '../agents/ai-credits-quota-state';
 import {
@@ -1655,6 +1656,7 @@ export async function prepareWorktreeTurnSession<
           systemPromptAppend,
           pluginSelections: options.pluginSelections,
           providerType: effectiveProviderType,
+          executionHarness: effectiveExecutionHarness,
         })
       : undefined;
     const runtimeProviderType = runtime?.providerType ?? effectiveProviderType;
@@ -1709,6 +1711,11 @@ export async function prepareWorktreeTurnSession<
         );
         return repoRulesBlockPromise;
       },
+      onComposeError: (error) =>
+        logMainProcessError(
+          '[repo-rules] Repository rules were not composed for the session',
+          error,
+        ),
     });
     const composedSystemPromptAppend =
       appendUserOverallPreferencesBlock(
@@ -3581,6 +3588,20 @@ async function dispatchHeldWorktreeChatTurn<
     if (preparation.cancelled) return;
     // A hidden continuation never carries one-shot instructions; they belonged
     // to the turn it continues.
+    const migrationNotice = await prepareRootMigrationChatNotice({
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      chatId: options.chatId,
+      provider: runtimeProviderType,
+      userText: options.text,
+      createdAt: async () => {
+        const tabs = await getChatStateService().getCompatibilityTabs({
+          projectId: options.projectId,
+          worktreeId: options.worktreeId,
+        });
+        return tabs.tabs.find((tab) => tab.id === options.chatId)?.createdAt;
+      },
+    });
     const instructedSubmittedText = options.hiddenDeferredContinuation
       ? visibleSubmittedText
       : prependPendingSystemInstructions(
@@ -3592,7 +3613,7 @@ async function dispatchHeldWorktreeChatTurn<
         );
     const submittedText = composeSubmittedText(
       instructedSubmittedText,
-      options.hiddenContext?.text,
+      joinHiddenBlocks(migrationNotice?.text, options.hiddenContext?.text),
       joinHiddenBlocks(memory?.renderedBlock, localMemory.value?.renderedBlock),
     );
     // The pre-send verdict under this dispatch's owner (contracts §3): a wake
@@ -3882,6 +3903,7 @@ async function dispatchHeldWorktreeChatTurn<
     }
     turnRun.accepted();
     activeTurnAccepted = true;
+    if (session.isDisposed?.() !== true) await migrationNotice?.delivered();
     options.onTurnAccepted?.();
     // `sendMessage` enqueues without inspecting session state, so a session
     // destroyed between dispatch and send still accepts the composed turn into

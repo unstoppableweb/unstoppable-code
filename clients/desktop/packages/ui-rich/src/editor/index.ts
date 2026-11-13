@@ -7,11 +7,18 @@ export {
 export {
   ComposerEditor,
   type ComposerEditorHandle,
+  type ComposerEditorMenuSession,
   type ComposerEditorProps,
 } from './ComposerEditor';
 export {
+  createComposerMenuChannel,
+  useComposerMenuChannel,
+  type ComposerMenuChannel,
+} from './composer-menu-channel';
+export {
   usePendingSlashCommand,
   type PendingSlashCommandGate,
+  type SlashCommandSelectionOutcome,
 } from './use-pending-slash-command';
 export {
   COMPOSER_DENSITY_CLASS_NAMES,
@@ -19,13 +26,10 @@ export {
 } from './composer-density';
 export { FileReferencePillElement } from './FileReferencePill';
 export {
-  SlashCommandMenu,
-  type SlashCommandMenuProps,
-} from './SlashCommandMenu';
-export {
-  FileTypeaheadMenu,
-  type FileTypeaheadMenuProps,
-} from './FileTypeaheadMenu';
+  useComposerMenu,
+  type ComposerMenuController,
+  type UseComposerMenuOptions,
+} from './useComposerMenu';
 export {
   appendFileReference,
   buildEditorValueFromMessage,

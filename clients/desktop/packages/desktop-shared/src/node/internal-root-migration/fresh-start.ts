@@ -44,6 +44,17 @@ export async function createFreshInternalRoot(options: {
         'A migration journal exists. Resume or recover it; --skip-migration cannot supersede it.',
       );
     await worker.readJournal(identity);
+    if (
+      (await readdir(identity.coordination)).some(
+        (name) =>
+          name.startsWith('restarted-') ||
+          name.startsWith('abandoned-w5-commits-'),
+      )
+    )
+      refuse(
+        'recovery-required',
+        `A retained migration exists under ${JSON.stringify(identity.coordination)}. Resume with --apply or obtain recovery; --skip-migration cannot supersede it.`,
+      );
     await worker.validateStaging(identity, null);
     if (await statIfPresent(path))
       refuse(

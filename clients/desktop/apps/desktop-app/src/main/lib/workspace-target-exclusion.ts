@@ -9,6 +9,19 @@ const runtimeStartReservations = new Map<string, number>();
 const runtimeStartDrainWaiters = new Map<string, Set<() => void>>();
 const archiveDrains = new Map<string, number>();
 const pendingRemovals = new Map<string, number>();
+const removalListeners = new Set<
+  (projectId: string, worktreeId: string) => void
+>();
+
+export function subscribeWorkspaceTargetRemoval(
+  listener: (projectId: string, worktreeId: string) => void,
+): () => void {
+  removalListeners.add(listener);
+  return () => {
+    removalListeners.delete(listener);
+  };
+}
+
 const removalSettledWaiters = new Map<string, Set<() => void>>();
 const preparationTokens = new Map<string, { valid: boolean }>();
 const preparationContext = new AsyncLocalStorage<{
@@ -200,6 +213,13 @@ export function markWorkspaceTargetRemovalPending(
 ): () => void {
   const targetKey = key(projectId, worktreeId);
   pendingRemovals.set(targetKey, (pendingRemovals.get(targetKey) ?? 0) + 1);
+  for (const listener of removalListeners) {
+    try {
+      listener(projectId, worktreeId);
+    } catch {
+      /* Retirement must still proceed. */
+    }
+  }
   let released = false;
   return (): void => {
     if (released) return;

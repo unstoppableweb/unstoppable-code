@@ -68,10 +68,6 @@ const FEATURE_FLAG_PAGE_GATES: Partial<
     label: 'Feed',
     flag: CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key,
   },
-  'cloud-chat': {
-    label: 'Cloud chats',
-    flag: CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key,
-  },
 };
 
 /**
@@ -85,7 +81,11 @@ export function isPageFeatureFlagGateOpen(page: NavigationPage): boolean {
 
 /** Compatibility aliases are valid navigation payloads but not pages to list. */
 const COMPATIBILITY_ALIAS_PAGES: ReadonlySet<NavigationPage> =
-  new Set<NavigationPage>(['mcp-account-connections', 'environments']);
+  new Set<NavigationPage>([
+    'mcp-account-connections',
+    'environments',
+    'cloud-chat',
+  ]);
 
 export function getPageAvailability(page: NavigationPage): PageAvailability {
   const flagGate = FEATURE_FLAG_PAGE_GATES[page];

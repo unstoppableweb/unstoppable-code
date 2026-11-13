@@ -183,6 +183,26 @@ export async function createReplicaManifest(
 }
 
 /**
+ * Names the cloud scope an account replica's manifest is bound to again,
+ * after the cloud keyed that scope to another project (design §21.6, §22).
+ * A manifest this build may not write is left as it is. Callers hold the
+ * scope lock.
+ */
+export async function rebindReplicaManifest(
+  scopeDir: string,
+  binding: NonNullable<MemoryManifestFile['binding']>,
+): Promise<void> {
+  const state = await readManifestState(scopeDir);
+  if (!isWritable(state) || state.kind === 'legacy') return;
+  await writeManifest(
+    scopeDir,
+    state.kind === 'current'
+      ? { ...state.manifest, binding }
+      : { ...state.raw, binding },
+  );
+}
+
+/**
  * The scope's document revision as an opaque token: equal tokens mean no
  * document write happened in between, in any process.
  */

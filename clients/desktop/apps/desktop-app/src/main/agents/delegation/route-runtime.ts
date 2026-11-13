@@ -74,7 +74,7 @@ import {
   createLocalCapabilityRoot,
   isJsonValue,
   type CodexSpawnProfileRequest,
-} from '@canopy/desktop-shared/node/codex-runtime';
+} from '@canopy/execution-engine/node/codex-runtime';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   isAgentModel,
@@ -83,7 +83,7 @@ import {
   type ChatTabPluginSelections,
   type CodexSelectedCapabilityRoot,
 } from '@canopy/desktop-shared/types';
-import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { ThreadStartParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/ThreadStartParams';
 import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import type { AgentSessionOptions } from '../types';
 import { resolveSessionWorkOwner } from '../work-owner';
@@ -357,6 +357,7 @@ function unavailable(
   code:
     | 'route_unavailable'
     | 'auth_required'
+    | 'policy_blocked'
     | 'capability_unavailable' = 'route_unavailable',
   message?: string,
 ): Extract<AgentDelegationResult<never>, { ok: false }> {
@@ -517,6 +518,11 @@ export function liveSessionRuleApproval(
 /** Private resolved invocation state is never copied into a public route. */
 export class DelegationRouteRuntime {
   private readonly captured = new Map<string, CapturedInvocation>();
+  /** Each live run's working directory and root chat, for its watchers (CAN-6031). */
+  private readonly workingDirectories = new Map<
+    string,
+    { readonly chatId: string; readonly cwd: string }
+  >();
   /** Account-proxy holds by preparation signal, visible before capture completes. */
   private readonly retainedPreparations = new Map<
     AbortSignal,
@@ -770,7 +776,10 @@ export class DelegationRouteRuntime {
             await resolveSessionWorkOwner(owner),
           )
         )
-          return unavailable('capability_unavailable');
+          return unavailable(
+            'policy_blocked',
+            'This model is blocked by your organization policy.',
+          );
         const authGeneration = this.options.authGeneration(harness);
         const workspaceEnvironment = resolveCodexRuntimeEnvironmentProfile({
           runtime: 'agent',
@@ -1394,6 +1403,15 @@ export class DelegationRouteRuntime {
     return build(prepared);
   }
 
+  /**
+   * The working directory of `delegationId`'s live run, the one its tools
+   * use, when its root chat is `chatId`; undefined without a live run.
+   */
+  workingDirectory(delegationId: string, chatId: string): string | undefined {
+    const directory = this.workingDirectories.get(delegationId);
+    return directory?.chatId === chatId ? directory.cwd : undefined;
+  }
+
   /** Per-run state shared by the launch and any in-run capability reload. */
   private async prepareSession(
     context: LocalDelegationContext,
@@ -1416,6 +1434,16 @@ export class DelegationRouteRuntime {
         message: 'The captured child route lost its authority before launch.',
         retryable: false,
       });
+    const directory = { chatId: parent.chatId, cwd };
+    this.workingDirectories.set(delegationId, directory);
+    context.retain(
+      (): Promise<void> => {
+        if (this.workingDirectories.get(delegationId) === directory)
+          this.workingDirectories.delete(delegationId);
+        return Promise.resolve();
+      },
+      { label: 'watcher-directory', phase: 'preparation' },
+    );
     // Prompts route to the root chat by identity, not through a live
     // provider session, so they reach the chat while no session is attached.
     const approval = liveSessionRuleApproval(

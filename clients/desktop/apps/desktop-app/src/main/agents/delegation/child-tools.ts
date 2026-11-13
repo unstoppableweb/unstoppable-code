@@ -11,11 +11,11 @@ import type {
   DelegateCanopyTools,
 } from './canopy-tools';
 import type { DelegationParent } from '@canopy/desktop-shared/node/delegation/parent';
-import type { CodexHostToolPolicy } from '@canopy/desktop-shared/node/codex-runtime/thread-handle';
-import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
-import type { DynamicToolCallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallResponse';
-import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
-import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
+import type { CodexHostToolPolicy } from '@canopy/execution-engine/node/codex-runtime/thread-handle';
+import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
+import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
+import { isJsonValue } from '@canopy/execution-engine/node/codex-runtime';
+import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   ADD_LEDGER_ENTRY_DESCRIPTION,
@@ -60,7 +60,7 @@ export function childDelegationGuidance(
  * descriptions and advertised schemas as the chat's. Their names follow the
  * injected-tool registry, so a child's calls render like a chat's.
  */
-const CHILD_LEDGER_TOOLS: readonly {
+export const CHILD_LEDGER_TOOLS: readonly {
   readonly key: LedgerToolKey;
   readonly description: string;
   readonly inputSchema: JsonValue;

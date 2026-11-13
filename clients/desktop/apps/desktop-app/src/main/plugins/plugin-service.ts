@@ -18,7 +18,7 @@ import {
 } from './inherited-cursor-plugins';
 import { runSerializedPluginMutation } from './plugin-mutation-queue';
 import { pruneInstalledItemRefs } from '../installed-items/installed-item-ref-prune';
-import { prunePipelinePreferenceSelections } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+import { prunePipelinePreferenceSelections } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import {
   canonicalInstalledItemRef,
   installedItemKey,
@@ -153,8 +153,8 @@ import {
   type PluginsCacheV1,
 } from '@canopy/execution-engine/types/plugins';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
-import type { PluginMarketplaceEntry } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
-import type { PluginSummary } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginSummary';
+import type { PluginMarketplaceEntry } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
+import type { PluginSummary } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSummary';
 import {
   settleAll,
   trackDetachedWork,

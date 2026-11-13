@@ -4,7 +4,7 @@ import type {
   AgentProviderType,
   WorktreeDiscovery,
 } from '@canopy/desktop-shared/types';
-import { writeFileAtomically } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
 import { logMainProcessWarn } from './main-process-logging';
 import { isRecord } from './type-guards';
 

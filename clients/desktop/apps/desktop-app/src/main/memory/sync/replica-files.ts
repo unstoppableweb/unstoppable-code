@@ -8,6 +8,7 @@ import {
   type MemorySyncStateFile,
 } from '@canopy/protocol/memory-sync';
 import type { z } from 'zod';
+import { rebindReplicaManifest } from '../local/scope-manifest';
 import {
   isNodeError,
   writeMemoryFileAtomically,
@@ -162,4 +163,30 @@ export async function writeMemoryReplicaAccount(
     memoryReplicaAccountFile(accountDir),
     serialize(MemoryReplicaAccountFileSchema.parse(account)),
   );
+}
+
+/**
+ * Binds a replica to its cloud scope again under another project: the cloud
+ * keyed the scope it already holds to that project (design §21.6, §22), so
+ * its files stay where they are. The manifest and outbox go first and
+ * `sync-state.json` last, which the engine maps replicas by, so a crash
+ * between them is finished by the next pass. The caller holds the scope lock.
+ */
+export async function rebindMemoryReplicaFiles(
+  scopeDir: string,
+  binding: MemoryReplicaBinding,
+): Promise<void> {
+  const state = await readMemorySyncState(scopeDir);
+  if (state === undefined || state === null) {
+    throw new Error('The memory replica has no readable sync state');
+  }
+  await rebindReplicaManifest(scopeDir, binding);
+  const raw = await readJson(memorySyncOutboxFile(scopeDir));
+  if (raw !== undefined) {
+    const outbox = MemorySyncOutboxFileSchema.safeParse(raw);
+    if (outbox.success) {
+      await writeMemorySyncOutbox(scopeDir, { ...outbox.data, binding });
+    }
+  }
+  await writeMemorySyncState(scopeDir, { ...state, binding });
 }

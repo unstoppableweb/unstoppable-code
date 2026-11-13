@@ -105,3 +105,22 @@ export function requestLoadedChangedFilesRefresh(
 ): Promise<ActivityChangedFilesResponse | undefined> {
   return requestChangedFilesRefreshInternal(projectId, worktreeId, true);
 }
+
+let cleanupWorktreeActivity: (
+  projectId: string,
+  worktreeId: string,
+) => void = () => undefined;
+
+/** Activity owns its state; the project store must not import it in reverse. */
+export function registerWorktreeActivityCleanup(
+  cleanup: typeof cleanupWorktreeActivity,
+): void {
+  cleanupWorktreeActivity = cleanup;
+}
+
+export function clearWorktreeActivity(
+  projectId: string,
+  worktreeId: string,
+): void {
+  cleanupWorktreeActivity(projectId, worktreeId);
+}

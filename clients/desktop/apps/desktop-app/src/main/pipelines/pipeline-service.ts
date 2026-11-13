@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
-import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   getProjectPipelinesDirCandidates,
@@ -28,7 +28,7 @@ export {
   saveStoredPipeline as savePipeline,
   writeStoredPipelineRemoteMetadata as writePipelineRemoteMetadata,
   updateStoredPipeline as updatePipeline,
-} from '@canopy/desktop-shared/pipelines/store';
+} from '@canopy/execution-engine/pipelines/store';
 
 export { listPipelineCapabilityData } from './pipeline-capability-data';
 

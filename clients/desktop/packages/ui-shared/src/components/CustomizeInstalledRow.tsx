@@ -3,10 +3,11 @@ import type { UnifiedEntryPlacement } from '../lib/unified-plugin-entry';
 import { mcpPlacementLabel } from '../lib/mcp-row-health';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
-import { AlertTriangle, PersonIcon } from '../icons/AppIcons';
+import { AlertTriangle, PersonIcon, RefreshIcon } from '../icons/AppIcons';
 import { curatedLogoKey } from '../lib/curated-logo-key';
 import { createdByViewer, pendingSignInLabel } from '../lib/customize-row-copy';
 import { displayVersion } from '../lib/display-version';
+import { INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL } from '../lib/installed-share-copy';
 import { REPLAY_MASK_CLASS, REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
 import {
@@ -22,6 +23,7 @@ import {
 } from './EntrySourceLabel';
 import { Tooltip } from './Tooltip';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
+import { Badge } from './Badge';
 
 function compactMetadata(entry: UnifiedPluginEntry): {
   source: string | undefined;
@@ -496,6 +498,19 @@ export function CustomizeInstalledRow({
                 <AlertTriangle width={13} height={13} aria-hidden="true" />
               </span>
             </Tooltip>
+          )}
+          {/* A shared copy whose source changed (CAN-5309): the detail's
+              marker, never shrunk; its text is part of the row's name. The
+              Update action stays on the detail. */}
+          {entry.shareUpdateAvailable === true && (
+            <Badge
+              tone="info"
+              icon={RefreshIcon}
+              className="shrink-0 whitespace-nowrap"
+              data-testid={`customize-row-update-available-${entry.id}`}
+            >
+              {INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL}
+            </Badge>
           )}
         </span>
         {health !== undefined ? (

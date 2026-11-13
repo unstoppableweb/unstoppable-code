@@ -177,6 +177,7 @@ interface ModelPickerBillingProps {
 }
 
 interface BaseModelPickerProps {
+  triggerControlProps?: ModelPickerMenuProps['triggerControlProps'];
   ownerDocument?: Document;
   lockedProvider?: AgentProviderType;
   /** See {@link LockedProviderBehavior}. Defaults to `'disabled'`. */
@@ -985,6 +986,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         staleAgent,
         modelGatewayEnforced,
         organizationName: activeOrganizationName,
+        personalOwner,
         isGuest,
         libraryAccess,
       });
@@ -1218,6 +1220,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     modelPolicy,
     modelGatewayEnforced,
     activeOrganizationName,
+    personalOwner,
     isGuest,
     libraryAccess,
     onStartNewChat,
@@ -1325,6 +1328,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                 row.gate.cause === 'stale-agent',
               modelGatewayEnforced,
               organizationName: activeOrganizationName,
+              personalOwner,
               isGuest,
               libraryAccess,
             });
@@ -1350,6 +1354,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     modelPolicy,
     modelGatewayEnforced,
     activeOrganizationName,
+    personalOwner,
     isGuest,
     libraryAccess,
   ]);
@@ -1519,6 +1524,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
           staleAgent: option?.available === false,
           modelGatewayEnforced,
           organizationName: activeOrganizationName,
+          personalOwner,
           isGuest,
           libraryAccess,
         });
@@ -1558,6 +1564,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         staleAgent: false,
         modelGatewayEnforced,
         organizationName: activeOrganizationName,
+        personalOwner,
         isGuest,
         libraryAccess,
       });
@@ -1570,6 +1577,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
       executionHarness,
       opencodeAvailable,
       activeOrganizationName,
+      personalOwner,
       billing?.value,
       currentModel,
       managedMappings,
@@ -2534,6 +2542,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             staleAgent: false,
             modelGatewayEnforced,
             organizationName: activeOrganizationName,
+            personalOwner,
             isGuest,
             libraryAccess,
           });
@@ -2638,6 +2647,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         </>
       )}
       <ModelPickerMenu
+        triggerControlProps={props.triggerControlProps}
         cursorExperimental={!cursorReleased}
         catalog={catalog}
         libraryAccess={libraryLabelAccess}

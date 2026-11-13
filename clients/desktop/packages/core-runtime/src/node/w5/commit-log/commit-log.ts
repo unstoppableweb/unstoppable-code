@@ -13,7 +13,10 @@ import {
   KEYED_RECEIPT_RETRY_WINDOW_MS,
   type KeyedReceiptKey,
 } from '../../../kernel/keyed-receipt';
-import { isCleanConflictEvidence } from './apply-evidence';
+import {
+  isCleanConflictEvidence,
+  isTransientUnwrittenFailureEvidence,
+} from './apply-evidence';
 import { openW5CommitLogDatabase } from './database';
 import { W5CommitLogError, W5CommitRefusedError } from './errors';
 import { fingerprintW5File } from './fingerprint';
@@ -958,6 +961,8 @@ export class W5CommitLog {
     hasReceipt: boolean;
     fileCount: number;
     diagnostics: { conflicts: W5FileConflict[]; written: string[] } | undefined;
+    /** Its apply stopped on a transient I/O error before writing anything. */
+    transientFailure: boolean;
   }> {
     return this.db
       .prepare(
@@ -980,6 +985,7 @@ export class W5CommitLog {
           hasReceipt: asInteger(row.has_receipt) !== 0,
           fileCount: asInteger(row.file_count),
           diagnostics: isCleanConflictEvidence(evidence) ? evidence : undefined,
+          transientFailure: isTransientUnwrittenFailureEvidence(evidence),
         };
       });
   }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { McpAvailabilityObserver } from '@canopy/desktop-shared/node/codex-runtime/mcp-availability-observer';
+import { McpAvailabilityObserver } from '@canopy/execution-engine/node/codex-runtime/mcp-availability-observer';
 import type { McpActivationHandoff } from './activation-handoff';
 import {
   mcpCapabilityIdentityKey,

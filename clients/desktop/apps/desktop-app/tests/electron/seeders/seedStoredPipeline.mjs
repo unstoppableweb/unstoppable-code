@@ -5,7 +5,7 @@ import { writeJson } from './fsHelpers.mjs';
 /**
  * Seed a stored (user) pipeline into a test's `CANOPY_DATA_DIR`.
  *
- * Mirrors the writer in `packages/desktop-shared/src/pipelines/store.ts`:
+ * Mirrors the writer in `packages/execution-engine/src/pipelines/store.ts`:
  *   - YAML body:  `{userDataDir}/pipelines/{id}.yaml`
  *   - index file: `{userDataDir}/pipelines/index.json` (`PipelineIndex`)
  *

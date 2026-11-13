@@ -161,6 +161,23 @@ export function sourceFromProbeHead(
   return provider && chatId ? { provider, chatId } : undefined;
 }
 
+/** The device a synced note was saved on, from its front matter. */
+export function deviceLabelFromProbeHead(
+  probeHead: string,
+): string | undefined {
+  const lines = probeHead.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return undefined;
+  const end = lines.findIndex(
+    (line, index) => index > 0 && line.trim() === '---',
+  );
+  if (end === -1) return undefined;
+  for (const line of lines.slice(1, end)) {
+    const match = /^deviceLabel:(.*)$/.exec(line);
+    if (match) return frontMatterScalar(match[1]);
+  }
+  return undefined;
+}
+
 /** Reads at most the first 4 KiB of a memory file. */
 async function readProbeHead(path: string): Promise<string> {
   const handle = await open(path, 'r');
@@ -223,6 +240,7 @@ export async function listLocalMemoryFiles(
         titled: title !== undefined,
       });
       const source = inbox ? sourceFromProbeHead(head) : undefined;
+      const deviceLabel = inbox ? deviceLabelFromProbeHead(head) : undefined;
       files.push({
         fileKey,
         kind:
@@ -236,6 +254,7 @@ export async function listLocalMemoryFiles(
         ...(title === undefined ? {} : { title }),
         ...(excerpt === undefined ? {} : { excerpt }),
         ...(source === undefined ? {} : { source }),
+        ...(deviceLabel === undefined ? {} : { deviceLabel }),
       });
     } catch (error) {
       if (

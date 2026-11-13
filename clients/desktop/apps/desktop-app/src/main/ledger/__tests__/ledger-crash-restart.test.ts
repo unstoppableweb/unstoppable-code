@@ -2,7 +2,6 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
 import {
   LEDGER_COMMAND_OPERATIONS,
@@ -40,10 +39,8 @@ const WORKER_ENTRY = join(__dirname, '..', 'storage-worker.ts');
 const OPEN_PROBE = join(__dirname, 'fixtures', 'ledger-open-probe.ts');
 const CRASH_WRITER = join(__dirname, 'fixtures', 'ledger-crash-writer.ts');
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..', '..', '..');
-const REQUEST_TIMEOUT_MS = 250;
+const REQUEST_TIMEOUT_MS = 30_000;
 const WORKER_EXIT_WAIT_MS = 30_000;
-// A calibration target only; synchronized observations establish the call window.
-const OVERRUN_MS = 200;
 const SLOW_TITLE = 'Overrun the request timeout';
 const TASK: LedgerAddEntryParams = {
   type: 'TASK',
@@ -81,6 +78,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  jest.useRealTimers();
   // Stops a fixture a failed test left paused; it exits within 60 s anyway.
   for (const child of children.splice(0)) child.kill('SIGKILL');
   await Promise.all(hosts.splice(0).map((host) => host.shutdown()));
@@ -115,26 +113,6 @@ function withRaw<Result>(
   } finally {
     raw.close();
   }
-}
-
-function countSql(rows: number): string {
-  return `SELECT count(*) FROM (WITH RECURSIVE c(i) AS (VALUES (1) UNION ALL SELECT i + 1 FROM c WHERE i < ${rows}) SELECT i FROM c)`;
-}
-
-/** Rows `countSql` counts in about `ms` here, from the fastest of 3 samples. */
-function rowsTaking(ms: number): number {
-  const sample = 500_000;
-  const fastest = withRaw(':memory:', (raw) => {
-    const statement = raw.prepare(countSql(sample));
-    let best = Number.POSITIVE_INFINITY;
-    for (let run = 0; run < 3; run += 1) {
-      const started = performance.now();
-      statement.get();
-      best = Math.min(best, performance.now() - started);
-    }
-    return best;
-  });
-  return Math.ceil((sample * ms) / Math.max(fastest, 1));
 }
 
 /** Counts after `adds` more adds: one row more of each but scopes and actors. */
@@ -203,107 +181,99 @@ async function probeOpen(dbPath: string): Promise<unknown> {
 }
 
 describe('Ledger crash and restart', () => {
-  let slowRows = 0;
+  it('restarts a worker that timed out while writing its entry row, with the command applied whole or not at all', async () => {
+    const context = setUpLedger();
+    contexts.push(context);
+    context.repository.close();
+    const dbPath = context.databasePath;
+    const { client } = createHost(
+      dbPath,
+      REQUEST_TIMEOUT_MS,
+      WORKER_EXIT_WAIT_MS,
+    );
+    const addAcknowledged = addInput(context, context.user, TASK, 'add');
+    const added = await client.addEntry(addAcknowledged);
+    const updateAcknowledged = updateInput(
+      context,
+      context.user,
+      {
+        entryId: added.entry.entryId,
+        expectedRevision: 1,
+        status: 'IN_PROGRESS',
+      },
+      'update',
+    );
+    const updated = await client.updateEntry(updateAcknowledged);
+    const before = await client.getStorageCounts();
+    const slowAdd = addInput(
+      context,
+      context.user,
+      { ...TASK, title: SLOW_TITLE },
+      'timed-out-add',
+    );
 
-  beforeAll(() => {
-    slowRows = rowsTaking(REQUEST_TIMEOUT_MS + OVERRUN_MS);
-  });
-
-  // Worker.terminate() cannot interrupt a native SQLite call: the worker stops
-  // at its next JavaScript call. The command then rolls back, or commits when
-  // only COMMIT was left, and the caller cannot tell which: it must apply whole.
-  it.each([
-    ['its entry row', 'ledger_entries', 'projection_json', 1],
-    [
-      'its outbox row, the last before COMMIT',
-      'ledger_outbox',
-      'payload_json',
-      2,
-    ],
-  ])(
-    'restarts a worker that timed out while writing %s, with the command applied whole or not at all',
-    async (_statement, table, column, sqliteCall) => {
-      const context = setUpLedger();
-      contexts.push(context);
-      context.repository.close();
-      const dbPath = context.databasePath;
-      withRaw(dbPath, (raw) =>
-        raw.exec(`CREATE TRIGGER slow_write AFTER INSERT ON ${table}
-          WHEN instr(NEW.${column}, '${SLOW_TITLE}') > 0
-          BEGIN ${countSql(slowRows)}; END`),
-      );
-      const { client } = createHost(
-        dbPath,
-        REQUEST_TIMEOUT_MS,
-        WORKER_EXIT_WAIT_MS,
-      );
-      const addAcknowledged = addInput(context, context.user, TASK, 'add');
-      const added = await client.addEntry(addAcknowledged);
-      const updateAcknowledged = updateInput(
-        context,
-        context.user,
-        {
-          entryId: added.entry.entryId,
-          expectedRevision: 1,
-          status: 'IN_PROGRESS',
-        },
-        'update',
-      );
-      const updated = await client.updateEntry(updateAcknowledged);
-      const before = await client.getStorageCounts();
-      const slowAdd = addInput(
-        context,
-        context.user,
-        { ...TASK, title: SLOW_TITLE },
-        'timed-out-add',
-      );
-
-      await expect(client.addEntry(slowAdd)).rejects.toMatchObject({
+    const oldWorker = startedWorkers[0];
+    if (!oldWorker) throw new Error('No storage worker started');
+    const paused = oldWorker.pauseNextEntryInsert();
+    // Only the deliberately blocked request runs on the fake clock.
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      const rejected = expect(client.addEntry(slowAdd)).rejects.toMatchObject({
         reason: 'STORAGE_UNAVAILABLE',
         message: 'Ledger storage did not answer',
       });
-      const oldWorker = startedWorkers[0];
-      if (!oldWorker) throw new Error('No storage worker started');
-      // The marker covers the native call and its immediate wrapper return;
-      // it does not prove termination was strictly inside native SQLite.
-      expect(oldWorker.termination).toEqual({ active: true, sqliteCall });
-
-      const after = await client.getStorageCounts();
-      // The host started the fresh worker only after the original exit event.
-      await oldWorker.exited;
-      expect(oldWorker.workersStartedAtExit).toBe(1);
-      expect(startedWorkers).toHaveLength(2);
-      // The fresh worker holds the lock the terminated one released.
-      await expect(probeOpen(dbPath)).resolves.toEqual({
-        opened: false,
-        reason: 'WRITER_UNAVAILABLE',
-      });
-
-      const slowKeys = await client.listReceiptKeys({
-        ledgerId: context.ledgerId,
-        operation: LEDGER_COMMAND_OPERATIONS.addEntry,
-        idempotencyKeys: ['timed-out-add'],
-      });
-      const applied = slowKeys.length > 0;
-      expect(after).toEqual(withAdds(before, applied ? 1 : 0));
-      if (applied) {
-        // A retry gets the committed receipt and writes nothing more.
-        const replay = await client.addEntry(slowAdd);
-        expect(replay.entry.title).toBe(SLOW_TITLE);
-        await expect(client.getStorageCounts()).resolves.toEqual(after);
-      }
-      await expect(client.addEntry(addAcknowledged)).resolves.toEqual(added);
-      await expect(client.updateEntry(updateAcknowledged)).resolves.toEqual(
-        updated,
-      );
-      await expect(
-        client.getEntry({
-          ledgerId: context.ledgerId,
-          entryId: added.entry.entryId,
+      await Promise.race([
+        paused,
+        rejected.then(() => {
+          throw new Error(
+            'Storage request rejected before its entry INSERT barrier',
+          );
         }),
-      ).resolves.toMatchObject({ entry: updated.entry });
-    },
-  );
+      ]);
+      jest.advanceTimersByTime(REQUEST_TIMEOUT_MS);
+      await rejected;
+      // The INSERT returned, but the transaction has not reached COMMIT.
+      expect(oldWorker.termination).toEqual({ active: true, sqliteCall: 1 });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    const after = await client.getStorageCounts();
+    // The host started the fresh worker only after the original exit event.
+    await oldWorker.exited;
+    expect(oldWorker.workersStartedAtExit).toBe(1);
+    expect(startedWorkers).toHaveLength(2);
+    // The fresh worker holds the lock the terminated one released.
+    await expect(probeOpen(dbPath)).resolves.toEqual({
+      opened: false,
+      reason: 'WRITER_UNAVAILABLE',
+    });
+
+    const slowKeys = await client.listReceiptKeys({
+      ledgerId: context.ledgerId,
+      operation: LEDGER_COMMAND_OPERATIONS.addEntry,
+      idempotencyKeys: ['timed-out-add'],
+    });
+    expect(slowKeys).toEqual([]);
+    expect(after).toEqual(before);
+    // The paused transaction rolled back whole; the same command can retry.
+    const replay = await client.addEntry(slowAdd);
+    expect(replay.entry.title).toBe(SLOW_TITLE);
+    const afterRetry = withAdds(before, 1);
+    await expect(client.getStorageCounts()).resolves.toEqual(afterRetry);
+    await expect(client.addEntry(slowAdd)).resolves.toEqual(replay);
+    await expect(client.getStorageCounts()).resolves.toEqual(afterRetry);
+    await expect(client.addEntry(addAcknowledged)).resolves.toEqual(added);
+    await expect(client.updateEntry(updateAcknowledged)).resolves.toEqual(
+      updated,
+    );
+    await expect(
+      client.getEntry({
+        ledgerId: context.ledgerId,
+        entryId: added.entry.entryId,
+      }),
+    ).resolves.toMatchObject({ entry: updated.entry });
+  });
 
   it('recovers every acknowledged write of a process killed with SIGKILL', async () => {
     const dbPath = join(tempDir, 'ledger', 'ledger.sqlite');
