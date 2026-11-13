@@ -79,10 +79,7 @@ import {
   WorktreeArchiveRefusalError,
   WorktreeRemovalRefusedError,
 } from '@/lib/worktreeRemovalAdmission';
-import {
-  worktreeDiscardBatchPointer,
-  worktreeRecoveryBatchPointer,
-} from '@canopy/ui-shared/lib/worktree-discard-copy';
+import { worktreeDiscardBatchPointer } from '@canopy/ui-shared/lib/worktree-discard-copy';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSidebarStore } from '@/stores/sidebarStore';
@@ -784,10 +781,6 @@ export const removeDesktopWorktreeInBatch = async (
     if (error instanceof TeardownFailedError) {
       throw new Error('Teardown script failed. Try again from the row menu.');
     }
-    if (error instanceof WorktreeArchiveRefusalError && error.recovery) {
-      if (error.recovery.destination.kind === 'journal-review') throw error;
-      throw new Error(worktreeRecoveryBatchPointer(error.recovery));
-    }
     const discard = await batchDiscardDescription(error, workspaceId);
     if (discard) throw new Error(worktreeDiscardBatchPointer(discard));
     throw error;
@@ -831,26 +824,6 @@ export const removeDesktopWorkEntryInBatch: RemoveWorkEntryInBatch = async (
   useStandaloneChatStore.getState().deleteWorkEntry(entryId, workspaceId, {
     lockAfterArchive: mode === 'archive',
   });
-
-/**
- * The shared rows' Archive (CAN-5461): the whole Work Entry, locked, as the
- * batch and the single-row confirm archive it. Production rows still archive
- * through `SidebarCoworkWorkspaceRow`'s confirmation; this serves the shared
- * rows wherever they render. A chat without a Work Entry fails rather than
- * archiving nothing.
- */
-export const archiveDesktopStandaloneChat = async (chat: {
-  readonly localId: string;
-  readonly projectLocalId: string;
-  readonly workEntryId?: string;
-}): Promise<void> => {
-  if (!chat.projectLocalId || !chat.workEntryId) {
-    throw new Error('This chat has no Work Entry to archive.');
-  }
-  await removeDesktopWorkEntryInBatch(chat.projectLocalId, chat.workEntryId, {
-    mode: 'archive',
-  });
-};
 
 /**
  * A Work Entry's batch facts, read live before each removal: gone when the
@@ -2417,7 +2390,6 @@ export function DesktopSharedSidebarHost({
         worktreeBatchBranchChoice
         onWorktreeBatchRemovalStateChange={setBatchRemovalState}
         onRemoveWorkEntryInBatch={removeDesktopWorkEntryInBatch}
-        onArchiveStandaloneChat={archiveDesktopStandaloneChat}
         getWorkEntryBatchRemovalFacts={desktopWorkEntryBatchRemovalFacts}
         getWorkEntryBulkState={desktopWorkEntryBulkState}
         onSetWorkEntryPinned={setDesktopWorkEntryPinned}

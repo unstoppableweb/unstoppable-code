@@ -77,6 +77,7 @@ export function AgentBlock({
   subagentIdentity,
   renderSubBlock,
 }: AgentBlockProps): JSX.Element {
+  const displayResult = taskOutputResult ?? result;
   const target = useContext(ChatMarkdownFileTargetContext);
   const nativeStop = useContext(NativeTaskStopContext);
   const nativeStopTarget = nativeStop?.target;
@@ -96,27 +97,14 @@ export function AgentBlock({
     subagentIdentity?.id,
     subagentIdentity?.title ?? description,
   );
-  const backgroundProcess = useActivityStore((state) =>
+  const backgroundStatus = useActivityStore((state) =>
     target && chatId && toolUseId
       ? state.bgProcesses[`${target.projectId}/${target.worktreeId}`]?.find(
           (process) =>
             process.chatId === chatId && process.toolUseId === toolUseId,
-        )
+        )?.status
       : undefined,
   );
-  const backgroundStatus = backgroundProcess?.status;
-  // A background agent whose transcript carries no output of its own (a
-  // cloud subagent, whose task row reports how it ended) shows its process's
-  // summary, as an error when it failed.
-  const processResult: ToolResult | undefined =
-    backgroundProcess?.summary !== undefined &&
-    (backgroundStatus === 'completed' || backgroundStatus === 'failed')
-      ? {
-          output: backgroundProcess.summary,
-          isError: backgroundStatus === 'failed',
-        }
-      : undefined;
-  const displayResult = taskOutputResult ?? processResult ?? result;
   const isRunning =
     isRunningOverride ??
     isClaudeAgentRunning(

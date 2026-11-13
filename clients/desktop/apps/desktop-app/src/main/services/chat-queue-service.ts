@@ -6118,8 +6118,12 @@ export class ChatQueueService {
         await this.persistRestoredQueueUntilDurable(message.request, entry, {
           type: 'cancel',
           request: message.request,
-          agentSendRefusalCode: error.code,
-          lastErrorMessage: error.message,
+          agentSendRefusalCode:
+            error.code === 'authorization_conflict'
+              ? 'owner_boundary'
+              : error.code,
+          lastErrorMessage:
+            'The agent that sent this message can no longer reach this chat.',
         });
         this.releaseWatcherAuthority(message.request);
         return;
@@ -6787,8 +6791,12 @@ export class ChatQueueService {
         await this.persistRestoredQueueUntilDurable(request, entry, {
           type: 'cancel',
           request,
-          agentSendRefusalCode: error.code,
-          lastErrorMessage: error.message,
+          agentSendRefusalCode:
+            error.code === 'authorization_conflict'
+              ? 'owner_boundary'
+              : error.code,
+          lastErrorMessage:
+            'The agent that sent this message can no longer reach this chat.',
         });
         return;
       }

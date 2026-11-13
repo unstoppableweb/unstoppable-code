@@ -22,9 +22,6 @@ interface CloudChatsWorld {
     readonly creates: unknown[];
     createDelayMs: number;
     readonly createRefusals: unknown[];
-    readonly extraAnswers: Map<string, (params: unknown) => unknown>;
-    replyDelayMs: number;
-    readonly cancels: unknown[];
   };
   call(method: string, params: Record<string, unknown>): unknown;
   onNotification(listener: (notification: unknown) => void): () => void;
@@ -39,7 +36,6 @@ const { createCloudChatsWorld, SEEDED_CLOUD_CHATS } = jest.requireActual<{
     readonly rootChatId: string;
     readonly secondChatId: string;
     readonly questionId: string;
-    readonly questionToolUseId: string;
   };
 }>('../../../../tests/electron/fixtures/cloudChatsWorld.js');
 
@@ -108,16 +104,6 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
   it('serves only operations the protocol defines', () => {
     for (const method of [...world.served(), ...world.streams()])
       expect(() => definition(method)).not.toThrow();
-  });
-
-  it('lists each served operation once, also one a spec overrides', () => {
-    const other = createCloudChatsWorld({ accountId: 'acct-1' });
-    other.state.extraAnswers.set('core.chat.message.send', () => ({
-      result: {},
-    }));
-    const served = other.served();
-    expect(served).toContain('core.chat.message.send');
-    expect(new Set(served).size).toBe(served.length);
   });
 
   it('lists the seeded project and task, and reads both chats', () => {
@@ -210,7 +196,7 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     expect(read.content).toContain('Launch plan');
   });
 
-  it('pushes a sent turn and an answered question as the web core reports Core’s turns', async () => {
+  it('pushes a sent message and its reply, and a question’s answer, as chat events', async () => {
     call('core.chat.task.events', { scope: 'all', cursor: null });
     call('core.chat.events', {
       scope: {
@@ -223,63 +209,6 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       scope: { ...SCOPE, chatId: SEEDED_CLOUD_CHATS.rootChatId },
     });
     await Promise.resolve();
-    const changes = (): {
-      type: string;
-      runtime?: Record<string, unknown>;
-      message?: { id: string; blocks: Record<string, unknown>[] };
-    }[] =>
-      items
-        .filter((each) => each.method === 'core.chat.events.item')
-        .flatMap(
-          (each) =>
-            (each.params.item as { changes: ReturnType<typeof changes> })
-              .changes,
-        );
-    const runtimes = (): Record<string, unknown>[] =>
-      changes().flatMap((change) =>
-        change.type === 'runtime.patched' && change.runtime
-          ? [change.runtime]
-          : [],
-      );
-    // A pending question's turn runs, waiting on the answer.
-    expect(
-      (
-        call('core.chat.snapshot.get', { scope: SCOPE }) as {
-          runtimeByChatId: Record<string, unknown>;
-        }
-      ).runtimeByChatId[SEEDED_CLOUD_CHATS.rootChatId],
-    ).toMatchObject({ status: 'awaiting_input' });
-    expect(
-      (
-        call('core.chat.snapshot.get', { scope: SCOPE }) as {
-          runtimeByChatId: Record<string, { activeTurnId?: unknown }>;
-        }
-      ).runtimeByChatId[SEEDED_CLOUD_CHATS.rootChatId]?.activeTurnId,
-    ).toEqual(expect.stringMatching(/./));
-
-    // The answer settles the question; the turn runs on to its reply, and
-    // Core records no result for the question call.
-    call('core.chat.question.respond', {
-      chatId: SEEDED_CLOUD_CHATS.rootChatId,
-      questionId: SEEDED_CLOUD_CHATS.questionId,
-      answers: { room: { selectedOptions: ['Studio B'] } },
-    });
-    expect(changes().map((change) => change.type)).toEqual([
-      'pending_question.removed',
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const asking = changes().find((change) =>
-      change.message?.blocks.some(
-        (block) => block.toolUseId === SEEDED_CLOUD_CHATS.questionToolUseId,
-      ),
-    )?.message;
-    expect(asking?.blocks.map((block) => block.type)).toEqual([
-      'text',
-      'tool_use',
-    ]);
-    // Core's session still reads streaming in the batch that ends the turn.
-    expect(runtimes()).toEqual([{ status: 'streaming', queuedMessageIds: [] }]);
-
     const receipt = call('core.chat.message.send', {
       scope: SCOPE,
       commandId: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21',
@@ -287,27 +216,18 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       messageId: 'message-1',
       text: 'Studio B, please.',
       _meta: { idempotencyKey: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21' },
-    }) as { outcome: string; entityId: string };
+    }) as { outcome: string };
     expect(receipt.outcome).toBe('applied');
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    // Queued, then running under the receipt's turn, then committed with no
-    // turn and Core's session still streaming.
-    expect(runtimes().slice(1)).toEqual([
-      { status: 'awaiting_input', queuedMessageIds: ['message-1'] },
-      {
-        status: 'streaming',
-        queuedMessageIds: [],
-        activeTurnId: receipt.entityId,
-      },
-      { status: 'streaming', queuedMessageIds: [] },
+    call('core.chat.question.respond', {
+      chatId: SEEDED_CLOUD_CHATS.rootChatId,
+      questionId: SEEDED_CLOUD_CHATS.questionId,
+      answers: { room: { selectedOptions: ['Studio B'] } },
+    });
+    expect(items.map((each) => each.method)).toEqual([
+      'core.chat.live.events.item',
+      'core.chat.events.item',
+      'core.chat.events.item',
     ]);
-    expect(
-      changes().some((change) =>
-        change.message?.blocks.some(
-          (block) => block.text === 'Seeded reply: Studio B, please.',
-        ),
-      ),
-    ).toBe(true);
     expectItemsValid();
     expect(world.state.sends).toHaveLength(1);
     expect(world.state.answers).toHaveLength(1);
@@ -316,113 +236,6 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       commandId: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21',
     }) as { outcome: string };
     expect(matched.outcome).toBe('matched');
-
-    // Stop on a turn already over is not an error.
-    expect(
-      call('core.chat.turn.cancel', {
-        chatId: SEEDED_CLOUD_CHATS.rootChatId,
-        turnId: receipt.entityId,
-        reason: 'user',
-      }),
-    ).toMatchObject({ state: 'idle' });
-  });
-
-  it('stops a running turn by its conversation turn id, as the web core does (CAN-6393)', async () => {
-    const running = createCloudChatsWorld({ accountId: 'acct-1' });
-    running.state.replyDelayMs = 60_000;
-    const pushed: { method: string; params: { item: unknown } }[] = [];
-    running.onNotification((notification: unknown) => {
-      pushed.push(notification as (typeof pushed)[number]);
-    });
-    const runningCall = (
-      method: string,
-      params: Record<string, unknown>,
-    ): unknown => {
-      const shape = definition(method);
-      expect(shape.params.safeParse(params).error).toBeUndefined();
-      const answer = running.call(method, params) as { result: unknown };
-      const answerShape =
-        shape.item === undefined ? shape.result : shape.openResult;
-      expect(answerShape?.safeParse(answer.result).error).toBeUndefined();
-      return answer.result;
-    };
-    runningCall('core.chat.events', {
-      scope: {
-        projectId: SEEDED_CLOUD_CHATS.workspaceId,
-        worktreeId: SEEDED_CLOUD_CHATS.taskId,
-      },
-      cursor: null,
-    });
-    const commandId = '6b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
-    const receipt = runningCall('core.chat.message.send', {
-      scope: SCOPE,
-      commandId,
-      chatId: SEEDED_CLOUD_CHATS.secondChatId,
-      messageId: 'message-running',
-      text: 'Take your time.',
-      _meta: { idempotencyKey: commandId },
-    }) as { entityId: string };
-    // The receipt names the conversation turn, as the snapshot's activeTurnId does.
-    expect(receipt.entityId).toBe(`turn-${commandId}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    runningCall('core.chat.live.events', {
-      scope: { ...SCOPE, chatId: SEEDED_CLOUD_CHATS.secondChatId },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const liveItems = (): unknown[] =>
-      pushed
-        .filter((each) => each.method === 'core.chat.live.events.item')
-        .map((each) => each.params.item);
-    // A running turn's live stream opens with no idle.
-    expect(liveItems()).toEqual([]);
-    const ended = runningCall('core.chat.turn.cancel', {
-      chatId: SEEDED_CLOUD_CHATS.secondChatId,
-      turnId: 'turn-other',
-      reason: 'user',
-    }) as { state: string };
-    expect(ended.state).toBe('idle');
-    const stopped = runningCall('core.chat.turn.cancel', {
-      chatId: SEEDED_CLOUD_CHATS.secondChatId,
-      turnId: receipt.entityId,
-      reason: 'user',
-    }) as { state: string };
-    expect(stopped.state).toBe('running');
-    expect(running.state.cancels).toHaveLength(2);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const runtimes = pushed.flatMap((each) =>
-      each.method === 'core.chat.events.item'
-        ? (
-            each.params.item as {
-              changes: { type: string; runtime?: Record<string, unknown> }[];
-            }
-          ).changes.flatMap((change) =>
-            change.type === 'runtime.patched' && change.runtime
-              ? [change.runtime]
-              : [],
-          )
-        : [],
-    );
-    // Queued, running under its turn, then the reply so far commits with no
-    // turn while Core's session still reads streaming; the live stream says
-    // idle.
-    expect(runtimes).toEqual([
-      { status: 'awaiting_input', queuedMessageIds: ['message-running'] },
-      {
-        status: 'streaming',
-        queuedMessageIds: [],
-        activeTurnId: receipt.entityId,
-      },
-      { status: 'streaming', queuedMessageIds: [] },
-    ]);
-    expect(liveItems()).toEqual([
-      { kind: 'idle', chatId: SEEDED_CLOUD_CHATS.secondChatId },
-    ]);
-    for (const notification of pushed) {
-      const stream = notification.method.replace(/\.item$/, '');
-      expect(
-        definition(stream).item?.safeParse(notification.params.item).error,
-      ).toBeUndefined();
-    }
   });
 
   it('refuses what the real web core refuses, as the web core does', () => {
@@ -675,13 +488,10 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       _meta: { idempotencyKey: commandId },
     }) as { result: { outcome: string } };
     expect(sent.result.outcome).toBe('applied');
-    // The turn runs and commits its reply after the receipt, as Core's does.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(
-      pushed.findLast(
-        (notification) => notification.method === 'core.chat.events.item',
-      ),
-    ).toMatchObject({ params: { item: { worktreeId: taskId } } });
+    expect(pushed.at(-1)).toMatchObject({
+      method: 'core.chat.events.item',
+      params: { item: { worktreeId: taskId } },
+    });
     for (const notification of pushed) {
       const stream = notification.method.replace(/\.item$/, '');
       expect(

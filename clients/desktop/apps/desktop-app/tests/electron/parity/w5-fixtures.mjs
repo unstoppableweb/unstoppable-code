@@ -6,9 +6,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import {
-  cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -17,7 +15,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { CanopyAppDriver } from '../canopyApp.mjs';
 import {
   captureDaemonDryRunEvidence,
@@ -327,32 +325,9 @@ export async function quitGracefullyKeepingData(
   ]);
   clearTimeout(deadline);
   await closeCanopy(electronApp, userDataDir, { keepUserData: true });
-  if (outcome !== 'exited') keepQuitLogs(userDataDir);
   expect(outcome, 'graceful quit must finish without a forced kill').toBe(
     'exited',
   );
-}
-
-/**
- * Copies a timed-out quit's logs into the test's output, which CI uploads on
- * failure: main.log's `[shutdown]` lines time each runtime cleanup stage
- * (CAN-6456). Logs only, never sockets or tokens, and a failed copy never
- * hides the quit failure itself.
- */
-function keepQuitLogs(userDataDir) {
-  const logs = path.join(userDataDir, 'logs');
-  if (!existsSync(logs)) return;
-  try {
-    cpSync(logs, test.info().outputPath('graceful-quit-logs'), {
-      recursive: true,
-      filter: (source) => {
-        const entry = lstatSync(source);
-        return entry.isDirectory() || entry.isFile();
-      },
-    });
-  } catch (error) {
-    console.warn(`Could not keep the quit logs: ${String(error)}`);
-  }
 }
 
 /** SIGKILLs the app's process tree, then reaps it, keeping its data root. */

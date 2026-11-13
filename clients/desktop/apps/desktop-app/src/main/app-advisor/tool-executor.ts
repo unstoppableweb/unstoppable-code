@@ -1,4 +1,3 @@
-import { chatHistoryActionCatalog } from '@canopy/agent-actions/families/chat-history';
 import type { z } from 'zod/v4';
 import { executeShowCapabilities } from '../canopy-tools/show-capabilities';
 import {
@@ -638,7 +637,7 @@ export async function executeAppAdvisorTool(
             ]),
           ),
         },
-        [...transcriptReadActionCatalog(), ...chatHistoryActionCatalog],
+        transcriptReadActionCatalog(),
       );
       const actions = [...sharedActions.actions, ...existing.actions]
         .filter((action) => {

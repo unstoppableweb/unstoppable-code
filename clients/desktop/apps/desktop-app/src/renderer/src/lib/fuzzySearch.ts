@@ -27,33 +27,6 @@ function isSegmentStart(target: string, index: number): boolean {
   return prev === '/' || prev === '.' || prev === '-' || prev === '_';
 }
 
-/**
- * The positions of `query` where it appears whole in `target`, preferring an
- * occurrence that starts a segment, or null when it never appears whole.
- */
-function contiguousIndices(
-  query: string,
-  normalizedTarget: string,
-  target: string,
-): number[] | null {
-  let start = normalizedTarget.indexOf(query);
-  if (start === -1) return null;
-  for (
-    let next = start;
-    next !== -1 && !isSegmentStart(target, start);
-    next = normalizedTarget.indexOf(query, next + 1)
-  ) {
-    if (isSegmentStart(target, next)) start = next;
-  }
-  const indices: number[] = [];
-  let offset = start;
-  for (const char of query) {
-    indices.push(offset);
-    offset += char.length;
-  }
-  return indices;
-}
-
 export function fuzzyMatch(query: string, target: string): FuzzyMatch | null {
   const normalizedQuery = query.trim().toLowerCase();
   const normalizedTarget = target.toLowerCase();
@@ -62,18 +35,14 @@ export function fuzzyMatch(query: string, target: string): FuzzyMatch | null {
     return { score: 0, indices: [] };
   }
 
-  // A contiguous run beats the leftmost scattered letters: "dodo" in
-  // "dev-dodo" is the word, not the "d" of "dev" plus "odo" (CAN-6405).
-  const indices =
-    contiguousIndices(normalizedQuery, normalizedTarget, target) ?? [];
-  if (indices.length === 0) {
-    let searchFrom = 0;
-    for (const char of normalizedQuery) {
-      const index = normalizedTarget.indexOf(char, searchFrom);
-      if (index === -1) return null;
-      indices.push(index);
-      searchFrom = index + 1;
-    }
+  const indices: number[] = [];
+  let searchFrom = 0;
+
+  for (const char of normalizedQuery) {
+    const index = normalizedTarget.indexOf(char, searchFrom);
+    if (index === -1) return null;
+    indices.push(index);
+    searchFrom = index + 1;
   }
 
   let score = 0;

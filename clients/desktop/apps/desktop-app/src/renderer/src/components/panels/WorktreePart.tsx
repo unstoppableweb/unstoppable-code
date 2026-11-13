@@ -18,10 +18,8 @@
  * a worktree is deleted.
  */
 import { lazy, Suspense, useMemo, type JSX } from 'react';
-import {
-  localPlatform,
-  needsPageTitlebarDragRegion,
-} from '@/lib/local-platform';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import type { WorktreeViewMode } from '@/lib/worktree-layout-prefs';
 import type { PanelHostState } from '@/lib/panels/panel-host-context';
 import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
@@ -103,7 +101,7 @@ export function WorktreePart({
         data-testid="worktree-part"
         className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden"
       >
-        {needsPageTitlebarDragRegion(localPlatform()) && (
+        {!usesNativeWindowFrame(localPlatform()) && (
           <div className="electron-drag absolute inset-x-0 top-0 h-10" />
         )}
         <Suspense fallback={null}>

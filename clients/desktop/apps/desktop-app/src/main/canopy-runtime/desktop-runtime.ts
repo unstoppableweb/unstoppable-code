@@ -1,8 +1,3 @@
-import { createCoreWorktreeRecoveryAdapter } from './core-worktree-recovery-adapter';
-import {
-  createCoreMemoryChatsAdapter,
-  type CoreMemoryChatsHost,
-} from './core-memory-chats-adapter';
 import { createCoworkFolderAdapter } from './cowork-folder-adapter';
 import { createDesktopWorktreeGitAdapter } from './worker-git-worktree-adapter';
 import { CoreHelperRuns } from '@canopy/core-runtime/node/agent/helpers';
@@ -469,7 +464,6 @@ export interface CreateDesktopRuntimeOptions {
   configHost?: Partial<CoreConfigHost>;
   /** Local memory behind `core.memory.*`; tests may inject one. */
   memoryHost?: CoreMemoryHost;
-  memoryChatsHost?: CoreMemoryChatsHost;
   /** Consolidation, rebuild, snapshots and import behind `core.memory.*`; tests may inject one. */
   memoryMaintenanceHost?: CoreMemoryMaintenanceHost;
   /** Archived containers behind the `core.archive` reads and lock; tests may inject one. */
@@ -1434,19 +1428,11 @@ export function createDesktopRuntime(
     options.terminalSettingsStore,
   );
   const configAdapter = createCoreConfigAdapter(options.configHost);
-  const memoryStoreAdapter = createCoreMemoryAdapter(options.memoryHost);
-  const memoryChatsAdapter = createCoreMemoryChatsAdapter(
-    options.memoryChatsHost,
-  );
-  const memoryAdapter: DesktopDomainAdapter = {
-    ...memoryStoreAdapter,
-    queries: { ...memoryStoreAdapter.queries, ...memoryChatsAdapter.queries },
-  };
+  const memoryAdapter = createCoreMemoryAdapter(options.memoryHost);
   const memoryMaintenanceAdapter = createCoreMemoryMaintenanceAdapter(
     options.memoryMaintenanceHost,
   );
   const archiveAdapter = createCoreArchiveAdapter(options.archiveHost);
-  const worktreeRecoveryAdapter = createCoreWorktreeRecoveryAdapter();
   const watcherAdapter = createCoreWatcherAdapter(options.watcherHost);
   const managedDelegationAdapter = createCoreManagedDelegationAdapter(
     options.managedDelegationHost,
@@ -1671,7 +1657,6 @@ export function createDesktopRuntime(
     memoryAdapter,
     memoryMaintenanceAdapter,
     archiveAdapter,
-    worktreeRecoveryAdapter,
     watcherAdapter,
     managedDelegationAdapter,
     deferredToolsAdapter,
@@ -1859,7 +1844,6 @@ export function createDesktopRuntime(
       ownedAdapter('core.memory', memoryAdapter),
       ownedAdapter('core.memory.maintenance', memoryMaintenanceAdapter),
       ownedAdapter('core.archive', archiveAdapter),
-      ownedAdapter('core.worktree.recovery', worktreeRecoveryAdapter),
       ownedAdapter('core.initiatedWork.watcher', watcherAdapter),
       ownedAdapter('core.managedDelegation', managedDelegationAdapter),
       ownedAdapter('core.agent.deferredTools', deferredToolsAdapter),

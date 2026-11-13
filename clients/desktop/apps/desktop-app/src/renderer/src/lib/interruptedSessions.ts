@@ -133,8 +133,7 @@ export async function resolveInterruptedSessionProviders(
                       ? 'authentication'
                       : reason.kind === 'provider_sign_in'
                         ? 'provider_sign_in'
-                        : reason.kind === 'app_shutdown' ||
-                            reason.kind === 'core_lost'
+                        : reason.kind === 'app_shutdown'
                           ? 'app_shutdown'
                           : 'usage_limit',
                 );

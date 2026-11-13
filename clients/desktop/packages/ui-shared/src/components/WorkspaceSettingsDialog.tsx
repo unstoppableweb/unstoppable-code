@@ -566,7 +566,6 @@ export function WorkspaceSettingsDialog({
                     value={color}
                     palette={palette}
                     testId={testIds?.colorSwatches}
-                    label="Project color"
                     onChange={(swatch) => {
                       setJustSaved(false);
                       colorEditVersionRef.current += 1;

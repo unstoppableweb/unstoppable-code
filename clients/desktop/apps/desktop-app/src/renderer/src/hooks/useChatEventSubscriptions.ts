@@ -14,7 +14,6 @@ import {
 } from '@/stores/composerRecoveryStore';
 import { useTransientRetryBannerStore } from '@/stores/transientRetryBannerStore';
 import { useIngestionLagStore } from '@/stores/ingestionLagStore';
-import { usePromptSuggestionStore } from '@/stores/promptSuggestionStore';
 import { invalidateAiCreditsAvailabilityCache } from '@/hooks/useAiCreditsAvailability';
 import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
 import {
@@ -52,9 +51,7 @@ import {
   isAiCreditsUsageLimitEventData,
   isChatIngestionLagEventData,
   isNoBillingSourceErrorEventData,
-  isPromptSuggestionEventData,
   isTransientRetryStateEventData,
-  PROMPT_SUGGESTION_EVENT_TYPE,
 } from '@canopy/desktop-shared/types';
 
 /**
@@ -254,26 +251,6 @@ export function useChatEventSubscriptions(): void {
               chatId: event.chatId,
             },
             event.data.lag,
-          );
-        }
-        return;
-      }
-      if (
-        isRecord(event.data) &&
-        event.data.type === PROMPT_SUGGESTION_EVENT_TYPE
-      ) {
-        // Transient, like ingestion lag: never reaches the transcript.
-        if (isPromptSuggestionEventData(event.data)) {
-          usePromptSuggestionStore.getState().setSuggestion(
-            {
-              projectId: event.projectId,
-              worktreeId: event.worktreeId,
-              chatId: event.chatId,
-            },
-            {
-              text: event.data.text,
-              turnUserMessageId: event.data.turnUserMessageId,
-            },
           );
         }
         return;

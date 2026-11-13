@@ -464,7 +464,6 @@ interface CloudStart {
 function cloudStartOf(
   request: CloudPipelineRunRequest,
   destination: CloudRunAgentDestination | undefined,
-  chat?: CloudRunAgentChat,
 ): CloudStart | CloudPipelineRunStartResult {
   if (request.targetId !== CLOUD_PIPELINE_RUN_TARGET_ID)
     return refused('cloud_target_unavailable', CLOUD_RUN_TARGET_UNAVAILABLE);
@@ -512,15 +511,6 @@ function cloudStartOf(
       ...(request.cloudModelChoices === undefined
         ? {}
         : { modelChoices: request.cloudModelChoices }),
-      ...(chat === undefined
-        ? {}
-        : {
-            chat: {
-              projectId: chat.projectId,
-              worktreeId: chat.worktreeId,
-              chatId: chat.chatId,
-            },
-          }),
     },
   };
 }
@@ -559,36 +549,25 @@ export function startCloudPipelineRun(
   return startCloudRun(request, undefined, source);
 }
 
-/** The chat whose agent starts a cloud run, as desktop names it. */
-export interface CloudRunAgentChat {
-  readonly projectId: string;
-  readonly worktreeId: string;
-  readonly chatId: string;
-}
-
 /**
  * An agent's cloud start (CAN-6354): as `startCloudPipelineRun`, and a run
  * in the calling chat's project or task names it in the start's scope,
- * beside the location, for the web core to admit or refuse. The calling
- * chat goes on the start too (CAN-6391), which the web core reports as the
- * run's agent initiator, so its desktop watchers know which chat started it.
+ * beside the location, for the web core to admit or refuse.
  */
 export function startAgentCloudPipelineRun(
   request: CloudPipelineRunRequest,
   destination: CloudRunAgentDestination | undefined,
-  chat: CloudRunAgentChat | undefined,
   source: CloudPipelineRunCalls = productionCalls(),
 ): Promise<CloudPipelineRunStartResult> {
-  return startCloudRun(request, destination, source, chat);
+  return startCloudRun(request, destination, source);
 }
 
 async function startCloudRun(
   request: CloudPipelineRunRequest,
   destination: CloudRunAgentDestination | undefined,
   source: CloudPipelineRunCalls,
-  chat?: CloudRunAgentChat,
 ): Promise<CloudPipelineRunStartResult> {
-  const start = cloudStartOf(request, destination, chat);
+  const start = cloudStartOf(request, destination);
   if (!('params' in start)) return start;
   const { definitionId, owner } = start;
   try {

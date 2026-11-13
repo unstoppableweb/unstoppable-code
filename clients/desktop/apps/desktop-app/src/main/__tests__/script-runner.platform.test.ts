@@ -46,7 +46,7 @@ async function isLiveProcess(pid: number): Promise<boolean> {
         error &&
         typeof error === 'object' &&
         'code' in error &&
-        (error.code === 'ENOENT' || error.code === 'ESRCH')
+        error.code === 'ENOENT'
       )
         return false;
       throw error;

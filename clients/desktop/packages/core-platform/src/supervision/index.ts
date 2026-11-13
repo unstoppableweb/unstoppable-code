@@ -3,7 +3,6 @@ import type {
   PlatformSupervisionServices,
 } from '@canopy/core-runtime';
 import { createChildServices } from './child';
-import { createProcessIdentifier } from './identify';
 import { createProcessInspector } from './inspect';
 import { killProcessTree } from './kill-tree';
 import { createProcessTableReader } from './process-table';
@@ -16,12 +15,10 @@ export function createSupervisionServices(
   operations: Partial<SupervisionOperations> = {},
 ): PlatformSupervisionServices {
   const ops: SupervisionOperations = { ...NODE_SUPERVISION, ...operations };
-  const inspectProcess = createProcessInspector(os, ops);
   const services: PlatformSupervisionServices = {
     ...createChildServices(os),
     killProcessTree: (request) => killProcessTree(os, request, ops),
-    inspectProcess,
-    identifyProcess: createProcessIdentifier(os, ops, inspectProcess),
+    inspectProcess: createProcessInspector(os, ops),
     readProcessTable: createProcessTableReader(os),
   };
   return Object.freeze(services);

@@ -1,14 +1,12 @@
-import { isSelectableAgentOverrideModel } from '@canopy/execution-engine/model-catalog';
-import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import {
   AGENT_MODELS,
   APP_ADVISOR_PROJECT_ID,
   PIPELINE_EDITOR_PROJECT_ID,
   isAgentModel,
+  isBaseModelSelectableForAgent,
   isInheritingAgentModel,
   resolveAgentModelDefinition,
   type ChatModel,
-  type ModelHarness,
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import {
@@ -16,7 +14,6 @@ import {
   parseAgentRouteModelId,
 } from '@canopy/protocol/agents';
 import {
-  NoDispatchableModelError,
   requireLaneAwareDefaultSelection,
   resolveAppAdvisorDefaultModel,
 } from '../lib/default-model-lane-resolver';
@@ -119,84 +116,44 @@ export function formatInheritedAgentRoute(
   defaultModel: ChatModel,
 ): string {
   if (isAgentModel(defaultModel)) {
-    throw new AgentModelSelectionError(
-      'model_unavailable',
+    throw new Error(
       `Agent "${agentId}" uses the default model, but the default model is an Agent. Choose a provider model as the default in Settings, or choose a base model for this Agent.`,
     );
   }
   return formatAgentRouteModelId(agentId, defaultModel);
 }
 
-/** Validate the selected route, not the Agent's (possibly stale) default. */
-export function assertAgentRouteModel(
-  model: ChatModel,
-  storedModel?: ChatModel,
-): void {
+/**
+ * Refuse a route id for an Agent with its own base model, so a supplied route
+ * cannot run a pinned Agent on another model.
+ */
+export function assertAgentRouteModel(model: ChatModel): void {
   const route = parseAgentRouteModelId(model);
-  if (!route) {
-    if (isAgentModel(model) && model.includes('@'))
-      throw new AgentModelSelectionError(
-        'model_unavailable',
-        'This Agent model route is not selectable. Choose another model.',
-      );
-    return;
-  }
-  if (!resolveAgentModelDefinition(route.agentId))
-    throw new AgentModelSelectionError(
-      'agent_unavailable',
-      'The selected Agent is not available. Choose another Agent.',
+  if (route && !isInheritingAgentModel(route.agentId)) {
+    throw new Error(
+      `Agent "${route.agentId}" has its own base model. Choose the Agent itself instead of "${model}".`,
     );
-  assertAgentRouteBaseAvailable(model, storedModel);
+  }
 }
 
-function assertAgentRouteBaseAvailable(
-  model: ChatModel,
-  storedModel?: ChatModel,
-): void {
+/**
+ * Refuse a route whose pinned base is no longer selectable before anything is
+ * written; runtime would refuse it only after the send was saved.
+ */
+function assertAgentRouteBaseAvailable(model: ChatModel): void {
   const route = parseAgentRouteModelId(model);
-  if (!route || isSelectableAgentOverrideModel(route.baseModel)) return;
+  // A pinned Agent runs on its own base, whatever route names it.
+  if (
+    !route ||
+    !isInheritingAgentModel(route.agentId) ||
+    isBaseModelSelectableForAgent(route.baseModel)
+  )
+    return;
   const name =
     resolveAgentModelDefinition(route.agentId)?.name ?? route.agentId;
-  throw new AgentModelSelectionError(
-    'model_unavailable',
-    model === storedModel
-      ? `Agent "${name}" is set to unavailable model "${route.baseModel}". Choose another model.`
-      : `Agent "${name}" cannot run on model "${route.baseModel}" because that model is not selectable. Choose another model.`,
+  throw new Error(
+    `Agent "${name}" is set to unavailable model "${route.baseModel}". Choose the Agent again or choose another model.`,
   );
-}
-
-/** Target-aware, read-only Agent admission before any chat mutation. Approval remains a separate host gate. */
-export async function assertAgentModelAdmission(
-  model: ChatModel,
-  target: {
-    projectId: string;
-    worktreeId?: string;
-    chatId?: string;
-    executionHarness?: ModelHarness;
-  },
-): Promise<void> {
-  if (!isAgentModel(model)) return;
-  assertAgentRouteModel(model);
-  const { resolveAgentModelRuntime } = await import('./agent-model-runtime');
-  const runtime = await resolveAgentModelRuntime({
-    model,
-    projectId: target.projectId,
-    executionHarness: target.executionHarness,
-  });
-  const { resolveAiCreditsScopeOwner } = await import('./work-owner');
-  const owner = await resolveAiCreditsScopeOwner({ kind: 'work', ...target });
-  if (!owner)
-    throw new AgentModelSelectionError(
-      'agent_unavailable',
-      'The owner of the target chat could not be checked. Try again later.',
-    );
-  const { isModelBlockedByStoredPolicy } =
-    await import('../lib/model-policy-state');
-  if (await isModelBlockedByStoredPolicy(runtime.runtimeModel, owner))
-    throw new AgentModelSelectionError(
-      'policy_blocked',
-      `Model "${runtime.runtimeModel}" is blocked by your organization policy. Choose another model.`,
-    );
 }
 
 /**
@@ -204,26 +161,21 @@ export async function assertAgentModelAdmission(
  * saved or queued; undefined when the selection needs no pin. The selection is
  * the requested model, else the chat's stored one. A chat already on this
  * Agent's route keeps it, so Settings changes never reroute it. Throws for a
- * nested default, an unusable model, or incompatible Agent resources.
+ * nested default, an unusable default, or a route forged for a pinned Agent.
  */
 export async function resolveSendModelPin(
   projectId: string,
   stored: ChatModel | undefined,
   requested: ChatModel | undefined,
-  target?: {
-    worktreeId?: string;
-    chatId?: string;
-    executionHarness?: ModelHarness;
-  },
 ): Promise<ChatModel | undefined> {
   const selected = requested ?? stored;
   if (selected === undefined) return undefined;
-  assertAgentRouteModel(selected, stored);
+  // A stored route stays valid after its Agent stops inheriting.
+  if (selected !== stored) assertAgentRouteModel(selected);
   const pinned = await pinSelectedAgent(projectId, stored, selected);
   // Whatever the send carries is checked: the selection, a route the chat
   // keeps, or one pinned just now.
-  assertAgentRouteBaseAvailable(pinned ?? selected, stored);
-  await assertAgentModelAdmission(pinned ?? selected, { projectId, ...target });
+  assertAgentRouteBaseAvailable(pinned ?? selected);
   return pinned;
 }
 
@@ -238,7 +190,10 @@ async function pinSelectedAgent(
     parseAgentRouteModelId(stored)?.agentId === selected
   )
     return stored;
-  return pinInheritingAgentToDestination(selected, projectId);
+  return formatInheritedAgentRoute(
+    selected,
+    await resolveAgentDestinationDefaultModel(projectId),
+  );
 }
 
 /**
@@ -250,21 +205,10 @@ export async function pinInheritingAgentToDestination(
   projectId: string,
 ): Promise<ChatModel> {
   assertAgentRouteModel(model);
-  let selected = model;
-  if (isInheritingAgentModel(model)) {
-    try {
-      selected = formatInheritedAgentRoute(
+  return isInheritingAgentModel(model)
+    ? formatInheritedAgentRoute(
         model,
         await resolveAgentDestinationDefaultModel(projectId),
-      );
-    } catch (error) {
-      if (!(error instanceof NoDispatchableModelError)) throw error;
-      throw new AgentModelSelectionError(
-        'destination_default_unavailable',
-        "Couldn't use this Agent because no default model is available. Choose another model or set an available default in Settings.",
-      );
-    }
-  }
-  assertAgentRouteBaseAvailable(selected);
-  return selected;
+      )
+    : model;
 }

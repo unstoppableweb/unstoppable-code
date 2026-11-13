@@ -1,4 +1,3 @@
-import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
 import { isCopilotRuntimeAvailable } from '../../copilot/runtime-availability';
@@ -7,7 +6,6 @@ import { randomUUID } from 'node:crypto';
 import {
   APP_ADVISOR_PROJECT_ID,
   getProviderForModel,
-  getExecutionHarnessForModel,
   IPC_CHANNELS,
   isTerminalBackedInterfaceMode,
   resolveKnownModel,
@@ -40,10 +38,7 @@ import {
   isChatTurnStopCurrent,
   type ChatTurnStopContext,
 } from '../../lib/chat-turn-cancel';
-import {
-  getActiveSessionInfos,
-  getAllActiveSessionInfos,
-} from '../../agents/session-manager';
+import { getAllActiveSessionInfos } from '../../agents/session-manager';
 import { sendToWindow } from '../../lib/window-send';
 import {
   createWorkEntry,
@@ -473,43 +468,15 @@ export async function handlePortalAppAdvisorSend(
           await readChatTabsFile(APP_ADVISOR_PROJECT_ID, storedEntry.entryId)
         ).tabs.find((tab) => tab.id === requestedChatId)
       : undefined;
-    const activeSession = storedEntry?.entryId
-      ? getActiveSessionInfos(APP_ADVISOR_PROJECT_ID, storedEntry.entryId).find(
-          (session) => session.chatId === requestedChatId,
-        )
-      : undefined;
-    // Like Advisor dispatch, a hydrated default is not a conversation lock.
-    const freshChat =
-      !activeSession &&
-      !storedTab?.sdkSessionId &&
-      (storedTab?.transcript?.messageCount ??
-        storedTab?.transcript?.committedMessageCount ??
-        storedTab?.messages.length ??
-        0) === 0 &&
-      storedTab?.executionHarnessExplicitlyChosen !== true;
-    const sendHarness =
-      knownModel && freshChat
-        ? getExecutionHarnessForModel(knownModel)
-        : (storedTab?.executionHarness ?? activeSession?.executionHarness);
     // The send's own resolver: a chat already on this Agent's route keeps it.
-    let modelRefusal: string | undefined;
     const requestedModel = knownModel
       ? await resolveSendModelPin(
           APP_ADVISOR_PROJECT_ID,
           storedTab?.model,
           knownModel,
-          {
-            worktreeId: storedEntry?.entryId ?? undefined,
-            chatId: requestedChatId,
-            executionHarness: sendHarness,
-          },
         ).then(
           (pinned) => pinned ?? knownModel,
-          (error: unknown): undefined => {
-            if (error instanceof AgentModelSelectionError)
-              modelRefusal = error.message;
-            return undefined;
-          },
+          (): undefined => undefined,
         )
       : undefined;
     const requestedModelProvider = requestedModel
@@ -522,7 +489,7 @@ export async function handlePortalAppAdvisorSend(
       context.fail(
         command,
         'invalid_payload',
-        modelRefusal ?? 'model must be a known, available model id.',
+        'model must be a known, available model id.',
       );
       return;
     }

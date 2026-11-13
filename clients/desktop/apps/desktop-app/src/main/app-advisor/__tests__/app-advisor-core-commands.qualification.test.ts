@@ -241,26 +241,6 @@ describe('App Advisor chats through core chat commands (CAN-4133)', () => {
     );
   });
 
-  it('core.chat.turn.cancel refuses a first-message cancel before any effect (CAN-6106)', async () => {
-    port.commit(advisorTab('advisor-chat'));
-    await expect(
-      runtime.instruction(
-        'core.chat.turn.cancel',
-        { chatId: 'advisor-chat', firstMessage: 'stop', reason: 'user' },
-        { caller },
-      ),
-    ).rejects.toMatchObject({
-      payload: {
-        kind: 'capability_unavailable',
-        details: {
-          unsupported: ['firstMessage'],
-          reason: 'first_message_unsupported',
-        },
-      },
-    });
-    expect(stop).not.toHaveBeenCalled();
-  });
-
   it('core.operation.cancel stops the exact turn', async () => {
     const run = await beginChatTurnRun({
       scope: {

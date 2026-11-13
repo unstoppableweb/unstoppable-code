@@ -1,7 +1,6 @@
 import type {
   CanopyCapabilities,
   CanopyClient,
-  CommandMap,
   ConnectionStatusEvent,
   QueryMap,
   TranscriptReadClient,
@@ -22,15 +21,11 @@ export interface StandaloneChatActiveWork {
   readonly workEntryId: string | null;
 }
 
-/** The file operations a host serves for a work entry outside its IPC host. */
-export type ScopedFileOperations = {
+/** The file queries a host serves for a work entry outside its IPC host. */
+export type ScopedFileQueries = {
   readonly [Method in 'file.read' | 'file.resolveLink' | 'file.roots']: (
     args: QueryMap[Method]['args'],
   ) => Promise<QueryMap[Method]['result']>;
-} & {
-  readonly 'file.save': (
-    args: CommandMap['file.save']['args'],
-  ) => Promise<CommandMap['file.save']['result']>;
 };
 
 /** Carry the open tabs of a base worktree into a newly branched one. */
@@ -91,9 +86,7 @@ export interface IpcCanopyClientPorts {
    * File reads for a work entry the host serves elsewhere, such as a cloud
    * chat over the web core (CAN-6175). Undefined keeps the IPC reads.
    */
-  readonly scopedFiles?: (
-    worktreeId: string,
-  ) => ScopedFileOperations | undefined;
+  readonly scopedFiles?: (worktreeId: string) => ScopedFileQueries | undefined;
   /** Report a recovered, non-fatal failure. Default: dropped. */
   readonly logError?: (message: string, details: { error: unknown }) => void;
   /** Stamps `toolFamily` on projected `tool_use` parts. Absent leaves it unset. */

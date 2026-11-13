@@ -1,5 +1,3 @@
-import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
-import { WorktreeRecoveryRequestSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
 import type {
   PortalTaskFirstChat,
   PortalTaskFirstChatResult,
@@ -931,58 +929,6 @@ export async function handlePortalWorktreeArchive(
     context.fail(command, 'invalid_payload', 'Invalid worktree archive mode.');
     return;
   }
-  const recovery =
-    payload.recovery === undefined
-      ? undefined
-      : WorktreeRecoveryRequestSchema.safeParse(payload.recovery);
-  if (
-    recovery &&
-    (!recovery.success || !recovery.data.expectedCreatedAt || context.origin)
-  ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Invalid worktree recovery request.',
-    );
-    return;
-  }
-  if (
-    (payload.deleteBranch !== undefined &&
-      typeof payload.deleteBranch !== 'boolean') ||
-    (payload.deleteWithoutRetentionIfMissing !== undefined &&
-      typeof payload.deleteWithoutRetentionIfMissing !== 'boolean') ||
-    (payload.expectedBranchName !== undefined &&
-      typeof payload.expectedBranchName !== 'string')
-  ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Invalid worktree removal options.',
-    );
-    return;
-  }
-  if (
-    context.origin &&
-    (payload.deleteBranch !== undefined ||
-      payload.deleteWithoutRetentionIfMissing !== undefined ||
-      payload.expectedBranchName !== undefined)
-  ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Worktree removal options require a user confirmation.',
-    );
-    return;
-  }
-  const recoveryRequest = recovery?.success ? recovery.data : undefined;
-  if (recoveryRequest && recoveryRequest.intent !== (mode ?? 'archive')) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Invalid worktree recovery intent.',
-    );
-    return;
-  }
   // The discard description is user-only (CAN-5334); an agent gets the throw.
   const typedRefusal = payload.typedRefusal === true && !context.origin;
 
@@ -993,13 +939,9 @@ export async function handlePortalWorktreeArchive(
     const result = await withTypedArchiveRefusal(
       {
         typedRefusal,
-        intent: worktreeRemovalIntent(mode !== 'delete'),
         workspaceId,
         worktreeId,
         archiveTrigger: context.origin ? 'agent' : 'manual',
-        ...(recoveryRequest?.expectedCreatedAt
-          ? { expectedCreatedAt: recoveryRequest.expectedCreatedAt }
-          : {}),
       },
       () =>
         archiveWorktree(
@@ -1008,21 +950,6 @@ export async function handlePortalWorktreeArchive(
             worktreeId,
             archiveTrigger: context.origin ? 'agent' : 'manual',
             source: 'portal',
-            ...(recoveryRequest?.expectedCreatedAt
-              ? { expectedCreatedAt: recoveryRequest.expectedCreatedAt }
-              : {}),
-            ...(typeof payload.deleteBranch === 'boolean'
-              ? { deleteBranch: payload.deleteBranch }
-              : {}),
-            ...(typeof payload.deleteWithoutRetentionIfMissing === 'boolean'
-              ? {
-                  deleteWithoutRetentionIfMissing:
-                    payload.deleteWithoutRetentionIfMissing,
-                }
-              : {}),
-            ...(typeof payload.expectedBranchName === 'string'
-              ? { expectedBranchName: payload.expectedBranchName }
-              : {}),
             ...(mode !== 'delete' ? { lockAfterArchive: true } : {}),
           },
           { telemetryParent: 'inherit' },
@@ -1129,24 +1056,12 @@ export async function handlePortalWorktreeDiscardDescribe(
     return;
   }
   try {
-    const options = {
-      ...(target.retainedArchives ? { retainedArchives: true } : {}),
-      ...(isRecord(command.payload) && command.payload.recovery !== undefined
-        ? {
-            recovery: WorktreeRecoveryRequestSchema.parse(
-              command.payload.recovery,
-            ),
-          }
-        : {}),
-    };
     context.complete(
       command,
-      Object.keys(options).length > 0
-        ? await describeWorktreeDiscard(
-            target.workspaceId,
-            target.worktreeId,
-            options,
-          )
+      target.retainedArchives
+        ? await describeWorktreeDiscard(target.workspaceId, target.worktreeId, {
+            retainedArchives: true,
+          })
         : await describeWorktreeDiscard(target.workspaceId, target.worktreeId),
     );
   } catch (error) {

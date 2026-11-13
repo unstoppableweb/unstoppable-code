@@ -6,7 +6,6 @@ import { CanopyClientProvider } from '@canopy/app-state/CanopyClientProvider';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 // eslint-disable-next-line no-restricted-imports
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
-import { DesktopTerminalRuntime } from '@/client/DesktopTerminalRuntime';
 import {
   createDesktopCanopyClient,
   createDesktopCapabilities,
@@ -17,7 +16,7 @@ import {
   createCloudSidebarTask,
   retryCloudTask,
 } from '@/cloud-chats/useCloudCoworkSidebar';
-import { webCoreFilePath } from '@/lib/chat-authority';
+import { useCloudChatSelection } from '@/cloud-chats/cloud-chat-selection';
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
 import {
   disposeWorktreePanelHydration,
@@ -25,13 +24,11 @@ import {
 } from '@/lib/panels/persistence-bridge';
 import { setWorkspacePanelLayoutMode } from '@/lib/panels/workspace-layout-mode-actions';
 import { panelKindsUnavailableFor } from '@/lib/panels/scope-panel-kinds';
-import { listAddablePanels } from '@/lib/panels/registry';
 import { webCoreScopeCapabilities } from '@/lib/web-core-scope-capabilities';
 import { clearWebCoreModelCatalog } from '@/stores/chat/web-core/model-catalog';
 import { refreshChatScopeRevisioned } from '@/stores/chat/slices/revisioned';
 import { closeWebCoreChatBackend } from '@/stores/chat/web-core';
 import { trackSelectionSave } from '@/stores/chat/web-core/selection-saves';
-import { initClaudeModels } from '@canopy/desktop-shared/types';
 import { useChatStore } from '@/stores/chatStore';
 import { useExperimentalFeaturesStore } from '@/stores/experimentalFeaturesStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -39,10 +36,15 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { StandaloneChatPage } from '../StandaloneChatPage';
-import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { MessageImages } from '../../chat/MessageImages';
 import { cloudAttachmentPath } from '@/cloud-chats/cloud-chat-attachments';
-import { CLOUD_ATTACHMENT_MAX_BYTES } from '@canopy/protocol/cloud-attachments';
+
+let mockUseStandalonePage = false;
+jest.mock('@/cloud-chats/cloud-chat-routing', () => ({
+  get cloudChatsUseStandalonePage(): boolean {
+    return mockUseStandalonePage;
+  },
+}));
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -149,16 +151,9 @@ function recordingBridge(path: string): unknown {
       // As main answers the web core's not_found for a chat it doesn't hold.
       return uncreated(Reflect.get(Object(args[0]), 'worktreeId'))
         ? Promise.resolve({ ok: false, reason: 'rejected' })
-        : Reflect.get(Object(args[1]), 'name') === 'full.md'
-          ? // As main answers a refusal the web core explains (CAN-6369).
-            Promise.resolve({
-              ok: false,
-              reason: 'rejected',
-              message: 'Attachment storage is full.',
-            })
-          : (uploadGate ?? Promise.resolve()).then(() =>
-              uploadReply(args[0], args[1]),
-            );
+        : (uploadGate ?? Promise.resolve()).then(() =>
+            uploadReply(args[0], args[1]),
+          );
     return reply(REPLIES[path], path in REPLIES);
   };
   return new Proxy(call, {
@@ -259,7 +254,7 @@ function worktreeOf(params: Record<string, unknown> | undefined): unknown {
     : params?.worktreeId;
 }
 /** The model the snapshot names for the task's own chat. */
-let snapshotModel: string | undefined = 'cloud-model';
+let snapshotModel = 'cloud-model';
 /** The snapshot's revision, which a change made since moves past. */
 let snapshotRevision = 1;
 /** Holds each transcript page reply until released. */
@@ -325,9 +320,6 @@ Object.defineProperty(window, 'canopyCore', {
       method?: string;
       params?: Record<string, unknown>;
     }): Promise<unknown> => {
-      // Each task's chat is the task itself.
-      const scoped = worktreeOf(request.params);
-      const task = typeof scoped === 'string' ? scoped : 'wt-1';
       const ok = (value: unknown): Promise<unknown> =>
         Promise.resolve({ ok: true, value });
       if (request.kind === 'openStream') return ok({ subscriptionId: 's1' });
@@ -420,20 +412,18 @@ Object.defineProperty(window, 'canopyCore', {
             });
           return ok({
             workspaceId: 'ws-1',
-            worktreeId: task,
+            worktreeId: 'wt-1',
             revision: snapshotRevision,
             eventsCursor: { daemonEpoch: 'e1', sequence: snapshotRevision },
             tabs: {
-              activeTabId: task,
+              activeTabId: 'wt-1',
               items: [
                 {
-                  chatId: task,
+                  chatId: 'wt-1',
                   title: 'Brief',
                   kind: 'chat',
                   createdAt: CREATED_AT,
-                  ...(snapshotModel === undefined
-                    ? {}
-                    : { modelId: snapshotModel }),
+                  modelId: snapshotModel,
                 },
                 {
                   chatId: 'chat-2',
@@ -445,7 +435,7 @@ Object.defineProperty(window, 'canopyCore', {
             },
             archives: [],
             runtimeByChatId: {
-              [task]: { status: 'idle', queuedMessageIds: [] },
+              'wt-1': { status: 'idle', queuedMessageIds: [] },
               'chat-2': { status: 'idle', queuedMessageIds: [] },
             },
             queue: [],
@@ -677,61 +667,6 @@ Object.defineProperty(window, 'canopyCore', {
               retry: { kind: 'same_request' },
             },
           });
-        case 'worker.filesystem.roots.list':
-          return ok({
-            roots: [
-              {
-                fileRootId: 'workspace',
-                name: 'Workspace',
-                kind: 'workspace-root',
-              },
-            ],
-          });
-        case 'worker.filesystem.directory.list': {
-          // The root holds brief.md and docs/, which holds its own brief.md.
-          const entry = (
-            relativePath: string,
-            kind: 'file' | 'directory',
-          ): Record<string, unknown> => ({
-            name: relativePath.split('/').pop(),
-            relativePath,
-            kind,
-            isIgnored: false,
-            isIndexExcluded: false,
-            isSymlink: false,
-            hasChildren: kind === 'directory',
-          });
-          return ok({
-            entries:
-              request.params?.relativePath === 'docs'
-                ? [entry('docs/brief.md', 'file')]
-                : [entry('docs', 'directory'), entry('brief.md', 'file')],
-          });
-        }
-        case 'worker.filesystem.file.read':
-          return ok({
-            fileRootId: 'workspace',
-            relativePath: 'brief.md',
-            name: 'brief.md',
-            contentKind: 'text',
-            encoding: 'utf8',
-            content: 'Sandbox brief body\n',
-            sizeBytes: 19,
-            returnedBytes: 19,
-            truncated: false,
-            modifiedAt: CREATED_AT,
-            version: 'v1',
-          });
-        // docs/brief.md exists, so the sandbox refuses a move onto it.
-        case 'worker.filesystem.entry.move':
-          return Promise.resolve({
-            ok: false,
-            error: {
-              kind: 'already_exists',
-              message: 'The destination already exists.',
-              retry: { kind: 'never' },
-            },
-          });
         case 'core.chat.list':
           if (typeof newTask === 'string' && createdTasks.has(newTask))
             return ok({
@@ -751,11 +686,11 @@ Object.defineProperty(window, 'canopyCore', {
           return ok({
             items: [
               {
-                chatId: task,
+                chatId: 'wt-1',
                 title: 'Brief',
                 state: 'idle',
                 workspaceId: 'ws-1',
-                worktreeId: task,
+                worktreeId: 'wt-1',
                 revision: 1,
                 createdAt: CREATED_AT,
               },
@@ -764,7 +699,7 @@ Object.defineProperty(window, 'canopyCore', {
                 title: 'Notes',
                 state: 'idle',
                 workspaceId: 'ws-1',
-                worktreeId: task,
+                worktreeId: 'wt-1',
                 revision: 1,
                 createdAt: CREATED_AT,
               },
@@ -876,7 +811,6 @@ function renderPage(): void {
   act(() => {
     root.render(
       <CanopyClientProvider client={client}>
-        <DesktopTerminalRuntime />
         <StandaloneChatPage />
       </CanopyClientProvider>,
     );
@@ -922,12 +856,20 @@ function menuRows(): readonly string[] {
 }
 
 describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
-  it("opens the cowork page for the retired cloud chat page's id", () => {
-    act(() => useNavigationStore.getState().navigate('cloud-chat'));
-    expect(useNavigationStore.getState().activePage).toBe('chat');
+  it('opens on the cloud chat page while the switch is off', () => {
+    mockUseStandalonePage = false;
+    openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+    expect(useNavigationStore.getState().activePage).toBe('cloud-chat');
+    expect(useCloudChatSelection.getState().selectedChatKey).toBe(
+      'web-core:wt-1',
+    );
+    expect(useStandaloneChatStore.getState().activeChatProjectId).not.toBe(
+      'web-core:ws-1',
+    );
   });
 
   it('opens like a local task and sends main no cloud id', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -944,13 +886,6 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       container.querySelector('[data-testid="cowork-top-workspace-name"]')
         ?.textContent,
     ).toBe('Cloud research');
-    // The App Advisor sees which cloud task is open, as on the old cloud
-    // chat page (CAN-5974).
-    expect(useCurrentUiStateStore.getState().slices['cloudChat.open']).toEqual({
-      chatId: 'wt-1',
-      projectId: 'ws-1',
-      title: 'Draft the brief',
-    });
     expect(shown('chat-panel')).toBe(true);
     expect(shown('activity-panel')).toBe(true);
     // The scope has no local terminal: no panel and no drawer toggle.
@@ -1050,6 +985,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it("attaches files to a cloud task's chat through main's upload (R6)", async () => {
+    mockUseStandalonePage = true;
     // A draft, so the composer shows its send button.
     useChatStore
       .getState()
@@ -1094,28 +1030,18 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         .filter((call) => call.path === CLOUD_UPLOAD)
         .map((call) => call.args);
 
-    // A file the web core would refuse never reaches main, and an oversized
-    // one is refused before its bytes are read.
-    const oversized = new File(['x'], 'huge.pdf', { type: 'application/pdf' });
-    const readOversized = jest.fn(() => Promise.resolve(new ArrayBuffer(1)));
-    Object.defineProperties(oversized, {
-      size: { value: CLOUD_ATTACHMENT_MAX_BYTES + 1 },
-      arrayBuffer: { value: readOversized },
-    });
+    // A file the web core would refuse never reaches main.
     await pick([
       new File([''], 'empty.md', { type: 'text/markdown' }),
       new File(['MZ'], 'tool.exe', { type: 'application/x-msdownload' }),
-      oversized,
     ]);
     expect(uploads()).toEqual([]);
-    expect(readOversized).not.toHaveBeenCalled();
     // The composer says why, as the web composer does.
     const problems = (): string | null | undefined =>
       container.querySelector('[data-testid="chat-input-attachment-problems"]')
         ?.textContent;
     expect(problems()).toContain('empty.md: Attachment is empty');
     expect(problems()).toContain('tool.exe: Attachment type is not supported');
-    expect(problems()).toContain('huge.pdf: Attachment is too large');
 
     // A file it takes uploads to the task's chat, under its web core ids,
     // and shows as the composer's attachment.
@@ -1150,10 +1076,6 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(problems()).toContain(
       "moved.md: Couldn't read it. It may have moved",
     );
-    // A file the web core refuses says why, in the web core's words, and
-    // is not attached (CAN-6369).
-    await pick([new File(['# Full'], 'full.md', { type: 'text/markdown' })]);
-    expect(problems()).toContain('full.md: Attachment storage is full.');
     expect(
       Array.from(
         container.querySelectorAll('[data-testid="attachment-pill"]'),
@@ -1187,8 +1109,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     release();
     uploadGate = null;
     await settle();
-    // Eight that uploaded, and full.md, which reached main and was refused.
-    expect(uploads()).toHaveLength(9);
+    expect(uploads()).toHaveLength(8);
     expect(send()?.disabled).toBe(false);
     expect(problems()).toContain('Attach up to eight files per message');
     expect(problems()).toContain('tool.exe: Attachment type is not supported');
@@ -1255,6 +1176,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         key === CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key ||
         key === CLIENT_FEATURE_FLAGS.canopyDesktopSuggestedPrompts.key,
     });
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1272,6 +1194,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it("picks a cloud chat's skills from its web core catalog and saves them there", async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1328,6 +1251,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("opens a cloud chat's picker on its saved selection and lists its connected MCP servers", async () => {
     savedSelection = ['skill:curated/review'];
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1359,6 +1283,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('opens the cloud picker on a tab this window created and saves to the chat the web core minted', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1414,6 +1339,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it('offers fast mode for a cloud model that runs it without effort levels', async () => {
     cloudModelLevels = null;
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1438,6 +1364,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('keeps a cloud model pick shown while a snapshot refresh lands during the change (CAN-6328)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1492,6 +1419,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('keeps the newest queued cloud model pick shown through a refresh while an older one is in flight (CAN-6345)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1541,6 +1469,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('rolls a refused cloud model pick back even when a refresh lands around the refusal (CAN-6345)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1595,6 +1524,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('takes a newer model another client set once a refresh after the pick reads it (CAN-6345)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1640,6 +1570,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it("reopens a cloud chat's picker on the selection a save in flight writes, so a second save keeps both (CAN-6331)", async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1722,6 +1653,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('withdraws a cloud send that Stop catches waiting for a selection save (CAN-6335)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -1796,6 +1728,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     ).length;
 
   it('opens a new cloud task at once and sends its first message once the web core creates it (CAN-6098)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     await connectCowork();
     let created = (): void => undefined;
@@ -1852,6 +1785,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('hands a waiting send its draft back when the web core refuses a new task, and retries it under the same id (CAN-6098)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     await connectCowork();
     createRefusal = 'This project is full.';
@@ -1910,6 +1844,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('applies a model picked while a new cloud task is created once it exists, and drops one when the create is refused (CAN-6098)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     await connectCowork();
     /** Opens a new task through the sidebar with its create held. */
@@ -2009,6 +1944,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('opens the cloud plugins picker on a new cloud task once the web core creates it, and saves to it (CAN-6098)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     await connectCowork();
     let created = (): void => undefined;
@@ -2072,6 +2008,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('uploads a file picked while a new cloud task is created once the web core creates it (CAN-6098)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     await connectCowork();
     let created = (): void => undefined;
@@ -2138,6 +2075,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it("sends to a new cloud task the web core lists while its create's reply is lost, and keeps it created (CAN-6098)", async () => {
+    mockUseStandalonePage = true;
     renderPage();
     await connectCowork();
     loseCreateReply = true;
@@ -2209,70 +2147,8 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
   });
 
-  it("never shows this computer's default model on a cloud chat the web core names none for (CAN-6365)", async () => {
-    snapshotModel = undefined;
-    // This computer runs its default model, so it can stamp it on a chat.
-    initClaudeModels([{ id: 'opus[1m]', label: 'Opus' }]);
-    // The chat's transcript is still on its way, so it reads as empty.
-    let pages = (): void => undefined;
-    pageGate = new Promise<void>((resolve) => {
-      pages = resolve;
-    });
-    renderPage();
-    act(() => {
-      openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
-    });
-    await settle();
-    // The window fills an empty local chat with its default model; a cloud
-    // chat's model is the web core's.
-    useChatStore.setState({
-      selectedWorktree: {
-        projectId: 'web-core:ws-1',
-        worktreeId: 'web-core:wt-1',
-      },
-    });
-    await act(() => useChatStore.getState().syncActiveEmptyTabToDefaults());
-    // Nor does a chat this window adds to the task.
-    act(() => {
-      useChatStore.getState().createTab({
-        projectId: 'web-core:ws-1',
-        worktreeId: 'web-core:wt-1',
-      });
-    });
-    await settle();
-    initClaudeModels([]);
-    const added = (
-      useChatStore.getState().worktreeChats['web-core:ws-1/web-core:wt-1']
-        ?.tabs ?? []
-    ).filter(
-      (tab) => tab.id !== 'web-core:wt-1' && tab.id !== 'web-core:chat-2',
-    );
-    expect(added.map((tab) => tab.model)).toEqual([undefined]);
-    pageGate = null;
-    pages();
-    await settle();
-    const tabs =
-      useChatStore.getState().worktreeChats['web-core:ws-1/web-core:wt-1']
-        ?.tabs ?? [];
-    expect(
-      tabs
-        .filter(
-          (tab) => tab.id === 'web-core:wt-1' || tab.id === 'web-core:chat-2',
-        )
-        .map((tab) => [tab.id, tab.model]),
-    ).toEqual([
-      ['web-core:wt-1', undefined],
-      ['web-core:chat-2', undefined],
-    ]);
-    expect(
-      Array.from(
-        container.querySelectorAll('button[aria-label^="Select model"]'),
-        (button) => button.getAttribute('aria-label'),
-      ),
-    ).toEqual(['Select model, current model Model']);
-  });
-
   it('keeps the draft and says why when the web core refuses a cloud send, and shows nothing as sent (CAN-6364)', async () => {
+    mockUseStandalonePage = true;
     const draft = [
       { type: 'paragraph' as const, children: [{ text: 'Book Studio B.' }] },
     ];
@@ -2386,6 +2262,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   /** Sends 'Book Studio B.' from the task's own chat on the cowork page. */
   const sendFromCoworkPage = async (): Promise<void> => {
+    mockUseStandalonePage = true;
     useChatStore
       .getState()
       .saveTabDraft('web-core:wt-1', [
@@ -2434,6 +2311,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('keeps a refused cloud send in the transcript when the composer could not take it back (CAN-6364)', async () => {
+    mockUseStandalonePage = true;
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -2467,172 +2345,6 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(
       container.querySelector('[data-testid="chat-input-send-refused"]'),
     ).toBeNull();
-  });
-
-  it('mounts the sandbox files and terminals, and sends main no cloud id (R9, R10)', async () => {
-    useFeatureFlagsStore.setState({
-      isEnabled: (key) =>
-        key === CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key ||
-        key === CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key,
-    });
-    // Its own task, so no earlier case's chat state carries over.
-    cloudCoworkStore.setState((state) => ({
-      tasksByProject: {
-        'web-core:ws-1': [
-          ...(state.tasksByProject['web-core:ws-1'] ?? []),
-          {
-            key: 'web-core:ws-1:wt-2',
-            workspaceId: 'ws-1',
-            worktreeId: 'wt-2',
-            title: 'Edit the brief',
-            state: 'idle',
-            updatedAt: CREATED_AT,
-          },
-        ],
-      },
-    }));
-    renderPage();
-    act(() => {
-      openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-2');
-    });
-    await settle();
-    expect(shown('workspace-layout-terminal-toggle')).toBe(true);
-
-    const worktreeKey = 'web-core:ws-1/web-core:wt-2';
-    const [groupId] = Object.keys(
-      usePanelLayoutStore.getState().layouts[worktreeKey]?.groups ?? {},
-    );
-    act(() => {
-      usePanelLayoutStore
-        .getState()
-        .addTab(worktreeKey, groupId ?? '', 'file-explorer');
-    });
-    await settle();
-    // The explorer lists the sandbox through the web core, without the row
-    // actions that hand a file to this computer.
-    expect(container.textContent).toContain('brief.md');
-    expect(coreRequests).toContain('worker.filesystem.directory.list');
-    expect(shown('files-tree-row-open-in-file-manager')).toBe(false);
-
-    // The menu keeps what the sandbox serves and drops what hands the file
-    // to this computer, and mentions until the composer takes them (R7).
-    act(() => {
-      container
-        .querySelector('[data-file-tree-id="workspace:brief.md"]')
-        ?.dispatchEvent(
-          new MouseEvent('contextmenu', {
-            bubbles: true,
-            cancelable: true,
-            clientX: 10,
-            clientY: 10,
-          }),
-        );
-    });
-    await settle();
-    // The menu is portalled to the document.
-    const inMenu = (id: string): boolean =>
-      document.querySelector(`[data-testid="files-tree-action-${id}"]`) !==
-      null;
-    expect(inMenu('menu')).toBe(true);
-    for (const kept of ['rename', 'delete', 'cut'])
-      expect([kept, inMenu(kept)]).toEqual([kept, true]);
-    for (const hidden of [
-      'open-external',
-      'open-in-file-manager',
-      'copy-entry',
-      'copy-absolute-path',
-      'send-to-chat',
-    ])
-      expect([hidden, inMenu(hidden)]).toEqual([hidden, false]);
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
-      );
-    });
-    await settle();
-
-    // A move never replaces what is already at its destination (CAN-6282):
-    // docs/ holds a brief.md, so the sandbox refuses cut and paste, and
-    // drag, and the explorer shows why.
-    const row = (relativePath: string): HTMLElement => {
-      const found = container.querySelector<HTMLElement>(
-        `[data-file-tree-id="workspace:${relativePath}"]`,
-      );
-      if (!found) throw new Error(`No ${relativePath} row`);
-      return found;
-    };
-    const refusal = 'A file or folder named brief.md already exists there.';
-    const key = (element: HTMLElement, letter: string): void => {
-      element.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: letter,
-          metaKey: true,
-          bubbles: true,
-        }),
-      );
-    };
-    act(() => {
-      key(row('brief.md'), 'x');
-    });
-    act(() => {
-      key(row('docs'), 'v');
-    });
-    await settle();
-    expect(container.textContent).toContain(refusal);
-    expect(coreRequests).toContain('worker.filesystem.entry.move');
-
-    coreRequests.length = 0;
-    const drag = (element: HTMLElement, type: string): void => {
-      const event = new Event(type, { bubbles: true, cancelable: true });
-      Object.defineProperty(event, 'dataTransfer', {
-        value: {
-          effectAllowed: 'all',
-          dropEffect: 'none',
-          setData: (): void => {},
-          getData: (): string => '',
-        },
-      });
-      element.dispatchEvent(event);
-    };
-    act(() => {
-      drag(row('brief.md'), 'dragstart');
-      drag(row('docs'), 'dragover');
-      drag(row('docs'), 'drop');
-    });
-    await settle();
-    expect(coreRequests).toContain('worker.filesystem.entry.move');
-    expect(container.textContent).toContain(refusal);
-    expect(row('brief.md')).toBeTruthy();
-
-    act(() => {
-      useChatStore.getState().openFileTab(
-        {
-          absolutePath: webCoreFilePath({
-            chatId: 'wt-2',
-            fileRootId: 'workspace',
-            relativePath: 'brief.md',
-          }),
-          filename: 'brief.md',
-        },
-        { projectId: 'web-core:ws-1', worktreeId: 'web-core:wt-2' },
-      );
-    });
-    await settle();
-    // The viewer reads it through the web core too.
-    expect(coreRequests).toContain('worker.filesystem.file.read');
-    expect(container.textContent).toContain('Sandbox brief body');
-
-    act(() => {
-      container
-        .querySelector<HTMLElement>(
-          '[data-testid="workspace-layout-terminal-toggle"]',
-        )
-        ?.click();
-    });
-    await settle();
-    // The drawer's terminal is a durable shell in the chat's sandbox.
-    expect(coreRequests).toContain('worker.terminal.create');
-    expect(callsCarryingWebCoreIds()).toEqual([]);
   });
 
   it('a local scope keeps every composer and tab control a cloud scope hides', () => {
@@ -2669,52 +2381,5 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(panelKindsUnavailableFor(webCoreScopeCapabilities(local))).toEqual(
       expect.arrayContaining(['terminal', 'browser', 'ledger', 'cost']),
     );
-    // The sandbox's files always; its terminals once the desktop binds them.
-    const withTerminals = webCoreScopeCapabilities(local, {
-      durableTerminals: true,
-    });
-    expect(withTerminals).toBe(
-      webCoreScopeCapabilities(local, { durableTerminals: true }),
-    );
-    expect(withTerminals.fileSystemAccess).toBe('read-write');
-    expect(withTerminals.scriptActions === true).toBe(false);
-    expect(panelKindsUnavailableFor(withTerminals)).not.toEqual(
-      expect.arrayContaining(['terminal']),
-    );
-    expect(panelKindsUnavailableFor(withTerminals)).not.toEqual(
-      expect.arrayContaining(['file-explorer']),
-    );
-    expect(
-      panelKindsUnavailableFor({ ...local, fileSystemAccess: 'none' }),
-    ).toEqual(['file-explorer', 'file-diff']);
-  });
-
-  it('offers a cloud task only the Activity it has data for, and its Activity shows it (CAN-6430, CAN-6431)', async () => {
-    renderPage();
-    act(() => {
-      openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
-    });
-    await settle();
-    const cards = (worktreeKey: string): string[] =>
-      listAddablePanels(worktreeKey)
-        .filter((entry) => entry.kind === 'activity-card')
-        .map((entry) => entry.instance?.sectionId ?? '');
-    // Only the sections the web core feeds: no Cost (no cost insights), no
-    // Summary, MCP servers, Notes, Prompts, Attachments or Memory, which
-    // would read this computer with the cloud task's ids.
-    expect(cards('web-core:ws-1/web-core:wt-1').sort()).toEqual([
-      'background-processes',
-      'todo',
-    ]);
-    // With no agent tasks yet, the Activity tab says so rather than staying
-    // blank.
-    act(() => {
-      container
-        .querySelector<HTMLElement>('[data-testid="panel-tab-panel-activity"]')
-        ?.click();
-    });
-    await settle();
-    expect(shown('activity-list-empty')).toBe(true);
-    expect(callsCarryingWebCoreIds()).toEqual([]);
   });
 });

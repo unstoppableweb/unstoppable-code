@@ -251,6 +251,15 @@ export async function dispatchPipelineEditorChatMessage(
       (): PersistedChatDispatchMetadata =>
         ({}) satisfies PersistedChatDispatchMetadata,
     );
+    const runtime = await resolveAgentModelRuntime({
+      projectId: request.projectId,
+      model: selectedModel,
+      systemPromptAppend,
+      pluginSelections: selectedPluginSelections,
+      providerType: selectedProviderType,
+    });
+    const model = runtime.runtimeModel;
+    const providerType = runtime.providerType;
     const executionHarness =
       // A cross-lane substitution invalidates every remembered harness: the
       // model that will actually run is the substituted one, so the harness
@@ -267,20 +276,7 @@ export async function dispatchPipelineEditorChatMessage(
       (persistedDispatchMetadata.model
         ? getExecutionHarnessForModel(persistedDispatchMetadata.model)
         : undefined) ??
-      getExecutionHarnessForModel(selectedModel);
-    if (!executionHarness)
-      throw new Error('The selected model has no execution harness.');
-
-    const runtime = await resolveAgentModelRuntime({
-      projectId: request.projectId,
-      model: selectedModel,
-      systemPromptAppend,
-      pluginSelections: selectedPluginSelections,
-      providerType: selectedProviderType,
-      executionHarness,
-    });
-    const model = runtime.runtimeModel;
-    const providerType = runtime.providerType;
+      runtime.executionHarness;
     if (
       executionHarness === 'cursor' ||
       runtime.executionHarness === 'cursor' ||

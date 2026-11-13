@@ -25,11 +25,6 @@ import type {
   PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared';
-import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
-import { toAppError } from '@canopy/protocol/app-errors';
-import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
-import type { InlineFailure } from '@/lib/inline-app-error';
-import { appAdvisorSaveFailure } from './appAdvisorSaveFailure';
 import { AutoArchiveSettingsControl } from '@canopy/ui-shared';
 import { Button, TextArea, TextInput } from '@canopy/ui-shared/components';
 import {
@@ -81,7 +76,7 @@ export function AppAdvisorSettingsModal({
   );
 
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -199,10 +194,9 @@ export function AppAdvisorSettingsModal({
         );
       }
     } catch (error) {
-      const failure = appAdvisorSaveFailure(
-        toAppError(resolveClientAppError(error)),
+      setSaveError(
+        error instanceof Error ? error.message : 'Failed to save settings.',
       );
-      if (failure) setSaveError(failure);
     } finally {
       setSaving(false);
     }
@@ -385,28 +379,21 @@ export function AppAdvisorSettingsModal({
       </div>
 
       {(isDirty || saveError) && (
-        <div className="flex flex-col gap-3 border-t px-6 py-3">
-          {/* A failed save sits above the footer's action in the shared
-              banner, as in the portal's Orchestrator settings. */}
-          <DesktopErrorBanner
-            className=""
-            error={saveError?.error}
-            {...(saveError?.details === undefined
-              ? {}
-              : { details: saveError.details })}
-            testId="app-advisor-settings-save-error"
-          />
-          <div className="flex items-center justify-end">
-            <Button
-              variant="primary"
-              size="compact"
-              onClick={() => void handleSave()}
-              disabled={saving || !isDirty}
-              data-testid="app-advisor-settings-save"
-            >
-              {saving ? 'Saving...' : 'Save'}
-            </Button>
-          </div>
+        <div className="flex items-center justify-end gap-3 border-t px-6 py-3">
+          {saveError && (
+            <span className="min-w-0 flex-1 truncate text-xs text-destructive">
+              {saveError}
+            </span>
+          )}
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={() => void handleSave()}
+            disabled={saving || !isDirty}
+            data-testid="app-advisor-settings-save"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
         </div>
       )}
     </DialogModal>

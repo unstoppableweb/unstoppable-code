@@ -21,10 +21,8 @@ const config = {
     '**/__scratch__/**/*.test.tsx',
   ],
   // Tests spawn `git` in temp repositories; drop inherited repository
-  // variables (set when run from a Git hook) and turn off the developer's
-  // commit signing before any worker forks.
+  // variables (set when run from a Git hook) before any worker forks.
   globalSetup: '<rootDir>/scripts/lib/jest-git-env-isolation.mjs',
-  globalTeardown: '<rootDir>/scripts/lib/jest-git-env-teardown.mjs',
   setupFiles: [
     '<rootDir>/scripts/lib/jest-web-encoding-setup.cjs',
     '<rootDir>/apps/desktop-app/src/__tests__/jestDataDirIsolation.ts',
@@ -50,8 +48,6 @@ const config = {
     '^@anthropic-ai/claude-agent-sdk$':
       '<rootDir>/apps/desktop-app/src/__tests__/claudeAgentSdkMock.ts',
     '^electron$': '<rootDir>/apps/desktop-app/src/__tests__/electronMock.ts',
-    '^electron-log/main(\\.js)?$':
-      '<rootDir>/apps/desktop-app/src/__tests__/jestElectronLog.ts',
     '^react-diff-viewer-continued$':
       '<rootDir>/apps/desktop-app/src/__tests__/reactDiffViewerMock.tsx',
     '^mammoth$': '<rootDir>/node_modules/mammoth/mammoth.browser.js',

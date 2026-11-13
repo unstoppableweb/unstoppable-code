@@ -63,17 +63,13 @@ const WINDOW_CAPABILITIES: ReadonlySet<string> = new Set([
   'cloudCapabilityLinks',
 ]);
 
-/**
- * What the web core serves for a cloud chat (CAN-6175 R5, R6), and its
- * sandbox's files (R9). Its terminals (R10) follow their flag, off here.
- */
+/** What the web core serves for a cloud chat (CAN-6175 R5, R6). */
 const SERVED_BY_WEB_CORE: ReadonlySet<string> = new Set([
   'chatThinkingLevel',
   'chatFastMode',
   'chatPluginSelections',
   // Uploads go through main's web core connection (R6).
   'chatAttachments',
-  'fileSystemAccess',
 ]);
 
 function grants(value: unknown): boolean {
@@ -157,12 +153,10 @@ describe('desktop chat scope capabilities (CAN-6175)', () => {
       .map(([key]) => key);
     expect(cloud).toBeDefined();
     expect(leaked).toEqual([]);
-    expect(cloud?.fileSystemAccess).toBe('read-write');
-    expect(cloud?.terminalPty).toBe(false);
     // A cloud chat still sets this computer's skills, plugins and MCP
     // servers beside its catalog.
     expect(cloud?.cloudCapabilityLinks).toBe(true);
     for (const key of SERVED_BY_WEB_CORE)
-      expect([key, grants(Reflect.get(cloud ?? {}, key))]).toEqual([key, true]);
+      expect([key, Reflect.get(cloud ?? {}, key)]).toEqual([key, true]);
   });
 });

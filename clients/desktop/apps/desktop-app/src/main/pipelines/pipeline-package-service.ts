@@ -380,9 +380,7 @@ function providerForConfiguredModel(
   // with, so they stay the analyzed (confirmed) model.
   if (alias && !alias.defaults) return undefined;
   const concreteModel =
-    alias?.defaults &&
-    'base' in alias.defaults &&
-    alias.defaults.base !== undefined
+    alias?.defaults && 'base' in alias.defaults
       ? alias.defaults.base
       : alias?.defaults && 'agent_id' in alias.defaults
         ? alias.defaults.agent_id
@@ -3133,31 +3131,6 @@ export async function repinAutomationCapabilityPackageContent(
     expected,
     next,
   );
-}
-
-/**
- * CAN-6065: gives `toAutomationId` the package install `fromAutomationId`
- * has, when a workflow's installed schedule hands it to another. Resolves to
- * whether `to` holds it, read back; with nothing to copy, `to` holds what
- * `from` did. `from`'s own install stays until its record is deleted.
- */
-export async function copyAutomationCapabilityPackageInstall(
-  fromAutomationId: string,
-  toAutomationId: string,
-): Promise<boolean> {
-  const storePath = getPipelinePackageInstallStorePath();
-  const to = { kind: 'automation' as const, localAutomationId: toAutomationId };
-  try {
-    const install = await findCapabilityPackageInstallByOwner(storePath, {
-      kind: 'automation',
-      localAutomationId: fromAutomationId,
-    });
-    if (!install) return true;
-    await upsertCapabilityPackageInstall(storePath, { ...install, owner: to });
-    return (await findCapabilityPackageInstallByOwner(storePath, to)) !== null;
-  } catch {
-    return false;
-  }
 }
 
 /**

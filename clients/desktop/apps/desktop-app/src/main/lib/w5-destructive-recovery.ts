@@ -458,7 +458,7 @@ async function unreadableJournalEntry(
     },
   );
 }
-export function journalDirectoryUnreadable(): W5CommitRefusedError {
+function journalDirectoryUnreadable(): W5CommitRefusedError {
   return new W5CommitRefusedError(
     'recovery-required',
     LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
@@ -751,7 +751,7 @@ export async function readInFlightWorktreeDestructiveOperations(
   }
 }
 
-export async function readBlockingDestructiveRecoveries(
+async function readBlockingDestructiveRecoveries(
   workspaceId: string,
   worktreeId?: string,
   includeCleanup = false,
@@ -1300,38 +1300,6 @@ async function assertChildArchiveResumable(
     throw recoveryRequired(previous, 'child-archive-resumable');
   if (!(await areOwnedPathsUnreplaced(previous)))
     throw recoveryRequired(previous, 'child-archive-resumable');
-}
-
-/** The journal's project directory, including its incarnation marker, still agrees. */
-export async function isRecoveryProjectUnreplaced(
-  record: DestructiveRecoveryRecord,
-): Promise<boolean> {
-  return isRecordedProjectDirectory(
-    await projectDirectoryIdentity(record.workspaceId),
-    record.directoryIdentity,
-  );
-}
-
-/** Read-only projection of standalone takeover; execution repeats these checks. */
-export async function canAdmitInterruptedArchive(
-  record: DestructiveRecoveryRecord,
-  input: {
-    operation: 'worktree-archive' | 'worktree-delete';
-    worktreeId: string;
-    createdAt: string;
-  },
-): Promise<boolean> {
-  if (!canResumeInterruptedArchive(record)) return false;
-  try {
-    await assertChildArchiveResumable(
-      record,
-      input,
-      await projectDirectoryIdentity(record.workspaceId),
-    );
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Only a verified committed archive can re-enter its idempotent cleanup tail. */

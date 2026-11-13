@@ -56,6 +56,8 @@ const AGENT_ORIGIN_NOTICE =
 const AGENT_ORIGIN_DUPLICATE = 'Duplicate the workflow to run it as yours.';
 const AGENT_ORIGIN_SAVE_FIRST =
   'Save your changes, then duplicate the workflow to run it as yours.';
+const LAST_SCHEDULE_BOUND =
+  'Delete the workflow to remove its last schedule: its schedule carries what this workflow was installed or granted with.';
 const NEW_SCHEDULE = 'New schedule';
 const SAVING_SCHEDULE = 'Saving this schedule…';
 /** Weekdays at 9:00 AM, the schedule a new one starts with. */
@@ -187,11 +189,6 @@ export interface UseWorkflowSchedulesOptions {
   readonly pipelines: PipelinesPageListApi;
   /** The page's Duplicate (phase 04), which opens the copy. */
   readonly onDuplicateWorkflow?: () => void;
-  /**
-   * Opens the page's Delete confirmation (CAN-6065): Remove on the last
-   * schedule of an installed workflow, which can't stay without it.
-   */
-  readonly onDeleteWorkflow?: () => void;
   /** The pipeline has unsaved edits, which a Duplicate wouldn't carry. */
   readonly pipelineDirty: boolean;
   /** The schedule an opener asked for, shown expanded (phase 07). */
@@ -206,7 +203,6 @@ export function useWorkflowSchedules({
   automations,
   pipelines,
   onDuplicateWorkflow,
-  onDeleteWorkflow,
   pipelineDirty,
   focusScheduleId,
 }: UseWorkflowSchedulesOptions): WorkflowSchedulesApi {
@@ -224,11 +220,9 @@ export function useWorkflowSchedules({
   const isWorkflowPage =
     pipelineId !== undefined &&
     (workflowPage !== undefined || records.length > 0);
-  // The grant is the pipeline's (CAN-6065), so it holds after its first
-  // schedule is removed.
-  const agentGranted =
-    workflowPage?.agentGranted === true ||
-    records.some((record) => record.ownedPipeline?.agentGranted === true);
+  const agentGranted = records.some(
+    (record) => record.ownedPipeline?.agentGranted === true,
+  );
 
   // New rows not saved yet, keyed by their own key.
   const [newRows, setNewRows] = useState<
@@ -399,6 +393,13 @@ export function useWorkflowSchedules({
     setRowError(null);
   }, [discardDrafts]);
 
+  const singleSchedule = workflowPage?.singleSchedule;
+  const scheduleCount = records.length + newRows.length;
+  const addBlockedReason =
+    singleSchedule !== undefined && scheduleCount >= 1
+      ? SINGLE_SCHEDULE_REASONS[singleSchedule.reason]
+      : undefined;
+
   const addSchedule = useCallback((): void => {
     if (!info) return;
     nextKey.current += 1;
@@ -494,6 +495,12 @@ export function useWorkflowSchedules({
               ? rowError.message
               : (draft.error?.message ?? null)
           }
+          lastBound={
+            draft.activity !== null &&
+            records.length === 1 &&
+            (agentGranted ||
+              draft.activity.installedFrom?.capabilityPackage !== undefined)
+          }
           running={
             draft.activity !== null &&
             automations.runningActivityId === draft.activity.id
@@ -511,33 +518,24 @@ export function useWorkflowSchedules({
                 setRowError({ key: draft.key, message: response.error });
             });
           }}
+          canDuplicate={
+            draft.activity !== null &&
+            draft.activity.installedFrom?.capabilityPackage === undefined
+          }
           onDuplicate={(): void => {
             if (draft.activity) void duplicateSchedule(draft.activity);
           }}
-          onRemove={(): void => {
-            // An installed workflow can't stay without its last schedule,
-            // whose record holds the install: Remove deletes the workflow,
-            // after the page's own confirmation.
-            if (
-              onDeleteWorkflow !== undefined &&
-              draft.activity?.installedFrom?.capabilityPackage !== undefined &&
-              records.length === 1
-            ) {
-              onDeleteWorkflow();
-              return;
-            }
-            void removeSchedule(draft);
-          }}
+          onRemove={(): void => void removeSchedule(draft)}
         />
       );
     },
     [
+      agentGranted,
       automations,
       awaitingKeys,
       declared,
       drafts,
       duplicateSchedule,
-      onDeleteWorkflow,
       projects,
       records.length,
       removeSchedule,
@@ -607,7 +605,8 @@ export function useWorkflowSchedules({
         onExpand: setExpandedKey,
         onToggle: (row, next): void => toggle(row.key, next),
         renderBody,
-        onAdd: addSchedule,
+        ...(addBlockedReason === undefined ? { onAdd: addSchedule } : {}),
+        ...(addBlockedReason !== undefined ? { addBlockedReason } : {}),
       }
     : undefined;
 
@@ -631,6 +630,13 @@ export function useWorkflowSchedules({
   };
 }
 
+/** Why a workflow can't have another schedule (phase 04). */
+const SINGLE_SCHEDULE_REASONS = {
+  orchestrator_prompt: 'Orchestrator workflows can have one schedule.',
+  agent_grant: 'Workflows an agent created can have one schedule.',
+  installed_package: 'Installed workflows can have one schedule.',
+} as const;
+
 interface ScheduleBodyProps {
   readonly draft: ScheduleDraft;
   readonly projects: ReturnType<typeof useProjectsStore.getState>['projects'];
@@ -638,11 +644,14 @@ interface ScheduleBodyProps {
   readonly declaredInputs: readonly string[];
   readonly requiredInputs: ReadonlySet<string>;
   readonly error: string | null;
+  /** The last schedule of an installed or granted workflow. */
+  readonly lastBound: boolean;
   readonly running: boolean;
   readonly onChange: (next: FormState) => void;
   readonly onMount: (next: FormState) => void;
   readonly onRunNow: () => void;
-  /** Another schedule of this workflow, off until it's reviewed. */
+  /** Absent on an installed workflow, whose copy would lose its package. */
+  readonly canDuplicate: boolean;
   readonly onDuplicate: () => void;
   readonly onRemove: () => void;
 }
@@ -655,10 +664,12 @@ function ScheduleBody({
   declaredInputs,
   requiredInputs,
   error,
+  lastBound,
   running,
   onChange,
   onMount,
   onRunNow,
+  canDuplicate,
   onDuplicate,
   onRemove,
 }: ScheduleBodyProps): JSX.Element {
@@ -741,27 +752,32 @@ function ScheduleBody({
             >
               Run now
             </Button>
-            <Button
-              variant="secondary"
-              size="compact"
-              onClick={onDuplicate}
-              data-testid="workflow-schedule-duplicate"
-            >
-              Duplicate
-            </Button>
+            {canDuplicate ? (
+              <Button
+                variant="secondary"
+                size="compact"
+                onClick={onDuplicate}
+                data-testid="workflow-schedule-duplicate"
+              >
+                Duplicate
+              </Button>
+            ) : null}
           </>
         ) : null}
         <Button
           variant="ghost"
           size="compact"
           // A new row's create can't be called back once sent.
-          disabled={draft.deleting || draft.saving}
+          disabled={lastBound || draft.deleting || draft.saving}
           onClick={onRemove}
           data-testid="workflow-schedule-remove"
         >
           Remove
         </Button>
       </div>
+      {lastBound ? (
+        <p className="text-xs text-pretty fg-tertiary">{LAST_SCHEDULE_BOUND}</p>
+      ) : null}
     </div>
   );
 }

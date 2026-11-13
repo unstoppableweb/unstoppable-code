@@ -60,8 +60,6 @@ import {
   SAVE_MEMORY_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   READ_MEMORY_DESCRIPTION,
-  SEARCH_CHATS_DESCRIPTION,
-  READ_CHAT_EXCERPT_DESCRIPTION,
   SHOW_FILES_DESCRIPTION,
   SHOW_VISUAL_DESCRIPTION,
   RESPOND_TO_FILE_COMMENT_DESCRIPTION,
@@ -96,8 +94,6 @@ import {
   saveMemoryJsonSchema,
   searchMemoryJsonSchema,
   readMemoryJsonSchema,
-  searchChatsJsonSchema,
-  readChatExcerptJsonSchema,
   showFilesJsonSchema,
   showVisualJsonSchema,
   previewVisualJsonSchema,
@@ -230,14 +226,6 @@ export const CLAUDE_TERMINAL_TOOL_DEFINITIONS: Readonly<
   search_memory: {
     description: SEARCH_MEMORY_DESCRIPTION,
     inputSchema: searchMemoryJsonSchema,
-  },
-  search_chats: {
-    description: SEARCH_CHATS_DESCRIPTION,
-    inputSchema: searchChatsJsonSchema,
-  },
-  read_chat_excerpt: {
-    description: READ_CHAT_EXCERPT_DESCRIPTION,
-    inputSchema: readChatExcerptJsonSchema,
   },
   read_memory: {
     description: READ_MEMORY_DESCRIPTION,

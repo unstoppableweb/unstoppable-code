@@ -67,16 +67,13 @@ function parseRegistry(raw: string): PlanExploreRegistryFile {
 }
 
 /**
- * In-memory cache of the parsed registry keyed by path and last-modified
+ * In-memory cache of the parsed registry keyed by the file's last-modified
  * time (ms). `resolveWorktreeCwd` is synchronous and may be called per turn, so
  * the synchronous read below avoids re-parsing the (tiny) registry file unless
  * it has actually changed on disk.
  */
-let cachedRegistry: {
-  filePath: string;
-  mtimeMs: number;
-  file: PlanExploreRegistryFile;
-} | null = null;
+let cachedRegistry: { mtimeMs: number; file: PlanExploreRegistryFile } | null =
+  null;
 
 async function readRegistry(): Promise<PlanExploreRegistryFile> {
   try {
@@ -149,26 +146,18 @@ export async function getPlanExploreTarget(
   expected?: PlanExploreTargetRef,
 ): Promise<PlanExploreTargetRef | null> {
   const file = await readRegistry();
-  const target = ownTarget(file, planId);
+  const target = file.targets[planId] ?? null;
   if (target && expected && !isSamePlanExploreScope(target, expected)) {
     return null;
   }
   return target;
 }
 
-function ownTarget(
-  file: PlanExploreRegistryFile,
-  planId: string,
-): PlanExploreTargetRef | null {
-  return Object.prototype.hasOwnProperty.call(file.targets, planId)
-    ? file.targets[planId]
-    : null;
-}
-
 /**
  * Synchronous registry read for `resolveWorktreeCwd`, which is synchronous.
  * Reads the tiny registry file via `readFileSync` and caches the parsed result
- * keyed by path and mtime so another data root never reuses the cached target.
+ * keyed by the file's mtime so repeated cwd resolutions avoid re-reading and
+ * re-parsing unless the registry changed.
  */
 export function getPlanExploreTargetSync(
   planId: string,
@@ -182,21 +171,17 @@ export function getPlanExploreTargetSync(
     return null;
   }
 
-  if (
-    !cachedRegistry ||
-    cachedRegistry.filePath !== filePath ||
-    cachedRegistry.mtimeMs !== mtimeMs
-  ) {
+  if (!cachedRegistry || cachedRegistry.mtimeMs !== mtimeMs) {
     try {
       const raw = readFileSync(filePath, 'utf8');
-      cachedRegistry = { filePath, mtimeMs, file: parseRegistry(raw) };
+      cachedRegistry = { mtimeMs, file: parseRegistry(raw) };
     } catch {
       cachedRegistry = null;
       return null;
     }
   }
 
-  return ownTarget(cachedRegistry.file, planId);
+  return cachedRegistry.file.targets[planId] ?? null;
 }
 
 export type RemovePlanExploreTargetResult =

@@ -19,14 +19,11 @@ import {
   type PortalAskUserQuestionAnswer,
   type PortalAskUserQuestionState,
   type PortalChatMessage,
-  type PortalChatPart,
   type PortalQueuedMessage,
-  type PortalTurnTimerAutoRoutedModel,
 } from '@canopy/protocol/portal';
-import {
-  messageRevision,
-  type ChatHydrationOptions,
-  type ChatStoreState,
+import type {
+  ChatHydrationOptions,
+  ChatStoreState,
 } from '../chat/create-chat-store';
 import { hasAuthoritativeMatch, isOptimisticMessage } from '../chat/optimistic';
 import {
@@ -75,9 +72,6 @@ export interface CloudChatThread {
   /** The chat's agent tasks (subagents and background work), as they stand. */
   getAgentTasks(): readonly AgentTaskRow[];
   subscribeAgentTasks(listener: () => void): () => void;
-  /** The ids of the messages its transcript holds; the host retires accepted sends by them. */
-  getMessageIds(): ReadonlySet<string>;
-  subscribeMessageIds(listener: () => void): () => void;
   answerQuestion(
     requestId: string,
     answers: readonly PortalAskUserQuestionAnswer[],
@@ -85,14 +79,6 @@ export interface CloudChatThread {
   dismissQuestion(requestId: string): Promise<void>;
   /** Stops the running turn the web core reports, or else the one this client started; rejects when none is known. */
   stop(): Promise<void>;
-  /**
-   * The model Auto picked for a prompt this client sent, which its turn's
-   * timer names. Kept in memory only, as REST's binding keeps it (CAN-6092).
-   */
-  noteAutoRouting(
-    promptMessageId: string,
-    routing: PortalTurnTimerAutoRoutedModel,
-  ): void;
   /**
    * Follows the running turn's reply as it is written, while the chat is on
    * screen; a hidden thread catches up from the transcript instead.
@@ -157,10 +143,6 @@ interface LiveReply {
   messageId: string | null;
   text: string;
   reasoning: string;
-  /** The turn's own tool calls by id, in the order they came (revision 2). */
-  readonly tools: Map<string, LiveTool>;
-  /** When the turn started, for its running timer (revision 2). */
-  readonly startedAtMs: number | null;
   finished: boolean;
   readonly createdAtMs: number;
   updatedAtMs: number;
@@ -168,102 +150,6 @@ interface LiveReply {
   stoppedAt: number | null;
   /** The transcript reads done by then. */
   readsAtStop: number;
-}
-
-/** One of a running turn's tool calls, as a `tool` item has it. */
-interface LiveTool {
-  readonly toolName: string;
-  readonly input: string;
-  readonly textOffset: number;
-  readonly result?: { readonly output: string; readonly isError: boolean };
-}
-
-/** One step of a live reply: text, or the tool calls between two texts. */
-type LiveStep =
-  | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'tools'; readonly blocks: Record<string, unknown>[] };
-
-/**
- * A live reply as REST's live view shows it: a message for each step, its
- * text and its tool calls in turn, each card after the text before it.
- */
-function liveSteps(reply: {
-  readonly text: string;
-  readonly tools: ReadonlyMap<string, LiveTool>;
-}): LiveStep[] {
-  const steps: LiveStep[] = [];
-  let at = 0;
-  for (const [toolUseId, tool] of reply.tools) {
-    const cut = Math.min(Math.max(tool.textOffset, at), reply.text.length);
-    if (cut > at) steps.push({ kind: 'text', text: reply.text.slice(at, cut) });
-    at = cut;
-    const last = steps[steps.length - 1];
-    const run: LiveStep =
-      last?.kind === 'tools' ? last : { kind: 'tools', blocks: [] };
-    if (run !== last) steps.push(run);
-    const { toolName, input, result } = tool;
-    if (run.kind === 'tools') {
-      run.blocks.push({ type: 'tool_use', toolUseId, toolName, input });
-      if (result !== undefined)
-        run.blocks.push({
-          type: 'tool_result',
-          toolUseId,
-          toolName,
-          ...result,
-        });
-    }
-  }
-  if (reply.text.length > at)
-    steps.push({ kind: 'text', text: reply.text.slice(at) });
-  return steps;
-}
-
-/**
- * A committed reply as REST's transcript shows it (CAN-6116): a message per
- * step, a new one where text follows a tool call or a tool call follows
- * text, so a finished turn folds as REST's does. The first step keeps the
- * row's id; the others take `<id>:step-<n>`, which desktop's projection
- * does not merge back into the row as it does `<id>:<n>` (CAN-2608).
- */
-function replySteps(message: unknown): unknown[] {
-  const id = messageId(message);
-  if (!isRecord(message) || message.role !== 'assistant' || id === null)
-    return [message];
-  const blocks: readonly unknown[] = Array.isArray(message.blocks)
-    ? message.blocks
-    : [];
-  const steps: unknown[][] = [[]];
-  let text = false;
-  let tools = false;
-  for (const block of blocks) {
-    const type = isRecord(block) ? block.type : undefined;
-    const tool = type === 'tool_use' || type === 'tool_result';
-    if ((type === 'text' && tools) || (tool && text)) {
-      steps.push([]);
-      text = false;
-      tools = false;
-    }
-    steps[steps.length - 1]?.push(block);
-    text ||= type === 'text';
-    tools ||= tool;
-  }
-  if (steps.length === 1) return [message];
-  return steps.map((step, index) => ({
-    ...message,
-    id: index === 0 ? id : `${id}:step-${index}`,
-    blocks: step,
-  }));
-}
-
-/** A reply's artifact parts as the web core serves them (CAN-6116). */
-function servedArtifactParts(value: unknown): PortalChatPart[] {
-  return Array.isArray(value)
-    ? value.flatMap((part: unknown) =>
-        isRecord(part) && part.kind === 'attachment' && isRecord(part.data)
-          ? [{ kind: 'attachment' as const, data: part.data }]
-          : [],
-      )
-    : [];
 }
 
 export class CloudChatSendRejectedError extends Error {
@@ -389,22 +275,6 @@ export function bindCloudChatThread(
   const revisions = new Map<string, number>();
   /** Each row's subagent cards as last published, to see them change. */
   const agentCards = new Map<string, string>();
-  /** The model Auto picked, by the id of the timer its prompt's turn shows. */
-  const autoRouting = new Map<string, PortalTurnTimerAutoRoutedModel>();
-  /** A timer row with the model Auto picked for its turn, as REST's shows it. */
-  const withAutoRouting = (message: PortalChatMessage): PortalChatMessage => {
-    const routed = autoRouting.get(message.messageId);
-    return routed === undefined
-      ? message
-      : {
-          ...message,
-          parts: message.parts?.map((part) =>
-            part.kind === 'turn_timer' && isRecord(part.data)
-              ? { ...part, data: { ...part.data, ...routed } }
-              : part,
-          ),
-        };
-  };
   /** Prompts this client sent, by canonical message id, for queued rows. */
   const sentPrompts = new Map<string, { text: string; at: number }>();
   let queuedMessageIds: readonly string[] = [];
@@ -412,9 +282,6 @@ export function bindCloudChatThread(
   const questionListeners = new Set<() => void>();
   let agentTasks: readonly AgentTaskRow[] = [];
   const agentTaskListeners = new Set<() => void>();
-  /** The transcript's message ids, for the host's outbox (CAN-6509). */
-  let messageIds: ReadonlySet<string> = new Set();
-  const messageIdListeners = new Set<() => void>();
   /** Provisional replies by turn id, oldest first (CAN-5984). */
   const liveReplies = new Map<string, LiveReply>();
   let live: CoreCoworkStream | null = null;
@@ -535,10 +402,7 @@ export function bindCloudChatThread(
    * until its message commits, a whole transcript read shows it never came
    * (a failed turn may have no reply), or liveHoldMs passes.
    */
-  function liveMessages(
-    after: number,
-    shown: ReadonlySet<string>,
-  ): PortalChatMessage[] {
+  function liveMessages(after: number): PortalChatMessage[] {
     const now = Date.now();
     for (const [turnId, reply] of liveReplies) {
       if (committed(turnId, reply)) {
@@ -569,134 +433,43 @@ export function bindCloudChatThread(
         },
         Math.max(0, Math.min(...held) - now),
       );
-    let order = after;
-    return [...liveReplies].flatMap(([turnId, reply]) => {
-      const messageId = `${target.key}:live:${turnId}`;
-      const status: PortalChatMessage['status'] = reply.finished
-        ? 'complete'
-        : 'streaming';
-      const steps: LiveStep[] =
-        reply.tools.size > 0
-          ? liveSteps(reply)
-          : reply.text.length > 0 || reply.reasoning.length > 0
-            ? [{ kind: 'text', text: reply.text }]
-            : [];
-      const messages = steps.flatMap((step, index): PortalChatMessage[] => {
-        const id = index === 0 ? messageId : `${messageId}:${index}`;
-        // A tool step's cards as the host projects a committed reply's,
-        // with the subagent rows its spawn calls nest.
-        const tools =
-          step.kind === 'tools'
-            ? project({
-                chatKey: target.key,
-                messages: [
-                  ...raw.filter(
-                    (each) =>
-                      isRecord(each) &&
-                      typeof each.parentToolUseId === 'string',
-                  ),
-                  {
-                    id,
-                    role: 'assistant',
-                    blocks: step.blocks,
-                    timestamp: reply.createdAtMs,
-                  },
-                ],
-                tasks: agentTasks,
-              }).find((each) => each.messageId === id)
-            : undefined;
-        if (step.kind === 'tools' && tools === undefined) return [];
-        const thinking: PortalChatPart[] =
-          index === 0 && reply.reasoning.length > 0
-            ? [{ kind: 'thinking', data: { text: reply.reasoning } }]
-            : [];
-        const parts = [...thinking, ...(tools?.parts ?? [])];
-        return [
-          {
-            ...(tools ?? {}),
-            messageId: id,
-            chatId: target.key,
-            role: 'assistant',
-            // As REST's: the steps before the newest are done.
-            status: index === steps.length - 1 ? status : 'complete',
-            text: step.kind === 'text' ? step.text : '',
-            ...(parts.length > 0 ? { parts } : {}),
-            createdAtMs: reply.createdAtMs,
-            updatedAtMs: reply.updatedAtMs,
-            presentationOrder: order++,
-          },
-        ];
-      });
-      // The running timer, as REST's presentation shows it, under the id of
-      // the timer its committed turn shows, which replaces it in place.
-      const timerId =
-        reply.promptMessageId === null
-          ? null
-          : `${reply.promptMessageId}:turn-timer`;
-      if (
-        timerId !== null &&
-        reply.startedAtMs !== null &&
-        !shown.has(timerId) &&
-        // Only while it runs: a held reply never brings back an ended turn.
-        !reply.finished &&
-        turnStillRuns(turnId)
+    return [...liveReplies]
+      .filter(
+        ([, reply]) => reply.text.length > 0 || reply.reasoning.length > 0,
       )
-        messages.push({
-          messageId: timerId,
-          chatId: target.key,
-          role: 'system',
-          status: 'streaming',
-          text: '',
-          parts: [
-            {
-              kind: 'turn_timer',
-              data: {
-                startedAt: reply.startedAtMs,
-                pausedAt: null,
-                resumedAt: null,
-                accumulatedPausedDurationMs: 0,
-                completedAt: null,
-              },
-            },
-          ],
-          createdAtMs: reply.startedAtMs,
-          updatedAtMs: reply.updatedAtMs,
-          presentationOrder: order++,
-        });
-      return messages;
-    });
+      .map(([turnId, reply], index) => ({
+        messageId: `${target.key}:live:${turnId}`,
+        chatId: target.key,
+        role: 'assistant',
+        status: reply.finished ? 'complete' : 'streaming',
+        text: reply.text,
+        ...(reply.reasoning.length > 0
+          ? { parts: [{ kind: 'thinking', data: { text: reply.reasoning } }] }
+          : {}),
+        createdAtMs: reply.createdAtMs,
+        updatedAtMs: reply.updatedAtMs,
+        presentationOrder: after + index,
+      }));
   }
 
   /**
    * A subagent card changes with its own rows and its task, not its spawn
    * row: move the row's revision when the card does, so the store takes it.
-   * A reply step moves its row's revision, which `upsert` moves too.
    */
-  function noteAgentCards(
-    message: PortalChatMessage,
-    revisionKey = message.messageId,
-  ): void {
+  function noteAgentCards(message: PortalChatMessage): void {
     const cards = message.parts?.filter((part) => part.kind === 'agent') ?? [];
     const fingerprint = cards.length === 0 ? '' : JSON.stringify(cards);
     const known = agentCards.get(message.messageId);
     agentCards.set(message.messageId, fingerprint);
     if (known === undefined || known === fingerprint) return;
     revisions.set(
-      revisionKey,
-      Math.max((revisions.get(revisionKey) ?? 0) + 1, Date.now()),
+      message.messageId,
+      Math.max((revisions.get(message.messageId) ?? 0) + 1, Date.now()),
     );
   }
 
   function publish(replaceMessages: boolean): void {
     if (closed) return;
-    const ids = new Set(raw.flatMap((each) => messageId(each) ?? []));
-    if (
-      ids.size !== messageIds.size ||
-      [...ids].some((id) => !messageIds.has(id))
-    ) {
-      messageIds = ids;
-      for (const listener of messageIdListeners) listener();
-    }
     // A prompt's attachments, as the web core serves them (CAN-6116).
     const attachments = new Map(
       raw.flatMap((each) => {
@@ -715,65 +488,13 @@ export function bindCloudChatThread(
           : [],
       ),
     );
-    // A reply step shares its row's revision, so every change moves it on.
-    const stepRows = new Map<string, string>();
-    const rowOf = (id: string): string => stepRows.get(id) ?? id;
-    // A reply's artifacts sit where REST puts them: a deliverable's card on
-    // its last step, the others before its first step's parts.
-    const artifacts = new Map<
-      string,
-      { before: PortalChatPart[]; after: PortalChatPart[] }
-    >();
-    const place = (
-      id: string | null,
-      key: 'before' | 'after',
-      parts: PortalChatPart[],
-    ): void => {
-      if (id === null || parts.length === 0) return;
-      const entry = artifacts.get(id) ?? { before: [], after: [] };
-      entry[key].push(...parts);
-      artifacts.set(id, entry);
-    };
     // The web core's transcript order is authoritative; keep it in the store.
     const projected = project({
       chatKey: target.key,
-      messages: raw.flatMap((each) => {
-        const steps = replySteps(each);
-        const row = messageId(each);
-        for (const step of steps.slice(1)) {
-          const id = messageId(step);
-          if (row !== null && id !== null) stepRows.set(id, row);
-        }
-        const served = isRecord(each) ? servedArtifactParts(each.parts) : [];
-        const isDeliverable = (part: PortalChatPart): boolean =>
-          isRecord(part.data) && 'deliverable' in part.data;
-        place(
-          row,
-          'before',
-          served.filter((part) => !isDeliverable(part)),
-        );
-        place(
-          messageId(steps[steps.length - 1]),
-          'after',
-          served.filter(isDeliverable),
-        );
-        return steps;
-      }),
+      messages: raw,
       tasks: agentTasks,
     }).map((projected, presentationOrder) => {
-      const shown = withAutoRouting(withTimerEndReason(projected));
-      const served = artifacts.get(shown.messageId);
-      const ended =
-        served === undefined
-          ? shown
-          : {
-              ...shown,
-              parts: [
-                ...served.before,
-                ...(shown.parts ?? []),
-                ...served.after,
-              ],
-            };
+      const ended = withTimerEndReason(projected);
       const files = attachments.get(ended.messageId);
       const message =
         files === undefined && !cancelled.has(ended.messageId)
@@ -785,8 +506,8 @@ export function bindCloudChatThread(
                 : {}),
               ...(files === undefined ? {} : { attachments: files }),
             };
-      noteAgentCards(message, rowOf(message.messageId));
-      const revision = revisions.get(rowOf(message.messageId));
+      noteAgentCards(message);
+      const revision = revisions.get(message.messageId);
       return revision === undefined
         ? { ...message, presentationOrder }
         : {
@@ -798,25 +519,7 @@ export function bindCloudChatThread(
             ),
           };
     });
-    // A live row's subagent card changes with its task too, as a committed
-    // row's does (noteAgentCards), so its revision moves with the card.
-    const provisional = liveMessages(
-      projected.length,
-      new Set(projected.map((each) => each.messageId)),
-    ).map((live) => {
-      const message = withAutoRouting(live);
-      noteAgentCards(message);
-      const revision = revisions.get(message.messageId);
-      return revision === undefined
-        ? message
-        : {
-            ...message,
-            updatedAtMs: Math.max(
-              message.updatedAtMs ?? message.createdAtMs,
-              revision,
-            ),
-          };
-    });
+    const provisional = liveMessages(projected.length);
     const shown = new Set(provisional.map((each) => each.messageId));
     // The store keeps rows a merge omits: a provisional row that went away
     // needs the list replaced, or it would sit beside its committed reply.
@@ -899,34 +602,12 @@ export function bindCloudChatThread(
     }
     const held = liveReplies.get(event.turnId);
     const updatedAtMs = Math.max((held?.updatedAtMs ?? 0) + 1, Date.now());
-    if (event.kind === 'tool') {
-      if (held === undefined) return true;
-      const { toolName, input, textOffset, result } = event;
-      held.tools.set(event.toolUseId, {
-        toolName,
-        input,
-        textOffset,
-        ...(result === undefined ? {} : { result }),
-      });
-      held.updatedAtMs = updatedAtMs;
-      return true;
-    }
     if (event.kind === 'turn') {
-      const startedAtMs =
-        event.startedAt === undefined ? NaN : Date.parse(event.startedAt);
       liveReplies.set(event.turnId, {
         promptMessageId: event.promptMessageId,
         messageId: event.messageId ?? null,
         text: event.text,
         reasoning: event.reasoning,
-        // Every attach sends its tools again after its opening item.
-        tools:
-          event.state === 'streaming' || held === undefined
-            ? new Map<string, LiveTool>()
-            : held.tools,
-        startedAtMs: Number.isFinite(startedAtMs)
-          ? startedAtMs
-          : (held?.startedAtMs ?? null),
         finished: event.state === 'finished',
         createdAtMs: held?.createdAtMs ?? Date.now(),
         updatedAtMs,
@@ -1587,31 +1268,6 @@ export function bindCloudChatThread(
     return respond(requestId, { answers: keyed });
   }
 
-  function noteAutoRouting(
-    promptMessageId: string,
-    routing: PortalTurnTimerAutoRoutedModel,
-  ): void {
-    if (closed) return;
-    const timerId = `${promptMessageId}:turn-timer`;
-    autoRouting.set(timerId, routing);
-    // A timer already shown takes the chip only when its revision passes the
-    // store's, whose completion time is the server's clock, not this one.
-    const shown = chatStore
-      .getState()
-      .threads[target.key]?.messages.find((each) => each.messageId === timerId);
-    revisions.set(
-      timerId,
-      Math.max(
-        (revisions.get(timerId) ?? 0) + 1,
-        Date.now(),
-        shown === undefined ? 0 : messageRevision(shown) + 1,
-      ),
-    );
-    // Before the first read, or after a failure, the next read's publish
-    // carries it; publishing now would clear a failed thread's error.
-    if (wholeReads > 0 && !failed) publish(false);
-  }
-
   function setLive(on: boolean): void {
     if (closed || on === liveWanted) return;
     liveWanted = on;
@@ -1649,7 +1305,6 @@ export function bindCloudChatThread(
     liveReplies.clear();
     setAgentTasks([]);
     agentTaskListeners.clear();
-    messageIdListeners.clear();
     const store = chatStore.getState();
     const entry = store.threads[target.key];
     if (claim === undefined) {
@@ -1684,7 +1339,6 @@ export function bindCloudChatThread(
     target,
     send,
     stop,
-    noteAutoRouting,
     loadOlder,
     getQuestions: () => questions,
     subscribeQuestions: (listener) => {
@@ -1698,13 +1352,6 @@ export function bindCloudChatThread(
       agentTaskListeners.add(listener);
       return () => {
         agentTaskListeners.delete(listener);
-      };
-    },
-    getMessageIds: () => messageIds,
-    subscribeMessageIds: (listener) => {
-      messageIdListeners.add(listener);
-      return () => {
-        messageIdListeners.delete(listener);
       };
     },
     answerQuestion,

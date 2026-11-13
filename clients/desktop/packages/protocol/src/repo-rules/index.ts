@@ -60,23 +60,6 @@ export interface RepoRulesStatus {
   reviewedAt?: string;
   diagnostic?: 'missing' | 'invalid' | 'unsupported-version' | 'unavailable';
 }
-/**
- * Why new chats can't read a repository's rules: a session read's skip reason,
- * or `missing-checkout` when its checkout is gone or can't be resolved.
- */
-export type RepoRulesBlockedReason =
-  | RepoRuleSkipped['reason']
-  | 'missing-checkout';
-/** A repository whose rules new chats can't read, and why (CAN-6368). */
-export interface RepoRulesBlocked {
-  /** Empty when the workspace's checkouts couldn't be resolved at all. */
-  repoId: string;
-  reason: RepoRulesBlockedReason;
-}
-/** What a session read can't use right now; empty when nothing is blocked. */
-export interface RepoRulesCheckResponse {
-  blocked: RepoRulesBlocked[];
-}
 export type RepoRulesApplyResponse = RepoRulesStatus;
 export interface RepoRulesScanResponse {
   scanId: string;

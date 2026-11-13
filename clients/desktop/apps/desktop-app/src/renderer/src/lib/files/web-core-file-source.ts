@@ -10,8 +10,6 @@ import type {
   FileIndexResponse,
   FileTreeDirectoryRequest,
   FileTreeDirectoryResponse,
-  FileTreeMutationRequest,
-  FileTreeMutationResponse,
   FileTreeRoot,
   FileTreeRootsRequest,
   FileTreeRootsResponse,
@@ -19,12 +17,8 @@ import type {
 import {
   WORKER_FILESYSTEM_FILE_READ_MAX_BYTES,
   WORKER_FILESYSTEM_SEARCH_MAX_LIMIT,
-  WorkerFilesystemDirectoryCreateResultSchema,
   WorkerFilesystemDirectoryListResultSchema,
-  WorkerFilesystemEntryDeleteResultSchema,
-  WorkerFilesystemEntryMoveResultSchema,
   WorkerFilesystemFileReadResultSchema,
-  WorkerFilesystemFileWriteResultSchema,
   WorkerFilesystemRootsListResultSchema,
   WorkerFilesystemSearchResultSchema,
 } from '@canopy/protocol/canopy-core';
@@ -50,7 +44,6 @@ export interface ResultSchema<Result> {
  */
 export function createWebCoreFileSource(
   relay: CanopyCoreRelayApi,
-  newIdempotencyKey: () => string = () => crypto.randomUUID(),
 ): WorkspaceFileSource {
   const request = <Result>(
     method: string,
@@ -77,8 +70,6 @@ export function createWebCoreFileSource(
   }
 
   return {
-    onThisComputer: false,
-
     getFileTreeRoots: async (
       args: FileTreeRootsRequest,
     ): Promise<FileTreeRootsResponse> => ({
@@ -157,95 +148,6 @@ export function createWebCoreFileSource(
       return { repos };
     },
 
-    // Each call is one user action with its own idempotency key. The web core
-    // has no copy and no trash, so both are refused rather than approximated:
-    // a trash delete never silently becomes a permanent one.
-    mutateFileTree: async (
-      args: FileTreeMutationRequest,
-    ): Promise<FileTreeMutationResponse> => {
-      const scope = { chatId: chatIdOf(args.worktreeId) };
-      const _meta = { idempotencyKey: newIdempotencyKey() };
-      switch (args.operation) {
-        case 'create-file':
-          await request(
-            'worker.filesystem.file.write',
-            {
-              scope,
-              fileRootId: args.target.repoId,
-              relativePath: args.target.relativePath,
-              content: '',
-              createOnly: true,
-              _meta,
-            },
-            WorkerFilesystemFileWriteResultSchema,
-          );
-          return { operation: args.operation, target: args.target };
-        case 'create-directory':
-          await request(
-            'worker.filesystem.directory.create',
-            {
-              scope,
-              fileRootId: args.target.repoId,
-              relativePath: args.target.relativePath,
-              createParents: false,
-              expectedAbsent: true,
-              _meta,
-            },
-            WorkerFilesystemDirectoryCreateResultSchema,
-          );
-          return { operation: args.operation, target: args.target };
-        case 'move':
-          if (args.conflict === 'increment') throw unavailable('increment');
-          // The sandbox refuses an existing destination (CAN-6282).
-          await request(
-            'worker.filesystem.entry.move',
-            {
-              scope,
-              sourceFileRootId: args.source.repoId,
-              destinationFileRootId: args.target.repoId,
-              fromRelativePath: args.source.relativePath,
-              toRelativePath: args.target.relativePath,
-              expectedSourceVersion: null,
-              expectedDestinationAbsent: true,
-              conflictPolicy: 'error',
-              _meta,
-            },
-            WorkerFilesystemEntryMoveResultSchema,
-          ).catch((error: unknown) => {
-            throw error instanceof CoreCoworkRequestError &&
-              error.payload.kind === 'already_exists'
-              ? new CoreCoworkRequestError({
-                  ...error.payload,
-                  message: `A file or folder named ${args.target.relativePath.split('/').pop() ?? args.target.relativePath} already exists there.`,
-                })
-              : error;
-          });
-          return {
-            operation: args.operation,
-            source: args.source,
-            target: args.target,
-          };
-        case 'copy':
-          throw unavailable('copy');
-        case 'delete':
-          if (args.useTrash === true) throw unavailable('trash');
-          await request(
-            'worker.filesystem.entry.delete',
-            {
-              scope,
-              fileRootId: args.target.repoId,
-              relativePath: args.target.relativePath,
-              expectedVersion: null,
-              recursive: true,
-              disposition: 'permanent',
-              _meta,
-            },
-            WorkerFilesystemEntryDeleteResultSchema,
-          );
-          return { operation: args.operation, target: args.target };
-      }
-    },
-
     readFileContent: async (
       args: FileContentRequest,
     ): Promise<FileContentResponse> => {
@@ -318,14 +220,6 @@ export function chatIdOf(worktreeId: string): string {
   const chatId = webCoreLocalId(worktreeId);
   if (chatId === null) throw notCloud('scope');
   return chatId;
-}
-
-function unavailable(option: string): CoreCoworkRequestError {
-  return new CoreCoworkRequestError({
-    kind: 'capability_unavailable',
-    message: `Cloud chat files do not support ${option}.`,
-    retry: { kind: 'never' },
-  });
 }
 
 function notCloud(what: string): CoreCoworkRequestError {

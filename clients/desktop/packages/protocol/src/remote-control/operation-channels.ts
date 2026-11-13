@@ -123,10 +123,6 @@ export const REMOTE_QUERY_CHANNELS = {
     requires: ['repoRulesImport'],
     invoke: [C.repoRulesStatus],
   },
-  'repoRules.check': {
-    requires: ['repoRulesImport'],
-    invoke: [C.repoRulesCheck],
-  },
   'repoRules.preview': {
     requires: ['repoRulesImport'],
     invoke: [C.repoRulesPreview],

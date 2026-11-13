@@ -203,7 +203,6 @@ import type {
   ChatTabsFile,
   ChangedFileInfo,
   McpQuestionAnswer,
-  ModelHarness,
   PersistedChatMessage,
   PersistedCommandReceipt,
   PortalChatSendIdentity,
@@ -590,7 +589,7 @@ export interface ChatStateServiceOptions {
    * `resolveSendModelPin`.
    */
   resolveSendModel?: (
-    target: ChatScopeKey & { chatId?: string; executionHarness?: ModelHarness },
+    target: ChatScopeKey,
     stored: string | undefined,
     requested: string | undefined,
   ) => Promise<string | undefined>;
@@ -2593,11 +2592,6 @@ function runtimeForEvent(
     if (!effectiveTurnUserMessageId || turnHasVisibleOutput !== false) {
       return null;
     }
-    // The Claude CLI ran this command itself and never called the model, so
-    // no output is missing: `/clear` prints nothing (CAN-6416).
-    if (data.type === 'result' && typeof data.local_command === 'string') {
-      return null;
-    }
     const sessionId =
       typeof data.session_id === 'string'
         ? data.session_id
@@ -3711,7 +3705,7 @@ export class ChatStateService implements ChatStateCommandPort {
         // import the chat-state singleton.
         const { resolveSendModelPin } =
           await import('../agents/agent-default-model');
-        return resolveSendModelPin(target.projectId, stored, requested, target);
+        return resolveSendModelPin(target.projectId, stored, requested);
       });
     this.withPlanReviewRevision =
       options.withPlanReviewRevision ??
@@ -7943,18 +7937,6 @@ export class ChatStateService implements ChatStateCommandPort {
     const createdAt = new Date(this.now()).toISOString();
     const explicitTitle = explicitChatTitle(request.title);
     const title = explicitTitle ?? initialChatTitle(request.text);
-    // An agent action may pin the fresh chat to one of its model's chat
-    // harness options, as the pickers do for an empty tab; the send that
-    // follows then captures that harness. Every other trusted sender echoes
-    // the harness main already resolved for the chat (the advisor, the
-    // renderer, the Portal), which is no choice and pins nothing. The choice
-    // is checked only when the tab is created below: a send to an existing
-    // chat keeps whatever harness that chat captured, whatever the current
-    // catalog says.
-    const explicitHarness =
-      request.executionHarnessChoice === true
-        ? request.executionHarness
-        : undefined;
     const tab: PersistedChatTab = {
       ...createPersistedChatTab({
         id: request.chatId,
@@ -7978,12 +7960,6 @@ export class ChatStateService implements ChatStateCommandPort {
           : {}),
       }),
       ...(explicitTitle ? { customTitle: explicitTitle } : {}),
-      ...(explicitHarness !== undefined
-        ? {
-            executionHarness: explicitHarness,
-            executionHarnessExplicitlyChosen: true,
-          }
-        : {}),
       ...(request.approvalMode ? { approvalMode: request.approvalMode } : {}),
       ...trustedSendDenyRulesField(request.sessionApprovalRules),
       ...(request.pluginSelections
@@ -8017,16 +7993,6 @@ export class ChatStateService implements ChatStateCommandPort {
               `Trusted send targets removed chat ${request.chatId}`,
             );
           }
-          // An explicit harness on a fresh tab must be one its model offers
-          // a chat; anything else fails closed before the tab exists.
-          if (
-            explicitHarness !== undefined &&
-            (request.model === undefined ||
-              !supportsChatHarnessChoice(request.model, explicitHarness))
-          )
-            throw new Error(
-              `Model "${request.model ?? ''}" does not run on the "${explicitHarness}" execution harness.`,
-            );
           // Chats nobody asked for open behind the tab the user is on:
           // hook-started chats and sends that ask to stay behind (scheduled
           // and catch-up automation runs). Everything the user set in motion
@@ -8879,7 +8845,7 @@ export class ChatStateService implements ChatStateCommandPort {
         refusal,
       );
       const reason = isAgentSenderContextError(error)
-        ? `agent_send:${error.code}`
+        ? `agent_send:${error.code === 'authorization_conflict' ? 'owner_boundary' : error.code}`
         : 'agent_send:owner_context_unavailable';
       let endedTurn = false;
       try {
@@ -12147,42 +12113,19 @@ export class ChatStateService implements ChatStateCommandPort {
       tabBeforeAuthorization?.kind === 'file'
         ? undefined
         : tabBeforeAuthorization?.model;
-    const admissionTab =
-      tabBeforeAuthorization && tabBeforeAuthorization.kind !== 'file'
-        ? tabWithSendModel(tabBeforeAuthorization, command)
-        : undefined;
     const sendModel =
       command.turnOverride?.model === undefined &&
       (command.modelSelectionMode ??
         tabBeforeAuthorization?.modelSelectionMode) === 'auto'
         ? undefined
-        : await this.resolveSendModel(
-            {
-              ...scope,
-              chatId: command.chatId,
-              executionHarness:
-                command.turnOverride?.executionHarness ??
-                (command.turnOverride?.model
-                  ? getExecutionHarnessForModel(command.turnOverride.model)
-                  : admissionTab?.executionHarness),
-            },
-            storedModel,
-            command.turnOverride?.model ?? command.model,
-          );
+        : await this.resolveSendModel(scope, storedModel, command.model);
     const requestedCommand = command;
     if (sendModel !== undefined) {
-      command =
-        command.turnOverride?.model !== undefined
-          ? {
-              ...command,
-              turnOverride: { ...command.turnOverride, model: sendModel },
-            }
-          : {
-              ...command,
-              model: sendModel,
-              providerType:
-                getProviderForModel(sendModel) ?? command.providerType,
-            };
+      command = {
+        ...command,
+        model: sendModel,
+        providerType: getProviderForModel(sendModel) ?? command.providerType,
+      };
     }
     if (
       tabBeforeAuthorization &&

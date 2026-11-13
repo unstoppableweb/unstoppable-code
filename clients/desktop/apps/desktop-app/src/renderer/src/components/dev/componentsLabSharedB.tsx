@@ -11,7 +11,6 @@ import {
   ChatDetailControl,
   ChatMessageContextMenu,
   ChatMessageLinkActionsProvider,
-  ChatMessageLookUpProvider,
   CHECKLIST_ROW_CLASS_NAME,
   ChecklistAction,
   ChecklistDismiss,
@@ -455,7 +454,6 @@ function MenuOpener({
             x: at.x,
             y: at.y,
             selection: at.selection,
-            selectionRanges: [],
             linkUrl: at.linkUrl,
             returnFocusTo: null,
           }}
@@ -503,15 +501,6 @@ function MessageContextMenuSheet(): JSX.Element {
               selection="rename the settings page"
               linkUrl={null}
             />
-          </SpecimenCell>
-          <SpecimenCell label="With a selection on macOS: Look up follows Copy selection">
-            <ChatMessageLookUpProvider value={noop}>
-              <MenuOpener
-                label="Open with a dictionary"
-                selection="idempotent"
-                linkUrl={null}
-              />
-            </ChatMessageLookUpProvider>
           </SpecimenCell>
           <SpecimenCell label="No selection: Copy selection is disabled">
             <MenuOpener

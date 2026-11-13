@@ -24,9 +24,6 @@ const KeyedMetaSchema = CanopyRequestMetadataSchema.extend({
   idempotencyKey: ID,
 });
 
-/** Wakes a sleeping cloud sandbox (CAN-6114); a local root is always awake. */
-const WAKE = z.boolean().optional();
-
 /** The scope `directory.create` and `entry.copy` take: no execution ids. */
 const CreateScopeSchema = CanopyWorkspaceScopeSchema.pick({
   organizationId: true,
@@ -46,15 +43,14 @@ const FileWriteBase = {
   _meta: KeyedMetaSchema,
 };
 
-// The catalog's if/then: replacing a file needs its version; creating forbids
-// one. Only a create wakes: the cloud's save never does (CAN-6114).
+// The catalog's if/then: replacing a file needs its version; creating forbids one.
 export const WorkerFilesystemFileWriteParamsSchema = z.union([
   z.strictObject({
     ...FileWriteBase,
     createOnly: z.literal(false),
     expectedVersion: z.string(),
   }),
-  z.strictObject({ ...FileWriteBase, createOnly: z.literal(true), wake: WAKE }),
+  z.strictObject({ ...FileWriteBase, createOnly: z.literal(true) }),
 ]);
 
 export type WorkerFilesystemFileWriteParams = z.output<
@@ -81,7 +77,6 @@ export const WorkerFilesystemDirectoryCreateParamsSchema = z.strictObject({
   relativePath: PATH,
   createParents: z.boolean(),
   expectedAbsent: z.literal(true),
-  wake: WAKE,
   _meta: KeyedMetaSchema,
 });
 
@@ -109,7 +104,6 @@ export const WorkerFilesystemEntryDeleteParamsSchema = z.strictObject({
   expectedVersion: z.string().nullable(),
   recursive: z.boolean(),
   disposition: DISPOSITION,
-  wake: WAKE,
   _meta: KeyedMetaSchema,
 });
 
@@ -170,7 +164,6 @@ export const WorkerFilesystemEntryMoveParamsSchema = z.strictObject({
   expectedSourceVersion: z.string().nullable(),
   expectedDestinationAbsent: z.boolean(),
   conflictPolicy: CONFLICT_POLICY,
-  wake: WAKE,
   _meta: KeyedMetaSchema,
 });
 

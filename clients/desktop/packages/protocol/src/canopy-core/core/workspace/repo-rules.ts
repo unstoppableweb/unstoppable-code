@@ -46,8 +46,6 @@ export const CoreWorkspaceRepoRulesScanParamsSchema = z.strictObject({
 });
 export const CoreWorkspaceRepoRulesStatusParamsSchema =
   CoreWorkspaceRepoRulesScanParamsSchema.pick({ workspaceId: true });
-export const CoreWorkspaceRepoRulesCheckParamsSchema =
-  CoreWorkspaceRepoRulesStatusParamsSchema;
 export const CoreWorkspaceRepoRulesPreviewParamsSchema = z.strictObject({
   workspaceId,
   scanId: z.string().uuid(),
@@ -132,20 +130,6 @@ export const CoreWorkspaceRepoRulesScanResultSchema = z.strictObject({
   diagnostic: diagnostic.optional(),
 });
 
-// What a session read of the workspace's source checkouts can't use right
-// now: each blocked repository once, with the read's skip reason or
-// missing-checkout (CAN-6368).
-export const CoreWorkspaceRepoRulesCheckResultSchema = z.strictObject({
-  blocked: z
-    .array(
-      z.strictObject({
-        repoId: z.string(),
-        reason: z.enum([...skipped.shape.reason.options, 'missing-checkout']),
-      }),
-    )
-    .max(32),
-});
-
 export const CoreWorkspaceRepoRulesPreviewResultSchema = z.strictObject({
   body: z.string(),
 });
@@ -171,9 +155,6 @@ export type CoreWorkspaceRepoRulesScanParams = z.output<
 >;
 export type CoreWorkspaceRepoRulesStatusParams = z.output<
   typeof CoreWorkspaceRepoRulesStatusParamsSchema
->;
-export type CoreWorkspaceRepoRulesCheckParams = z.output<
-  typeof CoreWorkspaceRepoRulesCheckParamsSchema
 >;
 export type CoreWorkspaceRepoRulesPreviewParams = z.output<
   typeof CoreWorkspaceRepoRulesPreviewParamsSchema
@@ -218,19 +199,6 @@ export const CORE_WORKSPACE_REPO_RULES_QUERIES = defineCanopyQueryRegistry(
       requiredGrants: [CORE_WORKSPACE_REPO_RULES_GRANTS.read],
       params: CoreWorkspaceRepoRulesStatusParamsSchema,
       result: CoreWorkspaceRepoRulesStatusResultSchema,
-      error: CoreWorkspaceRepoRulesQueryErrorSchema,
-    }),
-    // One bounded session read of the source checkouts, with a session
-    // read's caps; it writes nothing and never fails for a missing checkout.
-    'core.workspace.repoRules.check': defineCanopyQuery({
-      plane: 'core',
-      domain: 'workspace',
-      version: 1,
-      placement: 'core-only',
-      idempotency: 'inherent',
-      requiredGrants: [CORE_WORKSPACE_REPO_RULES_GRANTS.read],
-      params: CoreWorkspaceRepoRulesCheckParamsSchema,
-      result: CoreWorkspaceRepoRulesCheckResultSchema,
       error: CoreWorkspaceRepoRulesQueryErrorSchema,
     }),
   },

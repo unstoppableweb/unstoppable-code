@@ -92,22 +92,6 @@ export function captureToastFailure(
   }
 }
 
-/**
- * What a report of an already-recorded failure needs, without recording it
- * again: the session links for a defect's `Report this`.
- */
-export function readRecordedToastFailure(
-  error: AppError,
-): CapturedToastFailure {
-  if (error.kind !== 'defect') return { error };
-  try {
-    return { error, telemetry: readClientErrorTelemetry() };
-  } catch (failure) {
-    reportClientAppError(failure, { surface: 'toast' });
-    return { error };
-  }
-}
-
 export function presentRendererAppError(error: AppError): AppErrorPresentation {
   return presentAppError(error, rendererAppErrorDisplayPolicy);
 }

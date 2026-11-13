@@ -204,17 +204,11 @@ export const WORKER_SCRIPT_EXECUTION_STATUSES = [
   'failed',
   'cancelled',
   'lost',
-  'orphaned',
 ] as const;
 
 /**
  * A script key's latest run from the durable run log. `lost` is a run a
  * restart interrupted: it was not run again and its outcome is unknown.
- * `orphaned` is a run a restart interrupted whose process may still be
- * running and could not be proven to be the run's own, so nothing was
- * killed (CAN-6482); `pid` names that process. A `lost` run whose record
- * names no process (an earlier version's, or one never identified) has
- * `lostFrom: 'unrecorded'`: its process may still be running.
  */
 export const WorkerScriptExecutionSchema = z.strictObject({
   executionId: id,
@@ -226,10 +220,6 @@ export const WorkerScriptExecutionSchema = z.strictObject({
   exitCode,
   timedOut: z.boolean(),
   durationMs: z.int().nonnegative(),
-  /** An orphaned run's process (CAN-6482); absent for every other status. */
-  pid: z.int().min(2).optional(),
-  /** A lost run with no recorded process (CAN-6482 part 2). */
-  lostFrom: z.literal('unrecorded').optional(),
 });
 export type WorkerScriptExecution = z.output<
   typeof WorkerScriptExecutionSchema
@@ -297,28 +287,6 @@ export const WorkerScriptExecutionCancelResultSchema = z.strictObject({
 });
 export type WorkerScriptExecutionCancelResult = z.output<
   typeof WorkerScriptExecutionCancelResultSchema
->;
-
-/**
- * Removes one finished run's record and log (CAN-6482 part 2): never a run
- * that is running or orphaned, and never a process.
- */
-export const WorkerScriptExecutionClearParamsSchema = z.strictObject({
-  scope: WorkerScriptScopeSchema,
-  scriptKey: z.string().min(1).max(1024),
-  /** Clears only this run: a newer run of the script key is kept. */
-  executionId: id,
-});
-export type WorkerScriptExecutionClearParams = z.output<
-  typeof WorkerScriptExecutionClearParamsSchema
->;
-
-export const WorkerScriptExecutionClearResultSchema = z.strictObject({
-  /** False when the script key's latest run is not this one, or none is recorded. */
-  cleared: z.boolean(),
-});
-export type WorkerScriptExecutionClearResult = z.output<
-  typeof WorkerScriptExecutionClearResultSchema
 >;
 
 export const WorkerScriptQueryErrorSchema = CanopyErrorPayloadSchema.extend({
@@ -429,17 +397,6 @@ export const WORKER_SCRIPT_INSTRUCTION_DEFINITIONS =
       requiredGrants: [WORKER_SCRIPT_GRANTS.execute],
       params: WorkerScriptExecutionCancelParamsSchema,
       result: WorkerScriptExecutionCancelResultSchema,
-      error: WorkerScriptInstructionErrorSchema,
-    }),
-    'worker.script.execution.clear': defineCanopyInstruction({
-      plane: 'worker',
-      domain: 'script',
-      version: 1,
-      placement: 'worker-only',
-      idempotency: 'keyed',
-      requiredGrants: [WORKER_SCRIPT_GRANTS.execute],
-      params: WorkerScriptExecutionClearParamsSchema,
-      result: WorkerScriptExecutionClearResultSchema,
       error: WorkerScriptInstructionErrorSchema,
     }),
   });

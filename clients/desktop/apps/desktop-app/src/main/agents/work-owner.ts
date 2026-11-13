@@ -3,8 +3,8 @@
 // Every routed model request carries the owner of the work: Personal, or one
 // organization. The owner is bound once, when the work starts (a chat session,
 // a pipeline step, a helper invocation), and never follows the live sidebar
-// selection afterwards. Model admission and organization policy use this same
-// owner; missing authority must never masquerade as Personal.
+// selection afterwards. It is additive attribution today: the proxy records the
+// claim but no billing or policy decision reads it yet.
 
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
@@ -14,13 +14,9 @@ import {
 import {
   type AiCreditsScopeRequest,
   APP_ADVISOR_PROJECT_ID,
-  CODE_REVIEW_CHAT_PROJECT_ID,
-  PIPELINE_EDITOR_PROJECT_ID,
-  PLAN_EXPLORE_CHAT_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
-import { validateWorktreeChatScope } from '../lib/validation';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
 import type {
@@ -73,7 +69,7 @@ export interface WorkOwnerTarget {
  * Resolve the owner of work in `target`, given the context captured when that
  * work started (Decision D1 of CAN-3455):
  *
- * - App Advisor, Pipeline Assistant and work outside a workspace: Personal.
+ * - App Advisor and work outside a workspace: Personal.
  * - An organization-owned workspace, Cowork included: that organization
  *   (CAN-3462; CAN-3456 treated every Cowork project as Personal). A member
  *   who has left the organization is refused by the proxy there.
@@ -84,7 +80,6 @@ export interface WorkOwnerTarget {
  * A legacy standalone chat (`STANDALONE_CHAT_PROJECT_ID` with the Cowork
  * workspace, or its legacy chat-project id, in the worktree slot) resolves
  * through that Cowork workspace; without a worktree id it is Personal.
- * Plan and review chat scopes resolve through their registered real worktree.
  *
  * Reads persisted owner authority only. Throws when that authority is
  * unreadable, so callers can omit the claim rather than guess.
@@ -101,25 +96,10 @@ async function resolveWorkOwnerWithEvidence(
   capturedContext: WorkspaceContext,
   snapshotEvidence?: SnapshotWorkOwnerEvidence,
 ): Promise<WorkOwner> {
-  let { projectId, worktreeId } = target;
-  if (
-    projectId === PLAN_EXPLORE_CHAT_PROJECT_ID ||
-    projectId === CODE_REVIEW_CHAT_PROJECT_ID
-  ) {
-    if (!worktreeId) throw new Error('The chat worktree is not available.');
-    const { resolveRegisteredChatWorktree } =
-      await import('../lib/resolve-worktree');
-    ({ projectId, worktreeId } = resolveRegisteredChatWorktree(
-      projectId,
-      worktreeId,
-    ));
-    // A broken registry target is not work outside a workspace (Personal).
-    validateWorktreeChatScope(projectId, worktreeId);
-  }
+  const { projectId, worktreeId } = target;
   if (
     !projectId ||
     projectId === APP_ADVISOR_PROJECT_ID ||
-    projectId === PIPELINE_EDITOR_PROJECT_ID ||
     (projectId === STANDALONE_CHAT_PROJECT_ID && !worktreeId)
   ) {
     return PERSONAL_WORK_OWNER;
@@ -179,8 +159,8 @@ async function projectSnapshotWorkspaceTarget(
 
 /**
  * {@link resolveWorkOwner}, returning `undefined` when owner authority cannot
- * be read. Attribution callers may omit the claim; admission callers must
- * refuse missing authority rather than treating it as Personal.
+ * be read. The request then goes out without a claim and the proxy records it
+ * as missing; attribution must never fail a spawn.
  */
 async function resolveWorkOwnerOrOmit(
   target: WorkOwnerTarget,
@@ -379,8 +359,8 @@ export async function resolveAiCreditsScopeOwner(
  * {@link resolveAiCreditsScopeOwner} for one listing of many chats. Session
  * captures stay per chat; the fallback reads the navigation context once and
  * owner authority once per target. That authority depends on the project
- * alone, except for legacy standalone, plan and review chats, whose worktree
- * slots identify their real workspace scopes.
+ * alone, except for a legacy standalone chat, whose worktree slot names its
+ * Cowork workspace.
  */
 export function createAiCreditsScopeOwnerResolver(
   snapshotEvidence?: SnapshotWorkOwnerEvidence,
@@ -402,9 +382,7 @@ export function createAiCreditsScopeOwnerResolver(
       worktreeId: scope.worktreeId,
     };
     const key = JSON.stringify(
-      scope.projectId === STANDALONE_CHAT_PROJECT_ID ||
-        scope.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID ||
-        scope.projectId === CODE_REVIEW_CHAT_PROJECT_ID
+      scope.projectId === STANDALONE_CHAT_PROJECT_ID
         ? [scope.projectId, scope.worktreeId ?? null]
         : [scope.projectId],
     );

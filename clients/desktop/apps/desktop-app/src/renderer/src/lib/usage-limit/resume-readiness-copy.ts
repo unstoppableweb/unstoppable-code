@@ -86,33 +86,3 @@ export function resumeReadinessSummaryText(
   }
   return `${summary.readyCount} ready now · ${summary.waitingCount} ${waitingFor(summary)}`;
 }
-
-/**
- * The resume dialog's subtitle addition when nothing can resume yet:
- * `Claude’s weekly limit resets at Wed 6:12 PM.`, or `Claude’s limit resets
- * at …` when the waiting sessions hit different windows. `at` matches the
- * Usage card's `Limit resets at …` and reads for a same-day time too. Only
- * for one provider with one known future reset; otherwise each row's own
- * reset says it better.
- */
-export function allWaitingResetSentence(
-  summary: ResumeReadinessSummary,
-  windowLabel: string | undefined,
-  now: number,
-): string | undefined {
-  const [provider] = summary.waitingProviders;
-  if (
-    summary.readyCount !== 0 ||
-    summary.waitingCount === 0 ||
-    summary.waitingProviders.length !== 1 ||
-    provider === undefined ||
-    summary.sharedWaitingResetMs === undefined ||
-    summary.sharedWaitingResetMs <= now
-  ) {
-    return undefined;
-  }
-  const time = formatUsageLimitTimeLabel(summary.sharedWaitingResetMs);
-  if (!time) return undefined;
-  const limit = windowLabel ? windowLabel.toLowerCase() : 'limit';
-  return `${getModelCatalogProviderLabel(provider)}’s ${limit} resets at ${time}.`;
-}

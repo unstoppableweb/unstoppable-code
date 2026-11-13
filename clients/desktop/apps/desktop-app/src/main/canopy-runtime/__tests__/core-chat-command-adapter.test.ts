@@ -225,65 +225,6 @@ describe('core chat command router', () => {
     },
   );
 
-  it('refuses the capability-state revision before any effect (CAN-6092)', async () => {
-    const { port, command } = makePort();
-    const adapter = createCoreChatCommandAdapter(() => port);
-    await expect(
-      adapter.instructions['core.chat.update']({
-        projectId: 'project',
-        worktreeId: 'worktree',
-        commandId: 'save',
-        revision: 2,
-        action: {
-          type: 'chat.patch_tab_settings',
-          tabId: 'tab',
-          patch: { pluginSelections: {} },
-        },
-        _meta: { idempotencyKey: 'save' },
-      }),
-    ).rejects.toMatchObject({
-      payload: {
-        kind: 'capability_unavailable',
-        details: { unsupported: ['revision'], reason: 'unserved' },
-      },
-    });
-    expect(command).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      'action.cloneMode',
-      { cloneMode: 'in-place', sourceSdkSessionId: 'ended' },
-    ],
-    ['action.fastMode', { fastMode: true }],
-  ])(
-    'refuses a cloud continue field (%s) before any effect (CAN-6106)',
-    async (field, extra) => {
-      const { port, command } = makePort();
-      const adapter = createCoreChatCommandAdapter(() => port);
-      await expect(
-        adapter.instructions['core.chat.fork']({
-          projectId: 'project',
-          worktreeId: 'worktree',
-          commandId: 'continue',
-          action: {
-            type: 'chat.fork_tab',
-            sourceTabId: 'tab',
-            targetTabId: 'tab',
-            ...extra,
-          },
-          _meta: { idempotencyKey: 'continue' },
-        }),
-      ).rejects.toMatchObject({
-        payload: {
-          kind: 'capability_unavailable',
-          details: { unsupported: [field], reason: 'unserved' },
-        },
-      });
-      expect(command).not.toHaveBeenCalled();
-    },
-  );
-
   it('preserves the command envelope, CAS fields, and result', async () => {
     const { port, command } = makePort();
     const adapter = createCoreChatCommandAdapter(() => port);

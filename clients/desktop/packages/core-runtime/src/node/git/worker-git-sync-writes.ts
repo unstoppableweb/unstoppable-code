@@ -185,7 +185,6 @@ export function createWorkerGitSyncWriteHandlers<Checkout>(
       run(params.scope, context, PULL_CODES, (port) =>
         pullGitBranch(port, params.branch, params.strategy, {
           expectedBranch: params.expected?.branch,
-          expectedHeadSha: params.expectedHeadSha,
         }),
       ),
   };

@@ -39,8 +39,6 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
-  /** Locked Work Entry archive. Unconfigured or unavailable hosts default-deny. */
-  readonly standaloneChatArchive?: boolean;
   /** Host can disarm agent-armed work entry removal and answer branch questions. Default-deny. */
   readonly workEntryAutoDelete?: 'manage';
   /** Error reports; absent means false. Enable only with a complete adapter. */
@@ -658,8 +656,6 @@ export interface CanopyCapabilities {
    * only its message.
    */
   readonly worktreeDiscard?: boolean;
-  /** Incarnation-bound, settled recovery actions; description support alone is insufficient. */
-  readonly worktreeRecovery?: boolean;
   /**
    * Host can list what keeps a project's deletion from finishing that a
    * person can discard, and supersede an interrupted deletion on request

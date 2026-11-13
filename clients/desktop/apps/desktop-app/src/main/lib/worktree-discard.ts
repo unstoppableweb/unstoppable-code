@@ -1,13 +1,3 @@
-import type { WorktreeRecoveryRequest } from '@canopy/protocol/portal/worktree-recovery';
-import {
-  LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
-  LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL,
-} from '@canopy/protocol/portal/lifecycle-journal-refusal';
-import {
-  describeWorktreeRecovery,
-  recoveryFromRefusal,
-  type WorktreeRecoveryContext,
-} from './worktree-recovery-description';
 import {
   withArchiveFailureTelemetry,
   recordArchiveRefusal,
@@ -560,7 +550,6 @@ async function describeRepositories(
 }
 
 interface WorktreeDiscardDescribeOptions {
-  readonly recovery?: WorktreeRecoveryRequest;
   /**
    * CAN-5337: describe as if the project's interrupted deletion were already
    * superseded; for the project-level description only, after it verified
@@ -1085,24 +1074,8 @@ export async function describeWorktreeDiscard(
   worktreeId: string,
   options?: WorktreeDiscardDescribeOptions,
 ): Promise<WorktreeDiscardDescription> {
-  const description = await inspectWorktreeDiscard(
-    workspaceId,
-    worktreeId,
-    options,
-  )
-    .then((inspection) => inspection.description)
-    .catch((error: unknown) => {
-      if (!options?.recovery) throw error;
-      return unavailableDiscardDescription(workspaceId, worktreeId);
-    });
-  if (!options?.recovery) return description;
-  const request = { workspaceId, worktreeId, ...options.recovery };
-  return {
-    ...description,
-    recovery: await describeWorktreeRecovery(request, description).catch(() =>
-      recoveryFromRefusal(request),
-    ),
-  };
+  return (await inspectWorktreeDiscard(workspaceId, worktreeId, options))
+    .description;
 }
 
 function refusedWith(
@@ -1726,29 +1699,15 @@ export function isDiscardDescribedArchiveRefusal(error: unknown): boolean {
   );
 }
 
-/** A refused shape for legacy clients when secondary inspection itself fails. */
-function unavailableDiscardDescription(
-  workspaceId: string,
-  worktreeId: string,
-): WorktreeDiscardDescription {
-  return {
-    version: 1,
-    workspaceId,
-    worktreeId,
-    createdAt: '',
-    status: 'refused',
-    refusal: { reason: 'evidence-unreadable' },
-    causes: [],
-    sources: [],
-    targets: [],
-    alsoDeleted: [],
-    preserved: [],
-    mayRemain: [],
-    confirmation: 'unavailable',
-  };
-}
-
-/** Opted-in recovery-required refusals always resolve; legacy calls still throw. */
+/**
+ * CAN-5334 Q1 B: when an archive or delete request opts in with
+ * `typedRefusal`, an ordinary refusal resolves with its reason and the discard
+ * description instead of throwing. Without the flag nothing changes.
+ *
+ * CAN-5336 Q9 A: only a discardable description resolves. Any other refusal,
+ * or one whose description can't be read, keeps its original throw, so an
+ * unreadable-journal refusal still reaches its quarantine review.
+ */
 export async function withTypedArchiveRefusal<
   T extends ArchiveWorktreeResponse,
 >(
@@ -1757,42 +1716,15 @@ export async function withTypedArchiveRefusal<
     workspaceId: string;
     worktreeId: string;
     archiveTrigger?: ArchiveTrigger;
-    intent?: WorktreeRecoveryRequest['intent'];
-    expectedCreatedAt?: string;
   },
   run: () => Promise<T>,
 ): Promise<
   T | (ArchiveWorktreeResponse & { refusal: WorktreeArchiveTypedRefusal })
 > {
   return withArchiveFailureTelemetry(request, async () => {
-    // Committed cleanup may remove the row before refusing; capture its incarnation first.
-    const expectedCreatedAt =
-      request.expectedCreatedAt ??
-      (request.typedRefusal === true
-        ? await readWorkspaceWorktreesDetailed(request.workspaceId, {
-            persistRemovalCleanup: false,
-          })
-            .then((list) =>
-              list.authority === 'ok'
-                ? list.worktrees.find((row) => row.id === request.worktreeId)
-                    ?.createdAt
-                : undefined,
-            )
-            .catch(() => undefined)
-        : undefined);
     try {
       return await run();
     } catch (error) {
-      const recoveryRequired =
-        error instanceof W5CommitRefusedError &&
-        error.reason === 'recovery-required';
-      const recoveryRequest: WorktreeRecoveryContext = {
-        workspaceId: request.workspaceId,
-        worktreeId: request.worktreeId,
-        intent: request.intent ?? 'archive',
-        expectedCreatedAt: expectedCreatedAt ?? null,
-      };
-      const fallback = recoveryFromRefusal(recoveryRequest, error);
       const discard = await describeWorktreeDiscard(
         request.workspaceId,
         request.worktreeId,
@@ -1802,46 +1734,19 @@ export async function withTypedArchiveRefusal<
         isDiscardDescribedArchiveRefusal(error) &&
         discard?.status === 'discardable';
       recordArchiveRefusal(error, discard, offered);
-      if (!offered && !(request.typedRefusal === true && recoveryRequired))
-        throw error;
-      const described =
-        discard ??
-        unavailableDiscardDescription(request.workspaceId, request.worktreeId);
-      const recovery = recoveryRequired
-        ? await describeWorktreeRecovery(
-            recoveryRequest,
-            described,
-            error,
-          ).catch(() => fallback)
-        : undefined;
-      // Legacy classifiers must keep an unreadable journal on its review route,
-      // even if a concurrent repair made a secondary discard inspect eligible.
-      const journalReview = recovery?.destination.kind === 'journal-review';
-      if (journalReview) recordArchiveRefusal(error, discard, false);
+      if (!offered || discard?.status !== 'discardable') throw error;
+      const reason =
+        error instanceof WorktreeArchiveRefusedError ||
+        error instanceof W5CommitRefusedError
+          ? error.reason
+          : 'recovery-required';
       return {
         success: false,
         warnings: [],
         refusal: {
-          reason:
-            error instanceof WorktreeArchiveRefusedError ||
-            error instanceof W5CommitRefusedError
-              ? error.reason
-              : 'recovery-required',
-          message:
-            recovery?.destination.kind === 'journal-review'
-              ? recovery.destination.reason === 'unreadable-entry'
-                ? LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL
-                : LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL
-              : error instanceof Error
-                ? error.message
-                : String(error),
-          discard: journalReview
-            ? unavailableDiscardDescription(
-                request.workspaceId,
-                request.worktreeId,
-              )
-            : described,
-          ...(recovery ? { recovery } : {}),
+          reason,
+          message: error instanceof Error ? error.message : String(error),
+          discard,
         },
       };
     }

@@ -10,7 +10,6 @@ import { routeRendererRelayRequest } from '../relay-authority';
 import type { RendererRelaySurface } from '../surface-allowlist';
 import {
   WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS,
-  WEB_CORE_TEARDOWN_RELAY_OPERATIONS,
   WEB_CORE_RELAY_OPERATIONS,
 } from '../web-core-relay-definitions';
 import { createWebCoreRendererRelay } from '../../../ipc/canopy-core-relay';
@@ -77,8 +76,9 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       'core.workspace.create',
       'core.git.status.get',
       'core.runtime.initialize',
-      'worker.filesystem.entry.copy',
-      'worker.terminal.restore',
+      'worker.filesystem.file.write',
+      'worker.filesystem.entry.delete',
+      'worker.terminal.create',
     ]) {
       expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
       await expect(
@@ -278,150 +278,6 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
     }
     expect(binding).toHaveBeenCalled();
-    relay.dispose();
-  });
-
-  it('cloud durable terminal operations reach the web core binding (CAN-6175 R10)', async () => {
-    const binding = jest.fn<
-      ReturnType<RelayBindingProvider>,
-      Parameters<RelayBindingProvider>
-    >(unreachable);
-    const relay = webCoreRelay(binding);
-    for (const method of [
-      'worker.terminal.create',
-      'worker.terminal.get',
-      'worker.terminal.list',
-      'worker.terminal.write',
-      'worker.terminal.resize',
-      'worker.terminal.kill',
-      'worker.terminal.release',
-    ]) {
-      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
-      await expect(
-        relay.invoke(rendererEvent(), {
-          kind: 'request',
-          method,
-          params: { scope: { chatId: 'chat-1' } },
-        }),
-      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
-    }
-    expect(WEB_CORE_RELAY_OPERATIONS.has('worker.terminal.attach')).toBe(true);
-    await expect(
-      relay.invoke(rendererEvent(), {
-        kind: 'openStream',
-        method: 'worker.terminal.attach',
-        params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
-    expect(binding).toHaveBeenCalled();
-    relay.dispose();
-  });
-
-  it('ending a cloud terminal reaches the web core after cloud chats are turned off, and nothing else does (CAN-6175 R10)', async () => {
-    const binding = jest.fn<
-      ReturnType<RelayBindingProvider>,
-      Parameters<RelayBindingProvider>
-    >(unreachable);
-    const relay = createWebCoreRendererRelay({
-      bindingProvider: binding,
-      resolveSurface: (): RendererRelaySurfaceResolution => ({
-        surface: 'main',
-        caller: CALLER,
-      }),
-      cloudChatsEnabled: () => false,
-    });
-    const event = rendererEvent();
-    expect([...WEB_CORE_TEARDOWN_RELAY_OPERATIONS]).toEqual([
-      'worker.terminal.kill',
-    ]);
-    // The renderer's teardown kill gets past the flag to the binding.
-    await expect(
-      relay.invoke(event, {
-        kind: 'request',
-        method: 'worker.terminal.kill',
-        params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
-    expect(binding).toHaveBeenCalledTimes(1);
-    binding.mockClear();
-    // Every other terminal call is refused before the binding.
-    for (const method of [
-      'worker.terminal.create',
-      'worker.terminal.write',
-      'worker.terminal.release',
-    ]) {
-      await expect(
-        relay.invoke(event, {
-          kind: 'request',
-          method,
-          params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
-        }),
-      ).resolves.toMatchObject({
-        ok: false,
-        error: { kind: 'capability_unavailable' },
-      });
-    }
-    expect(binding).not.toHaveBeenCalled();
-    relay.dispose();
-  });
-
-  it('cloud file writes reach the web core and are never replayed with the same key (CAN-6175)', async () => {
-    const binding = jest.fn<
-      ReturnType<RelayBindingProvider>,
-      Parameters<RelayBindingProvider>
-    >(() =>
-      Promise.reject(
-        new CanopyTransportError({
-          kind: 'unavailable',
-          message: 'Not connected in this test.',
-          retry: { kind: 'same_idempotency_key' },
-        }),
-      ),
-    );
-    const relay = webCoreRelay(binding);
-    for (const method of [
-      'worker.filesystem.file.write',
-      'worker.filesystem.directory.create',
-      'worker.filesystem.entry.delete',
-      'worker.filesystem.entry.move',
-    ]) {
-      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
-      // The web core releases a key when its write fails, even after the
-      // write may have applied, so a same-key replay could act twice
-      // (CAN-4733): the relay answers never, as for local writes.
-      await expect(
-        relay.invoke(rendererEvent(), {
-          kind: 'request',
-          method,
-          params: {
-            scope: { chatId: 'chat-1' },
-            _meta: { idempotencyKey: `key-${method}` },
-          },
-        }),
-      ).resolves.toMatchObject({
-        ok: false,
-        error: { kind: 'unavailable', retry: { kind: 'never' } },
-      });
-    }
-    expect(binding).toHaveBeenCalled();
-
-    // A save of a file at the web core's 1 MiB read limit is past the local
-    // relay's 1 MiB request cap once JSON-encoded; the web core relay takes it.
-    await expect(
-      relay.invoke(rendererEvent(), {
-        kind: 'request',
-        method: 'worker.filesystem.file.write',
-        params: {
-          scope: { chatId: 'chat-1' },
-          fileRootId: 'workspace',
-          relativePath: 'large.txt',
-          content: 'x'.repeat(1024 * 1024 + 1),
-          createOnly: false,
-          expectedVersion: 'v1',
-          _meta: { idempotencyKey: 'key-large' },
-        },
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
     relay.dispose();
   });
 

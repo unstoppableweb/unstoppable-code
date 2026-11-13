@@ -30,7 +30,6 @@ Assume the CLI is available as a global `{{BRAND_CLI_NAME}}` executable.
 - Cancel a paused or running execution: `{{BRAND_CLI_NAME}} pipelines executions cancel <execution-id> [--executions-dir <dir>]`
 - List executions: `{{BRAND_CLI_NAME}} pipelines executions list [--executions-dir <dir>] [--limit <n>] [--offset <n>]`
 - Inspect an execution: `{{BRAND_CLI_NAME}} pipelines executions summary <execution-id> [--executions-dir <dir>]`
-- Start, list, inspect or cancel cloud runs: add `--target cloud` to `run`, `list`, `summary` or `cancel` (see [Cloud runs](#cloud-runs---target-cloud))
 - List bundled and user pipelines: `{{BRAND_CLI_NAME}} pipelines list`
 - Validate a pipeline definition without running it: `{{BRAND_CLI_NAME}} pipelines validate <pipeline-input> [--inline]`
 - Register a pipeline in the user store: `{{BRAND_CLI_NAME}} pipelines register <pipeline-input> [--inline]`
@@ -395,32 +394,6 @@ Example:
 ```
 
 Use the same `--executions-dir` that was used for `run` or `resume`.
-
-## Cloud runs (`--target cloud`)
-
-`run`, `list`, `summary` and `cancel` take `--target cloud` to work with runs in {{BRAND_DISPLAY_NAME}} Cloud instead of on this computer. A cloud run keeps going with the computer closed.
-
-Syntax:
-
-```bash
-{{BRAND_CLI_NAME}} pipelines executions run <workflow-id> --target cloud [--owner personal|org:<organization-id>] [--input KEY=VALUE]... [--cloud-model <step>=<model>]... [--idempotency-key <key> [--cloud-model-confirmation <confirmation>]]
-{{BRAND_CLI_NAME}} pipelines executions list --target cloud [--owner personal|org:<organization-id>] [--limit <n>] [--offset <n>]
-{{BRAND_CLI_NAME}} pipelines executions summary <execution-id> --target cloud
-{{BRAND_CLI_NAME}} pipelines executions cancel <execution-id> --target cloud [--idempotency-key <key>]
-```
-
-Behavior:
-
-- Set `{{BRAND_ENV_PREFIX}}_CLOUD_API_KEY` to the desktop cloud key (`csk_…`) of a signed-in account. Only a desktop sign-in key is accepted.
-- `<workflow-id>` is a curated workflow (`curated:<key>`) or a workflow shared to the cloud (`shared:canopy-cloud:<id>`). A local file or inline definition is refused.
-- `--owner` names who the run belongs to; it defaults to `personal`.
-- Options that only apply on this computer, such as `--executions-dir`, `--cwd`, `--env` or `--stream`, are refused with `--target cloud`.
-- When a model step can't run in the cloud as written, `run` exits `1`, starts nothing, and lists each step's key with the cloud models it may use. Run it again with one `--cloud-model <step>=<model>` for each listed step.
-- `run` prints `<execution-id> <pipeline-name>` and the run's current status, then returns; it does not wait for the run to finish. A queued run says so on stderr.
-- `run` and `cancel` send an idempotency key. If the CLI can't confirm the result, it prints the key; run the same command with `--idempotency-key <key>` and the change happens at most once. For a `run` with `--cloud-model`, the printed retry also includes `--cloud-model-confirmation <confirmation>`, so the retry sends the same request even if the workflow or its model policy changed in the meantime.
-- `list` prints the same `<execution-id>\t<status>\t<pipeline-name>` rows as local runs, newest first.
-- `summary` prints the run with its jobs, steps and step logs. Saved reports are not printed yet.
-- `cancel` answers as it does for local runs: `cancelled` on stdout, a stderr note while the run is still stopping, or exit `1` when the run already finished.
 
 ## Matrix execution output
 

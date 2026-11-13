@@ -4,9 +4,6 @@ import { once } from 'node:events';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import v8 from 'node:v8';
-import { linuxColdMembership } from '../internal-root-cold/linux-membership';
-import { createLinuxColdPathMapper } from '../internal-root-cold/linux-mounts';
 import {
   LinuxColdInspectionError,
   observeLinuxColdProcess,
@@ -77,17 +74,17 @@ function fixture(): LinuxColdIO {
 async function expectLinuxRefusal(
   observation: Promise<readonly NativeColdProcess[]>,
   expected: Partial<LinuxColdRefusal>,
-): Promise<LinuxColdRefusal> {
+): Promise<void> {
   try {
     await observation;
   } catch (error) {
     if (!(error instanceof LinuxColdInspectionError)) throw error;
     expect(error.name).toBe('LinuxColdInspectionError');
     expect(error.code).toBe('inspection-incomplete');
-    const refusal = error.refusals.find((row) => row.pid === expected.pid);
-    expect(refusal).toMatchObject(expected);
-    if (!refusal) throw new Error(`Expected refusal for pid=${expected.pid}`);
-    return refusal;
+    expect(
+      error.refusals.find((row) => row.pid === expected.pid),
+    ).toMatchObject(expected);
+    return;
   }
   throw new Error('Expected incomplete Linux cold inspection');
 }
@@ -402,256 +399,6 @@ it.each(['anonymous', 'memfd', 'memfd-fd'])(
     expect(observed.linuxPrivateMountUse?.affected).toBe(false);
   },
 );
-function deniedDeletedMappingFixture(
-  file = '/usr/lib/replaced.so (deleted)',
-  inode = 500n,
-): LinuxColdIO {
-  const io = privateMountFixture('anonymous', false);
-  return {
-    ...io,
-    text: async (name) => {
-      if (name.endsWith('/mountinfo')) return io.text('/proc/self/mountinfo');
-      if (name.endsWith('/maps'))
-        return `1000-2000 r--p 00000000 08:01 ${inode} ${file}\n`;
-      if (name.endsWith('/status'))
-        return `${await io.text(name)}Dumpable:\t0\n`;
-      if (name.endsWith('/cgroup'))
-        return '0::/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire-pulse.service\n';
-      return io.text(name);
-    },
-    link: (name) =>
-      name.includes('/map_files/') ? Promise.resolve(file) : io.link(name),
-    pin: (name) =>
-      name.includes('/map_files/')
-        ? Promise.reject(
-            Object.assign(new Error('map_files pin denied'), {
-              code: 'EPERM',
-              path: name,
-            }),
-          )
-        : io.pin(name),
-  };
-}
-it.each(['EPERM', 'EACCES'])(
-  'admits a fully inspected same-user process with unrelated deleted maps despite %s pin denial (fixture only)',
-  async (code) => {
-    const io = deniedDeletedMappingFixture();
-    const rows = await observeLinuxColdProcesses({
-      uid: 1000,
-      roots: ['/target'],
-      io: {
-        ...io,
-        pin: (name) =>
-          name.includes('/map_files/')
-            ? Promise.reject(
-                Object.assign(new Error('pin denied'), { code, path: name }),
-              )
-            : io.pin(name),
-      },
-    });
-    expect(rows.find((row) => row.pid === 7)?.linuxPrivateMountUse).toEqual({
-      roots: ['/target'],
-      affected: false,
-    });
-  },
-);
-it.each([
-  ['/target/removed (deleted)', 500n, 'under an affected tree'],
-  [
-    '/outside/hardlink (deleted)',
-    200n,
-    'collides with the affected-tree census',
-  ],
-] satisfies readonly (readonly [string, bigint, string])[])(
-  'refuses denied deleted mapping %s that could belong to an affected tree (fixture only)',
-  async (file, inode, reason) => {
-    const refusal = await expectLinuxRefusal(
-      observeLinuxColdProcesses({
-        uid: 1000,
-        roots: ['/target'],
-        io: deniedDeletedMappingFixture(file, inode),
-      }),
-      { pid: 7, dumpable: '0' },
-    );
-    expect(refusal.reason).toContain(reason);
-  },
-);
-it.each(['ext4', 'btrfs'])(
-  'admits a disjoint deleted mapping at a root-name boundary on %s (fixture only)',
-  async (filesystem) => {
-    const io = deniedDeletedMappingFixture('/target-sibling/library (deleted)');
-    const observed = await observeLinuxColdProcess(
-      7,
-      {
-        ...io,
-        text: async (name) =>
-          name.endsWith('/mountinfo')
-            ? (await io.text(name)).replace('ext4', filesystem)
-            : io.text(name),
-      },
-      ['/target'],
-    );
-    expect(observed.linuxPrivateMountUse?.affected).toBe(false);
-  },
-);
-it('names the process, denied evidence and safe next steps in a remaining Linux refusal', async () => {
-  await expect(
-    observeLinuxColdProcess(
-      7,
-      deniedDeletedMappingFixture('/target/removed (deleted)'),
-      ['/target'],
-    ),
-  ).rejects.toThrow(
-    /pid=7 .*comm=.*exe=.*reason=.*Deleted mapping cannot be ruled out.*path=.*target\/removed.*device=8:1 inode=500.*under an affected tree.*cgroup=.*If a separate application or service is named.*save work.*stopping its service normally.*Do not use sudo/,
-  );
-});
-it('keeps mapping identity, ambiguity and process diagnostics together in a denied-pin refusal', async () => {
-  const io = deniedDeletedMappingFixture('/outside/alias (deleted)', 200n);
-  const refusal = await expectLinuxRefusal(
-    observeLinuxColdProcesses({ uid: 1000, roots: ['/target'], io }),
-    {
-      pid: 7,
-      comm: 'name with ) parens',
-      executable: '/usr/bin/node',
-      dumpable: '0',
-      cgroup:
-        '0::/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire-pulse.service\n',
-    },
-  );
-  expect(refusal.reason).toMatch(
-    /Deleted mapping cannot be ruled out: path="\/outside\/alias" device=8:1 inode=200; superblock\/inode collides with the affected-tree census; map_files pin denied/,
-  );
-});
-it.each(['cwd', 'root', 'fd/0', 'maps'])(
-  'does not exempt a non-dumpable same-user process with unreadable %s evidence (fixture only)',
-  async (denied) => {
-    const io = deniedDeletedMappingFixture();
-    const fail = (name: string): never => {
-      throw Object.assign(new Error(`unreadable ${denied}`), {
-        code: 'EACCES',
-        path: name,
-      });
-    };
-    await expectLinuxRefusal(
-      observeLinuxColdProcesses({
-        uid: 1000,
-        roots: ['/target'],
-        io: {
-          ...io,
-          pin: (name) =>
-            name.endsWith(`/${denied}`) ? fail(name) : io.pin(name),
-          link: (name) =>
-            name.endsWith(`/${denied}`) ? fail(name) : io.link(name),
-          text: (name) =>
-            name.endsWith(`/${denied}`) ? fail(name) : io.text(name),
-        },
-      }),
-      { pid: 7, dumpable: '0', reason: `unreadable ${denied}` },
-    );
-  },
-);
-it.each([
-  'link-denied',
-  'link-mismatch',
-  'link-race',
-  'maps-race',
-  'mount-race',
-  'host-mount-race',
-  'private-mount',
-  'unresolved-device',
-  'escaped-name',
-  'missing-map',
-  'io-error',
-])(
-  'refuses ambiguous deleted-mapping fallback evidence: %s (fixture only)',
-  async (failure) => {
-    const io = deniedDeletedMappingFixture(
-      failure === 'escaped-name'
-        ? '/usr/lib/ambiguous\\012name (deleted)'
-        : undefined,
-    );
-    let links = 0,
-      maps = 0,
-      mounts = 0,
-      hostMounts = 0;
-    await expect(
-      observeLinuxColdProcess(
-        7,
-        {
-          ...io,
-          pin: (name) => {
-            if (
-              name.includes('/map_files/') &&
-              ['missing-map', 'io-error'].includes(failure)
-            )
-              throw Object.assign(new Error('mapping unavailable'), {
-                code: failure === 'missing-map' ? 'ENOENT' : 'EIO',
-                path: name,
-              });
-            return io.pin(name);
-          },
-          link: (name) => {
-            if (name.includes('/map_files/')) {
-              if (failure === 'link-denied')
-                throw Object.assign(new Error('readlink denied'), {
-                  code: 'EACCES',
-                  path: name,
-                });
-              if (
-                failure === 'link-mismatch' ||
-                (failure === 'link-race' && ++links > 1)
-              )
-                return Promise.resolve('/other.so (deleted)');
-            }
-            return io.link(name);
-          },
-          text: async (name) => {
-            const value = await io.text(name);
-            if (name.endsWith('/maps') && failure === 'unresolved-device')
-              return value.replace('/usr/lib/replaced.so', '/proc/replaced.so');
-            if (name.endsWith('/maps') && failure === 'maps-race' && ++maps > 1)
-              return value.replace(' 500 ', ' 501 ');
-            if (
-              name === '/proc/self/mountinfo' &&
-              failure === 'host-mount-race' &&
-              ++hostMounts > 1
-            )
-              return `${value}20 10 8:1 /elsewhere /private rw - ext4 /dev/sda1 rw\n`;
-            if (
-              name.endsWith('/mountinfo') &&
-              name !== '/proc/self/mountinfo' &&
-              (failure === 'private-mount' ||
-                (failure === 'mount-race' && ++mounts > 1))
-            )
-              return `${value}20 10 8:1 /elsewhere /private rw - ext4 /dev/sda1 rw\n`;
-            return value;
-          },
-        },
-        ['/target'],
-      ),
-    ).rejects.toMatchObject({ code: 'inspection-incomplete', pid: 7 });
-  },
-);
-it.each(['ext4', 'btrfs'])(
-  'refuses a denied deleted map covered by a same-device %s bind mount (fixture only)',
-  async (filesystem) => {
-    const io = deniedDeletedMappingFixture();
-    await expect(
-      observeLinuxColdProcess(
-        7,
-        {
-          ...io,
-          text: async (name) =>
-            name.endsWith('/mountinfo')
-              ? `${(await io.text(name)).replace('ext4', filesystem)}20 10 8:1 /target /usr/lib rw - ${filesystem} /dev/sda1 rw\n21 10 8:1 /unrelated /usr/lib rw - ${filesystem} /dev/sda1 rw\n`
-              : io.text(name),
-        },
-        ['/target'],
-      ),
-    ).rejects.toMatchObject({ code: 'inspection-incomplete', pid: 7 });
-  },
-);
-
 function btrfsMappingFixture(
   file: string,
   affected: boolean,
@@ -750,7 +497,7 @@ it.each(
     [7, 8].flatMap((tid) =>
       [
         { access: 'readable', code: null, failAt: 0 },
-        ...['EPERM', 'EACCES', 'ENOENT', 'ESRCH'].flatMap((code) =>
+        ...['EPERM', 'ENOENT', 'ESRCH'].flatMap((code) =>
           [1, 2].map((failAt) => ({
             access: `${code} at pin ${failAt}`,
             code,
@@ -814,28 +561,12 @@ it.each(
         },
       },
     });
-    if (code !== null) {
-      const pinFailure = `${code}: open '${reference}'`;
-      const deniedDeletedMapping =
-        failAt === 1 &&
-        (code === 'EPERM' || code === 'EACCES') &&
-        scenario !== 'collision-btrfs';
-      const mappingFailure =
-        scenario === 'deleted-ext4'
-          ? 'path="/alias/gone" device=8:1 inode=500; process and observer mount tables differ'
-          : 'path="/usr/lib/unrelated.so" device=8:1 inode=200; superblock/inode collides with the affected-tree census';
-      const refusal = await expectLinuxRefusal(observation, {
+    if (code !== null)
+      await expectLinuxRefusal(observation, {
         pid: 7,
-        reason: deniedDeletedMapping
-          ? `Deleted mapping cannot be ruled out: ${mappingFailure}; map_files pin denied (${pinFailure})`
-          : pinFailure,
+        reason: `${code}: open '${reference}'`,
       });
-      if (deniedDeletedMapping)
-        expect(refusal.cause).toMatchObject({
-          cause: { code, path: reference, message: pinFailure },
-        });
-      expect(selectedThreadPins).toBe(failAt);
-    } else
+    else
       expect((await observation).find((row) => row.pid === 7)).toMatchObject({
         linuxPrivateMountUse: { roots: ['/target'], affected: false },
       });
@@ -1974,7 +1705,7 @@ it.each([
   'pid-namespace',
   'path-identity',
 ])(
-  'refuses private mount %s with process or census attribution (fixture only)',
+  'refuses private mount %s with a named process (fixture only)',
   async (failure) => {
     const io = privateMountFixture('fd', false);
     let reads = 0;
@@ -2066,11 +1797,7 @@ it.each([
     };
     await expect(
       observeLinuxColdProcess(7, altered, ['/target']),
-    ).rejects.toMatchObject({
-      code: 'inspection-incomplete',
-      pid: failure.startsWith('tree-') ? null : 7,
-      ...(failure.startsWith('tree-') ? { comm: null } : {}),
-    });
+    ).rejects.toMatchObject({ code: 'inspection-incomplete', pid: 7 });
   },
 );
 it('censuses nested descendants rather than comparing only root inodes', async () => {
@@ -2126,8 +1853,7 @@ it.each(['empty', 'absent', 'appeared', 'ancestor-race'])(
     if (scenario === 'appeared' || scenario === 'ancestor-race')
       await expect(observation).rejects.toMatchObject({
         code: 'inspection-incomplete',
-        pid: null,
-        comm: null,
+        pid: 7,
       });
     else
       await expect(observation).resolves.toMatchObject({
@@ -2428,440 +2154,3 @@ if (process.platform === 'win32') {
     ).rejects.toThrow();
   });
 }
-
-it('observes and rechecks more than 100,000 target entries without excluding node_modules', async () => {
-  const base = privateMountFixture('fd', false);
-  const count = 60_000;
-  let censused = 0,
-    rechecked = 0;
-  const names = Array.from({ length: count }, (_, index) => String(index));
-  const io: LinuxColdIO = {
-    ...base,
-    list: async (file) =>
-      file === '/target'
-        ? ['node_modules', 'other']
-        : file === '/target/node_modules' || file === '/target/other'
-          ? names
-          : base.list(file),
-    entry: async (file) => {
-      if (!file.startsWith('/target/')) return base.entry(file);
-      const leaf = file.split('/')[3];
-      const directory = file.startsWith('/target/other') ? 2 : 1;
-      return {
-        dev: 2049n,
-        ino:
-          leaf === undefined
-            ? BigInt(100 + directory)
-            : BigInt(1000 + directory * count + Number(leaf)),
-        mode: leaf === undefined ? 0o040700n : 0o100600n,
-        ctimeNs: 0n,
-        mtimeNs: 0n,
-      };
-    },
-  };
-  const rows = await observeLinuxColdProcesses({
-    uid: 1000,
-    roots: ['/target', '/target/node_modules'],
-    io,
-    census: {
-      predictApplyPeak: true,
-      onProgress: (phase, completed) => {
-        if (phase === 'census') censused = completed;
-        else rechecked = completed;
-      },
-    },
-  });
-  expect(
-    rows.find((row) => row.pid === 7)?.linuxPrivateMountUse?.affected,
-  ).toBe(false);
-  expect(censused).toBe(120_003);
-  expect(rechecked).toBe(censused);
-});
-
-it.each(['single', 'snapshot'] as const)(
-  'excludes slow census and recheck from the %s proc deadline',
-  async (mode) => {
-    const base = privateMountFixture('fd', false);
-    let clock = 0;
-    const now = jest.spyOn(performance, 'now').mockImplementation(() => clock);
-    let completed = 0;
-    const io: LinuxColdIO = {
-      ...base,
-      entry: async (file) => {
-        const entry = await base.entry(file);
-        if (file === '/target/database') clock += 31_000;
-        return entry;
-      },
-    };
-    try {
-      const census = {
-        onProgress: (_phase: 'census' | 'recheck', count: number): void => {
-          completed = count;
-        },
-      };
-      if (mode === 'single')
-        await observeLinuxColdProcess(7, io, ['/target'], census);
-      else
-        await observeLinuxColdProcesses({
-          io,
-          uid: 1000,
-          roots: ['/target'],
-          census,
-        });
-      expect(completed).toBe(2);
-      expect(clock).toBe(62_000);
-    } finally {
-      now.mockRestore();
-    }
-  },
-);
-
-it.each(['single', 'snapshot'] as const)(
-  'attributes the %s census memory guard to the root, not an operator PID',
-  async (mode) => {
-    const base = privateMountFixture('fd', false);
-    const census = { predictApplyPeak: true, entryCap: 4098 };
-    const observation =
-      mode === 'single'
-        ? observeLinuxColdProcess(7, base, ['/target'], census)
-        : observeLinuxColdProcesses({
-            io: base,
-            uid: 1000,
-            roots: ['/target'],
-            census,
-          });
-    const reason: unknown = expect.stringContaining(
-      'root="/target" completed=1 reached=2 applyPeak=4100 cap=4098',
-    );
-    await expect(observation).rejects.toMatchObject({
-      code: 'inspection-incomplete',
-      pid: null,
-      comm: null,
-      refusals: [expect.objectContaining({ reason })],
-    });
-  },
-);
-
-it('retains the four-second bound on a proc read', async () => {
-  jest.useFakeTimers();
-  const base = privateMountFixture('fd', false);
-  const observation = observeLinuxColdProcess(7, {
-    ...base,
-    text: (file) =>
-      file === '/proc/self/mountinfo'
-        ? new Promise<string>(() => {})
-        : base.text(file),
-  });
-  const refused = expect(observation).rejects.toThrow(
-    'Proc observation deadline exceeded',
-  );
-  try {
-    await jest.advanceTimersByTimeAsync(4001);
-    await refused;
-  } finally {
-    jest.useRealTimers();
-  }
-});
-
-it('retains the total proc budget after census work is excluded', async () => {
-  const base = privateMountFixture('fd', false);
-  let clock = 0;
-  const now = jest.spyOn(performance, 'now').mockImplementation(() => clock);
-  try {
-    await expect(
-      observeLinuxColdProcess(
-        7,
-        {
-          ...base,
-          text: async (file) => {
-            const value = await base.text(file);
-            if (file === '/proc/7/stat') clock += 30_001;
-            return value;
-          },
-        },
-        ['/target'],
-      ),
-    ).rejects.toThrow('Proc observation deadline exceeded');
-  } finally {
-    now.mockRestore();
-  }
-});
-
-it.each(['single', 'snapshot'] as const)(
-  'counts existing replicas against the %s apply-peak reservation instead of doubling them again',
-  async (mode) => {
-    const base = privateMountFixture('fd', false);
-    const io: LinuxColdIO = {
-      ...base,
-      entry: async (file) => {
-        const entry = await base.entry(file.replace('/replica', '/target'));
-        return file.startsWith('/replica')
-          ? { ...entry, ino: entry.ino + 1000n }
-          : entry;
-      },
-      list: (file) => base.list(file.replace('/replica', '/target')),
-    };
-    const census = {
-      predictApplyPeak: true,
-      entryCap: 4100,
-      sourceRoot: '/target',
-      replicaRoots: ['/replica'],
-    };
-    if (mode === 'single')
-      await expect(
-        observeLinuxColdProcess(7, io, ['/target', '/replica'], census),
-      ).resolves.toMatchObject({ pid: 7 });
-    else
-      await expect(
-        observeLinuxColdProcesses({
-          io,
-          uid: 1000,
-          roots: ['/target', '/replica'],
-          census,
-        }),
-      ).resolves.toHaveLength(2);
-  },
-);
-
-it.each(['cycle', 'duplicate-names'] as const)(
-  'keeps %s a census refusal without process attribution',
-  async (failure) => {
-    const base = privateMountFixture('fd', false);
-    const reason: unknown = expect.stringContaining(
-      failure === 'cycle'
-        ? 'Cyclic Linux target directory'
-        : 'Incomplete Linux target directory',
-    );
-    await expect(
-      observeLinuxColdProcess(
-        7,
-        {
-          ...base,
-          entry: async (file) =>
-            file === '/target/cycle' ? base.entry('/target') : base.entry(file),
-          list: async (file) =>
-            file === '/target'
-              ? failure === 'cycle'
-                ? ['cycle']
-                : ['database', 'database']
-              : base.list(file),
-        },
-        ['/target'],
-      ),
-    ).rejects.toMatchObject({
-      code: 'inspection-incomplete',
-      pid: null,
-      comm: null,
-      refusals: [expect.objectContaining({ reason })],
-    });
-  },
-);
-
-it('retains an actual census memory guard after apply-peak admission', async () => {
-  const base = privateMountFixture('fd', false);
-  const reason: unknown = expect.stringContaining(
-    'completed=2 reached=3 applyPeak=3 cap=2',
-  );
-  await expect(
-    observeLinuxColdProcess(
-      7,
-      {
-        ...base,
-        list: async (file) =>
-          file === '/target' ? ['database', 'second'] : base.list(file),
-      },
-      ['/target'],
-      { entryCap: 2 },
-    ),
-  ).rejects.toMatchObject({
-    pid: null,
-    comm: null,
-    refusals: [expect.objectContaining({ reason })],
-  });
-});
-
-it.each(['single', 'snapshot'] as const)(
-  'bounds hung census and recheck metadata calls for %s observation',
-  async (mode) => {
-    for (const operation of ['entry', 'list'] as const) {
-      for (const phase of ['census', 'recheck'] as const) {
-        jest.useFakeTimers();
-        const base = privateMountFixture('fd', false);
-        let calls = 0;
-        const hangs = (file: string): boolean =>
-          file === '/target' &&
-          ++calls === (phase === 'census' ? 1 : operation === 'entry' ? 4 : 2);
-        const io: LinuxColdIO = {
-          ...base,
-          entry: (file) =>
-            operation === 'entry' && hangs(file)
-              ? new Promise<never>(() => {})
-              : base.entry(file),
-          list: (file) =>
-            operation === 'list' && hangs(file)
-              ? new Promise<never>(() => {})
-              : base.list(file),
-        };
-        const census = {};
-        const observation =
-          mode === 'single'
-            ? observeLinuxColdProcess(7, io, ['/target'], census)
-            : observeLinuxColdProcesses({
-                io,
-                uid: 1000,
-                roots: ['/target'],
-                census,
-              });
-        const reason: unknown = expect.stringContaining(
-          'metadata read deadline exceeded',
-        );
-        const refused = expect(observation).rejects.toMatchObject({
-          pid: null,
-          comm: null,
-          refusals: [expect.objectContaining({ reason })],
-        });
-        try {
-          await jest.advanceTimersByTimeAsync(4001);
-          await refused;
-        } finally {
-          jest.useRealTimers();
-        }
-      }
-    }
-  },
-);
-
-it('lowers the installed census guard for a small V8 heap before allocating a large tree', async () => {
-  const heap = v8.getHeapStatistics();
-  const statistics = jest
-    .spyOn(v8, 'getHeapStatistics')
-    .mockReturnValue({ ...heap, heap_size_limit: 4 * 1024 ** 2 });
-  try {
-    const reason: unknown = expect.stringContaining(
-      'completed=0 reached=1 applyPeak=4098 cap=4096',
-    );
-    await expect(
-      observeLinuxColdProcess(
-        7,
-        privateMountFixture('fd', false),
-        ['/target'],
-        { predictApplyPeak: true },
-      ),
-    ).rejects.toMatchObject({
-      pid: null,
-      refusals: [expect.objectContaining({ reason })],
-    });
-  } finally {
-    statistics.mockRestore();
-  }
-});
-
-it('retains both a global proc refusal and a census recheck refusal without PID attribution', async () => {
-  const base = privateMountFixture('fd', false);
-  let procReads = 0,
-    entryReads = 0;
-  const reason: unknown = expect.stringContaining(
-    'Linux target census incomplete',
-  );
-  const refusals: unknown = expect.arrayContaining([
-    expect.objectContaining({
-      pid: null,
-      reason: 'Proc process set changed during observation',
-    }),
-    expect.objectContaining({ pid: null, comm: null, reason }),
-  ]);
-  await expect(
-    observeLinuxColdProcesses({
-      uid: 1000,
-      roots: ['/target'],
-      io: {
-        ...base,
-        list: async (file) => {
-          const names = await base.list(file);
-          return file === '/proc' && ++procReads > 1 ? [...names, '8'] : names;
-        },
-        entry: async (file) => {
-          const entry = await base.entry(file);
-          return file === '/target/database' && ++entryReads > 1
-            ? { ...entry, ino: entry.ino + 1n }
-            : entry;
-        },
-      },
-    }),
-  ).rejects.toMatchObject({
-    refusals,
-  });
-});
-
-// Synthetic IO only: does not qualify native ext4 or a full --apply.
-test('two-million-entry census completes inside its metadata memory and time budgets', async () => {
-  const files = 100_000,
-    groups = 20;
-  const root = '/target/workspaces/installed-canopy-worktree/node_modules';
-  const names = Array.from({ length: files }, (_, i) => String(i));
-  const metadata = {
-    dev: 2049n,
-    ino: 1n,
-    mode: 0o100600n,
-    ctimeNs: 0n,
-    mtimeNs: 0n,
-  };
-  let censused = 0,
-    rechecked = 0;
-  const io: LinuxColdIO = {
-    entry: (file) => {
-      const relative = file.slice(root.length + 1);
-      const [group, leaf] = relative.split('/');
-      return Promise.resolve({
-        ...metadata,
-        ino:
-          file === root
-            ? 1n
-            : leaf === undefined
-              ? BigInt(100 + Number(group))
-              : BigInt(1000 + Number(group) * files + Number(leaf)),
-        mode: file === root || leaf === undefined ? 0o040700n : metadata.mode,
-      });
-    },
-    list: (file) =>
-      Promise.resolve(
-        file === root
-          ? Array.from({ length: groups }, (_, i) => String(i))
-          : names,
-      ),
-    pin: () => Promise.reject(new Error('not proc')),
-    identity: () => Promise.reject(new Error('not proc')),
-    text: () => Promise.reject(new Error('not proc')),
-    link: () => Promise.reject(new Error('not proc')),
-  };
-  const started = performance.now();
-  const before = process.memoryUsage().heapUsed;
-  let peak = before;
-  const census = await linuxColdMembership(
-    io,
-    [root],
-    createLinuxColdPathMapper('10 0 8:1 / / rw - ext4 /dev/sda1 rw\n'),
-    {
-      onProgress: (phase, count) => {
-        if (phase === 'census') censused = count;
-        else rechecked = count;
-        if (count % 100_000 === 0)
-          peak = Math.max(peak, process.memoryUsage().heapUsed);
-      },
-    },
-  );
-  expect(
-    census.object({ dev: 2049n, ino: BigInt(1000 + groups * files - 1) }),
-  ).toBe(true);
-  await census.recheck();
-  const milliseconds = performance.now() - started;
-  const heapGrowth = Math.max(peak, process.memoryUsage().heapUsed) - before;
-  process.stderr.write(
-    `CAN-6420 synthetic census: ${JSON.stringify({ censused, rechecked, milliseconds, heapGrowth })}\n`,
-  );
-  expect(censused).toBe(2_000_021);
-  expect(rechecked).toBe(censused);
-  // CAN-6420 complexity/budget guards, not performance evidence.
-  expect(milliseconds).toBeLessThan(120_000);
-  expect(heapGrowth).toBeLessThan(1.5 * 1024 ** 3);
-}, 180_000);

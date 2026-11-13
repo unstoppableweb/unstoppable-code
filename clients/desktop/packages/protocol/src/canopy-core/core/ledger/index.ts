@@ -2,8 +2,3 @@ export * from './limits';
 export * from './text';
 export * from './schemas';
 export * from './operations';
-export * from './policy';
-export * from './redaction';
-export * from './revisions';
-export * from './display-name';
-export * from './tools';

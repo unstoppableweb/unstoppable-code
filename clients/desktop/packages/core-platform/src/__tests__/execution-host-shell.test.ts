@@ -8,10 +8,7 @@ import type {
   PlatformOperatingSystem,
 } from '@canopy/core-runtime';
 import { createExecutionProcessServices } from '../index';
-import {
-  encodeExecutionHostFrame,
-  ExecutionHostFrameReader,
-} from '../execution-host/channel';
+import { encodeExecutionHostFrame } from '../execution-host/channel';
 import {
   createOwnedProcessHostPort,
   type OwnedExecutionHostPort,
@@ -344,38 +341,6 @@ describe('execution host shell arguments', () => {
     );
     expect(code).toBe(EXECUTION_HOST_LIMIT_EXIT_CODES.heap);
     expect(stderr).toContain('heap limit of 64 MiB');
-  });
-
-  it('lets an entry unwind and exit with its code once its launcher is gone', async () => {
-    const child = spawn(
-      process.execPath,
-      [
-        path.join(dir, SHELL),
-        ...executionHostShellArgs({ entry: ENTRY, budget: BUDGET }),
-      ],
-      {
-        env: { ...process.env, CANOPY_EXECUTION_HOST_CHANNEL: 'stdio' },
-        stdio: ['pipe', 'pipe', 'ignore'],
-      },
-    );
-    const exited = new Promise<number | null>((resolve) =>
-      child.on('exit', resolve),
-    );
-    const armed = new Promise<void>((resolve) => {
-      const reader = new ExecutionHostFrameReader(
-        (message) => {
-          if (field(message, 'type') === 'orphan') resolve();
-        },
-        () => undefined,
-      );
-      child.stdout.on('data', (chunk: Buffer) => reader.push(chunk));
-    });
-    child.stdin.write(encodeExecutionHostFrame({ type: 'orphan', code: 7 }));
-    await armed;
-    // The launcher dies: nothing reads the shell's output or writes its input.
-    child.stdout.destroy();
-    child.stdin.end();
-    expect(await exited).toBe(7);
   });
 
   it('stops an entry at its resident memory limit', async () => {

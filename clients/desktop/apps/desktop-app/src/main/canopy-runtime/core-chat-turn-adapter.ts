@@ -92,15 +92,6 @@ export function chatSummaryOf(
   };
 }
 
-function unserved(field: string, reason: string): CanopyOperationError {
-  return new CanopyOperationError({
-    kind: 'capability_unavailable',
-    message: 'Desktop chats do not serve these fields.',
-    details: { unsupported: [field], reason },
-    retry: { kind: 'after_refresh', resource: 'core.runtime.manifest.get' },
-  });
-}
-
 /**
  * Exact-turn Stop (CAN-5485). A desktop turn is named by its user message id,
  * the id `core.chat.message.send` takes and the transcript's turn view returns.
@@ -112,10 +103,18 @@ export function createCoreChatTurnAdapter(
     'core.chat.turn.cancel': async (params): Promise<TurnCancelResult> => {
       // Desktop's Stop is always the user's, as the web core's is.
       if (params.reason !== 'user')
-        throw unserved('reason', `cancel_${params.reason}_unsupported`);
-      // The computer has the first message itself: no server holds it back.
-      if (params.firstMessage !== undefined || params.turnId === undefined)
-        throw unserved('firstMessage', 'first_message_unsupported');
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'Desktop chats do not serve these fields.',
+          details: {
+            unsupported: ['reason'],
+            reason: `cancel_${params.reason}_unsupported`,
+          },
+          retry: {
+            kind: 'after_refresh',
+            resource: 'core.runtime.manifest.get',
+          },
+        });
       let scope: ChatCancelRequest | undefined;
       let state: ChatStateSnapshot | undefined;
       let archived:

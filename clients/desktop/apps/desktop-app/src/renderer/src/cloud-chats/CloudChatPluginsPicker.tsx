@@ -17,7 +17,7 @@ import {
 } from '@/stores/chat/web-core/selection-saves';
 import { taskCreationSettled } from '@/stores/chat/web-core/task-creations';
 import { webCoreScopeId } from '@/lib/chat-authority';
-import { useCloudChatCatalog } from './cloud-chat-catalog';
+import { useCloudChatCatalog } from './CloudChatComposerHost';
 
 /**
  * A cloud chat's skills, plugins and MCP servers in the desktop composer

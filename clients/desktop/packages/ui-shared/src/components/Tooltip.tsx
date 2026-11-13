@@ -136,8 +136,6 @@ export interface TooltipProps {
    * body, outside any replay-blocked transcript or panel around the trigger.
    */
   replayBlock?: boolean;
-  /** Let a touch user read help on a focusable, unavailable control. */
-  showOnTouch?: boolean;
   /** The trigger element. */
   children: ReactNode;
 }
@@ -217,7 +215,6 @@ export function Tooltip({
   openDelay = 0,
   suppressed = false,
   replayBlock = false,
-  showOnTouch = false,
   children,
 }: TooltipProps): JSX.Element {
   const interactive = Boolean(link);
@@ -546,13 +543,6 @@ export function Tooltip({
       onMouseLeave={requestHide}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      onPointerUp={
-        showOnTouch
-          ? (event): void => {
-              if (event.pointerType === 'touch') showTooltip();
-            }
-          : undefined
-      }
     >
       {describedChildren}
       {tooltipMounted &&

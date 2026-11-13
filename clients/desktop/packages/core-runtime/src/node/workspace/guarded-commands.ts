@@ -6,7 +6,6 @@ import {
   type CoreWorkspaceCoworkUpdateParams,
   type CoreWorkspaceCoworkUpdateResult,
   type CoreWorkspaceHooksUpdateParams,
-  type CoreWorkspacePluginSelections,
   type CoreWorkspacePluginsUpdateParams,
   type CoreWorkspacePluginsUpdateResult,
   type CoreWorkspaceRetentionUpdateParams,
@@ -72,17 +71,6 @@ export type CoreWorktreeMetadataPatch = Omit<
   'targetId'
 >;
 
-/**
- * The plugins change the host runs: defaults it can store, without REST's
- * defaults revision, which are refused before the host runs (CAN-6114).
- */
-export type CoreWorkspaceHostPluginsChange =
-  | Exclude<CoreWorkspacePluginsUpdateParams['change'], { kind: 'setDefaults' }>
-  | {
-      kind: 'setDefaults';
-      defaultPluginSelections: CoreWorkspacePluginSelections;
-    };
-
 export interface CoreWorkspaceGuardedHost {
   /** `expectedRevision` is the workspace revision (`workspace:{id}`). */
   updateHooks(
@@ -91,28 +79,16 @@ export interface CoreWorkspaceGuardedHost {
   ): Promise<void>;
   /** `expectedRevision` is the workspace revision (`workspace:{id}`). */
   updatePlugins(
-    input: Omit<CoreWorkspacePluginsUpdateParams, '_meta' | 'change'> & {
-      change: CoreWorkspaceHostPluginsChange;
-    },
+    input: Omit<CoreWorkspacePluginsUpdateParams, '_meta'>,
     call: CoreWorkspaceGuardedCall,
   ): Promise<CoreWorkspacePluginsUpdateResult>;
   updateRetention(
     input: Omit<CoreWorkspaceRetentionUpdateParams, '_meta'>,
     call: CoreWorkspaceGuardedCall,
   ): Promise<CoreWorkspaceRetentionUpdateResult>;
-  /**
-   * `expectedRevision` is the workspace revision (`workspace:{id}`). A
-   * cleared default model is refused before the host runs.
-   */
+  /** `expectedRevision` is the workspace revision (`workspace:{id}`). */
   updateCoworkSettings(
-    input: Omit<CoreWorkspaceCoworkUpdateParams, '_meta' | 'settings'> & {
-      settings: Omit<
-        CoreWorkspaceCoworkUpdateParams['settings'],
-        'defaultModel'
-      > & {
-        defaultModel?: string;
-      };
-    },
+    input: Omit<CoreWorkspaceCoworkUpdateParams, '_meta'>,
     call: CoreWorkspaceGuardedCall,
   ): Promise<CoreWorkspaceCoworkUpdateResult>;
   /**
@@ -139,33 +115,6 @@ export interface CoreWorkspaceGuardedHost {
     input: Omit<CoreWorktreeHooksSetPausedParams, '_meta'>,
     call: CoreWorkspaceGuardedCall,
   ): Promise<CoreWorktreeHooksSetPausedResult>;
-}
-
-/**
- * The web core's clear and REST's defaults revision (CAN-6114): desktop
- * defaults have no cleared state and no revision of their own.
- */
-function hostPluginsChange(
-  change: CoreWorkspacePluginsUpdateParams['change'],
-): CoreWorkspaceHostPluginsChange {
-  if (change.kind !== 'setDefaults') return change;
-  const { defaultPluginSelections, expectedDefaultPluginSelectionsRevision } =
-    change;
-  const fields = [
-    ...(defaultPluginSelections === null ? ['defaultPluginSelections'] : []),
-    ...(expectedDefaultPluginSelectionsRevision === undefined
-      ? []
-      : ['expectedDefaultPluginSelectionsRevision']),
-  ];
-  if (defaultPluginSelections === null || fields.length > 0)
-    throw new CanopyOperationError({
-      kind: 'capability_unavailable',
-      message:
-        'Clearing the default plugins, or guarding them by their own revision, is unavailable on this host.',
-      details: { reason: 'unserved', fields },
-      retry: { kind: 'never' },
-    });
-  return { kind: 'setDefaults', defaultPluginSelections };
 }
 
 export type CoreWorkspaceGuardedHandlers =
@@ -245,35 +194,22 @@ export function createCoreWorkspaceGuardedHandlers(
           {
             workspaceId: params.workspaceId,
             ...revisioned(params.expectedRevision),
-            change: hostPluginsChange(params.change),
+            change: params.change,
           },
           call(context),
         ),
       ),
     'core.workspace.cowork.update': (params, context) =>
-      run('core.workspace.cowork.update', () => {
-        const { defaultModel, ...settings } = params.settings;
-        // The web core's clear (CAN-6114): a desktop Cowork default has no
-        // cleared state to store.
-        if (defaultModel === null)
-          throw new CanopyOperationError({
-            kind: 'capability_unavailable',
-            message: 'Clearing the default model is unavailable on this host.',
-            details: { reason: 'unserved', fields: ['defaultModel'] },
-            retry: { kind: 'never' },
-          });
-        return host.updateCoworkSettings(
+      run('core.workspace.cowork.update', () =>
+        host.updateCoworkSettings(
           {
             workspaceId: params.workspaceId,
             ...revisioned(params.expectedRevision),
-            settings: {
-              ...settings,
-              ...(defaultModel !== undefined && { defaultModel }),
-            },
+            settings: params.settings,
           },
           call(context),
-        );
-      }),
+        ),
+      ),
     'core.workspace.retention.update': (params, context) =>
       run('core.workspace.retention.update', () =>
         host.updateRetention(

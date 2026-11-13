@@ -164,13 +164,6 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the Orchestrator page Labs experiment.',
   },
-  canopyDesktopLabsPromptSuggestions: {
-    key: 'canopy-desktop-labs-prompt-suggestions',
-    // Off until opted in: each suggestion is an extra provider request.
-    launchDarklyDisabledDefaultValue: 'offered',
-    launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the next prompt suggestions Labs experiment.',
-  },
   canopyDesktopLabsOverviewPage: {
     key: 'canopy-desktop-labs-overview-page',
     launchDarklyDisabledDefaultValue: 'offered',
@@ -735,8 +728,6 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
     .key]: LabsExperimentAvailability;
-  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
-    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage
@@ -878,9 +869,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -1111,9 +1099,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
         .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
-        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
         .launchDarklyEnabledUnavailableValue,
@@ -1309,7 +1294,6 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key,
-  CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,

@@ -718,7 +718,7 @@ function stepPromptText(
     typeof step.with?.system_prompt === 'string'
       ? step.with.system_prompt
       : undefined,
-    aliasInstructions && !('agent_id' in aliasInstructions)
+    aliasInstructions && 'base' in aliasInstructions
       ? aliasInstructions.instructions
       : undefined,
   ]
@@ -775,7 +775,7 @@ function affectedStepsForCollection(
       .filter(
         (alias) =>
           alias.defaults &&
-          !('agent_id' in alias.defaults) &&
+          'base' in alias.defaults &&
           alias.defaults.plugin_collection_id === collectionId,
       )
       .map((alias) => alias.id),
@@ -912,9 +912,7 @@ function declaredEnvironmentRequirements(
     );
     if (affectedSteps.length === 0) continue;
     const model =
-      alias.defaults &&
-      'base' in alias.defaults &&
-      alias.defaults.base !== undefined
+      alias.defaults && 'base' in alias.defaults
         ? alias.defaults.base
         : alias.name;
     requirements.push({

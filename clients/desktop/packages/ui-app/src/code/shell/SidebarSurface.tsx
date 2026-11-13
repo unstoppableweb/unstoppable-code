@@ -113,7 +113,6 @@ import {
 } from './StandaloneChatsSidebarSection';
 import type {
   WorkEntryNotificationHandlers,
-  StandaloneChatsSidebarChat,
   StandaloneChatsSidebarRowsState,
   StandaloneChatsSidebarSnapshot,
 } from './StandaloneChatsSidebarSection';
@@ -462,16 +461,6 @@ export interface SidebarSurfaceProps {
     groupId: string,
   ) => void;
   readonly onGroupError?: (workspaceLocalId: string, error: unknown) => void;
-  /**
-   * Archives a standalone chat's whole Work Entry, locked and restorable on
-   * desktop (CAN-5461). Offered only for rows whose owning project's
-   * capabilities include `standaloneChatArchive` and whose commands are
-   * enabled; never in a read-only list or for a cloud project. Settle once
-   * the removal is confirmed or failed; the host reports failures.
-   */
-  readonly onArchiveStandaloneChat?: (
-    chat: StandaloneChatsSidebarChat & { readonly projectLocalId: string },
-  ) => void | Promise<void>;
   readonly onCreateBranchWorktree?: (
     workspaceLocalId: string,
     baseWorktreeLocalId: string,
@@ -961,12 +950,6 @@ export interface SidebarSurfaceProps {
   readonly isWorkspaceCommandDisabled?: (workspaceLocalId: string) => boolean;
   /** Host-identified recipient placeholders rendered outside Projects. */
   readonly sharedWorkspaceIds?: ReadonlySet<string>;
-  /**
-   * Notices about shares that ended, at the top of Shared with you. Present
-   * (not nullish) keeps the section even with nothing else in it, and before
-   * the rows are ready: they do not depend on any workspace.
-   */
-  readonly sharedWithMeNotices?: ReactNode;
   /** Host-withheld rows that remain mounted elsewhere, such as an active revoked chat. */
   readonly hiddenWorktreeIds?: ReadonlySet<string>;
   /** Optional host policy for adding or suppressing row-menu entries. */
@@ -3487,39 +3470,6 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     : scopedSnapshot.worktrees;
   const hiddenWorkspacesToggleId =
     testIds?.hiddenWorkspacesToggle ?? 'portal-hidden-workspaces-toggle';
-  // Archive is judged per chat by its owning project, so a fallback row never
-  // borrows another project's capability (CAN-5461).
-  const canArchiveStandaloneChat = (chat: {
-    readonly projectLocalId: string;
-  }): boolean => {
-    const owner = scopedSnapshot.workspaces.find(
-      (workspace) => workspace.localId === chat.projectLocalId,
-    );
-    return (
-      owner !== undefined &&
-      owner.type === 'cowork' &&
-      owner.backend !== 'cloud' &&
-      owner.sharedFrom !== true &&
-      !props.sharedWorkspaceIds?.has(chat.projectLocalId) &&
-      !props.isWorkspaceCommandDisabled?.(chat.projectLocalId) &&
-      (props.capabilitiesFor?.(chat.projectLocalId) ?? capabilities)
-        .standaloneChatArchive === true
-    );
-  };
-  const standaloneChatArchiveProps = (
-    readOnly: boolean,
-  ): {
-    readonly onArchiveChat?: SidebarSurfaceProps['onArchiveStandaloneChat'];
-    readonly canArchiveChat?: (chat: {
-      readonly projectLocalId: string;
-    }) => boolean;
-  } =>
-    readOnly || props.onArchiveStandaloneChat === undefined
-      ? {}
-      : {
-          onArchiveChat: props.onArchiveStandaloneChat,
-          canArchiveChat: canArchiveStandaloneChat,
-        };
 
   const renderWorkspaceList = (
     listWorkspaces: typeof sections,
@@ -3798,7 +3748,6 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 snapshot={scopedSnapshot}
                 workspace={workspace}
                 workEntryMultiSelect={workEntryMultiSelect}
-                {...standaloneChatArchiveProps(readOnly)}
                 itemGroupCommands={
                   !readOnly &&
                   !props.isWorkspaceCommandDisabled?.(workspace.localId) &&
@@ -4104,7 +4053,6 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             props.onGroupError?.(chatsOwner.localId, error)
           }
           headerPresentation="section"
-          {...standaloneChatArchiveProps(cloudChatsWorkspace !== undefined)}
           workEntryNotifications={workEntryNotifications}
           selectionActions={selectionActionsFor('chats')}
           onEnterSelection={
@@ -4449,8 +4397,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           // own gap.
           <div aria-hidden="true" className="h-3" />
         )}
-      {((contentState === 'ready' && sharedSections.length > 0) ||
-        props.sharedWithMeNotices) && (
+      {contentState === 'ready' && sharedSections.length > 0 && (
         <section
           data-testid="portal-shared-with-me-section"
           aria-labelledby="portal-shared-with-me-heading"
@@ -4467,19 +4414,16 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               {SHARED_WITH_YOU_SECTION_LABEL}
             </Heading>
           </div>
-          {props.sharedWithMeNotices}
-          {contentState === 'ready' && sharedSections.length > 0 && (
-            <Stack gap="tight">
-              {renderWorkspaceList(
-                sharedSections,
-                {
-                  root: 'portal-shared-with-me-list',
-                  hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
-                },
-                true,
-              )}
-            </Stack>
-          )}
+          <Stack gap="tight">
+            {renderWorkspaceList(
+              sharedSections,
+              {
+                root: 'portal-shared-with-me-list',
+                hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
+              },
+              true,
+            )}
+          </Stack>
         </section>
       )}
       {/* A host rail seats the header inside its own sticky band, HERE
@@ -4545,7 +4489,6 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             {showStandaloneChats && (
               <StandaloneChatsSidebarSection
                 snapshot={scopedSnapshot}
-                {...standaloneChatArchiveProps(false)}
                 selectedStandaloneChatId={
                   selection?.kind === 'standalone-chat'
                     ? selection.standaloneChatId

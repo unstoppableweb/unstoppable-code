@@ -58,10 +58,7 @@ export function formatUsageLimitedWaitingDetail(
     : `Limit resets at ${resetLabel}`;
 }
 
-/** The label of a control that opens a session without resuming it. */
-export function usageLimitedSessionOpenLabel(
-  kind: UsageLimitedWaitingSession['kind'],
-): string {
+function openActionLabel(kind: UsageLimitedWaitingSession['kind']): string {
   return kind === 'chat' ? 'Open chat' : 'Open pipeline';
 }
 
@@ -97,7 +94,7 @@ export function UsageLimitedSessionsControl({
                 data-testid={`${testIdPrefix}-waiting-open`}
                 onClick={(): void => waiting.onOpenSession(only)}
               >
-                {usageLimitedSessionOpenLabel(only.kind)}
+                {openActionLabel(only.kind)}
               </Button>
             ) : (
               <Button
@@ -140,7 +137,7 @@ export function UsageLimitedSessionsControl({
                       </span>
                     ) : undefined
                   }
-                  trailing={usageLimitedSessionOpenLabel(session.kind)}
+                  trailing={openActionLabel(session.kind)}
                 >
                   <span className={REPLAY_MASK_CLASS}>{session.title}</span>
                 </ListRow>

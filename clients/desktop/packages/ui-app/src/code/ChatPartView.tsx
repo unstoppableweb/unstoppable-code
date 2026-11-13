@@ -37,7 +37,6 @@ import {
   AutoRoutedModelPill,
   AnsweredQuestionsBlock,
   AskUserQuestionCard,
-  AskUserQuestionPreparingRow,
   CollapsibleBlock,
   CompactionInfoBlock,
   DeferredAccountProxySwitchPart,
@@ -94,6 +93,7 @@ import {
 } from './ChatToolResultPart';
 import { useClaudeModsSkippedHost } from '../capability/claude-mods/ClaudeModsSkippedHost';
 import { DeferredClaudeModsSkippedPart } from '../capability/claude-mods/DeferredClaudeModsSkippedPart';
+import { Notice } from '@canopy/ui-shared/components/Notice';
 
 /**
  * Renders one neutral {@link PortalChatPart} by dispatching on its typed `kind`
@@ -941,7 +941,16 @@ function ChatPartContent({
             );
           }
           case 'preparing':
-            return <AskUserQuestionPreparingRow />;
+            return (
+              <Notice
+                intent="neutral"
+                icon={null}
+                role="none"
+                data-testid="ask-user-question-preparing"
+              >
+                Preparing question…
+              </Notice>
+            );
           case 'answered':
             return (
               <>

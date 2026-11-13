@@ -74,13 +74,6 @@ export interface FileTreeActionMenuProps {
   canPaste: boolean;
   variant?: 'explorer' | 'changed-file' | 'diff-tree';
   startPageState?: { isStartPage: boolean; toggle: () => void };
-  /**
-   * The files are on this computer (the default). A cloud chat's aren't, so
-   * the rows that hand them to the OS, and Copy, which main runs, are hidden.
-   */
-  localFiles?: boolean;
-  /** The scope's composer takes file mentions (the default). */
-  canMention?: boolean;
 }
 
 /** Desktop's current copy; the shared defaults use sentence case. */
@@ -137,14 +130,12 @@ export function FileTreeActionMenu({
   canPaste,
   variant = 'explorer',
   startPageState,
-  localFiles = true,
-  canMention = true,
 }: FileTreeActionMenuProps): JSX.Element | null {
   const [preferredApp, setPreferredApp] = useState<DetectedApp | null>(null);
   const fileExists = target.kind !== 'file' || target.fileExists !== false;
 
   useEffect(() => {
-    if (target.kind !== 'file' || !fileExists || !localFiles) {
+    if (target.kind !== 'file' || !fileExists) {
       setPreferredApp(null);
       return;
     }
@@ -161,7 +152,7 @@ export function FileTreeActionMenu({
     return (): void => {
       active = false;
     };
-  }, [fileExists, localFiles, target.kind]);
+  }, [fileExists, target.kind]);
 
   const explorer = variant === 'explorer';
   const run =
@@ -189,9 +180,9 @@ export function FileTreeActionMenu({
       onNewFolder={explorer ? run('new-folder') : undefined}
       onOpen={variant !== 'diff-tree' ? run('open') : undefined}
       onOpenToSide={explorer ? run('open-side') : undefined}
-      onOpenExternal={explorer && localFiles ? run('open-external') : undefined}
+      onOpenExternal={explorer ? run('open-external') : undefined}
       openInApp={
-        localFiles && fileExists && preferredApp && preferredAppIcon
+        fileExists && preferredApp && preferredAppIcon
           ? {
               appName: preferredApp.name,
               iconSrc: preferredAppIcon,
@@ -200,7 +191,7 @@ export function FileTreeActionMenu({
           : undefined
       }
       onMention={
-        canMention && fileExists && target.kind === 'file'
+        fileExists && target.kind === 'file'
           ? (): void => sendFileReferenceToChat(target)
           : undefined
       }
@@ -213,26 +204,22 @@ export function FileTreeActionMenu({
           : undefined
       }
       onCut={explorer ? run('cut') : undefined}
-      onCopy={explorer && localFiles ? run('copy') : undefined}
+      onCopy={explorer ? run('copy') : undefined}
       onPaste={explorer ? run('paste') : undefined}
       canPaste={canPaste}
       onCopyPath={copyPath(false)}
       copyPathTooltip={`Copy the ${target.kind === 'folder' ? 'folder' : 'file'} path`}
-      onCopyAbsolutePath={localFiles ? copyPath(true) : undefined}
+      onCopyAbsolutePath={copyPath(true)}
       onRename={explorer ? run('rename') : undefined}
-      openInFileManager={
-        localFiles
-          ? {
-              label: pt(uiText.fileManager.openItem),
-              onSelect: (): void =>
-                onOpenInFileManager(
-                  target.kind === 'file'
-                    ? (target.fileManagerPath ?? target.entry.absolutePath)
-                    : target.absolutePath,
-                ),
-            }
-          : undefined
-      }
+      openInFileManager={{
+        label: pt(uiText.fileManager.openItem),
+        onSelect: (): void =>
+          onOpenInFileManager(
+            target.kind === 'file'
+              ? (target.fileManagerPath ?? target.entry.absolutePath)
+              : target.absolutePath,
+          ),
+      }}
       onDelete={explorer ? run('delete') : undefined}
     />
   );

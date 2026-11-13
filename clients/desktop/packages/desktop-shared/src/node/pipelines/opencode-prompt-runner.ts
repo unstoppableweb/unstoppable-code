@@ -65,12 +65,6 @@ export interface OpenCodePipelineCapabilities extends Pick<
   expandPrompt?(prompt: string): string;
   warnings?: readonly string[];
   authorizeMcpTool?: OpenCodeRuntimeOptions['authorize'];
-  /**
-   * The app server among `mcpServers` that serves the step's Ledger tools.
-   * Its calls go to `authorizeMcpTool` under every permission preset; the
-   * host's route gates each with the attempt's approval session.
-   */
-  ledger?: { readonly server: string };
   dispose(): void | Promise<void>;
 }
 
@@ -220,10 +214,6 @@ export async function runOpenCodePipelinePrompt(
       throw new Error(
         'This OpenCode host cannot deliver the selected workflow capabilities.',
       );
-    // A host that can prepare capabilities also serves the step's Ledger
-    // tools through them; a host without one runs the step without them.
-    const capabilitiesNeeded =
-      hasSelections || request.ledgerAttemptKey !== undefined;
     const systemPrompt = [
       buildPipelineGlobalInstructionsBlock(
         getBrandEnv(request.environment, 'PREF_GLOBAL_INSTRUCTIONS_PIPELINES'),
@@ -258,7 +248,7 @@ export async function runOpenCodePipelinePrompt(
         ? prepareOpenCodeInferenceRoute(runtime.inferenceRoute).rawModelId
         : model;
       if (!rawModel) throw new Error('Choose an OpenCode model for this step.');
-      if (capabilitiesNeeded && host.prepareCapabilities) {
+      if (hasSelections && host.prepareCapabilities) {
         const preparing = host.prepareCapabilities(profile, signal);
         // The resolver can settle after cancellation. Its routes still belong
         // to this step and must be withdrawn even if no prompt was started.
@@ -267,28 +257,10 @@ export async function runOpenCodePipelinePrompt(
             if (signal.aborted) await value.dispose();
           })
           .catch(() => undefined);
-        try {
-          capabilities = await bounded(preparing);
-        } catch (error) {
-          // A step that selected capabilities cannot run without them. A
-          // step that only needed its Feed tools still runs, without them,
-          // rather than failing on a route it did not ask for.
-          if (hasSelections || signal.aborted) throw error;
-          // Every structured-output retry prepares again; the step hears
-          // about its missing Feed tools once.
-          if (attempt === 0)
-            emit({
-              type: 'warning',
-              message: `Feed tools are unavailable for this step: ${error instanceof Error ? error.message : String(error)}`,
-            });
-          capabilities = undefined;
-        }
-        // Every retry prepares the same capabilities; their warnings (an
-        // unavailable Feed route among them) are reported once.
-        if (attempt === 0)
-          for (const message of capabilities?.warnings ?? [])
-            emit({ type: 'warning', message });
-        if (attempt === 0 && capabilities) {
+        capabilities = await bounded(preparing);
+        for (const message of capabilities.warnings ?? [])
+          emit({ type: 'warning', message });
+        if (attempt === 0) {
           prompt = appendCodexSchemaInstruction(
             capabilities.expandPrompt?.(request.prompt) ?? request.prompt,
             request.schema,
@@ -341,12 +313,8 @@ export async function runOpenCodePipelinePrompt(
               input.toolName,
             );
             if (selectedMcpTool) {
-              const isLedgerCall =
-                capabilities?.ledger !== undefined &&
-                selectedMcpTool.server === capabilities.ledger.server;
               if (
-                (!isLedgerCall &&
-                  request.permissionPreset !== 'dangerous_all') ||
+                request.permissionPreset !== 'dangerous_all' ||
                 !capabilities?.authorizeMcpTool
               )
                 return { decision: 'deny' };

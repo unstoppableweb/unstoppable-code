@@ -22,7 +22,6 @@ import type {
   RepoRulesScanResponse,
   RepoRulesApplyRequest,
   RepoRulesApplyResponse,
-  RepoRulesCheckResponse,
   RepoRulesStatus,
   RepoRulesPreviewRequest,
   RepoRulesPreviewResponse,
@@ -54,7 +53,6 @@ import type {
   PortalWorktreeDiscardPayload,
   WorktreeDiscardDescription,
   WorktreeDiscardResult,
-  WorktreeRemovalOutcome,
 } from '@canopy/protocol/portal/worktree-discard';
 import type {
   ManagedDelegationExtendLifetimeLimitResult,
@@ -255,10 +253,6 @@ export interface QueryMap
   'repoRules.status': {
     args: { workspaceId: string };
     result: RepoRulesStatus;
-  };
-  'repoRules.check': {
-    args: { workspaceId: string };
-    result: RepoRulesCheckResponse;
   };
   'repoRules.preview': {
     args: RepoRulesPreviewRequest;
@@ -691,8 +685,7 @@ export interface CommandMap
   };
   'worktree.archive': {
     args: PortalWorktreeArchivePayload;
-    /** Legacy callers may acknowledge; recovery callers require a settled outcome. */
-    result: WorktreeRemovalOutcome | void;
+    result: void;
   };
   'worktree.reorder': {
     args: PortalWorktreeReorderPayload;

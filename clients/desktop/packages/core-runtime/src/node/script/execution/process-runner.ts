@@ -42,8 +42,6 @@ export interface ScriptChildProcess {
    * that start processes asynchronously (the daemon) report it.
    */
   forced?(): Promise<void>;
-  /** Calls `listener` with the PID once the host knows it, for hosts that learn it after spawning. */
-  onPid?(listener: (pid: number) => void): void;
 }
 
 export interface ScriptChildOutput {
@@ -109,8 +107,6 @@ export interface RunScriptProcessOptions {
   backgroundPriority?: boolean;
   /** Called synchronously after the process is registered for teardown. */
   onProcessStarted?: () => void;
-  /** Called with the process's PID once known, at once or when the host reports it. */
-  onProcessPid?: (pid: number) => void;
 }
 
 /** A run's result with what the protocol records about its output. */
@@ -417,10 +413,6 @@ export function runScriptProcess(
     };
     registry.add(activeScript);
     options.onProcessStarted?.();
-    if (options.onProcessPid) {
-      if (typeof child.pid === 'number') options.onProcessPid(child.pid);
-      else child.onPid?.(options.onProcessPid);
-    }
 
     if (options.signal) {
       abortListener = (): void => {

@@ -4,18 +4,10 @@ import {
   WORKER_PIPELINE_QUERY_DEFINITIONS,
   WORKER_PIPELINE_RUNNER_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_STREAM_DEFINITIONS,
-  type WorkerPipelineCapabilitiesImportParams,
-  type WorkerPipelineCapabilitiesImportResult,
   type WorkerPipelineDataExportParams,
   type WorkerPipelineDataExportResult,
   type WorkerPipelineDataImportParams,
   type WorkerPipelineDataImportResult,
-  type WorkerPipelineExecutionHandoffExportParams,
-  type WorkerPipelineExecutionHandoffExportResult,
-  type WorkerPipelineExecutionHandoffImportParams,
-  type WorkerPipelineExecutionHandoffImportResult,
-  type WorkerPipelineExecutionTranscriptExportParams,
-  type WorkerPipelineExecutionTranscriptExportResult,
 } from '@canopy/protocol/canopy-core';
 import {
   defineRuntimeModule,
@@ -33,11 +25,7 @@ import {
 } from '../execution/event-journal';
 import {
   createWorkerPipelineHandlers,
-  pipelineCapabilitiesRefusedError,
   pipelineDataBusyError,
-  pipelineExecutionNotFoundError,
-  pipelineHandoffBusyError,
-  pipelineHandoffRefusedError,
 } from '../execution/worker-pipelines';
 import {
   PipelineHostSupervisor,
@@ -103,13 +91,9 @@ const PIPELINE_RUNNER_ONLY_DEFINITIONS = {
 /**
  * Every `worker.pipeline.*` operation a cloud runner serves: the daemon's
  * set, one run's graceful checkpoint (CAN-6199), so its owner can roll the
- * runner's sandbox over, resume and retry for its own runs (CAN-6103), the
- * pipeline data import and export (CAN-6317), so its owner can keep a
- * pipeline's data between runs, one run's handoff export and import
- * (CAN-6376), so its owner can resume it on another incarnation, an
- * agent step's transcript export (CAN-6421), so its owner keeps it, and the
- * capability import (CAN-6439), so a run's agent steps get the skills,
- * plugins and MCP servers of its plugin collections.
+ * runner's sandbox over, resume and retry for its own runs (CAN-6103), and
+ * the pipeline data import and export (CAN-6317), so its owner can keep a
+ * pipeline's data between runs.
  */
 export const PIPELINE_RUNNER_DEFINITIONS = {
   queries: PIPELINE_HOST_DEFINITIONS.queries,
@@ -147,18 +131,10 @@ export interface PipelineHostModuleOptions {
    * Serve a cloud runner's own operations under
    * {@link PIPELINE_RUNNER_DEFINITIONS}: one run's checkpoint (CAN-6199),
    * resume and retry for the runs the supervisor started from a portable
-   * launch (CAN-6103), `worker.pipeline.data.*` over `pipelineData`
-   * (CAN-6317), `worker.pipeline.execution.handoff.*` over `handoffs`
-   * (CAN-6376), `worker.pipeline.execution.transcript.export` over
-   * `transcripts` (CAN-6421) and `worker.pipeline.capabilities.import` over
-   * `capabilities` (CAN-6439). The daemon serves none of them.
+   * launch (CAN-6103), and `worker.pipeline.data.*` over `pipelineData`
+   * (CAN-6317). The daemon serves none of them.
    */
-  readonly runnerOperations?: {
-    readonly pipelineData: PipelineRunnerDataPort;
-    readonly handoffs: PipelineRunnerHandoffPort;
-    readonly transcripts: PipelineRunnerTranscriptPort;
-    readonly capabilities: PipelineRunnerCapabilityPort;
-  };
+  readonly runnerOperations?: { readonly pipelineData: PipelineRunnerDataPort };
 }
 
 /**
@@ -174,58 +150,6 @@ export interface PipelineRunnerDataPort {
   exportData(
     params: WorkerPipelineDataExportParams,
   ): Promise<WorkerPipelineDataExportResult>;
-}
-
-/**
- * Where a cloud runner packs and restores one run's handoff (CAN-6376): its
- * execution directory and the provider sessions its agent steps recorded.
- * The module refuses an export of a run the runner does not hold, and
- * either call with `worker.pipeline.handoffBusy` while the run is pending
- * or running, so the store is never read or replaced mid-write; an import
- * once the lease ended is refused `worker.pipeline.handoffRefused`.
- */
-export interface PipelineRunnerHandoffPort {
-  exportHandoff(
-    params: WorkerPipelineExecutionHandoffExportParams,
-  ): Promise<WorkerPipelineExecutionHandoffExportResult>;
-  /**
-   * Restores only while `context.leaseHeld()` answers true: the port writes
-   * outside the host's lease fence, so it asks again before and after it
-   * copies the run.
-   */
-  importHandoff(
-    params: WorkerPipelineExecutionHandoffImportParams,
-    context: { readonly leaseHeld: () => boolean },
-  ): Promise<WorkerPipelineExecutionHandoffImportResult>;
-}
-
-/**
- * Where a cloud runner reads an agent step's transcript (CAN-6421): the file
- * the step's `transcript_file` output names in the run's execution
- * directory. The module refuses an export of a run the runner does not hold.
- */
-export interface PipelineRunnerTranscriptPort {
-  exportTranscript(
-    params: WorkerPipelineExecutionTranscriptExportParams,
-  ): Promise<WorkerPipelineExecutionTranscriptExportResult>;
-}
-
-/**
- * Where a cloud runner materializes a run's capabilities (CAN-6439): the
- * capability bundles its owner resolved from the run's plugin collections,
- * with their plugin trees' blobs. Bundles are immutable by digest, so an
- * import only adds; the module refuses one once the lease ended
- * (`worker.pipeline.capabilitiesRefused`).
- */
-export interface PipelineRunnerCapabilityPort {
-  /**
-   * Writes only while `context.leaseHeld()` answers true: the port writes
-   * outside the host's lease fence, so it asks again before it installs.
-   */
-  importCapabilities(
-    params: WorkerPipelineCapabilitiesImportParams,
-    context: { readonly leaseHeld: () => boolean },
-  ): Promise<WorkerPipelineCapabilitiesImportResult>;
 }
 
 /** The handlers a pipeline host module serves, for a host to bind to its transport. */
@@ -320,15 +244,8 @@ export function createPipelineHostModule(
         throw pipelineDataBusyError();
     }
   };
-  // A run whose state still moves is neither packed nor replaced.
-  const refuseWhileLive = async (executionId: string): Promise<boolean> => {
-    const current = await supervisor.get(executionId);
-    if (current?.status === 'pending' || current?.status === 'running')
-      throw pipelineHandoffBusyError();
-    return current !== null;
-  };
-  const runnerOperations = options.runnerOperations;
-  const runnerHandlers: PipelineRunnerOnlyHandlers | null = runnerOperations
+  const pipelineData = options.runnerOperations?.pipelineData;
+  const runnerHandlers: PipelineRunnerOnlyHandlers | null = pipelineData
     ? {
         'worker.pipeline.execution.checkpoint': async ({
           executionId,
@@ -346,44 +263,11 @@ export function createPipelineHostModule(
           all.instructions['worker.pipeline.execution.retry'],
         'worker.pipeline.data.import': async (params) => {
           await refuseWhileRunning(params);
-          return runnerOperations.pipelineData.importData(params);
+          return pipelineData.importData(params);
         },
         'worker.pipeline.data.export': async (params) => {
           await refuseWhileRunning(params);
-          return runnerOperations.pipelineData.exportData(params);
-        },
-        // A paused run moves to the next incarnation (CAN-6376).
-        'worker.pipeline.execution.handoff.export': async (params) => {
-          if (!(await refuseWhileLive(params.executionId)))
-            throw pipelineExecutionNotFoundError();
-          return runnerOperations.handoffs.exportHandoff(params);
-        },
-        'worker.pipeline.execution.handoff.import': async (params) => {
-          // A stale incarnation restores nothing: its fence stopped its runs.
-          if (!supervisor.leaseHeld())
-            throw pipelineHandoffRefusedError("This runner's lease has ended.");
-          await refuseWhileLive(params.executionId);
-          return runnerOperations.handoffs.importHandoff(params, {
-            leaseHeld: () => supervisor.leaseHeld(),
-          });
-        },
-        // A finished agent step's transcript, while its run goes on too:
-        // the step's record no longer changes (CAN-6421).
-        'worker.pipeline.execution.transcript.export': async (params) => {
-          if ((await supervisor.get(params.executionId)) === null)
-            throw pipelineExecutionNotFoundError();
-          return runnerOperations.transcripts.exportTranscript(params);
-        },
-        // A run's skills, plugin trees and MCP servers, before its start
-        // (CAN-6439). A stale incarnation installs nothing.
-        'worker.pipeline.capabilities.import': (params) => {
-          if (!supervisor.leaseHeld())
-            throw pipelineCapabilitiesRefusedError(
-              "This runner's lease has ended.",
-            );
-          return runnerOperations.capabilities.importCapabilities(params, {
-            leaseHeld: () => supervisor.leaseHeld(),
-          });
+          return pipelineData.exportData(params);
         },
       }
     : null;

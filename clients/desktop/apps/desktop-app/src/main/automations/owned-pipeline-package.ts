@@ -15,10 +15,6 @@
  * `chat` job's `send` step, in a top-level run the automation started of the
  * pipeline it owns. A session prompt, which sends to an existing chat, never
  * carried the package natively, and doesn't here either.
- *
- * CAN-6065: another schedule of the installed workflow page runs with its
- * owner's install, verified and resolved under the owner's id, so a package
- * update or uninstall of the owner covers every schedule.
  */
 import path from 'node:path';
 import { CHAT_AUTOMATION_JOB } from '@canopy/desktop-shared/lib/chat-automation-conversion';
@@ -26,46 +22,41 @@ import { hashPipelinePackageYaml } from '@canopy/execution-engine/node/pipelines
 import type { PipelineHostActionCaller } from '@canopy/execution-engine/node/pipelines/executor/types';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
+import type { PipelinePackageRef } from '@canopy/protocol/pipelines';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import {
-  scheduledUserPipelineId,
-  scheduleInstall,
-  type ScheduleInstall,
-} from './workflow-schedules';
+import { ownedPipelineId } from './owned-pipeline';
 
 /** The converter's send step (`STEP.send` in the converter). */
 export const CHAT_AUTOMATION_SEND_STEP = 'send';
 
 /**
- * The install a run of the activity's workflow applies (its own as owner,
- * else its owner's), when the pipeline creates the chat it sends to.
+ * The package a run of the activity's owned pipeline applies: its install's,
+ * when the pipeline creates the chat it sends to.
  */
 function ownedPipelinePackage(
-  activities: readonly ScheduledActivity[],
   activity: ScheduledActivity,
-): ScheduleInstall | undefined {
+): PipelinePackageRef | undefined {
+  const required = activity.installedFrom?.capabilityPackage;
   const { action } = activity;
   if (
+    required === undefined ||
     action.type !== 'worktree_pipeline' ||
-    action.inputs?.chat_id !== undefined
+    action.inputs?.chat_id !== undefined ||
+    ownedPipelineId(activity) === undefined
   )
     return undefined;
-  return scheduleInstall(activities, activity);
+  return required;
 }
 
 /** Fails a run of a converted install whose package isn't intact, before it starts. */
 export async function verifyOwnedPipelinePackage(
-  activities: readonly ScheduledActivity[],
   activity: ScheduledActivity,
 ): Promise<void> {
-  const install = ownedPipelinePackage(activities, activity);
-  if (install === undefined) return;
+  const required = ownedPipelinePackage(activity);
+  if (required === undefined) return;
   const { resolveInstalledAutomationPackageOverlay } =
     await import('../pipelines/pipeline-package-service');
-  await resolveInstalledAutomationPackageOverlay(
-    install.holder.id,
-    install.required,
-  );
+  await resolveInstalledAutomationPackageOverlay(activity.id, required);
 }
 
 export type OwnedPipelineSendCaller = Pick<
@@ -107,16 +98,13 @@ export async function ownedPipelineSendPackageOverlay(
   )
     return undefined;
   const { getAutomationsService } = await import('./service');
-  const service = getAutomationsService();
-  const activity = await service.findActivityForBackgroundAuthorization(
-    initiator.automationId,
-  );
+  const activity =
+    await getAutomationsService().findActivityForBackgroundAuthorization(
+      initiator.automationId,
+    );
   if (activity === undefined) return undefined;
-  const install = ownedPipelinePackage(await service.allActivities(), activity);
-  if (
-    install === undefined ||
-    scheduledUserPipelineId(activity) !== caller.pipelineId
-  )
+  const required = ownedPipelinePackage(activity);
+  if (required === undefined || ownedPipelineId(activity) !== caller.pipelineId)
     return undefined;
   const lineage = await runLineage(caller.executionId);
   if (lineage === 'nested') return undefined;
@@ -127,10 +115,7 @@ export async function ownedPipelineSendPackageOverlay(
     );
   const { resolveInstalledAutomationPackageOverlay } =
     await import('../pipelines/pipeline-package-service');
-  return resolveInstalledAutomationPackageOverlay(
-    install.holder.id,
-    install.required,
-  );
+  return resolveInstalledAutomationPackageOverlay(activity.id, required);
 }
 
 /** What a share hashes: the automation's name and action, as it shows them. */

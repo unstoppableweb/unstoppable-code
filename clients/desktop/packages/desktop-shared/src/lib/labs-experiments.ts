@@ -26,13 +26,6 @@ export interface LabsExperiment {
   requiresEarlyAccess: boolean;
   fixtureAvailability?: (typeof LABS_EXPERIMENT_AVAILABILITIES)[number];
 }
-
-/**
- * Next prompt suggestions: after a completed turn the provider predicts the
- * person's next message, and the empty composer offers it for Tab. Main reads
- * it before asking a provider for one; the composer before offering one.
- */
-export const PROMPT_SUGGESTIONS_EXPERIMENT_ID = 'prompt-suggestions';
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     id: EARLY_ACCESS_EXPERIMENT_ID,
@@ -75,17 +68,6 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     pages: [],
     sidebarKeys: [],
     flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    // Desktop only, so not in WEB_LABS_EXPERIMENTS.
-    id: PROMPT_SUGGESTIONS_EXPERIMENT_ID,
-    name: 'Next prompt suggestions',
-    description:
-      'After a Claude or Codex turn, show a likely next message in the empty composer. Press Tab to use it. Each suggestion is a small extra request.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key,
     requiresEarlyAccess: false,
   },
 

@@ -1,30 +1,4 @@
 import type { CanopyCapabilities } from '@canopy/app-core';
-import {
-  CLIENT_FEATURE_FLAGS,
-  type ClientFeatureFlagKey,
-} from '@canopy/protocol/feature-flags';
-
-export interface WebCoreScopeOptions {
-  /**
-   * The desktop binds cloud chat terminals (CAN-6175 R10): see
-   * `cloudTerminalsEnabled`.
-   */
-  readonly durableTerminals: boolean;
-}
-
-/**
- * Whether the desktop runs a cloud chat's terminals as durable shells in its
- * sandbox. They need both flags; with either off, every terminal is local
- * and a cloud scope has none.
- */
-export function cloudTerminalsEnabled(
-  isEnabled: (key: ClientFeatureFlagKey) => boolean,
-): boolean {
-  return (
-    isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key) &&
-    isEnabled(CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key)
-  );
-}
 
 /**
  * What a cloud cowork chat scope can do on this desktop (CAN-6175 D4): the
@@ -50,14 +24,9 @@ export function cloudTerminalsEnabled(
  * Feed, cost, subagents, and "Open in". Rows that serve one of these turn
  * it on here, from the web core manifest where the operation can be
  * unavailable.
- *
- * Served so far: the sandbox's files, read and written through the web core
- * (CAN-6175 R9), and its terminals when the desktop binds them (R10).
- * Scripts stay off: a cloud terminal can't run a startup command.
  */
 function buildWebCoreScopeCapabilities(
   host: CanopyCapabilities,
-  options: WebCoreScopeOptions,
 ): CanopyCapabilities {
   return {
     routing: host.routing,
@@ -72,8 +41,8 @@ function buildWebCoreScopeCapabilities(
       ? { cloudCapabilityLinks: true }
       : {}),
     localExecution: false,
-    terminalPty: options.durableTerminals,
-    fileSystemAccess: 'read-write',
+    terminalPty: false,
+    fileSystemAccess: 'none',
     pipelines: 'read-only',
     overviewNotifications: false,
     nativeWorktreeOpen: false,
@@ -105,38 +74,25 @@ function buildWebCoreScopeCapabilities(
     ledgerLocal: false,
     costInsights: false,
     // Unset would mean "every section the workspace type shows" and "the
-    // whole worktree's diff". A cloud scope shows the sections the web core
-    // feeds: its agent tasks and background processes, which the web core
-    // agent task publisher fills (CAN-6430). Every other section reads only
-    // this computer.
-    activitySectionIds: ['todo', 'background-processes'],
+    // whole worktree's diff"; a cloud scope implements neither yet.
+    activitySectionIds: [],
     wholeWorktreeDiff: false,
   };
 }
 
-const cache = new WeakMap<
-  CanopyCapabilities,
-  { withTerminals?: CanopyCapabilities; withoutTerminals?: CanopyCapabilities }
->();
+const cache = new WeakMap<CanopyCapabilities, CanopyCapabilities>();
 
 /**
  * The capabilities of a cloud chat scope shown by a window whose own
- * capabilities are `host`. One object per host set and options, so callers
- * can compare by identity.
+ * capabilities are `host`. One object per host set, so callers can compare
+ * by identity.
  */
 export function webCoreScopeCapabilities(
   host: CanopyCapabilities,
-  options: WebCoreScopeOptions = { durableTerminals: false },
 ): CanopyCapabilities {
-  let entry = cache.get(host);
-  if (entry === undefined) {
-    entry = {};
-    cache.set(host, entry);
-  }
-  if (options.durableTerminals) {
-    entry.withTerminals ??= buildWebCoreScopeCapabilities(host, options);
-    return entry.withTerminals;
-  }
-  entry.withoutTerminals ??= buildWebCoreScopeCapabilities(host, options);
-  return entry.withoutTerminals;
+  const cached = cache.get(host);
+  if (cached !== undefined) return cached;
+  const built = buildWebCoreScopeCapabilities(host);
+  cache.set(host, built);
+  return built;
 }

@@ -122,7 +122,6 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import {
   Stack,
   ChatMessageLinkActionsProvider,
-  ChatMessageLookUpProvider,
   ComposerTray,
   InputDeliveryList,
   OverlayScrollArea,
@@ -155,10 +154,7 @@ import {
   type AgentArtifactProjectionCache,
 } from './agent-artifact-projection';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
-import {
-  chatMessageLookUpSelection,
-  useChatMessageLinkActions,
-} from './chat-message-link-actions';
+import { useChatMessageLinkActions } from './chat-message-link-actions';
 import {
   estimateTranscriptSectionHeight,
   progressiveTranscriptRange,
@@ -304,7 +300,6 @@ function useIncrementalTurnGroups(
   chatId: string,
   messages: ChatMessage[],
   agentUsage: Record<string, AgentUsage> | undefined,
-  trailingTurnSettled: boolean,
 ): TurnGroupOrMessage[] {
   const cacheRef = useRef(createEmptyTurnGroupCache());
   return useMemo(
@@ -314,9 +309,8 @@ function useIncrementalTurnGroups(
         messages,
         agentUsage,
         cacheRef.current,
-        trailingTurnSettled,
       ),
-    [chatId, messages, agentUsage, trailingTurnSettled],
+    [chatId, messages, agentUsage],
   );
 }
 
@@ -977,33 +971,10 @@ export function ChatMessageList({
       return frame ? [message, frame] : [message];
     });
   }, [messages, transcriptTurns]);
-  const selectedWorktree = useChatStore((s) => s.selectedWorktree);
-  const worktreeTarget = targetOverride ?? selectedWorktree;
-  // This chat's tab fields; the selector runs only when this chat's tab or
-  // runtime changes, never for another chat's commit.
-  const chatTarget = useMemo(
-    (): ChatRenderTarget | null =>
-      worktreeTarget
-        ? {
-            projectId: worktreeTarget.projectId,
-            worktreeId: worktreeTarget.worktreeId,
-            chatId,
-          }
-        : null,
-    [worktreeTarget, chatId],
-  );
-  const trailingTurnSettled = useChatTabRenderState(
-    chatTarget,
-    ({ tab, runtime }) =>
-      tab !== undefined &&
-      tab.kind !== 'file' &&
-      localTurnActivity(tab, Date.now(), runtime) === 'idle',
-  );
   const turnGroups = useIncrementalTurnGroups(
     chatId,
     framedMessages,
     agentUsage,
-    trailingTurnSettled,
   );
   const continuationDiffOwnerByPrompt = useMemo(
     () => continuationDiffOwners(turnGroups),
@@ -1029,6 +1000,8 @@ export function ChatMessageList({
     () => searchTurnGroupId(turnGroups, searchSelection),
     [turnGroups, searchSelection],
   );
+  const selectedWorktree = useChatStore((s) => s.selectedWorktree);
+  const worktreeTarget = targetOverride ?? selectedWorktree;
   const startingTurnSentAt = useMemo(
     () =>
       startingTurnUserMessageId
@@ -1051,6 +1024,19 @@ export function ChatMessageList({
           : { kind: 'project', projectId: receivingProjectId }
         : undefined,
     [receivingProjectId],
+  );
+  // This chat's tab fields; the selector runs only when this chat's tab or
+  // runtime changes, never for another chat's commit.
+  const chatTarget = useMemo(
+    (): ChatRenderTarget | null =>
+      worktreeTarget
+        ? {
+            projectId: worktreeTarget.projectId,
+            worktreeId: worktreeTarget.worktreeId,
+            chatId,
+          }
+        : null,
+    [worktreeTarget, chatId],
   );
   useReconcileNativeTaskStops(chatTarget);
   const linkActions = useChatMessageLinkActions(worktreeTarget);
@@ -3449,30 +3435,19 @@ export function ChatMessageList({
                   );
                 }}
                 onAction={async (row, action, text) => {
-                  let refusal: string | undefined;
                   const result = await useChatStore
                     .getState()
-                    .dispatchChatCommand(
-                      worktreeTarget,
-                      {
-                        type: 'chat.input_delivery_action',
-                        chatId,
-                        rowId: row.id,
-                        rowRevision: row.revision,
-                        action,
-                        ...(text !== undefined ? { text } : {}),
-                      },
-                      {
-                        onResult: (commandResult) => {
-                          if (commandResult.outcome === 'rejected')
-                            refusal = commandResult.reason;
-                        },
-                      },
-                    );
+                    .dispatchChatCommand(worktreeTarget, {
+                      type: 'chat.input_delivery_action',
+                      chatId,
+                      rowId: row.id,
+                      rowRevision: row.revision,
+                      action,
+                      ...(text !== undefined ? { text } : {}),
+                    });
                   if (result !== 'accepted')
                     throw new Error(
-                      (result === 'rejected' && refusal) ||
-                        'The message changed or the action could not be confirmed. Review its current status.',
+                      'The message changed or the action could not be confirmed. Review its current status.',
                     );
                 }}
               />
@@ -3632,11 +3607,7 @@ export function ChatMessageList({
                       value={delegationStopControls}
                     >
                       <ChatMessageLinkActionsProvider value={linkActions}>
-                        <ChatMessageLookUpProvider
-                          value={chatMessageLookUpSelection()}
-                        >
-                          {messageList}
-                        </ChatMessageLookUpProvider>
+                        {messageList}
                       </ChatMessageLinkActionsProvider>
                     </ManagedDelegationStopContext.Provider>
                   </NativeTaskStopContext.Provider>

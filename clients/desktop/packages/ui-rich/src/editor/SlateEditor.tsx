@@ -17,7 +17,6 @@ import {
   type JSX,
   type KeyboardEvent,
   type MouseEvent,
-  type ReactNode,
 } from 'react';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { FileReferencePillElement } from './FileReferencePill';
@@ -56,8 +55,6 @@ export interface SlateEditorProps {
   editor: ChatEditor;
   value: Descendant[];
   placeholder: string;
-  /** Drawn after the placeholder text, such as a key hint. */
-  placeholderSuffix?: ReactNode;
   onChange: (value: Descendant[]) => void;
   onSelectionChange?: () => void;
   onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
@@ -131,7 +128,6 @@ function SlateEditorInner(
     editor,
     value,
     placeholder,
-    placeholderSuffix,
     onChange,
     onSelectionChange,
     onKeyDown,
@@ -199,10 +195,7 @@ function SlateEditorInner(
   // editor's own ink at 33% opacity, which is no token and drifts with the
   // surface behind it, so its opacity is reset and the token set instead.
   // It shows at once, with no fade: the editor remounts on every chat switch,
-  // and an entry animation blinked the placeholder in each time. Slate draws
-  // it inside the first paragraph, the replay block, so session replay never
-  // records it, which matters when it is conversation-derived (a next prompt
-  // suggestion).
+  // and an entry animation blinked the placeholder in each time.
   const renderPlaceholder = useCallback(
     ({ attributes, children }: RenderPlaceholderProps): JSX.Element => (
       <span
@@ -210,18 +203,10 @@ function SlateEditorInner(
         style={{ ...attributes.style, opacity: 1 }}
         className="fg-tertiary"
       >
-        {placeholderSuffix ? (
-          // The suffix sits one inline gap after the text, which may wrap.
-          <span className="inline-flex max-w-full items-center gap-2">
-            <span className="min-w-0">{children}</span>
-            {placeholderSuffix}
-          </span>
-        ) : (
-          children
-        )}
+        {children}
       </span>
     ),
-    [placeholderSuffix],
+    [],
   );
 
   return (

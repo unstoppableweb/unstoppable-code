@@ -1229,17 +1229,13 @@ export const createRevisionedSlice: StateCreator<
         // Stale destructive command: never auto-retry; refresh the view.
         setNotice('conflict', CHAT_STATE_CONFLICT_NOTICE);
         getController().forceRefresh(scope.projectId, scope.worktreeId);
-      } else if (
-        disposition === 'rejected' &&
-        options?.callerReportsFailure !== true
-      ) {
+      } else if (disposition === 'rejected') {
         setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
       }
       return disposition;
     } catch {
       if (tracked) commandTracker.settleTransportFailure(envelope.commandId);
-      if (options?.callerReportsFailure !== true)
-        setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
+      setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
       return 'transport_failed';
     }
   },

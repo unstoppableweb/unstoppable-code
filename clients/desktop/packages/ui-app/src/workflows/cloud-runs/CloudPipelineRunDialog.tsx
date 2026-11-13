@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, type JSX, type ReactNode } from 'react';
+import { type JSX, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 import type { CloudRunControlKeys } from '@canopy/app-state/cloud-pipeline-runs';
 import type { CoreCoworkInvoker } from '@canopy/app-state/core-cowork';
@@ -26,11 +26,6 @@ export interface CloudPipelineRunDialogProps {
   readonly renderRunChat?: (view: WorkerPipelineExecutionView) => ReactNode;
   /** The host's control keys, so a control sent again from a row replays. */
   readonly controlKeys?: CloudRunControlKeys;
-  /**
-   * Opens the Feed showing the entries this run's agents wrote, on a host
-   * that has one (CAN-6422). Without it the dialog offers no link.
-   */
-  readonly onOpenFeed?: () => void;
 }
 
 /**
@@ -48,7 +43,6 @@ export function CloudPipelineRunDialog({
   onOpenPlan,
   renderRunChat,
   controlKeys,
-  onOpenFeed,
 }: CloudPipelineRunDialogProps): JSX.Element {
   const session = useCloudPipelineRunSession(
     invoker,
@@ -56,11 +50,8 @@ export function CloudPipelineRunDialog({
     onView,
     controlKeys,
   );
-  // Close keeps the first focus, as before a host offered the Feed link.
-  const closeRef = useRef<HTMLButtonElement>(null);
   return (
     <DialogModal
-      initialFocusRef={closeRef}
       inset="flush"
       onClose={onClose}
       maxWidth="full"
@@ -76,27 +67,14 @@ export function CloudPipelineRunDialog({
       }
       subtitle={`${WORKFLOW_RUN_LOCATION_LABELS.cloud} run`}
       topRightActions={
-        <>
-          {onOpenFeed !== undefined && (
-            <Button
-              variant="ghost"
-              size="compact"
-              data-testid="cloud-run-detail-feed"
-              onClick={onOpenFeed}
-            >
-              Feed entries
-            </Button>
-          )}
-          <Button
-            ref={closeRef}
-            variant="ghost"
-            size="compact"
-            data-testid="cloud-run-detail-close"
-            onClick={onClose}
-          >
-            Close
-          </Button>
-        </>
+        <Button
+          variant="ghost"
+          size="compact"
+          data-testid="cloud-run-detail-close"
+          onClick={onClose}
+        >
+          Close
+        </Button>
       }
     >
       <CloudPipelineRunDetail

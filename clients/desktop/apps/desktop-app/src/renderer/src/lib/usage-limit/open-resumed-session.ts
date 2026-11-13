@@ -13,16 +13,12 @@ import {
   type UsageLimitedChatTarget,
   type UsageLimitedSessionTarget,
 } from '@canopy/desktop-shared/types';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   automationRunDestinationLabel,
   openAutomationRunDestination,
   type AutomationRunDestination,
   type OpenAutomationRunDestinationResult,
 } from '@/components/automations/resolveAutomationRunDestination';
-import { requestChatPanelReveal } from '@/lib/chatPanelReveal';
-import { openInWorkspaceContextAsync } from '@/lib/contextScope';
-import { trackResume } from '@/lib/resume-lifecycle';
 import { useResumeQueueStore } from '@/stores/resumeQueueStore';
 
 export const RESUME_DESTINATION_ERROR =
@@ -62,43 +58,6 @@ export function usageLimitedChatDestination(
     chatId: target.chatId,
     ...turn,
   };
-}
-
-/**
- * Opens an interrupted chat without resuming it: a worktree or cowork chat in
- * its workspace's navigation context, and App Advisor chats directly. The
- * opener revalidates the chat, so a stale destination opens nothing.
- */
-export function openInterruptedChatWithoutResuming(
-  target: UsageLimitedChatTarget,
-): void {
-  const destination = usageLimitedChatDestination(target);
-  const open = (): Promise<void> =>
-    openAutomationRunDestination(destination)
-      .then((result) => {
-        if (result.ok && destination.kind === 'worktree-chat') {
-          requestChatPanelReveal(
-            destination.projectId,
-            destination.worktreeId,
-            destination.chatId,
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        // A failed open stays quiet, as on Home; record it for diagnosis.
-        reportClientAppError(error);
-      });
-  if (destination.kind === 'worktree-chat') {
-    trackResume(() => openInWorkspaceContextAsync(destination.projectId, open));
-    return;
-  }
-  if (destination.kind === 'cowork-chat') {
-    trackResume(() =>
-      openInWorkspaceContextAsync(destination.workspaceId, open),
-    );
-    return;
-  }
-  trackResume(open);
 }
 
 /**

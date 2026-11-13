@@ -16,16 +16,6 @@ import {
   type SecretStoragePolicy,
 } from './secure-storage-policy';
 import { migrateSecureStorageFile } from './secure-storage-migration';
-import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
-import {
-  clearLocalModelGatewayCredentials,
-  isLocalModelGatewayOrganizationId,
-  LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
-  loadLocalModelGatewayCredential,
-  markLocalModelGatewayCredentialRejected,
-  readLocalModelGatewayCredentialCiphertext,
-  saveLocalModelGatewayCredential,
-} from './local-model-gateway-store';
 
 interface StoredGatewayCredentialRecord {
   accountId: string;
@@ -285,51 +275,6 @@ async function resolveCredentialOwner(
 }
 
 /**
- * Device gateway keys live in the device store. They are readable and
- * writable only while the account names no Personal organization, the same
- * rule that routes the device gateway; `refused` covers a signed-in account.
- */
-async function deviceGatewayTarget(
-  organizationId: string,
-): Promise<'account' | 'device' | 'refused'> {
-  let isDeviceGateway: boolean;
-  try {
-    isDeviceGateway = await isLocalModelGatewayOrganizationId(organizationId);
-  } catch (error) {
-    // An unreadable device store only matters while the device gateway is in
-    // play; an account with a Personal organization keeps its hosted keys,
-    // and the account owner check refuses an id it does not know.
-    const read = await readCanopyCloudAccountWithStatus();
-    if (read.status === 'ok' && !accountUsesDeviceModelGateway(read.entry))
-      return 'account';
-    throw new GatewayCredentialStorageUnavailableError(
-      getSecureStorageFailure(error) ?? undefined,
-    );
-  }
-  if (!isDeviceGateway) return 'account';
-  const read = await readCanopyCloudAccountWithStatus();
-  if (read.status !== 'ok') {
-    const failure =
-      read.status === 'unavailable'
-        ? read.secureStorageFailure
-        : getSecureStorageFailure(read.error);
-    if (failure) throw new GatewayCredentialStorageUnavailableError(failure);
-    return 'refused';
-  }
-  return accountUsesDeviceModelGateway(read.entry) ? 'device' : 'refused';
-}
-
-async function withDeviceStorage<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    const failure = getSecureStorageFailure(error);
-    if (failure) throw new GatewayCredentialStorageUnavailableError(failure);
-    throw error;
-  }
-}
-
-/**
  * Run `mutation` on the store and write it back. A mutation that returns
  * `'unchanged'` changed nothing, so the store is left as it is.
  */
@@ -372,12 +317,6 @@ export async function loadModelGatewayCredential(
   organizationId: string,
   expectedBaseUrl?: string,
 ): Promise<ModelGatewayCredentialRecord | null> {
-  const target = await deviceGatewayTarget(organizationId);
-  if (target === 'refused') return null;
-  if (target === 'device')
-    return withDeviceStorage(() =>
-      loadLocalModelGatewayCredential(expectedBaseUrl),
-    );
   const storage = availableStorage();
   const owner = await resolveCredentialOwner(organizationId, expectedBaseUrl);
   if (!owner) return null;
@@ -422,28 +361,6 @@ export async function loadModelGatewayCredential(
   return decrypt(storage, stored);
 }
 
-/**
- * Whether this account has a non-empty key for the organization, saved for any
- * endpoint. A key for an older endpoint still means the gateway is set up here
- * and only needs its key saved again.
- */
-export async function hasModelGatewayCredential(
-  organizationId: string,
-): Promise<boolean> {
-  const target = await deviceGatewayTarget(organizationId);
-  if (target === 'refused') return false;
-  if (target === 'device') {
-    const credential = await withDeviceStorage(() =>
-      loadLocalModelGatewayCredential(),
-    );
-    return credential !== null && credential.apiKey.trim() !== '';
-  }
-  const storage = availableStorage();
-  const owner = await resolveCredentialOwner(organizationId);
-  const stored = owner ? (await readStore()).records[owner.key] : undefined;
-  return stored !== undefined && decrypt(storage, stored).apiKey.trim() !== '';
-}
-
 export async function saveModelGatewayCredential(input: {
   organizationId: string;
   apiKey: string;
@@ -456,19 +373,6 @@ export async function saveModelGatewayCredential(input: {
   signal?: AbortSignal;
 }): Promise<void> {
   input.signal?.throwIfAborted();
-  const target = await deviceGatewayTarget(input.organizationId);
-  if (target !== 'account') {
-    if (
-      target === 'refused' ||
-      (input.expectedAccountId !== undefined &&
-        input.expectedAccountId !== LOCAL_MODEL_GATEWAY_ACCOUNT_ID)
-    )
-      throw new Error(
-        'Cannot save a model gateway credential outside the current account policy.',
-      );
-    await withDeviceStorage(() => saveLocalModelGatewayCredential(input));
-    return;
-  }
   const storage = availableStorage();
   const apiKey = input.apiKey.trim();
   if (apiKey) storage.assertCanWrite();
@@ -557,18 +461,6 @@ export async function clearModelGatewayCredential(
   organizationId: string,
   expectedAccountId?: string,
 ): Promise<'cleared' | 'nothing-to-clear' | 'unauthorized'> {
-  const target = await deviceGatewayTarget(organizationId);
-  if (target !== 'account') {
-    if (
-      target === 'refused' ||
-      (expectedAccountId !== undefined &&
-        expectedAccountId !== LOCAL_MODEL_GATEWAY_ACCOUNT_ID)
-    )
-      return 'unauthorized';
-    return (await withDeviceStorage(clearLocalModelGatewayCredentials))
-      ? 'cleared'
-      : 'nothing-to-clear';
-  }
   const owner = await resolveCredentialOwner(organizationId);
   if (
     !owner ||
@@ -600,18 +492,6 @@ export async function markModelGatewayCredentialRejected(
   expectedUpdatedAt?: string,
   expectedAccountId?: string,
 ): Promise<boolean> {
-  const target = await deviceGatewayTarget(organizationId);
-  if (target !== 'account') {
-    if (
-      target === 'refused' ||
-      (expectedAccountId !== undefined &&
-        expectedAccountId !== LOCAL_MODEL_GATEWAY_ACCOUNT_ID)
-    )
-      return false;
-    return withDeviceStorage(() =>
-      markLocalModelGatewayCredentialRejected(lastError, expectedUpdatedAt),
-    );
-  }
   const owner = await resolveCredentialOwner(organizationId);
   if (
     !owner ||
@@ -651,70 +531,7 @@ export async function authorizeModelGatewayCredential(
   organizationId: string,
   baseUrl: string,
 ): Promise<{ accountId: string }> {
-  const target = await deviceGatewayTarget(organizationId);
-  if (target === 'device') return { accountId: LOCAL_MODEL_GATEWAY_ACCOUNT_ID };
-  const owner =
-    target === 'account'
-      ? await resolveCredentialOwner(organizationId, baseUrl)
-      : null;
+  const owner = await resolveCredentialOwner(organizationId, baseUrl);
   if (!owner) throw new Error('AI gateway authorization is unavailable');
   return { accountId: owner.accountId };
-}
-
-/**
- * Move the device gateway's key for `baseUrl` into the signed-in account's
- * slot for its Personal organization, re-keying the ciphertext without
- * decrypting it. Never replaces a key the account already holds for that
- * endpoint.
- */
-export async function adoptLocalModelGatewayCredential(input: {
-  accountId: string;
-  organizationId: string;
-  baseUrl: string;
-}): Promise<'adopted' | 'exists' | 'no-key' | 'unauthorized'> {
-  const baseUrl = normalizeModelGatewayBaseUrl(input.baseUrl);
-  if (!baseUrl) return 'no-key';
-  const local = await readLocalModelGatewayCredentialCiphertext(baseUrl);
-  if (!local) return 'no-key';
-  const owner = await resolveCredentialOwner(input.organizationId, baseUrl);
-  if (!owner || owner.accountId !== input.accountId) return 'unauthorized';
-  let outcome: 'adopted' | 'exists' = 'exists';
-  await queueMutation(
-    async (file) => {
-      const current = await resolveCredentialOwner(
-        input.organizationId,
-        baseUrl,
-      );
-      if (current?.accountId !== owner.accountId)
-        throw new Error('Gateway account or authorization changed');
-      const held = Object.values(file.records).some(
-        (record) =>
-          record.accountId === owner.accountId &&
-          record.organizationId === input.organizationId &&
-          normalizeModelGatewayBaseUrl(record.baseUrlAtSave) === baseUrl,
-      );
-      if (held) return 'unchanged';
-      const existing = file.records[owner.key];
-      const key = existing
-        ? JSON.stringify([owner.accountId, input.organizationId, baseUrl])
-        : owner.key;
-      file.records[key] = {
-        accountId: owner.accountId,
-        organizationId: input.organizationId,
-        encryptedApiKeyBase64: local.encryptedApiKeyBase64,
-        baseUrlAtSave: baseUrl,
-        updatedAt: new Date().toISOString(),
-        ...(local.lastValidatedAt
-          ? { lastValidatedAt: local.lastValidatedAt }
-          : {}),
-        ...(local.validated === undefined
-          ? {}
-          : { validated: local.validated }),
-        ...(local.lastError ? { lastError: local.lastError } : {}),
-      };
-      outcome = 'adopted';
-    },
-    { requiresWrite: true, replaceOwnerlessLegacy: true },
-  );
-  return outcome;
 }

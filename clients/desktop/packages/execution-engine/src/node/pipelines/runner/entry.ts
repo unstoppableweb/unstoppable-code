@@ -42,7 +42,6 @@ import {
   pipelineRunnerRelayExitCode,
   servePipelineRunnerRelay,
 } from './relay';
-import { pipelineRunnerOwnerRoutes } from './owner-routes';
 
 /*
  * The cloud runner's process (CAN-6200, cloud pipelines CP-10), bundled as
@@ -302,19 +301,8 @@ async function serveRelay(
     stopHosts,
     secrets,
     // Its TTL comes with the first portable start; one incarnation serves
-    // one delegation. Model routes resolve with its AI Credits session (CP-68).
-    remoteOwner: {
-      lease: pipelineRunnerLeaseOf(activation),
-      resolveOwnerValues: pipelineRunnerOwnerRoutes(activation.aiCredits),
-    },
-    // A run's MCP servers reach the web origin's MCP proxy with the same
-    // session (CAN-6439).
-    ...(activation.aiCredits && {
-      mcpProxy: {
-        origin: activation.aiCredits.proxyOrigin,
-        token: activation.aiCredits.token,
-      },
-    }),
+    // one delegation.
+    remoteOwner: { lease: pipelineRunnerLeaseOf(activation) },
     targetId:
       flag(args, 'target-id') ?? `pipeline-runner:${activation.delegationId}`,
   });

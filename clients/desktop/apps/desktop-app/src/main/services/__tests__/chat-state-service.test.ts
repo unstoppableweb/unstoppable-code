@@ -1191,7 +1191,6 @@ describe('chat state service', () => {
   let tempDir: string;
   let paths: { tabs: string; archives: string; journal: string };
   let repositories: ChatStateRepository[];
-  let services: ChatStateService[];
   let dispatched: ChatSendMessageRequest[];
 
   it('does not publish a new tab when paired authorization is revoked at the final commit boundary', async () => {
@@ -1238,7 +1237,6 @@ describe('chat state service', () => {
       journal: join(tempDir, 'journal.jsonl'),
     };
     repositories = [];
-    services = [];
     dispatched = [];
     queueEdit.mockReset();
     queueCancel.mockReset();
@@ -1270,8 +1268,6 @@ describe('chat state service', () => {
     setChatTabsWriteObserver(null);
     setChatTabsRequiredDurabilityObserver(null);
     chatStateServiceModule.resetChatStateServiceForTests();
-    // These fixtures are not the singleton; stop their handoffs before draining.
-    for (const target of services) target.disposeTurnHandoff();
     // Hydration can arm queue timers; no host work may outlive its repository.
     getChatQueueService().resetForTests();
     await Promise.all(
@@ -1292,12 +1288,6 @@ describe('chat state service', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  function trackedService(options: ChatStateServiceOptions): ChatStateService {
-    const target = new ChatStateService(options);
-    services.push(target);
-    return target;
-  }
-
   function serviceWithRepository(
     overrides: Partial<ChatStateServiceOptions> = {},
     storagePaths = paths,
@@ -1311,7 +1301,7 @@ describe('chat state service', () => {
       ...repositoryOptions,
     });
     repositories.push(repository);
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -3836,7 +3826,7 @@ describe('chat state service', () => {
       });
 
       expect(resolveSendModel).toHaveBeenCalledWith(
-        { ...SCOPE, chatId: 'chat-1', executionHarness: undefined },
+        SCOPE,
         'agent_model_inherit',
         undefined,
       );
@@ -19934,7 +19924,7 @@ describe('chat state service', () => {
         cleanupSession: async (): Promise<void> => undefined,
         authorizeSend,
       };
-      const target = trackedService(options);
+      const target = new ChatStateService(options);
       await createChat(target);
 
       await expect(
@@ -21259,7 +21249,7 @@ describe('chat state service', () => {
   it('preserves portal origin when a stable-id send reaches the queue host', async () => {
     const repository = new ChatStateRepository({ resolvePaths: () => paths });
     repositories.push(repository);
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -23776,37 +23766,6 @@ describe('chat state service', () => {
         reason: 'agent_send:owner_boundary',
       });
       expect(queueConsumeRestoredInput).not.toHaveBeenCalled();
-    } finally {
-      validation.mockRestore();
-    }
-  });
-
-  it('resending a message its sender can no longer reach returns the refusal, not a fault', async () => {
-    const refusal =
-      'Chat chat-1 can run in Full Access, but this chat is limited to Auto now, so this chat cannot message it.';
-    const validation = jest
-      .spyOn(senderContext, 'revalidateAgentSenderRequest')
-      .mockResolvedValue(undefined);
-    try {
-      const f = await deliveryFixture({
-        ...reviewAgentRequest('row-1'),
-        attachmentPaths: undefined,
-      });
-      await f.steer();
-      await f.action('cancel');
-      expect((await f.getRow()).state).toBe('cancelled');
-      validation.mockRejectedValue(
-        new senderContext.AgentSenderContextError(
-          'authorization_conflict',
-          refusal,
-        ),
-      );
-      await expect(f.action('resend')).resolves.toMatchObject({
-        outcome: 'rejected',
-        reason: refusal,
-      });
-      expect(f.submission).toHaveBeenCalledTimes(1);
-      expect((await f.getRow()).state).toBe('cancelled');
     } finally {
       validation.mockRestore();
     }
@@ -27631,12 +27590,6 @@ describe('chat state service', () => {
       { type: 'result', is_error: true, result: 'Provider failed' },
       'failed',
     ],
-    [
-      // `/clear` runs in the Claude CLI and prints nothing (CAN-6416).
-      'a silent local command',
-      { type: 'result', is_error: false, result: '', local_command: 'clear' },
-      'completed',
-    ],
   ])(
     'does not reclassify %s as an empty completion',
     async (_label, data, status) => {
@@ -28054,7 +28007,7 @@ describe('chat state service', () => {
           enableFormat4: true,
         });
         repositories.push(repository);
-        const target = trackedService({
+        const target = new ChatStateService({
           repository,
           now: () => 1_786_104_000_000,
           createId: () => 'event-id',
@@ -29760,7 +29713,7 @@ describe('chat state service', () => {
     const dispatchStarted = new Promise<void>((resolve) => {
       markDispatchStarted = resolve;
     });
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       dispatch: async () => {
@@ -30210,7 +30163,7 @@ describe('chat state service', () => {
       ],
       { source: 'migration' },
     );
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       cleanupSession: async () => undefined,
@@ -34293,45 +34246,8 @@ describe('chat state service', () => {
     );
   });
 
-  it.each([false, true])(
-    'reopens scope admission only after the outer lifecycle settles (inner failure=%s)',
-    async (failInner) => {
-      const target = service();
-      await createChat(target);
-      await target.runWithScopeDeletionLifecycle(SCOPE, async () => {
-        const inner = target.runWithScopeDeletionLifecycle(SCOPE, async () => {
-          if (failInner) throw new Error('retirement preparation failed');
-        });
-        if (failInner)
-          await expect(inner).rejects.toThrow('retirement preparation failed');
-        else await inner;
-        await expect(
-          target.command(
-            envelope('still-fenced', {
-              type: 'chat.create_tab',
-              tabId: 'replacement-chat',
-              title: 'Replacement',
-            }),
-          ),
-        ).resolves.toMatchObject({
-          outcome: 'rejected',
-          reason: 'Chat scope is being deleted',
-        });
-      });
-      await expect(
-        target.command(
-          envelope('after-lifecycle', {
-            type: 'chat.create_tab',
-            tabId: 'replacement-chat',
-            title: 'Replacement',
-          }),
-        ),
-      ).resolves.toMatchObject({ outcome: 'applied' });
-    },
-  );
-
   it('migrates a new scope from inside its own admitted operation', async () => {
-    const target = trackedService({ recordDiagnostic: jest.fn() });
+    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
     const scope: ChatScopeKey = {
       projectId: SCOPE.projectId,
       worktreeId: 'admitted-first-load',
@@ -34349,7 +34265,7 @@ describe('chat state service', () => {
   });
 
   it('keeps an admitted scope from idle unload until its operation finishes', async () => {
-    const target = trackedService({ recordDiagnostic: jest.fn() });
+    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
     const admitted: unknown = hostRepositoryOption(
       target,
       'hasAdmittedOperation',
@@ -34402,7 +34318,7 @@ describe('chat state service', () => {
   });
 
   it('installs, replaces and safely uninstalls the live scope pin provider', async () => {
-    const target = trackedService({ recordDiagnostic: jest.fn() });
+    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
     let replacementIsPinned = false;
     const firstProvider = (scope: ChatScopeKey): boolean =>
       scope.projectId === SCOPE.projectId;
@@ -34474,7 +34390,7 @@ describe('chat state service', () => {
       process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = '42000';
       e2eBuild.mockReturnValue(false);
       process.env.NODE_ENV = 'production';
-      const productionTarget = trackedService({
+      const productionTarget = new ChatStateService({
         recordDiagnostic: jest.fn(),
       });
       targets.push(productionTarget);
@@ -34485,17 +34401,17 @@ describe('chat state service', () => {
       process.env.NODE_ENV = originalNodeEnv;
 
       // Under Jest an undrained service never arms the idle timer.
-      const jestTarget = trackedService({ recordDiagnostic: jest.fn() });
+      const jestTarget = new ChatStateService({ recordDiagnostic: jest.fn() });
       targets.push(jestTarget);
       expect(hostRepositoryOption(jestTarget, 'idleScopeUnloadMs')).toBe(0);
 
       e2eBuild.mockReturnValue(true);
-      const e2eTarget = trackedService({ recordDiagnostic: jest.fn() });
+      const e2eTarget = new ChatStateService({ recordDiagnostic: jest.fn() });
       targets.push(e2eTarget);
       expect(hostRepositoryOption(e2eTarget, 'idleScopeUnloadMs')).toBe(42000);
 
       process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = '9007199254740992';
-      const invalidTarget = trackedService({
+      const invalidTarget = new ChatStateService({
         recordDiagnostic: jest.fn(),
       });
       targets.push(invalidTarget);
@@ -34721,7 +34637,7 @@ describe('chat state service', () => {
       authorizationStarted = resolve;
     });
     const dispatch = jest.fn(() => Promise.resolve());
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -34921,7 +34837,7 @@ describe('chat state service', () => {
       .fn<Promise<void>, []>()
       .mockRejectedValueOnce(new Error('provider still busy'))
       .mockResolvedValue(undefined);
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -39306,7 +39222,7 @@ describe('chat state service', () => {
       })
       .mockImplementation(() => undefined);
     setChatTabsWriteObserver(projection);
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -39340,7 +39256,7 @@ describe('chat state service', () => {
       })
       .mockImplementation(() => undefined);
     setChatTabsWriteObserver(projection);
-    const target = trackedService({
+    const target = new ChatStateService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',

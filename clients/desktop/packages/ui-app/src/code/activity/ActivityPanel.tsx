@@ -36,7 +36,6 @@ import {
   type ActivityWorkspaceType,
 } from '@canopy/app-state';
 import {
-  EmptyState,
   Stack,
   HeaderActionButton,
   ProgressBar,
@@ -1982,92 +1981,79 @@ export function ActivityPanel({
     );
   };
 
-  // A task whose scope serves no section with anything to show says so,
-  // rather than leaving the pane blank (CAN-6430).
-  const renderActivityStack = (): JSX.Element =>
-    visibleOrder.length === 0 ? (
-      <div className="flex min-h-0 flex-1" data-testid="activity-list-empty">
-        <EmptyState title="No activity yet" tone="quiet" titleWeight="normal" />
-      </div>
-    ) : (
-      <OverlayScrollArea
-        className="min-h-0 flex-1"
-        contentClassName="p-3"
-        viewportProps={{ 'data-testid': 'activity-list' }}
+  const renderActivityStack = (): JSX.Element => (
+    <OverlayScrollArea
+      className="min-h-0 flex-1"
+      contentClassName="p-3"
+      viewportProps={{ 'data-testid': 'activity-list' }}
+    >
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
       >
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
+        <SortableContext
+          items={visibleOrder.filter(
+            (id) =>
+              !extraSections.find((section) => section.key === id)
+                ?.hiddenWhileMounted,
+          )}
+          strategy={verticalListSortingStrategy}
         >
-          <SortableContext
-            items={visibleOrder.filter(
-              (id) =>
-                !extraSections.find((section) => section.key === id)
-                  ?.hiddenWhileMounted,
-            )}
-            strategy={verticalListSortingStrategy}
-          >
-            <Stack gap="inline">
-              {visibleOrder.map((id) => {
-                const extra = extraSections.find(
-                  (section) => section.key === id,
-                );
-                const sectionOverride = sectionOverrides?.[id];
-                const descriptor = isActivitySectionId(id)
-                  ? ACTIVITY_SECTION_DESCRIPTORS[id]
-                  : undefined;
-                const chrome = resolveSectionChrome(id);
-                const hasExpandableContent =
-                  sectionOverride?.hasContent ?? extra?.hasContent ?? true;
-                return (
-                  <SortableSection
-                    key={id}
-                    id={id}
-                    hiddenWhileMounted={extra?.hiddenWhileMounted}
-                    title={chrome.title}
-                    icon={chrome.icon}
-                    subtitle={chrome.subtitle}
-                    subtitleInline={
-                      sectionOverride?.subtitleInline ?? extra?.subtitleInline
-                    }
-                    subtitleGap={
-                      sectionOverride?.subtitleGap ?? extra?.subtitleGap
-                    }
-                    headerAction={chrome.headerAction}
-                    collapsedIconColor={
-                      sectionOverride?.collapsedIconColor ??
-                      extra?.collapsedIconColor ??
-                      descriptor?.collapsedIconColor(sectionContext) ??
-                      'muted'
-                    }
-                    defaultCollapsed={
-                      sectionOverride?.defaultCollapsed ??
-                      extra?.defaultCollapsed ??
-                      id === 'terminals'
-                    }
-                    collapsible={hasExpandableContent}
-                    keepBodyMountedWhenCollapsed={
-                      sectionOverride?.keepBodyMountedWhenCollapsed ??
-                      extra?.keepBodyMountedWhenCollapsed
-                    }
-                    expandRequest={sectionOverride?.expandRequest}
-                    actionCard={
-                      sectionOverride?.actionCard ?? extra?.actionCard
-                    }
-                    dataTestId={
-                      sectionOverride?.dataTestId ?? extra?.dataTestId
-                    }
-                  >
-                    {renderBody(id)}
-                  </SortableSection>
-                );
-              })}
-            </Stack>
-          </SortableContext>
-        </DndContext>
-      </OverlayScrollArea>
-    );
+          <Stack gap="inline">
+            {visibleOrder.map((id) => {
+              const extra = extraSections.find((section) => section.key === id);
+              const sectionOverride = sectionOverrides?.[id];
+              const descriptor = isActivitySectionId(id)
+                ? ACTIVITY_SECTION_DESCRIPTORS[id]
+                : undefined;
+              const chrome = resolveSectionChrome(id);
+              const hasExpandableContent =
+                sectionOverride?.hasContent ?? extra?.hasContent ?? true;
+              return (
+                <SortableSection
+                  key={id}
+                  id={id}
+                  hiddenWhileMounted={extra?.hiddenWhileMounted}
+                  title={chrome.title}
+                  icon={chrome.icon}
+                  subtitle={chrome.subtitle}
+                  subtitleInline={
+                    sectionOverride?.subtitleInline ?? extra?.subtitleInline
+                  }
+                  subtitleGap={
+                    sectionOverride?.subtitleGap ?? extra?.subtitleGap
+                  }
+                  headerAction={chrome.headerAction}
+                  collapsedIconColor={
+                    sectionOverride?.collapsedIconColor ??
+                    extra?.collapsedIconColor ??
+                    descriptor?.collapsedIconColor(sectionContext) ??
+                    'muted'
+                  }
+                  defaultCollapsed={
+                    sectionOverride?.defaultCollapsed ??
+                    extra?.defaultCollapsed ??
+                    id === 'terminals'
+                  }
+                  collapsible={hasExpandableContent}
+                  keepBodyMountedWhenCollapsed={
+                    sectionOverride?.keepBodyMountedWhenCollapsed ??
+                    extra?.keepBodyMountedWhenCollapsed
+                  }
+                  expandRequest={sectionOverride?.expandRequest}
+                  actionCard={sectionOverride?.actionCard ?? extra?.actionCard}
+                  dataTestId={sectionOverride?.dataTestId ?? extra?.dataTestId}
+                >
+                  {renderBody(id)}
+                </SortableSection>
+              );
+            })}
+          </Stack>
+        </SortableContext>
+      </DndContext>
+    </OverlayScrollArea>
+  );
 
   const tabs = testIds
     ? TABS.map((item) => ({

@@ -1,4 +1,3 @@
-import type { AgentChatSearchFilter } from './query';
 import * as path from 'node:path';
 import { utilityProcess, type UtilityProcess } from 'electron';
 import type {
@@ -54,14 +53,13 @@ export class ChatSearchQueryRunner {
     request: ChatSearchQueryRequest,
     now?: number,
     offset?: number,
-    agent?: AgentChatSearchFilter,
   ): Promise<ChatSearchResult[]> {
     if (this.closed) {
       return Promise.reject(new Error('Chat-search query worker is closed.'));
     }
     return new Promise((resolve, reject) => {
       this.queue.push({
-        payload: { dbPath, request, now, offset, agent },
+        payload: { dbPath, request, now, offset },
         resolve,
         reject,
         child: null,

@@ -145,8 +145,7 @@ export const aiGatewayActionCatalog: readonly AgentActionCatalogEntry[] =
           },
     keywords: ['AI gateway', 'models', 'connect', 'personal', 'settings'],
     notes: [
-      'API keys are collected through the secure approval prompt, never chat or action payloads.',
-      'Cloud chats read gateways but cannot connect or update one: a change needs a confirmation in the Settings UI, so it is refused with missing_capability. Give the user the settings.open link to the AI gateway page instead.',
+      'Desktop only. API keys are collected through the secure approval prompt, never chat or action payloads.',
     ],
   }));
 export const aiGatewayDispatchJsonSchema: AgentActionFamilyJsonSchema = {

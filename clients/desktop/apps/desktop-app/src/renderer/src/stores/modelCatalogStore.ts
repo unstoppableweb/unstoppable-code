@@ -28,7 +28,6 @@ import {
   type ModelPolicyIndex,
 } from '@canopy/desktop-shared/lib/model-policy';
 import {
-  localModelGatewayProjection,
   resolveModelGatewayIndex,
   type ModelGatewayIndex,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
@@ -520,16 +519,12 @@ function applySnapshot(
   //   1. managed/gateway/Ollama catalogs and gateway routes,
   //   2. the authoritative harness-assignment snapshot,
   //   3. chat-tab reconciliation against the fully hydrated registries.
-  if (snapshot.cursor !== undefined) {
+  if (snapshot.cursor) {
     initCursorModels(snapshot.cursor);
     hydrateCursorModelCache(window.api, snapshot.cursor);
   }
-  if (snapshot.copilot !== undefined) {
-    initCopilotModels(snapshot.copilot);
-  }
-  if (snapshot.opencode !== undefined) {
-    initOpenCodeModels(snapshot.opencode);
-  }
+  initCopilotModels(snapshot.copilot ?? []);
+  initOpenCodeModels(snapshot.opencode ?? []);
   initModelAliases(snapshot.aliases);
   initClaudeModels(omitModelFeatureFlags(snapshot.claude));
   initCodexModels(omitModelFeatureFlags(snapshot.codex));
@@ -629,22 +624,10 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     let policyIndex: ModelPolicyIndex = EMPTY_POLICY_INDEX;
     let gatewayIndex: ModelGatewayIndex = EMPTY_GATEWAY_INDEX;
     try {
-      // Read beside the account. A failed device gateway read is no device
-      // gateway, as in main.
-      const devicePromise = Promise.allSettled([
-        window.api.localModelGateway.read(),
-      ]).then(([result]) =>
-        result.status === 'fulfilled' ? result.value : null,
-      );
       const account = await window.api.loadCanopyCloudAccount();
-      const device = await devicePromise;
       if (seq !== policyRefreshSeq) return;
       policyIndex = resolveModelPolicyIndex(account);
-      // The device AI gateway routes while the account names no Personal org.
-      gatewayIndex = resolveModelGatewayIndex(
-        account,
-        localModelGatewayProjection(device?.gateway),
-      );
+      gatewayIndex = resolveModelGatewayIndex(account);
     } catch {
       // A failed renderer-side read leaves the picker unfiltered; enforcement
       // itself lives at the main-process session guard, which fails closed for
@@ -756,15 +739,11 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     const unsubPolicy = window.api.onPreferencesChanged(() => {
       void get().refreshPolicy();
     });
-    const unsubDeviceGateway = window.api.localModelGateway.onChanged(() => {
-      void get().refreshPolicy();
-    });
     return (): void => {
       unsubContext();
       unsubFlags();
       unsubRegistry();
       unsubPolicy();
-      unsubDeviceGateway();
     };
   },
 

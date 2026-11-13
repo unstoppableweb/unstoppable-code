@@ -113,8 +113,6 @@ import {
   startPagesEqual,
 } from '@/lib/start-page/project-start-page';
 import { saveStartPageFromAction } from '@/lib/start-page/save-start-page';
-import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
-import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { Button } from '@canopy/ui-shared/components';
 
 const EMPTY_EXPANDED_PATHS = new Set<string>();
@@ -438,8 +436,7 @@ interface FolderRowProps {
   copyPath?: string;
   absolutePath?: string;
   onActionMenu?: (target: FileTreeFolderActionTarget) => void;
-  /** Unset where the files aren't on this computer: no row button. */
-  onOpenInFileManager?: (absolutePath: string) => void;
+  onOpenInFileManager: (absolutePath: string) => void;
   root?: FileTreeRoot;
   repoCount?: number;
   relativePath?: string;
@@ -586,7 +583,7 @@ function FolderRow({
       dropTarget={node?.id === interaction?.dropTargetId}
       sticky
       trailingAction={
-        absolutePath && onOpenInFileManager ? (
+        absolutePath ? (
           <Tooltip label={pt(uiText.fileManager.openItem)}>
             <Button
               variant="ghost-quiet"
@@ -615,7 +612,7 @@ interface FileNodeRowProps {
   repoCount: number;
   depth: number;
   onActionMenu: (target: FileTreeActionTarget) => void;
-  onOpenInFileManager?: (absolutePath: string) => void;
+  onOpenInFileManager: (absolutePath: string) => void;
 }
 
 const FileNodeRow = memo(function FileNodeRow({
@@ -716,24 +713,22 @@ const FileNodeRow = memo(function FileNodeRow({
       onDragEnd={interaction?.dragEnd}
       dropTarget={node.id === interaction?.dropTargetId}
       trailingAction={
-        onOpenInFileManager ? (
-          <Tooltip label={pt(uiText.fileManager.openItem)}>
-            <Button
-              variant="ghost-quiet"
-              size="sm"
-              iconOnly
-              data-testid="files-tree-row-open-in-file-manager"
-              aria-label={pt(uiText.fileManager.openItem)}
-              onClick={(event): void => {
-                event.preventDefault();
-                event.stopPropagation();
-                onOpenInFileManager(entry.absolutePath);
-              }}
-            >
-              <FolderIcon size="sm" />
-            </Button>
-          </Tooltip>
-        ) : undefined
+        <Tooltip label={pt(uiText.fileManager.openItem)}>
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
+            data-testid="files-tree-row-open-in-file-manager"
+            aria-label={pt(uiText.fileManager.openItem)}
+            onClick={(event): void => {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenInFileManager(entry.absolutePath);
+            }}
+          >
+            <FolderIcon size="sm" />
+          </Button>
+        </Tooltip>
       }
     />
   );
@@ -749,7 +744,7 @@ interface DirectoryChildrenProps {
   expandedPaths: Set<string>;
   onToggle: (path: string) => void;
   onActionMenu: (target: FileTreeActionTarget) => void;
-  onOpenInFileManager?: (absolutePath: string) => void;
+  onOpenInFileManager: (absolutePath: string) => void;
 }
 
 function DirectoryChildren({
@@ -909,7 +904,7 @@ interface RootRendererProps {
   expandedPaths: Set<string>;
   onToggle: (path: string) => void;
   onActionMenu: (target: FileTreeActionTarget) => void;
-  onOpenInFileManager?: (absolutePath: string) => void;
+  onOpenInFileManager: (absolutePath: string) => void;
 }
 
 const RootRenderer = memo(function RootRenderer({
@@ -968,7 +963,7 @@ interface FilteredNodesProps {
   collapsedPaths: Set<string>;
   onToggle: (treePath: string) => void;
   onActionMenu: (target: FileTreeActionTarget) => void;
-  onOpenInFileManager?: (absolutePath: string) => void;
+  onOpenInFileManager: (absolutePath: string) => void;
 }
 
 /**
@@ -1131,13 +1126,6 @@ export function FilesTreeTab({
   // Read-only scopes (a shared-container recipient) browse and open files but
   // never rename, delete, move, paste, or open the mutate context menu.
   const readOnly = useWorkspaceIsReadOnly();
-  // A cloud chat's sandbox files can't be handed to the OS, watched, copied
-  // or trashed (CAN-6175 R9).
-  const localFiles =
-    worktreeId === null || workspaceFileSourceFor(worktreeId).onThisComputer;
-  const { chatFileMentions } = useScopeCapabilities({
-    projectId: projectId ?? '',
-  });
   const startPageEnabled = useCanopyDesktopStartPageEnabled();
   const projectType = useProjectsStore(
     (state) => state.projects.find((project) => project.id === projectId)?.type,
@@ -2091,8 +2079,6 @@ export function FilesTreeTab({
     [projectId, worktreeId],
   );
 
-  const rowOpenInFileManager = localFiles ? handleOpenInFileManager : undefined;
-
   const handleRefresh = useCallback((): void => {
     if (!projectId || !worktreeId) return;
     if (rootsLoading) return;
@@ -2188,7 +2174,7 @@ export function FilesTreeTab({
   refreshVisibleDirectoriesRef.current = refreshVisibleDirectories;
 
   useEffect(() => {
-    if (!isVisible || !projectId || !worktreeId || !localFiles) {
+    if (!isVisible || !projectId || !worktreeId) {
       setWatching(false);
       return;
     }
@@ -2230,7 +2216,7 @@ export function FilesTreeTab({
       unsubscribe();
       releaseFileTreeWatch(projectId, worktreeId);
     };
-  }, [isVisible, localFiles, projectId, worktreeId]);
+  }, [isVisible, projectId, worktreeId]);
 
   const visibleRowIds = useCallback((): string[] => {
     const host = hostRef.current;
@@ -2440,7 +2426,7 @@ export function FilesTreeTab({
           ) {
             continue;
           }
-          await workspaceFileSourceFor(worktreeId).mutateFileTree({
+          await window.api.mutateFileTree({
             operation,
             projectId,
             worktreeId,
@@ -2507,7 +2493,7 @@ export function FilesTreeTab({
       if (inlineEditor.mode === 'rename') {
         const parts = inlineEditor.node.relativePath.split('/');
         parts[parts.length - 1] = value;
-        await workspaceFileSourceFor(worktreeId).mutateFileTree({
+        await window.api.mutateFileTree({
           operation: 'move',
           projectId,
           worktreeId,
@@ -2523,7 +2509,7 @@ export function FilesTreeTab({
           inlineEditor.node.kind === 'folder'
             ? inlineEditor.node.relativePath
             : inlineEditor.node.relativePath.split('/').slice(0, -1).join('/');
-        await workspaceFileSourceFor(worktreeId).mutateFileTree({
+        await window.api.mutateFileTree({
           operation: inlineEditor.mode,
           projectId,
           worktreeId,
@@ -2560,12 +2546,12 @@ export function FilesTreeTab({
     try {
       for (const node of deleteTargets) {
         if (!node.relativePath) continue;
-        await workspaceFileSourceFor(worktreeId).mutateFileTree({
+        await window.api.mutateFileTree({
           operation: 'delete',
           projectId,
           worktreeId,
           target: nodeReference(node),
-          useTrash: localFiles,
+          useTrash: true,
         });
         setDeleteTargets((current) =>
           current.filter((candidate) => candidate.id !== node.id),
@@ -2582,13 +2568,7 @@ export function FilesTreeTab({
     } finally {
       setMutationBusy(false);
     }
-  }, [
-    deleteTargets,
-    localFiles,
-    projectId,
-    refreshVisibleDirectories,
-    worktreeId,
-  ]);
+  }, [deleteTargets, projectId, refreshVisibleDirectories, worktreeId]);
 
   const handleAction = useCallback(
     (
@@ -2881,10 +2861,7 @@ export function FilesTreeTab({
         );
         return;
       }
-      if (
-        modifier &&
-        (localFiles ? ['c', 'x'] : ['x']).includes(event.key.toLowerCase())
-      ) {
+      if (modifier && ['c', 'x'].includes(event.key.toLowerCase())) {
         event.preventDefault();
         setClipboard({
           operation: event.key.toLowerCase() === 'x' ? 'cut' : 'copy',
@@ -2918,7 +2895,6 @@ export function FilesTreeTab({
       clipboard,
       focusVisibleRow,
       focusAppManagedRootsGroup,
-      localFiles,
       rootGroups,
       readOnly,
       selectedNodesFor,
@@ -2932,13 +2908,13 @@ export function FilesTreeTab({
       const nodes = selectedNodesFor(node).filter((item) => item.relativePath);
       dragNodesRef.current = nodes;
       if (!selectedIds.has(node.id)) setSelectedIds(new Set([node.id]));
-      event.dataTransfer.effectAllowed = localFiles ? 'copyMove' : 'move';
+      event.dataTransfer.effectAllowed = 'copyMove';
       event.dataTransfer.setData(
         'text/plain',
         nodes.map((item) => item.relativePath).join('\n'),
       );
     },
-    [localFiles, selectedIds, selectedNodesFor],
+    [selectedIds, selectedNodesFor],
   );
 
   const dropDestinationForNode = useCallback(
@@ -2968,7 +2944,7 @@ export function FilesTreeTab({
       if (!destination || dragNodesRef.current.length === 0) return;
       event.preventDefault();
       event.dataTransfer.dropEffect =
-        localFiles && (event.altKey || event.ctrlKey) ? 'copy' : 'move';
+        event.altKey || event.ctrlKey ? 'copy' : 'move';
       setDropTargetId(destination.id);
       if (node.kind !== 'folder') {
         cancelDragAutoExpand();
@@ -3010,7 +2986,6 @@ export function FilesTreeTab({
     [
       cancelDragAutoExpand,
       dropDestinationForNode,
-      localFiles,
       projectId,
       toggleFileTreeExpandedPath,
       uiStateKey,
@@ -3041,21 +3016,14 @@ export function FilesTreeTab({
       const destination = dropDestinationForNode(node);
       if (!destination) return;
       event.preventDefault();
-      const operation =
-        localFiles && (event.altKey || event.ctrlKey) ? 'copy' : 'move';
+      const operation = event.altKey || event.ctrlKey ? 'copy' : 'move';
       const sources = dragNodesRef.current;
       dragNodesRef.current = [];
       cancelDragAutoExpand();
       setDropTargetId(null);
       void transferNodes(sources, destination, operation);
     },
-    [
-      cancelDragAutoExpand,
-      dropDestinationForNode,
-      localFiles,
-      readOnly,
-      transferNodes,
-    ],
+    [cancelDragAutoExpand, dropDestinationForNode, readOnly, transferNodes],
   );
 
   const dragEnd = useCallback((): void => {
@@ -3259,7 +3227,7 @@ export function FilesTreeTab({
           root={root}
           repoCount={roots.length}
           onActionMenu={handleOpenActionMenu}
-          onOpenInFileManager={rowOpenInFileManager}
+          onOpenInFileManager={handleOpenInFileManager}
         />
         {isExpanded && (
           <FilteredNodes
@@ -3270,7 +3238,7 @@ export function FilesTreeTab({
             collapsedPaths={collapsedSearchPaths}
             onToggle={handleToggleFilteredPath}
             onActionMenu={handleOpenActionMenu}
-            onOpenInFileManager={rowOpenInFileManager}
+            onOpenInFileManager={handleOpenInFileManager}
           />
         )}
       </div>
@@ -3296,7 +3264,7 @@ export function FilesTreeTab({
       expandedPaths={expandedPaths}
       onToggle={handleTogglePath}
       onActionMenu={handleOpenActionMenu}
-      onOpenInFileManager={rowOpenInFileManager}
+      onOpenInFileManager={handleOpenInFileManager}
     />
   );
 
@@ -3629,12 +3597,9 @@ export function FilesTreeTab({
           onAction={handleAction}
           onOpenInApp={handleOpenInApp}
           canPaste={clipboard !== null}
-          localFiles={localFiles}
-          canMention={chatFileMentions === true}
           startPageState={((): FileTreeActionMenuProps['startPageState'] => {
             if (
               !startPageEnabled ||
-              !localFiles ||
               !projectId ||
               !projectType ||
               actionTarget.kind !== 'file'
@@ -3666,11 +3631,7 @@ export function FilesTreeTab({
       {deleteTargets.length > 0 && (
         <ConfirmDialog
           title={`Delete ${deleteTargets.length === 1 ? deleteTargets[0].name : `${deleteTargets.length} items`}?`}
-          message={
-            localFiles
-              ? 'The selected files and folders will be moved to the system trash or recycle bin.'
-              : "The selected files and folders will be permanently deleted. This can't be undone."
-          }
+          message="The selected files and folders will be moved to the system trash or recycle bin."
           confirmLabel="Delete"
           busyLabel="Deleting…"
           busy={mutationBusy}

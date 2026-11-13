@@ -520,8 +520,7 @@ function upsertMessage(
   return ordered;
 }
 
-/** A row's revision as the store compares it: a timer's completion counts. */
-export function messageRevision(message: PortalChatMessage): number {
+function messageRevision(message: PortalChatMessage): number {
   const frameRevision = message.updatedAtMs ?? message.createdAtMs;
   // Persisted timer messages retain their start timestamp; completion advances
   // only the embedded timer block.

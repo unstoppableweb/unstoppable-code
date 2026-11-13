@@ -6,9 +6,7 @@ export {
 } from './invoker';
 export {
   createCoreCoworkStore,
-  RECONNECT_DELAYS_MS,
   type CoreCoworkProject,
-  type CoreCoworkStoreOptions,
   type CoreCoworkState,
   type CoreCoworkStatus,
   type CoreCoworkTask,
@@ -55,9 +53,3 @@ export {
   type DurablePtyResume,
   type DurableTerminalConnection,
 } from './durable-pty-client';
-export {
-  createDurableTerminalClient,
-  type DurableTerminalClient,
-  type DurableTerminalClientOptions,
-} from './durable-terminal-client';
-export { createScopedTerminalClient } from './scoped-terminal-client';

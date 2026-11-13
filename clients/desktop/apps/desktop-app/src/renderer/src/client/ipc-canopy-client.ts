@@ -9,19 +9,15 @@ import type { CanopyCapabilities, CanopyClient } from '@canopy/app-core';
 import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import { createIpcCanopyClient } from '@canopy/ipc-canopy-client';
-import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
+import { scopedFileQueriesFor } from '@/lib/files/workspace-file-source';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
-import {
-  cloudTerminalsEnabled,
-  webCoreScopeCapabilities,
-} from '@/lib/web-core-scope-capabilities';
+import { webCoreScopeCapabilities } from '@/lib/web-core-scope-capabilities';
 import { recordTerminalOutputApplied } from '@/lib/renderer-diagnostics/recorder';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { createDesktopFeedbackReportClient } from './feedback-report-client';
@@ -156,8 +152,6 @@ export function createDesktopCapabilities(
     },
     panelLayoutControls: false,
     itemGrouping: false,
-    // `work-entries:delete` archives a Work Entry locked (CAN-5461).
-    standaloneChatArchive: true,
     workspaceRemoval: 'delete',
     // `worktree.create` / `worktree.update` run over IPC. Row identity and
     // activity sections keep the shared defaults, so neither is set.
@@ -194,7 +188,6 @@ export function createDesktopCapabilities(
     lifecycleJournalQuarantine: true,
     // `worktree:discard-describe` / `worktree:discard` (CAN-5334).
     worktreeDiscard: true,
-    worktreeRecovery: true,
     // `workspace:delete-discard-describe` and the supersede field (CAN-5337).
     projectDeletionDiscard: true,
     // Observed cost reads over the `cost:*` IPC.
@@ -329,7 +322,7 @@ export function createDesktopCanopyClient(
       await forkOpenWorktreeState(request);
     },
     resolveLocalFileRoot: (rootId) => localFileRootOverrides.get(rootId),
-    scopedFiles: scopedFileOperationsFor,
+    scopedFiles: scopedFileQueriesFor,
     logError: (message, details) => {
       reportRendererConsoleError(message, details);
     },
@@ -349,15 +342,10 @@ export function createDesktopCanopyClient(
     ...(settings ? { settings } : {}),
   });
   return Object.assign(client, {
-    // A cloud chat scope answers from the web core's set (CAN-6175 D4). The
-    // flags are read at call time; `useScopeCapabilities` re-renders on them.
+    // A cloud chat scope answers from the web core's set (CAN-6175 D4).
     capabilitiesFor: (localId: string): CanopyCapabilities =>
       isWebCoreScope(localId)
-        ? webCoreScopeCapabilities(client.capabilities, {
-            durableTerminals: cloudTerminalsEnabled(
-              useFeatureFlagsStore.getState().isEnabled,
-            ),
-          })
+        ? webCoreScopeCapabilities(client.capabilities)
         : client.capabilities,
     // Older hosts have no bridge; blocked remote lists mean no arms.
     listWorkEntryAutoDelete: () =>

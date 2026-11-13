@@ -11,7 +11,6 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { isWebCoreScope } from '@/lib/chat-authority';
 import { useShallow } from 'zustand/shallow';
 import {
   getOnlyQueuedHookPlaceholderQueueId,
@@ -334,8 +333,7 @@ export const ChatTabBar = memo(function ChatTabBar({
   const scopeWorktreeId = effectiveScope?.worktreeId;
   useEffect(() => {
     setWorktreeRootPath(undefined);
-    // A cloud scope has no worktree path on this computer (CAN-6395).
-    if (!scopeProjectId || !scopeWorktreeId || isWebCoreScope(scopeProjectId)) {
+    if (!scopeProjectId || !scopeWorktreeId) {
       return;
     }
     let cancelled = false;
@@ -957,12 +955,10 @@ export const ChatTabBar = memo(function ChatTabBar({
                 void (async (): Promise<void> => {
                   let worktreePath: string | undefined;
                   try {
-                    worktreePath = isWebCoreScope(sel.projectId)
-                      ? undefined
-                      : await window.api.getWorktreePath({
-                          projectId: sel.projectId,
-                          worktreeId: sel.worktreeId,
-                        });
+                    worktreePath = await window.api.getWorktreePath({
+                      projectId: sel.projectId,
+                      worktreeId: sel.worktreeId,
+                    });
                   } catch {
                     worktreePath = undefined;
                   }

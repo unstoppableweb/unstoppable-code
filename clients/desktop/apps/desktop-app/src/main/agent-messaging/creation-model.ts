@@ -1,18 +1,13 @@
-import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import {
   getAgentModelSelectionId,
-  getExecutionHarnessForModel,
   isAgentModel,
   isInheritingAgentModel,
   resolveKnownModel,
   resolveModelAlias,
-  type AgentProviderType,
   type ChatCommand,
   type ChatModel,
 } from '@canopy/desktop-shared/types';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
-import type { AgentExecutionHarness } from '@canopy/protocol/models';
-import { supportsChatHarnessChoice } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { AgentChatSendError } from './send-orchestration';
 import { pinInheritingAgentToDestination } from '../agents/agent-default-model';
 import {
@@ -20,6 +15,7 @@ import {
   type ResolvedAgentModelRuntime,
 } from '../agents/agent-model-runtime';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
+import { NoDispatchableModelError } from '../lib/default-model-lane-resolver';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
@@ -31,12 +27,6 @@ export interface CreationModelSelection {
   /** The id the new chat stores: a route for an Agent on the default model. */
   model: ChatModel;
   agentId?: string;
-  /**
-   * The harness the action named for the new chat, checked against the
-   * model's chat harness options; absent when the model's own harness runs.
-   */
-  executionHarness?: AgentExecutionHarness;
-  fromDestinationDefault: boolean;
 }
 
 type CreateTabSeed = Omit<
@@ -48,14 +38,13 @@ type CreateTabSeed = Omit<
  * Check an explicitly selected model against the target project and work
  * owner, as `setStandaloneChatModel` and the turn would, before anything is
  * allocated. Throws a typed refusal; never writes an entry, tab or input.
+ * `acceptAgentRoute` is for an automation's own chat (CAN-5379), whose route
+ * the automations service already resolved, as its native send ran it.
  */
 export async function resolveCreationModelSelection(
   requested: string,
   target: { projectId: string; taskId: string },
-  options: {
-    /** A harness the action named; must be one the model offers a chat. */
-    executionHarness?: AgentExecutionHarness;
-  } = {},
+  options: { acceptAgentRoute?: boolean } = {},
 ): Promise<CreationModelSelection> {
   const known = resolveKnownModel(requested);
   if (!known)
@@ -63,26 +52,19 @@ export async function resolveCreationModelSelection(
       'not_found',
       `Model ${requested} is not available. Use models.list to choose a model.`,
     );
-  if (
-    options.executionHarness !== undefined &&
-    !supportsChatHarnessChoice(known, options.executionHarness)
-  )
+  // models.list lists Agents by bare id. A route would let the caller choose an
+  // inheriting Agent's base instead of the target default.
+  const route = parseAgentRouteModelId(known);
+  if (route && options.acceptAgentRoute !== true)
     throw new AgentChatSendError(
       'validation_failed',
-      `Model ${requested} does not run on the ${options.executionHarness} harness. Use its harnessChoices from models.list, or omit executionHarness.`,
+      `Choose the Agent itself (${route.agentId}) instead of "${known}"; the target project decides its model.`,
     );
-  // Naming the model's own harness chooses nothing, as it does for
-  // chat.create: the chat is not pinned, so later model changes move it.
-  const executionHarness =
-    options.executionHarness === getExecutionHarnessForModel(known)
-      ? undefined
-      : options.executionHarness;
   let model: ChatModel;
   try {
     model = await pinInheritingAgentToDestination(known, target.projectId);
   } catch (error) {
-    throw error instanceof AgentModelSelectionError &&
-      error.code === 'destination_default_unavailable'
+    throw error instanceof NoDispatchableModelError
       ? new AgentChatSendError(
           'target_not_ready',
           'The target project has no default model for this Agent.',
@@ -100,9 +82,7 @@ export async function resolveCreationModelSelection(
       model,
       projectId: target.projectId,
     });
-  } catch (error) {
-    if (error instanceof AgentModelSelectionError)
-      throw new AgentChatSendError('validation_failed', error.message);
+  } catch {
     throw new AgentChatSendError(
       'not_found',
       isAgentModel(model)
@@ -111,15 +91,7 @@ export async function resolveCreationModelSelection(
     );
   }
   try {
-    // A named harness is the runtime the chat runs on; its connection is
-    // checked in place of the model's own.
-    await assertRunnableForTargetOwner(
-      model,
-      executionHarness === undefined
-        ? runtime
-        : { ...runtime, executionHarness },
-      target,
-    );
+    await assertRunnableForTargetOwner(model, runtime, target);
   } catch (error) {
     if (error instanceof AgentChatSendError) throw error;
     throw new AgentChatSendError(
@@ -129,18 +101,16 @@ export async function resolveCreationModelSelection(
   }
   return {
     model,
-    fromDestinationDefault: isInheritingAgentModel(known),
     ...(isAgentModel(model)
       ? { agentId: getAgentModelSelectionId(model) }
       : {}),
-    ...(executionHarness === undefined ? {} : { executionHarness }),
   };
 }
 
 /** Runtime connection, policy and gateway checks for the target work owner. */
 async function assertRunnableForTargetOwner(
   model: ChatModel,
-  { providerType, executionHarness, runtimeModel }: ResolvedAgentModelRuntime,
+  { providerType, executionHarness }: ResolvedAgentModelRuntime,
   target: { projectId: string; taskId: string },
 ): Promise<void> {
   for (const [runtimeId, label, isAvailable] of [
@@ -168,7 +138,7 @@ async function assertRunnableForTargetOwner(
       'target_not_ready',
       'The owner of the target project could not be read. Nothing was created; retry later.',
     );
-  if (await isModelBlockedByStoredPolicy(runtimeModel, workOwner))
+  if (await isModelBlockedByStoredPolicy(model, workOwner))
     throw new AgentChatSendError(
       'validation_failed',
       'This model is blocked by your organization policy.',
@@ -187,18 +157,11 @@ async function assertRunnableForTargetOwner(
 export async function resolveCreationModelSeed(
   projectId: string,
   model: ChatModel,
-  fromDestinationDefault = false,
-  /**
-   * The provider a named harness runs the chat on. The seed then carries that
-   * provider and its defaults, so the harness pin that follows changes no
-   * provider and keeps the seeded settings.
-   */
-  providerType?: AgentProviderType,
 ): Promise<CreateTabSeed | { noDispatchableModel: string }> {
   const { resolveRemoteCreateTabSeed } =
     await import('../portal/adapters/chat-adapter');
   const route = parseAgentRouteModelId(model);
-  if (route && fromDestinationDefault && !providerType) {
+  if (route && isInheritingAgentModel(route.agentId)) {
     const defaults = await resolveRemoteCreateTabSeed(projectId);
     if (
       !('noDispatchableModel' in defaults) &&
@@ -210,8 +173,5 @@ export async function resolveCreationModelSeed(
       return { ...seed, model };
     }
   }
-  return resolveRemoteCreateTabSeed(projectId, {
-    model,
-    ...(providerType === undefined ? {} : { providerType }),
-  });
+  return resolveRemoteCreateTabSeed(projectId, { model });
 }

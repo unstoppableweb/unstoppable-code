@@ -102,12 +102,6 @@ export type InternalRootStartupReader = (options: {
   readonly identity: BrandBuildIdentity;
   readonly observation?: InternalRootStartupObservation;
   readonly onValidatedSource?: (source: string) => void;
-  readonly onCompletedMigration?: (migration: {
-    source: string;
-    destination: string;
-    transactionId: string;
-    completedAtMs: number;
-  }) => void;
 }) => InternalRootStartupState;
 
 /** The validator belongs to B; this adapter supplies only synchronous filesystem facts. */
@@ -115,7 +109,6 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
   home: suppliedHome,
   identity,
   onValidatedSource,
-  onCompletedMigration,
   observation = {
     os: hostOperatingSystem(),
     getuid: () => process.getuid?.(),
@@ -182,8 +175,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           observation.os === 'win32'
             ? `${root.dev}:${root.ino}`
             : `${published.dev}:${published.ino}`;
-        const complete =
-          root.isDirectory() &&
+        return root.isDirectory() &&
           !root.isSymbolicLink() &&
           realpathSync.native(destination) === destination &&
           (observation.os === 'win32'
@@ -194,19 +186,8 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
             journal.publicationIdentity,
             observation.os,
           )
-            ? 'complete'
-            : 'incomplete';
-        if (complete === 'complete') {
-          onCompletedMigration?.({
-            source: journal.identity.source,
-            destination: journal.identity.destination,
-            transactionId: journal.transactionId,
-            // Completion is the journal's last write; ordinary root/chat writes
-            // do not advance this cutoff. Rebuild requires a stopped host.
-            completedAtMs: Number(stat.mtimeMs),
-          });
-        }
-        return complete;
+          ? 'complete'
+          : 'incomplete';
       }
       const names = readdirSync(coordination);
       if (

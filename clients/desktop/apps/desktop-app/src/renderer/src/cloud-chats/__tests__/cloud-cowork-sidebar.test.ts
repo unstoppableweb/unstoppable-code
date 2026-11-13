@@ -9,7 +9,7 @@ import {
   listCloudChatsForAdvisor,
   openCloudChatForAdvisor,
 } from '../cloud-chat-advisor-actions';
-import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { useCloudChatSelection } from '../cloud-chat-selection';
 import {
   cloudCoworkStore,
   cloudProjectsForContext,
@@ -113,7 +113,6 @@ describe('App Advisor reads and opens the cloud chats the sidebar shows (CAN-597
         key === CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key ||
         (on && key === CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key),
     });
-  const openTask = jest.fn(() => Promise.resolve());
 
   beforeEach(() => {
     setFlag(true);
@@ -129,8 +128,7 @@ describe('App Advisor reads and opens the cloud chats the sidebar shows (CAN-597
       projects: PROJECTS,
       tasksByProject: TASKS,
     });
-    useStandaloneChatStore.setState({ openWorkEntryFromSidebar: openTask });
-    openTask.mockClear();
+    useCloudChatSelection.setState({ selectedChatKey: null });
   });
 
   it("lists the selected context's chats as ids and titles, and opens only those", () => {
@@ -152,14 +150,15 @@ describe('App Advisor reads and opens the cloud chats the sidebar shows (CAN-597
       ok: false,
       error: { code: 'not_found' },
     });
-    expect(openTask).not.toHaveBeenCalled();
+    expect(useCloudChatSelection.getState().selectedChatKey).toBeNull();
 
     expect(openCloudChatForAdvisor('task-1')).toEqual({
       ok: true,
       result: { chatId: 'task-1', projectId: 'ours', title: 'Plan' },
     });
-    // It opens on the cowork page, like a local task (CAN-6175 R2b).
-    expect(openTask).toHaveBeenCalledWith('web-core:ours', 'web-core:task-1');
+    expect(useCloudChatSelection.getState().selectedChatKey).toBe(
+      'web-core:task-1',
+    );
   });
 
   it('answers unavailable while cloud chats are off or offline', () => {
@@ -179,6 +178,6 @@ describe('App Advisor reads and opens the cloud chats the sidebar shows (CAN-597
       ok: false,
       error: { code: 'surface_unavailable' },
     });
-    expect(openTask).not.toHaveBeenCalled();
+    expect(useCloudChatSelection.getState().selectedChatKey).toBeNull();
   });
 });

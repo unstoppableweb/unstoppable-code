@@ -20,7 +20,7 @@ import {
   parseFrontmatterAndBody,
   serializeMarkdownWithFrontmatter,
 } from './frontmatter';
-import { buildPluginMemberInventory, pluginAppConfigPaths } from './inventory';
+import { buildPluginMemberInventory } from './inventory';
 import { pluginMemberInvocation } from './invocation-grammar';
 import type {
   ClaudePluginManifest,
@@ -730,9 +730,7 @@ function copyOptionalPluginFiles(options: {
     });
   }
   const optionalFiles: Array<[string, string]> = [
-    ...pluginAppConfigPaths(options.source.files).map(
-      (filePath): [string, string] => [filePath, filePath],
-    ),
+    ['.app.json', '.app.json'],
     ['index.md', 'index.md'],
     ['README.md', 'SOURCE_README.md'],
   ];

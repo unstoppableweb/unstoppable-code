@@ -24,10 +24,8 @@ import {
   interruptedSessionHomeCopy,
   interruptedSessionsHomeCopy,
 } from '@/lib/usage-limit/resume-readiness-copy';
-import {
-  openInterruptedChatWithoutResuming,
-  usageLimitedChatDestination,
-} from '@/lib/usage-limit/open-resumed-session';
+import { usageLimitedChatDestination } from '@/lib/usage-limit/open-resumed-session';
+import { openAutomationRunDestination } from '@/components/automations/resolveAutomationRunDestination';
 import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import { useHomeInterruptedSessionsBannerStore } from '@/stores/homeInterruptedSessionsBannerStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -171,6 +169,40 @@ function openAttentionTarget(item: ContinueAttentionItem): void {
   );
 }
 
+/**
+ * Opens an interrupted chat without resuming it: a worktree chat in its
+ * workspace's navigation context, and App Advisor chats directly. The
+ * opener revalidates the chat, so a stale destination opens nothing.
+ */
+function openInterruptedChat(
+  entry: Extract<InterruptedSessionEntry, { kind: 'chat' }>,
+): void {
+  const destination = usageLimitedChatDestination(entry.target);
+  const open = (): Promise<void> =>
+    openAutomationRunDestination(destination)
+      .then((result) => {
+        if (result.ok && destination.kind === 'worktree-chat') {
+          requestChatPanelReveal(
+            destination.projectId,
+            destination.worktreeId,
+            destination.chatId,
+          );
+        }
+      })
+      .catch(() => undefined);
+  if (destination.kind === 'worktree-chat') {
+    trackResume(() => openInWorkspaceContextAsync(destination.projectId, open));
+    return;
+  }
+  if (destination.kind === 'cowork-chat') {
+    trackResume(() =>
+      openInWorkspaceContextAsync(destination.workspaceId, open),
+    );
+    return;
+  }
+  trackResume(open);
+}
+
 type WorktreeNameOf = (worktree: {
   id: string;
   branchName: string;
@@ -264,7 +296,7 @@ function interruptedSessionPresentation(
     (location !== null ||
       cowork !== undefined ||
       destination.kind === 'app-advisor-chat')
-      ? { onOpen: (): void => openInterruptedChatWithoutResuming(entry.target) }
+      ? { onOpen: (): void => openInterruptedChat(entry) }
       : {}),
   };
 }

@@ -313,17 +313,7 @@ export function isWakeBoundaryMessage(message: {
   return message.blocks[0]?.type === 'wake_boundary';
 }
 
-export function groupIntoTurns(
-  messages: TurnMessage[],
-  options: {
-    /**
-     * The chat runs no turn, so a last turn with no timer row has ended. An
-     * authority that writes no timer rows (the web core) leaves it open
-     * otherwise. Like a turn the next user message ends, it shows no duration.
-     */
-    readonly trailingTurnSettled?: boolean;
-  } = {},
-): TurnGroupOrMessage[] {
+export function groupIntoTurns(messages: TurnMessage[]): TurnGroupOrMessage[] {
   const result: TurnGroupOrMessage[] = [];
   let currentUserMessage: TurnMessage | null = null;
   let currentAssistantMessages: TurnMessage[] = [];
@@ -333,10 +323,7 @@ export function groupIntoTurns(
       return;
     }
 
-    if (
-      (reason === 'next_user' || options.trailingTurnSettled === true) &&
-      currentAssistantMessages.length > 0
-    ) {
+    if (reason === 'next_user' && currentAssistantMessages.length > 0) {
       const completedAt =
         currentAssistantMessages[currentAssistantMessages.length - 1]
           ?.timestamp ?? currentUserMessage.timestamp;
@@ -538,8 +525,6 @@ export function getToolCategory(
     canopyKey === 'get_github_pull_request_status' ||
     canopyKey === 'save_memory' ||
     canopyKey === 'search_memory' ||
-    canopyKey === 'search_chats' ||
-    canopyKey === 'read_chat_excerpt' ||
     canopyKey === 'read_memory' ||
     canopyKey === 'show_files' ||
     canopyKey === 'show_capabilities' ||

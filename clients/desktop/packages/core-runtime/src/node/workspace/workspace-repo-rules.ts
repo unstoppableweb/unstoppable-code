@@ -60,10 +60,6 @@ export interface CoreWorkspaceRepoRulesHandlers {
       'core.workspace.repoRules.status',
       CanopyHandlerContext
     >;
-    'core.workspace.repoRules.check': CanopyQueryHandler<
-      'core.workspace.repoRules.check',
-      CanopyHandlerContext
-    >;
   };
   instructions: {
     'core.workspace.repoRules.apply': CanopyInstructionHandler<
@@ -152,10 +148,6 @@ export function createCoreWorkspaceRepoRulesHandlers(
       // Status reads workspace policy only; it is not bound to a review.
       'core.workspace.repoRules.status': ({ workspaceId }, context) =>
         run(context, (policy) => policy.status(workspaceId)),
-      // Check runs one bounded session read of the source checkouts
-      // (CAN-6368); like status, it is not bound to a review.
-      'core.workspace.repoRules.check': ({ workspaceId }, context) =>
-        run(context, (policy) => policy.check(workspaceId)),
     },
     instructions: {
       'core.workspace.repoRules.apply': (params, context) =>

@@ -1,5 +1,4 @@
 import { useCallback, type JSX } from 'react';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type { WorktreeDiscardOffer } from '@canopy/app-state';
 import {
   WorktreeDiscardHost,
@@ -8,10 +7,7 @@ import {
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useGitHubStore } from '@/stores/githubStore';
-import {
-  cleanupUnlistedWorktreeRendererState,
-  useProjectsStore,
-} from '@/stores/projectsStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 import { finishWorktreeArchive } from './finishWorktreeArchive';
 
 /**
@@ -34,7 +30,6 @@ export function DesktopWorktreeDiscardHost(): JSX.Element {
       warnings,
       removedTemporaryWorkspaceId,
       retainedArchive,
-      expectedCreatedAt,
     }: WorktreeDiscarded): void => {
       for (const warning of warnings) {
         useGitHubStore.getState().addToast(warning, 'warning', undefined, {
@@ -48,25 +43,6 @@ export function DesktopWorktreeDiscardHost(): JSX.Element {
         void useArchivedContainersStore
           .getState()
           .settleDeleted(workspaceId, worktreeId);
-        return;
-      }
-      if (expectedCreatedAt) {
-        // An idempotent archive can succeed for an older incarnation while a
-        // newer row already exists. Re-read, never delete that row by id.
-        void useProjectsStore
-          .getState()
-          .loadProjects({ silent: true, requireSuccess: true })
-          .then(() => {
-            if (cleanupUnlistedWorktreeRendererState(workspaceId, worktreeId))
-              finishWorktreeArchive({
-                projectId: workspaceId,
-                worktreeId,
-                refreshReferenceRepos: false,
-              });
-          })
-          .catch((error: unknown) => {
-            reportClientAppError(error);
-          });
         return;
       }
       // As performArchive does, drop a temporary project left empty.

@@ -9,10 +9,7 @@ import {
   useWindowsGitRequirement,
 } from '@/hooks/useWindowsGitRequirement';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
-import {
-  localPlatform,
-  shellDrawsTitlebarDragRegion,
-} from '@/lib/local-platform';
+import { localPlatform } from '@/lib/local-platform';
 import { bridgeMainSkillsChanged } from '@/lib/skillsChanged';
 import {
   openCloudAccountSettings,
@@ -97,7 +94,6 @@ import { CloudConnectGate } from './components/shared/CloudConnectGate';
 import { GuestUpgradeNudge } from './components/shared/GuestUpgradeNudge';
 import { SuggestionCorner } from '@canopy/ui-app/suggestions';
 import { OsNotificationOfferProducer } from './components/suggestions/OsNotificationOfferProducer';
-import { DeviceAiGatewayConflictNotice } from './components/settings/DeviceAiGatewayConflictNotice';
 import { RepeatTaskOfferProducer } from './components/suggestions/RepeatTaskOfferProducer';
 import { RunCommentsModalHost } from './components/shared/RunCommentsModal';
 import { ShareSessionStatusModal } from './components/shared/ShareSessionStatusModal';
@@ -267,6 +263,11 @@ const HomePage = lazy(() =>
   })),
 );
 
+const CloudChatPage = lazy(() =>
+  import('./cloud-chats/CloudChatPage').then((m) => ({
+    default: m.CloudChatPage,
+  })),
+);
 const StandaloneChatPage = lazy(() =>
   import('./components/pages/StandaloneChatPage').then((m) => ({
     default: m.StandaloneChatPage,
@@ -2081,7 +2082,7 @@ function App(): JSX.Element {
         className={`relative flex min-w-0 flex-1 flex-col bg-base ${mainShellCovered ? 'invisible' : ''}`}
         data-testid="app-main-shell"
       >
-        {shellDrawsTitlebarDragRegion(localPlatform()) && (
+        {localPlatform() === 'darwin' && (
           <div
             className="electron-drag absolute inset-x-0 top-0 h-10"
             data-testid="app-main-titlebar-drag-region"
@@ -2156,6 +2157,7 @@ function App(): JSX.Element {
                 {visiblePage === 'overview' && <OverviewPage />}
                 {visiblePage === 'home' && <HomePage />}
                 {visiblePage === 'chat' && <StandaloneChatPage />}
+                {visiblePage === 'cloud-chat' && <CloudChatPage />}
                 {visiblePage !== null && isWorkflowsTabId(visiblePage) && (
                   <WorkflowsPage tab={visiblePage} />
                 )}
@@ -2357,20 +2359,14 @@ function App(): JSX.Element {
       <GitHubConnectOfferHost />
       <ReleaseHighlightsHost ready={startupUnlockReady} />
       <RemoteAccessHost />
-      {/* `electron-no-drag` is load-bearing: a top corner overlaps the drag
-          strip a page without a top bar draws at its top edge, and app-region
-          hit testing ignores z-order, so without it a window drag would take
-          clicks from the banners and toasts here (CAN-5711). The box is
-          content-sized, so the hole only covers notifications on screen. */}
       <div
-        className={`electron-no-drag ${getInAppNotificationContainerClasses(
+        className={getInAppNotificationContainerClasses(
           inAppNotificationPlacement,
           {
             // The notification stack starts top corners below the header.
             clearHeader: true,
           },
-        )}`}
-        data-testid="in-app-notification-corner"
+        )}
         // The corner's own `z-toast` class must not freeze a Browser page
         // under it: each child below decides for itself (nearest marker wins).
         data-canopy-browser-native-overlay="false"
@@ -2399,15 +2395,13 @@ function App(): JSX.Element {
           {/* While another computer controls this one; persistent until the
               session ends, so it sits above the transient layers. */}
           <RemoteAccessControlledNotice />
-          {/* The top standing condition, as a pinned card in the toast
-              stack until it recovers or is closed; renders nothing here. */}
+          {/* The top standing condition, until it recovers. */}
           <Suspense fallback={null}>
             <DesktopStandingConditions />
           </Suspense>
           <WorkspaceRecoveryNotice />
           <GuestUpgradeNudge />
           <OsNotificationOfferProducer />
-          <DeviceAiGatewayConflictNotice />
           <RepeatTaskOfferProducer />
           <SuggestionCorner />
           <Suspense fallback={null}>

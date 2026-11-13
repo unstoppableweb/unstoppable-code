@@ -1,7 +1,3 @@
-import {
-  normalizeAgentAliasBase,
-  resolvePipelineAgentAliasRoute,
-} from './agent-alias-model';
 import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 import {
   getJobOrder,
@@ -1084,6 +1080,9 @@ function normalizeModelAliasDefaults(
     rawDefaults,
     'agent_id',
   );
+  if (hasBase && hasAgentId) {
+    throw new Error(`${context} cannot specify both base and agent_id`);
+  }
   if (!hasBase && !hasAgentId) {
     throw new Error(`${context} must specify base or agent_id`);
   }
@@ -1098,12 +1097,7 @@ function normalizeModelAliasDefaults(
         `${context} agent_id must be a non-empty agent_model_* string`,
       );
     }
-    const defaults = {
-      agent_id: agentId,
-      ...normalizeAgentAliasBase(rawDefaults.base),
-    };
-    resolvePipelineAgentAliasRoute(defaults);
-    return defaults;
+    return { agent_id: agentId };
   }
 
   const base =

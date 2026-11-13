@@ -1,7 +1,3 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
 // Variables that tell Git which repository to use (`git rev-parse
 // --local-env-vars`). Git exports them to hooks, so tests started from a hook
 // would otherwise run their temp-repository `git init` / `git config` against
@@ -40,48 +36,4 @@ export function removeRepositoryGitEnv(env = process.env) {
 
 export function withoutRepositoryGitEnv(env) {
   return removeRepositoryGitEnv({ ...env });
-}
-
-/**
- * Point Git at a global config that includes the developer's own (identity,
- * aliases and the rest still apply) and then turns commit and tag signing
- * off. Test repositories commit constantly; with a signing setup each commit
- * would ask the developer's signer (CAN-6349). A test that sets its own
- * `GIT_CONFIG_GLOBAL` still replaces this one. Returns a function that puts
- * `GIT_CONFIG_GLOBAL` back as it was and removes the config, so a second call
- * in the same process (Jest watch mode) includes the developer's own again.
- */
-export function useUnsignedGitConfig(env = process.env) {
-  const previous = env.GIT_CONFIG_GLOBAL;
-  const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
-  const xdgHome = env.XDG_CONFIG_HOME ?? path.join(home, '.config');
-  // Without GIT_CONFIG_GLOBAL, Git reads the XDG file and then ~/.gitconfig.
-  const included =
-    env.GIT_CONFIG_GLOBAL !== undefined && env.GIT_CONFIG_GLOBAL !== ''
-      ? [env.GIT_CONFIG_GLOBAL]
-      : [path.join(xdgHome, 'git', 'config'), path.join(home, '.gitconfig')];
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'canopy-test-gitconfig-'));
-  const configPath = path.join(dir, 'gitconfig');
-  const quoted = (value) =>
-    `"${value.replaceAll('\\', '/').replaceAll('"', '\\"')}"`;
-  writeFileSync(
-    configPath,
-    [
-      ...included.flatMap((file) => ['[include]', `\tpath = ${quoted(file)}`]),
-      // After the includes: Git keeps the last value of a key.
-      '[commit]',
-      '\tgpgsign = false',
-      '[tag]',
-      '\tgpgsign = false',
-      '',
-    ].join('\n'),
-  );
-  env.GIT_CONFIG_GLOBAL = configPath;
-  return () => {
-    if (env.GIT_CONFIG_GLOBAL === configPath) {
-      if (previous === undefined) delete env.GIT_CONFIG_GLOBAL;
-      else env.GIT_CONFIG_GLOBAL = previous;
-    }
-    rmSync(dir, { recursive: true, force: true });
-  };
 }

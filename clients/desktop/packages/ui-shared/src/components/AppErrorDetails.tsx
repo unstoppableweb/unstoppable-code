@@ -35,25 +35,19 @@ export function AppErrorDetails({
     >
       <div className="flex items-center gap-2 text-xs fg-secondary">
         <span>Reference</span>
-        {/* The copy control sits right against the ID: its quiet 12px glyph
-            and the capsule's own padding are the only space between them. */}
-        <span className="flex items-center">
-          <span
-            className="font-mono"
-            data-selectable
-            data-testid={`${dataTestId}-reference`}
-          >
-            {referenceId}
-          </span>
-          <CopyButton
-            value={referenceId}
-            variant="ghost-quiet"
-            glyphSize="xs"
-            ariaLabel="Copy reference"
-            title="Copy reference"
-            dataTestId={`${dataTestId}-copy`}
-          />
+        <span
+          className="font-mono"
+          data-selectable
+          data-testid={`${dataTestId}-reference`}
+        >
+          {referenceId}
         </span>
+        <CopyButton
+          value={referenceId}
+          ariaLabel="Copy reference"
+          title="Copy reference"
+          dataTestId={`${dataTestId}-copy`}
+        />
       </div>
       {rawDetail ? (
         <Disclosure label="Technical details" dataTestId={`${dataTestId}-raw`}>

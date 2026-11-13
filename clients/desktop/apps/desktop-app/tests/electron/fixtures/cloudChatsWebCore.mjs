@@ -52,8 +52,6 @@ export async function startCloudChatsWebCore() {
   const connections = new Map();
   /** Which connection opened each subscription. */
   const subscriptionOwners = new Map();
-  /** POSTs the gateway answers 503 before the web core sees them, by method. */
-  const gatewayFailures = new Map();
 
   const push = (connectionId, message) => {
     const connection = connections.get(connectionId);
@@ -102,7 +100,6 @@ export async function startCloudChatsWebCore() {
       operations: world.served(),
       events: [],
       streams: world.streams(),
-      schemaRevisions: world.schemaRevisions(),
     },
     limits: {},
     authentication: {
@@ -193,14 +190,6 @@ export async function startCloudChatsWebCore() {
       return;
     }
     const message = await readBody(request);
-    // As staging's load balancer answers a request whose pod a deploy
-    // closed mid-request: 503, no JSON-RPC body (CAN-6394).
-    const failures = gatewayFailures.get(message?.method) ?? 0;
-    if (failures > 0) {
-      gatewayFailures.set(message.method, failures - 1);
-      send(response, 503, { error: 'backend_connection_closed' });
-      return;
-    }
     if (message === null || message.id === undefined) {
       response.writeHead(202).end();
       return;
@@ -234,9 +223,6 @@ export async function startCloudChatsWebCore() {
     baseUrl: `http://127.0.0.1:${server.address().port}`,
     /** The seeded world: its `state` records sends and answers. */
     world,
-    /** The gateway answers the next `count` POSTs of `method` 503. */
-    failWithGateway: (method, count = 1) =>
-      gatewayFailures.set(method, (gatewayFailures.get(method) ?? 0) + count),
     close: () =>
       new Promise((resolve) => {
         for (const connection of connections.values())

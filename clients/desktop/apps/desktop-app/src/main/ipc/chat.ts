@@ -1,9 +1,3 @@
-import { prepareRootMigrationChatNotice } from '../lib/root-migration-chat-notice';
-import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
-import {
-  assertAgentModelAdmission,
-  pinInheritingAgentToDestination,
-} from '../agents/agent-default-model';
 import { assertCoworkChatRootPresent } from '../lib/cowork-folder-guard';
 import { committedSelectionsStillStored } from './committed-plugin-selections';
 import { chatVisualsPromptEligible } from '../lib/chat-visuals-feature-flag';
@@ -64,6 +58,8 @@ import {
   getProviderForModel,
   inferLegacyExecutionHarness,
   isAgentModel,
+  isBaseModelSelectableForAgent,
+  isInheritingAgentModel,
   isTerminalBackedInterfaceMode,
   isThinkingLevel,
   normalizeAgentModelConfig,
@@ -192,7 +188,11 @@ import {
 } from '../agents/work-owner';
 import { buildHandoffSummaryInputFromTranscript } from '@canopy/agent-transcript';
 import { resolveAgentModelRuntime } from '../agents/agent-model-runtime';
-import { resolveSendModelPin } from '../agents/agent-default-model';
+import {
+  formatInheritedAgentRoute,
+  resolveAgentDestinationDefaultModel,
+  resolveSendModelPin,
+} from '../agents/agent-default-model';
 import { forkCodexThreadByIdViaOneShot } from '../codex/fork-thread';
 import {
   answerChatQuestionFromRenderer,
@@ -336,6 +336,7 @@ import {
 } from '../memory/memory-context';
 import { createOrgMemoryDeliveryTracker } from '../memory/delivery-tracker';
 import { persistOrgMemoryUsedForChat } from '../lib/chat-tab-dispatch-utils';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { MAX_TELEMETRY_CLIENT_ID_LENGTH } from '@canopy/protocol/telemetry';
 import { clampId } from '@canopy/desktop-shared/lib/telemetry-mapping';
 import {
@@ -1632,6 +1633,38 @@ async function normalizeCanonicalModelSelection(
 }
 
 /**
+ * Pin an Agent that inherits the default model to the destination's current
+ * default, so the chat keeps that route after Settings change. Undefined when
+ * the destination has no usable default, or for a route the chat cannot take.
+ */
+async function materializeInheritingAgentModel(
+  model: string,
+  projectId: string,
+  currentModel: () => Promise<string | undefined> = () =>
+    Promise.resolve(undefined),
+): Promise<string | undefined> {
+  const route = parseAgentRouteModelId(model);
+  if (route) {
+    // A pinned Agent keeps its own base; only a chat already on the route may
+    // keep it after its Agent stops inheriting.
+    return (isInheritingAgentModel(route.agentId) &&
+      isBaseModelSelectableForAgent(route.baseModel)) ||
+      (await currentModel()) === model
+      ? model
+      : undefined;
+  }
+  if (!isInheritingAgentModel(model)) return model;
+  try {
+    return formatInheritedAgentRoute(
+      model,
+      await resolveAgentDestinationDefaultModel(projectId),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Settle a desktop send's model before it is queued: the request's model, else
  * the chat's stored one. A bare Agent on the default model is pinned on the
  * chat under the model-change lock, so a concurrent model change cannot mix
@@ -1654,15 +1687,6 @@ async function prepareSendModel(
         req.projectId,
         tab?.model,
         req.model,
-        {
-          worktreeId: req.worktreeId,
-          chatId: req.chatId,
-          executionHarness:
-            req.executionHarness ??
-            (req.model && req.model !== tab?.model
-              ? getExecutionHarnessForModel(req.model)
-              : tab?.executionHarness),
-        },
       );
       if (model === undefined) return req;
       // A chat with no tab yet (a browser-minted Portal chat) is created on
@@ -1744,47 +1768,41 @@ export async function changeChatModelThroughCore(
 ): Promise<ChatCommandResult> {
   const { projectId, worktreeId, chatId } = change.target;
   let committed: ChatCommandResult | undefined;
-  let refusal: string | undefined;
-  try {
-    await changeChatModel(
-      {
-        projectId,
-        worktreeId,
-        chatId,
-        model: change.model,
-        ...(change.executionHarness === undefined
+  await changeChatModel(
+    {
+      projectId,
+      worktreeId,
+      chatId,
+      model: change.model,
+      ...(change.executionHarness === undefined
+        ? {}
+        : { executionHarness: change.executionHarness }),
+      ...(change.notice === undefined ? {} : { notice: change.notice }),
+    },
+    getWindow,
+    {
+      core: {
+        commandId: change.commandId,
+        commit: (request) => port.command(request),
+        ...(change.expectedRevision === undefined
           ? {}
-          : { executionHarness: change.executionHarness }),
-        ...(change.notice === undefined ? {} : { notice: change.notice }),
-      },
-      getWindow,
-      {
-        core: {
-          commandId: change.commandId,
-          commit: (request) => port.command(request),
-          ...(change.expectedRevision === undefined
-            ? {}
-            : { expectedRevision: change.expectedRevision }),
-          ...(change.expectedTabRevision === undefined
-            ? {}
-            : { expectedTabRevision: change.expectedTabRevision }),
-          ...(change.origin === undefined ? {} : { origin: change.origin }),
-          onCommitted: (result) => {
-            committed = result;
-          },
+          : { expectedRevision: change.expectedRevision }),
+        ...(change.expectedTabRevision === undefined
+          ? {}
+          : { expectedTabRevision: change.expectedTabRevision }),
+        ...(change.origin === undefined ? {} : { origin: change.origin }),
+        onCommitted: (result) => {
+          committed = result;
         },
       },
-    );
-  } catch (error) {
-    if (!(error instanceof AgentModelSelectionError)) throw error;
-    refusal = error.message;
-  }
+    },
+  );
   if (committed) return committed;
   return {
     commandId: change.commandId,
     revision: (await port.getState({ projectId, worktreeId })).revision,
     outcome: 'rejected',
-    reason: refusal ?? 'The model is not available for this chat.',
+    reason: 'The model is not available for this chat.',
   };
 }
 
@@ -1806,9 +1824,12 @@ async function changeChatModelLocked(
     core?: CoreModelChangeCommit;
   },
 ): Promise<boolean> {
-  const requestedModel = await pinInheritingAgentToDestination(
+  const requestedModel = await materializeInheritingAgentModel(
     req.model,
     req.projectId,
+    async () =>
+      (await readCanonicalChatTab(req.projectId, req.worktreeId, req.chatId))
+        ?.model,
   );
   const model = requestedModel ? resolveKnownModel(requestedModel) : undefined;
   if (!model) {
@@ -1826,12 +1847,6 @@ async function changeChatModelLocked(
   );
   if (!selectedHarness || !supportsChatHarnessChoice(model, selectedHarness))
     return false;
-  await assertAgentModelAdmission(model, {
-    projectId: req.projectId,
-    worktreeId: req.worktreeId,
-    chatId: req.chatId,
-    executionHarness: selectedHarness,
-  });
   const lockedHarness =
     req.lockedHarness ??
     (options.core && previousTab && chatTabHasStarted(previousTab)
@@ -2895,7 +2910,6 @@ export function registerChatHandlers(
               systemPromptAppend,
               pluginSelections,
               providerType: effectiveProviderType,
-              executionHarness: effectiveExecutionHarness,
             })
           : undefined;
         const runtimeProviderType =
@@ -3401,7 +3415,6 @@ export function registerChatHandlers(
                     pluginSelections:
                       request.pluginSelections ?? pluginSelections,
                     providerType: request.providerType ?? effectiveProviderType,
-                    executionHarness: effectiveExecutionHarness,
                   })
                 : undefined;
               const resumedProviderType =
@@ -3599,23 +3612,9 @@ export function registerChatHandlers(
         );
         const memory = preparedMemory?.attempt.result ?? null;
         if (preparedMemory === null) memoryDeliveryTracker.noteRaceLoss();
-        const migrationNotice = await prepareRootMigrationChatNotice({
-          projectId,
-          worktreeId,
-          chatId,
-          provider: runtimeProviderType,
-          userText: text,
-          createdAt: async () => {
-            const tabs = await getChatStateService().getCompatibilityTabs({
-              projectId,
-              worktreeId,
-            });
-            return tabs.tabs.find((tab) => tab.id === chatId)?.createdAt;
-          },
-        });
         const submittedText = composeSubmittedText(
           messageText,
-          joinHiddenBlocks(migrationNotice?.text, hiddenContext?.text),
+          hiddenContext?.text,
           joinHiddenBlocks(memory?.renderedBlock, localMemory?.renderedBlock),
         );
         getExecutionObservabilityIngest().startChatTurn({
@@ -3749,8 +3748,6 @@ export function registerChatHandlers(
             }),
           );
           turnRun.accepted();
-          if (session.isDisposed?.() !== true)
-            await migrationNotice?.delivered();
         } catch (error) {
           if (memory?.facts.length && memory.searchId) {
             memoryDeliveryTracker.ackDropped(

@@ -126,8 +126,6 @@ export const CoreChatRuntimeSummarySchema = z.object({
   lastActivityAt: z.number().optional(),
   /** The running turn's id, as `core.chat.turn.cancel` takes it; absent when none runs or the core does not report it (CAN-4185). */
   activeTurnId: id.optional(),
-  /** Whether the core holds this chat's queued entries for editing (`lock`); absent when it does not say, which clients read as unsupported (CAN-6106). */
-  queuedEditHold: z.boolean().optional(),
 });
 
 export const CoreChatQueueSummarySchema = z.object({

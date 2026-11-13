@@ -3,13 +3,13 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import {
   Button,
+  buttonClassName,
   ErrorBanner,
   FormField,
   ModelProviderIcon,
   ProviderStatusDot,
   StatusLabel,
   TextInput,
-  TextLink,
 } from '@canopy/ui-shared/components';
 import { ArrowUpRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -24,10 +24,8 @@ import {
   type DiscoveredGatewayModel,
 } from '@canopy/protocol/model-gateway/discovery';
 import {
-  AI_GATEWAY_PRESETS,
   matchAiGatewayPreset,
   type AiGatewayPreset,
-  type AiGatewayPresetId,
 } from '@canopy/protocol/model-gateway/presets';
 import {
   useSettingsAiGatewayConnectionKey,
@@ -72,11 +70,6 @@ export interface AiGatewaySetupProps {
    * narrow dialog.
    */
   readonly layout?: 'page' | 'dialog';
-  /**
-   * Start at this preset's key step instead of the chooser, as a shortcut
-   * picked outside the setup. Ignored when reconnecting a stored gateway.
-   */
-  readonly initialPresetId?: AiGatewayPresetId;
 }
 
 /** Shown once the gateway holds as many enabled models as it can. */
@@ -115,23 +108,9 @@ function seededBaseUrl(
   return stored && storedPreset === null ? stored : '';
 }
 
-function initialPreset(
-  current: AiGatewayEditorConfig | null,
-  initialPresetId: AiGatewayPresetId | undefined,
-): AiGatewayPreset | null {
-  if (current?.baseUrl) return matchAiGatewayPreset(current.baseUrl);
-  return (
-    AI_GATEWAY_PRESETS.find((preset) => preset.id === initialPresetId) ?? null
-  );
-}
-
-function initialStep(
-  current: AiGatewayEditorConfig | null,
-  initialPresetId: AiGatewayPresetId | undefined,
-): SetupStep {
-  if (!current?.baseUrl && initialPresetId === undefined)
-    return { kind: 'choose' };
-  return { kind: 'connect', preset: initialPreset(current, initialPresetId) };
+function initialStep(current: AiGatewayEditorConfig | null): SetupStep {
+  if (!current?.baseUrl) return { kind: 'choose' };
+  return { kind: 'connect', preset: matchAiGatewayPreset(current.baseUrl) };
 }
 
 /**
@@ -147,7 +126,6 @@ export function AiGatewaySetup({
   onSaved,
   enableOnSave,
   layout = 'page',
-  initialPresetId,
 }: AiGatewaySetupProps): JSX.Element {
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
   const { maskClassName } = useSettingsPrivacy();
@@ -156,11 +134,9 @@ export function AiGatewaySetup({
   const keepsKeys = KeyRow !== undefined;
   const statusId = useId();
 
-  const [step, setStep] = useState<SetupStep>(() =>
-    initialStep(current, initialPresetId),
-  );
+  const [step, setStep] = useState<SetupStep>(() => initialStep(current));
   const [baseUrl, setBaseUrl] = useState(() =>
-    seededBaseUrl(initialPreset(current, initialPresetId), current),
+    seededBaseUrl(matchAiGatewayPreset(current?.baseUrl), current),
   );
   const [apiKey, setApiKey] = useState('');
   const [connecting, setConnecting] = useState(false);
@@ -441,10 +417,14 @@ export function AiGatewaySetup({
               mounts this with a standalone host whose link needs the hosted
               settings provider. Desktop opens new-window https links in the
               browser. */}
-          <TextLink
+          <a
             href={preset.keyUrl}
             target="_blank"
             rel="noreferrer"
+            className={buttonClassName({
+              variant: 'link',
+              className: 'text-xs',
+            })}
             data-testid="ai-gateway-preset-key-link"
           >
             <span className="inline-flex items-center gap-1 whitespace-nowrap">
@@ -453,7 +433,7 @@ export function AiGatewaySetup({
                 : `${preset.name} virtual keys`}
               <ArrowUpRightIcon size="xs" aria-hidden="true" />
             </span>
-          </TextLink>
+          </a>
         </div>
         {connectFooter}
       </div>

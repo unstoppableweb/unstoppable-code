@@ -64,7 +64,6 @@ import {
   CHAT_STATE_REFRESH_RETRY_LABEL,
 } from '@/stores/chat/revisioned-copy';
 import { ensureCloudScopeLifecycle } from '@/cloud-chats/cloud-scope-lifecycle';
-import { useReportOpenCloudTask } from '@/cloud-chats/cloud-chat-ui-state';
 import { useCoworkProjectReachable } from '@/lib/cowork-directory';
 import { draftHasContent } from '@/lib/chat-draft-content';
 
@@ -87,7 +86,6 @@ export function StandaloneChatPage(): JSX.Element {
     (s) => s.activeChatProjectId,
   );
   const activeWorkEntryId = useStandaloneChatStore((s) => s.activeWorkEntryId);
-  useReportOpenCloudTask(activeChatProjectId, activeWorkEntryId);
   const orgDefaultChatsError = useStandaloneChatStore(
     (s) => s.orgDefaultChatsError,
   );

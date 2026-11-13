@@ -384,12 +384,6 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
         false,
         'Model id from models.list, including an installed custom Agent. Omit for the project default.',
       ),
-      field(
-        'executionHarness',
-        'string',
-        false,
-        'With model: the execution harness for the new chat, the model’s own or one of its harnessChoices in models.list (for example opencode for an app-managed model). Omit for the model’s own harness.',
-      ),
     ],
     example: projectWriteActionSchema.parse({
       type: 'projects.create_task',
@@ -398,8 +392,7 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     keywords: ['create', 'new task', 'new chat', 'initial message'],
     notes: [
       'Returns CreatedTaskChatReceipt: address, taskCreated, chatCreated and input only when an initial message was accepted. Input proves acceptance, not completion.',
-      'With model, the model or Agent is checked against the target project (availability, policy, gateway, runtime) before anything is created. Any Agent accepts agent_model_<id>@<model-id> to override its default, subject to compatibility, policy and normal approval. A bare Agent on the default model is pinned to the target default. The receipt adds model (the stored id) and, for an Agent, agentId; projects.list_task_chats model is the durable re-check.',
-      'executionHarness needs model and must be the model’s own harness or one of its harnessChoices in models.list (validation_failed otherwise); the harness runtime must be connected (invalid_target). A harnessChoices entry pins the new chat to it before any first message; the model’s own harness chooses nothing. Cloud projects refuse it.',
+      'With model, the model or Agent is checked against the target project (availability, policy, gateway, runtime) before anything is created. An Agent on the default model is pinned to the target default. The receipt adds model (the stored id) and, for an Agent, agentId; projects.list_task_chats model is the durable re-check.',
       'Initial messages use the trusted agent sender. No sender overrides, navigation or managed-delegate access.',
       'Always creates a new task and founding chat; taskCreated and chatCreated are true. Repeated calls are new creations, not retries.',
       'Cowork projects only. Code projects must use the existing worktree-creation workflow; this action returns unsupported_action there.',
@@ -426,12 +419,6 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
         false,
         'Model id from models.list, including an installed custom Agent. Always creates a new chat. Omit for the project default or a reused empty chat.',
       ),
-      field(
-        'executionHarness',
-        'string',
-        false,
-        'With model: the execution harness for the new chat, the model’s own or one of its harnessChoices in models.list (for example opencode for an app-managed model). Omit for the model’s own harness.',
-      ),
     ],
     example: projectWriteActionSchema.parse({
       type: 'projects.create_task_chat',
@@ -441,8 +428,7 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     keywords: ['create', 'new task', 'new chat', 'initial message'],
     notes: [
       'Returns CreatedTaskChatReceipt: address, taskCreated, chatCreated and input only when an initial message was accepted. Input proves acceptance, not completion.',
-      'With model, the model or Agent is checked against the target project (availability, policy, gateway, runtime) before anything is created. Any Agent accepts agent_model_<id>@<model-id> to override its default, subject to compatibility, policy and normal approval. A bare Agent on the default model is pinned to the target default. The receipt adds model (the stored id) and, for an Agent, agentId; projects.list_task_chats model is the durable re-check.',
-      'executionHarness needs model and must be the model’s own harness or one of its harnessChoices in models.list (validation_failed otherwise); the harness runtime must be connected (invalid_target). A harnessChoices entry pins the new chat to it before any first message; the model’s own harness chooses nothing. Cloud projects refuse it.',
+      'With model, the model or Agent is checked against the target project (availability, policy, gateway, runtime) before anything is created. An Agent on the default model is pinned to the target default. The receipt adds model (the stored id) and, for an Agent, agentId; projects.list_task_chats model is the durable re-check.',
       'Initial messages use the trusted agent sender. No sender overrides, navigation or managed-delegate access.',
       'Without model, may reuse the first eligible empty non-terminal chat, excluding file, read-only, stale-session and caller chats. Reuse keeps its settings and returns chatCreated:false; otherwise chatCreated:true. With model, always creates a new chat. taskCreated is always false.',
       'Supports code and cowork tasks. Omit initialMessage to create or reuse an empty chat without starting a provider session.',

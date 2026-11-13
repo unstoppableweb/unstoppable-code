@@ -1,9 +1,4 @@
 import {
-  CHAT_HISTORY_ACTION_TYPES,
-  chatHistoryActionSchema,
-  type ChatHistoryAction,
-} from '@canopy/agent-actions/families/chat-history';
-import {
   scriptPreferencesActionSchema,
   scriptPreferencesDispatchJsonSchema,
 } from '@canopy/agent-actions/families/settings/script-preferences';
@@ -331,15 +326,11 @@ export const APP_ADVISOR_UPDATE_LEDGER_ENTRY_DESCRIPTION =
 
 export const getCurrentUiStateSchema = z.object({});
 
-export type AppAdvisorDispatchAction =
-  | AppAdvisorAction
-  | TranscriptReadAction
-  | ChatHistoryAction;
+export type AppAdvisorDispatchAction = AppAdvisorAction | TranscriptReadAction;
 
 const appAdvisorActionTypes = [
   ...APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
   ...TRANSCRIPT_READ_ACTION_TYPES,
-  ...CHAT_HISTORY_ACTION_TYPES,
 ];
 const appAdvisorActionTypeSchema = z.enum(appAdvisorActionTypes);
 const visibleAppAdvisorActionTypes = APP_ADVISOR_ACTION_CATALOG.filter(
@@ -372,7 +363,6 @@ export const searchActionsToolShape = {
     .union([
       z.enum(visibleAppAdvisorActionTypes),
       z.enum(TRANSCRIPT_READ_ACTION_TYPES),
-      z.enum(CHAT_HISTORY_ACTION_TYPES),
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
@@ -2859,7 +2849,6 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
 > = z.union([
   appAdvisorActionSchema,
   transcriptReadActionSchema,
-  chatHistoryActionSchema,
   installedItemActionSchema,
   experimentActionSchema,
   settingsActionSchema,
@@ -2936,7 +2925,6 @@ export const searchActionsJsonSchema: JsonValue = {
       enum: [
         ...visibleAppAdvisorActionTypes,
         ...TRANSCRIPT_READ_ACTION_TYPES,
-        ...CHAT_HISTORY_ACTION_TYPES,
         ...INSTALLED_ITEM_ACTION_TYPES,
         ...EXPERIMENT_ACTION_TYPES,
         ...SETTINGS_ACTION_TYPES,

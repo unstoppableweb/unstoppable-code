@@ -12,7 +12,6 @@ import {
   type CanopyCoreRelayLikeReply,
   type CoreCoworkInvoker,
   type CoreCoworkStream,
-  type ProjectCloudChatMessages,
 } from '@canopy/app-state/core-cowork';
 import { CoreChatMessageSendParamsSchema } from '@canopy/protocol/canopy-core';
 import type { ModelCatalogOption } from '@canopy/protocol/models';
@@ -25,8 +24,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { cloudChatCanopyClient } from '@/cloud-chats/cloud-chat-client';
 import { chatTabStripLabel } from '@/lib/chatTabLabel';
-import { projectAgentTaskTranscript } from '@canopy/agent-transcript/agent-tasks';
-import { projectPersistedChatTranscript } from '@canopy/desktop-shared/portal/persisted-chat-projection';
+import { projectCloudChatMessages } from '@/cloud-chats/cloud-chat-threads';
 import {
   applyCanonicalChanges,
   applyRuntimeStatusesToTabs,
@@ -47,36 +45,13 @@ import {
   presentLiveReplies,
   type LiveChatState,
 } from '../live-replies';
-import { isPersistedChatMessage, translateCommandResult } from '../translate';
-
-/**
- * The web path's projection: the shared thread binding with subagent rows
- * nested into their spawn call (CAN-5976), as the cloud chat page projected
- * them before R2b deleted it.
- */
-const projectCloudChatMessages: ProjectCloudChatMessages = ({
-  chatKey,
-  messages,
-  tasks,
-}) =>
-  projectAgentTaskTranscript({
-    messages: messages.filter(isPersistedChatMessage),
-    tasks,
-    project: (rows) =>
-      projectPersistedChatTranscript({
-        scope: 'worktree',
-        chatId: chatKey,
-        messages: [...rows],
-        fidelity: 'local',
-      }),
-  });
+import { isPersistedChatMessage } from '../translate';
 import { createWebCoreChatBackendCore } from '../web-core-chat-backend';
 import {
   cloudAttachmentPath,
   cloudAttachmentPreview,
 } from '@/cloud-chats/cloud-chat-attachments';
 import { trackSelectionSave } from '../selection-saves';
-import type { AgentTaskRow } from '@canopy/protocol/cloud-session';
 
 const WORKSPACE = 'ws-1';
 const TASK = 'wt-1';
@@ -148,8 +123,6 @@ const core = {
   }[],
   /** The running turn of each other chat, which only its own snapshot names. */
   turns: {} as Record<string, string>,
-  /** Each chat's agent task rows, as its snapshot carries them. */
-  tasks: {} as Record<string, unknown[]>,
   /** Rows per transcript page. */
   pageSize: 100,
   /** Set to make the web core refuse an archive with this reason. */
@@ -278,18 +251,9 @@ const STORE_TO_CORE: Record<string, string> = {
 const UNSERVED_PAGE_PARAMS = ['cursor', 'view', 'turnId'];
 
 function snapshot(chatId?: unknown): Record<string, unknown> {
-  const opened = typeof chatId === 'string' ? chatId : CHAT;
-  const tasks = core.tasks[opened];
-  return {
-    ...openedSnapshot(chatId),
-    tasks,
-  };
-}
-
-function openedSnapshot(chatId?: unknown): Record<string, unknown> {
   if (typeof chatId === 'string' && chatId !== CHAT)
     return {
-      ...openedSnapshot(),
+      ...snapshot(),
       runtimeByChatId: {
         [chatId]: {
           status: 'streaming',
@@ -600,15 +564,7 @@ function webPath(io: Side): {
  */
 function desktopPath(
   io: Side,
-  options: {
-    readonly liveHoldMs?: number;
-    readonly echoWaitMs?: number;
-    readonly publishAgentTasks?: (
-      scope: { readonly projectId: string; readonly worktreeId: string },
-      chatId: string,
-      tasks: readonly AgentTaskRow[],
-    ) => void;
-  } = {},
+  options: { readonly liveHoldMs?: number; readonly echoWaitMs?: number } = {},
 ): {
   readonly backend: ReturnType<typeof createWebCoreChatBackendCore>;
   /** The task's tabs and archive rows as the store holds them. */
@@ -646,9 +602,6 @@ function desktopPath(
     ...(options.echoWaitMs === undefined
       ? {}
       : { echoWaitMs: options.echoWaitMs }),
-    ...(options.publishAgentTasks === undefined
-      ? {}
-      : { publishAgentTasks: options.publishAgentTasks }),
     publishLive: (_key, chat) => {
       live = chat;
     },
@@ -1727,9 +1680,7 @@ it('the desktop store refuses a cloud plan request and stops a starting turn by 
     io.calls.filter((call) => call.method === 'core.chat.message.send'),
   ).toEqual([]);
 
-  // A queued turn names no id yet (the web core reports Core's session as
-  // awaiting input, with the turn's prompt queued); Stop still cancels the
-  // receipt's turn.
+  // A starting turn names no id yet; Stop still cancels the receipt's turn.
   await desktop.send('paged');
   core.revision = 51;
   io.latest.get('core.chat.events')?.push(
@@ -1737,10 +1688,7 @@ it('the desktop store refuses a cloud plan request and stops a starting turn by 
       {
         type: 'runtime.patched',
         chatId: CHAT,
-        runtime: {
-          status: 'awaiting_input',
-          queuedMessageIds: ['paged-u'],
-        },
+        runtime: { status: 'starting', queuedMessageIds: [] },
       },
     ]),
   );
@@ -1763,10 +1711,7 @@ it('the desktop store refuses a cloud plan request and stops a starting turn by 
       {
         type: 'runtime.patched',
         chatId: CHAT,
-        runtime: {
-          status: 'awaiting_input',
-          queuedMessageIds: ['u3'],
-        },
+        runtime: { status: 'starting', queuedMessageIds: [] },
       },
     ]),
   );
@@ -1796,10 +1741,7 @@ it('the desktop store refuses a cloud plan request and stops a starting turn by 
       {
         type: 'runtime.patched',
         chatId: CHAT,
-        runtime: {
-          status: 'awaiting_input',
-          queuedMessageIds: ['u2'],
-        },
+        runtime: { status: 'starting', queuedMessageIds: [] },
       },
     ]),
   );
@@ -1978,11 +1920,7 @@ it('the desktop store re-reads a cloud transcript whose send receipt outlasted t
       {
         type: 'runtime.patched',
         chatId: CHAT,
-        runtime: {
-          status: 'streaming',
-          queuedMessageIds: [],
-          activeTurnId: 't4',
-        },
+        runtime: { status: 'streaming', queuedMessageIds: [] },
       },
     ]),
   );
@@ -2421,254 +2359,6 @@ it("a cloud send waits for the chat's selection save, so its turn runs with what
   expect(sends()).toBe(1);
 });
 
-it('a cloud send waits for a model pick in flight, so its turn runs with the model just chosen', async () => {
-  core.revision = 75;
-  core.status = 'idle';
-  core.activeTurnId = undefined;
-  core.messages = [U1];
-  core.chats = [{ chatId: CHAT, title: 'Plan', state: 'idle' }];
-  const io = side();
-  const backend = createWebCoreChatBackendCore({
-    invoker: () => io.invoker,
-    newId: () => crypto.randomUUID(),
-    reopenDelayMs: 0,
-    liveReopenDelayMs: 0,
-    publishLive: () => undefined,
-  });
-  closers.push(() => backend.closeAll());
-  const sends = (): number =>
-    io.calls.filter((call) => call.method === 'core.chat.message.send').length;
-
-  let applied = (): void => undefined;
-  core.updateGate = new Promise<void>((resolve) => {
-    applied = resolve;
-  });
-  const pick = backend.command({
-    schemaVersion: 1,
-    commandId: crypto.randomUUID(),
-    ...SCOPE,
-    command: {
-      type: 'chat.set_model',
-      tabId: CHAT_KEY,
-      model: 'model-b',
-      providerType: 'claude',
-    },
-  });
-  await settle();
-  const send = backend.sendMessage({
-    ...SCOPE,
-    chatId: CHAT_KEY,
-    userMessageId: 'desktop-after-pick',
-    text: 'after-save',
-  });
-  await settle();
-  // Nothing goes to the web core while the model is still saving.
-  expect(sends()).toBe(0);
-  core.updateGate = null;
-  applied();
-  await pick;
-  await send;
-  expect(sends()).toBe(1);
-});
-
-it('a cloud send waits for a plugins save still running after a quicker model pick lands', async () => {
-  core.revision = 76;
-  core.status = 'idle';
-  core.activeTurnId = undefined;
-  core.messages = [U1];
-  core.chats = [{ chatId: CHAT, title: 'Plan', state: 'idle' }];
-  const io = side();
-  const backend = createWebCoreChatBackendCore({
-    invoker: () => io.invoker,
-    newId: () => crypto.randomUUID(),
-    reopenDelayMs: 0,
-    liveReopenDelayMs: 0,
-    publishLive: () => undefined,
-  });
-  closers.push(() => backend.closeAll());
-  const sends = (): number =>
-    io.calls.filter((call) => call.method === 'core.chat.message.send').length;
-
-  let saved = (): void => undefined;
-  trackSelectionSave(
-    CHAT_KEY,
-    new Promise<void>((resolve) => {
-      saved = resolve;
-    }),
-  );
-  await backend.command({
-    schemaVersion: 1,
-    commandId: crypto.randomUUID(),
-    ...SCOPE,
-    command: {
-      type: 'chat.set_model',
-      tabId: CHAT_KEY,
-      model: 'model-b',
-      providerType: 'claude',
-    },
-  });
-  const send = backend.sendMessage({
-    ...SCOPE,
-    chatId: CHAT_KEY,
-    userMessageId: 'desktop-after-both',
-    text: 'after-save',
-  });
-  await settle();
-  // The model pick landed; the plugins save it joined still runs.
-  expect(sends()).toBe(0);
-  saved();
-  await send;
-  expect(sends()).toBe(1);
-});
-
-it("a cloud chat's task rows follow the web core's events, and a snapshot read before a newer task event never brings its older state back", async () => {
-  core.revision = 140;
-  core.status = 'idle';
-  core.activeTurnId = undefined;
-  core.messages = [U1];
-  core.chats = [{ chatId: CHAT, title: 'Plan', state: 'idle' }];
-  const task = (status: string): Record<string, unknown> => ({
-    stateVersion: status === 'running' ? '1' : '2',
-    taskId: 'task-sub',
-    kind: 'subagent',
-    harness: 'CLAUDE_CODE',
-    status,
-    stopReason: null,
-    native: {},
-    parentTaskId: null,
-    spawnTurnId: null,
-    spawnToolCallId: 'toolu_spawn',
-    title: null,
-    description: 'Survey the repo',
-    prompt: null,
-    subagentType: null,
-    thinkingEffort: null,
-    costUsd: null,
-    summary: null,
-    outputTail: null,
-    model: null,
-    usage: null,
-    error: null,
-    createdAtMs: 1_000,
-    startedAtMs: 1_000,
-    updatedAtMs: 1_000,
-    completedAtMs: status === 'running' ? null : 2_000,
-    approvalPending: false,
-    background: true,
-  });
-  core.tasks = { [CHAT]: [task('running')] };
-  const published: string[][] = [];
-  const io = side();
-  const desktop = desktopPath(io, {
-    publishAgentTasks: (_scope, chatId, tasks) => {
-      if (chatId === CHAT_KEY) published.push(tasks.map((each) => each.status));
-    },
-  });
-  await settle();
-  expect(published.at(-1)).toEqual(['running']);
-
-  // A refresh reads the snapshot while the task completes.
-  let served = (): void => undefined;
-  core.snapshotGate = new Promise<void>((resolve) => {
-    served = resolve;
-  });
-  const refresh = desktop.backend.getState(SCOPE);
-  await settle();
-  io.latest.get('core.chat.events')?.push(
-    batch(140, 141, [
-      {
-        type: 'agent_tasks.replaced',
-        chatId: CHAT,
-        tasks: [task('completed')],
-      },
-    ]),
-  );
-  await settle();
-  expect(published.at(-1)).toEqual(['completed']);
-  core.snapshotGate = null;
-  served();
-  await refresh;
-  await settle();
-  expect(published.at(-1)).toEqual(['completed']);
-  core.tasks = {};
-});
-
-it("after a resync, every chat this window read shows its tasks' current state, not only the opened chat's (CAN-6475)", async () => {
-  core.revision = 150;
-  core.status = 'idle';
-  core.activeTurnId = undefined;
-  core.messages = [U1];
-  core.chats = [
-    { chatId: CHAT, title: 'Plan', state: 'idle' },
-    { chatId: 'chat-2', title: 'Notes', state: 'idle' },
-  ];
-  const task = (status: string): Record<string, unknown> => ({
-    stateVersion: status === 'running' ? '1' : '2',
-    taskId: 'task-sibling',
-    kind: 'subagent',
-    harness: 'CLAUDE_CODE',
-    status,
-    stopReason: null,
-    native: {},
-    parentTaskId: null,
-    spawnTurnId: null,
-    spawnToolCallId: 'toolu_sibling',
-    title: null,
-    description: 'Check the notes',
-    prompt: null,
-    subagentType: null,
-    thinkingEffort: null,
-    costUsd: null,
-    summary: null,
-    outputTail: null,
-    model: null,
-    usage: null,
-    error: null,
-    createdAtMs: 1_000,
-    startedAtMs: 1_000,
-    updatedAtMs: 1_000,
-    completedAtMs: status === 'running' ? null : 2_000,
-    approvalPending: false,
-    background: true,
-  });
-  core.tasks = { 'chat-2': [task('running')] };
-  const published: string[][] = [];
-  const io = side();
-  const desktop = desktopPath(io, {
-    publishAgentTasks: (_scope, chatId, tasks) => {
-      if (chatId === 'web-core:chat-2')
-        published.push(tasks.map((each) => each.status));
-    },
-  });
-  await settle();
-  // The sibling chat is shown: its own snapshot brings its task.
-  await desktop.backend.getTranscriptPage({
-    ...SCOPE,
-    chatId: 'web-core:chat-2',
-    view: 'turns',
-  });
-  await settle();
-  expect(published.at(-1)).toEqual(['running']);
-
-  // Its task completes while the events are missed, and the stream resyncs.
-  core.tasks = { 'chat-2': [task('completed')] };
-  core.revision = 152;
-  io.latest.get('core.chat.events')?.push({
-    kind: 'end',
-    cursor: null,
-    outcome: 'error',
-    error: {
-      kind: 'failed_precondition',
-      code: 'core.chat.snapshotRequired',
-      message: 'Read the snapshot again.',
-      retry: { kind: 'never' },
-    },
-  });
-  await settle();
-  expect(published.at(-1)).toEqual(['completed']);
-  core.tasks = {};
-});
-
 it("a cloud send carries the window's fast mode for a model that runs it, and never Ultra fast", async () => {
   core.revision = 80;
   core.status = 'idle';
@@ -3031,102 +2721,4 @@ it("a cloud tab's model keeps the web core's order after a late receipt's repair
   expect(
     desktop.backend.webCoreTabModel({ ...SCOPE, chatId: CHAT_KEY })?.model,
   ).toBe('model-c');
-});
-
-it("a finished reply keeps REST's steps on desktop, and a later step takes its row's update (CAN-6116)", async () => {
-  const saved = {
-    messages: core.messages,
-    revision: core.revision,
-    status: core.status,
-    activeTurnId: core.activeTurnId,
-  };
-  const reply = (output?: string): Record<string, unknown> => ({
-    id: 'a9',
-    role: 'assistant',
-    timestamp: 2,
-    blocks: [
-      { type: 'text', text: 'Starting.' },
-      { type: 'tool_use', toolUseId: 'c1', toolName: 'Bash', input: 'echo' },
-      ...(output === undefined
-        ? []
-        : [
-            {
-              type: 'tool_result',
-              toolUseId: 'c1',
-              toolName: 'Bash',
-              output,
-              isError: false,
-            },
-          ]),
-      { type: 'text', text: output === undefined ? 'Waiting.' : 'All done.' },
-    ],
-  });
-  core.messages = [U1, reply()];
-  core.revision = 4;
-  core.status = 'idle';
-  core.activeTurnId = undefined;
-  try {
-    const io = side();
-    const web = webPath(io);
-    await settle();
-    expect(web.shown().rows.map((row) => row.id)).toEqual([
-      'u1',
-      'a9',
-      'a9:step-1',
-      'a9:step-2',
-    ]);
-    core.revision = 5;
-    core.messages = [U1, reply('one')];
-    io.latest
-      .get('core.chat.events')
-      ?.push(
-        batch(4, 5, [
-          { type: 'message.upserted', chatId: CHAT, message: reply('one') },
-        ]),
-      );
-    await settle();
-    expect(web.shown().rows.at(-1)).toMatchObject({
-      id: 'a9:step-2',
-      text: 'All done.',
-    });
-  } finally {
-    Object.assign(core, saved);
-  }
-});
-
-describe("a plugin-selection save's receipt on the desktop's web core path (CAN-6092)", () => {
-  it('translates a receipt whose capability state exceeds the 32 KiB JSON detail bound', () => {
-    const same = (id: string): string => id;
-    const ids = {
-      chatToStore: same,
-      chatToCore: same,
-      newChatToCore: same,
-      messageToStore: same,
-      messageToCore: same,
-    };
-    const pruned = Array.from({ length: 400 }, (_, index) => ({
-      kind: 'plugin',
-      marketplaceId: `marketplace-${index}`,
-      pluginName: `a-plugin-with-a-long-name-${index}`,
-    }));
-    expect(JSON.stringify(pruned).length).toBeGreaterThan(32_768);
-    expect(
-      translateCommandResult(
-        {
-          commandId: 'save-1',
-          revision: 0,
-          outcome: 'applied',
-          entityId: 'chat-1',
-          capabilities: {
-            capabilityBundles: {},
-            capabilityBundleStateVersion: 3,
-            outcome: 'staged',
-            capabilityPruned: pruned,
-            warnings: [],
-          },
-        },
-        ids,
-      ),
-    ).toMatchObject({ commandId: 'save-1', outcome: 'applied' });
-  });
 });

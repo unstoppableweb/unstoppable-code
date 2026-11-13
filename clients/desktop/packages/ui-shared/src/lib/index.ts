@@ -115,7 +115,6 @@ export * from './useSidebarHeaderRest';
 export * from './plan-proposal-markdown';
 export * from './useDelayedFlag';
 export * from './composer-placeholder';
-export * from './prompt-suggestion';
 
 export {
   pluginNeedsInstall,

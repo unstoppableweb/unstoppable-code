@@ -19,11 +19,10 @@ import {
 import type { PortalStandaloneWorkEntryFields } from '@canopy/protocol';
 import {
   Dot,
-  ErrorBanner,
-  DropdownMenuDivider,
   RailSectionHeader,
   DropdownMenuItem,
   DropdownMenuItemIcon,
+  DropdownMenuDivider,
   SidebarMoreRow,
   SidebarToggleRow,
   StandaloneChatRow,
@@ -72,11 +71,6 @@ import {
   capSidebarItemGroupBlocks,
 } from './sidebar/sidebar-item-groups-model';
 import { workEntryRecencyMs } from './sidebar/sidebar-ordering';
-import {
-  standaloneChatArchiveKey,
-  useStandaloneChatArchive,
-  type StandaloneChatArchiveController,
-} from './sidebar/use-standalone-chat-archive';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
 import {
   SidebarSelectionRowsReporter,
@@ -245,21 +239,6 @@ export interface StandaloneChatsSidebarSectionProps {
   readonly onCreateInGroup?: (groupId: string) => void;
   readonly onGroupError?: (error: unknown) => void;
   readonly snapshot: StandaloneChatsSidebarSnapshot;
-  /**
-   * Archives the chat's whole Work Entry (CAN-5461). The chat arrives with
-   * its owning project resolved. Settle the promise only once the row's
-   * removal is confirmed or has failed; the host reports the failure.
-   */
-  readonly onArchiveChat?: (
-    chat: StandaloneChatsSidebarChat & { readonly projectLocalId: string },
-  ) => void | Promise<void>;
-  /**
-   * Whether this chat may offer Archive, by its owning project. Omitted with
-   * {@link onArchiveChat}, every active chat with an owner offers it.
-   */
-  readonly canArchiveChat?: (
-    chat: StandaloneChatsSidebarChat & { readonly projectLocalId: string },
-  ) => boolean;
   /** Adds a notification-only menu to Work Entry rows when supplied. */
   readonly workEntryNotifications?: WorkEntryNotificationHandlers;
   readonly selectedStandaloneChatId: string | null;
@@ -534,10 +513,7 @@ export function StandaloneChatsSidebarSection({
   onGroupError,
   workEntryNotifications,
   workEntryMultiSelect,
-  onArchiveChat,
-  canArchiveChat,
 }: StandaloneChatsSidebarSectionProps): JSX.Element | null {
-  const archiveController = useStandaloneChatArchive(onArchiveChat);
   const [localExpanded, setLocalExpanded] = useState(true);
   const expanded = collapsed === undefined ? localExpanded : !collapsed;
   const toggle = (): void => {
@@ -669,25 +645,6 @@ export function StandaloneChatsSidebarSection({
     : flatHiddenChatCount;
   // The bulk selection's list for this section's Work Entry rows.
   const selectionListId = workspace?.localId;
-  // Archive for one chat, bound to its owner; undefined where it is not
-  // offered. Unparented chats belong to this section's workspace.
-  const archiveBindingFor = (
-    chat: StandaloneChatsSidebarChat,
-  ): ChatArchiveBinding | undefined => {
-    const projectLocalId = chat.projectLocalId || workspace?.localId;
-    if (onArchiveChat === undefined || !projectLocalId || chat.archived) {
-      return undefined;
-    }
-    const owned = { ...chat, projectLocalId };
-    if (canArchiveChat !== undefined && !canArchiveChat(owned)) {
-      return undefined;
-    }
-    return {
-      key: standaloneChatArchiveKey(owned),
-      chat: owned,
-      controller: archiveController,
-    };
-  };
   const renderGroupRow = (
     id: string,
     menu: WorktreeMenuItem[] = [],
@@ -706,7 +663,6 @@ export function StandaloneChatsSidebarSection({
         testIds={testIds}
         showActivityAge={showActivityAge}
         statusPlacement={rowStatusPlacement}
-        archive={archiveBindingFor(row.targetChat)}
       />
     ) : null;
   };
@@ -920,11 +876,6 @@ export function StandaloneChatsSidebarSection({
         // only a host rail gets one.
         <ChatsSelectedPinSeat />
       )}
-      <ErrorBanner
-        error={archiveController.error}
-        className=""
-        blockMessageFromReplay
-      />
       {(expanded || showsCollapsedSelection) && (
         // Marked as the occludable block the header is measured against —
         // but ONLY in the section presentation, which is the unique Chats
@@ -1033,13 +984,11 @@ export function StandaloneChatsSidebarSection({
                 notifications={workEntryNotifications}
                 showActivityAge={showActivityAge}
                 statusPlacement={rowStatusPlacement}
-                archive={archiveBindingFor(row.targetChat)}
               />
             ))
           ) : (
             cappedChats.map((chat) => {
               const selected = selectedStandaloneChatId === chat.localId;
-              const archive = archiveBindingFor(chat);
               return (
                 <SidebarRowFrame
                   key={chat.localId}
@@ -1059,18 +1008,6 @@ export function StandaloneChatsSidebarSection({
                     onSelect={() => onSelectChat(chat.localId)}
                     dataChatId={chat.localId}
                     touchTarget={touchTargets}
-                    {...(archive === undefined
-                      ? {}
-                      : {
-                          archivingInFlight: archive.controller.isPending(
-                            archive.key,
-                          ),
-                          onArchive: (): void =>
-                            archive.controller.archive(
-                              archive.key,
-                              archive.chat,
-                            ),
-                        })}
                   />
                 </SidebarRowFrame>
               );
@@ -1121,17 +1058,6 @@ export function StandaloneChatsSidebarSection({
   );
 }
 
-/** Archive as one row offers it: the shared controller, keyed and bound. */
-interface ChatArchiveBinding {
-  readonly key: string;
-  readonly chat: StandaloneChatsSidebarChat & {
-    readonly projectLocalId: string;
-  };
-  readonly controller: StandaloneChatArchiveController<
-    StandaloneChatsSidebarChat & { readonly projectLocalId: string }
-  >;
-}
-
 interface ChatsSectionWorkEntryRowProps {
   readonly row: StandaloneWorkEntryRow<
     StandaloneChatsSidebarChat & { projectLocalId: string }
@@ -1148,8 +1074,6 @@ interface ChatsSectionWorkEntryRowProps {
   readonly notifications: WorkEntryNotificationHandlers | undefined;
   readonly showActivityAge: boolean;
   readonly statusPlacement: 'trailing' | 'leading';
-  /** Archive for this entry; absent where the host cannot run it. */
-  readonly archive?: ChatArchiveBinding;
 }
 
 /**
@@ -1194,9 +1118,9 @@ function WorkEntryNotificationMenuItems({
  * dot (CAN-3053).
  *
  * The row offers no hover actions. The portal has no command to rename,
- * pin, mark done or delete a Work Entry, and a control it cannot run is left
- * out rather than drawn dead. Its menu carries the viewer's own notification
- * choices and, where the host can run it, Archive (CAN-5461).
+ * pin, mark done, archive or delete a Work Entry, and a control it cannot run
+ * is left out rather than drawn dead. Its menu carries only the viewer's own
+ * notification choices, which are a server setting rather than a command.
  */
 function ChatsSectionWorkEntryRow({
   row,
@@ -1210,7 +1134,6 @@ function ChatsSectionWorkEntryRow({
   notifications,
   showActivityAge,
   statusPlacement,
-  archive,
 }: ChatsSectionWorkEntryRowProps): JSX.Element {
   const drag = useContext(WorktreeSortableStateContext);
   const selectedChat =
@@ -1293,19 +1216,14 @@ function ChatsSectionWorkEntryRow({
       ? { ...item, separatorBefore: false }
       : item,
   );
-  const archiving = archive?.controller.isPending(archive.key) === true;
-  const removing = multiSelect?.isRemoving(selectionKey) === true || archiving;
-  // Archive ends the menu in its own group, as on every Work Entry menu.
-  // A selection of 2 or more acts on the selection instead.
-  const showsArchive = !replaces && archive !== undefined;
   const offersSelectItem =
     !replaces && selectable && multiSelect?.onSelectItem !== undefined;
   const hasMenu =
     rowMenu.length > 0 ||
     showsNotifications ||
     offersSelectItem ||
-    selectionItems.length > 0 ||
-    showsArchive;
+    selectionItems.length > 0;
+
   return (
     <SidebarRowFrame
       data-testid={testIds?.chatRow?.(row.targetChat.localId)}
@@ -1336,14 +1254,7 @@ function ChatsSectionWorkEntryRow({
                 selectable,
               )
         }
-        removing={removing}
-        hoverActions={archive === undefined ? 'classic' : 'compact'}
-        onArchive={
-          archive === undefined
-            ? undefined
-            : (): void => archive.controller.archive(archive.key, archive.chat)
-        }
-        archiveDisabledReason={removing ? 'Removing…' : undefined}
+        removing={multiSelect?.isRemoving(selectionKey) === true}
         status={row.status}
         statusPlacement={statusPlacement}
         selected={selected}
@@ -1363,12 +1274,11 @@ function ChatsSectionWorkEntryRow({
         }
         // Reopening the entry keeps the chat already open in it; otherwise
         // it opens the chat with the newest activity.
-        onOpen={(): void => {
-          if (removing) return;
-          onSelectChat((selectedChat ?? row.targetChat).localId);
-        }}
+        onOpen={(): void =>
+          onSelectChat((selectedChat ?? row.targetChat).localId)
+        }
         renderMenuItems={
-          hasMenu && !removing
+          hasMenu
             ? (menuContext): ReactNode => (
                 <>
                   {rowMenu.length > 0 && (
@@ -1401,23 +1311,6 @@ function ChatsSectionWorkEntryRow({
                         item.onSelect?.();
                       }}
                     />
-                  )}
-                  {showsArchive && (
-                    <>
-                      {(rowMenu.length > 0 ||
-                        showsNotifications ||
-                        selectionItems.length > 0) && <DropdownMenuDivider />}
-                      <WorkEntryRowMenuItems
-                        menu={menuContext}
-                        archiveTitle="Archive this entry and all of its chats"
-                        removalDisabledReason={
-                          removing ? 'Removing…' : undefined
-                        }
-                        onArchive={(): void =>
-                          archive.controller.archive(archive.key, archive.chat)
-                        }
-                      />
-                    </>
                   )}
                 </>
               )

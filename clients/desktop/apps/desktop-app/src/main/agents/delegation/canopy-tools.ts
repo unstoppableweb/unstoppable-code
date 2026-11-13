@@ -25,8 +25,6 @@ import {
   GET_SCRIPT_OUTPUT_DESCRIPTION,
   QUERY_CODE_GRAPH_DESCRIPTION,
   READ_MEMORY_DESCRIPTION,
-  SEARCH_CHATS_DESCRIPTION,
-  READ_CHAT_EXCERPT_DESCRIPTION,
   READ_PIPELINE_YAML_DESCRIPTION,
   SAVE_MEMORY_DESCRIPTION,
   SEARCH_CODE_GRAPH_DESCRIPTION,
@@ -46,8 +44,6 @@ import {
   getScriptOutputJsonSchema,
   queryCodeGraphJsonSchema,
   readMemoryJsonSchema,
-  searchChatsJsonSchema,
-  readChatExcerptJsonSchema,
   readPipelineYamlJsonSchema,
   saveMemoryJsonSchema,
   searchCodeGraphJsonSchema,
@@ -74,8 +70,6 @@ import {
   readLocalMemory,
   saveLocalMemory,
   searchLocalMemory,
-  searchChats,
-  readChatExcerpt,
 } from '../../canopy-tools/session-runtime';
 import { buildDelegateDeferredToolsGuidance } from '../../canopy-tools/prompting';
 import type { DelegateDeferredToolsSource } from './delegate-deferred-tools';
@@ -215,14 +209,6 @@ const DELEGATE_TOOL_DEFINITIONS: Readonly<
   search_memory: {
     description: SEARCH_MEMORY_DESCRIPTION,
     inputSchema: searchMemoryJsonSchema,
-  },
-  search_chats: {
-    description: SEARCH_CHATS_DESCRIPTION,
-    inputSchema: searchChatsJsonSchema,
-  },
-  read_chat_excerpt: {
-    description: READ_CHAT_EXCERPT_DESCRIPTION,
-    inputSchema: readChatExcerptJsonSchema,
   },
   read_memory: {
     description: READ_MEMORY_DESCRIPTION,
@@ -420,15 +406,6 @@ function delegateRuntime(
         provider: scope.provider,
         sessionId: `delegation:${scope.delegationId}`,
         ...request,
-      }),
-    searchChats: (request) =>
-      searchChats({ ...request, projectId, worktreeId, chatId: scope.chatId }),
-    readChatExcerpt: (request) =>
-      readChatExcerpt({
-        ...request,
-        projectId,
-        worktreeId,
-        chatId: scope.chatId,
       }),
     searchLocalMemory: (request) =>
       searchLocalMemory({ projectId, worktreeId, ...request }),

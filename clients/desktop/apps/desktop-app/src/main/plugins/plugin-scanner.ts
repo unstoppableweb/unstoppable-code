@@ -13,7 +13,6 @@ import type {
 } from '@canopy/execution-engine/types/plugins';
 import type { PluginModInfo } from '@canopy/protocol/plugins';
 import { parseClaudeJsonFile } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
-import { readPluginManifest } from './plugin-manifest';
 import { safeReadJson, safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter } from '../lib/frontmatter';
 import { canonicalPathInside } from './plugin-members';
@@ -45,6 +44,17 @@ function isScanOptions(value: unknown): value is ScanPluginDetailsOptions {
     value !== null &&
     !Array.isArray(value) &&
     'manifestKind' in value
+  );
+}
+
+function manifestPathForKind(
+  pluginDir: string,
+  kind: PluginManifestKind,
+): string {
+  return path.join(
+    pluginDir,
+    kind === 'codex' ? '.codex-plugin' : '.claude-plugin',
+    'plugin.json',
   );
 }
 
@@ -537,14 +547,10 @@ export function scanPluginDetails(
   const kind = options?.manifestKind ?? 'claude';
   const manifest = normalizeManifestForScanning(
     isScanOptions(manifestOrOptions)
-      ? readPluginManifest(kind, (relativePath) =>
-          safeReadJson<PluginManifestLike>(path.join(pluginDir, relativePath)),
-        )
+      ? safeReadJson<PluginManifestLike>(manifestPathForKind(pluginDir, kind))
       : (manifestOrOptions ??
-          readPluginManifest(kind, (relativePath) =>
-            safeReadJson<PluginManifestLike>(
-              path.join(pluginDir, relativePath),
-            ),
+          safeReadJson<PluginManifestLike>(
+            manifestPathForKind(pluginDir, kind),
           )),
   );
   const details: PluginDetails = {

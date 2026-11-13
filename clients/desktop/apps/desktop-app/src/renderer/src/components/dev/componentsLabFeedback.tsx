@@ -224,15 +224,7 @@ export function FailureSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="ErrorBanner (a failure inside a page or panel)">
-        <SpecimenCell label="Message only" wide>
-          <div className="w-full">
-            <ErrorBanner error="The repository is archived and read-only." />
-          </div>
-        </SpecimenCell>
-        <SpecimenCell
-          label="Try again switches to a spinner and keeps its width"
-          wide
-        >
+        <SpecimenCell label="With retry" wide>
           <div className="w-full">
             <ErrorBanner
               error="Couldn’t load skills."

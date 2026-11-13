@@ -1,4 +1,3 @@
-import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import type { BrowserWindow } from 'electron';
 import {
@@ -370,8 +369,6 @@ export function registerWorktreeHandlers(
       const response = await withTypedArchiveRefusal(
         {
           typedRefusal: request.typedRefusal,
-          intent: worktreeRemovalIntent(request.lockAfterArchive),
-          expectedCreatedAt: request.expectedCreatedAt,
           workspaceId: request.projectId,
           worktreeId: request.worktreeId,
         },

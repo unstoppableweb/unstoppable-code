@@ -23,6 +23,7 @@ import {
   markTaskCreated,
   trackTaskCreation,
 } from '@/stores/chat/web-core/task-creations';
+import { cloudChatsUseStandalonePage } from './cloud-chat-routing';
 import {
   markCloudTaskClick,
   markCloudTaskCreateSettled,
@@ -271,23 +272,31 @@ function followTaskListing(scope: {
 }
 
 /**
- * A cloud project's "+". The new task opens at once on the cowork page,
+ * A cloud project's "+". On the cowork page the new task opens at once,
  * through the work-entry seam, while the web core creates it (CAN-6098): its
  * row shows the create pending, then failed with a retry if the web core
- * refuses it.
+ * refuses it. CloudChatPage reads a task as soon as it opens and holds a
+ * missing one as gone, and the list opens a row as soon as it shows, so
+ * there the task's row shows once it exists, as before, and a refused create
+ * rejects with no row left.
  */
-export function createCloudSidebarTask(
+export async function createCloudSidebarTask(
   projectId: string,
 ): Promise<WorktreeCreateResult> {
   const workspaceId = webCoreLocalId(projectId);
-  if (workspaceId === null)
-    return Promise.reject(new Error('Not a cloud project.'));
+  if (workspaceId === null) throw new Error('Not a cloud project.');
+  if (!cloudChatsUseStandalonePage) {
+    const task = await cloudCoworkStore.getState().createTask(workspaceId);
+    const worktreeId = webCoreScopeId(task.worktreeId);
+    openCoworkWorkEntryFromSidebar(projectId, worktreeId);
+    return { status: 'completed', worktreeId };
+  }
   const { task, created } = cloudCoworkStore.getState().beginTask(workspaceId);
   markCloudTaskClick(task.worktreeId);
   const worktreeId = webCoreScopeId(task.worktreeId);
   followTaskCreation({ projectId, worktreeId }, created);
   openCoworkWorkEntryFromSidebar(projectId, worktreeId);
-  return Promise.resolve({ status: 'completed', worktreeId });
+  return { status: 'completed', worktreeId };
 }
 
 /** Creates a cloud task the web core refused again, under the same id. */

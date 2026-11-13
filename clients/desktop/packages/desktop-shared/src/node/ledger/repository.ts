@@ -11,40 +11,22 @@ import {
   LedgerTitleSchema,
   LedgerUuidSchema,
   LedgerWorkSummaryGetResultSchema,
-  buildLedgerCreation,
-  buildLedgerRevision,
-  canLedgerActorOwn,
-  checkLedgerAttribution,
-  checkLedgerParent,
-  checkLedgerScopeContent,
-  checkLedgerCreation,
-  evaluateLedgerUpdate,
-  findLedgerAutoStartOperation,
-  isLedgerEntryOpen,
   isLedgerGlobalContainer,
   ledgerGlobalOwnerKey,
-  ledgerTaskAncestorDepth,
-  planLedgerChildClose,
-  resolveLedgerCreationParent,
-  sameLedgerActor,
   toLedgerEntrySearchItem,
   type LedgerActorRef,
   type LedgerAttribution,
   type LedgerChangesListResult,
-  type LedgerChildClosePlan as LedgerChildClosePlanOf,
-  type LedgerEntryChange,
   type LedgerCommandReceipt,
   type LedgerContainer,
   type LedgerEntry,
   type LedgerEntryGetResult,
   type LedgerLeftOpen,
   type LedgerMutation,
-  type LedgerPolicyViolation,
   type LedgerRollupsListResult,
   type LedgerSourceAvailability,
   type LedgerStatus,
   type LedgerSyncState,
-  type LedgerUpdateRejection,
   type LedgerWorkSummaryGetResult,
 } from '@canopy/protocol/canopy-core';
 
@@ -75,6 +57,19 @@ import {
   ledgerScopeLifecycleRejection,
   ledgerScopeLifecycleStep,
 } from './lifecycle';
+import {
+  canLedgerActorOwn,
+  canLedgerActorUpdateOwnedEntry,
+  checkLedgerAttribution,
+  checkLedgerCreation,
+  evaluateLedgerUpdate,
+  isLedgerEntryOpen,
+  sameLedgerActor,
+  type LedgerPolicyViolation,
+  type LedgerStatusChange,
+  type LedgerOwnerChange,
+  type LedgerUpdateRejection,
+} from './policy';
 import {
   actorFromRow,
   parseLedgerInput,
@@ -264,6 +259,15 @@ interface LedgerRevisionWrite {
   readonly publication: LedgerEntryDraft['publication'];
 }
 
+interface LedgerEntryChange {
+  readonly status: LedgerStatusChange | null;
+  readonly owner: LedgerOwnerChange | null;
+  readonly parent: {
+    readonly from: string | null;
+    readonly to: string | null;
+  } | null;
+}
+
 type LedgerMutationContext = Pick<
   LedgerUpdateRequest,
   | 'attribution'
@@ -275,11 +279,13 @@ type LedgerMutationContext = Pick<
   readonly leftOpen?: NonNullable<LedgerMutation['leftOpen']>;
 };
 
-/** A close's planned revisions of the open entries under it (L05). */
-type LedgerChildClosePlan = Extract<
-  LedgerChildClosePlanOf<LedgerCurrentEntry>,
-  { readonly kind: 'plan' }
->;
+interface LedgerChildClosePlan {
+  readonly choice: 'complete' | 'fail' | 'detach';
+  /** Detach targets: the nearest open entries at any depth. */
+  readonly detachTargets: readonly LedgerCurrentEntry[];
+  /** Open descendants in post-order, used by complete/fail. */
+  readonly openDescendants: readonly LedgerCurrentEntry[];
+}
 
 function pendingTitleFromRow(row: LedgerSqlRow): LedgerPendingTitleRecord {
   return {
@@ -363,6 +369,38 @@ function throwIfViolation(violation: LedgerPolicyViolation | null): void {
   }
 }
 
+function buildNewEntry(
+  scope: LedgerScopeState,
+  draft: LedgerEntryDraft,
+  entryId: string,
+  createdAt: string,
+  parentEntryId: string | undefined,
+): LedgerEntry {
+  return {
+    schemaVersion: 1,
+    entryId,
+    scope: scope.record.scope,
+    createdAt,
+    updatedAt: createdAt,
+    revision: 1,
+    author: draft.author,
+    authorDetails: draft.authorDetails,
+    owner: draft.owner,
+    type: draft.type,
+    title: draft.title,
+    content: draft.content,
+    highlights: draft.highlights,
+    referenceFiles: draft.referenceFiles,
+    status: draft.status,
+    origin: draft.origin,
+    attribution: draft.attribution,
+    ...(draft.supersedesEntryId === undefined
+      ? {}
+      : { supersedesEntryId: draft.supersedesEntryId }),
+    ...(parentEntryId === undefined ? {} : { parentEntryId }),
+  };
+}
+
 function updateRejection(
   reason: LedgerUpdateRejection,
   field: string | undefined,
@@ -374,6 +412,11 @@ function updateRejection(
     field,
     ...(reason === 'FORBIDDEN' ? {} : { currentEntry: entry }),
   });
+}
+
+/** `updatedAt` never moves backwards, even if the clock does. */
+function laterTimestamp(candidate: string, previous: string): string {
+  return Date.parse(candidate) >= Date.parse(previous) ? candidate : previous;
 }
 
 function pageLimit(
@@ -2032,12 +2075,13 @@ export class LedgerRepository {
     draft: LedgerEntryDraft,
   ): void {
     throwIfViolation(checkLedgerCreation(draft));
-    throwIfViolation(
-      checkLedgerScopeContent({
-        container: scope.record.scope.container,
-        referenceFileCount: draft.referenceFiles.length,
-      }),
-    );
+    // A global Ledger has no worktree for a file to be relative to.
+    if (
+      isLedgerGlobalContainer(scope.record.scope.container) &&
+      draft.referenceFiles.length > 0
+    ) {
+      throw new LedgerStoreError('INVALID_INPUT', { field: 'referenceFiles' });
+    }
     if (draft.origin.ledgerId !== scope.ledgerId) {
       throw new LedgerStoreError('INVALID_INPUT', { field: 'origin.ledgerId' });
     }
@@ -2079,26 +2123,36 @@ export class LedgerRepository {
     request: LedgerCreateRequest,
   ): string | undefined {
     const supersedesEntryId = request.draft.supersedesEntryId;
-    const resolved = resolveLedgerCreationParent({
-      requestedParentEntryId: request.parentEntryId,
-      corrected:
-        supersedesEntryId === undefined
-          ? undefined
-          : this.requireEntry(scope, supersedesEntryId).entry,
-    });
-    if ('reason' in resolved) {
-      throw new LedgerStoreError(resolved.reason, { field: resolved.field });
+    if (supersedesEntryId === undefined) {
+      if (request.parentEntryId !== undefined) {
+        this.assertValidParent(
+          scope,
+          request.draft.type,
+          request.parentEntryId,
+        );
+      }
+      return request.parentEntryId;
     }
-    if (resolved.parentEntryId !== undefined) {
+    const corrected = this.requireEntry(scope, supersedesEntryId).entry;
+    if (
+      request.parentEntryId !== undefined &&
+      request.parentEntryId !== corrected.parentEntryId
+    ) {
+      throw new LedgerStoreError('PARENT_INVALID', {
+        field: 'parentEntryId',
+      });
+    }
+    const parentEntryId = corrected.parentEntryId;
+    if (parentEntryId !== undefined) {
       this.assertValidParent(
         scope,
         request.draft.type,
-        resolved.parentEntryId,
+        parentEntryId,
         undefined,
-        { allowClosedParent: resolved.allowClosedParent },
+        { allowClosedParent: true },
       );
     }
-    return resolved.parentEntryId;
+    return parentEntryId;
   }
 
   /**
@@ -2113,51 +2167,90 @@ export class LedgerRepository {
     options: { readonly allowClosedParent?: boolean } = {},
   ): void {
     if (parentEntryId === null) return;
-    const exists =
+    if (childType === 'OPERATION' || childType === 'SUMMARY') {
+      throw new LedgerStoreError('PARENT_INVALID', {
+        field: 'parentEntryId',
+      });
+    }
+    if (
       this.prepare(LEDGER_SQL.selectEntry).get(
         scope.ledgerId,
         parentEntryId,
-      ) !== undefined;
-    const violation = checkLedgerParent({
-      childType,
-      parent: exists
-        ? this.requireEntry(scope, parentEntryId).entry
-        : undefined,
-      ...(options.allowClosedParent === undefined
-        ? {}
-        : { allowClosedParent: options.allowClosedParent }),
-      ...(movingEntryId === undefined
-        ? {}
-        : {
-            parentInMovedSubtree: (): boolean =>
-              this.prepare(LEDGER_SQL.selectSubtreeRowIds)
-                .all(scope.ledgerId, movingEntryId, scope.ledgerId)
-                .some((row) => rowText(row, 'entry_id') === parentEntryId),
-            movedTaskDepth: (): number =>
-              this.maxTaskDescendantDepth(scope, movingEntryId),
-          }),
-      parentTaskDepth: (): number =>
-        this.taskAncestorDepth(scope, parentEntryId),
-    });
-    if (violation !== null) {
-      throw new LedgerStoreError(violation.reason, {
-        ...(violation.field === undefined ? {} : { field: violation.field }),
+      ) === undefined
+    ) {
+      throw new LedgerStoreError('PARENT_INVALID', {
+        field: 'parentEntryId',
       });
+    }
+    const parent = this.requireEntry(scope, parentEntryId).entry;
+    if (
+      options.allowClosedParent !== true &&
+      !isLedgerEntryOpen(parent.status)
+    ) {
+      throw new LedgerStoreError('PARENT_CLOSED', {
+        field: 'parentEntryId',
+      });
+    }
+    if (parent.type !== 'OPERATION' && parent.type !== 'TASK') {
+      throw new LedgerStoreError('PARENT_INVALID', {
+        field: 'parentEntryId',
+      });
+    }
+
+    if (movingEntryId !== undefined) {
+      const subtree = this.prepare(LEDGER_SQL.selectSubtreeRowIds).all(
+        scope.ledgerId,
+        movingEntryId,
+        scope.ledgerId,
+      );
+      if (subtree.some((row) => rowText(row, 'entry_id') === parentEntryId)) {
+        throw new LedgerStoreError('PARENT_INVALID', {
+          field: 'parentEntryId',
+        });
+      }
+    }
+
+    if (childType === 'TASK') {
+      const parentTaskDepth = this.taskAncestorDepth(scope, parent.entryId);
+      const movedTaskDepth =
+        movingEntryId === undefined
+          ? 0
+          : this.maxTaskDescendantDepth(scope, movingEntryId);
+      if (parentTaskDepth + 1 + movedTaskDepth > 2) {
+        throw new LedgerStoreError('PARENT_INVALID', {
+          field: 'parentEntryId',
+        });
+      }
     }
   }
 
   /** Counts only TASK ancestors; OPERATION is a boundary, not a task level. */
   private taskAncestorDepth(scope: LedgerScopeState, entryId: string): number {
-    const depth = ledgerTaskAncestorDepth(
-      this.requireEntry(scope, entryId).entry,
-      (ancestorId) => this.requireEntry(scope, ancestorId).entry,
-    );
-    if (typeof depth !== 'number') {
-      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
-        diagnosticCode: depth.damage,
-      });
+    let depth = 0;
+    let current = this.requireEntry(scope, entryId).entry;
+    const visited = new Set<string>();
+    while (true) {
+      if (visited.has(current.entryId)) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'ledger_parent_cycle',
+        });
+      }
+      visited.add(current.entryId);
+      if (current.type === 'OPERATION') return depth;
+      if (current.type !== 'TASK') {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'ledger_parent_type',
+        });
+      }
+      depth += 1;
+      if (depth > 2) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'ledger_task_depth',
+        });
+      }
+      if (current.parentEntryId === undefined) return depth;
+      current = this.requireEntry(scope, current.parentEntryId).entry;
     }
-    return depth;
   }
 
   /** Maximum number of TASK descendants beneath a task being moved. */
@@ -2186,36 +2279,27 @@ export class LedgerRepository {
     const entryId = this.mintId();
     const createdAt = this.timestamp();
     const sequence = this.advanceSequence(scope.ledgerId);
-    const { draft } = request;
-    const creation = buildLedgerCreation({
-      scope: scope.record.scope,
-      fields: {
-        author: draft.author,
-        authorDetails: draft.authorDetails,
-        owner: draft.owner,
-        type: draft.type,
-        title: draft.title,
-        content: draft.content,
-        highlights: draft.highlights,
-        referenceFiles: draft.referenceFiles,
-        status: draft.status,
-        origin: draft.origin,
-        attribution: draft.attribution,
-        ...(draft.supersedesEntryId === undefined
-          ? {}
-          : { supersedesEntryId: draft.supersedesEntryId }),
-      },
-      entryId,
-      mutationId: this.mintId(),
-      createdAt,
-      parentEntryId,
-    });
     // Validating the complete projection is the last guard: nothing that
     // violates the protocol entry schema is ever persisted.
-    const entry = parseLedgerInput(LedgerEntrySchema, creation.entry, '');
+    const entry = parseLedgerInput(
+      LedgerEntrySchema,
+      buildNewEntry(scope, request.draft, entryId, createdAt, parentEntryId),
+      '',
+    );
     const mutation = parseLedgerInput(
       LedgerMutationSchema,
-      creation.mutation,
+      {
+        mutationId: this.mintId(),
+        entryId,
+        kind: 'create',
+        revision: 1,
+        previousRevision: null,
+        occurredAt: createdAt,
+        status: { from: null, to: entry.status },
+        owner: { from: null, to: entry.owner },
+        attribution: entry.attribution,
+        invocationOrigin: entry.origin,
+      },
       '',
     );
     const inserted = this.prepare(LEDGER_SQL.insertEntry).get(
@@ -2304,31 +2388,51 @@ export class LedgerRepository {
     request: LedgerUpdateRequest,
     targetStatus: LedgerStatus | undefined,
   ): LedgerChildClosePlan | null {
-    const plan = planLedgerChildClose({
-      entryId: current.entry.entryId,
-      targetStatus,
-      choice: request.params.openChildren,
-      attribution: request.attribution,
-      ...(request.delegateOwnerActorIds !== undefined
-        ? { delegateOwnerActorIds: request.delegateOwnerActorIds }
-        : {}),
-      mayUpdateAnyOpenEntry: request.mayUpdateAnyOpenEntry,
-      childrenOf: (entryId) => this.selectChildren(scope, entryId),
-    });
-    switch (plan.kind) {
-      case 'none':
-        return null;
-      case 'cycle':
-        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
-          diagnosticCode: 'ledger_parent_cycle',
-        });
-      case 'refuse':
-        throw new LedgerStoreError('OPEN_CHILDREN', {
-          openChildEntryIds: [...plan.openChildEntryIds],
-        });
-      case 'plan':
-        return plan;
+    if (targetStatus === undefined || isLedgerEntryOpen(targetStatus)) {
+      return null;
     }
+    // Open entries can sit beneath children that are already closed (a
+    // person's close leaves its children open), so look at every depth.
+    const nearestOpen = this.selectNearestOpenDescendants(
+      scope,
+      current.entry.entryId,
+    );
+    if (nearestOpen.length === 0) return null;
+
+    const choice = request.params.openChildren;
+    if (choice === undefined) {
+      if (request.mayUpdateAnyOpenEntry) return null;
+      throw new LedgerStoreError('OPEN_CHILDREN', {
+        openChildEntryIds: nearestOpen.map((child) => child.entry.entryId),
+      });
+    }
+
+    // Detach moves the same nearest open entries the refusal names, so an open
+    // subtask under an already-closed task goes to top level with its subtree.
+    const openDescendants =
+      choice === 'detach'
+        ? nearestOpen
+        : this.selectOpenDescendantsPostOrder(scope, current.entry.entryId);
+    const unauthorizedChildren = openDescendants.filter(
+      (child) =>
+        !canLedgerActorUpdateOwnedEntry(
+          request.attribution,
+          child.entry.owner.actorId,
+          request.delegateOwnerActorIds,
+        ),
+    );
+    if (!request.mayUpdateAnyOpenEntry && unauthorizedChildren.length > 0) {
+      throw new LedgerStoreError('OPEN_CHILDREN', {
+        openChildEntryIds: unauthorizedChildren.map(
+          (child) => child.entry.entryId,
+        ),
+      });
+    }
+    return {
+      choice,
+      detachTargets: nearestOpen,
+      openDescendants,
+    };
   }
 
   /** Applies the plan and returns each revised child, in commit order. */
@@ -2398,6 +2502,53 @@ export class LedgerRepository {
    * direct child, and each open entry whose ancestors up to `parentEntryId`
    * are all closed. Empty exactly when no descendant is open.
    */
+  private selectNearestOpenDescendants(
+    scope: LedgerScopeState,
+    parentEntryId: string,
+  ): LedgerCurrentEntry[] {
+    const openEntries: LedgerCurrentEntry[] = [];
+    const visited = new Set<string>([parentEntryId]);
+    const visit = (entryId: string): void => {
+      for (const child of this.selectChildren(scope, entryId)) {
+        if (visited.has(child.entry.entryId)) {
+          throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+            diagnosticCode: 'ledger_parent_cycle',
+          });
+        }
+        visited.add(child.entry.entryId);
+        if (isLedgerEntryOpen(child.entry.status)) {
+          openEntries.push(child);
+        } else {
+          visit(child.entry.entryId);
+        }
+      }
+    };
+    visit(parentEntryId);
+    return openEntries;
+  }
+
+  private selectOpenDescendantsPostOrder(
+    scope: LedgerScopeState,
+    parentEntryId: string,
+  ): LedgerCurrentEntry[] {
+    const openEntries: LedgerCurrentEntry[] = [];
+    const visited = new Set<string>([parentEntryId]);
+    const visit = (entryId: string): void => {
+      for (const child of this.selectChildren(scope, entryId)) {
+        if (visited.has(child.entry.entryId)) {
+          throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+            diagnosticCode: 'ledger_parent_cycle',
+          });
+        }
+        visited.add(child.entry.entryId);
+        visit(child.entry.entryId);
+        if (isLedgerEntryOpen(child.entry.status)) openEntries.push(child);
+      }
+    };
+    visit(parentEntryId);
+    return openEntries;
+  }
+
   private applyInternalMutation(
     scope: LedgerScopeState,
     current: LedgerCurrentEntry,
@@ -2460,53 +2611,57 @@ export class LedgerRepository {
     child: LedgerEntry,
     request: LedgerCreateRequest | LedgerUpdateRequest,
   ): LedgerEntry | null {
-    const current = findLedgerAutoStartOperation(child, (entryId) =>
-      this.requireEntry(scope, entryId),
-    );
-    if (current === 'cycle') {
-      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
-        diagnosticCode: 'ledger_parent_cycle',
-      });
+    let ancestor = child;
+    const visited = new Set([child.entryId]);
+    while (ancestor.parentEntryId !== undefined) {
+      if (visited.has(ancestor.parentEntryId)) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'ledger_parent_cycle',
+        });
+      }
+      visited.add(ancestor.parentEntryId);
+      const current = this.requireEntry(scope, ancestor.parentEntryId);
+      ancestor = current.entry;
+      if (ancestor.type !== 'OPERATION' || ancestor.status !== 'TODO') continue;
+      const attribution =
+        'draft' in request ? request.draft.attribution : request.attribution;
+      const origin =
+        'draft' in request ? request.draft.origin : request.invocationOrigin;
+      const baseReceiptKey = request.receiptKey;
+      const systemAttribution: LedgerAttribution = {
+        kind: 'system',
+        effectiveActor: attribution.effectiveActor,
+        recordedBy: attribution.recordedBy,
+        executorDetails: attribution.executorDetails,
+      };
+      return this.applyChange(
+        scope,
+        current,
+        {
+          attribution: systemAttribution,
+          invocationOrigin: origin,
+          ownerEligible: true,
+          receiptKey: this.internalReceiptKey(
+            scope,
+            baseReceiptKey,
+            'auto-start',
+            ancestor.entryId,
+          ),
+          requestHash: hashLedgerCanonicalValue({
+            purpose: 'auto-start',
+            entryId: ancestor.entryId,
+            revision: ancestor.revision,
+            status: 'IN_PROGRESS',
+          }),
+        },
+        {
+          status: { from: 'TODO', to: 'IN_PROGRESS' },
+          owner: null,
+          parent: null,
+        },
+      ).entry;
     }
-    if (current === null) return null;
-    const ancestor = current.entry;
-    const attribution =
-      'draft' in request ? request.draft.attribution : request.attribution;
-    const origin =
-      'draft' in request ? request.draft.origin : request.invocationOrigin;
-    const baseReceiptKey = request.receiptKey;
-    const systemAttribution: LedgerAttribution = {
-      kind: 'system',
-      effectiveActor: attribution.effectiveActor,
-      recordedBy: attribution.recordedBy,
-      executorDetails: attribution.executorDetails,
-    };
-    return this.applyChange(
-      scope,
-      current,
-      {
-        attribution: systemAttribution,
-        invocationOrigin: origin,
-        ownerEligible: true,
-        receiptKey: this.internalReceiptKey(
-          scope,
-          baseReceiptKey,
-          'auto-start',
-          ancestor.entryId,
-        ),
-        requestHash: hashLedgerCanonicalValue({
-          purpose: 'auto-start',
-          entryId: ancestor.entryId,
-          revision: ancestor.revision,
-          status: 'IN_PROGRESS',
-        }),
-      },
-      {
-        status: { from: 'TODO', to: 'IN_PROGRESS' },
-        owner: null,
-        parent: null,
-      },
-    ).entry;
+    return null;
   }
 
   /** An open-entry no-op keeps revision and times, but its receipt persists. */
@@ -2599,16 +2754,21 @@ export class LedgerRepository {
     }
     const previous = current.entry;
     const sequence = this.advanceSequence(scope.ledgerId);
-    const revision = buildLedgerRevision({
-      previous,
-      change,
-      mutationId: this.mintId(),
-      now: this.timestamp(),
-      attribution: request.attribution,
-      invocationOrigin: request.invocationOrigin,
-      ...(request.leftOpen === undefined ? {} : { leftOpen: request.leftOpen }),
-    });
-    const entry = parseLedgerInput(LedgerEntrySchema, revision.entry, '');
+    const updatedAt = laterTimestamp(this.timestamp(), previous.updatedAt);
+    const projection = {
+      ...previous,
+      revision: previous.revision + 1,
+      updatedAt,
+      status: change.status?.to ?? previous.status,
+      owner: change.owner?.to ?? previous.owner,
+    };
+    if (change.parent !== null) {
+      delete projection.parentEntryId;
+      if (change.parent.to !== null) {
+        projection.parentEntryId = change.parent.to;
+      }
+    }
+    const entry = parseLedgerInput(LedgerEntrySchema, projection, '');
     const movedRootEntryId =
       change.parent === null
         ? null
@@ -2617,7 +2777,22 @@ export class LedgerRepository {
           : this.currentRootForEntry(scope, change.parent.to);
     const mutation = parseLedgerInput(
       LedgerMutationSchema,
-      revision.mutation,
+      {
+        mutationId: this.mintId(),
+        entryId: entry.entryId,
+        kind: 'update',
+        revision: entry.revision,
+        previousRevision: previous.revision,
+        occurredAt: updatedAt,
+        ...(change.status === null ? {} : { status: change.status }),
+        ...(change.owner === null ? {} : { owner: change.owner }),
+        ...(change.parent === null ? {} : { parent: change.parent }),
+        ...(request.leftOpen === undefined
+          ? {}
+          : { leftOpen: request.leftOpen }),
+        attribution: request.attribution,
+        invocationOrigin: request.invocationOrigin,
+      },
       '',
     );
     const updated = this.prepare(LEDGER_SQL.updateEntry).run(

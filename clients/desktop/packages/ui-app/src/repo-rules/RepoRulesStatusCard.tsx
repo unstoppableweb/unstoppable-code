@@ -1,10 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type JSX } from 'react';
-import type {
-  RepoRulesBlocked,
-  RepoRulesStatus,
-} from '@canopy/protocol/repo-rules';
+import type { RepoRulesStatus } from '@canopy/protocol/repo-rules';
 import { useCanopyClient } from '@canopy/app-state';
 import {
   Button,
@@ -13,7 +10,6 @@ import {
   Stack,
 } from '@canopy/ui-shared/components';
 import { CapabilityGate } from '../capability/CapabilityGate';
-import { REPO_RULES_BLOCKED_REASONS } from './repoRulesCopy';
 import { Surface } from '@canopy/ui-shared/components';
 
 export interface RepoRulesStatusCardProps {
@@ -35,10 +31,7 @@ type CardState =
   | { readonly kind: 'ready'; readonly status: RepoRulesStatus }
   | { readonly kind: 'error' };
 
-function statusSentence(
-  status: RepoRulesStatus,
-  blocked: readonly RepoRulesBlocked[],
-): string {
+function statusSentence(status: RepoRulesStatus): string {
   if (
     status.diagnostic === 'invalid' ||
     status.diagnostic === 'unsupported-version'
@@ -46,12 +39,6 @@ function statusSentence(
     return "Off. The saved setting couldn't be read. Review the rules to turn them on again.";
   if (!status.enabled)
     return "Off. Review this project's Cursor rules to use them in new chats.";
-  if (blocked.length) {
-    const reasons = Array.from(
-      new Set(blocked.map(({ reason }) => REPO_RULES_BLOCKED_REASONS[reason])),
-    );
-    return `Blocked. New chats can't use this project's Cursor rules. ${reasons.join(' ')}`;
-  }
   const off = status.disabledRuleIds.length;
   const except =
     off === 0
@@ -64,11 +51,9 @@ function statusSentence(
 
 /**
  * Saved Cursor rules setting for one workspace (CAN-2053), for Project
- * Settings. Shows the saved policy first and never scans the repository, so
- * turning rules off works even when the checkout is unavailable. For enabled
- * rules it then asks `repoRules.check` which repositories new chats can't
- * read, and says why (CAN-6368). Renders nothing on a host without
- * `repoRulesImport`.
+ * Settings. Reads the policy only and never scans the repository, so turning
+ * rules off works even when the checkout is unavailable. Renders nothing on a
+ * host without `repoRulesImport`.
  */
 export function RepoRulesStatusCard(
   props: RepoRulesStatusCardProps,
@@ -90,28 +75,16 @@ function RepoRulesStatusCardBody({
 }: RepoRulesStatusCardProps): JSX.Element {
   const client = useCanopyClient();
   const [state, setState] = useState<CardState>({ kind: 'loading' });
-  const [blocked, setBlocked] = useState<readonly RepoRulesBlocked[]>([]);
   const [turningOff, setTurningOff] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
 
   useEffect(() => {
     const current = ++generation.current;
-    setBlocked([]);
     client
       .query('repoRules.status', { workspaceId })
       .then((status) => {
-        if (generation.current !== current) return;
-        setState({ kind: 'ready', status });
-        if (!status.enabled) return;
-        // The status line and Turn off are already shown; a slow or failed
-        // check only leaves the rules shown as on.
-        client
-          .query('repoRules.check', { workspaceId })
-          .then((check) => {
-            if (generation.current === current) setBlocked(check.blocked);
-          })
-          .catch(() => undefined);
+        if (generation.current === current) setState({ kind: 'ready', status });
       })
       .catch(() => {
         if (generation.current === current) setState({ kind: 'error' });
@@ -154,7 +127,7 @@ function RepoRulesStatusCardBody({
       ? 'Checking the saved setting…'
       : state.kind === 'error'
         ? "Couldn't load the saved setting."
-        : statusSentence(state.status, blocked);
+        : statusSentence(state.status);
   if (surface === 'row') {
     return (
       <div

@@ -8,7 +8,6 @@
  * instance still relies on. This wrapper keeps one main-side watch alive per
  * worktree until the last renderer consumer releases it.
  */
-import { isWebCoreScope } from '@/lib/chat-authority';
 
 interface SharedWatch {
   count: number;
@@ -32,8 +31,6 @@ export function acquireFileTreeWatch(
   projectId: string,
   worktreeId: string,
 ): Promise<void> {
-  // A cloud scope has no folder on this computer to watch (CAN-6395).
-  if (isWebCoreScope(projectId)) return Promise.resolve();
   const key = watchKey(projectId, worktreeId);
   const existing = watches.get(key);
   if (existing) {
@@ -53,7 +50,6 @@ export function releaseFileTreeWatch(
   projectId: string,
   worktreeId: string,
 ): void {
-  if (isWebCoreScope(projectId)) return;
   const key = watchKey(projectId, worktreeId);
   const shared = watches.get(key);
   if (!shared) return;

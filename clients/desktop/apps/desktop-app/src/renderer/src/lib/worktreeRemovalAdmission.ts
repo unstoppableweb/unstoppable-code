@@ -1,9 +1,4 @@
-import { WORKTREE_REMOVAL_UNCONFIRMED } from '@canopy/ui-shared/lib/worktree-discard-copy';
-import {
-  archiveRefusalOutcome,
-  type WorktreeDiscardOffer,
-} from '@canopy/app-state';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import { archiveRefusalOutcome } from '@canopy/app-state';
 import type {
   ArchiveWorktreeResponse,
   WorktreeDiscardDescription,
@@ -28,8 +23,6 @@ export class WorktreeArchiveRefusalError extends Error {
   constructor(
     message: string,
     readonly discard: WorktreeDiscardDescription,
-    readonly recovery?: WorktreeRecoveryDescription,
-    readonly removal?: WorktreeDiscardOffer['removal'],
   ) {
     super(message);
     this.name = 'WorktreeArchiveRefusalError';
@@ -42,22 +35,13 @@ export class WorktreeArchiveRefusalError extends Error {
  * down the existing failure path, so an older desktop's journal refusal still
  * reaches its own review. Returns when the archive was not refused.
  */
-export function throwIfArchiveRefused(
-  response: ArchiveWorktreeResponse,
-  removal?: WorktreeDiscardOffer['removal'],
-): void {
+export function throwIfArchiveRefused(response: ArchiveWorktreeResponse): void {
   const outcome = archiveRefusalOutcome(response);
-  if (!outcome) {
-    if (response.success !== true)
-      throw new Error(WORKTREE_REMOVAL_UNCONFIRMED);
-    return;
-  }
-  if (outcome.kind !== 'fail' && response.refusal)
+  if (!outcome) return;
+  if (outcome.kind === 'offer' && response.refusal)
     throw new WorktreeArchiveRefusalError(
       outcome.message,
       response.refusal.discard,
-      'recovery' in outcome ? outcome.recovery : undefined,
-      removal,
     );
   throw new Error(outcome.message);
 }

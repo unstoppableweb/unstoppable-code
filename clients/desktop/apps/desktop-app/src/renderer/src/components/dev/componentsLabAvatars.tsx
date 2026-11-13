@@ -17,15 +17,6 @@ const PHOTO = `data:image/svg+xml;utf8,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c9a27e"/><stop offset="1" stop-color="#6b4f3a"/></linearGradient></defs><rect width="64" height="64" fill="url(#g)"/><circle cx="32" cy="26" r="11" fill="#f1d7c1"/><path d="M12 64c2-14 10-20 20-20s18 6 20 20z" fill="#2f3e57"/></svg>',
 )}`;
 
-const INITIAL_NAMES = [
-  'Ada Lovelace',
-  'Grace Hopper',
-  'Alan Turing',
-  'Katherine Johnson',
-  'Linus',
-  'margaret.hamilton@example.com',
-] as const;
-
 const SIZES: readonly DisplayAvatarSize[] = ['xs', 'sm', 'md', 'lg', 'xl'];
 
 const USES: Readonly<Record<DisplayAvatarSize, string>> = {
@@ -61,15 +52,6 @@ export function AvatarsSpecimen(): JSX.Element {
         >
           <DisplayAvatar name="Ana Ruiz" image={PHOTO} size="2xl" />
           <DisplayAvatar name="Sam Lee" size="2xl" />
-        </SpecimenCell>
-        <SpecimenCell label="Initials from names and an email address" wide>
-          {INITIAL_NAMES.map((name) => (
-            <DisplayAvatar key={name} name={name} />
-          ))}
-        </SpecimenCell>
-        <SpecimenCell label="Beside a name">
-          <DisplayAvatar name="Grace Hopper" size="sm" />
-          <span className="text-s">Grace Hopper</span>
         </SpecimenCell>
         <SpecimenCell label="A photo that fails to load falls back to the initials">
           <DisplayAvatar name="Kai Mori" image="data:," size="lg" />

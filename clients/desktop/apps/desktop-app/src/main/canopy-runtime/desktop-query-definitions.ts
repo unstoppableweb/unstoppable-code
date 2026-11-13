@@ -1,6 +1,5 @@
 import {
   CANOPY_QUERY_DEFINITIONS,
-  CORE_WORKTREE_RECOVERY_QUERIES,
   CORE_COWORK_FOLDER_QUERIES,
   CORE_CATALOG_QUERY_DEFINITIONS,
   CORE_CATALOG_SKILL_QUERY_DEFINITIONS,
@@ -20,7 +19,6 @@ import {
 /** The desktop dispatcher's queries: the composed registry plus the catalog reads, the in-process worker's materialization read (CAN-4123), the config read (CAN-5992), the memory reads (CAN-5993), the agent watcher list (CAN-5994), the deferred tools search (CAN-5995), visual rendering (CAN-6040) and the managed delegation reads (CAN-6291) the daemon does not serve. */
 export const DESKTOP_QUERY_DEFINITIONS = composeCanopyQueryRegistries(
   CANOPY_QUERY_DEFINITIONS,
-  CORE_WORKTREE_RECOVERY_QUERIES,
   CORE_COWORK_FOLDER_QUERIES,
   CORE_CATALOG_QUERY_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,

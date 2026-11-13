@@ -1,5 +1,3 @@
-import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
-import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 // ---------------------------------------------------------------------------
 // Renderer-side helpers for pipeline model aliases.
 //
@@ -45,11 +43,7 @@ export function aliasDefaultsToPreference(
 ): ConcreteModelAliasPreference | undefined {
   if (!defaults) return undefined;
   if ('agent_id' in defaults) {
-    return {
-      mode: 'agent',
-      agent_id: defaults.agent_id,
-      ...(defaults.base !== undefined ? { base: defaults.base } : {}),
-    };
+    return { mode: 'agent', agent_id: defaults.agent_id };
   }
   return {
     mode: 'inline',
@@ -169,11 +163,7 @@ export interface ModelAliasValidationContext {
   pluginCollectionIds: ReadonlySet<string>;
   /** Locally-available Agent ids (`agent_model_*`) for Agent-mode preferences. */
   availableAgentIds: ReadonlySet<string>;
-  isAgentRouteAvailable?: (route: string) => boolean;
 }
-
-export const AGENT_ALIAS_MODEL_SELECTION_ERROR =
-  "Choose a model or use the agent's model.";
 
 /**
  * Validate a resolved effective preference. Returns a human-readable error
@@ -204,16 +194,9 @@ export function validateEffectiveAliasPreference(
   if (!pref.agent_id || pref.agent_id.trim() === '') {
     return 'Agent is required.';
   }
-  const agentId =
-    parseAgentRouteModelId(pref.agent_id)?.agentId ?? pref.agent_id;
-  if (!ctx.availableAgentIds.has(agentId)) {
+  if (!ctx.availableAgentIds.has(pref.agent_id)) {
     return 'Agent is not available locally.';
   }
-  const parsed = parsePipelineAgentAliasRoute(pref);
-  if (!parsed.ok) return AGENT_ALIAS_MODEL_SELECTION_ERROR;
-  const route = parsed.route;
-  if (ctx.isAgentRouteAvailable && !ctx.isAgentRouteAvailable(route))
-    return 'Agent model is not available locally.';
   return undefined;
 }
 

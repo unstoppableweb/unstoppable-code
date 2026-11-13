@@ -29,12 +29,8 @@ export interface AgentDelegationQueueState {
   readonly name: string;
   /** This work's 1-based position while queued. */
   readonly position?: number;
-  /**
-   * Live tool-response value: what this work is waiting for. `queue`: its
-   * turn in the delegation queue; `app`: the app-wide limit; `slot`: a free
-   * turn slot on the machine that runs it (cloud chats).
-   */
-  readonly waitingFor?: 'queue' | 'app' | 'slot';
+  /** Live tool-response value: what this work is waiting for. */
+  readonly waitingFor?: 'queue' | 'app';
   /** Live tool-response value: number of currently running delegations. */
   readonly running?: number;
   /** Live tool-response value: number of delegations waiting. */
@@ -88,8 +84,7 @@ export function isAgentDelegationQueueState(
     (value.position === undefined || isPositiveSafeInteger(value.position)) &&
     (value.waitingFor === undefined ||
       value.waitingFor === 'queue' ||
-      value.waitingFor === 'app' ||
-      value.waitingFor === 'slot') &&
+      value.waitingFor === 'app') &&
     (value.running === undefined || isNonNegativeSafeInteger(value.running)) &&
     (value.waiting === undefined || isNonNegativeSafeInteger(value.waiting)) &&
     (value.limit === undefined || isPositiveSafeInteger(value.limit))

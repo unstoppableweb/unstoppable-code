@@ -163,22 +163,11 @@ export const CorePullRequestMergeParamsSchema = z.strictObject({
   expectedHeadSha: GitObjectIdSchema,
   /** Absent, the repository's preferred method. */
   strategy: z.enum(CORE_PULL_REQUEST_MERGE_STRATEGIES).optional(),
-  /** The base and head branches the caller saw; another refuses the merge. */
-  expectedBaseBranch: z.string().max(512).optional(),
-  expectedHeadBranch: z.string().max(512).optional(),
 });
 
 export type CorePullRequestMergeParams = z.output<
   typeof CorePullRequestMergeParamsSchema
 >;
-
-/**
- * The minor schema revision `core.pullRequest.refresh` serves (protocol rule
- * 5, CAN-6093): revision 2 adds what the cloud pull request panel shows that
- * revision 1 leaves out. A client asks for it with `revision` only when the
- * runtime advertises it; a client that does not ask gets revision 1 output.
- */
-export const CORE_PULL_REQUEST_REFRESH_SCHEMA_REVISION = 2;
 
 export const CorePullRequestRefreshParamsSchema = z.strictObject({
   /** The caller's worktree. */
@@ -193,8 +182,6 @@ export const CorePullRequestRefreshParamsSchema = z.strictObject({
    * repository of the worktree.
    */
   repoId: OpaqueIdSchema.optional(),
-  /** Revision 2 output, sent only when the runtime advertises it. */
-  revision: z.literal(CORE_PULL_REQUEST_REFRESH_SCHEMA_REVISION).optional(),
 });
 
 export type CorePullRequestRefreshParams = z.output<
@@ -219,20 +206,6 @@ export const CorePullRequestRefreshSummarySchema = z.strictObject({
       name: z.string().max(512),
       status: z.enum(['success', 'failure', 'pending', 'neutral']),
       url: z.string().max(8192).nullable(),
-      /** Revision 2: GitHub's finer state; absent when unrecognized. */
-      executionState: z
-        .enum([
-          'queued',
-          'running',
-          'success',
-          'failure',
-          'cancelled',
-          'timed_out',
-          'skipped',
-          'action_required',
-          'neutral',
-        ])
-        .optional(),
     }),
   ),
   reviewDecision: CorePullRequestSchema.shape.reviewDecision,
@@ -243,33 +216,11 @@ export const CorePullRequestRefreshSummarySchema = z.strictObject({
   unresolvedReviewThreadCount: z.number().int().min(0).nullable(),
   /** As `core.pullRequest.get` projects it; merge sends it back. */
   revision: CorePullRequestSchema.shape.revision,
-  /** Revision 2: the pull request's base branch on GitHub. */
-  baseBranch: z.string().max(512).optional(),
-  /** Revision 2: its labels, in GitHub's order. */
-  labels: z
-    .array(
-      z.strictObject({
-        name: z.string().max(512),
-        /** Hex without `#`; empty when GitHub gave none. */
-        color: z.string().max(64),
-        description: z.string().max(4096).nullable(),
-      }),
-    )
-    .optional(),
-  /** Revision 2: conversation and review comments together. */
-  commentCount: z.number().int().min(0).optional(),
-  /** Revision 2: GitHub's last update, as GitHub wrote it. */
-  updatedAt: TimestampSchema.optional(),
 });
 
 /** One repository's pull request and action eligibility, the root first. */
 export const CorePullRequestRefreshRepositorySchema = z.strictObject({
   repositoryId: OpaqueIdSchema,
-  /**
-   * Revision 2: the id a Git checkout scope names this repository by (its
-   * checkout id in a multi-repository worktree), which `repoId` takes.
-   */
-  repoId: OpaqueIdSchema.optional(),
   /** The name the repository shows in a multi-repository worktree. */
   repoName: z.string().max(512),
   /** False when this repository could not be read; the others still answer. */
@@ -337,18 +288,6 @@ export const CorePullRequestRefreshRepositorySchema = z.strictObject({
 export const CorePullRequestRefreshResultSchema = z.strictObject({
   repositories: z.array(CorePullRequestRefreshRepositorySchema).min(1),
   refreshedAt: TimestampSchema,
-  /**
-   * Revision 2: the first repository's checkout as sampled, without waking:
-   * its branch (null when detached) and upstream (null without one). Null
-   * when it could not be sampled.
-   */
-  checkout: z
-    .strictObject({
-      branch: z.string().max(512).nullable(),
-      upstream: z.string().max(1024).nullable(),
-    })
-    .nullable()
-    .optional(),
 });
 
 export type CorePullRequestRefreshResult = z.output<

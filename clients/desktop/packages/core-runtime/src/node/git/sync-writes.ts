@@ -21,8 +21,6 @@ export interface GitSyncWritePort {
   fetchOrigin(this: void, options: { readonly prune: boolean }): Promise<void>;
   /** `rev-parse --abbrev-ref HEAD`. */
   currentBranch(this: void): Promise<string>;
-  /** `rev-parse HEAD`; null when it has no commit. */
-  head(this: void): Promise<string | null>;
   /** Effect: `pull --ff-only origin <branch>`. */
   pullFastForward(this: void, branch: string): Promise<void>;
   /** Effect: `pull --rebase --autostash origin <branch>`. */
@@ -38,8 +36,6 @@ export interface GitSyncWritePort {
 export interface GitPullOptions {
   /** Refuse unless this branch is checked out right before the pull. */
   readonly expectedBranch?: string;
-  /** Refuse unless `HEAD` is at this commit right before the pull. */
-  readonly expectedHeadSha?: string;
 }
 
 /** Fetches the checkout's `origin`. */
@@ -69,7 +65,7 @@ export async function classifyGitPullConflict(
  * Pulls `origin`'s `branch` into the checkout. A rebase pull that fails with
  * the checkout mid-rebase, or with its autostash unmerged, answers the
  * conflict; every other failure rejects with Git's own error. The expected
- * branch and head are checked right before the pull.
+ * head is checked right before the pull.
  */
 export async function pullGitBranch(
   port: GitSyncWritePort,
@@ -78,10 +74,8 @@ export async function pullGitBranch(
   options: GitPullOptions = {},
 ): Promise<WorkerGitPullResult> {
   if (
-    (options.expectedBranch !== undefined &&
-      (await port.currentBranch()) !== options.expectedBranch) ||
-    (options.expectedHeadSha !== undefined &&
-      (await port.head()) !== options.expectedHeadSha)
+    options.expectedBranch !== undefined &&
+    (await port.currentBranch()) !== options.expectedBranch
   )
     throw new GitBranchWriteRefusal(
       'head-changed',

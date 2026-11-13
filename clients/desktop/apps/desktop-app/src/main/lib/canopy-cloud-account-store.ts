@@ -1269,9 +1269,7 @@ export async function resetUnreadableCanopyCloudAccount(
   });
 }
 
-export async function getCanopyCloudCredentials({
-  preserveAccountReadErrors = false,
-}: { preserveAccountReadErrors?: boolean } = {}): Promise<{
+export async function getCanopyCloudCredentials(): Promise<{
   baseUrl: string;
   apiKey: string;
   capabilities: string[];
@@ -1284,11 +1282,7 @@ export async function getCanopyCloudCredentials({
   teams?: CanopyTeamSummary[];
 }> {
   const baseUrl = getCanopyCloudBaseUrl();
-  const result = preserveAccountReadErrors
-    ? await readCanopyCloudAccountWithStatus()
-    : undefined;
-  if (result && result.status !== 'ok') throw result.error;
-  const entry = result ? result.entry : await loadCanopyCloudAccount();
+  const entry = await loadCanopyCloudAccount();
   if (!entry || entry.apiKey.trim().length === 0) {
     throw new CanopyCloudConfigError(
       'api-key-required',

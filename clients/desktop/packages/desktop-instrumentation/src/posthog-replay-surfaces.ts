@@ -83,7 +83,7 @@ export const NAVIGATION_PAGE_REPLAY_PRIVACY = Object.freeze({
   overview: 'reviewed',
   home: 'reviewed',
   chat: 'reviewed',
-  // Legacy id; `navigate` opens the cowork page instead (CAN-6175).
+  // The shared transcript parts block their content elements (CAN-5975).
   'cloud-chat': 'reviewed',
   pipelines: 'reviewed',
   plugins: 'reviewed',

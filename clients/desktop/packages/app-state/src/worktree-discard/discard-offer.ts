@@ -1,9 +1,3 @@
-import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
-import {
-  formatWorktreeRecoveryReason,
-  type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
-import type { PortalWorktreeArchivePayload } from '@canopy/protocol/portal';
 import { create } from 'zustand';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
 
@@ -21,19 +15,13 @@ export interface WorktreeDiscardOffer {
   readonly message: string;
   /** Present when a typed refusal carried it. */
   readonly description?: WorktreeDiscardDescription;
-  readonly recovery?: WorktreeRecoveryDescription;
-  /** Safety choices from the original confirmation, not a component callback. */
-  readonly removal?: Pick<
-    PortalWorktreeArchivePayload,
-    'deleteBranch' | 'expectedBranchName' | 'deleteWithoutRetentionIfMissing'
-  >;
   /**
    * CAN-5338: a retained archive's permanent deletion failed; describe it
    * with `retainedArchives`.
    */
   readonly retainedArchives?: boolean;
-  /** Legacy ordinary removal only; recovery actions never call it. */
-  readonly retry?: () => void;
+  /** Runs the ordinary removal the user asked for again. */
+  readonly retry: () => void;
 }
 
 /**
@@ -67,35 +55,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Supported recovery wins; unreadable evidence retains its journal review.
- * Without settled-action support, use the legacy discardable/fail routes.
+ * How a typed archive or delete answer (`typedRefusal`) continues: `offer`
+ * the discard for a discardable description, otherwise `fail` down the
+ * existing failure path with the refusal's message unchanged, so an older
+ * desktop's non-discardable refusal still reaches its own review (CAN-5335).
+ * `null` when the answer is not a refusal.
  */
 export function archiveRefusalOutcome(
   result: unknown,
-  recoverySupported = true,
 ):
-  | {
-      readonly kind: 'recovery' | 'journal-review';
-      readonly message: string;
-      readonly recovery: WorktreeRecoveryDescription;
-    }
   | { readonly kind: 'offer'; readonly message: string }
   | { readonly kind: 'fail'; readonly message: string }
   | null {
   if (!isRecord(result) || !isRecord(result.refusal)) return null;
   const { refusal } = result;
-  const supported = WorktreeRecoveryDescriptionSchema.safeParse(
-    refusal.recovery,
-  );
-  if (recoverySupported && supported.success)
-    return {
-      kind:
-        supported.data.destination.kind === 'journal-review'
-          ? 'journal-review'
-          : 'recovery',
-      message: formatWorktreeRecoveryReason(supported.data),
-      recovery: supported.data,
-    };
   const message =
     typeof refusal.message === 'string' && refusal.message.trim() !== ''
       ? refusal.message

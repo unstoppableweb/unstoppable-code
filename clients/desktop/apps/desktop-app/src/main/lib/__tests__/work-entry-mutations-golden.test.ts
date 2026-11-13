@@ -55,10 +55,6 @@ jest.mock('../../lib/worktree-data-cleanup', () => ({
 }));
 jest.mock('../../lib/archived-containers', () => ({
   broadcastArchivedContainersChanged: jest.fn(),
-  isArchivedWorkspaceOperationLockHeld: jest.fn(() => false),
-  withArchivedWorkspaceOperationLock: jest.fn(
-    (_workspaceId: string, operation: () => Promise<unknown>) => operation(),
-  ),
 }));
 jest.mock('../../lib/archived-container-retention', () => ({
   resolveContainerRetentionDays: jest.fn(),
@@ -239,7 +235,6 @@ describe('Work Entry mutation lifecycle', () => {
       expect(browser.prepareTaskBrowserRetirement).toHaveBeenCalledWith(
         'project-a',
         'entry-a',
-        entry.createdAt,
       );
       expect(chatState.runWithScopeDeletionLifecycle).toHaveBeenCalledWith(
         { projectId: 'project-a', worktreeId: 'entry-a' },
@@ -280,8 +275,6 @@ describe('Work Entry mutation lifecycle', () => {
       expect(browser.commitTaskBrowserRetirement).toHaveBeenCalledWith(
         'project-a',
         'entry-a',
-        'owner_removed',
-        'retirement-a',
       );
       expect(watcher.commitLocalScopeCancellation).toHaveBeenCalledWith(
         'project-a',

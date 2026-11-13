@@ -817,14 +817,6 @@ function resolveScriptRunLogStatus(args: {
   completedAt?: string;
 } {
   const { execution } = args;
-  // A restart left an orphaned run's process running and could not prove it
-  // the run's own, so it shows as running until its Stop lands (CAN-6482).
-  if (execution.status === 'orphaned')
-    return {
-      snapshotStatus: 'running',
-      portalStatus: 'running',
-      completedAt: execution.completedAt ?? undefined,
-    };
   // A lost run (a restart interrupted it) shows as cancelled, as a stale
   // running run always has; `worker.script.*` reports it as lost.
   const isStaleRunning =

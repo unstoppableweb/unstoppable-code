@@ -30,7 +30,6 @@ import {
   createSubjectCapabilityPackage,
 } from '../pipelines/pipeline-package-service';
 import { installSkillCapabilityPackage } from './skill-package-install';
-import { analyzeSkillFromDisk } from './analyze-skill-package';
 import {
   getSkillDependencyReadiness,
   normalizeSkillDependencyReadinessRequest,
@@ -322,15 +321,10 @@ export function registerSkillHandlers(): void {
   // so it deliberately does NOT assert the cloud capability: a publisher can
   // review what would travel before deciding to share. The commit uploads
   // blobs and does assert it.
-  // The analysis reads the named skill's SKILL.md itself; the renderer's
-  // copy must be that same file (CAN-6403).
   registerIpcHandler(
     SKILLS_CHANNELS.PACKAGE_ANALYZE,
     (_event, request: AnalyzeSkillCapabilityPackageRequest) =>
-      analyzeSkillFromDisk(request, {
-        readRawSkill: service.readRawSkill,
-        analyze: analyzeSkillCapabilityPackage,
-      }),
+      analyzeSkillCapabilityPackage(request),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.PACKAGE_CANCEL_ANALYSIS,

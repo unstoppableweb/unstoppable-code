@@ -1632,11 +1632,7 @@ test('signing out detaches the owner: the profile leaves the relay and the page 
   expect(relay.connectedDeviceIds().has(secondary.deviceId)).toBe(true);
   await page.getByTestId('sidebar-account-menu-trigger').click();
   await page.getByRole('menuitem', { name: 'Sign out' }).click();
-  // Either landing ends the session on the page: a slow server lands on the
-  // unconfirmed one, which finishes the sign-out (CAN-6370).
-  await page.waitForURL(/\/login\?signedOut=(?:1|unconfirmed)$/, {
-    timeout: 60_000,
-  });
+  await page.waitForURL(/\/login\?signedOut=1/, { timeout: 60_000 });
   await relay.waitFor((ids) => !ids.has(secondary.deviceId), {
     label: 'the signed-out profile to leave the relay',
   });

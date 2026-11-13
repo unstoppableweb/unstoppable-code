@@ -22,6 +22,7 @@ import {
   SparkleIcon,
   ScheduleIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { applyTheme } from '@/lib/theme';
 
 /**
  * Localhost lab for checking every shared marker state by hand
@@ -454,17 +455,13 @@ const SECTION_VIEWS: Readonly<Record<Section, () => JSX.Element>> = {
   context: ContextSection,
 };
 
-export function MarkersLabPage({
-  onColorModeChange,
-}: {
-  readonly onColorModeChange: (mode: ColorMode) => void;
-}): JSX.Element {
+export function MarkersLabPage(): JSX.Element {
   const [colorMode, setColorMode] = useState<ColorMode>(initialColorMode);
   const [view, setView] = useState<Section | 'all'>(initialSection);
 
   useEffect(() => {
-    onColorModeChange(colorMode);
-  }, [colorMode, onColorModeChange]);
+    applyTheme('default', colorMode);
+  }, [colorMode]);
 
   const selectView = (next: Section | 'all'): void => {
     setView(next);

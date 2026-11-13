@@ -10,7 +10,6 @@ import {
   type CoreCoworkInvoker,
   type CoreCoworkStream,
 } from '@canopy/app-state/core-cowork';
-import { formatAskUserAnswers } from '@canopy/desktop-shared/lib/ask-user-answers';
 import { sendFailure } from './send-refusal';
 import type {
   AgentProviderType,
@@ -55,10 +54,6 @@ import type {
   TranscriptPage,
 } from '@canopy/agent-transcript/transcript-storage';
 import { isWebCoreScope, webCoreLocalId } from '@/lib/chat-authority';
-import {
-  parseAgentTaskRows,
-  type AgentTaskRow,
-} from '@canopy/protocol/cloud-session';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   createLiveFollower,
@@ -66,8 +61,7 @@ import {
   type LiveChat,
 } from './live-follower';
 import type { LiveChatState } from './live-replies';
-import { selectionSaveSettled, trackSelectionSave } from './selection-saves';
-import { redactMcpAnswersForDisplay } from '../messages';
+import { selectionSaveSettled } from './selection-saves';
 import {
   isTaskBeingCreated,
   taskCreated,
@@ -90,7 +84,6 @@ import {
   translateTranscriptPage,
   isTurnRunningStatus,
   isServedThinkingLevel,
-  turnRuntimeStatus,
   sendModelConfig,
   withTabChoices,
   withTabSettings,
@@ -268,16 +261,6 @@ export interface WebCoreChatBackendOptions {
     target: CloudChatUploadTarget,
     file: CloudChatAttachmentUploadFile,
   ) => Promise<CloudChatAttachmentUploadResult>;
-  /**
-   * A chat's agent tasks, as the web core last reported them: the rows of
-   * its snapshot and of each `agent_tasks.replaced`, for the chat's
-   * background work (the old cloud chat page's tray, CAN-5976).
-   */
-  readonly publishAgentTasks?: (
-    scope: Scope,
-    chatId: string,
-    tasks: readonly AgentTaskRow[],
-  ) => void;
 }
 
 /** A file the composer attaches to a web core chat, read in the renderer. */
@@ -360,8 +343,6 @@ export interface WebCoreChatBackendCore {
           CloudChatAttachmentUploadResult,
           { ok: false }
         >['reason'];
-        /** The web core's own words for a refusal it explained. */
-        readonly message?: string;
       }
   >;
 }
@@ -483,13 +464,6 @@ export function createWebCoreChatBackendCore(
    */
   const questions = new Map<string, Map<string, PendingQuestion>>();
   /**
-   * Questions this window answered, with their answers, by scope. The web
-   * core removes an answered question, and a cloud harness's turn may record
-   * no result for it (CAN-6394): the store keeps the answered record, as
-   * main keeps a local chat's, so its card reads as answered.
-   */
-  const answered = new Map<string, Map<string, PendingQuestion>>();
-  /**
    * Question changes events applied per scope while a snapshot read was in
    * flight: those newer than the snapshot are replayed onto what it read.
    */
@@ -504,43 +478,6 @@ export function createWebCoreChatBackendCore(
    * across `closeAll`: the store keeps their rows through a reconnect.
    */
   const readChats = new Map<string, Set<string>>();
-  /** Chats whose agent tasks this window has read, by scope. */
-  const taskReads = new Map<string, Set<string>>();
-  /** Task changes the events reported, by scope and chat. */
-  const taskEvents = new Map<string, number>();
-  const taskEventKey = (scope: Scope, chatId: string): string =>
-    `${scopeKey(scope)}/${chatId}`;
-
-  function publishTasks(scope: Scope, chatId: string, tasks: unknown): void {
-    options.publishAgentTasks?.(
-      scope,
-      ids.chatToStore(chatId),
-      parseAgentTaskRows(tasks),
-    );
-  }
-
-  /** The chat's own snapshot, for its tasks: a task snapshot holds one chat's. */
-  async function readChatTasks(scope: Scope, chatId: string): Promise<void> {
-    const reads = taskReads.get(scopeKey(scope)) ?? new Set<string>();
-    if (reads.has(chatId)) return;
-    taskReads.set(scopeKey(scope), reads.add(chatId));
-    const eventsAtRead = taskEvents.get(taskEventKey(scope, chatId)) ?? 0;
-    try {
-      const snapshot = await request('core.chat.snapshot.get', {
-        scope: bareScope(scope),
-        chatId,
-      });
-      // A task change reported while the snapshot was read is newer.
-      if (
-        isRecord(snapshot) &&
-        (taskEvents.get(taskEventKey(scope, chatId)) ?? 0) === eventsAtRead
-      )
-        publishTasks(scope, chatId, snapshot.tasks);
-    } catch (error) {
-      reads.delete(chatId);
-      reportClientAppError(error);
-    }
-  }
   /** The store's id for each message the web core minted its own id for. */
   const storeIds = new Map<string, string>();
   const coreIds = new Map<string, string>();
@@ -586,94 +523,6 @@ export function createWebCoreChatBackendCore(
     return paths === undefined || (message.attachmentPaths?.length ?? 0) > 0
       ? message
       : { ...message, attachmentPaths: paths };
-  }
-
-  /**
-   * The result of each question call this window answered, by tool call id,
-   * and the call of each question it answered, by question id. Core records
-   * no result for its question tool's call, so the web core's transcript
-   * ends at the call and the store would close it as interrupted; the call
-   * shows the answer as a local chat's does instead (CAN-6394).
-   */
-  const questionResults = new Map<string, string>();
-  const answeredCalls = new Map<string, string>();
-
-  /**
-   * Remembers an answer as it is sent, since the web core may report the
-   * question settled before it replies: its record, which the store keeps
-   * answered, and its call's result. Returns the undo for a refused answer.
-   */
-  function rememberAnswer(
-    scope: Scope,
-    command: Extract<
-      ChatCommandRequest['command'],
-      { type: 'chat.answer_question' }
-    >,
-  ): () => void {
-    const asked = questions.get(scopeKey(scope))?.get(command.questionId);
-    if (asked === undefined) return (): void => undefined;
-    const shown = redactMcpAnswersForDisplay(asked.questions, [
-      ...command.answers,
-    ]);
-    const records =
-      answered.get(scopeKey(scope)) ?? new Map<string, PendingQuestion>();
-    records.set(command.questionId, {
-      ...asked,
-      answers: shown,
-      answeredAt: Date.now(),
-    });
-    answered.set(scopeKey(scope), records);
-    const toolUseId = asked.toolUseId;
-    if (toolUseId !== undefined) {
-      questionResults.set(toolUseId, formatAskUserAnswers(shown));
-      answeredCalls.set(command.questionId, toolUseId);
-    }
-    for (const oldest of questionResults.keys()) {
-      if (questionResults.size <= MESSAGE_ID_LIMIT) break;
-      questionResults.delete(oldest);
-    }
-    for (const oldest of answeredCalls.keys()) {
-      if (answeredCalls.size <= MESSAGE_ID_LIMIT) break;
-      answeredCalls.delete(oldest);
-    }
-    return () => {
-      records.delete(command.questionId);
-      if (toolUseId === undefined) return;
-      questionResults.delete(toolUseId);
-      answeredCalls.delete(command.questionId);
-    };
-  }
-
-  /** A message with the result of each question call this window answered. */
-  function withQuestionResults(
-    message: PersistedChatMessage,
-  ): PersistedChatMessage {
-    if (message.role !== 'assistant' || questionResults.size === 0)
-      return message;
-    const settled = new Set(
-      message.blocks.flatMap((block) =>
-        block.type === 'tool_result' ? [block.toolUseId] : [],
-      ),
-    );
-    let changed = false;
-    const blocks = message.blocks.flatMap((block) => {
-      if (block.type !== 'tool_use' || settled.has(block.toolUseId))
-        return [block];
-      const output = questionResults.get(block.toolUseId);
-      if (output === undefined) return [block];
-      changed = true;
-      return [
-        block,
-        {
-          type: 'tool_result' as const,
-          toolUseId: block.toolUseId,
-          toolName: block.toolName,
-          output,
-          isError: false,
-        },
-      ];
-    });
-    return changed ? { ...message, blocks } : message;
   }
 
   function remember(coreId: string, storeId: string): void {
@@ -797,13 +646,6 @@ export function createWebCoreChatBackendCore(
     chatToCore: ids.chatToCore,
     turnRuns: (chat) => turnRuns(chat, ids.chatToCore(chat.chatId)),
     publish: options.publishLive ?? ((): void => undefined),
-    onIdle: (chat) => {
-      if (turnRuns(chat, ids.chatToCore(chat.chatId)))
-        void refreshEndedTurn(
-          { projectId: chat.projectId, worktreeId: chat.worktreeId },
-          chat.chatId,
-        );
-    },
     ...(options.liveReopenDelayMs === undefined
       ? {}
       : { reopenDelayMs: options.liveReopenDelayMs }),
@@ -834,9 +676,7 @@ export function createWebCoreChatBackendCore(
     const translated = translateTranscriptPage(page, ids);
     return {
       ...translated,
-      messages: translated.messages.map((message) =>
-        withQuestionResults(withSentAttachments(message)),
-      ),
+      messages: translated.messages.map(withSentAttachments),
     };
   }
 
@@ -947,30 +787,9 @@ export function createWebCoreChatBackendCore(
     const turns = turnsFor(req);
     const reportsAtRead = new Map(turns.reports);
     // The snapshot first: its revision and cursor cover every later change.
-    const taskEventsAtRead = new Map(taskEvents);
     const opened = await request('core.chat.snapshot.get', {
       scope: bareScope(req),
     });
-    // The task snapshot carries its opened chat's tasks; another chat's are
-    // read when it is shown.
-    const openedChatId =
-      isRecord(opened) &&
-      isRecord(opened.tabs) &&
-      typeof opened.tabs.activeTabId === 'string'
-        ? opened.tabs.activeTabId
-        : null;
-    taskReads.set(
-      scopeKey(req),
-      new Set(openedChatId === null ? [] : [openedChatId]),
-    );
-    // A task change reported while the snapshot was read is newer.
-    if (
-      openedChatId !== null &&
-      isRecord(opened) &&
-      taskEvents.get(taskEventKey(req, openedChatId)) ===
-        taskEventsAtRead.get(taskEventKey(req, openedChatId))
-    )
-      publishTasks(req, openedChatId, opened.tasks);
     const translated = translateSnapshot(
       opened,
       await listChats(req),
@@ -1009,12 +828,7 @@ export function createWebCoreChatBackendCore(
         translated.unreadQuestionChatIds.has(question.chatId) &&
         !read.some((each) => each.requestId === question.requestId),
     );
-    const answeredRecords = [
-      ...(answered.get(scopeKey(req))?.values() ?? []),
-    ].filter(
-      (record) => !read.some((each) => each.requestId === record.requestId),
-    );
-    const pendingQuestions = [...read, ...kept, ...answeredRecords];
+    const pendingQuestions = [...read, ...kept];
     const shown = new Map(
       pendingQuestions.map((question) => [question.requestId, question]),
     );
@@ -1054,97 +868,6 @@ export function createWebCoreChatBackendCore(
     for (const listener of listeners) listener(event);
   }
 
-  /**
-   * The messages whose question call this window answered, when the event
-   * settles the question: the call shows its answer at once, not only once
-   * Core commits the turn's reply. A failed read waits for that commit.
-   */
-  async function answeredQuestionMessages(
-    scope: Scope,
-    item: ReturnType<typeof parseEventItem>,
-  ): Promise<ChatStateChangedEvent['changes']> {
-    const callsByChat = new Map<string, Set<string>>();
-    for (const change of item.changes) {
-      if (change.type !== 'pending_question.removed') continue;
-      const toolUseId = answeredCalls.get(change.requestId);
-      if (toolUseId === undefined) continue;
-      callsByChat.set(
-        change.chatId,
-        (callsByChat.get(change.chatId) ?? new Set()).add(toolUseId),
-      );
-    }
-    const pages = await Promise.all(
-      [...callsByChat].map(async ([chatId, calls]) => {
-        const page = await readPage(scope, chatId).catch((error: unknown) => {
-          reportClientAppError(error);
-          return null;
-        });
-        return (page?.messages ?? [])
-          .filter((message) =>
-            message.blocks.some(
-              (block) =>
-                block.type === 'tool_use' && calls.has(block.toolUseId),
-            ),
-          )
-          .map((message) => ({
-            type: 'message.upserted' as const,
-            chatId: ids.chatToStore(chatId),
-            message,
-          }));
-      }),
-    );
-    return pages.flat();
-  }
-
-  /**
-   * A turn the live stream says has ended, or one Stop found gone, while the
-   * committed runtime still runs it (CAN-6393, CAN-6396): read the snapshot,
-   * and when it shows the turn over, publish the chat's runtime from it as a
-   * revision of this backend's own, as a late echo's repair does. A snapshot
-   * that still runs the turn changes nothing the store shows, and one an
-   * event overtook is older than the store: neither is published, or a
-   * finished turn would show running again.
-   */
-  async function refreshEndedTurn(
-    scope: Scope,
-    storeChatId: string,
-  ): Promise<void> {
-    try {
-      const chatId = ids.chatToCore(storeChatId);
-      // A send still settling marks the turn its own: read after it.
-      await Promise.all([...(sending.get(chatId) ?? [])]);
-      const reports = turnsFor(scope).reports;
-      const reportsAtRead = reports.get(chatId) ?? 0;
-      const snapshot = await getState(scope);
-      // The read reports the chat once; any other report came from an event.
-      if ((reports.get(chatId) ?? 0) !== reportsAtRead + 1) return;
-      const runtime = snapshot.runtimeByChatId[storeChatId];
-      const key = scopeKey(scope);
-      const base = revisions.get(key);
-      if (
-        runtime === undefined ||
-        base === undefined ||
-        isTurnRunningStatus(runtime.status) ||
-        runtime.status === 'awaiting_input'
-      )
-        return;
-      offsets.set(key, (offsets.get(key) ?? 0) + 1);
-      revisions.set(key, base + 1);
-      emit({
-        schemaVersion: 1,
-        eventId: `web-core-turn-ended:${key}:${base + 1}:${newId()}`,
-        occurredAt: new Date().toISOString(),
-        projectId: scope.projectId,
-        worktreeId: scope.worktreeId,
-        baseRevision: base,
-        revision: base + 1,
-        changes: [{ type: 'runtime.patched', chatId: storeChatId, runtime }],
-      });
-    } catch (error) {
-      reportClientAppError(error);
-    }
-  }
-
   async function apply(entry: ScopeStream, item: unknown): Promise<void> {
     const parsed = parseEventItem(item);
     const transcripts = new Map<string, TranscriptDescriptor>();
@@ -1153,10 +876,6 @@ export function createWebCoreChatBackendCore(
         chatId,
         transcriptDescriptor(await readPage(entry.scope, chatId)),
       );
-    const answeredMessages = await answeredQuestionMessages(
-      entry.scope,
-      parsed,
-    );
     const turns = turnsFor(entry.scope);
     for (const [chatId, turnId] of activeTurnChanges(parsed)) {
       turns.pending.delete(chatId);
@@ -1166,12 +885,7 @@ export function createWebCoreChatBackendCore(
     }
     for (const change of parsed.changes)
       if (change.type === 'runtime.patched')
-        turns.status.set(change.chatId, turnRuntimeStatus(change.runtime));
-      else if (change.type === 'agent_tasks.replaced') {
-        const key = taskEventKey(entry.scope, change.chatId);
-        taskEvents.set(key, (taskEvents.get(key) ?? 0) + 1);
-        publishTasks(entry.scope, change.chatId, change.tasks);
-      }
+        turns.status.set(change.chatId, change.runtime.status);
       // The web core's newer read state replaces the window's choice.
       else if (
         change.type === 'tab.metadata_patched' &&
@@ -1195,16 +909,9 @@ export function createWebCoreChatBackendCore(
     // Shifted as it is emitted, after any repair this event waited behind.
     const revision = toStoreRevision(entry.scope, translated.revision);
     sawCoreRevision(entry.scope, translated.revision);
-    const answers = answered.get(scopeKey(entry.scope));
     const event: ChatStateChangedEvent = {
       ...translated,
-      changes: [...translated.changes, ...answeredMessages].map((change) => {
-        const record =
-          change.type === 'pending_question.removed'
-            ? answers?.get(change.requestId)
-            : undefined;
-        if (record !== undefined)
-          return { type: 'pending_question.upserted', question: record };
+      changes: translated.changes.map((change) => {
         // A tab the web core sends again keeps the window's settings, and
         // shows its model in revision order (CAN-6345).
         if (change.type === 'tab.upserted') {
@@ -1224,10 +931,7 @@ export function createWebCoreChatBackendCore(
           };
         }
         if (change.type === 'message.upserted')
-          return {
-            ...change,
-            message: withQuestionResults(withSentAttachments(change.message)),
-          };
+          return { ...change, message: withSentAttachments(change.message) };
         if (
           change.type !== 'tab.metadata_patched' ||
           change.patch.model === undefined
@@ -1343,10 +1047,6 @@ export function createWebCoreChatBackendCore(
       const snapshot = await getState(entry.scope);
       if (entry.closed || entry.epoch !== epoch) return;
       entry.cursor = cursors.get(key) ?? null;
-      // The snapshot holds only its opened chat's tasks; every other chat
-      // this window read may have missed task changes too (CAN-6475).
-      for (const storeChatId of readChats.get(key) ?? [])
-        void readChatTasks(entry.scope, ids.chatToCore(storeChatId));
       emit({
         schemaVersion: 1,
         eventId: `web-core-resync:${key}:${snapshot.revision}:${newId()}`,
@@ -1472,8 +1172,6 @@ export function createWebCoreChatBackendCore(
         { messages: [], totalMessages: 0, transcriptRevision: 0 },
         ids,
       );
-    if (req.before === undefined)
-      void readChatTasks(req, ids.chatToCore(req.chatId));
     // The web core serves the plain transcript only: no turn view.
     return readPage(req, ids.chatToCore(req.chatId), {
       ...(req.before === undefined ? {} : { before: req.before }),
@@ -1599,16 +1297,7 @@ export function createWebCoreChatBackendCore(
     // A refused answer throws, so the question stays open to answer again;
     // one that settled leaves with its `pending_question.removed` event.
     if (plan.kind === 'question') {
-      const forget =
-        req.command.type === 'chat.answer_question'
-          ? rememberAnswer(req, req.command)
-          : (): void => undefined;
-      await request(plan.request.method, plan.request.params).catch(
-        (error: unknown) => {
-          forget();
-          throw error;
-        },
-      );
+      await request(plan.request.method, plan.request.params);
       return {
         commandId: req.commandId,
         revision: revisions.get(scopeKey(req)) ?? 0,
@@ -1631,12 +1320,8 @@ export function createWebCoreChatBackendCore(
           }
         : null;
     if (pick !== null) pick.state.pending = pick.choice;
-    const running = runPlan(req, plan.requests);
-    // A message sent meanwhile runs with the model just picked.
-    if (req.command.type === 'chat.set_model')
-      trackSelectionSave(req.command.tabId, running);
     try {
-      const { result, coreRevision } = await running;
+      const { result, coreRevision } = await runPlan(req, plan.requests);
       const { reported } = pick?.state ?? {};
       const at =
         coreRevision > 0
@@ -1773,10 +1458,7 @@ export function createWebCoreChatBackendCore(
       },
       { name: file.name, mimeType: file.mediaType, bytes: file.bytes },
     );
-    if (!result.ok)
-      return result.message === undefined
-        ? { ok: false, reason: result.reason }
-        : { ok: false, reason: result.reason, message: result.message };
+    if (!result.ok) return { ok: false, reason: result.reason };
     const filename = result.attachment.filename;
     const absolutePath = cloudAttachmentPath(result.attachmentId, filename);
     rememberCloudAttachmentPreview(absolutePath, {
@@ -1883,14 +1565,12 @@ export function createWebCoreChatBackendCore(
     const { outcome, reason, entityId } = receipt;
     if (outcome !== 'applied' && outcome !== 'already_applied')
       throw new Error(reason ?? 'The web core did not accept the message.');
-    // Stop works before the web core reports the turn it just accepted,
-    // unless a runtime report that arrived while the send was in flight
-    // already ended it: one that shows it queued still names no turn.
+    // Stop works before the web core reports the turn it just accepted, unless
+    // a runtime report arrived while the send was in flight.
     if (
       entityId !== undefined &&
       !turns.active.has(chatId) &&
-      ((turns.reports.get(chatId) ?? 0) === reportsAtSend ||
-        turns.status.get(chatId) === 'queued')
+      (turns.reports.get(chatId) ?? 0) === reportsAtSend
     ) {
       turns.pending.set(chatId, entityId);
       live.refresh();
@@ -1933,33 +1613,11 @@ export function createWebCoreChatBackendCore(
       turns.pending.get(chatId) ??
       (await readActiveTurn(req, chatId));
     if (turnId === null) return { outcome: 'turn_not_active' };
-    try {
-      await request('core.chat.turn.cancel', {
-        chatId,
-        turnId,
-        reason: 'user',
-      });
-    } catch (error) {
-      // The web core no longer knows the turn: it is over, or a web core
-      // from before CAN-6393 could not find it by its conversation turn id.
-      // The snapshot is read again, so the chat shows whichever is true.
-      if (
-        error instanceof CoreCoworkRequestError &&
-        error.payload.kind === 'not_found'
-      ) {
-        if (turns.active.get(chatId) === turnId) turns.active.delete(chatId);
-        if (turns.pending.get(chatId) === turnId) turns.pending.delete(chatId);
-        void refreshEndedTurn(
-          { projectId: req.projectId, worktreeId: req.worktreeId },
-          req.chatId,
-        );
-        return { outcome: 'turn_not_active' };
-      }
-      // Any other failure leaves the turn as the chat's events report it:
-      // Stop stays to try again. It is reported, never left unhandled.
-      reportClientAppError(error);
-      return {};
-    }
+    await request('core.chat.turn.cancel', {
+      chatId,
+      turnId,
+      reason: 'user',
+    });
     return { outcome: 'stop_requested' };
   }
 

@@ -55,7 +55,6 @@
     "./portal/pairing-link": "./src/portal/pairing-link.ts",
     "./portal/lifecycle-journal": "./src/portal/lifecycle-journal.ts",
     "./portal/lifecycle-journal-refusal": "./src/portal/lifecycle-journal-refusal.ts",
-    "./portal/worktree-recovery": "./src/portal/worktree-recovery.ts",
     "./portal/worktree-discard": "./src/portal/worktree-discard.ts",
     "./portal/worktree-discard-schemas": "./src/portal/worktree-discard-schemas.ts",
     "./portal/project-deletion-discard": "./src/portal/project-deletion-discard.ts",

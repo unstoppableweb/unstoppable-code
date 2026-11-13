@@ -53,14 +53,6 @@
       "lastResponse": null
     }
   ],
-  "chatHistory": [
-    {
-      "chatId": "c2",
-      "matchId": "805066f8-1b32-46d7-8535-18d2b4d865da",
-      "date": "2026-01-01T00:00:00.000Z",
-      "text": "The release checklist starts with internal rollout."
-    }
-  ],
   "models": [
     {
       "id": "M1",
@@ -76,12 +68,7 @@
     }
   ],
   "defaultModelId": "M1",
-  "organizations": [
-    {
-      "organizationId": "o1",
-      "name": "Conformance org"
-    }
-  ],
+  "organizations": [{ "organizationId": "o1", "name": "Conformance org" }],
   "foreign": {
     "workspaceId": "w2",
     "worktreeId": "tx",
@@ -158,71 +145,5 @@
         ]
       }
     ]
-  },
-  "pullRequests": {
-    "readable": [
-      {
-        "repository": "conformance/app",
-        "number": 42,
-        "status": {
-          "url": "https://github.com/conformance/app/pull/42",
-          "title": "Add the widget",
-          "state": "open",
-          "isDraft": false,
-          "headBranch": "feature",
-          "baseBranch": "main",
-          "headSha": "1111111111111111111111111111111111111111",
-          "headRepository": "conformance/app",
-          "mergeable": "mergeable",
-          "reviewDecision": "review_required",
-          "checks": {
-            "state": "failure",
-            "total": 3,
-            "passed": 1,
-            "failed": 1,
-            "pending": 1,
-            "failedNames": ["lint"],
-            "available": true
-          },
-          "mergeQueue": {
-            "inQueue": false,
-            "position": null
-          }
-        }
-      },
-      {
-        "repository": "conformance/app",
-        "number": 43,
-        "status": {
-          "url": "https://github.com/conformance/app/pull/43",
-          "title": "Queue the release",
-          "state": "open",
-          "isDraft": false,
-          "headBranch": "release",
-          "baseBranch": "main",
-          "headSha": "2222222222222222222222222222222222222222",
-          "headRepository": "conformance/app",
-          "mergeable": "mergeable",
-          "reviewDecision": "approved",
-          "checks": {
-            "state": "success",
-            "total": 2,
-            "passed": 2,
-            "failed": 0,
-            "pending": 0,
-            "failedNames": [],
-            "available": true
-          },
-          "mergeQueue": {
-            "inQueue": true,
-            "position": 2
-          }
-        }
-      }
-    ],
-    "inaccessible": {
-      "repository": "conformance/private",
-      "number": 7
-    }
   }
 }

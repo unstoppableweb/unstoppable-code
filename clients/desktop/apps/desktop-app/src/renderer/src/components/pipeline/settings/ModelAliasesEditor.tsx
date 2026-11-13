@@ -1,10 +1,3 @@
-import { parseAgentRouteModelId } from '@canopy/protocol/agents';
-import { AgentAliasModelFields } from '@canopy/ui-shared/components';
-import {
-  parsePipelineAgentAliasRoute,
-  resolvePipelineModelAliasLenient,
-} from '@canopy/pipeline-interop';
-import { AGENT_ALIAS_MODEL_SELECTION_ERROR } from '@/lib/pipelineModelAliases';
 import { type JSX, useEffect, useState } from 'react';
 import type {
   PipelineAgentModelAliasDefaults,
@@ -99,10 +92,7 @@ function buildAliasSummary(alias: PipelineModelAlias): string {
   if (mode === 'none') {
     secondary = `${alias.id} · Required at dispatch/setup`;
   } else if (mode === 'agent') {
-    const defaults = getAgentDefaults(alias);
-    const embedded = parseAgentRouteModelId(defaults.agent_id);
-    const base = defaults.base ?? embedded?.baseModel;
-    secondary = `${alias.id} · ${embedded?.agentId ?? (defaults.agent_id || 'Agent')}${base ? ` · ${getModelDisplayName(resolvePipelineModelAliasLenient(base))}` : ''}`;
+    secondary = `${alias.id} · ${getAgentDefaults(alias).agent_id || 'Agent'}`;
   } else {
     const base = getInlineDefaults(alias).base;
     secondary = `${alias.id} · ${base ? getModelDisplayName(base) : 'No base model'}`;
@@ -170,10 +160,7 @@ function ModelAliasItem({
     const currentAgent = getAgentDefaults(alias).agent_id;
     onChange({
       ...alias,
-      defaults: {
-        ...getAgentDefaults(alias),
-        agent_id: currentAgent || agents[0]?.id || '',
-      },
+      defaults: { agent_id: currentAgent || agents[0]?.id || '' },
     });
   }
 
@@ -359,38 +346,34 @@ function ModelAliasItem({
             )}
 
             {mode === 'agent' && (
-              <AgentAliasModelFields
-                value={getAgentDefaults(alias)}
-                agents={agents}
-                onChange={(defaults) => onChange({ ...alias, defaults })}
-                disabled={readonly}
-                modelError={
-                  parsePipelineAgentAliasRoute(getAgentDefaults(alias)).ok
-                    ? undefined
-                    : AGENT_ALIAS_MODEL_SELECTION_ERROR
-                }
-                renderModelPicker={({
-                  value,
-                  onChange: changeModel,
-                  disabled,
-                  placeholderLabel,
-                  ...control
-                }) => (
-                  <ModelPicker
-                    triggerControlProps={control}
-                    currentModel={resolvePipelineModelAliasLenient(value)}
-                    onModelChange={changeModel}
-                    allowWorkspaceDefault={false}
-                    hideAgents
-                    allowCursor
-                    allowCopilot
-                    allowOpenCode
-                    placeholderLabel={placeholderLabel}
-                    triggerTooltip="Model for this agent alias"
-                    disabled={disabled}
-                  />
-                )}
-              />
+              <div className="flex flex-col pt-1 gap-3">
+                <FormField
+                  label="Agent"
+                  hint="Uses the agent base model, instructions, and plugins at run time."
+                >
+                  {agents.length === 0 ? (
+                    <p className="text-xs fg-secondary italic">
+                      No local agents available
+                    </p>
+                  ) : (
+                    <SelectField
+                      value={getAgentDefaults(alias).agent_id}
+                      onChange={(e) =>
+                        onChange({
+                          ...alias,
+                          defaults: { agent_id: e.target.value },
+                        })
+                      }
+                      options={agents.map((agent) => ({
+                        value: agent.id,
+                        label: `${agent.name} (${agent.id})`,
+                      }))}
+                      placeholder="Select an agent"
+                      disabled={readonly}
+                    />
+                  )}
+                </FormField>
+              </div>
             )}
           </Stack>
         </div>

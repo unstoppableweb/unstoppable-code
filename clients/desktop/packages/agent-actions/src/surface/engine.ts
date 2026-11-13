@@ -37,44 +37,6 @@ import {
   type SearchActionsInput,
 } from '../tools/search-actions';
 import { agentActionDispatchJsonSchema } from './dispatch-schema';
-import type { AgentActionMemoryTools } from '../port/memory-port';
-import type { AgentFeedPort } from '../port/feed-port';
-import type { AgentPullRequestStatusPort } from '../port/pull-request-status-port';
-import type { AgentManagedDelegationPort } from '../port/managed-delegation-port';
-import {
-  executeManagedDelegationTool,
-  MANAGED_DELEGATION_JSON_SCHEMAS,
-  MANAGED_DELEGATION_PARENT_TOOL_KEYS,
-  managedDelegationToolDescription,
-  type ManagedDelegationToolKey,
-} from '../tools/managed-delegation';
-import {
-  READ_MEMORY_JSON_SCHEMA,
-  readMemoryDescription,
-  readMemoryInputSchema,
-  SAVE_MEMORY_JSON_SCHEMA,
-  saveMemoryDescription,
-  saveMemoryInputSchema,
-  SEARCH_MEMORY_JSON_SCHEMA,
-  searchMemoryDescription,
-  searchMemoryInputSchema,
-} from '../tools/memory';
-import {
-  executeFeedTool,
-  feedToolDescription,
-  feedToolJsonSchema,
-} from '../tools/feed';
-import {
-  executeGetGitHubPullRequestStatus,
-  GET_GITHUB_PULL_REQUEST_STATUS_JSON_SCHEMA,
-  getGitHubPullRequestStatusDescription,
-} from '../tools/pull-request-status';
-import {
-  SCHEDULE_WAKEUP_JSON_SCHEMA,
-  scheduleWakeupDescription,
-  scheduleWakeupInputSchema,
-  type ScheduleWakeupInput,
-} from '../tools/schedule-wakeup';
 import {
   START_SPLIT_AGENT_JSON_SCHEMA,
   startSplitAgentInputSchema,
@@ -118,15 +80,6 @@ export interface AgentActionWatcherPort<H, THook extends string = string> {
     input: DeleteWatchersInput,
     call: AgentActionCall<H>,
   ): Promise<AgentActionToolResult>;
-  /**
-   * ScheduleWakeup: one wakeup of the calling chat after a delay, listed and
-   * deleted with the other watchers. The surface offers the tool only with
-   * this member and `scheduled_wakeup` among the host's watcher triggers.
-   */
-  scheduleWakeup?(
-    input: ScheduleWakeupInput,
-    call: AgentActionCall<H>,
-  ): Promise<AgentActionToolResult>;
 }
 
 export type AgentSplitAgentKind = 'forked' | 'branched';
@@ -155,27 +108,6 @@ export interface AgentActionSurfaceOptions<H, THook extends string> {
   families: readonly AgentActionFamily<H>[];
   watchers?: AgentActionWatcherPort<H, THook>;
   split?: AgentActionSplitPort<H>;
-  /** Backs GetGitHubPullRequestStatus when `capabilities.pullRequestStatus`. */
-  pullRequestStatus?: AgentPullRequestStatusPort<H>;
-  /** Backs the memory tools when `capabilities.memory` is set. */
-  memory?: AgentActionMemoryTools<H>;
-  /** Backs the Feed tools when `capabilities.feed`. */
-  feed?: AgentFeedPort<H>;
-  /**
-   * Backs the managed delegation tools when `capabilities.managedDelegation`:
-   * the parent tools for a chat that may delegate, and RequestSteering for
-   * a delegate. A host decides both per calling chat.
-   */
-  managedDelegation?: AgentManagedDelegationTools<H>;
-}
-
-/** The managed delegation tools one calling chat is offered. */
-export interface AgentManagedDelegationTools<H> {
-  readonly port: AgentManagedDelegationPort<H>;
-  /** DelegateTask and the tools that read and control its delegates. */
-  readonly parentTools: boolean;
-  /** RequestSteering, for a chat that is itself a delegate. */
-  readonly requestSteering: boolean;
 }
 
 export interface AgentActionSurface<H> {
@@ -343,30 +275,12 @@ export function createAgentActionSurface<H, THook extends string = string>(
   options: AgentActionSurfaceOptions<H, THook>,
 ): AgentActionSurface<H> {
   const { brand, capabilities, families, watchers, split } = options;
-  const pullRequestStatus =
-    capabilities.pullRequestStatus === true
-      ? options.pullRequestStatus
-      : undefined;
-  const memoryReach = capabilities.memory;
-  const memory = memoryReach === undefined ? undefined : options.memory;
-  const feed = capabilities.feed === true ? options.feed : undefined;
-  const managedDelegation =
-    capabilities.managedDelegation === true
-      ? options.managedDelegation
-      : undefined;
   const availableTypes = new Set(
     families.flatMap((family) => family.supportedTypes(capabilities)),
   );
   const actionTypes = capabilities.actionTypes.filter((type) =>
     availableTypes.has(type),
   );
-  // The watcher port that schedules wakeups, when the host offers them.
-  const wakeups =
-    capabilities.scheduleWakeup === true &&
-    capabilities.watcherTriggers.includes('scheduled_wakeup') &&
-    watchers?.scheduleWakeup !== undefined
-      ? watchers
-      : undefined;
   const searchableTriggers = SEARCHABLE_WATCHER_TRIGGERS.filter((trigger) =>
     capabilities.watcherTriggers.includes(trigger),
   );
@@ -429,18 +343,6 @@ export function createAgentActionSurface<H, THook extends string = string>(
         return entry ? [entry] : [];
       }),
     };
-  }
-
-  function delegationPort(
-    key: ManagedDelegationToolKey,
-  ): AgentManagedDelegationPort<H> | undefined {
-    if (managedDelegation === undefined) return undefined;
-    const offered =
-      key === 'request_steering'
-        ? managedDelegation.requestSteering
-        : managedDelegation.parentTools &&
-          MANAGED_DELEGATION_PARENT_TOOL_KEYS.some((parent) => parent === key);
-    return offered ? managedDelegation.port : undefined;
   }
 
   function offersSplitAgent(key: SplitAgentToolKey): boolean {
@@ -521,80 +423,6 @@ export function createAgentActionSurface<H, THook extends string = string>(
               name,
               description: START_BRANCHED_AGENT_DESCRIPTION,
               inputSchema: START_SPLIT_AGENT_JSON_SCHEMA,
-            }
-          : null;
-      case 'get_github_pull_request_status':
-        // No host offers WatchGitHubItems through this surface yet.
-        return pullRequestStatus
-          ? {
-              key,
-              name,
-              description: getGitHubPullRequestStatusDescription(brand),
-              inputSchema: GET_GITHUB_PULL_REQUEST_STATUS_JSON_SCHEMA,
-            }
-          : null;
-      case 'schedule_wakeup':
-        // A server keeps wakeups scheduled through this surface; desktop
-        // keeps its own injected tool over the same schema.
-        return wakeups
-          ? {
-              key,
-              name,
-              description: scheduleWakeupDescription({ delivery: 'cloud' }),
-              inputSchema: SCHEDULE_WAKEUP_JSON_SCHEMA,
-            }
-          : null;
-      case 'save_memory':
-        return memory && memoryReach
-          ? {
-              key,
-              name,
-              description: saveMemoryDescription(memoryReach),
-              inputSchema: SAVE_MEMORY_JSON_SCHEMA,
-            }
-          : null;
-      case 'search_memory':
-        return memory && memoryReach
-          ? {
-              key,
-              name,
-              description: searchMemoryDescription(memoryReach),
-              inputSchema: SEARCH_MEMORY_JSON_SCHEMA,
-            }
-          : null;
-      case 'read_memory':
-        return memory && memoryReach
-          ? {
-              key,
-              name,
-              description: readMemoryDescription(memoryReach),
-              inputSchema: READ_MEMORY_JSON_SCHEMA,
-            }
-          : null;
-      case 'add_ledger_entry':
-      case 'search_ledger_entries':
-      case 'update_ledger_entry':
-        return feed
-          ? {
-              key,
-              name,
-              description: feedToolDescription(key, brand),
-              inputSchema: feedToolJsonSchema(key),
-            }
-          : null;
-      case 'delegate_task':
-      case 'get_delegate_output':
-      case 'inspect_delegate':
-      case 'list_delegates':
-      case 'stop_delegate':
-      case 'message_delegate':
-      case 'request_steering':
-        return delegationPort(key)
-          ? {
-              key,
-              name,
-              description: managedDelegationToolDescription(key),
-              inputSchema: MANAGED_DELEGATION_JSON_SCHEMAS[key],
             }
           : null;
     }
@@ -747,68 +575,6 @@ export function createAgentActionSurface<H, THook extends string = string>(
         case 'start_forked_agent':
         case 'start_branched_agent':
           return startSplitAgent(key, rawArgs, call);
-        case 'get_github_pull_request_status':
-          return pullRequestStatus
-            ? executeGetGitHubPullRequestStatus(
-                rawArgs,
-                pullRequestStatus,
-                call,
-              )
-            : unavailable(key);
-        case 'schedule_wakeup': {
-          if (!wakeups) return unavailable(key);
-          const parsed = scheduleWakeupInputSchema.safeParse(rawArgs);
-          if (!parsed.success) {
-            return invalidAgentActionArguments(
-              AGENT_ACTION_TOOL_DISPLAY_NAMES.schedule_wakeup,
-              parsed.error.issues.map(
-                (issue) => `${issue.path.join('.')}: ${issue.message}`,
-              ),
-            );
-          }
-          return (
-            wakeups.scheduleWakeup?.(parsed.data, call) ?? unavailable(key)
-          );
-        }
-        case 'save_memory': {
-          if (!memory) return unavailable(key);
-          const parsed = saveMemoryInputSchema.safeParse(rawArgs);
-          return parsed.success
-            ? memory.save(parsed.data, call)
-            : invalidAgentActionArguments(AGENT_ACTION_TOOL_DISPLAY_NAMES[key]);
-        }
-        case 'search_memory': {
-          if (!memory) return unavailable(key);
-          const parsed = searchMemoryInputSchema.safeParse(rawArgs);
-          return parsed.success
-            ? memory.search(parsed.data, call)
-            : invalidAgentActionArguments(AGENT_ACTION_TOOL_DISPLAY_NAMES[key]);
-        }
-        case 'read_memory': {
-          if (!memory) return unavailable(key);
-          const parsed = readMemoryInputSchema.safeParse(rawArgs);
-          return parsed.success
-            ? memory.read(parsed.data, call)
-            : invalidAgentActionArguments(AGENT_ACTION_TOOL_DISPLAY_NAMES[key]);
-        }
-        case 'add_ledger_entry':
-        case 'search_ledger_entries':
-        case 'update_ledger_entry':
-          return feed
-            ? executeFeedTool(key, rawArgs, feed, call)
-            : unavailable(key);
-        case 'delegate_task':
-        case 'get_delegate_output':
-        case 'inspect_delegate':
-        case 'list_delegates':
-        case 'stop_delegate':
-        case 'message_delegate':
-        case 'request_steering': {
-          const port = delegationPort(key);
-          return port
-            ? executeManagedDelegationTool(key, rawArgs, port, call)
-            : unavailable(key);
-        }
       }
     },
   };

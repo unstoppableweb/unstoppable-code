@@ -153,23 +153,12 @@ export async function seedFilesystemRecords(dataRoot: string): Promise<void> {
 }
 
 /**
- * Which config files Git reads, not which repository it uses: kept so Jest's
- * unsigned global config still applies to test commits (CAN-6349).
- */
-const GIT_CONFIG_SOURCE_KEYS = new Set([
-  'GIT_CONFIG_GLOBAL',
-  'GIT_CONFIG_NOSYSTEM',
-]);
-
-/**
  * This process's environment without `GIT_*`, so a test run from a Git hook
  * never points Git at the enclosing repository.
  */
 export function gitFreeEnvironment(): Record<string, string | undefined> {
   return Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) => !key.startsWith('GIT_') || GIT_CONFIG_SOURCE_KEYS.has(key),
-    ),
+    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
   );
 }
 

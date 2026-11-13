@@ -185,10 +185,7 @@ export async function resolveChatTurnOverride(
   // Resolve inherited Agents before OpenCode admission, matching the send.
   const model =
     namedModel &&
-    ((await resolveSendModelPin(target.projectId, tab.model, namedModel, {
-      ...target,
-      executionHarness: getExecutionHarnessForModel(namedModel),
-    })) ??
+    ((await resolveSendModelPin(target.projectId, tab.model, namedModel)) ??
       namedModel);
   if (request.model && !model)
     throw new Error('The automation model is unavailable.');

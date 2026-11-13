@@ -11,7 +11,6 @@ import { RuleType, type MarkdownToJSX } from 'markdown-to-jsx';
 import { Checkbox } from './Choice';
 import { DeferredMarkdownMath } from './DeferredMarkdownMath';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
-import { TEXT_LINK_INLINE_CLASS } from './TextLink';
 import { MarkdownImage } from './MarkdownImage';
 import { MarkdownMermaid } from './MarkdownMermaid';
 import { MAX_MERMAID_BLOCKS } from './markdown-mermaid-policy';
@@ -241,7 +240,8 @@ export function isNavigableTranscriptHref(href: string): boolean {
  * A text link in prose: accent ink over a faint underline set clear of the
  * descenders; the underline takes the ink's full colour on hover and focus.
  */
-export const TRANSCRIPT_LINK_CLASS = TEXT_LINK_INLINE_CLASS;
+export const TRANSCRIPT_LINK_CLASS =
+  'fg-accent underline decoration-accent/30 decoration-1 underline-offset-4 transition-[text-decoration-color] hover:decoration-current focus-visible:decoration-current';
 
 /**
  * Anchor override for agent transcripts: navigable URLs stay links, everything

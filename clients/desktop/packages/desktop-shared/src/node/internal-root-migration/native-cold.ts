@@ -9,9 +9,7 @@ import {
   WindowsColdInspectionError,
   WINDOWS_PROCESS_FILE,
   type NativeColdProcess,
-  type LinuxColdCensusOptions,
 } from '@canopy/core-platform';
-import { internalRootMigrationProgress } from './progress';
 import { InternalRootMigrationRefused } from '@canopy/core-runtime/node/internal-root-migration';
 import { daemonName, type BrandCore } from '@canopy/protocol/brand';
 
@@ -494,7 +492,6 @@ export function internalRootColdHost(
   readonly services: ReturnType<typeof createPlatformServices>;
   readonly observe: (
     roots?: readonly string[],
-    census?: LinuxColdCensusOptions,
   ) => Promise<readonly NativeColdProcess[]>;
   readonly windowsProcessPath?: string;
 } {
@@ -550,16 +547,6 @@ export function internalRootColdHost(
               );
             }
           }
-        : (roots, census) =>
-            observeLinuxColdProcesses({
-              roots,
-              census: {
-                ...census,
-                onProgress: (phase, completed) =>
-                  internalRootMigrationProgress(
-                    `Linux target ${phase}: ${completed} entries completed`,
-                  ),
-              },
-            }),
+        : (roots) => observeLinuxColdProcesses({ roots }),
   };
 }

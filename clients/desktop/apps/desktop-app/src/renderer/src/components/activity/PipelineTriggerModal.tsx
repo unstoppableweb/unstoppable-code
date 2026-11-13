@@ -1,8 +1,4 @@
 import {
-  getRendererModelFactsVersion,
-  subscribeRendererModelFacts,
-} from '@/stores/modelPolicyRuntime';
-import {
   PipelineSourceLabel,
   pipelineOriginLabel,
 } from '@canopy/ui-shared/components/EntrySourceLabel';
@@ -11,7 +7,6 @@ import {
   Stack,
   ErrorBanner,
   ErrorState,
-  FieldError,
   Notice,
   Surface,
 } from '@canopy/ui-shared/components';
@@ -23,7 +18,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from 'react';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
@@ -227,12 +221,6 @@ export interface PipelineTriggerModalProps {
    * pipeline declares; the user can still change everything before running.
    */
   initialInputs?: Record<string, string>;
-  /**
-   * Opens on `initialPipelineId`'s run settings once it loads, as the Run of
-   * that workflow's own editor does (CAN-6406). It never runs by itself:
-   * the settings step always waits for Run.
-   */
-  startOnSettings?: boolean;
   onClose: () => void;
   onRun: (
     pipelineId: string,
@@ -586,7 +574,6 @@ export function PipelineTriggerModal({
   reloadToken = 0,
   initialPipelineId,
   initialInputs,
-  startOnSettings = false,
   onClose,
   onRun,
   isRunning = false,
@@ -1014,21 +1001,19 @@ export function PipelineTriggerModal({
     (selectedPipeline !== null &&
       aliasDraftSeededFor === selectedPipeline.info.id);
   const aliasReadyToRun = !hasAliases || aliasDraftSeeded;
-  useSyncExternalStore(
-    subscribeRendererModelFacts,
-    getRendererModelFactsVersion,
-    getRendererModelFactsVersion,
-  );
-  const aliasesBlocked =
-    hasAliases &&
-    areAliasPreferencesBlocked(pipelineAliases, aliasDraft, {
+  const aliasesBlocked = useMemo(() => {
+    if (!hasAliases) return false;
+    return areAliasPreferencesBlocked(pipelineAliases, aliasDraft, {
       pluginCollectionIds: new Set(
         (selectedPipeline?.content.plugin_collections ?? []).map((c) => c.id),
       ),
-      isAgentRouteAvailable: (route: string): boolean =>
-        getAgentModelAvailability(route).available,
-      availableAgentIds: new Set(agents.map((agent) => agent.id)),
+      availableAgentIds: new Set(
+        agents
+          .filter((agent) => getAgentModelAvailability(agent.id).available)
+          .map((agent) => agent.id),
+      ),
     });
+  }, [hasAliases, pipelineAliases, aliasDraft, selectedPipeline, agents]);
 
   const viewerId = cloudReady
     ? (sharedCloudAccount?.account?.id ?? null)
@@ -1866,29 +1851,6 @@ export function PipelineTriggerModal({
     setStep('configure');
   };
 
-  const openedOnSettings = useRef(false);
-  useEffect(() => {
-    if (
-      !startOnSettings ||
-      openedOnSettings.current ||
-      selectedPipeline?.info.id !== initialPipelineId
-    )
-      return;
-    openedOnSettings.current = true;
-    if (hasInputs) {
-      setInputValues(seedInitialInputValues(selectedInputDefs, initialInputs));
-      setInputErrors({});
-    }
-    setStep('configure');
-  }, [
-    hasInputs,
-    initialInputs,
-    initialPipelineId,
-    selectedInputDefs,
-    selectedPipeline,
-    startOnSettings,
-  ]);
-
   const handleBack = (): void => {
     if (isRunning) return;
     setStep('select');
@@ -1945,29 +1907,6 @@ export function PipelineTriggerModal({
         ? `Configure inputs for ${selectedPipeline.info.name}`
         : '';
 
-  // The working directory shows with the workflow list and with a
-  // workflow's run settings, which a run can open on (CAN-6406).
-  const repoSelector =
-    showRepoDropdown && showTargetControls && repoChoices ? (
-      <div data-testid="pipeline-trigger-modal-repo-select">
-        <DialogFormField
-          label="Working directory"
-          htmlFor="pipeline-trigger-modal-repo"
-        >
-          <SelectField
-            id="pipeline-trigger-modal-repo"
-            value={selectedRepoId ?? ''}
-            onChange={(e) => setSelectedRepoId(e.target.value)}
-            options={repoChoices.map((choice) => ({
-              value: choice.repoId,
-              label: choice.repoName,
-            }))}
-            disabled={isRunning}
-          />
-        </DialogFormField>
-      </div>
-    ) : null;
-
   return (
     <DialogModal
       inset="flush"
@@ -2011,7 +1950,25 @@ export function PipelineTriggerModal({
                 loadState.curated.length > 0 ||
                 cloudReady) && (
                 <Stack gap="item">
-                  {repoSelector}
+                  {showRepoDropdown && showTargetControls && repoChoices && (
+                    <div data-testid="pipeline-trigger-modal-repo-select">
+                      <DialogFormField
+                        label="Working directory"
+                        htmlFor="pipeline-trigger-modal-repo"
+                      >
+                        <SelectField
+                          id="pipeline-trigger-modal-repo"
+                          value={selectedRepoId ?? ''}
+                          onChange={(e) => setSelectedRepoId(e.target.value)}
+                          options={repoChoices.map((choice) => ({
+                            value: choice.repoId,
+                            label: choice.repoName,
+                          }))}
+                          disabled={isRunning}
+                        />
+                      </DialogFormField>
+                    </div>
+                  )}
 
                   <Stack gap="item">
                     <Stack gap="inline">
@@ -2197,8 +2154,6 @@ export function PipelineTriggerModal({
               Back to workflow list
             </Button>
 
-            {repoSelector}
-
             <Surface variant="group" className="">
               <div className="flex items-center gap-3 px-3 py-2.5">
                 <PipelineGlyph icon={selectedPipeline.info.icon} />
@@ -2350,19 +2305,16 @@ export function PipelineTriggerModal({
         !hasUnresolvedRequiredDefaults &&
         collectionValidation?.messages?.length ? (
           <ul className="flex flex-col text-xs gap-0.5">
-            {collectionValidation.messages.map((m, idx) =>
-              m.severity === 'error' ? (
-                <li key={`validation-${idx}`}>
-                  <FieldError id={`pipeline-trigger-validation-${idx}`}>
-                    {m.text}
-                  </FieldError>
-                </li>
-              ) : (
-                <li key={`validation-${idx}`} className="fg-warning">
-                  {m.text}
-                </li>
-              ),
-            )}
+            {collectionValidation.messages.map((m, idx) => (
+              <li
+                key={`validation-${idx}`}
+                className={
+                  m.severity === 'error' ? 'fg-destructive' : 'fg-warning'
+                }
+              >
+                {m.text}
+              </li>
+            ))}
           </ul>
         ) : null}
         {step === 'configure' && hasAliases && aliasesBlocked && (

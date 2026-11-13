@@ -1,25 +1,16 @@
 import {
   agentActionError,
   agentActionIdempotencyKey,
-  agentActionResult,
-  agentActionToolResult,
   portErrorResponse,
-  runIdempotentWrite,
 } from '../action-support';
-import type { AgentActionLimitsPort } from '../limits';
-import type { AgentActionReceiptStore } from '../receipts';
 import type { AgentActionResponse, AgentJson } from '../response';
 import type { AgentActionHostCapabilities } from '../surface/capabilities';
 import type { AgentActionWatcherPort } from '../surface/engine';
 import type { AgentActionCall, AgentActionCallScope } from '../surface/family';
 import type { AgentActionToolResult } from '../tools/definition';
-import type { ScheduleWakeupInput } from '../tools/schedule-wakeup';
-import { sha256Hex } from '../sha256';
 import {
   isCanonicalSetupWatcherEntry,
-  MAX_ACTIVE_WATCHER_PAGE_SIZE,
   resolveSetupWatcherTrigger,
-  type SearchWatchersInput,
   type SetupWatcherTargetInput,
   type SetupWatchersInput,
   type TargetSetupWatcherEntry,
@@ -29,16 +20,7 @@ import {
   searchAgentWatcherCatalog,
   type AgentWatcherTriggerType,
 } from '../watchers/catalog';
-import {
-  isLegacyChatWatcherTrigger,
-  offersCanonicalChatWatchers,
-  type CanonicalChatWatcherEntry,
-} from '../watchers/chat-watchers';
-import {
-  AgentPortError,
-  type AgentChatState,
-  type AgentEnvironmentPort,
-} from './environment-port';
+import type { AgentChatState, AgentEnvironmentPort } from './environment-port';
 
 export interface AgentChatWatcherTarget {
   workspaceId: string;
@@ -99,74 +81,12 @@ export interface AgentChatWatcherRecord {
   label: string | null;
 }
 
-/** A project chat by canonical ids, as `projects.list_task_chats` names it. */
-export interface AgentProjectChatAddress {
-  projectId: string;
-  taskId: string;
-  chatId: string;
-}
-
-/** A project, or one of its tasks, whose new chats a watcher waits for. */
-export interface AgentProjectChatScope {
-  projectId: string;
-  taskId?: string;
-}
-
-/**
- * A `project_task_chat_completion` watcher. As for chat watchers, except
- * that the target is a canonical project chat, which the port resolves
- * under its own target rules (for example, only projects with the calling
- * chat's saved owner, anything else `not_found`).
- */
-export interface AgentArmProjectChatWatcherInput {
-  target: AgentProjectChatAddress;
-  label?: string;
-  followUpInstruction?: string;
-  armForNextCompletion: boolean;
-  allowDuplicate?: boolean;
-  forWrite?: { idempotencyKey: string };
-  idempotencyKey: string;
-}
-
-/**
- * A `project_new_chat_started` watcher: it fires once, on the first input
- * of a chat in the scope that starts after it was armed, never the calling
- * chat's own start.
- */
-export interface AgentArmProjectNewChatWatcherInput {
-  target: AgentProjectChatScope;
-  label?: string;
-  followUpInstruction?: string;
-  allowDuplicate?: boolean;
-  idempotencyKey: string;
-}
-
-export interface AgentProjectChatWatcherRecord {
-  watcherId: string;
-  trigger: 'project_task_chat_completion';
-  target: AgentProjectChatAddress;
-  label: string | null;
-}
-
-export interface AgentProjectNewChatWatcherRecord {
-  watcherId: string;
-  trigger: 'project_new_chat_started';
-  target: AgentProjectChatScope;
-  label: string | null;
-}
-
 /** A pipeline run's terminal status, as pipeline watchers filter on it. */
 export type AgentPipelineTerminalStatus = 'success' | 'failure' | 'cancelled';
 
-/**
- * The pipeline runs a watcher follows, and the terminal statuses that fire
- * it: one run (`executionId`), or the runs that start after it is armed
- * (no `executionId`), of one workflow when `pipelineId` names it.
- */
+/** One pipeline run, and the terminal statuses that fire its watcher. */
 export interface AgentPipelineWatcherTarget {
-  executionId?: string;
-  /** With `executionId`, the run must be one of this workflow. */
-  pipelineId?: string;
+  executionId: string;
   /** Omitted fires on every terminal status. */
   terminalStatuses?: readonly AgentPipelineTerminalStatus[];
 }
@@ -188,41 +108,9 @@ export interface AgentPipelineWatcherRecord {
   label: string | null;
 }
 
-/**
- * A ScheduleWakeup (`scheduled_wakeup`): one notification of the calling
- * chat once `delaySeconds` have passed since it was armed.
- */
-export interface AgentArmScheduledWakeupInput {
-  delaySeconds: number;
-  followUpInstruction?: string;
-  /** As for chat watchers: the same key returns the wakeup it armed. */
-  idempotencyKey: string;
-}
-
-/** What a wakeup waits for: its delay and when it is due (ISO 8601). */
-export interface AgentScheduledWakeupTarget {
-  delaySeconds: number;
-  scheduledFor: string;
-}
-
-export interface AgentArmedScheduledWakeup extends AgentArmedChatWatcher {
-  target: AgentScheduledWakeupTarget;
-  label: string;
-}
-
-export interface AgentScheduledWakeupWatcherRecord {
-  watcherId: string;
-  trigger: 'scheduled_wakeup';
-  target: AgentScheduledWakeupTarget;
-  label: string | null;
-}
-
 export type AgentWatcherRecord =
   | AgentChatWatcherRecord
-  | AgentPipelineWatcherRecord
-  | AgentProjectChatWatcherRecord
-  | AgentProjectNewChatWatcherRecord
-  | AgentScheduledWakeupWatcherRecord;
+  | AgentPipelineWatcherRecord;
 
 export type AgentWatcherDeleteStatus = 'deleted' | 'not_found' | 'busy';
 
@@ -255,53 +143,16 @@ export interface AgentChatWatcherPort<H> {
     call: AgentActionCall<H>,
   ): Promise<AgentArmedChatWatcher>;
   /**
-   * Arms a watcher on the pipeline runs the calling chat may watch. It
-   * notifies the calling chat each time a watched run pauses, leaving the
-   * watcher armed, and once when a watched run reaches a terminal status it
-   * fires on, which consumes it. A host offers
+   * Arms a watcher that notifies the calling chat once when a pipeline run
+   * it may watch reaches a terminal status. A host offers
    * `worktree_pipeline_completion` only with this member; it refuses a run
    * the calling chat may not watch with `not_found`, and one that already
-   * ended, or that is not a run of the named workflow, with
-   * `invalid_target`.
+   * ended with `invalid_target`.
    */
   armPipelineCompletion?(
     input: AgentArmPipelineWatcherInput,
     call: AgentActionCall<H>,
   ): Promise<AgentArmedChatWatcher>;
-  /**
-   * Arms a `project_task_chat_completion` watcher. A host offers the trigger
-   * only with this member. The tools refuse the calling chat before the
-   * port; the port answers a target the caller may not watch, or one that
-   * does not exist, with the same `not_found`, and an idle target without
-   * `armForNextCompletion` (unbound) with `invalid_target`.
-   */
-  armProjectChatCompletion?(
-    input: AgentArmProjectChatWatcherInput,
-    call: AgentActionCall<H>,
-  ): Promise<AgentArmedChatWatcher>;
-  /**
-   * Arms a `project_new_chat_started` watcher. A host offers the trigger only
-   * with this member, and answers a scope the caller may not watch with
-   * `not_found`.
-   */
-  armProjectNewChatStarted?(
-    input: AgentArmProjectNewChatWatcherInput,
-    call: AgentActionCall<H>,
-  ): Promise<AgentArmedChatWatcher>;
-  /**
-   * Arms a `scheduled_wakeup` watcher, which notifies the calling chat once
-   * its delay has passed. A host offers the trigger, and ScheduleWakeup, only
-   * with this member. While the calling chat has a pending wakeup with the
-   * same delay and follow-up instruction, the port returns it with its
-   * original due time (`created: false`) instead of arming another, as
-   * desktop does. The port refuses a calling chat it cannot wake later
-   * (`invalid_target`) and one with no room for another watcher
-   * (`quota_exceeded`).
-   */
-  armScheduledWakeup?(
-    input: AgentArmScheduledWakeupInput,
-    call: AgentActionCall<H>,
-  ): Promise<AgentArmedScheduledWakeup>;
   list(call: AgentActionCall<H>): Promise<readonly AgentWatcherRecord[]>;
   delete(
     watcherIds: readonly string[],
@@ -340,60 +191,24 @@ function responseJson(response: AgentActionResponse): AgentJson {
 
 /**
  * The watcher tools over chat-completion watchers, and pipeline-completion
- * and canonical project chat watchers where the port arms them: target
- * validation against the environment port, the host's watcher target scope,
- * and per-entry results. They create only `worktree_chat_completion`
- * watchers, `worktree_pipeline_completion` watchers with a port that has
- * `armPipelineCompletion`, and `project_task_chat_completion` and
- * `project_new_chat_started` watchers with a port that has
- * `armProjectChatCompletion` and `armProjectNewChatStarted`, so
- * capabilities that offer any other trigger are refused at construction: a
- * host offers exactly the triggers its watcher tools accept.
- *
- * With a port that has `armScheduledWakeup` the tools also offer
- * `scheduled_wakeup` and ScheduleWakeup, an idempotent write behind the
- * host's receipts and limits like the other agent writes: a retried call
- * replays its result, and each new wakeup takes a limits slot.
- *
- * A host offering a canonical trigger gets the canonical tools' behavior:
- * SearchWatchers pages active watchers and filters them by canonical target
- * ids, and lists the legacy chat rows only for an exact trigger lookup,
- * while SetupWatchers still accepts them.
+ * watchers where the port arms them: target validation against the
+ * environment port, the host's watcher target scope, and per-entry results.
+ * They create only `worktree_chat_completion` watchers, and
+ * `worktree_pipeline_completion` watchers with a port that has
+ * `armPipelineCompletion`, so capabilities that offer any other trigger are
+ * refused at construction: a host offers exactly the triggers its watcher
+ * tools accept.
  */
 export function createChatWatcherTools<H>(options: {
   capabilities: AgentActionHostCapabilities;
   environment: AgentEnvironmentPort<H>;
   watchers: AgentChatWatcherPort<H>;
-  /**
-   * Where ScheduleWakeup records its results, so a retried call replays the
-   * wakeup it armed. Required with `armScheduledWakeup`.
-   */
-  receipts?: AgentActionReceiptStore<H>;
-  /** The limits a new wakeup counts against; null or omitted for none. */
-  limits?: AgentActionLimitsPort | null;
 }): AgentActionWatcherPort<H, never> {
   const { capabilities, environment, watchers } = options;
-  const toolTriggers: readonly AgentWatcherTriggerType[] = [
-    'worktree_chat_completion',
-    ...(watchers.armPipelineCompletion === undefined
-      ? []
-      : ['worktree_pipeline_completion' as const]),
-    ...(watchers.armProjectChatCompletion === undefined
-      ? []
-      : ['project_task_chat_completion' as const]),
-    ...(watchers.armProjectNewChatStarted === undefined
-      ? []
-      : ['project_new_chat_started' as const]),
-    ...(watchers.armScheduledWakeup === undefined
-      ? []
-      : ['scheduled_wakeup' as const]),
-  ];
-  if (watchers.armScheduledWakeup !== undefined && !options.receipts) {
-    throw new Error(
-      'createChatWatcherTools needs receipts to offer ScheduleWakeup.',
-    );
-  }
-  const canonical = offersCanonicalChatWatchers(capabilities.watcherTriggers);
+  const toolTriggers: readonly AgentWatcherTriggerType[] =
+    watchers.armPipelineCompletion === undefined
+      ? ['worktree_chat_completion']
+      : ['worktree_chat_completion', 'worktree_pipeline_completion'];
   const unsupported = capabilities.watcherTriggers.filter(
     (trigger) => !toolTriggers.includes(trigger),
   );
@@ -414,16 +229,20 @@ export function createChatWatcherTools<H>(options: {
     scope: AgentActionCallScope,
     call: AgentActionCall<H>,
   ): Promise<AgentActionResponse> {
-    if (isCanonicalSetupWatcherEntry(entry))
-      return setupCanonical(entry, index, scope, call);
-    const trigger = resolveSetupWatcherTrigger(entry);
+    const trigger = isCanonicalSetupWatcherEntry(entry)
+      ? entry.trigger
+      : resolveSetupWatcherTrigger(entry);
     if (
       trigger === 'worktree_pipeline_completion' &&
+      !isCanonicalSetupWatcherEntry(entry) &&
       capabilities.watcherTriggers.includes(trigger)
     ) {
       return setupPipeline(entry, index, call);
     }
-    if (trigger !== 'worktree_chat_completion') {
+    if (
+      trigger !== 'worktree_chat_completion' ||
+      isCanonicalSetupWatcherEntry(entry)
+    ) {
       return agentActionError(
         call,
         'missing_capability',
@@ -534,105 +353,32 @@ export function createChatWatcherTools<H>(options: {
     };
   }
 
-  /**
-   * A canonical project chat watcher, armed through the port, which resolves
-   * the target under the host's own target rules. Bot triggers, and project
-   * triggers the host does not offer, are not available here.
-   */
-  async function setupCanonical(
-    entry: CanonicalChatWatcherEntry,
-    index: number,
-    scope: AgentActionCallScope,
-    call: AgentActionCall<H>,
-  ): Promise<AgentActionResponse> {
-    const offered = capabilities.watcherTriggers.includes(entry.trigger);
-    const metadata = {
-      ...(entry.label ? { label: entry.label } : {}),
-      ...(entry.followUpInstruction
-        ? { followUpInstruction: entry.followUpInstruction }
-        : {}),
-      ...(entry.allowDuplicate === true ? { allowDuplicate: true } : {}),
-      idempotencyKey: agentActionIdempotencyKey(
-        `setup_watchers.${index}`,
-        call,
-        entry,
-      ),
-    };
-    let armed: AgentArmedChatWatcher;
-    if (
-      entry.trigger === 'project_task_chat_completion' &&
-      offered &&
-      watchers.armProjectChatCompletion
-    ) {
-      if (entry.target.chatId === scope.chatId) {
-        return agentActionError(
-          call,
-          'invalid_target',
-          'A chat cannot watch itself.',
-        );
-      }
-      armed = await watchers.armProjectChatCompletion(
-        {
-          target: { ...entry.target },
-          armForNextCompletion: entry.armForNextCompletion === true,
-          ...metadata,
-        },
-        call,
-      );
-    } else if (
-      entry.trigger === 'project_new_chat_started' &&
-      offered &&
-      watchers.armProjectNewChatStarted
-    ) {
-      armed = await watchers.armProjectNewChatStarted(
-        { target: { ...entry.target }, ...metadata },
-        call,
-      );
-    } else {
-      return agentActionError(
-        call,
-        'missing_capability',
-        `Watcher trigger ${entry.trigger} is not available here.`,
-      );
-    }
-    return {
-      requestId: call.toolUseId ?? '',
-      ok: true,
-      result: { watcherId: armed.watcherId },
-    };
-  }
-
   async function setupPipeline(
     entry: TargetSetupWatcherEntry<never>,
     index: number,
     call: AgentActionCall<H>,
   ): Promise<AgentActionResponse> {
     const requested = pipelineTarget(entry.target);
-    if (watchers.armPipelineCompletion === undefined || requested === null) {
+    if (
+      watchers.armPipelineCompletion === undefined ||
+      requested?.executionId === undefined ||
+      requested.executionId.length === 0
+    ) {
       return agentActionError(
         call,
         'invalid_payload',
-        'worktree_pipeline_completion watchers here need target.executionId (the executionId pipeline.run returned), target.pipelineId, or target.terminalStatuses.',
+        'worktree_pipeline_completion watchers here need target.executionId: the executionId pipeline.run returned.',
       );
     }
-    if (requested.runOn === 'local') {
-      return agentActionError(
-        call,
-        'invalid_target',
-        'Workflow runs here run in the cloud. Omit runOn to watch them.',
-      );
-    }
-    // The input schema admits only terminal statuses here, and needs one of
-    // executionId, pipelineId and terminalStatuses.
-    const { executionId, pipelineId, terminalStatuses } = requested;
+    // The input schema admits only terminal statuses here.
+    const statuses = requested.terminalStatuses;
     const armed = await watchers.armPipelineCompletion(
       {
         target: {
-          ...(executionId ? { executionId } : {}),
-          ...(pipelineId ? { pipelineId } : {}),
-          ...(terminalStatuses === undefined
+          executionId: requested.executionId,
+          ...(statuses === undefined
             ? {}
-            : { terminalStatuses: [...terminalStatuses] }),
+            : { terminalStatuses: [...statuses] }),
         },
         ...(entry.label ? { label: entry.label } : {}),
         ...(entry.followUpInstruction
@@ -654,161 +400,48 @@ export function createChatWatcherTools<H>(options: {
     };
   }
 
-  /**
-   * ScheduleWakeup as an idempotent write: the key comes from the tool call,
-   * so a retried call replays the wakeup it armed, and a new wakeup reserves
-   * a limits slot before it is armed.
-   */
-  async function scheduleWakeup(
-    input: ScheduleWakeupInput,
-    call: AgentActionCall<H>,
-  ): Promise<AgentActionToolResult> {
-    const { receipts } = options;
-    if (watchers.armScheduledWakeup === undefined || receipts === undefined) {
-      return {
-        text: 'ScheduleWakeup is not available in this chat.',
-        isError: true,
-      };
-    }
-    if (!call.scope) {
-      return agentActionToolResult(
-        agentActionError(
-          call,
-          'invalid_target',
-          'ScheduleWakeup needs a chat to wake; it is not available here.',
-        ),
-      );
-    }
-    const idempotencyKey = agentActionIdempotencyKey(
-      'schedule_wakeup',
-      call,
-      input,
-    );
-    try {
-      return await runIdempotentWrite({
-        receipts,
-        limits: options.limits ?? null,
-        kind: 'schedule_wakeup',
-        call,
-        idempotencyKey,
-        payload: input,
-        prepare: () =>
-          Promise.resolve({
-            ok: true,
-            parentDepth: 0,
-            write: async (): Promise<AgentActionToolResult> => {
-              const armed = await watchers.armScheduledWakeup?.(
-                {
-                  delaySeconds: input.delaySeconds,
-                  ...(input.followUpInstruction === undefined
-                    ? {}
-                    : { followUpInstruction: input.followUpInstruction }),
-                  idempotencyKey,
-                },
-                call,
-              );
-              if (armed === undefined)
-                throw new AgentPortError(
-                  'unsupported_action',
-                  'ScheduleWakeup is not available in this chat.',
-                );
-              return agentActionToolResult(
-                agentActionResult(call, 'schedule_wakeup', {
-                  watcherId: armed.watcherId,
-                  trigger: 'scheduled_wakeup',
-                  label: armed.label,
-                  target: { ...armed.target },
-                  // A pending identical wakeup was returned instead.
-                  deduped: !armed.created,
-                }),
-              );
-            },
-          }),
-      });
-    } catch (error) {
-      return agentActionToolResult(
-        portErrorResponse(call, 'ScheduleWakeup', error),
-      );
-    }
-  }
-
-  // These tools watch only runs the calling chat started: one by its
-  // execution id, or the ones it starts later.
+  // These tools watch only runs the calling chat started, by execution id.
   const offeredCatalog = catalog
     .filter((entry) => capabilities.watcherTriggers.includes(entry.trigger))
     .map((entry) =>
-      entry.trigger === 'scheduled_wakeup'
+      entry.trigger === 'worktree_pipeline_completion'
         ? {
             ...entry,
+            title: 'Workflow run completion',
+            requiredFields: ['executionId'],
+            optionalFields: ['terminalStatuses'],
             usageGuidance:
-              'Use ScheduleWakeup for a one-shot wakeup of this chat after 60–3600 seconds. End the turn after registering; do not sleep or poll. The wakeup is kept on the server and arrives once, usually within about a minute of its due time; a chat archived or deleted before then gets nothing.',
+              'Fires once when a workflow run this chat started reaches a terminal status. Use {"watchers":[{"trigger":"worktree_pipeline_completion","target":{"executionId":"..."}}]} with the executionId pipeline.run returned.',
           }
-        : entry.trigger === 'worktree_pipeline_completion'
-          ? {
-              ...entry,
-              title: 'Workflow run completion',
-              requiredFields: [],
-              optionalFields: ['executionId', 'pipelineId', 'terminalStatuses'],
-              usageGuidance:
-                'Fires when a workflow run this chat started pauses or reaches a terminal status. Pause notifications leave the watcher active; a matching terminal status consumes it. Use {"watchers":[{"trigger":"worktree_pipeline_completion","target":{"executionId":"..."}}]} with the executionId pipeline.run returned, or omit executionId and optionally set pipelineId or terminalStatuses to watch the runs this chat starts later.',
-            }
-          : entry,
+        : entry,
     );
 
   return {
     hookTriggerNames: [],
-    ...(watchers.armScheduledWakeup === undefined ? {} : { scheduleWakeup }),
     search: async (input, call): Promise<AgentActionToolResult> => {
-      // A canonical host lists a legacy chat row only for an exact lookup.
-      const rows = searchAgentWatcherCatalog(
-        canonical
-          ? offeredCatalog.filter(
-              (entry) =>
-                !isLegacyChatWatcherTrigger(entry.trigger) ||
-                input.trigger === entry.trigger,
-            )
-          : offeredCatalog,
-        input,
-      );
+      const rows = searchAgentWatcherCatalog(offeredCatalog, input);
       const active =
         input.includeActive === false ? [] : await watchers.list(call);
-      const catalogJson = rows.map(
-        (row): AgentJson => ({
-          trigger: row.trigger,
-          title: row.title,
-          targetKind: row.targetKind,
-          setupTool: row.setupTool,
-          requiredFields: row.requiredFields,
-          optionalFields: row.optionalFields,
-          optionalEntryFields: row.optionalEntryFields,
-          ...(input.detailLevel === 'standard' &&
-          row.usageGuidance !== undefined
-            ? { usageGuidance: row.usageGuidance }
-            : {}),
-        }),
-      );
-      const watcherJson = (watcher: AgentWatcherRecord): AgentJson => ({
-        watcherId: watcher.watcherId,
-        trigger: watcher.trigger,
-        target: watcherTargetJson(watcher),
-        label: watcher.label,
-      });
-      if (!canonical) {
-        return json({
-          catalog: catalogJson,
-          activeWatchers: active.map(watcherJson),
-        });
-      }
-      const page = pageActiveWatchers(active, input);
-      if (!page.ok) return { text: page.error, isError: true };
       return json({
-        catalog: catalogJson,
-        activeWatchers: page.watchers.map(watcherJson),
-        activeReturned: page.watchers.length,
-        activeTotalMatches: page.totalMatches,
-        ...(page.nextCursor === undefined
-          ? {}
-          : { activeNextCursor: page.nextCursor }),
+        catalog: rows.map(
+          (row): AgentJson => ({
+            trigger: row.trigger,
+            title: row.title,
+            targetKind: row.targetKind,
+            setupTool: row.setupTool,
+            requiredFields: row.requiredFields,
+            optionalFields: row.optionalFields,
+            optionalEntryFields: row.optionalEntryFields,
+          }),
+        ),
+        activeWatchers: active.map(
+          (watcher): AgentJson => ({
+            watcherId: watcher.watcherId,
+            trigger: watcher.trigger,
+            target: watcherTargetJson(watcher),
+            label: watcher.label,
+          }),
+        ),
       });
     },
     setup: async (input, call): Promise<AgentActionToolResult> => {
@@ -860,122 +493,12 @@ function pipelineTarget(
     : target;
 }
 
-/** The default page of active watchers a canonical SearchWatchers returns. */
-const DEFAULT_ACTIVE_WATCHER_PAGE_SIZE = 50;
-
-/**
- * A watcher's canonical target ids, for SearchWatchers' target filters and
- * `activeQuery`: a chat watcher's project, task and chat, and none for a
- * pipeline watcher.
- */
-function canonicalTargetIds(watcher: AgentWatcherRecord): {
-  projectId?: string;
-  taskId?: string;
-  chatId?: string;
-} {
-  switch (watcher.trigger) {
-    case 'worktree_chat_completion':
-      return {
-        projectId: watcher.target.workspaceId,
-        taskId: watcher.target.worktreeId,
-        chatId: watcher.target.chatId,
-      };
-    case 'project_task_chat_completion':
-    case 'project_new_chat_started':
-      return { ...watcher.target };
-    case 'worktree_pipeline_completion':
-    case 'scheduled_wakeup':
-      return {};
-  }
-}
-
-/**
- * One page of active watchers, as desktop pages them: target filters match
- * canonical ids exactly, `activeQuery` matches the watcher id, label and
- * target ids case-insensitively, and a cursor (`v1.<offset>.<key>`) is valid
- * only for the same query and filters. No watcher has a bot target here, so
- * a bot filter matches none.
- */
-function pageActiveWatchers(
-  watchers: readonly AgentWatcherRecord[],
-  input: SearchWatchersInput,
-):
-  | {
-      ok: true;
-      watchers: AgentWatcherRecord[];
-      totalMatches: number;
-      nextCursor?: string;
-    }
-  | { ok: false; error: string } {
-  const query = (input.activeQuery ?? '').trim().toLowerCase();
-  const pageSize = Math.min(
-    MAX_ACTIVE_WATCHER_PAGE_SIZE,
-    Math.max(
-      1,
-      Math.floor(input.activePageSize ?? DEFAULT_ACTIVE_WATCHER_PAGE_SIZE),
-    ),
-  );
-  const matches = watchers.filter((watcher) => {
-    if (input.targetBotId !== undefined) return false;
-    const ids = canonicalTargetIds(watcher);
-    if (
-      (input.targetProjectId !== undefined &&
-        ids.projectId !== input.targetProjectId) ||
-      (input.targetTaskId !== undefined && ids.taskId !== input.targetTaskId) ||
-      (input.targetChatId !== undefined && ids.chatId !== input.targetChatId)
-    )
-      return false;
-    if (query.length === 0) return true;
-    return [
-      watcher.watcherId,
-      watcher.label,
-      ids.projectId,
-      ids.taskId,
-      ids.chatId,
-    ]
-      .filter((value): value is string => typeof value === 'string')
-      .some((value) => value.toLowerCase().includes(query));
-  });
-  const key = sha256Hex(
-    JSON.stringify([
-      query,
-      input.targetProjectId ?? null,
-      input.targetBotId ?? null,
-      input.targetTaskId ?? null,
-      input.targetChatId ?? null,
-    ]),
-  ).slice(0, 8);
-  let offset = 0;
-  if (input.activeCursor !== undefined) {
-    const match = /^v1\.(\d{1,9})\.([0-9a-f]{8})$/.exec(input.activeCursor);
-    if (!match || match[2] !== key)
-      return { ok: false, error: 'Invalid activeCursor.' };
-    offset = Number(match[1]);
-  }
-  const page = matches.slice(offset, offset + pageSize);
-  const next = offset + page.length;
-  return {
-    ok: true,
-    watchers: page,
-    totalMatches: matches.length,
-    ...(next < matches.length
-      ? { nextCursor: `v1.${String(next)}.${key}` }
-      : {}),
-  };
-}
-
 function watcherTargetJson(watcher: AgentWatcherRecord): AgentJson {
-  if (
-    watcher.trigger === 'worktree_chat_completion' ||
-    watcher.trigger === 'project_task_chat_completion' ||
-    watcher.trigger === 'project_new_chat_started' ||
-    watcher.trigger === 'scheduled_wakeup'
-  )
+  if (watcher.trigger === 'worktree_chat_completion')
     return { ...watcher.target };
-  const { executionId, pipelineId, terminalStatuses } = watcher.target;
+  const { executionId, terminalStatuses } = watcher.target;
   return {
-    ...(executionId === undefined ? {} : { executionId }),
-    ...(pipelineId === undefined ? {} : { pipelineId }),
+    executionId,
     ...(terminalStatuses === undefined
       ? {}
       : { terminalStatuses: [...terminalStatuses] }),

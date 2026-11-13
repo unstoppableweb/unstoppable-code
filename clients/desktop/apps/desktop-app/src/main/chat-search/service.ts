@@ -83,7 +83,6 @@ import {
 } from '../lib/archived-containers';
 import { isWorktreeSummaryData } from '../lib/worktree-summary-persistence';
 import {
-  type AgentChatSearchFilter,
   chatSearchQueryExceedsBodyThreshold,
   mapChatSearchCatalogRow,
   normalizeQueryRequest,
@@ -692,37 +691,6 @@ export class ChatSearchService {
     const pageRequest = { ...request, limit: normalized.limit };
     return this.collectVisiblePage(normalized.limit, (offset) =>
       queryChatSearchDatabase(database, pageRequest, now, offset),
-    );
-  }
-
-  /** Agent history always projects snippets off-main, including small chats. */
-  async queryForAgent(
-    request: ChatSearchQueryRequest,
-    context: WorkspaceContext,
-    agent: AgentChatSearchFilter,
-  ): Promise<ChatSearchResult[]> {
-    if (this.closed) throw new Error('Chat search is closed.');
-    this.getDatabase();
-    // An in-memory recovery index cannot be reopened safely by the worker.
-    if (this.workerDatabasePath === null)
-      throw new Error('Chat search is unavailable.');
-    this.queryRunner ??= new ChatSearchQueryRunner();
-    const runner = this.queryRunner;
-    const dbPath = this.workerDatabasePath;
-    const now = Date.now();
-    const normalized = normalizeQueryRequest(request);
-    if (!normalized) return [];
-    return this.collectVisiblePageAsync(
-      Math.min(10, normalized.limit),
-      (offset) =>
-        runner.run(
-          dbPath,
-          { ...request, limit: Math.min(10, normalized.limit) },
-          now,
-          offset,
-          agent,
-        ),
-      this.createContextVisibilityPredicate(context),
     );
   }
 

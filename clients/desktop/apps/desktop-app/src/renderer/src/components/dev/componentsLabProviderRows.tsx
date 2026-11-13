@@ -1,5 +1,5 @@
-import { useContext, type JSX } from 'react';
-import { LabBrandDisplayNameContext } from './componentsLabStageContext';
+import type { JSX } from 'react';
+import { brandText } from '@/lib/brand';
 import {
   ProviderRowLabel,
   ProviderStatusDot,
@@ -95,13 +95,12 @@ const noop = (): void => undefined;
 
 /** RemoteControlMobileAppPromo: both stores, one store, callback, hidden. */
 export function RemoteControlPromoSpecimen(): JSX.Element {
-  const brandDisplayName = useContext(LabBrandDisplayNameContext);
   return (
     <SpecimenPanel title="Download offer inside a Remote Control panel">
       <SpecimenCell label="Both stores, badges as links (web)" wide>
         <div className="w-full max-w-xl">
           <RemoteControlMobileAppPromo
-            brandDisplayName={brandDisplayName}
+            brandDisplayName={brandText.appName}
             links={[APPLE, GOOGLE]}
             activation={{ kind: 'anchor' }}
             visible
@@ -111,7 +110,7 @@ export function RemoteControlPromoSpecimen(): JSX.Element {
       <SpecimenCell label="Both stores, badges as buttons (desktop)" wide>
         <div className="w-full max-w-xl">
           <RemoteControlMobileAppPromo
-            brandDisplayName={brandDisplayName}
+            brandDisplayName={brandText.appName}
             links={[APPLE, GOOGLE]}
             activation={{ kind: 'callback', onActivate: noop }}
             visible
@@ -121,7 +120,7 @@ export function RemoteControlPromoSpecimen(): JSX.Element {
       <SpecimenCell label="One store only" wide>
         <div className="w-full max-w-xl">
           <RemoteControlMobileAppPromo
-            brandDisplayName={brandDisplayName}
+            brandDisplayName={brandText.appName}
             links={[APPLE]}
             activation={{ kind: 'anchor' }}
             visible
@@ -133,13 +132,13 @@ export function RemoteControlPromoSpecimen(): JSX.Element {
         wide
       >
         <RemoteControlMobileAppPromo
-          brandDisplayName={brandDisplayName}
+          brandDisplayName={brandText.appName}
           links={[APPLE, GOOGLE]}
           activation={{ kind: 'anchor' }}
           visible={false}
         />
         <RemoteControlMobileAppPromo
-          brandDisplayName={brandDisplayName}
+          brandDisplayName={brandText.appName}
           links={[]}
           activation={{ kind: 'anchor' }}
           visible

@@ -297,20 +297,6 @@ function ownedPipelineMatchesChat(
   );
 }
 
-/** Whether the update applies a new revision of the share `stored` came from. */
-function appliesSharedUpdate(
-  request: AutomationUpdateRequest,
-  stored: ScheduledActivity,
-): boolean {
-  return (
-    request.installedFrom !== undefined &&
-    stored.installedFrom !== undefined &&
-    request.installedFrom.remoteId === stored.installedFrom.remoteId &&
-    (request.installedFrom.sourceKind ?? 'shared') ===
-      (stored.installedFrom.sourceKind ?? 'shared')
-  );
-}
-
 export async function updateAutomationFromForm(
   request: AutomationUpdateRequest,
   service: AutomationsService = getAutomationsService(),
@@ -321,13 +307,10 @@ export async function updateAutomationFromForm(
   const owned = stored ? ownedPipelineId(stored) : undefined;
   const activities = await service.allActivities();
   // CAN-5782: a chat action would regenerate the steps other schedules run.
-  // CAN-6065: applying an installed workflow's shared update is meant to:
-  // its other schedules run with that install.
   if (
     stored &&
     owned !== undefined &&
     chatActionOf(request.action) !== undefined &&
-    !appliesSharedUpdate(request, stored) &&
     isSharedByOtherSchedules(activities, stored, owned)
   )
     return { ok: false, error: OWNED_PIPELINE_SHARED };
@@ -434,12 +417,10 @@ export const OWNED_PIPELINE_HAND_EDITED =
 /**
  * An agent's update (CAN-4551, 7c). A native automation updates as before.
  * One that owns its pipeline is re-checked as agent-authored: while it still
- * converts, its pipeline is regenerated with the agent's marker. An update
- * that changes the plugins, approval mode or Orchestrator model its native
- * grant keeps (CAN-5479) re-mints the grant with them, as the agent's create
- * would, when the agent may write that native action. Once D11 would refuse
- * its runs, it converts back to the native action and the pipeline is
- * deleted. Its chat action is the one sent, else the one its pipeline stands
+ * converts, its pipeline is regenerated with the agent's marker; once D11
+ * would refuse its runs, or the update changes the plugins, approval mode or
+ * Orchestrator model its native grant keeps (CAN-5479), it converts back to
+ * the native action and the pipeline is deleted. Its chat action is the one sent, else the one its pipeline stands
  * for, with the grant's settings in place of whatever a hand edit set.
  */
 export async function updateAutomationForAgent(
@@ -556,8 +537,18 @@ export async function updateAutomationForAgent(
       ? { ok: false, error: AUTOMATION_CHANGED_MEANWHILE }
       : response;
   const edited = editedActivity(request, stored, chat, writer);
-  // What the agent may write as the native action, checked inside the queued
-  // write: its own access, which the converted action didn't need.
+  // Its grant is re-minted for the new revision only with the authority it
+  // had; an agent's change of authority stays a native action's (CAN-5479).
+  const regenerated = sameNativeGrantAuthority(
+    nativeGrantAuthority(chat),
+    authority,
+  )
+    ? await regenerateOwned(request, edited, owned, current, guarded, service)
+    : undefined;
+  if (regenerated) return changed(regenerated);
+  // D11 would refuse its converted runs, or its authority changed: back to
+  // the native action, if the agent may write that, checked inside the
+  // queued write.
   const { authorizeNative } = writer;
   const nativeWriter: UpdateWriter = authorizeNative
     ? {
@@ -567,22 +558,6 @@ export async function updateAutomationForAgent(
           authorizeNative(chat),
       }
     : guarded;
-  // Its grant is re-minted for the new revision. An agent's change of
-  // authority is re-minted too, as its create would mint it, once the agent
-  // may write that native action, so the automation stays a workflow.
-  const regenerated = await regenerateOwned(
-    request,
-    edited,
-    owned,
-    current,
-    sameNativeGrantAuthority(nativeGrantAuthority(chat), authority)
-      ? guarded
-      : nativeWriter,
-    service,
-  );
-  if (regenerated) return changed(regenerated);
-  // D11 would refuse its converted runs: back to the native action, if the
-  // agent may write that.
   const chatBack = chatActionOf(chat);
   const back = chatBack ? convertedBack(request, chatBack) : undefined;
   const updated = await writeUpdate(

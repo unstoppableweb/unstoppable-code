@@ -1,8 +1,3 @@
-import { parseSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
-import type { PipelineAgentModelConfig } from '@canopy/execution-engine/types/pipeline';
-import { resolvePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
-import { isSelectableAgentOverrideModel } from '@canopy/execution-engine/model-catalog';
-import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import {
@@ -115,7 +110,11 @@ import {
   resolvePipelineModelAlias,
 } from '@canopy/execution-engine/node/pipelines/executor/normalize-pipeline';
 import {
+  AI_GATEWAY_MODELS,
+  CLAUDE_MODELS,
+  CODEX_MODELS,
   DEFAULT_CLAUDE_MODEL,
+  OLLAMA_MODELS,
   getConfiguredSupportedThinkingLevelsMap,
   getExecutionHarnessForModel,
   getModelSource,
@@ -126,10 +125,7 @@ import {
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
-import {
-  readCodexSpeedRecord,
-  mergeAgentModelConfig,
-} from '@canopy/execution-engine/lib/codex-speed';
+import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   AgentModelConfig,
   ChatTabPluginSelections,
@@ -770,7 +766,7 @@ export interface StepLogMetadata {
   agent_harness?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
   agent_model?: string;
   agent_runtime_model?: string;
-  agent_model_config?: PipelineAgentModelConfig;
+  agent_model_config?: AgentModelConfig;
   model_alias?: string;
   model_alias_name?: string;
   model_alias_plugin_collection_ids?: string[];
@@ -2860,13 +2856,18 @@ interface ResolvedPipelineModelInputs {
   aliasId?: string;
   aliasName?: string;
   agentId?: string;
-  agentModelOverride?: boolean;
   aliasPluginCollectionIds: string[];
   syntheticSelectionsByCollectionId?: Record<string, ChatTabPluginSelections>;
 }
 
 function isRuntimeBaseModelAvailable(model: string): boolean {
-  return isSelectableAgentOverrideModel(model);
+  const resolved = resolveModelAlias(model);
+  return (
+    CLAUDE_MODELS.includes(resolved) ||
+    CODEX_MODELS.includes(resolved) ||
+    AI_GATEWAY_MODELS.includes(resolved) ||
+    OLLAMA_MODELS.includes(resolved)
+  );
 }
 
 function preferenceToDefaults(
@@ -2876,10 +2877,7 @@ function preferenceToDefaults(
     return undefined;
   }
   if (preference.mode === 'agent') {
-    return {
-      agent_id: preference.agent_id,
-      ...(preference.base !== undefined ? { base: preference.base } : {}),
-    };
+    return { agent_id: preference.agent_id };
   }
   return {
     base: preference.base,
@@ -2933,7 +2931,7 @@ async function resolveAgentAliasInputs(options: {
     inputValues.system_prompt,
     resolution.instructions ?? '',
   );
-  const syntheticId = `${AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX}${resolution.agentId}`;
+  const syntheticId = `${AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX}${agentId}`;
   return {
     inputValues: {
       ...inputValues,
@@ -2944,8 +2942,7 @@ async function resolveAgentAliasInputs(options: {
     runtimeModel: resolution.base,
     aliasId,
     aliasName,
-    agentId: resolution.agentId,
-    agentModelOverride: parseAgentRouteModelId(agentId) !== null,
+    agentId,
     aliasPluginCollectionIds: resolution.pluginSelections ? [syntheticId] : [],
     syntheticSelectionsByCollectionId: resolution.pluginSelections
       ? { [syntheticId]: resolution.pluginSelections }
@@ -2987,7 +2984,7 @@ export async function resolvePipelineModelInputs(options: {
       return resolveAgentAliasInputs({
         aliasId: alias.id,
         aliasName: alias.name,
-        agentId: resolvePipelineAgentAliasRoute(defaults),
+        agentId: defaults.agent_id,
         inputValues,
         runtime: options.runtime,
         ...(options.scope ? { scope: options.scope } : {}),
@@ -3078,9 +3075,7 @@ export async function resolvePipelineModelAliasTarget(
   const defaults = preferenceToDefaults(preference) ?? alias.defaults;
   if (!defaults) return null;
   if ('agent_id' in defaults) {
-    const resolution = await resolveAgent(
-      resolvePipelineAgentAliasRoute(defaults),
-    );
+    const resolution = await resolveAgent(defaults.agent_id);
     if (!resolution || !isRuntimeBaseModelAvailable(resolution.base))
       return null;
     return {
@@ -3127,7 +3122,7 @@ export function resolveHostStepModel(options: {
       );
     }
     if ('agent_id' in defaults) {
-      return resolvePipelineAgentAliasRoute(defaults);
+      return defaults.agent_id;
     }
     if (defaults.instructions?.trim() || defaults.plugin_collection_id) {
       throw new Error(
@@ -3254,7 +3249,7 @@ async function resolvePipelineAliasProbeModel(options: {
   }
   if ('agent_id' in defaults) {
     const resolution = await options.runtime.resolvePipelineAgentModelAlias?.(
-      resolvePipelineAgentAliasRoute(defaults),
+      defaults.agent_id,
       options.scope,
     );
     return resolution?.base ?? options.value;
@@ -4477,8 +4472,6 @@ async function maybeRunAccountProviderPrompt(options: {
   attempt: number;
   iteration: number;
   logMetadata: StepLogMetadata;
-  /** The step's Ledger attempt; only the OpenCode host serves its tools. */
-  ledgerAttempt?: PipelineLedgerAttempt | null;
 }): Promise<StepResult | null> {
   const {
     runStepOptions,
@@ -4492,7 +4485,6 @@ async function maybeRunAccountProviderPrompt(options: {
     attempt,
     iteration,
     logMetadata,
-    ledgerAttempt,
   } = options;
   const isResume = runStepOptions.step.uses === 'builtin/agent-resume';
   if (runStepOptions.step.uses !== 'builtin/agent-prompt' && !isResume) {
@@ -4596,9 +4588,6 @@ async function maybeRunAccountProviderPrompt(options: {
       ? {
           worktreeId: runStepOptions.worktreeId,
           executionContext: runStepOptions.executionContext,
-          ...(ledgerAttempt
-            ? { ledgerAttemptKey: ledgerAttempt.attemptKey }
-            : {}),
         }
       : {}),
     executionsDir: runStepOptions.runtime.executionsDir,
@@ -6149,16 +6138,6 @@ async function runStepBody(
       resolvedAgentInputs.aliasName,
       resolvedAgentInputs.aliasPluginCollectionIds,
     );
-    if (resolvedAgentInputs.agentId) {
-      logMetadata.agent_model_config = {
-        ...mergeAgentModelConfig(
-          options.modelConfig,
-          logMetadata.agent_model_config ?? {},
-        ),
-        agentId: resolvedAgentInputs.agentId,
-        baseModel: resolvedAgentInputs.runtimeModel,
-      };
-    }
     if (recoveryCheckpoint?.harness && logMetadata.agent_model) {
       logMetadata.agent_harness =
         recoveryCheckpoint.harness === 'cursor' ||
@@ -6231,47 +6210,14 @@ async function runStepBody(
         agentOrigin: options.agentOrigin,
         initiator: options.initiator,
         cwd: effectiveCwd,
-        resolveModel: async (value) => {
-          const route = resolveHostStepModel({
-            value,
-            modelAliases: options.modelAliases,
-            modelAliasPreferences: options.modelAliasPreferences,
-          });
-          const alias = options.modelAliases?.find(
-            (candidate) => candidate.id === value,
-          );
-          const defaults = alias
-            ? (preferenceToDefaults(
-                options.modelAliasPreferences?.[alias.id],
-              ) ?? alias.defaults)
-            : undefined;
-          if (alias && defaults && 'agent_id' in defaults) {
-            const parsed = parseAgentRouteModelId(route);
-            logMetadata.model_alias = alias.id;
-            logMetadata.model_alias_name = alias.name;
-            const parsedSend = parseSendAgentMessageInputs(rawInputValues);
-            const settings = parsedSend.ok ? parsedSend.value.settings : {};
-            logMetadata.agent_model_config = {
-              ...mergeAgentModelConfig(options.modelConfig, {
-                ...logMetadata.agent_model_config,
-                ...(settings.thinkingEffort !== undefined
-                  ? { thinkingLevel: settings.thinkingEffort }
-                  : {}),
-                ...(settings.fastMode !== undefined
-                  ? { fastMode: settings.fastMode }
-                  : {}),
-                ...(settings.speed !== undefined
-                  ? { speed: settings.speed }
-                  : {}),
-              }),
-              agentId: parsed?.agentId ?? route,
-              requestedModel: route,
-              ...(parsed ? { baseModel: parsed.baseModel } : {}),
-            };
-            await options.onLogMetadataResolved?.(logMetadata);
-          }
-          return route;
-        },
+        resolveModel: (value) =>
+          Promise.resolve().then(() =>
+            resolveHostStepModel({
+              value,
+              modelAliases: options.modelAliases,
+              modelAliasPreferences: options.modelAliasPreferences,
+            }),
+          ),
         pluginCollectionSelections: (id) => {
           const snapshot = options.resolvedPluginCollections?.[id];
           return snapshot?.chatSelections ?? snapshot?.selections;
@@ -6295,26 +6241,6 @@ async function runStepBody(
     const settingSources =
       parseSettingSources(resolvedAgentInputs.inputValues.setting_sources) ??
       DEFAULT_AGENT_SETTING_SOURCES;
-    const usesTerminalWorker =
-      options.agentTerminalMode &&
-      options.runtime.agentPromptWorker &&
-      (options.step.uses === 'builtin/agent-prompt' ||
-        (options.step.uses === 'builtin/agent-resume' &&
-          resolvedAgentInputs.inputValues.session_id?.trim()));
-    if (
-      resolvedAgentInputs.agentModelOverride &&
-      !usesTerminalWorker &&
-      (recoveryCheckpoint?.harness ??
-        getExecutionHarnessForModel(resolvedAgentInputs.runtimeModel ?? '')) ===
-        'claude' &&
-      Object.values(
-        resolvedAgentInputs.syntheticSelectionsByCollectionId ?? {},
-      ).some((selections) => (selections.mcpServerRefs?.length ?? 0) > 0)
-    ) {
-      throw new Error(
-        "This workflow cannot load the Agent's selected MCP servers. Choose another model or run it with a terminal worker.",
-      );
-    }
     const pluginCollectionRuntime = await materializePluginCollectionRuntime({
       ...options,
       effectiveCwd,
@@ -6367,7 +6293,6 @@ async function runStepBody(
     }
     const cursorResult = await maybeRunAccountProviderPrompt({
       runStepOptions: { ...options, recoveryCheckpoint },
-      ledgerAttempt: ledger.attempt,
       inputValues: resolvedAgentInputs.inputValues,
       pluginCollectionRuntime,
       effectiveCwd,

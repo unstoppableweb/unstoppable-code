@@ -17,7 +17,6 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
-import { sharedAutomationActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
 import {
   analyzeCapabilityPackage,
   computePipelinePackageDigestSync,
@@ -208,7 +207,6 @@ export interface SharedContainerCapabilityPackageAnalysisDependencies {
   ) => Promise<StoredUserPipelineDefinition | null>;
   readPipelineFile: (filePath: string) => Promise<string | null>;
   findCuratedPipelineKey: (pipelineId: string) => Promise<string | undefined>;
-  /** The same validated owned-chat projection the automation list shows. */
   listAutomations: () => Promise<ScheduledActivity[]>;
   mcpSelectionToEnvironmentRequirement: (
     selection: McpServerRef,
@@ -267,13 +265,9 @@ const DEFAULT_DEPENDENCIES: SharedContainerCapabilityPackageAnalysisDependencies
       return match?.curatedOrigin?.key ?? match?.curatedKey;
     },
     listAutomations: async () => {
-      const [{ getAutomationsService }, { projectOwnedChatAutomations }] =
-        await Promise.all([
-          import('../../automations/service'),
-          import('../../automations/owned-chat-projection'),
-        ]);
-      return projectOwnedChatAutomations(await getAutomationsService().list())
-        .activities;
+      const { getAutomationsService } =
+        await import('../../automations/service');
+      return (await getAutomationsService().list()).activities;
     },
     mcpSelectionToEnvironmentRequirement: async (selection) => {
       const { mcpSelectionToEnvironmentRequirement } =
@@ -904,8 +898,7 @@ async function automationUnit(
     context.diagnostics.definitionsOmitted += 1;
     return undefined;
   }
-  const sharedActivity = sharedAutomationActivity(activity);
-  const action = sharedActivity.action;
+  const action = activity.action;
   let pipelineYaml: string | undefined;
   let curatedPipelineKey: string | undefined;
   if (action.type === 'worktree_pipeline') {
@@ -929,7 +922,7 @@ async function automationUnit(
     context,
     await buildAutomationDefinitionResource(
       {
-        activity: sharedActivity,
+        activity,
         containerType:
           context.input.containerType === 'CODE_WORKTREE' ? 'code' : 'cowork',
         ...(pipelineYaml !== undefined ? { pipelineYaml } : {}),

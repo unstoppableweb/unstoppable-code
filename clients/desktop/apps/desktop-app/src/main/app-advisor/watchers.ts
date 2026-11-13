@@ -340,18 +340,6 @@ import {
   logMainProcessInfo,
   logMainProcessWarn,
 } from '../lib/main-process-logging';
-import {
-  cloudRunOwnerResource,
-  cloudRunWatcherResource,
-  cloudRunTargetDisplay,
-  cloudRunWatcherDeps,
-  cloudRunWatcherRefusal,
-  getCloudRunWatcherObserver,
-  isCloudRunEvent,
-  notifiedCloudRunEvent,
-  type AppAdvisorCloudRunEvent,
-  type CloudRunWatchSubscription,
-} from './cloud-run-watchers';
 import { GitHubBrokerError } from '../lib/github-broker';
 import {
   automationDefinitionResource,
@@ -499,7 +487,6 @@ type WatcherFiringEvent =
   | AppAdvisorNewChatStartedEvent
   | AppAdvisorHookTriggeredEvent
   | AppAdvisorAutomationRunEvent
-  | AppAdvisorCloudRunEvent
   | ExecutionEvent;
 
 type AutomationRunCorrelation =
@@ -1162,10 +1149,7 @@ function promoteQueuedGitHubEvents(
 }
 
 function shouldKeepWatcherActiveAfterEvent(event: WatcherFiringEvent): boolean {
-  return (
-    (isExecutionEvent(event) && isPipelinePauseEvent(event)) ||
-    (isCloudRunEvent(event) && event.status === 'paused')
-  );
+  return isExecutionEvent(event) && isPipelinePauseEvent(event);
 }
 
 interface WatcherEventDecision {
@@ -2395,8 +2379,6 @@ function isPersistedWatcher(value: unknown): value is AppAdvisorWatcher {
         typeof pending.pipelineExecutionId !== 'string') ||
       (pending.pipelineTransitionKey !== undefined &&
         typeof pending.pipelineTransitionKey !== 'string') ||
-      (pending.cloudRunOwner !== undefined &&
-        typeof pending.cloudRunOwner !== 'string') ||
       (pending.appAdvisorPrompt !== undefined &&
         pending.appAdvisorPrompt !== true)
     )
@@ -2914,8 +2896,6 @@ function buildDedupeKey(
     executionId: normalizeOptionalString(target.executionId),
     pipelineId: normalizeOptionalString(target.pipelineId),
     terminalStatuses: normalizedPipelineStatuses(target),
-    // Absent on local watchers, so their keys are unchanged.
-    ...(target.runOn === 'cloud' ? { runOn: target.runOn } : {}),
   });
 }
 
@@ -3296,18 +3276,6 @@ async function validateWatcherTargetIsAwaitingFutureEvent(
   if (
     entry.trigger === 'worktree_pipeline_completion' &&
     entry.target.kind === 'worktree_pipeline' &&
-    entry.target.runOn === 'cloud'
-  ) {
-    // Orchestrator reaches the cloud runs of every owner the account reads,
-    // so no one owner's runs are its own to watch.
-    if (entry.target.projectId === APP_ADVISOR_PROJECT_ID)
-      return 'Orchestrator cannot watch cloud runs yet. Read them with pipeline.execution_get.';
-    return cloudRunWatcherRefusal(entry.target, cloudRunWatcherDeps());
-  }
-
-  if (
-    entry.trigger === 'worktree_pipeline_completion' &&
-    entry.target.kind === 'worktree_pipeline' &&
     entry.target.executionId
   ) {
     const state = await loadExecutionState(
@@ -3315,7 +3283,7 @@ async function validateWatcherTargetIsAwaitingFutureEvent(
       join(getDataDir(), 'pipeline-executions'),
     );
     if (!state) {
-      return 'Watcher target execution was not found. Provide a non-terminal executionId, or omit executionId to watch future runs matching projectId/worktreeId. For a cloud run, set target.runOn to cloud.';
+      return 'Watcher target execution was not found. Provide a non-terminal executionId, or omit executionId to watch future runs matching projectId/worktreeId.';
     }
     if (
       !pipelineExecutionMatchesWorkspaceScope(state, entry.target) ||
@@ -3462,22 +3430,7 @@ async function watcherAuthorizationResources(
   // A pipelineId-only watcher has no run to inspect until one fires, and an
   // automation's delivery authorizes the run it dispatched when there is one.
   // Arming checks what is knowable now; delivery checks what actually fired.
-  // A cloud run watcher's runs have no local record (CAN-6391): a queued
-  // notice is authorized as the owner its run was recorded with, so a
-  // project that changed owner since never receives another owner's run;
-  // arming, and a notice that names no run, as the project's owner, the
-  // only owner whose runs the watcher reaches.
-  if (
-    watcher.target.kind === 'worktree_pipeline' &&
-    watcher.target.runOn === 'cloud'
-  ) {
-    const recorded = watcher.pendingLocalDelivery?.cloudRunOwner;
-    resources.push(
-      recorded === undefined
-        ? await cloudRunWatcherResource(watcher.target)
-        : cloudRunOwnerResource(recorded),
-    );
-  } else if (dispatchedExecutionId)
+  if (dispatchedExecutionId)
     resources.push(...(await watcherPipelineResources(dispatchedExecutionId)));
   else if (
     watcher.target.kind === 'worktree_pipeline' &&
@@ -3699,12 +3652,7 @@ async function resolveInheritedWatcherContext(
   if (target.kind === 'automation')
     return (await findAutomationActivity(target.automationId))
       ?.executionContext;
-  // A cloud run has no local record; its project's context stands for it.
-  if (
-    target.kind === 'worktree_pipeline' &&
-    target.executionId &&
-    target.runOn !== 'cloud'
-  ) {
+  if (target.kind === 'worktree_pipeline' && target.executionId) {
     const state = await loadExecutionState(
       target.executionId,
       join(getDataDir(), 'pipeline-executions'),
@@ -3869,20 +3817,6 @@ async function enrichWatcherTarget(
     };
   }
 
-  if (target.runOn === 'cloud') {
-    const [worktree, run] = await Promise.all([
-      readWorktreeDisplayMetadata(target.projectId, target.worktreeId),
-      cloudRunTargetDisplay(target, cloudRunWatcherDeps()),
-    ]);
-    return {
-      ...target,
-      ...worktree,
-      pipelineName: run.pipelineName ?? optionalTrimmed(target.pipelineName),
-      executionStatus: run.executionStatus,
-      executionStartedAt: run.executionStartedAt,
-    };
-  }
-
   const [worktree, state] = await Promise.all([
     readWorktreeDisplayMetadata(target.projectId, target.worktreeId),
     target.executionId
@@ -3990,18 +3924,6 @@ function createLocalDelivery(
           pipelineTransitionKey: pipelineTransitionKey(event),
         }
       : {}),
-    // A cloud run's pause is recorded as observed once delivered, as a
-    // local one is, so the observer never reports it twice.
-    ...(isCloudRunEvent(event) && event.pauseKey !== undefined
-      ? {
-          pipelineExecutionId: event.executionId,
-          pipelineTransitionKey: event.pauseKey,
-        }
-      : {}),
-    // Its delivery is authorized as the run's recorded owner.
-    ...(isCloudRunEvent(event) && event.owner !== undefined
-      ? { cloudRunOwner: event.owner }
-      : {}),
   };
 }
 
@@ -4045,49 +3967,13 @@ async function readChatRecoveryState(target: ChatWatcherTarget): Promise<{
   return { ...scope, snapshot };
 }
 
-/**
- * Whether a cloud run's pause or end fires this watcher (CAN-6391): a
- * cloud run watcher on that run, or on later cloud runs of its workflow.
- * The observer reads only the runs a watcher follows, so this checks the
- * event against the target it read for.
- */
-function watcherMatchesCloudRunEvent(
-  watcher: AppAdvisorWatcher,
-  event: AppAdvisorCloudRunEvent,
-): boolean {
-  if (
-    watcher.trigger !== 'worktree_pipeline_completion' ||
-    watcher.target.kind !== 'worktree_pipeline' ||
-    watcher.target.runOn !== 'cloud'
-  ) {
-    return false;
-  }
-  const target = watcher.target;
-  if (target.executionId && event.executionId !== target.executionId) {
-    return false;
-  }
-  if (
-    !target.executionId &&
-    target.pipelineId &&
-    event.pipelineId !== target.pipelineId
-  ) {
-    return false;
-  }
-  if (event.status === 'paused' || event.status === 'unavailable') {
-    return true;
-  }
-  return normalizedPipelineStatuses(target).includes(event.status);
-}
-
 function watcherMatchesPipelineEvent(
   watcher: AppAdvisorWatcher,
   event: ExecutionEvent,
 ): boolean {
   if (
     watcher.trigger !== 'worktree_pipeline_completion' ||
-    watcher.target.kind !== 'worktree_pipeline' ||
-    // A cloud run watcher hears only of its cloud runs.
-    watcher.target.runOn === 'cloud'
+    watcher.target.kind !== 'worktree_pipeline'
   ) {
     return false;
   }
@@ -4447,9 +4333,6 @@ function summarizePipelineJobs(
 }
 
 function sanitizeWatcherEvent(event: WatcherFiringEvent): unknown {
-  if (isCloudRunEvent(event)) {
-    return notifiedCloudRunEvent(event);
-  }
   if (!isExecutionEvent(event)) {
     return event;
   }
@@ -7927,11 +7810,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
 
   private initializeGitHubObservation(generation: number): void {
     if (!this.configured || generation !== this.configurationGeneration) return;
-    getCloudRunWatcherObserver().configure({
-      listSubscriptions: () => this.listCloudRunWatchSubscriptions(),
-      applyEvent: (watcherId, event) =>
-        this.handleCloudRunEvent(watcherId, event),
-    });
     getGitHubWorkflowRunObserver().configure({
       listSubscriptions: () => this.listGitHubWorkflowSubscriptions(),
       applyObservation: (observation) =>
@@ -7947,7 +7825,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
 
   shutdown(): void {
     this.localScheduler.stop();
-    getCloudRunWatcherObserver().stop();
     this.unsubscribeChatWatcherAccess?.();
     this.unsubscribeChatWatcherAccess = null;
     this.unsubscribeChatWatcherSetting?.();
@@ -8941,7 +8818,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       wait.finish('failed');
       throw error;
     }
-    const result: SetupAppAdvisorWatchersResult = await this.enqueueMutation(
+    return this.enqueueMutation(
       async (wait) => {
         if (input.watchers.length > 10) {
           return {
@@ -9381,17 +9258,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       { name: 'watcher.setup', scope: watcherOwnerScope(destination) },
       wait,
     );
-    // A cloud run watcher's runs are looked at only while one is live.
-    if (
-      result.ok &&
-      input.watchers.some(
-        (entry) =>
-          entry.target.kind === 'worktree_pipeline' &&
-          entry.target.runOn === 'cloud',
-      )
-    )
-      void getCloudRunWatcherObserver().rescan();
-    return result;
   }
 
   async watchGitHubItems(
@@ -11647,53 +11513,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     }
   }
 
-  /**
-   * The live cloud run watchers (CAN-6391), as the cloud run observer reads
-   * their runs: the run, or the later runs of a workflow, of each, and the
-   * pauses each already reported.
-   */
-  async listCloudRunWatchSubscriptions(): Promise<CloudRunWatchSubscription[]> {
-    const subscriptions: CloudRunWatchSubscription[] = [];
-    for (const watcher of await this.readSharedWatchers()) {
-      const target = watcher.target;
-      if (
-        (watcher.status !== 'active' && watcher.status !== 'firing') ||
-        watcher.trigger !== 'worktree_pipeline_completion' ||
-        target.kind !== 'worktree_pipeline' ||
-        target.runOn !== 'cloud'
-      )
-        continue;
-      subscriptions.push({
-        watcherId: watcher.id,
-        // A delivery still pending: not looked at, but its runs stay tracked.
-        ...(watcher.status === 'firing' || watcher.pendingLocalDelivery
-          ? { held: true }
-          : {}),
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
-        ...(target.executionId ? { executionId: target.executionId } : {}),
-        ...(target.pipelineId ? { pipelineId: target.pipelineId } : {}),
-        terminalStatuses: normalizedPipelineStatuses(target),
-        armedAt: watcher.createdAt,
-        reportedPauses: { ...watcher.observedPipelinePauses },
-      });
-    }
-    return subscriptions;
-  }
-
-  /** Fire one cloud run watcher with what the observer found. */
-  handleCloudRunEvent(
-    watcherId: string,
-    event: AppAdvisorCloudRunEvent,
-  ): Promise<void> {
-    return this.fireMatchingWatchers(
-      (watcher) =>
-        watcher.id === watcherId && watcherMatchesCloudRunEvent(watcher, event),
-      event,
-      this.storedWatcherOwnerScope((watcher) => watcher.id === watcherId),
-    );
-  }
-
   handleHookTriggeredEvent(event: AppAdvisorHookTriggeredEvent): Promise<void> {
     return this.fireMatchingWatchers(
       (watcher) => watcherMatchesHookEvent(watcher, event),
@@ -12402,11 +12221,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             (!isExecutionEvent(event) ||
               !isPipelinePauseEvent(event) ||
               watcher.observedPipelinePauses?.[event.executionId] !==
-                pipelineTransitionKey(event)) &&
-            (!isCloudRunEvent(event) ||
-              event.pauseKey === undefined ||
-              watcher.observedPipelinePauses?.[event.executionId] !==
-                event.pauseKey),
+                pipelineTransitionKey(event)),
         );
         if (watchers.length === 0) {
           return [];
@@ -13642,17 +13457,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   }
 
   private notifyChange(watchers: AppAdvisorWatcher[]): void {
-    // A cloud run watcher back to active after a held delivery needs the
-    // observer looking again (CAN-6391); the rescan arms it only then.
-    if (
-      watchers.some(
-        (watcher) =>
-          watcher.status === 'active' &&
-          watcher.target.kind === 'worktree_pipeline' &&
-          watcher.target.runOn === 'cloud',
-      )
-    )
-      void getCloudRunWatcherObserver().rescan();
     publishAutoDeleteActivity(
       'watchers',
       collectWatcherTargetKeys(

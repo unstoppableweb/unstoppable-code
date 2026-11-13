@@ -497,10 +497,7 @@ async function listUsageLimitedIdleSessionsWithProviders(
         ? state.authentication_pause?.attempt_id ===
             req.authenticationAttemptId &&
           state.authentication_pause.reason_ids.includes(reason.id)
-        : // A lost daemon core's pause resumes as a shutdown's does (CAN-6481).
-          reason.kind === 'app_shutdown' ||
-            reason.kind === 'core_lost' ||
-            reason.kind === 'provider_sign_in'
+        : reason.kind === 'app_shutdown' || reason.kind === 'provider_sign_in'
           ? !req.provider || reason.provider === req.provider
           : !req.resumeReason &&
             (reason.kind === 'provider_usage_limit' ||
@@ -547,7 +544,7 @@ async function listUsageLimitedIdleSessionsWithProviders(
           ...matching.map((reason) =>
             reason.kind === 'provider_sign_in'
               ? ('provider_sign_in' as const)
-              : reason.kind === 'app_shutdown' || reason.kind === 'core_lost'
+              : reason.kind === 'app_shutdown'
                 ? ('app_shutdown' as const)
                 : reason.kind === 'provider_authentication_required'
                   ? ('authentication' as const)

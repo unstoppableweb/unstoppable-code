@@ -650,66 +650,6 @@ describe('agent core operations for local memory (CAN-5993)', () => {
     ).rejects.toBeInstanceOf(AgentToolOperationRefusedError);
   });
 
-  it('ReadMemory opens archive keys from search through tool validation and refuses pruned or escaping keys', async () => {
-    const read = recordingDispatcher(
-      {
-        memory: 'workspace',
-        fileKey: 'inbox/.consolidated/note.md',
-        content: 'archived detail',
-      },
-      { params: true },
-    );
-    useDispatcher(read.dispatcher);
-    const runtime: CanopyInjectedToolRuntime = {
-      requestUserAnswers: (): Promise<never> =>
-        Promise.reject(new Error('Unused')),
-      loadScriptOutput: (): Promise<never> =>
-        Promise.reject(new Error('Unused')),
-      readLocalMemory: (request: ReadLocalMemoryInput): Promise<string> =>
-        readLocalMemory({ ...chat, ...request }),
-    };
-    for (const file of [
-      'inbox/.consolidated/note.md',
-      'imported/.consolidated/import.md',
-    ]) {
-      await expect(
-        executeCanopyInjectedTool(
-          'read_memory',
-          { scope: 'workspace', file },
-          runtime,
-        ),
-      ).resolves.toEqual({ text: 'archived detail' });
-    }
-    expect(read.recorded).toHaveLength(2);
-    expect(read.recorded.map((entry) => entry.params)).toEqual([
-      {
-        scope: { workspaceId: 'p', worktreeId: 'w' },
-        memory: 'workspace',
-        fileKey: 'inbox/.consolidated/note.md',
-      },
-      {
-        scope: { workspaceId: 'p', worktreeId: 'w' },
-        memory: 'workspace',
-        fileKey: 'imported/.consolidated/import.md',
-      },
-    ]);
-    for (const file of [
-      'inbox/.consolidated/topic-pruned.md',
-      'inbox/.consolidated/Topic-pruned-2.md',
-      'inbox/.consolidated/../../private.md',
-      'inbox/.consolidated/nested/note.md',
-    ]) {
-      await expect(
-        executeCanopyInjectedTool(
-          'read_memory',
-          { scope: 'workspace', file },
-          runtime,
-        ),
-      ).resolves.toMatchObject({ isError: true });
-    }
-    expect(read.recorded).toHaveLength(2);
-  });
-
   it('the memory scope comes only from the calling chat, never from tool input', async () => {
     const { dispatcher, recorded } = recordingDispatcher(
       { memory: 'workspace', fileKey: 'inbox/n.md', hits: [], content: '' },

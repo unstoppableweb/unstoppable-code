@@ -12,7 +12,6 @@ import {
 } from './DropdownMenu';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
 import { RichHoverTooltip } from './RichHoverTooltip';
-import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import {
   SpaceNotificationMenuStatusLine,
   type SpaceNotificationMenuStatus,
@@ -21,12 +20,6 @@ import {
 interface ActionMenuItemBase<K extends string> {
   readonly key: K;
   readonly label: string;
-  /**
-   * Block the label text from session replays, for a label that quotes
-   * conversation content (Look up “selection”). The row and its icon stay
-   * recorded. Applies to action rows.
-   */
-  readonly replayBlockLabel?: boolean;
   /**
    * Every row leads with an icon, so the labels line up down the menu. A run
    * of similar rows in one group (Close, Close others, Close to the right)
@@ -250,11 +243,7 @@ export function ActionMenuItems<K extends string>({
                 <DropdownMenuItemIcon>
                   {actionMenuRowIcon(items, index)}
                 </DropdownMenuItemIcon>
-                {item.replayBlockLabel === true ? (
-                  <span className={REPLAY_BLOCK_CLASS}>{item.label}</span>
-                ) : (
-                  item.label
-                )}
+                {item.label}
                 <ActionMenuShortcut shortcut={item.shortcut} />
               </DropdownMenuItem>
             </ActionMenuRichTooltip>

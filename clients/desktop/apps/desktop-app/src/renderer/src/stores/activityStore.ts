@@ -44,7 +44,6 @@ import {
   useLiveBackgroundTaskStore,
 } from './liveBackgroundTaskStore';
 import type { LiveBackgroundTaskChatEntry } from './liveBackgroundTaskStore';
-import { isWebCoreTaskProcess } from './chat/web-core/agent-task-processes';
 
 const MAX_OUTPUT_LINES = 200;
 const TERMINAL_OUTPUT_STOP_DELAY_MS = 2000;
@@ -177,16 +176,6 @@ interface ActivityState {
     projectId: string,
     worktreeId: string,
     files: ActivityChangedFilesResponse,
-  ) => void;
-  /**
-   * Replace one chat's background processes in its scope: a cloud chat's,
-   * which the web core reports as agent task rows rather than main.
-   */
-  setChatBackgroundProcesses: (
-    projectId: string,
-    worktreeId: string,
-    chatId: string,
-    processes: readonly BackgroundProcess[],
   ) => void;
   setWorktreeSummary: (key: string, data: WorktreeSummaryData) => void;
   setTrackedPlans: (key: string, plans: TrackedPlanData[]) => void;
@@ -2339,23 +2328,6 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     set((state) => ({ panelExpanded: !state.panelExpanded }));
   },
 
-  setChatBackgroundProcesses: (
-    projectId,
-    worktreeId,
-    chatId,
-    processes,
-  ): void => {
-    const key = worktreeKey(projectId, worktreeId);
-    set((state) => {
-      const current = state.bgProcesses[key] ?? [];
-      const others = current.filter((process) => process.chatId !== chatId);
-      if (others.length === current.length && processes.length === 0)
-        return state;
-      return {
-        bgProcesses: { ...state.bgProcesses, [key]: [...others, ...processes] },
-      };
-    });
-  },
   setChangedFiles: (projectId, worktreeId, files): void => {
     const key = worktreeKey(projectId, worktreeId);
     const prev = get().changedFiles[key];
@@ -3119,24 +3091,12 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       }
     }
 
-    // A cloud chat's agent tasks come from the web core, not its transcript
-    // (CAN-6452): the rebuild keeps each one, with its id and no local Stop,
-    // in place of any launch it rebuilt for the same task.
-    const published = (previousProcesses ?? []).filter(isWebCoreTaskProcess);
-    const rebuilt = nextData.bgProcesses
-      .map((process) => mergePreviousProcessState(previousProcesses, process))
-      .filter(
-        (process) =>
-          findProcessIndex(published, {
-            chatId: process.chatId,
-            taskId: process.taskId,
-            toolUseId: process.toolUseId,
-          }) < 0,
-      );
-    nextData.bgProcesses = withEndedAt(previousProcesses, [
-      ...rebuilt,
-      ...published,
-    ]);
+    nextData.bgProcesses = withEndedAt(
+      previousProcesses,
+      nextData.bgProcesses.map((process) =>
+        mergePreviousProcessState(previousProcesses, process),
+      ),
+    );
 
     set((state) => {
       if (

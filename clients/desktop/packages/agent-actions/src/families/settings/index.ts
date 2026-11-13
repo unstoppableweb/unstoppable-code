@@ -26,7 +26,6 @@ import {
   agentActionResult,
   portErrorResponse,
 } from '../../action-support';
-import { AgentPortError } from '../../port/environment-port';
 import type {
   AgentSettingsOpenRejectionReason,
   AgentSettingsPort,
@@ -131,12 +130,7 @@ export function createSettingsActionFamily<H>(options: {
             action.type,
             await options.port.aiGateway(action, call),
           );
-        } catch (error) {
-          // A host's typed refusal (a write it cannot confirm, a scope the
-          // account cannot reach) keeps its code and message; anything else
-          // stays generic, so no backend detail reaches the agent.
-          if (error instanceof AgentPortError)
-            return portErrorResponse(call, action.type, error);
+        } catch {
           return agentActionError(
             call,
             'execution_failed',
@@ -161,13 +155,6 @@ export function createSettingsActionFamily<H>(options: {
         const outcome = await options.port.open(action.destination, call);
         if (outcome.status === 'rejected') {
           return settingsRejection(call, outcome.reason);
-        }
-        if (outcome.status === 'link') {
-          return agentActionResult(call, action.type, {
-            status: 'link',
-            destination: routeJson(action.destination),
-            url: outcome.url,
-          });
         }
         return agentActionResult(call, action.type, {
           status: 'opened',
@@ -253,7 +240,6 @@ export function settingsActionCatalog(): readonly AgentActionCatalogEntry[] {
         'Use settings.open for a request to open Settings Plugins or Settings MCP servers. plugins.open_management opens Customize, a different destination for managing installed items.',
         "Organization destinations must name one of the signed-in account's current organizations; others are refused with invalid_target.",
         'Destinations are routes, never URLs. Opening settings changes only what the user sees.',
-        'A host without a window to navigate, such as a cloud chat, answers status "link" with the web settings URL for the destination instead of opening it; give that link to the user.',
       ],
     },
   ];

@@ -55,9 +55,6 @@ import {
   type SharedContainerRunStatusRequest,
   type ListDismissedSharedContainersRequest,
   type ListDismissedSharedContainersResult,
-  type ListSharedContainerOwnerDeparturesResult,
-  type DismissSharedContainerOwnerDepartureRequest,
-  type DismissSharedContainerOwnerDepartureResult,
   type RestoreSharedContainerResult,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   isStoredSecretValue,
@@ -69,7 +66,6 @@ import {
   MAX_SHARED_CONTAINER_RUN_COMMANDS,
   SHARED_CONTAINER_BLOCKED_BY_ORG_BILLING_ERROR_CODE,
   SHARED_CONTAINER_DISMISSAL_NOT_FOUND_ERROR_CODE,
-  SHARED_CONTAINER_OWNER_DEPARTURE_NOT_FOUND_ERROR_CODE,
   SHARED_CONTAINER_EXTERNAL_SHARING_DISABLED_ERROR_CODE,
   SHARED_CONTAINER_GRANT_NOT_FOUND_ERROR_CODE,
   SHARED_CONTAINER_INSUFFICIENT_ROLE_ERROR_CODE,
@@ -86,15 +82,12 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { getFeatureFlagService } from '../feature-flags';
 import { validateId } from '../lib/validation';
-import { isUuid } from '@canopy/protocol/uuid';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { addTrackedPlansWriteListener } from '../lib/plan-persistence';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
   createSharedContainerGrant,
-  dismissSharedContainerOwnerDeparture,
   listDismissedSharedContainers,
-  listSharedContainerOwnerDepartures,
   listSharedContainerRecipients,
   listSharedContainersByMe,
   restoreSharedContainer,
@@ -436,19 +429,6 @@ function isDismissalsUnsupported(error: unknown): boolean {
   return (
     error instanceof CanopyCloudClientError &&
     error.code === 'unsupported-capability'
-  );
-}
-
-// IPC failures expose only messages. Return the empty-state marker for a
-// definitive loss of authorization, so the renderer can forget its cache.
-function areOwnerDeparturesUnavailable(error: unknown): boolean {
-  return (
-    error instanceof CanopyCloudClientError &&
-    (error.code === 'unsupported-capability' ||
-      error.code === 'missing-api-key' ||
-      error.code === 'cloud-not-configured' ||
-      (error.code === 'http-error' &&
-        (error.status === 401 || error.status === 403)))
   );
 }
 
@@ -1705,62 +1685,6 @@ export function registerSharedContainerHandlers(runtime: {
       throw error;
     }
   });
-
-  registerIpcHandler<[], ListSharedContainerOwnerDeparturesResult>(
-    IPC_CHANNELS.sharedContainersListOwnerDepartures,
-    async () => {
-      assertSharedContainersEnabled();
-      try {
-        return await listSharedContainerOwnerDepartures();
-      } catch (error) {
-        // A rollback can remove the collection route before the cached
-        // capability updates. A DELETE 404 has different semantics.
-        if (
-          error instanceof CanopyCloudClientError &&
-          error.code === 'http-error' &&
-          error.status === 404
-        ) {
-          return { unsupported: true };
-        }
-        if (areOwnerDeparturesUnavailable(error)) return { unsupported: true };
-        throw error;
-      }
-    },
-  );
-
-  registerIpcHandler<
-    [DismissSharedContainerOwnerDepartureRequest],
-    DismissSharedContainerOwnerDepartureResult
-  >(
-    IPC_CHANNELS.sharedContainersDismissOwnerDeparture,
-    async (_event, request) => {
-      assertSharedContainersEnabled();
-      validateId(request.noticeId, 'noticeId');
-      if (!isUuid(request.noticeId)) {
-        throw new Error('noticeId must be a UUID');
-      }
-      try {
-        await dismissSharedContainerOwnerDeparture(request.noticeId);
-      } catch (error) {
-        if (areOwnerDeparturesUnavailable(error)) return { unsupported: true };
-        // Only the typed answer means "gone": an older route's bare 404 says
-        // nothing about this notice.
-        if (
-          !(
-            error instanceof CanopyCloudClientError &&
-            error.status === 404 &&
-            error.serverCode ===
-              SHARED_CONTAINER_OWNER_DEPARTURE_NOT_FOUND_ERROR_CODE
-          )
-        ) {
-          throw error;
-        }
-      }
-      // Every window re-lists its notices, not just the one that asked.
-      getSharedContainerInboxWatcher().signalLocalChange();
-      return { dismissed: true };
-    },
-  );
 
   registerIpcHandler<
     [SharedContainerRecipientRequest],

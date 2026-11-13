@@ -32,21 +32,15 @@ import type {
 import {
   callerBoundingApprovalMode,
   callerBoundingSessionApprovalRules,
-  isApprovalModeDowngrade,
   reachableApprovalMode,
 } from '../approvals/live-approval-modes';
 import {
   FAIL_CLOSED_APPROVAL_MODE,
-  getProviderForChatModel,
   type ApprovalMode,
   type ApprovalRule,
   type ChatSendMessageRequest,
   type ClaudeTerminalTurnState,
 } from '@canopy/desktop-shared/types';
-import { supportsChatHarnessChoice } from '@canopy/desktop-shared/lib/chat-model-selection';
-import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
-import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
-import { isOpenCodeRuntimeAvailable } from '../opencode/runtime-availability';
 import {
   buildAgentSenderRequest,
   isAgentSenderContextError,
@@ -328,36 +322,7 @@ interface SendAdmissionGuard {
   settingsRevision: number;
   callerRevision: number | undefined;
   contained: () => boolean;
-  /** Why `contained` refuses now. */
-  refusal: () => string;
-}
-
-const APPROVAL_MODE_NAMES: Readonly<Record<ApprovalMode, string>> = {
-  ask: 'Ask',
-  auto: 'Auto',
-  'full-access': 'Full Access',
-};
-
-/**
- * Why a message to chat `chatId` is refused: a policy that could not be read
- * in full, a mode broader than the calling chat's, or grants and denies the
- * two chats do not share.
- */
-function containmentRefusal(
-  chatId: string,
-  state:
-    | { unreadable: 'caller' | 'target' }
-    | { target: ApprovalMode; bound: ApprovalMode },
-): string {
-  if ('unreadable' in state) {
-    return state.unreadable === 'caller'
-      ? `This chat's tool approvals could not be read in full, so it cannot message chat ${chatId}. A rule, setting or folder they depend on could not be resolved.`
-      : `Chat ${chatId}'s tool approvals could not be read in full, so this chat cannot message it. A rule, setting or folder they depend on could not be resolved.`;
-  }
-  if (isApprovalModeDowngrade(state.target, state.bound)) {
-    return `Chat ${chatId} can run in ${APPROVAL_MODE_NAMES[state.target]}, but this chat is limited to ${APPROVAL_MODE_NAMES[state.bound]} now, so this chat cannot message it.`;
-  }
-  return `Chat ${chatId} holds tool approvals this chat doesn't, or lacks a deny rule this chat has, so this chat cannot message it.`;
+  refusal: string;
 }
 
 /** Whether a chat's canonical tab still holds the policy read from it. */
@@ -888,65 +853,7 @@ export function createDesktopEnvironmentPort(
             modelConfig: { thinkingLevel: input.model.thinkingLevel },
           }
         : {}),
-      // A named harness travels on the reservation, which pins the fresh tab
-      // to it, and on the send, which captures it; the provider follows the
-      // harness as a picker's choice does.
-      ...harnessRequestFields(input.model),
     };
-  }
-
-  function harnessRequestFields(
-    model: AgentStartChatInput['model'],
-  ): Pick<
-    ChatSendMessageRequest,
-    'executionHarness' | 'executionHarnessChoice' | 'providerType'
-  > {
-    if (!model?.executionHarness) return {};
-    const providerType = getProviderForChatModel(
-      model.id,
-      model.executionHarness,
-    );
-    return {
-      executionHarness: model.executionHarness,
-      executionHarnessChoice: true,
-      ...(providerType === undefined ? {} : { providerType }),
-    };
-  }
-
-  /**
-   * A named harness must be one the model offers a chat (the shared family
-   * matched it against models.list; this is main's own check), and its
-   * runtime must be connected, or nothing is reserved.
-   */
-  async function assertHarnessChoice(
-    model: NonNullable<AgentStartChatInput['model']>,
-  ): Promise<void> {
-    const harness = model.executionHarness;
-    if (harness === undefined) return;
-    if (!supportsChatHarnessChoice(model.id, harness))
-      throw new AgentPortError(
-        'validation_failed',
-        `Model ${model.id} does not run on the ${harness} harness. Use its harnessChoices from models.list, or omit executionHarness.`,
-      );
-    // The pin pairs the harness with the provider it implies; a pairing no
-    // provider serves is refused here, as the project creation refuses it,
-    // never reserved with the model's default provider.
-    if (getProviderForChatModel(model.id, harness) === undefined)
-      throw new AgentPortError(
-        'validation_failed',
-        `No provider is available for model ${model.id} on the ${harness} harness.`,
-      );
-    for (const [runtimeId, label, isAvailable] of [
-      ['cursor', 'Cursor', isCursorRuntimeAvailable],
-      ['copilot', 'Copilot', isCopilotRuntimeAvailable],
-      ['opencode', 'OpenCode', isOpenCodeRuntimeAvailable],
-    ] as const) {
-      if (harness === runtimeId && !(await isAvailable()))
-        throw new AgentPortError(
-          'missing_capability',
-          `${label} is not connected in the desktop app.`,
-        );
-    }
   }
 
   async function callerApprovalPolicy(
@@ -1002,7 +909,6 @@ export function createDesktopEnvironmentPort(
     chatId: string,
     call: DesktopAgentActionCall,
   ): Promise<AgentStartChatReceipt> {
-    if (input.model) await assertHarnessChoice(input.model);
     const receipt = await startTarget(input, chatId, call);
     const target = {
       workspaceId: input.scope.workspaceId,
@@ -1055,7 +961,7 @@ export function createDesktopEnvironmentPort(
               throw error;
             }
           },
-          refusal: (): string =>
+          refusal:
             'The new chat would run with broader tool approvals than this chat.',
         };
       },
@@ -1128,23 +1034,17 @@ export function createDesktopEnvironmentPort(
       scope ? effectivePolicyOf(scope, callerPolicy, call) : undefined,
       effectivePolicyOf(targetChat, targetPolicy, call),
     ]);
-    const reach = (): ApprovalMode =>
-      deps.liveApprovalMode(targetChat, targetPolicy.mode, 'reach');
-    const bound = (): ApprovalMode => liveCallerMode(callerPolicy.mode, call);
+    const refusal = `Chat ${targetChat.chatId} runs with broader tool approvals than this chat, so this chat cannot message it.`;
     const contained = (): boolean =>
       isApprovalPolicyWithin(
-        withMode(targetEffective, reach()),
-        withMode(callerEffective, bound()),
-      );
-    const refusal = (): string =>
-      containmentRefusal(
-        targetChat.chatId,
-        callerEffective && targetEffective
-          ? { target: reach(), bound: bound() }
-          : { unreadable: callerEffective ? 'target' : 'caller' },
+        withMode(
+          targetEffective,
+          deps.liveApprovalMode(targetChat, targetPolicy.mode, 'reach'),
+        ),
+        withMode(callerEffective, liveCallerMode(callerPolicy.mode, call)),
       );
     if (!contained()) {
-      throw new AgentPortError('authorization_conflict', refusal());
+      throw new AgentPortError('authorization_conflict', refusal);
     }
     return {
       targetPolicy,
@@ -1212,13 +1112,13 @@ export function createDesktopEnvironmentPort(
         if (stale.length === 0 && guard.contained()) return undefined;
         refused =
           stale.length === 0
-            ? new AgentPortError('authorization_conflict', guard.refusal())
+            ? new AgentPortError('authorization_conflict', guard.refusal)
             : new AgentPortError(
                 'stale_ui_state',
                 `The message to chat ${targetChat.chatId} was not sent because ${stale.join(' and ')} changed while it was checked. Try again.`,
                 true,
               );
-        return refused.message;
+        return guard.refusal;
       },
       refusal: () => refused,
     };
@@ -1243,7 +1143,7 @@ export function createDesktopEnvironmentPort(
     ) {
       throw (
         admission.refusal() ??
-        new AgentPortError('authorization_conflict', guard.refusal())
+        new AgentPortError('authorization_conflict', guard.refusal)
       );
     }
     return admission;
@@ -1405,9 +1305,7 @@ export function createDesktopEnvironmentPort(
             const stale = staleReads(tab, guard, target.chatId, call);
             if (stale.length === 0 && guard.contained()) return undefined;
             refusal = { stale };
-            return stale.length === 0
-              ? guard.refusal()
-              : `The message to chat ${target.chatId} was not sent because ${stale.join(' and ')} changed while it was checked.`;
+            return guard.refusal;
           },
           () => {
             const send = (): Promise<
@@ -1440,7 +1338,7 @@ export function createDesktopEnvironmentPort(
       );
       if (refusal && result.outcome === 'rejected') {
         if (refusal.stale.length === 0) {
-          throw new AgentPortError('authorization_conflict', guard.refusal());
+          throw new AgentPortError('authorization_conflict', guard.refusal);
         }
         for (const what of refusal.stale) changed.add(what);
         if (attempt < SEND_ADMISSION_ATTEMPTS) continue;

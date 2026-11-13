@@ -357,7 +357,6 @@ function unavailable(
   code:
     | 'route_unavailable'
     | 'auth_required'
-    | 'policy_blocked'
     | 'capability_unavailable' = 'route_unavailable',
   message?: string,
 ): Extract<AgentDelegationResult<never>, { ok: false }> {
@@ -776,10 +775,7 @@ export class DelegationRouteRuntime {
             await resolveSessionWorkOwner(owner),
           )
         )
-          return unavailable(
-            'policy_blocked',
-            'This model is blocked by your organization policy.',
-          );
+          return unavailable('capability_unavailable');
         const authGeneration = this.options.authGeneration(harness);
         const workspaceEnvironment = resolveCodexRuntimeEnvironmentProfile({
           runtime: 'agent',

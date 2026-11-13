@@ -3485,35 +3485,6 @@ function cleanupArchivedWorktreeRendererState(
   useHooksStore.getState().cleanupWorktree(projectId, worktreeId);
 }
 
-/** Recovery cleanup needs confirmed absence, not an optimistically hidden row. */
-export function cleanupUnlistedWorktreeRendererState(
-  projectId: string,
-  worktreeId: string,
-): boolean {
-  const get = useProjectsStore.getState;
-  const state = get();
-  if (
-    state.projectInventoryStatus !== 'ready' ||
-    !state.projectInventorySnapshot ||
-    state.failedWorkspaceIds.has(projectId)
-  )
-    return false;
-  const hasOwner = (projects: readonly SidebarItem[]): boolean =>
-    projects.some(
-      (project) =>
-        project.id === projectId &&
-        (project.type === 'cowork' ||
-          project.worktrees.some((row) => row.id === worktreeId)),
-    );
-  if (
-    hasOwner(state.projects) ||
-    hasOwner(state.projectInventorySnapshot.projects)
-  )
-    return false;
-  cleanupArchivedWorktreeRendererState(projectId, worktreeId, get);
-  return true;
-}
-
 function finalizeArchiveUiRemoval(
   snapshot: ArchiveUiSnapshot,
   get: () => ProjectsState,
@@ -3835,20 +3806,7 @@ async function performArchive(
           typedRefusal: true,
         });
   // Before warnings and finalization: the callers' catches roll the row back.
-  throwIfArchiveRefused(archiveResponse, {
-    ...(options?.expectedBranchName !== undefined
-      ? { expectedBranchName: options.expectedBranchName }
-      : {}),
-    ...(options?.deleteBranch !== undefined
-      ? { deleteBranch: options.deleteBranch }
-      : {}),
-    ...(options?.deleteWithoutRetentionIfMissing !== undefined
-      ? {
-          deleteWithoutRetentionIfMissing:
-            options.deleteWithoutRetentionIfMissing,
-        }
-      : {}),
-  });
+  throwIfArchiveRefused(archiveResponse);
 
   for (const warning of archiveResponse.warnings) {
     useGitHubStore.getState().addToast(warning, 'warning', undefined, {

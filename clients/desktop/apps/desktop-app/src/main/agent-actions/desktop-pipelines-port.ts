@@ -53,10 +53,7 @@ import {
   type GlobalStartRefusal,
 } from '../pipelines/pipeline-global-start';
 import { agentPipelineOwnerContext } from '../pipelines/pipeline-owner-policy';
-import type {
-  CloudRunAgentChat,
-  CloudRunAgentDestination,
-} from '../pipelines/cloud-pipeline-runs';
+import type { CloudRunAgentDestination } from '../pipelines/cloud-pipeline-runs';
 import { CLOUD_PIPELINE_RUN_TARGET_ID } from '@canopy/protocol/canopy-core/core/pipeline/cloud-runs';
 import { inlineWatcherSetupJson } from './desktop-legacy-family';
 import { worktreeWatcherDestination } from './desktop-watcher-port';
@@ -365,20 +362,13 @@ async function runInScopedTask(
       worktreeId: runtime.worktreeId,
     });
     if ('refusal' in owner) return rejected('owner_unavailable', owner.refusal);
-    return runInCloud(
-      action,
-      pipeline,
-      owner.owner,
-      watcherCall,
-      {
-        workspaceId: runtime.projectId,
-        ...(executionScope === 'worktree'
-          ? { worktreeId: runtime.worktreeId }
-          : {}),
-        ...(action.repoId ? { repoId: action.repoId } : {}),
-      },
-      agentChatOf(initiatorForWorktreeRuntime(runtime)),
-    );
+    return runInCloud(action, pipeline, owner.owner, watcherCall, {
+      workspaceId: runtime.projectId,
+      ...(executionScope === 'worktree'
+        ? { worktreeId: runtime.worktreeId }
+        : {}),
+      ...(action.repoId ? { repoId: action.repoId } : {}),
+    });
   }
   const { createElectronExecutionRuntime } =
     await import('../pipelines/execution-runtime');
@@ -669,14 +659,7 @@ async function runGlobal(
     );
   }
   if (action.runOn === 'cloud')
-    return runInCloud(
-      action,
-      pipeline,
-      owner.owner,
-      call,
-      undefined,
-      agentChatOf(source.initiator),
-    );
+    return runInCloud(action, pipeline, owner.owner, call);
   const options: ExecutePipelineRequestOptions = {
     pipelineId: pipeline.info.id,
     ...pipelineSourceExecutionOptions(pipeline),
@@ -725,24 +708,12 @@ const CLOUD_REFUSAL_REASONS: Readonly<
  * project, and its task for a worktree chat, for the web core to admit or
  * refuse with its own reason.
  */
-/**
- * The agent chat a cloud start names (CAN-6391), so the run reports which
- * desktop chat started it; Orchestrator's runs name none, since it watches
- * no cloud runs.
- */
-function agentChatOf(
-  initiator: PipelineExecutionInitiator,
-): CloudRunAgentChat | undefined {
-  return initiator.kind === 'agent' ? initiator.chat : undefined;
-}
-
 async function runInCloud(
   action: PipelineRunAction,
   pipeline: PipelineData,
   owner: string,
   call: WatcherCall,
   destination?: CloudRunAgentDestination,
-  chat?: CloudRunAgentChat,
 ): Promise<AgentPipelineRunResult> {
   const { info } = pipeline;
   const { startAgentCloudPipelineRun } =
@@ -776,7 +747,6 @@ async function runInCloud(
         : {}),
     },
     destination,
-    chat,
   );
   if (result.success)
     return {

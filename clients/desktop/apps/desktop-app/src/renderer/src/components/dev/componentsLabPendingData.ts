@@ -237,12 +237,6 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     baseline: 'docs/design/legacy-headings.baseline.json',
   },
   {
-    family: 'Links',
-    remaining: 76,
-    breakdown: '76 raw <a>, across 56 files',
-    baseline: 'docs/design/legacy-links.baseline.json',
-  },
-  {
     family: 'Tooltips',
     remaining: 1,
     breakdown: '1 native title on a control',

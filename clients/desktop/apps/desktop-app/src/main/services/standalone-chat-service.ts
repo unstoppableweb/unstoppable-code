@@ -1,4 +1,3 @@
-import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import { removeUnstartedWorkEntry } from '../lib/cowork-work-entries';
 import { assertCoworkWorkspaceRootPresent } from '../lib/cowork-folder-guard';
@@ -37,7 +36,6 @@ import {
   type AgentModelConfig,
   type AgentProviderType,
   type AiCreditsScopeRequest,
-  type ChatActiveSessionInfo,
   type ModelHarness,
   type PersistedChatMessage,
   type PersistedChatTab,
@@ -175,30 +173,6 @@ import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/
 
 const CURSOR_CONNECT_MESSAGE =
   'Connect Cursor in Settings to send with Cursor, or choose another model.';
-
-/**
- * A standalone summary's turn fields, from the chat's live session: whether
- * a turn runs and, for a session that applies setters only from its next
- * turn, its declaration and the running turn's settings, so a composer can
- * show a mid-turn change as pending.
- */
-function standaloneTurnFields(
-  session: ChatActiveSessionInfo | undefined,
-): Pick<
-  PortalStandaloneChatSummary,
-  'turnActive' | 'settingApplication' | 'turnSettings'
-> {
-  const turnActive = session?.turnActive === true;
-  return {
-    turnActive,
-    ...(session?.settingApplication
-      ? { settingApplication: { ...session.settingApplication } }
-      : {}),
-    ...(turnActive && session?.turnSettings
-      ? { turnSettings: { ...session.turnSettings } }
-      : {}),
-  };
-}
 
 /**
  * Cowork runs Cursor on the managed runtime like a worktree chat. Every entry
@@ -1021,11 +995,11 @@ function buildStandaloneChatSummary(
     deferredToolsAllowed:
       options?.deferredToolsAllowed ?? tab.deferredToolsAllowed,
     ...(workEntryId !== undefined
-      ? standaloneTurnFields(
-          getActiveSessionInfos(projectId, workEntryId).find(
-            (session) => session.chatId === tab.id,
+      ? {
+          turnActive: getActiveSessionInfos(projectId, workEntryId).some(
+            (session) => session.chatId === tab.id && session.turnActive,
           ),
-        )
+        }
       : {}),
     ...(lastTurnEnd ? { lastTurnEnd } : {}),
     ...(options?.pendingQuestions !== undefined
@@ -1225,12 +1199,6 @@ export function projectStandaloneChatSnapshot(
     pluginSelectionsDetail: chat.pluginSelectionsDetail,
     deferredToolsAllowed: chat.deferredToolsAllowed,
     turnActive: chat.turnActive,
-    ...(chat.settingApplication !== undefined
-      ? { settingApplication: chat.settingApplication }
-      : {}),
-    ...(chat.turnSettings !== undefined
-      ? { turnSettings: chat.turnSettings }
-      : {}),
     ...(chat.lastTurnEnd !== undefined
       ? { lastTurnEnd: chat.lastTurnEnd }
       : {}),
@@ -1601,12 +1569,6 @@ export async function setStandaloneChatModel(
         `No execution harness is available for model "${model}".`,
       );
     }
-    await assertAgentModelAdmission(model, {
-      projectId: workspaceId,
-      worktreeId: entryId,
-      chatId: payload.chatId,
-      executionHarness: targetHarness,
-    });
     const capturedHarness = capturedExecutionHarnessForStandaloneTab(
       existing,
       workspaceId,
@@ -2200,12 +2162,6 @@ async function sendStandaloneChatMessageOnce(
           workspaceId,
           existingTab?.model,
           request.model,
-          {
-            worktreeId: entryId,
-            chatId: request.chatId,
-            executionHarness:
-              request.executionHarness ?? existingTab?.executionHarness,
-          },
         );
         if (sendModelPin !== undefined) {
           request = {

@@ -5,7 +5,6 @@ import {
   LEDGER_STATUSES,
   LedgerSearchEntriesParamsSchema,
   LedgerUuidSchema,
-  isLedgerEntryOpen,
   type LedgerActorFilter,
   type LedgerAttributionKind,
   type LedgerEntryType,
@@ -18,6 +17,7 @@ import {
 
 import { LedgerStoreError } from './errors';
 import { hashLedgerCanonicalValue } from './hashing';
+import { isLedgerEntryOpen } from './policy';
 import { normalizeLedgerTimeBound } from './time';
 import type { LedgerSearchEntriesInput } from './types';
 

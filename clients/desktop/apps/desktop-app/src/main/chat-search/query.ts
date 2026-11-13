@@ -192,21 +192,12 @@ export function normalizeQueryRequest(request: ChatSearchQueryRequest): {
   return limit === 0 ? null : { ftsQuery, limit };
 }
 
-/** Trusted agent policy filters, applied before ranking or projecting text. */
-export interface AgentChatSearchFilter {
-  projectId: string;
-  excludeChatId: string;
-  documentId?: string;
-  excerpt?: boolean;
-}
-
 /** Rank all matching transcript rows, collapse to one parent, then paginate. */
 export function queryChatSearchDatabase(
   db: DatabaseSync,
   request: ChatSearchQueryRequest,
   now = Date.now(),
   offset = 0,
-  agent?: AgentChatSearchFilter,
 ): ChatSearchResult[] {
   const normalized = normalizeQueryRequest(request);
   if (!normalized) return [];
@@ -223,14 +214,6 @@ export function queryChatSearchDatabase(
        JOIN chat_docs d ON d.doc_id = chat_fts.doc_id
        WHERE body MATCH ?
          AND (d.expires_at IS NULL OR d.expires_at > ?)
-         ${
-           agent
-             ? `AND d.project_id = ? AND d.chat_id != ?
-           AND d.document_kind = 'chat'
-           AND d.source IN ('live', 'worktree-archive', 'cowork-archive', 'archived-container')
-           ${agent.documentId === undefined ? '' : 'AND d.doc_id = ?'}`
-             : ''
-         }
      ), ranked AS (
        SELECT *, ROW_NUMBER() OVER (
          PARTITION BY project_id, worktree_id, chat_id
@@ -248,7 +231,7 @@ export function queryChatSearchDatabase(
             page.provider_type, page.updated_at, page.archived_at,
             page.expires_at, page.message_count, page.review_status,
             page.parent_doc_id, page.delegation_id, page.run_generation,
-            snippet(chat_fts, 2, ?, ?, ?, ?) AS marked_snippet
+            snippet(chat_fts, 2, ?, ?, ?, 24) AS marked_snippet
      FROM page JOIN chat_fts ON chat_fts.rowid = page.fts_rowid
      WHERE chat_fts MATCH ?
      ORDER BY page.match_rank, page.doc_id, page.fts_rowid`,
@@ -256,19 +239,11 @@ export function queryChatSearchDatabase(
   const rows: unknown[] = statement.all(
     normalized.ftsQuery,
     now,
-    ...(agent
-      ? [
-          agent.projectId,
-          agent.excludeChatId,
-          ...(agent.documentId === undefined ? [] : [agent.documentId]),
-        ]
-      : []),
     normalized.limit,
     start,
     MATCH_START,
     MATCH_END,
     SNIPPET_ELLIPSIS,
-    agent?.excerpt ? 64 : 24,
     normalized.ftsQuery,
   );
   return rows.map((result) => {
@@ -276,14 +251,7 @@ export function queryChatSearchDatabase(
     const catalogEntry = mapChatSearchCatalogRow(row);
     const markedSnippet =
       typeof row.marked_snippet === 'string' ? row.marked_snippet : '';
-    const parsed = parseChatSearchSnippet(markedSnippet);
-    if (agent) {
-      parsed.snippet = parsed.snippet.slice(0, agent.excerpt ? 6000 : 1200);
-      parsed.matchRanges = parsed.matchRanges.filter(
-        ({ end }) => end <= parsed.snippet.length,
-      );
-    }
-    return { ...catalogEntry, ...parsed };
+    return { ...catalogEntry, ...parseChatSearchSnippet(markedSnippet) };
   });
 }
 

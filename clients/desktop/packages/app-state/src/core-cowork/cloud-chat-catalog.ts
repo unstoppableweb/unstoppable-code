@@ -1,6 +1,5 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import {
-  CORE_INSTRUCTION_DEFINITIONS,
   CatalogSelectionGetResultSchema,
   CatalogSnapshotGetResultSchema,
   CoreChatLifecycleResultSchema,
@@ -432,9 +431,7 @@ export function createCloudChatCatalog(
       const choice = ++selectionChoice;
       const write = selectionWrites.then(async () => {
         if (choice !== selectionChoice) return;
-        // Update's own result: a save's capability state may exceed the
-        // lifecycle catchall's 32 KiB JSON bound (CAN-6092).
-        CORE_INSTRUCTION_DEFINITIONS['core.chat.update'].result.parse(
+        CoreChatLifecycleResultSchema.parse(
           unwrap(
             await invoker.request('core.chat.update', {
               ...envelope(),

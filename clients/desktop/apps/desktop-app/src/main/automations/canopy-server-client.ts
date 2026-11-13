@@ -3,13 +3,6 @@ import { assertResourceShareDestination } from '../lib/resource-share-context';
 import { assertShareScopeTarget } from '../lib/share-scope-target';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
-import { findInstalledAutomationAgent } from '@canopy/desktop-shared/lib/automation-agent';
-import {
-  getSharedAgent,
-  automationAgentPackageMatches,
-  automationAgentPluginsMatch,
-} from '../agents/canopy-server-client';
-import { listAgentModels } from '../agents/agent-model-store';
 import {
   resourceContextEnabled,
   resourceContextSnapshot,
@@ -30,7 +23,6 @@ import type {
 import type {
   ListSharedAutomationsResponse,
   SharedAutomationDetail,
-  SharedAutomationDocument,
   SharedAutomationPublicShareInfo,
 } from '@canopy/protocol/automations';
 import {
@@ -40,24 +32,6 @@ import {
 } from '../canopy-cloud/client';
 
 const API_PREFIX = `/api/v1/${BRAND.web.apiNamespace}`;
-
-async function validateAutomationAgent(
-  document: SharedAutomationDocument,
-): Promise<void> {
-  const config =
-    'modelConfig' in document.action ? document.action.modelConfig : undefined;
-  if (config?.agent && config.model) {
-    const detail = await getSharedAgent(config.agent.remoteId);
-    await findInstalledAutomationAgent(
-      config.model,
-      config.agent,
-      detail,
-      await listAgentModels(),
-      automationAgentPluginsMatch,
-      automationAgentPackageMatches,
-    );
-  }
-}
 
 const listLanes = createResourceLaneInventory<SharedAutomationSummary>();
 
@@ -147,7 +121,6 @@ export async function createSharedAutomation(
   request: Omit<CreateSharedAutomationIpcRequest, 'activityId'>,
 ): Promise<SharedAutomationDetail> {
   assertShareScopeTarget(request, 'an automation');
-  await validateAutomationAgent(request.automation);
   if (resourceContextEnabled()) {
     const destination = await assertResourceShareDestination(request);
     if (request.savedFrom) {
@@ -189,7 +162,6 @@ export async function updateSharedAutomation(
   request: Omit<UpdateSharedAutomationIpcRequest, 'activityId'>,
 ): Promise<SharedAutomationDetail> {
   assertShareScopeTarget(request, 'an automation');
-  await validateAutomationAgent(request.automation);
   if (resourceContextEnabled()) {
     const source = await getSharedAutomation(request.automationId);
     if ('shareScope' in request && request.shareScope) {

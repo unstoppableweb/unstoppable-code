@@ -135,11 +135,7 @@ const hit = (entry: SearchHit): MemorySearchResult['hits'][number] => ({
   memory: entry.scope,
   fileKey: entry.fileKey,
   heading: entry.heading ?? null,
-  // Keep the closed v1 wire shape: archive context travels with the snippet
-  // through every caller, including paired web chats.
-  snippet: entry.archived
-    ? `[Archived; saved ${entry.savedAt ?? 'date unknown'}] ${entry.snippet}`
-    : entry.snippet,
+  snippet: entry.snippet,
 });
 
 /**

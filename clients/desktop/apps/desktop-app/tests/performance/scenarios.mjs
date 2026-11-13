@@ -9375,42 +9375,6 @@ export function managedDelegationScripts(config, descriptors, evidencePath) {
   return scripts;
 }
 
-/** The preferences the scenario's fixture writes. Pure, for its tests. */
-export function managedDelegationPreferences() {
-  return {
-    onboardingCompleted: ['v1'],
-    managedDelegationMode: 'explicit-only',
-    defaultChatInterfaceMode: 'canopy',
-    defaultWorktreeProvider: 'claude',
-    defaultChatProvider: 'claude',
-    codexMultiAgentWorktreeChatsEnabled: false,
-    // Pin the background summary helper to the mock, as the
-    // large-transcript concurrency fixture does.
-    summaryModel: 'claude-haiku-4-5-20251001',
-    summaryModelSetByUser: true,
-    // Running managed delegates count as chat turns. At the default cap of
-    // 10, a later parent's send is refused once enough earlier delegates
-    // are running, and how many are depends on how fast they start.
-    maxActiveChatTurns:
-      MANAGED_DELEGATION_PARENTS *
-      (1 + MANAGED_DELEGATION_DELEGATES_PER_PARENT),
-  };
-}
-
-/** Chat-turn guard refusals in the run's main log, which the UI hides. */
-function managedDelegationGuardRefusals(userDataDir) {
-  let log;
-  try {
-    log = readFileSync(path.join(userDataDir, 'logs', 'main.log'), 'utf8');
-  } catch {
-    return [];
-  }
-  return log
-    .split('\n')
-    .filter((line) => line.includes('ResourceGuardError'))
-    .map((line) => /ResourceGuardError: ([^"]+)/.exec(line)?.[1] ?? line);
-}
-
 async function prepareManagedDelegationConcurrency(userDataDir, config) {
   const seed = seedWorkspace(userDataDir);
   const worktreePath = seed.workspaces?.find(
@@ -9429,7 +9393,21 @@ async function prepareManagedDelegationConcurrency(userDataDir, config) {
   writeFileSync(
     path.join(userDataDir, 'preferences.json'),
     JSON.stringify(
-      { version: 1, preferences: managedDelegationPreferences() },
+      {
+        version: 1,
+        preferences: {
+          onboardingCompleted: ['v1'],
+          managedDelegationMode: 'explicit-only',
+          defaultChatInterfaceMode: 'canopy',
+          defaultWorktreeProvider: 'claude',
+          defaultChatProvider: 'claude',
+          codexMultiAgentWorktreeChatsEnabled: false,
+          // Pin the background summary helper to the mock, as the
+          // large-transcript concurrency fixture does.
+          summaryModel: 'claude-haiku-4-5-20251001',
+          summaryModelSetByUser: true,
+        },
+      },
       null,
       2,
     ),
@@ -9468,7 +9446,6 @@ async function prepareManagedDelegationConcurrency(userDataDir, config) {
   return {
     descriptors,
     seededChatFileBytes: statSync(seeded.filePath).size,
-    guardRefusals: () => managedDelegationGuardRefusals(userDataDir),
   };
 }
 
@@ -9593,9 +9570,8 @@ async function runManagedDelegationConcurrency({
         },
       );
     } catch (error) {
-      const refusals = fixture.guardRefusals();
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; observed=${JSON.stringify(last)}${refusals.length ? `; chat-turn guard refused ${String(refusals.length)} send(s): ${refusals[0]}` : ''}`,
+        `${error instanceof Error ? error.message : String(error)}; observed=${JSON.stringify(last)}`,
       );
     }
   });
@@ -21125,14 +21101,6 @@ export function performanceWindowEnv(options, platform = process.platform) {
     : {};
 }
 
-function performanceNativeProfileDir(userDataDir) {
-  // Linux's launch guard requires Chromium state below the fixture root.
-  // App metadata remains in userDataDir through CANOPY_DATA_DIR.
-  return process.platform === 'linux'
-    ? path.join(userDataDir, 'electron-profile')
-    : userDataDir;
-}
-
 export function performanceElectronArgs(
   releaseLike,
   userDataDir,
@@ -21141,9 +21109,7 @@ export function performanceElectronArgs(
   // Production takes its single-instance lock before ready. CANOPY_DATA_DIR
   // isolates app metadata, but cannot redirect Chromium storage or that lock.
   return [
-    ...(releaseLike
-      ? [`--user-data-dir=${performanceNativeProfileDir(userDataDir)}`]
-      : []),
+    ...(releaseLike ? [`--user-data-dir=${userDataDir}`] : []),
     ...diagnosticArgs,
   ];
 }
@@ -21380,10 +21346,7 @@ async function runPerformanceScenarioAttempt(
         sessionData: app.getPath('sessionData'),
       }));
       for (const [kind, nativeRoot] of Object.entries(nativeDataRoots)) {
-        if (
-          realpathSync(nativeRoot) !==
-          realpathSync(performanceNativeProfileDir(userDataDir))
-        ) {
+        if (realpathSync(nativeRoot) !== realpathSync(userDataDir)) {
           throw new Error(
             `Release-like ${kind} escaped the isolated fixture root: ${nativeRoot}`,
           );

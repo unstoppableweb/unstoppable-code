@@ -115,42 +115,8 @@ const projectKey = (workspaceId: string): string =>
 const taskKey = (workspaceId: string, worktreeId: string): string =>
   `${AUTHORITY}:${workspaceId}:${worktreeId}`;
 
-/** Tries of a failing reread, and the pause before each, growing. */
-const REREAD_RETRIES = 3;
-const REREAD_RETRY_MS = 1_000;
-
-/** The pause before each reconnect in a row; the last repeats. */
-export const RECONNECT_DELAYS_MS: readonly number[] = [
-  1_000, 2_000, 5_000, 10_000, 30_000,
-];
-
-export interface CoreCoworkStoreOptions {
-  /**
-   * A fresh invoker for a store whose connection was lost, or null when
-   * none can be had now (CAN-6442). With it, the store reconnects by itself
-   * after each pause in {@link RECONNECT_DELAYS_MS} until it is online again
-   * or disconnected; without it, only the host reconnects it.
-   */
-  readonly reconnect?: () => CoreCoworkInvoker | null;
-}
-
 /** A generation that moved on while a reply was in flight. */
 class StaleGenerationError extends Error {}
-
-/** A request the core refused only for now: the same read may land later. */
-function isRetryableRead(error: unknown): boolean {
-  return (
-    error instanceof CoreCoworkRequestError &&
-    error.payload.retry.kind !== 'never'
-  );
-}
-
-/** The delay the core asked a retried read to wait, such as a gateway's Retry-After. */
-function retryDelayMs(error: unknown): number {
-  if (!(error instanceof CoreCoworkRequestError)) return 0;
-  const { retry } = error.payload;
-  return retry.kind === 'never' ? 0 : (retry.delayMs ?? 0);
-}
 
 type Frame =
   | { kind: 'item'; cursor: CanopyStreamCursor; item: unknown }
@@ -246,24 +212,17 @@ const EMPTY = {
  * passes a {@link CoreCoworkInvoker}. Leaving `online` drops everything, so
  * an offline core never shows a cached snapshot (D7).
  */
-export function createCoreCoworkStore(
-  options: CoreCoworkStoreOptions = {},
-): StoreApi<CoreCoworkState> {
+export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
   let invoker: CoreCoworkInvoker | null = null;
   let stream: CoreCoworkStream | null = null;
   let appliedCursor: CanopyStreamCursor | null = null;
   let rereadTimer: ReturnType<typeof setTimeout> | null = null;
   const pendingRereads = new Set<string>();
   let pendingResync = false;
-  /** Rereads failed in a row with a retryable answer. */
-  let failedRereads = 0;
   // Refreshes run one at a time, so an older read never lands after a newer one.
   let refreshQueue: Promise<void> = Promise.resolve();
   /** Each task's create in flight, by task key, for what waits on it. */
   const creations = new Map<string, Promise<CoreCoworkTask>>();
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Reconnects tried since the store was last online. */
-  let reconnects = 0;
 
   const store = createStore<CoreCoworkState>()((set, get) => {
     const assertCurrent = (generation: number): void => {
@@ -289,15 +248,12 @@ export function createCoreCoworkStore(
     };
 
     const releaseConnection = (): void => {
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-      reconnectTimer = null;
       refreshQueue = Promise.resolve();
       creations.clear();
       if (rereadTimer !== null) clearTimeout(rereadTimer);
       rereadTimer = null;
       pendingRereads.clear();
       pendingResync = false;
-      failedRereads = 0;
       appliedCursor = null;
       const open = stream;
       stream = null;
@@ -503,27 +459,7 @@ export function createCoreCoworkStore(
     };
 
     const goOffline = (generation: number): void => {
-      if (get().generation !== generation) return;
-      get().disconnect('offline');
-      scheduleReconnect(get().generation);
-    };
-
-    /** Reconnects a store that went offline by itself, after a growing pause. */
-    const scheduleReconnect = (generation: number): void => {
-      const reconnect = options.reconnect;
-      if (reconnect === undefined) return;
-      const delayMs =
-        RECONNECT_DELAYS_MS[
-          Math.min(reconnects, RECONNECT_DELAYS_MS.length - 1)
-        ] ?? 30_000;
-      reconnects += 1;
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        if (get().generation !== generation) return;
-        const next = reconnect();
-        if (next === null) scheduleReconnect(generation);
-        else void get().connect(next);
-      }, delayMs);
+      if (get().generation === generation) get().disconnect('offline');
     };
 
     const flushRereads = (generation: number): void => {
@@ -538,40 +474,16 @@ export function createCoreCoworkStore(
           for (const workspaceId of workspaceIds)
             await rereadProject(generation, workspaceId);
       });
-      void work.then(
-        () => {
-          failedRereads = 0;
-        },
-        (error: unknown) => {
-          if (error instanceof StaleGenerationError) return;
-          // A read the core answered as worth retrying (a gateway that lost
-          // the request, CAN-6394) is read again; the connection still
-          // stands, so the section stays. Only a lasting failure is offline.
-          if (
-            isRetryableRead(error) &&
-            failedRereads < REREAD_RETRIES &&
-            get().generation === generation
-          ) {
-            failedRereads += 1;
-            if (resync) pendingResync = true;
-            for (const workspaceId of workspaceIds)
-              pendingRereads.add(workspaceId);
-            scheduleReread(
-              generation,
-              Math.max(REREAD_RETRY_MS * failedRereads, retryDelayMs(error)),
-            );
-            return;
-          }
-          goOffline(generation);
-        },
-      );
+      void work.catch((error: unknown) => {
+        if (!(error instanceof StaleGenerationError)) goOffline(generation);
+      });
     };
 
-    const scheduleReread = (
-      generation: number,
-      delayMs = TASK_REREAD_COALESCE_MS,
-    ): void => {
-      rereadTimer ??= setTimeout(() => flushRereads(generation), delayMs);
+    const scheduleReread = (generation: number): void => {
+      rereadTimer ??= setTimeout(
+        () => flushRereads(generation),
+        TASK_REREAD_COALESCE_MS,
+      );
     };
 
     const openTaskStream = async (generation: number): Promise<void> => {
@@ -680,7 +592,6 @@ export function createCoreCoworkStore(
           await openTaskStream(generation);
           await relistAll(generation);
           assertCurrent(generation);
-          reconnects = 0;
           set({ status: 'online' });
         } catch (error) {
           if (error instanceof StaleGenerationError) return;
@@ -694,7 +605,6 @@ export function createCoreCoworkStore(
 
       disconnect: (reason): void => {
         releaseConnection();
-        if (reason === 'disabled') reconnects = 0;
         set({ generation: get().generation + 1, status: reason, ...EMPTY });
       },
 

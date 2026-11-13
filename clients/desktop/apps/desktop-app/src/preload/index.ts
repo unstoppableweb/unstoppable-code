@@ -36,7 +36,6 @@ import type {
 } from '@canopy/protocol/foreign-activity';
 import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 import { isCloudProjectSetupProgress } from '@canopy/desktop-shared/lib/cloud-project-setup';
-import { isWebCoreTarget } from '../shared/web-core-scope';
 import {
   isOrgProjectSetupProgress,
   type OrgProjectDeepLinkOpenEvent,
@@ -323,9 +322,7 @@ import { isResourceMonitorSnapshot } from './resource-monitor-validation';
 import { createClaudeTerminalBridge } from './claude-terminal-bridge';
 import { isChatSessionImportedEvent } from './session-transfer-validation';
 import {
-  isDismissSharedContainerOwnerDepartureResult,
   isListDismissedSharedContainersResult,
-  isListSharedContainerOwnerDeparturesResult,
   isRestoreSharedContainerResult,
   isSharedContainerInboxChangedEvent,
   isSharedContainerPublicationState,
@@ -2256,8 +2253,6 @@ function organizationReply<T>(
 const canopyApi: CanopyApi = {
   reloadWindow: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowReload),
   restartApp: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowRestart),
-  lookUpSelection: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.appWindowLookUpSelection),
   notifyStartupUnlocked: () =>
     ipcRenderer.invoke(IPC_CHANNELS.appStartupUnlocked),
   loadProjects: () => ipcRenderer.invoke(IPC_CHANNELS.projectsLoad),
@@ -2481,16 +2476,10 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.fileTreeDirectory, request),
   mutateFileTree: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.fileTreeMutate, request),
-  // A cloud task's files live in its sandbox, which main never watches: its
-  // explorer reads them again itself (CAN-6395).
   startFileTreeWatch: (request) =>
-    isWebCoreTarget(request)
-      ? Promise.resolve()
-      : ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStart, request),
+    ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStart, request),
   stopFileTreeWatch: (request) =>
-    isWebCoreTarget(request)
-      ? Promise.resolve()
-      : ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStop, request),
+    ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStop, request),
   onFileTreeChanged: (callback) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -2560,8 +2549,6 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.worktreeArchive, request),
   checkWorktreeRemovalAdmission: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, request),
-  listWorktreeRecovery: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryList, request),
   describeWorktreeDiscard: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeDiscardDescribe, request),
   discardWorktree: (request) =>
@@ -3248,33 +3235,6 @@ const canopyApi: CanopyApi = {
       );
     };
   },
-  localModelGateway: {
-    read: () => ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayRead),
-    update: (input) =>
-      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayUpdate, input),
-    connect: (input) =>
-      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayConnect, input),
-    onChanged: (callback) => {
-      const handler = (): void => callback();
-      ipcRenderer.on(IPC_CHANNELS.localModelGatewayChanged, handler);
-      return () => {
-        ipcRenderer.removeListener(
-          IPC_CHANNELS.localModelGatewayChanged,
-          handler,
-        );
-      };
-    },
-    onMigrationConflict: (callback) => {
-      const handler = (): void => callback();
-      ipcRenderer.on(IPC_CHANNELS.localModelGatewayMigrationConflict, handler);
-      return () => {
-        ipcRenderer.removeListener(
-          IPC_CHANNELS.localModelGatewayMigrationConflict,
-          handler,
-        );
-      };
-    },
-  },
   loadCanopyCloudAccount: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAccount),
   getCanopyCloudBaseUrl: () =>
@@ -3493,14 +3453,8 @@ const canopyApi: CanopyApi = {
       : files
           .map((file) => webUtils.getPathForFile(file))
           .filter((path) => path.length > 0),
-  // A cloud task has no folder on this computer: main can't resolve its ids,
-  // and every caller already treats a refused read as no path (CAN-6395).
   getWorktreePath: (request) =>
-    isWebCoreTarget(request)
-      ? Promise.reject(
-          new Error('A cloud task has no folder on this computer.'),
-        )
-      : ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
   listWorktreeRepoEntries: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeListRepoEntries, request),
   showInFinder: (request) =>
@@ -3556,14 +3510,8 @@ const canopyApi: CanopyApi = {
       setFileVisibility: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansFileVisibility, request),
     },
-    // A cloud task is not this computer's: main can't resolve its ids
-    // (CAN-6395).
     stopBgProcess: (request) =>
-      isWebCoreTarget(request)
-        ? Promise.reject(
-            new Error('A cloud task has no Stop on this computer.'),
-          )
-        : ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
     startOutputPolling: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityStartOutputPolling, request),
     stopOutputPolling: (request) =>
@@ -4851,25 +4799,6 @@ const canopyApi: CanopyApi = {
       );
       if (!isListDismissedSharedContainersResult(response)) {
         throw new Error('Main returned an invalid removed-share listing');
-      }
-      return response;
-    },
-    listOwnerDepartures: async () => {
-      const response: unknown = await ipcRenderer.invoke(
-        IPC_CHANNELS.sharedContainersListOwnerDepartures,
-      );
-      if (!isListSharedContainerOwnerDeparturesResult(response)) {
-        throw new Error('Main returned an invalid owner departure listing');
-      }
-      return response;
-    },
-    dismissOwnerDeparture: async (request) => {
-      const response: unknown = await ipcRenderer.invoke(
-        IPC_CHANNELS.sharedContainersDismissOwnerDeparture,
-        request,
-      );
-      if (!isDismissSharedContainerOwnerDepartureResult(response)) {
-        throw new Error('Main returned an invalid owner departure dismissal');
       }
       return response;
     },
@@ -6389,8 +6318,6 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesApply, request),
     status: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesStatus, request),
-    check: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.repoRulesCheck, request),
     preview: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesPreview, request),
   },

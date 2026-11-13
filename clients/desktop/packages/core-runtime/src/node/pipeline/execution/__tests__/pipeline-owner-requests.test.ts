@@ -236,23 +236,10 @@ describe('pipeline owner requests', () => {
       'owner.ledger.codexToolAuthorize': { toolsKey: 'k', threadId: 't', call },
       'owner.ledger.codexToolExecute': { toolsKey: 'k', threadId: 't', call },
       'owner.ledger.codexToolsDispose': { toolsKey: 'k' },
-      'owner.ledger.operation': {
-        attemptKey: 'a',
-        operation: 'core.ledger.owners.list',
-        params: {},
-      },
       'owner.claude.modAdmission': { cwd: '/tmp/run', settingSources: [] },
       'owner.model.agentAlias': { agentId: 'agent_model_1' },
       'owner.plan.create': { content: '# Plan' },
       'owner.plan.update': { planId: 'plan-1', approve: false },
-      'owner.mcp.bind': {
-        marketplaceId: 'market',
-        pluginName: 'notes',
-        serverName: 'docs',
-        contentHash: 'a'.repeat(64),
-      },
-      'owner.mcp.authorize': { routeRef: 'mcpr1_AAAAAAAAAAAAAAAAAAAAAA' },
-      'owner.mcp.rejected': { grantId: 'mcpg1_AAAAAAAAAAAAAAAAAAAAAA' },
     };
     for (const action of WORKER_PIPELINE_OWNER_ACTIONS) {
       expect(
@@ -273,14 +260,6 @@ describe('pipeline owner requests', () => {
       WorkerPipelineHostActionRequestSchema.safeParse({
         action: 'owner.model.policy',
         check: 'blocked',
-      }).success,
-    ).toBe(false);
-    // CAN-6168: a bind names a server and a hash; no OAuth field crosses.
-    expect(
-      WorkerPipelineHostActionRequestSchema.safeParse({
-        action: 'owner.mcp.bind',
-        ...minimal['owner.mcp.bind'],
-        url: 'https://evil.example.test/',
       }).success,
     ).toBe(false);
     // CAN-5832: an Agent alias names an Agent model id, nothing else.
@@ -316,57 +295,5 @@ describe('pipeline owner requests', () => {
         value: { kind: 'ledger.codexToolExecute', response: large },
       }).success,
     ).toBe(true);
-  });
-
-  it('an MCP header rides only the authorization that granted it (CAN-6168)', async () => {
-    const HEADER = 'Bearer mcp-header-canary-6168';
-    const settle = async (
-      request: WorkerPipelineHostRequest['request'],
-      value: unknown,
-    ): Promise<unknown> => {
-      const broker = new PipelineHostRequestBroker();
-      const dispatcher = compose(broker);
-      const stop = await settlePipelineHostRequests({
-        dispatcher,
-        caller,
-        apply: (raised) =>
-          Promise.resolve({
-            result: WorkerPipelineHostResultSchema.parse({
-              status: 'owner',
-              value,
-            }),
-            values: {
-              requestId: raised.requestId,
-              mcpAuthorization: { authorization: HEADER },
-            },
-          }),
-      });
-      const settlement = await broker.raiseOwner(
-        hostRequest('owner-mcp', request),
-        new AbortController().signal,
-      );
-      stop();
-      await dispatcher.shutdown();
-      return settlement;
-    };
-    const authorize = {
-      action: 'owner.mcp.authorize',
-      routeRef: 'mcpr1_AAAAAAAAAAAAAAAAAAAAAA',
-    } as const;
-    await expect(
-      settle(authorize, {
-        kind: 'mcp.authorize',
-        grantId: 'mcpg1_AAAAAAAAAAAAAAAAAAAAAA',
-      }),
-    ).resolves.toMatchObject({
-      values: { mcpAuthorization: { authorization: HEADER } },
-    });
-    for (const [request, value] of [
-      [authorize, { kind: 'mcp.authorize', grantId: null }],
-      [invocation, invocationValue],
-    ] as const) {
-      const settlement = await settle(request, value);
-      expect(JSON.stringify(settlement)).not.toContain(HEADER);
-    }
   });
 });

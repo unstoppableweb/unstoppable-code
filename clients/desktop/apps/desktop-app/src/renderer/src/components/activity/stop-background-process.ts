@@ -1,6 +1,5 @@
 import type { BackgroundProcess } from '@canopy/desktop-shared/types';
 import type { useActivityStore } from '@/stores/activityStore';
-import { isWebCoreScope } from '@/lib/chat-authority';
 
 type HandleSdkSystemEvent = ReturnType<
   typeof useActivityStore.getState
@@ -63,9 +62,6 @@ export async function stopBackgroundProcess(
 ): Promise<void> {
   const taskId = process.taskId;
   if (!taskId) return;
-  // A cloud task is not this computer's: main's Stop can't resolve its ids
-  // (CAN-6395), and the web core serves no task Stop yet (CAN-6107).
-  if (isWebCoreScope(projectId) || isWebCoreScope(worktreeId)) return;
   try {
     const stopOutcome = await window.api.activity.stopBgProcess({
       projectId,

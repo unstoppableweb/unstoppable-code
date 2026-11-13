@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { isSafePortableRelativePath } from '../../safe-relative-path';
 import { CanopyWorkspaceScopeSchema } from '../common';
 import {
   CanopyStreamCursorSchema,
@@ -38,18 +37,6 @@ export const WorkerFilesystemRootSchema = z
     fileRootId: BOUNDED_FILE_ROOT_ID_SCHEMA,
     name: z.string(),
     kind: z.enum(['git-repo', 'workspace-root', 'attachments', 'standalone']),
-    /**
-     * Optional, additive: the workspace-relative directory this root's
-     * relative paths sit under ('' is the workspace), never a host path.
-     * Missing means no translation.
-     */
-    mountPath: z
-      .string()
-      .refine(
-        (path) => path === '' || isSafePortableRelativePath(path),
-        'Expected a workspace-relative path',
-      )
-      .optional(),
   })
   .catchall(CanopyJsonValueSchema)
   .refine(isBoundedCanopyJsonValue, 'Expected bounded JSON-safe data')
@@ -71,8 +58,6 @@ export const WorkerFilesystemDirectoryListParamsSchema = z.strictObject({
   fileRootId: BOUNDED_FILE_ROOT_ID_SCHEMA,
   relativePath: z.string(),
   catalogRevision: CATALOG_REVISION_SCHEMA.optional(),
-  /** Wakes a sleeping cloud sandbox (CAN-6114); a local root is always awake. */
-  wake: z.boolean().optional(),
 });
 
 export type WorkerFilesystemDirectoryListParams = z.output<
@@ -279,8 +264,6 @@ export const WorkerFilesystemFileReadParamsSchema = z.strictObject({
   relativePath: z.string().max(4096),
   maxBytes: z.number().int().min(1).max(WORKER_FILESYSTEM_FILE_READ_MAX_BYTES),
   catalogRevision: CATALOG_REVISION_SCHEMA.optional(),
-  /** Wakes a sleeping cloud sandbox (CAN-6114); a local root is always awake. */
-  wake: z.boolean().optional(),
 });
 
 export type WorkerFilesystemFileReadParams = z.output<

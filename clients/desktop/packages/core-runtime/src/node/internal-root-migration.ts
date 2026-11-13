@@ -35,11 +35,6 @@ export interface InternalRootInventory {
   readonly nestedSecure: boolean;
   readonly stableOwned: boolean;
 }
-export interface InternalRootBuildResult {
-  readonly publicationIdentity: string;
-  /** Post-clone inventory from the same walk that qualified the copy. */
-  readonly sourceInventory: InternalRootInventory;
-}
 export interface InternalRootSpace {
   readonly requiredBytes: number;
   readonly availableBytes: number;
@@ -153,14 +148,6 @@ export type InternalRootRepairResult =
 export interface InternalRootRepairs {
   /** Live composition freezes owner/Git evidence only after original-root W5 recovery. */
   readonly settleSourceFirst?: boolean;
-  /** Read-only Linux census scope, including external Git roots before any journal. */
-  coldExternalFiles?(
-    context: InternalRootRepairContext,
-  ): Promise<readonly string[]>;
-  /** Read-only omission projection before source settlement or plan freezing. */
-  preflightOmissions?(
-    identity: InternalRootIdentity,
-  ): Promise<readonly string[]>;
   /** Read-only inventory qualification; never persists a plan or repairs state. */
   inspect?(context: InternalRootRepairContext): Promise<readonly string[]>;
   prepare(context: InternalRootRepairContext): Promise<
@@ -211,9 +198,6 @@ export interface InternalRootMigrationWorker {
   inventory(
     identity: InternalRootIdentity,
     destination?: boolean,
-    /** Inventory, fresh apply and restart only; never constrain frozen journal resume. */
-    preflightPaths?: boolean,
-    abandonedPaths?: readonly string[],
   ): Promise<InternalRootInventory>;
   readJournal(
     identity: InternalRootIdentity,
@@ -234,21 +218,14 @@ export interface InternalRootMigrationWorker {
     identity: InternalRootIdentity,
     files: readonly string[],
   ): Promise<void>;
-  build(journal: InternalRootJournal): Promise<InternalRootBuildResult>;
+  build(journal: InternalRootJournal): Promise<string>;
   exposeStaging(journal: InternalRootJournal): Promise<void>;
   seal(
     journal: InternalRootJournal,
     publicationIdentity: string,
   ): Promise<string>;
-  /** Reuse only an in-process seal with no intervening repair; always check identity. */
-  publicationRoot(
-    journal: InternalRootJournal,
-    verifiedFingerprint?: string,
-  ): Promise<string>;
-  publish(
-    journal: InternalRootJournal,
-    verifiedFingerprint?: string,
-  ): Promise<void>;
+  publicationRoot(journal: InternalRootJournal): Promise<string>;
+  publish(journal: InternalRootJournal): Promise<void>;
   validateRebuild(journal: InternalRootJournal): Promise<void>;
   discardDestination(journal: InternalRootJournal): Promise<void>;
   preserveUnpublished(
@@ -322,19 +299,6 @@ export async function migrateInternalRoot(
     identity.brandId === 'canopy' &&
     inventory.nestedSecure &&
     inventory.historicalSecure;
-  const inventorySource = async (
-    preflightPaths: boolean,
-    frozenPaths?: readonly string[],
-  ): Promise<InternalRootInventory> => {
-    if (!preflightPaths || (!repairs.preflightOmissions && !frozenPaths))
-      return worker.inventory(identity, false, preflightPaths);
-    return worker.inventory(
-      identity,
-      false,
-      true,
-      frozenPaths ?? (await repairs.preflightOmissions?.(identity)),
-    );
-  };
   const prior = await worker.readJournal(identity);
   await worker.validateStaging(identity, prior);
   if (
@@ -355,7 +319,7 @@ export async function migrateInternalRoot(
       'Declare the selected installation internal; stable installations must stay untouched.',
     );
   if (options.apply && options.restart && prior && canRestart(prior)) {
-    const inventory = await inventorySource(true);
+    const inventory = await worker.inventory(identity);
     requireSpace(await worker.space(identity, inventory.bytes));
     const release = await worker.coordinate(identity);
     try {
@@ -369,7 +333,7 @@ export async function migrateInternalRoot(
         );
       await worker.proveCold(identity, prior.externalFiles);
       await worker.validateStaging(identity, prior);
-      const current = await inventorySource(true);
+      const current = await worker.inventory(identity);
       if (
         !matchesInternalRootNodeIdentity(
           current.sourceIdentity,
@@ -456,36 +420,7 @@ export async function migrateInternalRoot(
       await release();
     }
   }
-  const inventory = await inventorySource(
-    !options.apply || !prior,
-    prior?.repairPlan?.abandonedPaths,
-  );
-  const coldExternalFiles = async (): Promise<
-    readonly string[] | undefined
-  > => {
-    if (prior && prior.phase !== 'prepared') return prior.externalFiles;
-    if (worker.os !== 'linux' || !repairs.coldExternalFiles)
-      return prior?.externalFiles;
-    try {
-      // Prepared journals can predate external discovery. Resume cannot refuse
-      // before that existing journal; renew its scope before staging construction,
-      // leaving the journal prepared and unchanged if capacity refuses.
-      const discovered = await repairs.coldExternalFiles({
-        identity,
-        transactionId: 'read-only-cold-census',
-        inventory,
-        workingRoot: identity.source,
-        externalFiles: prior?.externalFiles ?? [],
-      });
-      return [...new Set([...(prior?.externalFiles ?? []), ...discovered])];
-    } catch (error) {
-      if (error instanceof InternalRootMigrationRefused) throw error;
-      throw new InternalRootMigrationRefused(
-        'cold-proof-unavailable',
-        `Linux census scope discovery failed for ${JSON.stringify(identity.source)}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  };
+  const inventory = await worker.inventory(identity);
   if (!options.apply) {
     const space = await worker.space(identity, inventory.bytes);
     let coldProof: Extract<
@@ -493,7 +428,7 @@ export async function migrateInternalRoot(
       { kind: 'inventory' }
     >['coldProof'];
     try {
-      await worker.proveCold(identity, await coldExternalFiles());
+      await worker.proveCold(identity, prior?.externalFiles);
       coldProof = { kind: 'ready' };
     } catch (error) {
       if (!(error instanceof InternalRootMigrationRefused)) throw error;
@@ -619,8 +554,7 @@ export async function migrateInternalRoot(
         ? await worker.space(identity, inventory.bytes, prior)
         : await worker.space(identity, inventory.bytes),
     );
-  const initialColdExternalFiles = await coldExternalFiles();
-  await worker.proveCold(identity, initialColdExternalFiles);
+  await worker.proveCold(identity, prior?.externalFiles);
   const transactionId = prior?.transactionId ?? worker.transactionId();
   const context = (
     journal?: InternalRootJournal,
@@ -632,18 +566,10 @@ export async function migrateInternalRoot(
     externalFiles: journal?.externalFiles ?? [],
     repairPlan: journal?.repairPlan,
   });
-  // Evidence never survives this invocation; every repair hook is a write barrier.
-  let sourceInventory: InternalRootInventory | undefined;
-  let sealedFingerprint: string | undefined;
-  const invalidate = (): void => {
-    sourceInventory = undefined;
-    sealedFingerprint = undefined;
-  };
   let repairPlan = prior?.repairPlan;
   const prepare = async (
     journal?: InternalRootJournal,
   ): Promise<readonly string[]> => {
-    invalidate();
     const ready = await repairs.prepare(context(journal));
     if (ready.kind !== 'ready') refuse('repair-unavailable', ready.recovery);
     if (
@@ -687,11 +613,8 @@ export async function migrateInternalRoot(
         `Another invocation changed the journal under ${JSON.stringify(identity.coordination)}; inventory again.`,
       );
     await worker.validateStaging(identity, loaded);
-    await worker.proveCold(identity, [
-      ...new Set([...(initialColdExternalFiles ?? []), ...externalFiles]),
-    ]);
-    const current = await inventorySource(!loaded, repairPlan?.abandonedPaths);
-    sourceInventory = current;
+    await worker.proveCold(identity, externalFiles);
+    const current = await worker.inventory(identity);
     if (
       current.fingerprint !== inventory.fingerprint ||
       current.sourceIdentity !== inventory.sourceIdentity ||
@@ -719,7 +642,7 @@ export async function migrateInternalRoot(
       await worker.saveJournal(journal);
     };
     const checkSource = async (): Promise<InternalRootInventory> => {
-      const original = (sourceInventory ??= await worker.inventory(identity));
+      const original = await worker.inventory(identity);
       if (
         !matchesInternalRootNodeIdentity(
           original.sourceIdentity,
@@ -746,7 +669,6 @@ export async function migrateInternalRoot(
       await worker.proveCold(identity, externalFiles);
       await checkSource();
       await worker.validateRebuild(journal);
-      invalidate();
       await worker.restoreExternal(journal);
       await advance('rebuilding');
     }
@@ -754,7 +676,6 @@ export async function migrateInternalRoot(
       await worker.proveCold(identity, externalFiles);
       await checkSource();
       await worker.assertExternalPreimages(journal);
-      invalidate();
       await worker.discardDestination(journal);
       await advance('source-settled', {
         publicationIdentity: undefined,
@@ -770,17 +691,15 @@ export async function migrateInternalRoot(
           'destination-exists',
           internalRootDestinationExistsRecovery(identity.destination),
         );
-      invalidate();
       await worker.recoverW5(journal);
       if (repairs.settleSourceFirst) {
         externalFiles = await prepare();
         await worker.proveCold(identity, externalFiles);
       }
-      sourceInventory = await worker.inventory(identity);
       await advance('source-settled', {
         externalFiles,
         repairPlan,
-        settledFingerprint: sourceInventory.fingerprint,
+        settledFingerprint: (await worker.inventory(identity)).fingerprint,
       });
     }
     if (journal.phase === 'source-settled' || journal.phase === 'building') {
@@ -796,19 +715,15 @@ export async function migrateInternalRoot(
           externalSnapshots: await worker.captureExternal(journal),
         });
       await advance('building');
-      const { publicationIdentity, sourceInventory: builtSource } =
-        await worker.build(journal);
-      sourceInventory = builtSource;
+      const publicationIdentity = await worker.build(journal);
       // Journal the inode before exposing a clone outside private coordination.
       await advance('building', { stagingIdentity: publicationIdentity });
       await worker.exposeStaging(journal);
       await worker.proveCold(identity, externalFiles);
       await worker.validateExternal(identity, externalFiles);
       await checkSource();
-      invalidate();
       const repaired = await repairs.repair(context(journal));
       if (repaired.kind !== 'ok') refuse('repair-refused', repaired.recovery);
-      invalidate();
       const verified = await repairs.verify(context(journal));
       if (verified.kind !== 'ok') refuse('repair-refused', verified.recovery);
       await worker.proveCold(identity, externalFiles);
@@ -817,7 +732,6 @@ export async function migrateInternalRoot(
         journal,
         publicationIdentity,
       );
-      sealedFingerprint = publicationFingerprint;
       await advance('publishing', {
         publicationIdentity,
         publicationFingerprint,
@@ -828,15 +742,10 @@ export async function migrateInternalRoot(
       await worker.proveCold(identity, externalFiles);
       await worker.validateExternal(identity, externalFiles);
       await checkSource();
-      const workingRoot = await worker.publicationRoot(
-        journal,
-        sealedFingerprint,
-      );
-      sealedFingerprint = journal.publicationFingerprint;
+      const workingRoot = await worker.publicationRoot(journal);
       if (workingRoot === identity.destination) {
         await worker.assertExternalPostimages(journal);
       } else {
-        invalidate();
         const verified = await repairs.verify({
           ...context(journal),
           workingRoot,
@@ -845,12 +754,8 @@ export async function migrateInternalRoot(
       }
       await worker.proveCold(identity, externalFiles);
       await checkSource();
-      await worker.publish(journal, sealedFingerprint);
-      sealedFingerprint = journal.publicationFingerprint;
-      const publishedRoot = await worker.publicationRoot(
-        journal,
-        sealedFingerprint,
-      );
+      await worker.publish(journal);
+      const publishedRoot = await worker.publicationRoot(journal);
       if (publishedRoot !== identity.destination)
         refuse(
           'recovery-required',
@@ -861,7 +766,6 @@ export async function migrateInternalRoot(
         'Final root is published but unqualified. Keep all affected hosts stopped and retain both roots and the journal for teammate-assisted journal/W5 recovery. Retry qualification from the frozen plan, never fresh preparation.';
       let qualified: InternalRootRepairResult;
       try {
-        invalidate();
         qualified = await repairs.qualifyPublished({
           ...context(journal),
           workingRoot: publishedRoot,

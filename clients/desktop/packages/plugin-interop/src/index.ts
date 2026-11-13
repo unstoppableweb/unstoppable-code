@@ -7,4 +7,4 @@ export * from './projection';
 export * from './native-projection';
 export * from './cursor-support';
 export * from './harness-support';
-export { comparePluginPaths, resolvePluginPath } from './file-map';
+export { comparePluginPaths } from './file-map';

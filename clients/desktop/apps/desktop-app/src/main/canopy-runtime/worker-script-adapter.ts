@@ -79,13 +79,6 @@ export function createWorkerScriptAdapter(
           params,
           context,
         ),
-      // Electron main and the daemon keep the same run logs (CAN-5087), so a
-      // clear needs no route (CAN-6482).
-      'worker.script.execution.clear': async (params, context) =>
-        (await handlers()).instructions['worker.script.execution.clear'](
-          params,
-          context,
-        ),
     },
     observe: async (executionId, observer) =>
       (await loadWorker()).observe(executionId, observer),

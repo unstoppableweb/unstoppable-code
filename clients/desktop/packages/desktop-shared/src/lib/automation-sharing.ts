@@ -1,11 +1,5 @@
 import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import {
-  AGENT_MODEL_ID_PREFIX,
-  formatAgentRouteModelId,
-  parseAgentRouteModelId,
-  isValidSharedAgentModelId,
-} from '@canopy/protocol/agents';
-import type { ResolvedAutomationAgent } from './automation-agent';
+import { AGENT_MODEL_ID_PREFIX } from '@canopy/protocol/agents';
 import {
   SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
   SHARED_AUTOMATION_API_VERSION,
@@ -64,8 +58,8 @@ import { parsePipelineText } from '@canopy/pipeline-interop/parse-pipeline';
  * `SharedAutomationDocument` wire format, enforcing the redaction matrix at
  * the share boundary:
  *
- * - **Blocked** conditions include unavailable Agent references, execution-bound
- *   actions and invalid portable documents.
+ * - **Blocked** conditions refuse the share outright only when the action is
+ *   tied to an existing pipeline execution or the rebuilt document is invalid.
  * - **Stripped** fields are removed with an author-facing notice so the
  *   author can see exactly what will not travel (run-condition command,
  *   pipeline input values, machine bindings, model alias preferences, the
@@ -89,8 +83,6 @@ export const AUTOMATION_SHARE_BLOCK_REASONS = [
   'pipeline_dependencies_stale',
   'installed_pipeline_dependencies',
   'pipeline_local_only_trigger',
-  'local_agent_unavailable',
-  'agent_model_required',
 ] as const;
 
 export type AutomationShareBlockReason =
@@ -248,10 +240,6 @@ export const AUTOMATION_SHARE_BLOCK_MESSAGES: Record<
   installed_pipeline_dependencies:
     'This automation was installed from a share with its workflows, so it cannot be shared again. Share the original instead.',
   pipeline_local_only_trigger: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-  agent_model_required:
-    'Choose an explicit model for this Agent before sharing the automation (agent@model).',
-  local_agent_unavailable:
-    'This automation uses a local-only or unavailable Agent. Choose a shared or organization Agent and a model before sharing.',
 };
 
 /** User-facing copy for each stripped-field notice. */
@@ -295,9 +283,6 @@ export interface ResolvedAutomationPlugins {
 }
 
 export interface BuildSharedAutomationDocumentOptions {
-  resolvedAgent?: ResolvedAutomationAgent;
-  /** Container packages only: the matching Agent travels separately as `uses.agent`. */
-  packagedAgentId?: string;
   sessionTargetKind?: AutomationSessionTargetKind;
   declaredTargetContexts?: TargetContext[];
   /** Scopes from the exact parsed definition selected for publication. */
@@ -378,25 +363,15 @@ function isNonEmptyRecord(value: Record<string, unknown> | undefined): boolean {
  */
 function buildSharedModelConfig(
   action: PromptAction,
-  agent: ResolvedAutomationAgent | undefined,
-  stripAgentModel: boolean,
+  stripLocalAgentModel: boolean,
 ): SharedAutomationModelConfig | undefined {
   const config: SharedAutomationModelConfig = {};
   if (
-    !stripAgentModel &&
+    !stripLocalAgentModel &&
     typeof action.model === 'string' &&
     action.model.length > 0
   ) {
-    const route = parseAgentRouteModelId(action.model);
-    config.model =
-      route && agent
-        ? formatAgentRouteModelId(agent.agentId, route.baseModel)
-        : action.model;
-    if (route && agent)
-      config.agent = {
-        remoteId: agent.remoteId,
-        contentHash: agent.contentHash,
-      };
+    config.model = action.model;
   }
   // Session prompts never had the deprecated `thinking` field.
   const thinkingLevel =
@@ -691,28 +666,12 @@ export function buildSharedAutomationDocument(
         notices.push('attachments_stripped');
       }
     }
-    const usesAgent =
+    const stripLocalAgentModel =
       typeof action.model === 'string' &&
       action.model.startsWith(AGENT_MODEL_ID_PREFIX);
-    const agentRoute = parseAgentRouteModelId(action.model ?? '');
-    const packagedAgent =
-      usesAgent &&
-      options.resolvedAgent === undefined &&
-      options.packagedAgentId !== undefined &&
-      isValidSharedAgentModelId(options.packagedAgentId) &&
-      options.packagedAgentId === (agentRoute?.agentId ?? action.model);
-    if (usesAgent && !packagedAgent && !agentRoute) {
-      return { ok: false, reasons: ['agent_model_required'] };
+    if (stripLocalAgentModel) {
+      notices.push('local_agent_model_stripped');
     }
-    if (
-      usesAgent &&
-      !packagedAgent &&
-      (!agentRoute ||
-        options.resolvedAgent?.localAgentId !== agentRoute.agentId)
-    ) {
-      return { ok: false, reasons: ['local_agent_unavailable'] };
-    }
-    if (packagedAgent) notices.push('local_agent_model_stripped');
     const plugins = resolveSharedPlugins(action, options.resolvedPlugins);
     if (plugins.stripped) {
       notices.push('local_plugins_stripped');
@@ -735,11 +694,7 @@ export function buildSharedAutomationDocument(
     ) {
       notices.push('plan_mode_stripped');
     }
-    const modelConfig = buildSharedModelConfig(
-      action,
-      options.resolvedAgent,
-      packagedAgent,
-    );
+    const modelConfig = buildSharedModelConfig(action, stripLocalAgentModel);
     const pipelineDependencies = buildSharedPipelineDependencies(
       action.prompt,
       action.promptReferences,

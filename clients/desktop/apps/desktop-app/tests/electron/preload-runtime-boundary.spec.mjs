@@ -32,15 +32,7 @@ const UNSUPPORTED_VM_WARNING =
   "The vm module of Node.js is unsupported in Electron's renderer process";
 
 test('desktop preload avoids renderer vm and still exposes the IPC bridge', async () => {
-  // The launcher seeds flags from their fail-closed defaults; the device AI
-  // gateway contract below needs its flag on, as unconfigured builds have it.
-  const { electronApp, userDataDir } = await launchCanopy({
-    env: {
-      CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
-        'canopy-ai-gateway-settings-enabled': true,
-      }),
-    },
-  });
+  const { electronApp, userDataDir } = await launchCanopy();
 
   try {
     const window = await electronApp.firstWindow();
@@ -120,81 +112,6 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
         ),
       ),
     ).rejects.toThrow('Invalid AI gateway endpoint.');
-    // Signed out, the device AI gateway's local-model-gateway:read, :update
-    // and :connect contract crosses the real preload and main, with its
-    // local-model-gateway:changed push (api.localModelGateway.onChanged) and
-    // the api.localModelGateway.onMigrationConflict subscription. Its key reads
-    // through model-gateway:load-credential with the device gateway id.
-    const device = await window.evaluate(async () => {
-      const { api } = window;
-      const changed = new Promise((resolve) => {
-        const stop = api.localModelGateway.onChanged(() => {
-          stop();
-          resolve(true);
-        });
-      });
-      api.localModelGateway.onMigrationConflict(() => undefined)();
-      const before = await api.localModelGateway.read();
-      const saved = await api.localModelGateway.update({
-        expectedOrganizationId: before.organizationId,
-        expectedRevision: 'absent',
-        baseUrl: 'https://gateway.example.test',
-        models: [
-          {
-            id: 'device-model',
-            gatewayId: 'anthropic/claude-sonnet-5.5',
-            label: 'Device model',
-            harness: 'claude',
-            contextWindow: 200000,
-            supportedThinkingLevels: [],
-            toolSchemaProfile: 'standard',
-          },
-        ],
-        enabled: true,
-      });
-      const stale = await api.localModelGateway.update({
-        expectedOrganizationId: before.organizationId,
-        expectedRevision: 'absent',
-        enabled: false,
-      });
-      const connect = await api.localModelGateway.connect({
-        expectedOrganizationId: before.organizationId,
-        baseUrl: 'https://gateway.example.test',
-      });
-      const key = await api.loadModelGatewayCredential(
-        before.organizationId,
-        'https://gateway.example.test',
-      );
-      const after = await api.localModelGateway.read();
-      const notified = await Promise.race([
-        changed,
-        new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
-      ]);
-      return { before, saved, stale, connect, key, after, notified };
-    });
-    expect(device.before.gateway).toBeNull();
-    expect(device.saved).toMatchObject({
-      ok: true,
-      value: {
-        organizationId: device.before.organizationId,
-        baseUrl: 'https://gateway.example.test',
-        enabled: true,
-      },
-    });
-    expect(device.stale).toMatchObject({
-      ok: false,
-      error: { serverCode: 'stale_revision' },
-    });
-    expect(device.connect).toEqual({
-      ok: true,
-      value: { status: 'key_required' },
-    });
-    expect(device.key).toMatchObject({
-      apiKey: '',
-      organizationId: device.before.organizationId,
-    });
-    expect(device.after.gateway?.revision).toBe(device.saved.value.revision);
-    expect(device.notified).toBe(true);
     expect(
       rendererWarnings.filter((message) =>
         message.includes(UNSUPPORTED_VM_WARNING),

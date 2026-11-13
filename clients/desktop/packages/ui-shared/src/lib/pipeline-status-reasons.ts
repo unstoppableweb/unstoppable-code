@@ -60,13 +60,6 @@ export function pipelineStatusReasonCopy(reason: PipelineStatusReason): {
       helper:
         'Resume this run when you are ready. Completed steps will be retained.',
     };
-  // The background service hosting the run stopped unexpectedly (CAN-6481).
-  if (reason.kind === 'core_lost')
-    return {
-      heading: 'Paused when the background service stopped',
-      helper:
-        'Resume this run when you are ready. Completed steps will be retained.',
-    };
   const provider = providerLabel(reason);
   if (reason.kind === 'provider_authentication_required') {
     return {
@@ -167,7 +160,6 @@ export function compactPipelineStatusReasonLabel(
   if (reason.kind === 'app_shutdown') return 'Application stopped';
   if (reason.kind === 'owner_lost') return 'Connection lost';
   if (reason.kind === 'host_rollover') return 'Machine replaced';
-  if (reason.kind === 'core_lost') return 'Background service stopped';
   if (reason.kind === 'input_required') return 'Needs input';
   if (reason.kind === 'provider_usage_limit') return `${provider} usage limit`;
   if (reason.kind === 'provider_authentication_required') {

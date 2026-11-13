@@ -22,7 +22,6 @@ import {
   buildQuestionReadyChip,
   ComposerSendButton,
   defaultChatPlaceholder,
-  PromptSuggestionKeyHint,
 } from '@canopy/ui-shared';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import {
@@ -275,8 +274,6 @@ interface ComposerStateSpec {
   readonly fastMode?: boolean;
   readonly approvalMode?: ApprovalMode;
   readonly contextPercent?: number;
-  /** A next prompt suggestion the empty composer offers (Labs). */
-  readonly promptSuggestion?: string;
 }
 
 /** One composer, assembled the way ChatInput assembles it. */
@@ -442,7 +439,7 @@ function GalleryComposer({
               ? 'Enter your plan adjustments here…'
               : spec.streaming
                 ? 'Type to queue a follow-up message…'
-                : (spec.promptSuggestion ?? DEFAULT_PLACEHOLDER);
+                : DEFAULT_PLACEHOLDER;
 
   const pending = spec.pendingModel === true;
   const trailingSlot: ReactNode = editingQueued ? (
@@ -533,11 +530,6 @@ function GalleryComposer({
             : slateContainerClassName
       }
       placeholder={placeholder}
-      placeholderSuffix={
-        placeholder === spec.promptSuggestion ? (
-          <PromptSuggestionKeyHint />
-        ) : undefined
-      }
     />
   );
   const composerControls = voiceRecording ? (
@@ -939,17 +931,6 @@ const SECTIONS: readonly GallerySection[] = [
       },
       { id: 'voice-off', title: 'Dictation off', voiceOff: true },
       { id: 'dragging', title: 'Dragging files over the chat', dragging: true },
-      {
-        id: 'prompt-suggestion',
-        title: 'Next prompt suggestion (Labs)',
-        promptSuggestion: 'make the test pass',
-      },
-      {
-        id: 'prompt-suggestion-running',
-        title: 'Next prompt suggestion, agent running (hidden)',
-        promptSuggestion: 'make the test pass',
-        streaming: true,
-      },
     ],
   },
   {
@@ -990,12 +971,6 @@ const SECTIONS: readonly GallerySection[] = [
     title: 'Tall: something extra in the box',
     states: [
       { id: 'long', title: 'Long text (wraps)', text: LONG_TEXT },
-      {
-        id: 'prompt-suggestion-long',
-        title: 'Long next prompt suggestion (wraps)',
-        promptSuggestion:
-          'run the upload test fifty times with the mock server latency raised and tell me which runs fail',
-      },
       { id: 'attachments', title: 'An image and a file', attachments: true },
       {
         id: 'attachments-many',
@@ -1025,12 +1000,6 @@ const SECTIONS: readonly GallerySection[] = [
     title: 'Narrow chat panel (360px)',
     states: [
       { id: 'narrow-empty', title: 'Empty', width: 360 },
-      {
-        id: 'narrow-prompt-suggestion',
-        title: 'Next prompt suggestion',
-        width: 360,
-        promptSuggestion: 'run the upload test fifty times',
-      },
       {
         id: 'narrow-typing',
         title: 'Typing',

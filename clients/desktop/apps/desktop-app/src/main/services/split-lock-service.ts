@@ -143,11 +143,6 @@ export function acquireSplitLock(
   emitChange({ workspaceId, worktreeId, locked: true });
 }
 
-/** Read-only admission fence, including deletion before its first journal save. */
-export function hasWorkspaceDeletionLease(workspaceId: string): boolean {
-  return workspaceDeletionLeases.has(workspaceId);
-}
-
 /**
  * Atomically exclude split starts while canonical workspace deletion runs.
  * Throws before any deletion side effect when a worktree in the workspace is

@@ -17,9 +17,6 @@ export function panelKindsUnavailableFor(
 ): PanelKind[] {
   const unavailable: PanelKind[] = [];
   if (capabilities.terminalPty !== true) unavailable.push('terminal');
-  if (capabilities.fileSystemAccess === 'none') {
-    unavailable.push('file-explorer', 'file-diff');
-  }
   if (capabilities.inAppBrowserPanel !== true) unavailable.push('browser');
   if (capabilities.automations !== true) unavailable.push('automations');
   if (capabilities.chatWorkflows?.planMode !== true) {
@@ -33,47 +30,7 @@ export function panelKindsUnavailableFor(
   if (capabilities.costInsights !== true) {
     unavailable.push('cost', 'session-breakdown');
   }
-  // A scope that serves no activity section has no Activity tab to offer.
-  if (capabilities.activitySectionIds?.length === 0) {
-    unavailable.push('activity-section');
-  }
   return unavailable;
-}
-
-/**
- * Whether a chat scope serves one activity section, as its own card or in
- * the Activity stack: its allowlist names it (CAN-6430), and Cost only where
- * the scope has cost insights (CAN-6431). Every other section of a cloud
- * scope would read this computer with the cloud task's ids.
- */
-export function scopeServesActivitySection(
-  capabilities: CanopyCapabilities,
-  sectionId: string,
-): boolean {
-  if (sectionId === 'cost' && capabilities.costInsights !== true) return false;
-  return (
-    capabilities.activitySectionIds === undefined ||
-    capabilities.activitySectionIds.includes(sectionId)
-  );
-}
-
-/** A layout's scope's capabilities, outside React. */
-function layoutScopeCapabilities(worktreeKey: string): CanopyCapabilities {
-  const { projectId } = splitWorktreeKey(worktreeKey);
-  return (
-    ipcCanopyClient.capabilitiesFor?.(projectId) ?? ipcCanopyClient.capabilities
-  );
-}
-
-/** Whether a layout's scope serves an activity section, outside React. */
-export function layoutScopeServesActivitySection(
-  worktreeKey: string,
-  sectionId: string,
-): boolean {
-  return scopeServesActivitySection(
-    layoutScopeCapabilities(worktreeKey),
-    sectionId,
-  );
 }
 
 const unavailableByCapabilities = new WeakMap<
@@ -85,7 +42,10 @@ const unavailableByCapabilities = new WeakMap<
 function panelKindsUnavailableInLayout(
   worktreeKey: string,
 ): ReadonlySet<PanelKind> {
-  const capabilities = layoutScopeCapabilities(worktreeKey);
+  const { projectId } = splitWorktreeKey(worktreeKey);
+  const capabilities =
+    ipcCanopyClient.capabilitiesFor?.(projectId) ??
+    ipcCanopyClient.capabilities;
   let kinds = unavailableByCapabilities.get(capabilities);
   if (kinds === undefined) {
     kinds = new Set(panelKindsUnavailableFor(capabilities));

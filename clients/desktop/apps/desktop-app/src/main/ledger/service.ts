@@ -1,7 +1,13 @@
+import type { ZodType } from 'zod';
 import {
+  LEDGER_LIMITS,
   LedgerAuthorDetailsSchema,
+  LedgerContentSchema,
+  LedgerFileRefSchema,
+  LedgerHighlightSchema,
   LedgerOriginSchema,
   ledgerSourceKindOfOrigin,
+  LedgerTitleSchema,
   type LedgerActorFilter,
   type LedgerActorKind,
   type LedgerActorRef,
@@ -25,6 +31,7 @@ import {
   type LedgerWorkSummaryGetResult,
   type LedgerRollupsListParams,
   type LedgerRollupsListResult,
+  type LedgerFileRef,
   type LedgerMutation,
   type LedgerOrigin,
   type LedgerOwnerCandidatePage,
@@ -35,11 +42,12 @@ import {
   type LedgerSummaryPublishParams,
   type LedgerSummaryPublishResult,
   type LedgerSyncState,
-  redactLedgerEntryText,
-  type LedgerRedaction,
 } from '@canopy/protocol/canopy-core';
 import type { CanopyHandlerContext } from '@canopy/core-runtime';
-import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
+import {
+  redactSecrets,
+  redactValues,
+} from '@canopy/execution-engine/lib/redaction';
 import {
   LedgerActorDirectory,
   type LedgerChatLivenessSource,
@@ -687,14 +695,32 @@ export class LedgerCoreService implements LedgerService {
       const idempotencyKey = requireIdempotencyKey(context, site, requestMeta);
       const authorDetails = this.authorDetails(caller, site);
       const origin = await this.origin(caller, site);
-      const redacted = redactedOrRefused(
-        redactLedgerEntryText<LedgerAddEntryParams>(
-          entry,
-          caller.binding.secretValues ?? [],
-          this.redact,
-        ),
-        site,
-      );
+      const secrets = caller.binding.secretValues ?? [];
+      const redacted: LedgerAddEntryParams = {
+        ...entry,
+        ...(entry.title === undefined
+          ? {}
+          : { title: this.redactField(entry.title, 'title', site, secrets) }),
+        content: this.redactField(entry.content, 'content', site, secrets),
+        ...(entry.highlights === undefined
+          ? {}
+          : {
+              highlights: this.redactHighlights(
+                entry.highlights,
+                site,
+                secrets,
+              ),
+            }),
+        ...(entry.referenceFiles === undefined
+          ? {}
+          : {
+              referenceFiles: this.redactFileRefs(
+                entry.referenceFiles,
+                site,
+                secrets,
+              ),
+            }),
+      };
       const commit: OwnerCommit<LedgerStoreCommandReceipt> = (
         owner,
         ownerEligible,
@@ -830,14 +856,16 @@ export class LedgerCoreService implements LedgerService {
       const { _meta: requestMeta, ...publication } = params;
       const idempotencyKey = requireIdempotencyKey(context, site, requestMeta);
       const helperDetails = this.authorDetails(caller, site);
-      const redacted = redactedOrRefused(
-        redactLedgerEntryText<LedgerPublishSummaryParams>(
-          publication,
-          [],
-          this.redact,
-        ),
-        site,
-      );
+      const redacted: LedgerPublishSummaryParams = {
+        ...publication,
+        title: this.redactField(publication.title, 'title', site),
+        content: this.redactField(publication.content, 'content', site),
+        ...(publication.highlights === undefined
+          ? {}
+          : {
+              highlights: this.redactHighlights(publication.highlights, site),
+            }),
+      };
       const receipt = await this.options.store().publishSummary({
         ledgerId: caller.scope.ledgerId,
         helper: caller.actor,
@@ -1183,18 +1211,98 @@ export class LedgerCoreService implements LedgerService {
         return undefined;
     }
   }
-}
 
-/** A masked entry, or the field masking left invalid as a refusal (LD02). */
-function redactedOrRefused<Value>(
-  redaction: LedgerRedaction<Value>,
-  site: LedgerErrorSite,
-): Value {
-  if (redaction.ok) return redaction.value;
-  throw ledgerOperationError('INVALID_INPUT', site, {
-    field: redaction.field,
-    ...(redaction.limit === undefined ? {} : { limit: redaction.limit }),
-  });
+  private redactField(
+    value: string,
+    field: 'title' | 'content',
+    site: LedgerErrorSite,
+    secretValues: readonly string[] = [],
+  ): string {
+    return field === 'title'
+      ? this.redactText(
+          value,
+          LedgerTitleSchema,
+          field,
+          LEDGER_LIMITS.titleMaxCodePoints,
+          site,
+          secretValues,
+        )
+      : this.redactText(
+          value,
+          LedgerContentSchema,
+          field,
+          LEDGER_LIMITS.contentMaxCodePoints,
+          site,
+          secretValues,
+        );
+  }
+
+  private redactHighlights(
+    highlights: readonly string[],
+    site: LedgerErrorSite,
+    secretValues: readonly string[] = [],
+  ): string[] {
+    return highlights.map((highlight, index) =>
+      this.redactText(
+        highlight,
+        LedgerHighlightSchema,
+        `highlights.${String(index)}`,
+        LEDGER_LIMITS.highlightMaxCodePoints,
+        site,
+        secretValues,
+      ),
+    );
+  }
+
+  /**
+   * Masks the caller's configured secret values out of reference files,
+   * whose root and path the agent chooses. A reference the masking leaves
+   * invalid is refused rather than stored.
+   */
+  private redactFileRefs(
+    refs: readonly LedgerFileRef[],
+    site: LedgerErrorSite,
+    secretValues: readonly string[],
+  ): LedgerFileRef[] {
+    if (secretValues.length === 0) return [...refs];
+    return refs.map((ref, index): LedgerFileRef => {
+      const parsed = LedgerFileRefSchema.safeParse({
+        ...ref,
+        rootId: redactValues(ref.rootId, secretValues),
+        path: redactValues(ref.path, secretValues),
+      });
+      if (!parsed.success) {
+        throw ledgerOperationError('INVALID_INPUT', site, {
+          field: `referenceFiles.${String(index)}`,
+        });
+      }
+      return parsed.data;
+    });
+  }
+
+  /**
+   * Redacts secrets and PII (LD02): first the exact values the caller's
+   * binding names, such as a pipeline step's configured secrets, whatever
+   * their shape, then anything that looks like a secret. A masked value can
+   * be longer than the original; rather than truncate silently, the field's
+   * limit is reported.
+   */
+  private redactText(
+    value: string,
+    schema: ZodType<string>,
+    field: string,
+    limit: number,
+    site: LedgerErrorSite,
+    secretValues: readonly string[],
+  ): string {
+    const masked =
+      secretValues.length === 0 ? value : redactValues(value, secretValues);
+    const parsed = schema.safeParse(this.redact(masked));
+    if (!parsed.success) {
+      throw ledgerOperationError('INVALID_INPUT', site, { field, limit });
+    }
+    return parsed.data;
+  }
 }
 
 /**

@@ -9,7 +9,6 @@ import {
   resolveOwnerScopedModelId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
-import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
 import { isOpenCodeGatewayRouteSupported } from '@canopy/desktop-shared/lib/opencode-gateway-models';
 import {
   prepareOpenCodeInferenceRoute,
@@ -34,12 +33,6 @@ import {
   type CanopyCloudAccountEntry,
 } from '../lib/canopy-cloud-account-store';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
-import {
-  isLocalModelGatewayOrganizationId,
-  LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
-  subscribeLocalModelGatewayChanges,
-} from '../lib/local-model-gateway-store';
-import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 
@@ -134,19 +127,6 @@ export async function openOpenCodeInferenceLease(options: {
       ? 'anthropic-messages'
       : 'openai-responses';
   const funding = entry.origin === 'org-gateway' ? 'org-gateway' : 'ai-credits';
-  // The device gateway has no account behind it: the lease binds to the
-  // device gateway instead, and ends once an account names a Personal org.
-  const deviceGateway =
-    funding === 'org-gateway' &&
-    (await isLocalModelGatewayOrganizationId(entry.organizationId));
-  const leaseIdentity = (
-    account: CanopyCloudAccountEntry | null,
-  ): string | undefined =>
-    deviceGateway
-      ? accountUsesDeviceModelGateway(account)
-        ? `local:${entry.organizationId ?? ''}`
-        : undefined
-      : accountIdentity(account);
   if (!sessionId.trim())
     throw new Error('The chat is unavailable. Reopen it and try again.');
   const broker = getCodexGatewayProxyService();
@@ -157,35 +137,18 @@ export async function openOpenCodeInferenceLease(options: {
   let disposed = false;
   let authorityUnavailable = false;
   let unsubscribe = (): void => {};
-  let unsubscribeDevice = (): void => {};
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     abort.abort();
     signal.removeEventListener('abort', dispose);
     unsubscribe();
-    unsubscribeDevice();
     if (brokerLease) broker.unregisterRoute(brokerLease.routeId);
   };
   unsubscribe = subscribeCanopyCloudAccountChanges((account) => {
     if (!expectedAccount) initialAccountChanged = true;
-    else if (leaseIdentity(account) !== expectedAccount) dispose();
+    else if (accountIdentity(account) !== expectedAccount) dispose();
   });
-  // Only a device change that ends this route ends the lease: removing or
-  // disabling the gateway, or moving its endpoint. Renames and model edits
-  // are checked per token read by `assertRoute`, as for hosted gateways.
-  const deviceRoute = `${entry.organizationId ?? ''}|${normalizeModelGatewayBaseUrl(entry.baseUrl) ?? ''}`;
-  if (deviceGateway)
-    unsubscribeDevice = subscribeLocalModelGatewayChanges((config) => {
-      if (
-        config?.enabled &&
-        `${config.organizationId}|${normalizeModelGatewayBaseUrl(config.baseUrl) ?? ''}` ===
-          deviceRoute
-      )
-        return;
-      if (!expectedAccount) initialAccountChanged = true;
-      else dispose();
-    });
   signal.addEventListener('abort', dispose, { once: true });
   if (signal.aborted) dispose();
   const assertActive = (): void => {
@@ -206,7 +169,7 @@ export async function openOpenCodeInferenceLease(options: {
   };
   try {
     await assertRoute();
-    expectedAccount = leaseIdentity(await loadCanopyCloudAccount());
+    expectedAccount = accountIdentity(await loadCanopyCloudAccount());
     assertActive();
     if (!expectedAccount)
       throw new Error('Sign in to use this model with OpenCode.');
@@ -218,7 +181,7 @@ export async function openOpenCodeInferenceLease(options: {
       await assertRoute();
       if (
         getCanopyCloudBaseUrl() !== cloudBaseUrl ||
-        leaseIdentity(await loadCanopyCloudAccount()) !== expectedAccount
+        accountIdentity(await loadCanopyCloudAccount()) !== expectedAccount
       )
         throw new Error('The account changed. Send a new message to continue.');
       const credential =
@@ -228,7 +191,7 @@ export async function openOpenCodeInferenceLease(options: {
       await assertRoute();
       if (
         getCanopyCloudBaseUrl() !== cloudBaseUrl ||
-        leaseIdentity(await loadCanopyCloudAccount()) !== expectedAccount
+        accountIdentity(await loadCanopyCloudAccount()) !== expectedAccount
       )
         throw new Error('The account changed. Send a new message to continue.');
       assertActive();
@@ -326,9 +289,7 @@ export async function openOpenCodeInferenceLease(options: {
                 entry.organizationId ?? '',
                 status,
                 version,
-                deviceGateway
-                  ? LOCAL_MODEL_GATEWAY_ACCOUNT_ID
-                  : expectedAccount,
+                expectedAccount,
               ),
           }
         : {}),

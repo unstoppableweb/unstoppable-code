@@ -37,11 +37,6 @@ export interface DesktopSettingsPortDeps {
   ): SendableBrowserWindow | null;
   /** The `canopy-desktop-hosted-settings` rollout flag. */
   hostedSettingsEnabled(): boolean;
-  /**
-   * Account pages that work signed out. AI gateway does while its flag is
-   * on: signed out, it sets up this device's own gateway.
-   */
-  opensSignedOut?(route: SettingsRoute): boolean;
 }
 
 /**
@@ -93,16 +88,11 @@ export function createDesktopSettingsPort(
       } catch {
         account = { status: 'unavailable' };
       }
-      if (
-        account.status === 'signed_out' &&
-        deps.opensSignedOut?.(route) !== true
-      )
+      if (account.status === 'signed_out')
         return { status: 'rejected', reason: 'signed_out' };
       if (account.status === 'unavailable')
         return { status: 'rejected', reason: 'unavailable' };
       if (route.scope === 'organization') {
-        if (account.status === 'signed_out')
-          return { status: 'rejected', reason: 'signed_out' };
         if (account.organizationIds === null)
           return { status: 'rejected', reason: 'unavailable' };
         if (!account.organizationIds.includes(route.organizationId))
@@ -125,10 +115,6 @@ export const desktopSettingsPort: AgentSettingsPort<CanopyInjectedToolRuntime> =
     ...createDesktopSettingsPort({
       readAccount: readDesktopSettingsAccount,
       hostedSettingsEnabled: isHostedSettingsEnabled,
-      opensSignedOut: (route) =>
-        route.scope === 'account' &&
-        route.page === 'ai-gateway' &&
-        desktopAiGatewayEnabled(),
       getWindow: (call) =>
         call.host.worktreeActionRuntime?.getWindow() ??
         call.host.settingsWindow?.() ??

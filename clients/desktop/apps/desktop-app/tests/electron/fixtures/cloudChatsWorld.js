@@ -124,49 +124,6 @@ function seedTranscripts() {
   };
 }
 
-/**
- * A Core agent task row as the web core serves it in a chat snapshot's
- * `tasks` and in `agent_tasks.replaced` (CAN-5976).
- */
-export function agentTaskRow(fields) {
-  return {
-    stateVersion: '1',
-    kind: 'subagent',
-    harness: 'CLAUDE_CODE',
-    status: 'running',
-    stopReason: null,
-    native: {},
-    parentTaskId: null,
-    spawnTurnId: null,
-    spawnToolCallId: null,
-    title: null,
-    description: null,
-    prompt: null,
-    subagentType: null,
-    thinkingEffort: null,
-    costUsd: null,
-    summary: null,
-    outputTail: null,
-    model: null,
-    usage: null,
-    error: null,
-    createdAtMs: Date.parse(AT),
-    startedAtMs: Date.parse(AT),
-    updatedAtMs: Date.parse(AT),
-    completedAtMs: null,
-    approvalPending: false,
-    background: false,
-    ...fields,
-  };
-}
-
-/** The spawn call of the background subagent `startBackgroundAgent` gives a chat. */
-export const BACKGROUND_AGENT = {
-  spawnToolCallId: 'toolu_e2e_survey',
-  description: 'Survey the repo',
-  shellDescription: 'Watch the build',
-};
-
 const ok = (result) => ({ result });
 const refuse = (kind, message, code) => ({
   error: {
@@ -385,24 +342,7 @@ export function createCloudChatsWorld({ accountId }) {
     createRefusals: [],
     /** Operations a spec adds or overrides: method → (params) => answer. */
     extraAnswers: new Map(),
-    /** Each chat's agent task rows, as its snapshot carries them. */
-    tasks: {},
-    /** Each chat's running turn, by chat id: its conversation turn id. */
-    activeTurns: {},
-    /** How long a sent turn runs before its reply commits, in ms. */
-    replyDelayMs: 100,
-    /** Every `core.chat.turn.cancel` the desktop made, in order. */
-    cancels: [],
-    /** How many `core.chat.snapshot.get` the desktop made. */
-    snapshotReads: 0,
-    /**
-     * A running turn's live reply, by chat id, which `core.chat.live.events`
-     * opens on: its turn item and its tool calls (live revision 2).
-     */
-    liveTurns: {},
   };
-  /** Each running turn's reply, committed when its timer fires or Stop lands. */
-  const finishers = new Map();
   /** @type {Map<string, { method: string, params: object }>} */
   const subscriptions = new Map();
   /** @type {Set<(notification: object) => void>} */
@@ -456,24 +396,6 @@ export function createCloudChatsWorld({ accountId }) {
       ? seeded.files
       : {};
 
-  /**
-   * The runtime of the batch that commits a turn's reply: Core's session
-   * status still reads `streaming` though no turn runs (staging, 11 Nov
-   * 2026); a turn that still runs names itself.
-   */
-  const committedRuntime = (chatId) =>
-    activeTurnOf(chatId) === undefined
-      ? { status: 'streaming', queuedMessageIds: [] }
-      : runtimeOf(chatId);
-
-  /** The turn that asked a pending question runs until it is answered. */
-  const QUESTION_TURN = 'e2e-question-turn';
-  const activeTurnOf = (chatId) =>
-    state.activeTurns[chatId] ??
-    (state.questions.some((question) => question.chatId === chatId)
-      ? QUESTION_TURN
-      : undefined);
-
   const tab = (chat) => ({
     chatId: chat.chatId,
     title: chat.title,
@@ -482,35 +404,10 @@ export function createCloudChatsWorld({ accountId }) {
     transcriptRevision: state.transcripts[chat.chatId].length,
   });
 
-  /**
-   * A chat's runtime as the web core's `runtimeOf` reads it from Core
-   * (apps/web/src/lib/web-core/chat.ts): the running turn's id beside Core's
-   * session status, which waits on a pending question as `awaiting_input`.
-   */
-  const runtimeOf = (chatId) => {
-    const turnId = activeTurnOf(chatId);
-    return {
-      status:
-        turnId === undefined
-          ? (state.runtime[chatId] ?? 'idle')
-          : state.questions.some((question) => question.chatId === chatId)
-            ? 'awaiting_input'
-            : 'streaming',
-      queuedMessageIds: [],
-      ...(turnId === undefined ? {} : { activeTurnId: turnId }),
-    };
-  };
-
-  /**
-   * Tells each live stream following `chatId` that no turn runs, as the web
-   * core's live stream does once a turn's reply commits (chat-live.ts).
-   */
-  const liveIdle = (chatId) =>
-    emit(
-      'core.chat.live.events',
-      { kind: 'idle', chatId },
-      (each) => each.scope?.chatId?.toLowerCase() === chatId,
-    );
+  const runtimeOf = (chatId) => ({
+    status: state.runtime[chatId] ?? 'idle',
+    queuedMessageIds: [],
+  });
 
   const chatBatch = (worktreeId, changes) => {
     const baseRevision = state.revision;
@@ -529,112 +426,6 @@ export function createCloudChatsWorld({ accountId }) {
       },
       (params) => params.scope?.worktreeId?.toLowerCase() === worktreeId,
     );
-    // Every committed batch also names its task on the sidebar's stream
-    // (apps/web/src/lib/web-core/chat-task-events.ts), which re-reads it.
-    emit(
-      'core.chat.task.events',
-      {
-        kind: 'task',
-        workspaceId: seeded.workspaceId,
-        worktreeId,
-        batchId: String(state.revision),
-      },
-      (each) =>
-        each.scope === 'all' || each.scope?.workspaceId === seeded.workspaceId,
-    );
-  };
-
-  /**
-   * Core settles an answered question and its turn runs on to the reply.
-   * Core records no result for its question call (staging, 11 Nov 2026): the
-   * batch that commits the reply upserts the asking message as it was, the
-   * call with nothing after it, and reports Core's session still running
-   * with no turn, as the web core's `runtimeOf` reads them
-   * (apps/web/src/lib/web-core/chat.ts, chat-events.ts).
-   */
-  const finishAnsweredTurn = (question) => {
-    const messages = state.transcripts[question.chatId];
-    const asking = messages.find((message) =>
-      message.blocks.some(
-        (block) =>
-          block.type === 'tool_use' && block.toolUseId === question.toolUseId,
-      ),
-    );
-    const reply = text(
-      `${question.requestId}-reply`,
-      'assistant',
-      'Studio B it is.',
-      0,
-    );
-    reply.timestamp = Date.now();
-    messages.push(reply);
-    chatBatch(state.chats.get(question.chatId).worktreeId, [
-      ...(asking === undefined
-        ? []
-        : [
-            {
-              type: 'message.upserted',
-              chatId: question.chatId,
-              message: asking,
-            },
-          ]),
-      { type: 'message.upserted', chatId: question.chatId, message: reply },
-      {
-        type: 'runtime.patched',
-        chatId: question.chatId,
-        runtime: committedRuntime(question.chatId),
-      },
-    ]);
-    liveIdle(question.chatId);
-  };
-
-  /**
-   * A sent turn as the web core reports Core's: queued while Core's session
-   * still reads `awaiting_input`, then running under its conversation turn
-   * id, then its reply committed in a batch whose runtime names no turn
-   * while Core's session status still reads `streaming`. No runtime change
-   * follows (staging, 11 Nov 2026). Stop ends it early with what it wrote.
-   */
-  const runTurn = (chatId, user, turnId, replyText) => {
-    const worktreeId = state.chats.get(chatId).worktreeId;
-    const messages = state.transcripts[chatId];
-    setTimeout(() => {
-      chatBatch(worktreeId, [
-        {
-          type: 'runtime.patched',
-          chatId,
-          runtime: { status: 'awaiting_input', queuedMessageIds: [user.id] },
-        },
-      ]);
-      setTimeout(() => {
-        messages.push(user);
-        state.activeTurns[chatId] = turnId;
-        chatBatch(worktreeId, [
-          { type: 'message.upserted', chatId, message: user },
-          { type: 'runtime.patched', chatId, runtime: runtimeOf(chatId) },
-        ]);
-        const finish = (body) => {
-          clearTimeout(timer);
-          finishers.delete(turnId);
-          const reply = text(`${user.id}-reply`, 'assistant', body, 0);
-          reply.timestamp = Date.now();
-          messages.push(reply);
-          delete state.activeTurns[chatId];
-          chatBatch(worktreeId, [
-            { type: 'message.upserted', chatId, message: user },
-            { type: 'message.upserted', chatId, message: reply },
-            {
-              type: 'runtime.patched',
-              chatId,
-              runtime: committedRuntime(chatId),
-            },
-          ]);
-          liveIdle(chatId);
-        };
-        const timer = setTimeout(() => finish(replyText), state.replyDelayMs);
-        finishers.set(turnId, finish);
-      }, 20);
-    }, 0);
   };
 
   /** The task folder's entries directly under `directory` ('' is the root). */
@@ -698,20 +489,14 @@ export function createCloudChatsWorld({ accountId }) {
           nextCursor: null,
         });
       case 'core.chat.snapshot.get': {
-        state.snapshotReads += 1;
         const worktreeId = params.scope.worktreeId.toLowerCase();
         const chats = chatsOf(worktreeId);
-        // A task snapshot opens the task's own chat; a chat snapshot, its chat.
-        const opened = (params.chatId ?? worktreeId).toLowerCase();
         return ok({
           workspaceId: seeded.workspaceId,
           worktreeId,
           revision: state.revision,
           eventsCursor: cursor(),
-          tabs: { activeTabId: opened, items: chats.map(tab) },
-          ...(state.tasks[opened] === undefined
-            ? {}
-            : { tasks: state.tasks[opened] }),
+          tabs: { activeTabId: worktreeId, items: chats.map(tab) },
           archives: [],
           runtimeByChatId: Object.fromEntries(
             chats.map((chat) => [chat.chatId, runtimeOf(chat.chatId)]),
@@ -737,7 +522,7 @@ export function createCloudChatsWorld({ accountId }) {
               worktreeId,
               title,
               state:
-                state.activeTurns[chatId] !== undefined
+                state.runtime[chatId] === 'streaming'
                   ? 'running'
                   : state.questions.some(
                         (question) => question.chatId === chatId,
@@ -769,36 +554,26 @@ export function createCloudChatsWorld({ accountId }) {
         state.sends.push(params);
         const user = text(params.messageId, 'user', params.text, 0);
         user.timestamp = Date.now();
+        const reply = text(
+          `${params.messageId}-reply`,
+          'assistant',
+          `Seeded reply: ${params.text}`,
+          0,
+        );
+        reply.timestamp = Date.now() + 1;
+        messages.push(user, reply);
         const turnId = `turn-${params.commandId}`;
-        runTurn(chatId, user, turnId, `Seeded reply: ${params.text}`);
-        // The receipt names the conversation turn, the id Stop cancels.
+        chatBatch(state.chats.get(chatId).worktreeId, [
+          { type: 'message.upserted', chatId, message: user },
+          { type: 'message.upserted', chatId, message: reply },
+          { type: 'runtime.patched', chatId, runtime: runtimeOf(chatId) },
+        ]);
         return ok({
           commandId: params.commandId,
           revision: state.revision,
           outcome: 'applied',
           entityId: turnId,
           messageId: params.messageId,
-        });
-      }
-      case 'core.chat.turn.cancel': {
-        state.cancels.push(params);
-        const chatId = params.chatId.toLowerCase();
-        const chat = state.chats.get(chatId);
-        if (chat === undefined) return chatNotFound();
-        const running = activeTurnOf(chatId) === params.turnId;
-        // The run winds down and its reply commits with what it wrote; a
-        // turn already over is not an error (the catalog page, #8885).
-        if (running)
-          setTimeout(() => finishers.get(params.turnId)?.('Stopped.'), 20);
-        return ok({
-          chatId,
-          workspaceId: seeded.workspaceId,
-          worktreeId: chat.worktreeId,
-          title: chat.title,
-          state: running ? 'running' : 'idle',
-          revision: 0,
-          createdAt: chat.createdAt,
-          updatedAt: new Date().toISOString(),
         });
       }
       case 'core.chat.send.receipt': {
@@ -827,8 +602,6 @@ export function createCloudChatsWorld({ accountId }) {
           );
         state.answers.push(params);
         state.questions = state.questions.filter((each) => each !== question);
-        // An answered interaction leaves Core's pending list, so the web core
-        // sends `pending_question.removed` (apps/web/src/lib/web-core/chat-events.ts).
         chatBatch(state.chats.get(question.chatId).worktreeId, [
           {
             type: 'pending_question.removed',
@@ -836,8 +609,6 @@ export function createCloudChatsWorld({ accountId }) {
             requestId: question.requestId,
           },
         ]);
-        // Core then runs the turn on to its reply.
-        setTimeout(() => finishAnsweredTurn(question), 50);
         // The web core answers with the chat, as `core.chat.turn.cancel` does.
         return ok({
           chatId: question.chatId,
@@ -1016,9 +787,6 @@ export function createCloudChatsWorld({ accountId }) {
     }
   };
 
-  /** The live stream's minor revision, which adds tool items (CAN-6116). */
-  const LIVE_EVENTS_REVISION = 2;
-
   /** Streams the page opens; each answers `{ subscriptionId, acceptedCursor }`. */
   const STREAMS = new Set([
     'core.chat.task.events',
@@ -1030,26 +798,15 @@ export function createCloudChatsWorld({ accountId }) {
     if (!STREAMS.has(method)) return undefined;
     const subscriptionId = randomUUID();
     subscriptions.set(subscriptionId, { method, params });
-    if (method === 'core.chat.live.events') {
-      // The live stream opens on its current state: the running turn's reply
-      // and its tool calls, or idle when no turn runs. A turn that runs with
-      // no reply yet opens with nothing. Tool calls are revision 2 items: as
-      // the web core does (chat-live.ts), a stream opened without
-      // `revision: 2` gets none.
-      const chatId = params.scope?.chatId ?? seeded.rootChatId;
-      const revised = params.revision === LIVE_EVENTS_REVISION;
-      const live = (
-        state.liveTurns[chatId.toLowerCase()] ??
-        (activeTurnOf(chatId.toLowerCase()) === undefined
-          ? [{ kind: 'idle', chatId }]
-          : [])
-      ).filter((item) => revised || item.kind !== 'tool');
-      // After the open's reply, once the server has bound the subscription.
-      setTimeout(() => {
-        for (const item of live)
-          emit('core.chat.live.events', item, (each) => each === params);
-      }, 0);
-    }
+    if (method === 'core.chat.live.events')
+      // The live stream opens on its current state: no turn runs.
+      queueMicrotask(() =>
+        emit(
+          'core.chat.live.events',
+          { kind: 'idle', chatId: params.scope?.chatId ?? seeded.rootChatId },
+          (each) => each === params,
+        ),
+      );
     return ok({ subscriptionId, acceptedCursor: params.cursor ?? null });
   };
 
@@ -1133,145 +890,34 @@ export function createCloudChatsWorld({ accountId }) {
     );
   };
 
-  /**
-   * The methods the fake serves, as `core.runtime.initialize` reports them:
-   * each once, as the web core lists its handler map's keys, also when a spec
-   * overrides a served method.
-   */
+  /** The methods the fake serves, as `core.runtime.initialize` reports them. */
   const servedMethods = () => [
-    ...new Set([
-      'core.workspace.list',
-      'core.chat.task.list',
-      'core.chat.snapshot.get',
-      'core.chat.list',
-      'core.chat.transcript.page',
-      'core.chat.message.send',
-      'core.chat.send.receipt',
-      'core.chat.question.respond',
-      'core.chat.turn.cancel',
-      'core.chat.create',
-      'core.catalog.snapshot.get',
-      'core.catalog.selection.get',
-      'worker.filesystem.roots.list',
-      'worker.filesystem.directory.list',
-      'worker.filesystem.search',
-      'worker.filesystem.file.read',
-      'core.client.lease.acquire',
-      'core.client.lease.renew',
-      'core.client.lease.release',
-      'core.events.ack',
-      'core.events.unsubscribe',
-      ...state.extraAnswers.keys(),
-    ]),
+    'core.workspace.list',
+    'core.chat.task.list',
+    'core.chat.snapshot.get',
+    'core.chat.list',
+    'core.chat.transcript.page',
+    'core.chat.message.send',
+    'core.chat.send.receipt',
+    'core.chat.question.respond',
+    'core.chat.create',
+    'core.catalog.snapshot.get',
+    'core.catalog.selection.get',
+    'worker.filesystem.roots.list',
+    'worker.filesystem.directory.list',
+    'worker.filesystem.search',
+    'worker.filesystem.file.read',
+    'core.client.lease.acquire',
+    'core.client.lease.renew',
+    'core.client.lease.release',
+    'core.events.ack',
+    'core.events.unsubscribe',
+    ...state.extraAnswers.keys(),
   ];
-
-  /** Replaces a chat's task rows and sends them, as the web core does with each Core batch. */
-  const replaceAgentTasks = (chatId, tasks) => {
-    state.tasks[chatId] = tasks;
-    chatBatch(state.chats.get(chatId).worktreeId, [
-      { type: 'agent_tasks.replaced', chatId, tasks },
-    ]);
-  };
-
-  /**
-   * Gives `chatId` a background subagent and a background shell, as Core
-   * reports them: the spawn call and the subagent's own row (marked with the
-   * call's `parentToolUseId`) in the transcript, both tasks running.
-   */
-  const startBackgroundAgent = (chatId, { replyCommitted = true } = {}) => {
-    const { spawnToolCallId, description, shellDescription } = BACKGROUND_AGENT;
-    const at = Date.parse(AT) + 200_000;
-    const spawnInput = JSON.stringify({
-      description,
-      prompt: 'List the config files.',
-      subagent_type: 'Explore',
-      run_in_background: true,
-    });
-    const childRow = {
-      id: 'e2e-subagent-row',
-      role: 'assistant',
-      timestamp: at + 1_000,
-      parentToolUseId: spawnToolCallId,
-      blocks: [{ type: 'text', text: 'I see three config files.' }],
-    };
-    state.tasks[chatId] = [
-      agentTaskRow({
-        taskId: 'e2e-task-survey',
-        spawnToolCallId,
-        description,
-        background: true,
-      }),
-      agentTaskRow({
-        taskId: 'e2e-task-shell',
-        kind: 'background_shell',
-        description: shellDescription,
-        native: { toolName: 'Bash' },
-        background: true,
-      }),
-    ];
-    if (!replyCommitted) {
-      // The subagent writes before its parent's reply commits: its row is
-      // in the transcript while the spawn call is only in the running
-      // turn's live reply (55ea4e2123a).
-      const turnId = 'e2e-spawn-turn';
-      const prompt = state.transcripts[chatId].findLast(
-        (message) => message.role === 'user',
-      );
-      state.transcripts[chatId].push(childRow);
-      state.activeTurns[chatId] = turnId;
-      state.liveTurns[chatId] = [
-        {
-          kind: 'turn',
-          chatId,
-          turnId,
-          promptMessageId: prompt?.id ?? null,
-          text: 'Asking a subagent.',
-          reasoning: '',
-          state: 'streaming',
-        },
-        {
-          kind: 'tool',
-          chatId,
-          turnId,
-          toolUseId: spawnToolCallId,
-          toolName: 'Task',
-          input: spawnInput,
-          textOffset: 'Asking a subagent.'.length,
-        },
-      ];
-      return;
-    }
-    state.transcripts[chatId].push(
-      {
-        id: 'e2e-spawn-row',
-        role: 'assistant',
-        timestamp: at,
-        blocks: [
-          { type: 'text', text: 'Asking a subagent.' },
-          {
-            type: 'tool_use',
-            toolUseId: spawnToolCallId,
-            toolName: 'Task',
-            input: spawnInput,
-          },
-          {
-            type: 'tool_result',
-            toolUseId: spawnToolCallId,
-            toolName: 'Task',
-            output: 'Started in the background.',
-            isError: false,
-          },
-        ],
-      },
-      childRow,
-    );
-  };
 
   return {
     state,
     accountId,
-    replaceAgentTasks,
-    startBackgroundAgent,
     /** The operation's answer, `{ result }` or `{ error }`; undefined when not served. */
     call,
     /** Delivers every stream item notification to `listener`; returns the unsubscribe. */
@@ -1282,7 +928,5 @@ export function createCloudChatsWorld({ accountId }) {
     /** The methods the fake serves, as `core.runtime.initialize` reports them. */
     served: servedMethods,
     streams: () => [...STREAMS],
-    /** The minor revisions `core.runtime.initialize` advertises, as the web core's manifest does. */
-    schemaRevisions: () => ({ 'core.chat.live.events': LIVE_EVENTS_REVISION }),
   };
 }

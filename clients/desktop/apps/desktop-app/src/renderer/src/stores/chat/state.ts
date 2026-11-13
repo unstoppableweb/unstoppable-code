@@ -145,11 +145,6 @@ export interface ChatRevisionedSlice {
       onResult?: (result: ChatCommandResult) => void;
       /** Treat an idempotent command's not-found result as success. */
       acceptNotFound?: boolean;
-      /**
-       * The caller shows its own failure, as the question card does, so a
-       * rejected or failed command raises no chat-wide notice.
-       */
-      callerReportsFailure?: boolean;
     },
   ) => Promise<ChatCommandDisposition>;
 }

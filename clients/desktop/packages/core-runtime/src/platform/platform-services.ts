@@ -284,21 +284,6 @@ export type PlatformProcessInspection =
   | { readonly state: 'absent' }
   | { readonly state: 'unverifiable'; readonly reason: string };
 
-/**
- * A process's identity for a proven reap (CAN-6482): its start identity, its
- * process group and its executable path, read together. `unverifiable` when
- * any part cannot be read; a reap needs every part to match a record.
- */
-export type PlatformProcessIdentity =
-  | {
-      readonly state: 'running';
-      readonly startIdentity: string;
-      readonly processGroupId: number;
-      readonly executablePath: string;
-    }
-  | { readonly state: 'absent' }
-  | { readonly state: 'unverifiable'; readonly reason: string };
-
 /** One host process, for resource accounting only; never authority to signal. */
 export interface PlatformProcessTableRow {
   readonly pid: number;
@@ -338,14 +323,6 @@ export interface PlatformSupervisionServices {
   inspectProcess(
     request: PlatformProcessInspectionRequest,
   ): Promise<PlatformProcessInspection>;
-  /**
-   * The start identity, process group and executable path of one process,
-   * for a reap that must prove the process is the one it recorded (CAN-6482).
-   * Absent on hosts that cannot read them; callers then never reap.
-   */
-  identifyProcess?(
-    request: PlatformProcessInspectionRequest,
-  ): Promise<PlatformProcessIdentity>;
   /**
    * Every host process the user can see, for resource accounting. CPU is
    * measured between this services instance's consecutive reads where the

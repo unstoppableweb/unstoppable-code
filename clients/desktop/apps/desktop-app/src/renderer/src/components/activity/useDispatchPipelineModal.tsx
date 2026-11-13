@@ -38,8 +38,6 @@ export interface DispatchPipelineTarget {
 /** Workflows' Run, which needs no selected task (CAN-4542). */
 export interface WorkflowsRunOptions {
   initialPipelineId?: string;
-  /** Opens on that pipeline's run settings, as its editor's Run does. */
-  startOnSettings?: boolean;
   /** The selected task, offered as **Current task**. */
   currentTarget?: { projectId: string; worktreeId: string };
 }
@@ -447,7 +445,6 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
     <WorkflowsRunPipelineModal
       currentTarget={workflowsRun.currentTarget}
       initialPipelineId={workflowsRun.initialPipelineId}
-      startOnSettings={workflowsRun.startOnSettings}
       onClose={closeDispatchModal}
       onRun={handleWorkflowsRun}
       isRunning={dispatchRunning}

@@ -334,20 +334,9 @@ function ConfiguredAiGateway({
         <section className={SETTINGS_CARD_CLASS}>
           <div className={SETTINGS_CARD_GROUP_CLASS}>
             <div className={SETTINGS_CARD_ROW_CLASS}>
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <span className="text-s font-medium fg-primary">
-                  Use only my AI gateway
-                </span>
-                {/* Where keys stay on this computer, its own key row says so. */}
-                {KeyRow ? null : (
-                  <p
-                    className="text-xs text-pretty fg-secondary"
-                    data-testid="ai-gateway-only-desktop-note"
-                  >
-                    Also applies to the desktop app, which needs its own key.
-                  </p>
-                )}
-              </div>
+              <span className="text-s font-medium fg-primary">
+                Use only my AI gateway
+              </span>
               <ToggleSwitch
                 label="Use only my AI gateway"
                 checked={config.onlyThisGateway}

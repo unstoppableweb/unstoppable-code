@@ -7,7 +7,6 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { AgentIcon, MinusIcon, PlusIcon } from '../../icons';
 import { useCleanChatLook } from '../chat-look';
 import { Inline } from '../Stack';
-import { StatusLabel } from '../StatusLabel';
 import { StepRow } from './StepRow';
 import { formatDuration, formatTokenCount } from '../../lib/format-usage';
 import { AgentCardOpenChatAction } from './AgentCardOpenChatAction';
@@ -325,7 +324,7 @@ export function AgentBlockCard({
         {isRunning && pendingSpinner != null && (
           <span className="flex-shrink-0 fg-accent">{pendingSpinner}</span>
         )}
-        {isError && <StatusLabel size="3xs">error</StatusLabel>}
+        {isError && <span className="text-3xs fg-destructive/80">error</span>}
       </Inline>
       {headerTrailing}
     </button>

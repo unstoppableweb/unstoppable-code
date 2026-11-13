@@ -23,7 +23,6 @@ import type { AgentActionReceiptStore } from '../../receipts';
 import type { AgentActionToolResult } from '../../tools/definition';
 import type { AgentActionResponse } from '../../response';
 import type { AgentActionHostCapabilities } from '../../surface/capabilities';
-import { resolveModelCatalogHarnessChoice } from '@canopy/protocol/models';
 import {
   defineAgentActionFamily,
   type AgentActionCall,
@@ -337,19 +336,15 @@ export function createEnvironmentActionFamily<H>(
     | { ok: true; model: AgentStartChatInput['model'] }
     | { ok: false; response: AgentActionResponse }
   > {
-    if (
-      action.model === undefined &&
-      action.thinkingLevel === undefined &&
-      action.executionHarness === undefined
-    ) {
+    if (action.model === undefined && action.thinkingLevel === undefined) {
       return { ok: true, model: undefined };
     }
     const list = await port.listModels({ scope }, call);
     const modelId = action.model ?? list.defaultModelId;
-    const found = list.models.find(
+    const model = list.models.find(
       (entry) => entry.id === modelId && entry.available,
     );
-    if (!found) {
+    if (!model) {
       return {
         ok: false,
         response: agentActionError(
@@ -357,35 +352,10 @@ export function createEnvironmentActionFamily<H>(
           'not_found',
           action.model !== undefined
             ? `Model ${action.model} is not available. Use models.list to choose a model.`
-            : 'There is no default model to apply thinkingLevel or executionHarness to. Choose a model from models.list.',
+            : 'There is no default model to apply thinkingLevel to. Choose a model from models.list.',
         ),
       };
     }
-    // A named harness must be the model's own or one of its harnessChoices;
-    // the chosen route's capabilities then decide the thinking levels.
-    const harness = action.executionHarness;
-    const ownHarness =
-      found.harness ??
-      (found.provider === 'unknown' ? undefined : found.provider);
-    const choice = harness
-      ? found.harnessChoices?.find((entry) => entry.harness === harness)
-      : undefined;
-    if (harness !== undefined && !choice && ownHarness !== harness) {
-      const offered = found.harnessChoices?.map((entry) => entry.harness) ?? [];
-      return {
-        ok: false,
-        response: agentActionError(
-          call,
-          'validation_failed',
-          offered.length > 0
-            ? `Model ${found.id} does not run on the ${harness} harness. Its harnessChoices in models.list are: ${offered.join(', ')}.`
-            : `Model ${found.id} does not run on the ${harness} harness and offers no other harness. Omit executionHarness.`,
-        ),
-      };
-    }
-    const model = choice
-      ? resolveModelCatalogHarnessChoice(found, harness)
-      : found;
     const levels = modelThinkingLevels(model);
     if (
       action.thinkingLevel !== undefined &&
@@ -410,9 +380,6 @@ export function createEnvironmentActionFamily<H>(
         ...(action.thinkingLevel
           ? { thinkingLevel: action.thinkingLevel }
           : {}),
-        // Only a harness other than the model's own reaches the host: naming
-        // the model's own harness changes nothing, so the chat is not pinned.
-        ...(choice ? { executionHarness: choice.harness } : {}),
       },
     };
   }

@@ -213,8 +213,6 @@ import {
   loadModelGatewayCredential,
   saveModelGatewayCredential,
 } from '../lib/model-gateway-credential-store';
-import { refreshPersonalGatewayKey } from '../lib/model-gateway-state';
-import { broadcastModelRegistryUpdated } from '../models/model-registry';
 
 const REQUIRED_CANOPY_CLOUD_CAPABILITIES = [
   'pipelines-crud-v1',
@@ -1865,7 +1863,7 @@ export async function saveModelGatewayCredentialInOrder(
       normalizedInput.baseUrl,
       'in_app',
     );
-    await afterModelGatewayCredentialChanged();
+    await bestEffortInvalidateModelGatewayAuthSessions();
     return { valid: false, error: null };
   }
   const probe = await probeModelGatewayCredential(normalizedInput);
@@ -1910,17 +1908,11 @@ export async function saveModelGatewayCredentialInOrder(
       'api_key',
       probe.rejected ? 'authentication' : 'network',
     );
-  await afterModelGatewayCredentialChanged();
+  await bestEffortInvalidateModelGatewayAuthSessions();
   return { valid: probe.valid, error: probe.error };
 }
 
-async function afterModelGatewayCredentialChanged(): Promise<void> {
-  try {
-    // A personal gateway's models show only once this computer has its key.
-    if (await refreshPersonalGatewayKey()) broadcastModelRegistryUpdated();
-  } catch {
-    // The registry catches up on the next account refresh.
-  }
+async function bestEffortInvalidateModelGatewayAuthSessions(): Promise<void> {
   try {
     const { invalidateProviderAuthSessions } =
       await import('../agents/session-manager');
@@ -1974,7 +1966,7 @@ export async function clearModelGatewayCredentialForRemovedGateway(
     // stored; only a deleted key needs sessions and windows to re-read it.
     advanceGatewayCredentialSaveGeneration(scope);
     if (result === 'nothing-to-clear') return true;
-    await afterModelGatewayCredentialChanged();
+    await bestEffortInvalidateModelGatewayAuthSessions();
     sendToAllWindows(
       IPC_CHANNELS.modelGatewayCredentialChanged,
       organizationId,

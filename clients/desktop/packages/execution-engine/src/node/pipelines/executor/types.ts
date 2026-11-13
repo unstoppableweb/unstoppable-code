@@ -533,7 +533,7 @@ export interface PipelineLedgerAttemptRequest {
   predecessorAgentSessionId?: string;
   /** The recovery checkpoint this run resumes. */
   checkpointId?: string;
-  harness: 'claude' | 'codex' | 'opencode';
+  harness: 'claude' | 'codex';
   model?: string;
   thinkingEffort?: string;
   permissionPreset: PermissionPreset;
@@ -957,8 +957,6 @@ export interface OpenCodePromptRunnerRequest extends CursorPromptRunnerRequest {
   /** Captured pipeline scope, never the current navigation selection. */
   worktreeId?: string;
   executionContext?: string;
-  /** The step's open Ledger attempt; the app's MCP route serves its tools. */
-  ledgerAttemptKey?: string;
 }
 export type OpenCodePromptRunnerResult = CodexPromptRunnerResult;
 export interface OpenCodePromptRunner {
@@ -1240,8 +1238,6 @@ export interface ExecutionHandle {
   pauseForAuthentication?(attemptId: string): Promise<ExecutionState>;
   /** As {@link pauseForShutdown}, recording `owner_lost`: a remote owner is gone (CAN-6102). */
   pauseForOwnerLoss?(): Promise<ExecutionState>;
-  /** As {@link pauseForShutdown}, recording `core_lost`: its daemon core is gone (CAN-6481). */
-  pauseForCoreLoss?(): Promise<ExecutionState>;
   /**
    * A graceful {@link pauseForShutdown} recording `host_rollover`, so the
    * run's host can roll over (CAN-6199): no new step starts, running steps

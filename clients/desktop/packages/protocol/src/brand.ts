@@ -1436,8 +1436,6 @@ export interface InjectedToolNamesForBrand {
     readonly getGitPreferences: string;
     readonly saveMemory: string;
     readonly searchMemory: string;
-    readonly searchChats: string;
-    readonly readChatExcerpt: string;
     readonly readMemory: string;
     readonly readPipelineYaml: string;
     readonly showFiles: string;
@@ -1489,8 +1487,6 @@ export interface InjectedToolNamesForBrand {
     readonly getGitPreferences: string;
     readonly saveMemory: string;
     readonly searchMemory: string;
-    readonly searchChats: string;
-    readonly readChatExcerpt: string;
     readonly readMemory: string;
     readonly readPipelineYaml: string;
     readonly showFiles: string;
@@ -1553,8 +1549,6 @@ export function buildInjectedToolNamesForBrand(
       getGitPreferences: `mcp__${namespace}__GetGitPreferences`,
       saveMemory: `mcp__${namespace}__SaveMemory`,
       searchMemory: `mcp__${namespace}__SearchMemory`,
-      searchChats: `mcp__${namespace}__SearchChats`,
-      readChatExcerpt: `mcp__${namespace}__ReadChatExcerpt`,
       readMemory: `mcp__${namespace}__ReadMemory`,
       readPipelineYaml: `mcp__${namespace}__ReadPipelineYaml`,
       showFiles: `mcp__${namespace}__ShowFiles`,
@@ -1606,8 +1600,6 @@ export function buildInjectedToolNamesForBrand(
       getGitPreferences: `${namespace}_get_git_preferences`,
       saveMemory: `${namespace}_save_memory`,
       searchMemory: `${namespace}_search_memory`,
-      searchChats: `${namespace}_search_chats`,
-      readChatExcerpt: `${namespace}_read_chat_excerpt`,
       readMemory: `${namespace}_read_memory`,
       readPipelineYaml: `${namespace}_read_pipeline_yaml`,
       showFiles: `${namespace}_show_files`,

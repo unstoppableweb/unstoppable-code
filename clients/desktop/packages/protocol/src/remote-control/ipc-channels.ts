@@ -116,7 +116,6 @@ export const REMOTE_IPC_CHANNELS = {
   referencePreviewLinearTeams: 'reference-preview:linear-teams',
   repoDefaultCloneDir: 'repo:default-clone-dir',
   repoRulesApply: 'repo-rules:apply',
-  repoRulesCheck: 'repo-rules:check',
   repoRulesPreview: 'repo-rules:preview',
   repoRulesScan: 'repo-rules:scan',
   repoRulesStatus: 'repo-rules:status',

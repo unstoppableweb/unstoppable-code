@@ -11,10 +11,8 @@ import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 // CAN-6280: a seeded cloud chat, against the built app and a fake web core
 // over the real POST + SSE binding. With cloud chats on and the mock account
 // signed in, the sidebar lists the seeded cloud project and task; opening
-// the task shows it on the cowork page (CAN-6175 R2b) with its transcript
-// and its pending question, and once the question is answered a sent
-// message reaches the web core and comes back, with its reply, as chat
-// events.
+// the task shows its transcript and its pending question, and a sent message
+// reaches the web core and comes back, with its reply, as chat events.
 
 const SENT = 'Book Studio B for Thursday at 3pm.';
 
@@ -44,7 +42,7 @@ test('a seeded cloud chat opens, shows its question and sends a message', async 
     await expect(task.first()).toContainText(SEEDED_CLOUD_CHATS.taskTitle);
     await task.first().click();
 
-    const page = window.getByTestId('chat-panel');
+    const page = window.getByTestId('cloud-chat-page');
     await expect(page).toBeVisible();
     await expect(
       page.getByText('What do we still need before the launch?'),
@@ -53,13 +51,14 @@ test('a seeded cloud chat opens, shows its question and sends a message', async 
       page.getByText('Which room should I book for the demo?'),
     ).toBeVisible();
 
-    // The pending question holds the composer until it is answered.
-    await window.getByText('Studio B', { exact: true }).click();
-    await expect.poll(() => cloud.world.state.answers.length).toBe(1);
     const composer = page.getByRole('textbox').first();
     await composer.click();
     await composer.fill(SENT);
-    await page.getByRole('button', { name: 'Send message' }).click();
+    // The question card has its own Send; the composer's comes last.
+    await page
+      .getByRole('button', { name: 'Send', exact: true })
+      .last()
+      .click();
 
     await expect(page.getByText(`Seeded reply: ${SENT}`)).toBeVisible();
     expect(cloud.world.state.sends).toHaveLength(1);

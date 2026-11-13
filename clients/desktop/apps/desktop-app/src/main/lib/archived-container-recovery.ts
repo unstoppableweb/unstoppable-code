@@ -371,9 +371,6 @@ export async function readArchivedContainerRecoveryJournal(
   worktreeId: string,
 ): Promise<{
   createdAt: string;
-  phase: RecoveryJournal['phase'];
-  identity: string | null;
-  recovery: Recovery;
   repositories: {
     referenceRepoPath: string;
     repositoryIdentity: string | null;
@@ -383,11 +380,6 @@ export async function readArchivedContainerRecoveryJournal(
   if (!journal) return null;
   return {
     createdAt: journal.createdAt,
-    phase: journal.phase,
-    identity: journal.identity
-      ? `${journal.identity.dev}:${journal.identity.ino}:${journal.identity.birthtimeMs}`
-      : null,
-    recovery: journal.recovery,
     repositories: (journal.repositories ?? []).map((repository) => ({
       referenceRepoPath: repository.referenceRepoPath,
       repositoryIdentity: repository.repositoryIdentity?.path ?? null,

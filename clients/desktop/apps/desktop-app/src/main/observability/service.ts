@@ -1,4 +1,3 @@
-import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
 import {
@@ -7789,10 +7788,7 @@ export class ObservabilityService {
               attempt: historicalAttempt.attempt,
               iteration: iteration.iteration,
               step: stepValue,
-              modelConfig: mergeAgentModelConfig(
-                state.model_config,
-                stepValue.agent_model_config ?? {},
-              ),
+              modelConfig: stepValue.agent_model_config ?? state.model_config,
             });
           }
         }
@@ -7812,10 +7808,7 @@ export class ObservabilityService {
               historicalAttempt.iteration_history,
             ),
             step: stepValue,
-            modelConfig: mergeAgentModelConfig(
-              state.model_config,
-              stepValue.agent_model_config ?? {},
-            ),
+            modelConfig: stepValue.agent_model_config ?? state.model_config,
           });
         }
       }
@@ -7834,10 +7827,7 @@ export class ObservabilityService {
             attempt: currentAttempt,
             iteration: iteration.iteration,
             step: stepValue,
-            modelConfig: mergeAgentModelConfig(
-              state.model_config,
-              stepValue.agent_model_config ?? {},
-            ),
+            modelConfig: stepValue.agent_model_config ?? state.model_config,
           });
         }
       }
@@ -7875,10 +7865,7 @@ export class ObservabilityService {
             attempt: currentAttempt,
             iteration: job.iteration_count,
             step: stepValue,
-            modelConfig: mergeAgentModelConfig(
-              state.model_config,
-              stepValue.agent_model_config ?? {},
-            ),
+            modelConfig: stepValue.agent_model_config ?? state.model_config,
           });
         }
       }

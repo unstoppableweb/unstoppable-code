@@ -24,8 +24,7 @@ import { RichHoverCard } from './RichHoverTooltip';
 import { ErrorBanner } from './StatusBlocks';
 import { selectionTextWithMathSource } from './markdown-math-copy';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
-import { lookUpMenuLabel } from '../lib/look-up-label';
-import { CopyIcon, GlobeIcon, LinkIcon, SearchIcon } from '../icons/AppIcons';
+import { CopyIcon, GlobeIcon, LinkIcon } from '../icons/AppIcons';
 
 /**
  * Writes the copied text through the clipboard of `ownerDocument`'s window.
@@ -86,31 +85,6 @@ export function ChatMessageLinkActionsProvider({
     <ChatMessageLinkActionsContext.Provider value={value}>
       {children}
     </ChatMessageLinkActionsContext.Provider>
-  );
-}
-
-/**
- * Shows the system dictionary for the selection in the document that has
- * focus. Only a host that has such a lookup (the macOS desktop app) supplies
- * one; elsewhere the message menu offers no Look up row.
- */
-export type ChatMessageLookUpSelection = () => void;
-
-const ChatMessageLookUpContext =
-  createContext<ChatMessageLookUpSelection | null>(null);
-
-/** Supplies the host's dictionary lookup to every message menu below. */
-export function ChatMessageLookUpProvider({
-  value,
-  children,
-}: {
-  value: ChatMessageLookUpSelection | null;
-  children?: ReactNode;
-}): JSX.Element {
-  return (
-    <ChatMessageLookUpContext.Provider value={value}>
-      {children}
-    </ChatMessageLookUpContext.Provider>
   );
 }
 
@@ -259,11 +233,6 @@ interface OpenMenuState {
   readonly y: number;
   /** The selection when the menu opened; empty when there was none. */
   readonly selection: string;
-  /**
-   * The selected ranges when the menu opened, restored before a lookup so
-   * the system dictionary reads the selection the menu was opened on.
-   */
-  readonly selectionRanges: readonly Range[];
   /** The http(s) link the menu opened on, resolved; `null` elsewhere. */
   readonly linkUrl: string | null;
   /** Focus goes back here when the menu closes from inside. */
@@ -285,39 +254,6 @@ function capturedSelection(ownerDocument: Document): string {
   const selection = ownerDocument.getSelection();
   if (!selection || selection.isCollapsed) return '';
   return selectionTextWithMathSource(selection);
-}
-
-/** Copies of the selection's ranges; empty when nothing is selected. */
-function capturedSelectionRanges(ownerDocument: Document): Range[] {
-  const selection = ownerDocument.getSelection();
-  if (!selection || selection.isCollapsed) return [];
-  const ranges: Range[] = [];
-  for (let index = 0; index < selection.rangeCount; index += 1) {
-    ranges.push(selection.getRangeAt(index).cloneRange());
-  }
-  return ranges;
-}
-
-/**
- * Puts back the ranges captured when the menu opened, unless their content
- * has left the document since. Choosing a menu row can move or clear the
- * selection, and the system dictionary reads the live one.
- */
-function restoreSelection(state: OpenMenuState): void {
-  const { ownerDocument, selectionRanges } = state;
-  if (selectionRanges.length === 0) return;
-  if (
-    selectionRanges.some(
-      (range) =>
-        !range.startContainer.isConnected || !range.endContainer.isConnected,
-    )
-  ) {
-    return;
-  }
-  const selection = ownerDocument.getSelection();
-  if (!selection) return;
-  selection.removeAllRanges();
-  for (const range of selectionRanges) selection.addRange(range);
 }
 
 function isKeyboardMenuShortcut(event: KeyboardEvent<HTMLElement>): boolean {
@@ -344,9 +280,7 @@ function anchorPoint(element: HTMLElement): { x: number; y: number } {
  * disabled when there was none (CAN-4870). Whole-message copies live in the
  * row's footer, not here. On an http(s) link, or an element that declares one with
  * {@link CHAT_MESSAGE_LINK_URL_ATTRIBUTE}, it first lists Copy link and the
- * open actions from {@link ChatMessageLinkActionsProvider} (CAN-2632). With a
- * selection and a host lookup from {@link ChatMessageLookUpProvider}, it ends
- * with Look up, the system dictionary row a macOS menu shows. Hosts call it
+ * open actions from {@link ChatMessageLinkActionsProvider} (CAN-2632). Hosts call it
  * unconditionally in the row, spread `targetProps` onto the message element,
  * and render `menu`.
  *
@@ -411,7 +345,6 @@ export function useChatMessageContextMenu({
         x: point.x,
         y: point.y,
         selection: capturedSelection(ownerDocument),
-        selectionRanges: capturedSelectionRanges(ownerDocument),
         linkUrl: linkUrlAt(target, element),
         returnFocusTo: ownerDocument.activeElement,
       });
@@ -578,7 +511,6 @@ export function ChatMessageContextMenu({
   onClose: () => void;
 }): JSX.Element | null {
   const linkActions = useContext(ChatMessageLinkActionsContext);
-  const lookUpSelection = useContext(ChatMessageLookUpContext);
 
   const items = useMemo((): TabContextMenuItem[] => {
     const { linkUrl } = state;
@@ -621,36 +553,13 @@ export function ChatMessageContextMenu({
       disabled: state.selection.length === 0,
       onSelect: (): void => onCopy(state.selection, state),
     };
-    // Look up follows Copy selection, so Copy selection keeps its place
-    // whether or not the host has a dictionary or anything is selected.
-    const lookUpLabel =
-      lookUpSelection === null ? null : lookUpMenuLabel(state.selection);
-    const lookUpItems: TabContextMenuItem[] =
-      lookUpSelection !== null && lookUpLabel !== null
-        ? [
-            {
-              key: 'look-up-selection',
-              label: lookUpLabel,
-              // The label quotes the user's selection, conversation content
-              // the menu shows outside the transcript's blocked region.
-              replayBlockLabel: true,
-              icon: <SearchIcon />,
-              testId: 'chat-message-look-up-selection',
-              onSelect: (): void => {
-                restoreSelection(state);
-                lookUpSelection();
-              },
-            },
-          ]
-        : [];
     return [
       ...linkItems,
       linkItems.length > 0
         ? { ...copySelection, separatorBefore: true }
         : copySelection,
-      ...lookUpItems,
     ];
-  }, [linkActions, lookUpSelection, onCopy, state]);
+  }, [linkActions, onCopy, state]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLSpanElement>): void => {

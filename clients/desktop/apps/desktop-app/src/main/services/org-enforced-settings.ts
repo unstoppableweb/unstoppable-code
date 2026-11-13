@@ -27,16 +27,7 @@ import { sendToWindow } from '../lib/window-send';
 import { getTelemetrySyncService } from './telemetry-sync-service';
 import { migrateOrgPinnedTelemetrySharing } from '../lib/telemetry-pin-migration';
 import { setCurrentModelPolicyAccount } from '../lib/model-policy-state';
-import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
-import {
-  readLocalModelGatewayProjectionStatus,
-  refreshPersonalGatewayKey,
-  setCurrentModelGatewayAccount,
-} from '../lib/model-gateway-state';
-import {
-  readCanopyCloudAccountWithStatus,
-  toPublicCanopyCloudAccountState,
-} from '../lib/canopy-cloud-account-store';
+import { setCurrentModelGatewayAccount } from '../lib/model-gateway-state';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
 import { getUsageDataPolicy } from '../lib/usage-data-policy';
 
@@ -78,17 +69,8 @@ const modelPolicyApplier: OrgEnforcedPolicyApplier = {
 const modelGatewayApplier: OrgEnforcedPolicyApplier = {
   kind: 'model-gateway',
   async apply(account): Promise<boolean> {
-    const local = await readLocalModelGatewayProjectionStatus();
-    // Keep the current index and marker, including only-mode, rather than
-    // apply an unreadable device gateway as none.
-    if (!local.ok && accountUsesDeviceModelGateway(account))
-      throw new Error('The device AI gateway could not be read');
-    const result = setCurrentModelGatewayAccount(
-      account,
-      local.ok ? local.projection : null,
-    );
-    const keyChanged = await refreshPersonalGatewayKey();
-    if (result.changed || result.catalogChanged || keyChanged)
+    const result = setCurrentModelGatewayAccount(account);
+    if (result.changed || result.catalogChanged)
       broadcastModelRegistryUpdated();
     if (result.changed) {
       // The org's models are merged into MAIN's model registry only. The
@@ -171,35 +153,6 @@ export async function applyEnforcedSettings(
     }
   }
   return anyChanged;
-}
-
-/**
- * Re-apply the gateway policy after the device AI gateway changed, against the
- * stored account. Runs once at startup too: signed out, the periodic re-probe
- * never applies, so without it the device gateway would not reach the catalog.
- * An unreadable account is left to the re-probe rather than applied as none.
- */
-export async function refreshLocalModelGatewayPolicy(): Promise<boolean> {
-  const read = await readCanopyCloudAccountWithStatus();
-  if (read.status !== 'ok') return false;
-  try {
-    const changed = await modelGatewayApplier.apply(
-      toPublicCanopyCloudAccountState(read.entry),
-    );
-    if (changed) {
-      for (const window of BrowserWindow.getAllWindows()) {
-        sendToWindow(window, IPC_CHANNELS.preferencesChanged);
-      }
-    }
-    return changed;
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[org-enforced-settings] device AI gateway refresh failed:',
-      error,
-    );
-    return false;
-  }
 }
 
 /**

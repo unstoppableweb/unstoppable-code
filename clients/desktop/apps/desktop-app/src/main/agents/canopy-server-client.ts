@@ -1,5 +1,3 @@
-import { toAppError } from '@canopy/protocol/app-errors';
-import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { requireProviderForModel } from '@canopy/desktop-shared/types';
@@ -249,48 +247,6 @@ async function authorizedAgentDocument(
     instructions: source.instructions,
     plugins,
   };
-}
-
-/** Compare portable selections without installing or dropping any selected resource. */
-export async function automationAgentPluginsMatch(
-  local: AgentModelDefinition,
-  detail: SharedAgentDetail,
-): Promise<boolean> {
-  try {
-    await authorizedAgentDocument(local, detail.agent);
-    return true;
-  } catch (error: unknown) {
-    const failure = toAppError(error);
-    if (failure?.kind === 'defect')
-      logMainProcessWarn('Could not compare shared Agent plugins', failure);
-    // Unresolvable selections are not a match, never an install fallback.
-    return false;
-  }
-}
-
-/** Existing Agent install receipts bind package identity and recipient-local content. */
-export async function automationAgentPackageMatches(
-  local: AgentModelDefinition,
-  detail: SharedAgentDetail,
-): Promise<boolean> {
-  if (!detail.package) return false;
-  // Defer the install ledger until needed; its services also use this client.
-  const { findCapabilityPackageInstallByOwner } =
-    await import('../pipelines/pipeline-package-install-store');
-  const { getPipelinePackageInstallStorePath } = await import('../lib/paths');
-  const receipt = await findCapabilityPackageInstallByOwner(
-    getPipelinePackageInstallStorePath(),
-    { kind: 'agent', localId: local.id },
-  );
-  return (
-    receipt !== null &&
-    receipt.distributionMode !== 'definition_only' &&
-    receipt.packageDigest === detail.package.digest &&
-    receipt.originExternalId === detail.id &&
-    receipt.supportingFilesComplete !== false &&
-    local.contentHash !== undefined &&
-    receipt.localContentHash === local.contentHash
-  );
 }
 
 export async function createSharedAgent(

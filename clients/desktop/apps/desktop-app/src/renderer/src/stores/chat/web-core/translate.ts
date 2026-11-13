@@ -1,6 +1,6 @@
 import {
   CANOPY_STREAM_DEFINITIONS,
-  CORE_INSTRUCTION_DEFINITIONS,
+  CoreChatLifecycleResultSchema,
   CoreChatListResultSchema,
   CoreChatSnapshotGetResultSchema,
   CoreChatTranscriptPageResultSchema,
@@ -202,20 +202,15 @@ function unloadedTab(input: {
  */
 function runtime(value: unknown): ChatRuntimeState | null {
   if (!isRecord(value) || !isRuntimeStatus(value.status)) return null;
+  const parked =
+    value.status === 'awaiting_input' && typeof value.activeTurnId !== 'string';
   const queued = Array.isArray(value.queuedMessageIds)
     ? value.queuedMessageIds.filter(
         (id): id is string => typeof id === 'string',
       )
     : [];
-  // Core parks a session between turns awaiting input, and just after a turn
-  // ends its status still reads `streaming`, with no turn and none queued
-  // (staging, 11 Nov 2026): nothing runs (CAN-6396).
-  const ended =
-    typeof value.activeTurnId !== 'string' &&
-    (value.status === 'awaiting_input' ||
-      (value.status === 'streaming' && queued.length === 0));
   return {
-    status: ended ? 'idle' : value.status,
+    status: parked ? 'idle' : value.status,
     queuedMessageIds: queued,
     ...(typeof value.lastActivityAt === 'number'
       ? { lastActivityAt: value.lastActivityAt }
@@ -400,7 +395,7 @@ export function translateSnapshot(
     const state = runtime(summary);
     if (state === null) continue;
     runtimeByChatId[ids.chatToStore(chatId)] = state;
-    statuses.set(chatId, state.status);
+    statuses.set(chatId, summary.status);
     if (summary.activeTurnId !== undefined)
       activeTurns.set(chatId, summary.activeTurnId);
   }
@@ -680,9 +675,8 @@ function metadataPatch(patch: JsonRecord): ChatTabMetadataPatch {
 
 /**
  * One protocol change as the store's change, or null for one the store has
- * no use for: agent tasks, which the backend publishes as the chat's
- * background work (its stop, task transcripts, extend and wakes are
- * CAN-6107's), and delegation cards, which other rows bring.
+ * no use for yet: agent tasks (CAN-6107) and delegation cards, which other
+ * rows bring.
  */
 export function translateChange(
   change: EventChange,
@@ -763,14 +757,7 @@ export function translateChange(
         : {
             type: 'runtime.patched',
             chatId: ids.chatToStore(change.chatId),
-            runtime: {
-              ...state,
-              status: turnRuntimeStatus({
-                status: state.status,
-                activeTurnId: change.runtime.activeTurnId,
-                queuedMessageIds: state.queuedMessageIds,
-              }),
-            },
+            runtime: state,
           };
     }
     case 'archive.upserted': {
@@ -850,33 +837,6 @@ export function isTurnRunningStatus(status: string | undefined): boolean {
   return status !== undefined && TURN_RUNNING_STATUSES.has(status);
 }
 
-/**
- * A `runtime.patched` status as its turns say it. The web core reports
- * Core's session status beside the chat's turns (`runtimeOf` in
- * apps/web/src/lib/web-core/chat.ts), and that status lags them: it still
- * reads `streaming` in the change that commits a finished turn's reply,
- * with no later change, and `awaiting_input` while a sent turn waits queued
- * (CAN-6396). A turn runs only while the runtime names it, and one is about
- * to while it waits queued; with neither, nothing runs.
- */
-export function turnRuntimeStatus<Status extends string>(runtime: {
-  readonly status: Status;
-  readonly activeTurnId?: unknown;
-  readonly queuedMessageIds: readonly unknown[];
-}): Status | 'streaming' | 'awaiting_input' | 'queued' | 'idle' {
-  if (typeof runtime.activeTurnId === 'string')
-    return isTurnRunningStatus(runtime.status) && runtime.status !== 'queued'
-      ? runtime.status
-      : runtime.status === 'awaiting_input'
-        ? 'awaiting_input'
-        : 'streaming';
-  if (runtime.queuedMessageIds.length > 0) return 'queued';
-  return isTurnRunningStatus(runtime.status) ||
-    runtime.status === 'awaiting_input'
-    ? 'idle'
-    : runtime.status;
-}
-
 /** The running turn each `runtime.patched` in an item reports, by bare chat id. */
 export function activeTurnChanges(
   item: EventItem,
@@ -886,9 +846,9 @@ export function activeTurnChanges(
     if (change.type !== 'runtime.patched') continue;
     const turnId = change.runtime.activeTurnId;
     if (typeof turnId === 'string') turns.set(change.chatId, turnId);
-    // A queued turn names no id yet: the receipt's turn stays the one Stop
-    // cancels. With none queued, the turn ended (turnRuntimeStatus).
-    else if (change.runtime.queuedMessageIds.length === 0)
+    // A starting or running turn may not name its id yet: the receipt's
+    // turn stays the one Stop cancels. Only a turn that ended clears it.
+    else if (!isTurnRunningStatus(change.runtime.status))
       turns.set(change.chatId, null);
   }
   return turns;
@@ -1171,11 +1131,7 @@ export function translateCommandResult(
   value: unknown,
   ids: WebCoreIds,
 ): ChatCommandResult {
-  // Update's result is every lifecycle receipt plus a plugin-selection save's
-  // capability state, which may exceed the lifecycle catchall's 32 KiB JSON
-  // bound (CAN-6092).
-  const parsed =
-    CORE_INSTRUCTION_DEFINITIONS['core.chat.update'].result.safeParse(value);
+  const parsed = CoreChatLifecycleResultSchema.safeParse(value);
   if (!parsed.success) throw new WebCoreTranslationError('command receipt');
   const receipt = parsed.data;
   return {

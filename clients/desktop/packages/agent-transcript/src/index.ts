@@ -30,7 +30,6 @@ export * from './lib/epoch-ms';
 export * from './lib/auth-failure-attach';
 export * from './lib/memory-citation';
 export * from './lib/handoff-summary';
-export * from './lib/provider-switch-seed';
 export * from './lib/message-sanitization';
 export * from './lib/hidden-message-content';
 export * from './lib/transcript-fingerprint';

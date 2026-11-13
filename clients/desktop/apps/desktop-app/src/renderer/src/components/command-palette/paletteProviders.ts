@@ -181,8 +181,6 @@ export function buildWorktreeItems(
         subtitleReplayMasked: true,
         keywords: [
           project.name,
-          // The worktree's name, shown under its title in the sidebar.
-          worktreeId,
           worktree.branchName,
           worktree.label ?? '',
           summary?.title ?? '',

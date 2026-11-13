@@ -103,56 +103,7 @@ function targetCovers(
       );
     case 'network':
       return outer.kind === 'network' && hostCovers(outer.host, inner.host);
-    case 'browser-upload':
-      return (
-        outer.kind === 'browser-upload' &&
-        uploadCovers(outer, inner, rooted ? 'same' : 'path-same')
-      );
   }
-}
-
-type UploadTarget = Extract<EffectiveRuleTarget, { kind: 'browser-upload' }>;
-
-/**
- * Whether upload rule `held` applies to every upload `wanted` does. An upload
- * reads files relative to its own chat's worktree, so a path names the same
- * files only in the same root. `roots` says where a match counts:
- *
- * - `same`: only in the same root, for a grant an Ask or Auto bound holds;
- * - `any`: in any root, for a grant a Full Access bound holds, since that
- *   chat can copy any file into its own root without asking and upload it;
- * - `path-same`: a rule for every file in any root, a path rule only in the
- *   same root, for a deny the target holds.
- */
-function uploadCovers(
-  held: UploadTarget,
-  wanted: UploadTarget,
-  roots: 'same' | 'any' | 'path-same',
-): boolean {
-  if (held.origin !== wanted.origin) return false;
-  const sameRoot = held.root === wanted.root;
-  if (held.path === undefined) return roots !== 'same' || sameRoot;
-  return held.path === wanted.path && (roots === 'any' || sameRoot);
-}
-
-/**
- * Whether every browser upload grant `target` holds, `bound` holds too. No
- * mode approves an upload without a rule, so this applies to a Full Access
- * bound as well.
- */
-function uploadGrantsHeld(
-  target: EffectiveApprovalPolicy,
-  bound: EffectiveApprovalPolicy,
-): boolean {
-  const roots = bound.mode === 'full-access' ? 'any' : 'same';
-  const uploadGrants = (policy: EffectiveApprovalPolicy): UploadTarget[] =>
-    withBehavior(policy, 'allow').flatMap((rule) =>
-      rule.target.kind === 'browser-upload' ? [rule.target] : [],
-    );
-  const boundGrants = uploadGrants(bound);
-  return uploadGrants(target).every((wanted) =>
-    boundGrants.some((held) => uploadCovers(held, wanted, roots)),
-  );
 }
 
 const withBehavior = (
@@ -172,14 +123,10 @@ const withBehavior = (
  * - every grant the target holds, the bound holds too: a file path at the
  *   same absolute path or under a folder the bound grants, a command, tool,
  *   or MCP grant in the same root, a network host the bound's host covers
- *   (a Full Access bound grants everything but uploads);
- * - every browser upload grant the target holds, whatever the bound's mode,
- *   the bound holds for the same origin, for every file or the same path,
- *   in the same root (in any root for a Full Access bound);
+ *   (a Full Access bound grants everything);
  * - every policy file the bound always asks about, the target asks about;
  * - every deny the bound holds, the target holds at the same absolute path
- *   or a broader one (an upload deny: the same origin, for every file in
- *   any root or the same path in the same root).
+ *   or a broader one.
  */
 export function isApprovalPolicyWithin(
   target: EffectiveApprovalPolicy | undefined,
@@ -196,7 +143,6 @@ export function isApprovalPolicyWithin(
   ) {
     return false;
   }
-  if (!uploadGrantsHeld(target, bound)) return false;
   if (bound.mode !== 'full-access') {
     const boundAllows = withBehavior(bound, 'allow');
     const allowsHeld = withBehavior(target, 'allow').every((grant) =>

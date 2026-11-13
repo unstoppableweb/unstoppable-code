@@ -36,16 +36,7 @@ import {
   useAnimatedComposerBox,
   useOneLineComposer,
   VOICE_TAKE_EDITOR_CONTAINER_CLASS,
-  offeredPromptSuggestion,
-  promptSuggestionKeyAction,
-  PromptSuggestionKeyHint,
 } from '@canopy/ui-shared';
-import { PROMPT_SUGGESTIONS_EXPERIMENT_ID } from '@canopy/desktop-shared/lib/labs-experiments';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
-import {
-  usePromptSuggestionEntry,
-  usePromptSuggestionStore,
-} from '@/stores/promptSuggestionStore';
 import { isClaudeTurnLimitMessage } from '@canopy/agent-transcript';
 import {
   ComposerWorkDrawer,
@@ -504,14 +495,12 @@ import {
   ComposerDrawer,
   ComposerNoticeStack,
   MessageEditCancelSave,
-  PendingTurnSettingsHint,
   useCompactQueue,
 } from '@canopy/ui-shared/components';
 import { canContinueOnOtherHarness } from '@/lib/chatProviderLock';
 import { hasPendingQuestionForChat } from '@/stores/chat/pending-questions';
 import { isTabAiCreditsRouted } from '@/stores/chat/tab-utils';
 import { tabRequestedCodexSpeed } from '@/stores/chat/codex-speed';
-import { usePendingTurnSettings } from './usePendingTurnSettings';
 import { useContextualCodexSpeedControl } from '@/hooks/useContextualCodexSpeedControl';
 import { useCodexSpeedDowngrade } from '@/hooks/useCodexSpeedDowngrade';
 import { getDocument } from '@canopy/ui-shared/panels';
@@ -2484,18 +2473,6 @@ function ChatInputContent({
   // spinner).
   const composerTurn = useComposerTurnActivity(composerChatTarget, tab?.status);
   const isStreaming = composerTurn.activity !== 'idle' && !pendingExit;
-  // A model or thinking-level change made mid-turn on a session that applies
-  // setters only from its next turn (OpenCode) shows as pending beside the
-  // controls until that turn ends.
-  const pendingTurnSettingsState = usePendingTurnSettings({
-    projectId: targetOverride?.projectId ?? selectedWorktree?.projectId,
-    worktreeId: targetOverride?.worktreeId ?? selectedWorktree?.worktreeId,
-    chatId: tab?.id,
-    turnActive: isStreaming,
-    model,
-    thinkingLevel,
-    supportedThinkingLevels,
-  });
   const handleCancelRunningChat = useCallback((): void => {
     void cancelSession(targetOverride);
   }, [cancelSession, targetOverride]);
@@ -3162,31 +3139,6 @@ function ChatInputContent({
         bannerTarget.chatId,
       ),
   );
-  // Next prompt suggestions (Labs): only a native session composer, whose
-  // chat main sends them for, offers one.
-  const promptSuggestionsEnabled = useLabsExperimentEnabled(
-    PROMPT_SUGGESTIONS_EXPERIMENT_ID,
-  );
-  const promptSuggestionTarget = promptSuggestionsEnabled
-    ? sessionChatTarget
-    : null;
-  const promptSuggestionEntry = usePromptSuggestionEntry(
-    promptSuggestionTarget,
-  );
-  // A suggestion follows the turn it came from; a later send makes it stale.
-  const latestUserMessageId = useChatStore((s): string | undefined => {
-    if (!promptSuggestionTarget || !promptSuggestionEntry) return undefined;
-    const messages = s.worktreeChats[
-      `${promptSuggestionTarget.projectId}/${promptSuggestionTarget.worktreeId}`
-    ]?.tabs.find(
-      (candidate) => candidate.id === promptSuggestionTarget.chatId,
-    )?.messages;
-    if (!messages) return undefined;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index].role === 'user') return messages[index].id;
-    }
-    return undefined;
-  });
   // A newly displayed approval card takes focus only from the body or this
   // composer with no draft (`approval-focus-policy.ts`), evaluated now.
   const canApprovalTakeComposerFocus = useCallback((): boolean => {
@@ -6494,62 +6446,11 @@ function ChatInputContent({
     [confirmComposerTurn, verifyStreamingTabs],
   );
 
-  // Offered only where the default placeholder would show, so it never hides
-  // a question, plan, approval or other prompt the composer is waiting on.
-  const promptSuggestion = offeredPromptSuggestion({
-    suggestion: promptSuggestionEntry?.suggestion,
-    dismissed: promptSuggestionEntry?.dismissed ?? false,
-    latestUserMessageId,
-    // Untrimmed: Slate hides the placeholder for any text, whitespace too, and
-    // Tab must not insert a suggestion the person can no longer see.
-    draftEmpty:
-      serializedDraft.text.length === 0 &&
-      serializedDraft.fileReferences.length === 0 &&
-      pendingAttachments.length === 0,
-    showsDefaultPlaceholder:
-      !voiceRecording &&
-      voice.state === 'idle' &&
-      !questionPromptOpen &&
-      !planCardOpen &&
-      !isEditingQueued &&
-      !isTerminalMode &&
-      !pendingExit &&
-      !approvalPending &&
-      !isStreaming &&
-      !isAccountHarness &&
-      !readOnly &&
-      !sandbox,
-  });
-
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     // The `!` typeahead runs before send: Enter/Tab pick a script while it is
     // open, and an unmatched draft still sends raw.
     if (scriptTypeahead.handleKeyDown(e)) return;
     if (composerMenu.handleKeyDown(e)) return;
-    // Menus had the key first, so their Tab and Escape still work. With no
-    // suggestion offered, Tab keeps moving focus.
-    const suggestionAction = promptSuggestionKeyAction(
-      {
-        key: e.key,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        metaKey: e.metaKey,
-        ctrlKey: e.ctrlKey,
-        isComposing: e.nativeEvent.isComposing,
-      },
-      promptSuggestion !== null && promptSuggestionTarget !== null,
-    );
-    if (suggestionAction === 'accept' && promptSuggestion !== null) {
-      e.preventDefault();
-      dictationInputModeRef.current = 'typed';
-      Transforms.insertText(editor, promptSuggestion);
-      return;
-    }
-    if (suggestionAction === 'dismiss' && promptSuggestionTarget !== null) {
-      e.preventDefault();
-      usePromptSuggestionStore.getState().dismiss(promptSuggestionTarget);
-      return;
-    }
     // Cancel an active dictation session when the user hits Escape, and keep
     // any keystroke from staying marked as voice input.
     if (e.key === 'Escape' && voice.state !== 'idle') {
@@ -6811,10 +6712,7 @@ function ChatInputContent({
                         ? 'Type to queue a follow-up message…'
                         : isAccountHarness
                           ? 'Send a message'
-                          : (promptSuggestion ?? chatPlaceholder)
-      }
-      placeholderSuffix={
-        promptSuggestion !== null ? <PromptSuggestionKeyHint /> : undefined
+                          : chatPlaceholder
       }
     />
   );
@@ -7895,13 +7793,6 @@ function ChatInputContent({
                       }
                     : {})}
                 />
-              ) : null}
-              {pendingTurnSettingsState ? (
-                // The row's own gap is zero (each control pads itself), so
-                // the cue carries its lead-in on a wrapper, never the badge.
-                <span className="flex shrink-0 pl-2">
-                  <PendingTurnSettingsHint pending={pendingTurnSettingsState} />
-                </span>
               ) : null}
               {/* Multi-repo projects: the folder the chat runs in, beside
                   effort. Its name truncates with the model's as the row

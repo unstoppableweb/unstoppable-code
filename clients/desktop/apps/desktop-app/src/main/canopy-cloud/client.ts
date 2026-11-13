@@ -143,13 +143,11 @@ function buildCloudPath(baseUrl: string, pathname: string): string {
   return `${baseUrl}${pathname}`;
 }
 
-async function resolveCloudCredentials(
-  options?: Parameters<typeof getCanopyCloudCredentials>[0],
-): Promise<Awaited<ReturnType<typeof getCanopyCloudCredentials>>> {
+async function resolveCloudCredentials(): Promise<
+  Awaited<ReturnType<typeof getCanopyCloudCredentials>>
+> {
   try {
-    return await (options
-      ? getCanopyCloudCredentials(options)
-      : getCanopyCloudCredentials());
+    return await getCanopyCloudCredentials();
   } catch (error) {
     if (error instanceof CanopyCloudConfigError) {
       throw new CanopyCloudClientError(
@@ -163,10 +161,8 @@ async function resolveCloudCredentials(
   }
 }
 
-export async function resolveCanopyCloudCredentialContext(
-  options?: Parameters<typeof getCanopyCloudCredentials>[0],
-): Promise<CanopyCloudCredentialContext> {
-  return resolveCloudCredentials(options);
+export async function resolveCanopyCloudCredentialContext(): Promise<CanopyCloudCredentialContext> {
+  return resolveCloudCredentials();
 }
 
 interface CloudResponseErrorDetail {

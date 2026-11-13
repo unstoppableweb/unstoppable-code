@@ -200,8 +200,6 @@ export interface ModelRowGateInput {
    * owner, where the copy stays generic.
    */
   readonly organizationName?: string;
-  /** Personal work, where only-gateway is the user's own choice. */
-  readonly personalOwner?: boolean;
   /**
    * CAN-3026 — the saved Canopy Cloud credential is a guest.
    *
@@ -315,7 +313,6 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     staleAgent,
     modelGatewayEnforced,
     organizationName,
-    personalOwner,
     isGuest,
     libraryAccess,
   } = input;
@@ -404,11 +401,9 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
       ? {
           kind: 'hard-disabled',
           cause: 'org-gateway',
-          reason: personalOwner
-            ? 'You chose to use only your AI gateway. Pick one of its models, or add its key in Providers.'
-            : organizationName
-              ? `${organizationName} requires its configured AI gateway.`
-              : 'Your organization requires its configured AI gateway.',
+          reason: organizationName
+            ? `${organizationName} requires its configured AI gateway.`
+            : 'Your organization requires its configured AI gateway.',
         }
       : { kind: 'hidden', cause: 'org-gateway-only' };
   }

@@ -1,6 +1,4 @@
-import { automationAgentPluginsMatch } from '@/lib/agentSharing';
 import { Fieldset } from '@canopy/ui-shared/components';
-import { findInstalledAutomationAgent } from '@canopy/desktop-shared/lib/automation-agent';
 import {
   type JSX,
   type ReactNode,
@@ -398,17 +396,9 @@ export function InstallSharedAutomationModal({
   const [targetActivityId, setTargetActivityId] = useState<string | undefined>(
     initialDraft?.targetActivityId ?? staleList[0]?.id,
   );
-  const targetActivity = staleList.find(
+  const existingActivity = staleList.find(
     (activity) => activity.id === targetActivityId,
   );
-  // CAN-6065: a converted install whose workflow other schedules share shows
-  // its stored action; the update compares with, seeds from and rolls back
-  // to the chat action it stands for, as when it has one schedule.
-  const shownChatAction = targetActivity?.ownedPipeline?.chatAction;
-  const existingActivity =
-    targetActivity !== undefined && shownChatAction !== undefined
-      ? { ...targetActivity, action: shownChatAction }
-      : targetActivity;
   const workspaceNameById = new Map(
     workspaces.map((workspace) => [workspace.id, workspace.name]),
   );
@@ -1686,20 +1676,6 @@ function InstallSharedAutomationForm({
       // key here, each a different namespace from a team-share id, so without
       // `sourceKind` neither surface can recognize its own install.
       const origin = source === 'shared' ? undefined : { sourceKind: source };
-      const config =
-        'modelConfig' in detail.automation.action
-          ? detail.automation.action.modelConfig
-          : undefined;
-      if (config?.agent && config.model) {
-        const agent = await window.agents.getShared(config.agent.remoteId);
-        bindings.agent = await findInstalledAutomationAgent(
-          config.model,
-          config.agent,
-          agent,
-          (await window.agents.list()).agents,
-          (local, detail) => automationAgentPluginsMatch(local, detail, rows),
-        );
-      }
       let response: Awaited<ReturnType<typeof window.api.automations.create>>;
       if (existingActivity) {
         const built = buildApplyUpdateRequest(

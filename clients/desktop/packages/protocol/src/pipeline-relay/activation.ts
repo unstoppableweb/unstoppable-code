@@ -112,20 +112,6 @@ export const CloudRunnerActivationSchema = z.strictObject({
     .meta({ writeOnly: true }),
   /** Hosted secrets for the incarnation's one instruction, or none. */
   secrets: CloudRunnerSecretGrantSchema.nullable(),
-  /**
-   * CP-68: the incarnation's AI Credits session, which the model routes the
-   * web core answers by `routeId` resolve to: the web origin whose LLM proxy
-   * the steps call, and the session key (`llm-proxy` and `mcp-proxy`
-   * scopes, the run's credit ceiling). Absent or null, a model step gets no
-   * route and pauses as an authentication failure.
-   */
-  aiCredits: z
-    .strictObject({
-      proxyOrigin: z.url(),
-      token: z.string().min(1).max(512).meta({ writeOnly: true }),
-    })
-    .nullable()
-    .optional(),
 });
 export type CloudRunnerActivation = z.output<
   typeof CloudRunnerActivationSchema
@@ -150,8 +136,6 @@ export interface CloudRunnerActivationRecord {
     readonly redeemWithinMs: number;
     readonly bindings: readonly z.output<typeof ExecutionSecretBindingSchema>[];
   } | null;
-  /** The AI Credits session's proxy origin, when the activation carries one. */
-  readonly aiCreditsProxyOrigin?: string;
 }
 
 export function cloudRunnerActivationRecordOf(
@@ -174,9 +158,5 @@ export function cloudRunnerActivationRecordOf(
             redeemWithinMs: activation.secrets.redeemWithinMs,
             bindings: activation.secrets.entries.map(({ binding }) => binding),
           },
-    // Only when present, so an activation without one keeps its digest.
-    ...(activation.aiCredits
-      ? { aiCreditsProxyOrigin: activation.aiCredits.proxyOrigin }
-      : {}),
   };
 }

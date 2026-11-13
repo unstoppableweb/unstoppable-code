@@ -196,22 +196,6 @@ function withRegistryLock<T>(
   return next;
 }
 
-/** Whether the project's Work Entry registry file exists. Reads treat a
- * missing file as empty; callers that need proof a row was removed must not. */
-export async function workEntryRegistryExists(
-  projectId: string,
-): Promise<boolean> {
-  try {
-    await stat(
-      getWorkspaceWorkEntriesFilePath(resolveWorkEntryWorkspaceId(projectId)),
-    );
-    return true;
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return false;
-    throw error;
-  }
-}
-
 /**
  * Strict reader for registry mutation paths and lock-free projections. A
  * missing registry represents a fresh workspace, but any other read or

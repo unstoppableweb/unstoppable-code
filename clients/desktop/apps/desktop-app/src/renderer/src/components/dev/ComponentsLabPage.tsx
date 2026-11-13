@@ -7,7 +7,6 @@ import {
   Surface,
 } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
-import { ComponentsLabSheet } from './ComponentsLabSheet';
 import {
   LabColorModeContext,
   LabOverviewContext,
@@ -65,6 +64,42 @@ function initialSelection(): string {
   return COMPONENTS_LAB_ENTRIES.some((entry) => entry.id === id) && id
     ? id
     : OVERVIEW;
+}
+
+function Caption({
+  entry,
+}: {
+  readonly entry: ComponentsLabEntry;
+}): JSX.Element {
+  return (
+    <div className="flex flex-col gap-1">
+      <Heading level={2} variant="section">
+        {entry.name}
+      </Heading>
+      <p className="text-s fg-secondary">{entry.note}</p>
+      <p className="flex flex-wrap gap-x-3 text-xs fg-tertiary">
+        <code>{entry.source}</code>
+        {entry.prs.length > 0 ? (
+          <span>{entry.prs.map((pr) => `#${pr}`).join(', ')}</span>
+        ) : null}
+      </p>
+    </div>
+  );
+}
+
+function Sheet({ entry }: { readonly entry: ComponentsLabEntry }): JSX.Element {
+  const { Stage, View } = entry;
+  return (
+    <section
+      id={entry.id}
+      data-testid={`components-lab-${entry.id}`}
+      className="flex flex-col gap-4"
+    >
+      <Caption entry={entry} />
+      {Stage ? <Stage /> : null}
+      <View />
+    </section>
+  );
 }
 
 function OverviewCard({
@@ -237,7 +272,7 @@ export function ComponentsLabPage(): JSX.Element {
                 </div>
               ) : null}
               {visible.map((entry) => (
-                <ComponentsLabSheet key={entry.id} entry={entry} />
+                <Sheet key={entry.id} entry={entry} />
               ))}
             </LabColorModeContext.Provider>
           </main>

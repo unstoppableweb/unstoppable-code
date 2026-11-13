@@ -1,7 +1,3 @@
-import type {
-  WorktreeRecoveryDescription,
-  WorktreeRecoveryRequest,
-} from './worktree-recovery';
 /**
  * Wire contract for the user-only worktree discard (CAN-5334): a permanent
  * removal of one listed worktree whose ordinary removal cannot finish. The
@@ -124,8 +120,6 @@ export type WorktreeDiscardDeletedData =
 
 export interface WorktreeDiscardDescription {
   version: 1;
-  /** Only when explicitly requested; never part of discard confirmation. */
-  recovery?: WorktreeRecoveryDescription;
   workspaceId: string;
   worktreeId: string;
   /** The incarnation; empty when no row is listed. */
@@ -174,12 +168,10 @@ export interface WorktreeArchiveTypedRefusal {
   reason: string;
   message: string;
   discard: WorktreeDiscardDescription;
-  recovery?: WorktreeRecoveryDescription;
 }
 
 /** Payload for `portal.worktree.discard.describe`; read-only. */
 export interface PortalWorktreeDiscardDescribePayload {
-  recovery?: WorktreeRecoveryRequest;
   workspaceId: string;
   worktreeId: string;
   /**
@@ -202,14 +194,3 @@ export interface PortalWorktreeDiscardPayload {
   /** CAN-5338: set when the confirmed description lists a `retained-archive` target. */
   retainedArchives?: boolean;
 }
-
-/** Acknowledgement alone never means that a removal completed. */
-export type WorktreeRemovalOutcome =
-  | {
-      status: 'completed';
-      warnings: string[];
-      removedTemporaryWorkspaceId?: string;
-    }
-  | { status: 'refused'; refusal: WorktreeArchiveTypedRefusal }
-  | { status: 'transport-failed' }
-  | { status: 'unconfirmed' };

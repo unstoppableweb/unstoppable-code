@@ -2,11 +2,8 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
   PlatformServices,
-  PlatformUnixSocketAddress,
-  PlatformEndpointPathIdentity,
   DaemonStartupClaimPort,
 } from '@canopy/core-runtime';
-import { assertCanopyDaemonEndpointStale } from '@canopy/core-runtime/node';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createCanopyStartupClaimPort } from '@canopy/core-transport/node';
 import {
@@ -182,8 +179,7 @@ function refuse(reason: W5MaintenanceRefusal, decision?: number): never {
  * host cohort (Electron main, the CLI and create-worktree children). Refuses,
  * never waits, while holding anything. The process hosting this must never
  * register as a host itself.
- * Runtime must already exist and be private. Only a proven-stale socket may be
- * unlinked, after host exclusion; diagnose never unlinks it.
+ * Runtime must already exist and be private; maintenance never repairs it.
  * Resolve (RX2) checks every decision against the diagnosis before its cold
  * writer starts.
  */
@@ -277,9 +273,8 @@ export async function runW5Maintenance(
   if (acquisition.kind !== 'acquired')
     refuse(acquisition.kind === 'held' ? 'claim-held' : 'claim-ambiguous');
   const { handle } = acquisition;
-  const recoveredEndpointBind = acquisition.recovered?.endpointBound === true;
   // Until an absent endpoint is proven, keep any inherited bind evidence.
-  let preserveEndpointBind = recoveredEndpointBind;
+  let preserveEndpointBind = acquisition.recovered?.endpointBound === true;
   let operationError: unknown;
   const exclusive: W5ExclusiveMaintenance = Object.freeze({
     kind: 'w5-exclusive-maintenance',
@@ -295,7 +290,6 @@ export async function runW5Maintenance(
   }
   async function releaseClaim(): Promise<void> {
     const result = await claims.release(handle, { preserveEndpointBind });
-    // Diagnose retains inherited bind markers, so their release stays uncertain.
     if (result !== 'released')
       throw new W5MaintenanceRefusedError('release-uncertain', operationError);
   }
@@ -343,7 +337,7 @@ export async function runW5Maintenance(
     signal?.throwIfAborted();
     await verifyRuntime();
     // A published daemon no longer holds the startup claim. Probe its lifetime
-    // lock even when discovery is missing.
+    // lock even when discovery is missing, and never unlink runtime artifacts.
     const endpoints = platform.endpoints;
     const address = ((): ReturnType<typeof endpoints.address> => {
       try {
@@ -360,84 +354,54 @@ export async function runW5Maintenance(
         : await endpoints.probe(
             endpoints.address({ dataRoot, endpointName: 'core' }),
           );
-    async function requireStaleSocket(
-      socketAddress: PlatformUnixSocketAddress,
-      identity: PlatformEndpointPathIdentity,
-    ): Promise<void> {
+    if (probe.state !== 'absent') {
+      preserveEndpointBind = acquisition.recovered?.endpointBound === true;
+      refuse('endpoint-unavailable');
+    }
+    preserveEndpointBind = false;
+    let descriptorBytes: Buffer | undefined;
+    const descriptorPath = join(runtime, 'core.json');
+    try {
+      const stat = await lstat(descriptorPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
+        refuse('endpoint-unavailable');
+      const permissions = await platform.secureFiles.permissions({
+        path: descriptorPath,
+        kind: 'file',
+        mode: 'owner-only',
+        action: 'verify',
+      });
+      if (permissions.state !== 'private') refuse('endpoint-unavailable');
+      descriptorBytes = await readFile(descriptorPath);
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
+    }
+    if (descriptorBytes) {
+      let raw: unknown;
       try {
-        // CAN-5957's device-remap rule belongs in this shared daemon decision.
-        await assertCanopyDaemonEndpointStale({
-          descriptorPath: join(runtime, 'core.json'),
-          address: socketAddress,
-          identity,
-          supervision: platform.supervision,
-          recoveredEndpointBind,
-          signal,
-        });
+        raw = JSON.parse(descriptorBytes.toString('utf8'));
       } catch {
         refuse('endpoint-unavailable');
       }
+      const descriptor = CanopyRuntimeDescriptorSchema.safeParse(raw);
+      if (
+        !descriptor.success ||
+        descriptor.data.endpoint.path !== address.path ||
+        descriptor.data.endpoint.kind !==
+          (address.kind === 'unix-socket' ? 'socket' : 'pipe')
+      )
+        refuse('endpoint-unavailable');
+      const owner = await platform.supervision.inspectProcess({
+        pid: descriptor.data.pid,
+        signal,
+      });
+      if (
+        owner.state === 'unverifiable' ||
+        (owner.state === 'running' &&
+          owner.startIdentity === descriptor.data.startIdentity)
+      )
+        refuse('identity-unprovable');
     }
-    if (
-      probe.state !== 'absent' &&
-      !(probe.state === 'refused' && address.kind === 'unix-socket')
-    )
-      refuse('endpoint-unavailable');
-    if (probe.state === 'absent') preserveEndpointBind = false;
-    async function readDescriptor(): Promise<Buffer | undefined> {
-      let descriptorBytes: Buffer | undefined;
-      const descriptorPath = join(runtime, 'core.json');
-      try {
-        const stat = await lstat(descriptorPath);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
-          refuse('endpoint-unavailable');
-        const permissions = await platform.secureFiles.permissions({
-          path: descriptorPath,
-          kind: 'file',
-          mode: 'owner-only',
-          action: 'verify',
-        });
-        if (permissions.state !== 'private') refuse('endpoint-unavailable');
-        descriptorBytes = await readFile(descriptorPath);
-      } catch (error) {
-        if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
-      }
-      return descriptorBytes;
-    }
-    async function verifyDescriptor(
-      descriptorBytes: Buffer | undefined,
-    ): Promise<void> {
-      if (descriptorBytes) {
-        let raw: unknown;
-        try {
-          raw = JSON.parse(descriptorBytes.toString('utf8'));
-        } catch {
-          refuse('endpoint-unavailable');
-        }
-        const descriptor = CanopyRuntimeDescriptorSchema.safeParse(raw);
-        if (
-          !descriptor.success ||
-          descriptor.data.endpoint.path !== address.path ||
-          descriptor.data.endpoint.kind !==
-            (address.kind === 'unix-socket' ? 'socket' : 'pipe')
-        )
-          refuse('endpoint-unavailable');
-        const owner = await platform.supervision.inspectProcess({
-          pid: descriptor.data.pid,
-          signal,
-        });
-        if (
-          owner.state === 'unverifiable' ||
-          (owner.state === 'running' &&
-            owner.startIdentity === descriptor.data.startIdentity)
-        )
-          refuse('identity-unprovable');
-      }
-    }
-    const descriptorBytes = await readDescriptor();
-    if (probe.state === 'refused' && address.kind === 'unix-socket')
-      await requireStaleSocket(address, probe.identity);
-    await verifyDescriptor(descriptorBytes);
     // TRANSITIONAL cohort step: remove when the W5 rows move to `daemon`.
     try {
       exclusion = await acquireW5MaintenanceExclusion({
@@ -471,42 +435,6 @@ export async function runW5Maintenance(
     });
     heldHosts.set(context.host, exclusive);
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
-    if (
-      probe.state === 'refused' &&
-      endpoints.semantics === 'filesystem-socket'
-    ) {
-      const socketAddress = endpoints.address({
-        dataRoot,
-        endpointName: 'core',
-      });
-      const fresh = await endpoints.probe(socketAddress);
-      if (
-        fresh.state !== 'refused' ||
-        fresh.identity.device !== probe.identity.device ||
-        fresh.identity.inode !== probe.identity.inode
-      )
-        refuse('endpoint-unavailable');
-      const freshDescriptor = await readDescriptor();
-      await requireStaleSocket(socketAddress, fresh.identity);
-      // Inherited bind lineage does not waive W5's descriptor admission checks.
-      await verifyDescriptor(freshDescriptor);
-      signal?.throwIfAborted();
-      if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
-        refuse('claim-lost');
-      if (request.mode !== 'diagnose') {
-        const claim = await claims.identity(handle);
-        if (!claim || !(await exclusion.isHeld())) refuse('claim-lost');
-        if (
-          (await endpoints.unlinkStale({
-            address: socketAddress,
-            expected: fresh.identity,
-            claim,
-          })) === 'changed'
-        )
-          refuse('endpoint-unavailable');
-        preserveEndpointBind = false;
-      }
-    }
     // Local import keeps SQLite and offline scans off the desktop startup graph.
     const { diagnoseW5State } = await import('./w5-maintenance-diagnosis');
     const diagnosis = await diagnoseW5State(

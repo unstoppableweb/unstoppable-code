@@ -1,9 +1,3 @@
-import {
-  unavailableWorktreeRecovery,
-  worktreeRecoveryStoppingPoint,
-  type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
-import type { DestructiveRecoveryRecord } from '../w5-destructive-journal';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN } from '@canopy/protocol/portal/lifecycle-journal';
@@ -321,88 +315,30 @@ export async function assertDeleteTargetUnaliased(path: string): Promise<void> {
   }
 }
 
-function lifecycleRefusal(
-  plan: WorktreeDeletePlan,
-  check: string,
-  record?: DestructiveRecoveryRecord,
-): W5CommitRefusedError {
-  const recovery: WorktreeRecoveryDescription = unavailableWorktreeRecovery(
-    {
-      workspaceId: plan.workspaceId,
-      worktreeId: plan.worktreeId,
-      createdAt: plan.createdAt,
-    },
-    { intent: 'delete', expectedCreatedAt: plan.createdAt },
-    check,
-  );
-  if (
-    check === 'unreadable-entry' ||
-    check === 'journal-directory-unreadable'
-  ) {
-    recovery.code = 'external.worktree_recovery_unreadable';
-    recovery.destination = {
-      kind: 'journal-review',
-      reason:
-        check === 'unreadable-entry'
-          ? 'unreadable-entry'
-          : 'directory-unreadable',
-    };
-  }
-  if (check === 'legacy-journal-unreadable')
-    recovery.code = 'external.worktree_recovery_unreadable';
-  if (record) {
-    recovery.evidence = {
-      kind: 'journal',
-      operation: record.operation,
-      operationId: record.operationId,
-      attribution:
-        record.workspaceId === plan.workspaceId &&
-        record.worktreeId === plan.worktreeId &&
-        record.createdAt === plan.createdAt
-          ? 'subject'
-          : 'other',
-    };
-    recovery.stoppingPoint = worktreeRecoveryStoppingPoint(record.steps);
-  }
-  return new W5CommitRefusedError(
-    'recovery-required',
-    'An interrupted lifecycle needs manual recovery.',
-    { recovery },
-  );
-}
-
 /** Read only. Even an unreadable foreign journal refuses before workspace filtering. */
 export async function assertDeleteLifecycleClear(
   plan: WorktreeDeletePlan,
 ): Promise<void> {
   const directory = join(getCanopyDataDir(), 'w5', 'destructive-lifecycles');
-  let names: string[];
-  try {
-    await assertDeleteTargetUnaliased(directory);
-    names = await readdir(directory).catch((error: unknown) => {
-      if (!absent(error)) throw error;
-      return [];
-    });
-  } catch {
-    throw lifecycleRefusal(plan, 'journal-directory-unreadable');
-  }
+  await assertDeleteTargetUnaliased(directory);
+  const names = await readdir(directory).catch((error: unknown) => {
+    if (!absent(error)) throw error;
+    return [];
+  });
   for (const name of names) {
     if (!LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name)) continue;
     const path = join(directory, name);
-    let record: DestructiveRecoveryRecord;
-    try {
-      await assertDeleteTargetUnaliased(path);
-      record = journalSchema.parse(JSON.parse(await readFile(path, 'utf8')));
-    } catch {
-      throw lifecycleRefusal(plan, 'unreadable-entry');
-    }
+    await assertDeleteTargetUnaliased(path);
+    const record = journalSchema.parse(
+      JSON.parse(await readFile(path, 'utf8')),
+    );
     if (
       record.workspaceId === plan.workspaceId &&
       (record.worktreeId === undefined ||
         record.worktreeId === plan.worktreeId) &&
       (record.state !== 'completed' || record.cleanupRequired)
     )
-      throw lifecycleRefusal(plan, 'stranded-journal-scan', record);
+      throw deleteRefusal('An interrupted lifecycle needs manual recovery.');
   }
   const archive = join(
     getCanopyDataDir(),
@@ -424,18 +360,14 @@ export async function assertDeleteLifecycleClear(
       'archive-recovery-evidence',
     ),
   ]) {
-    let present: boolean;
-    try {
-      await assertDeleteTargetUnaliased(path);
-      present = await lstat(path)
-        .then(() => true)
-        .catch((error: unknown) => {
-          if (!absent(error)) throw error;
-          return false;
-        });
-    } catch {
-      throw lifecycleRefusal(plan, 'legacy-journal-unreadable');
-    }
-    if (present) throw lifecycleRefusal(plan, 'legacy-journal');
+    await assertDeleteTargetUnaliased(path);
+    const stat = await lstat(path).catch((error: unknown) => {
+      if (!absent(error)) throw error;
+      return undefined;
+    });
+    if (stat)
+      throw deleteRefusal(
+        'Legacy archive or staged Git evidence needs manual recovery.',
+      );
   }
 }

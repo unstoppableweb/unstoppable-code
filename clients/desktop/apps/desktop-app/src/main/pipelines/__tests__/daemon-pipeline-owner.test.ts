@@ -99,7 +99,6 @@ import {
   DAEMON_PIPELINE_NOT_STARTED_HERE_MESSAGE,
   ensureDaemonPipelineOwnerSettlement,
   expectDaemonPipelineHostSteps,
-  setDaemonPipelineOwnerRequestHandler,
 } from '../daemon-pipeline-owner';
 
 const BUNDLED_ACTIONS = resolve(
@@ -390,60 +389,6 @@ describe('daemon pipeline owner settlement (CAN-5771)', () => {
     await waitFor(() => owner.calls.length === 2);
     expect(applies).toBe(1);
     expect(owner.calls[1]).toEqual(owner.calls[0]);
-  });
-
-  it('an MCP authorization header is never resent on another session or a replay (CAN-6168)', async () => {
-    const HEADER = 'Bearer mcp-header-canary-resend';
-    const executionId = follow(fakeHost(never));
-    setDaemonPipelineOwnerRequestHandler((request) =>
-      Promise.resolve({
-        result: {
-          status: 'owner',
-          value: {
-            kind: 'mcp.authorize',
-            grantId: 'mcpg1_AAAAAAAAAAAAAAAAAAAAAA',
-          },
-        },
-        execution: {
-          pipelineOwnerValues: {
-            requestId: request.requestId,
-            mcpAuthorization: { authorization: HEADER },
-          },
-        },
-      }),
-    );
-    const request: WorkerPipelineHostRequest = {
-      ...requestFor(executionId),
-      request: {
-        action: 'owner.mcp.authorize',
-        routeRef: 'mcpr1_AAAAAAAAAAAAAAAAAAAAAA',
-      },
-    };
-    const dropped = new Error('The connection closed.');
-    markUnreachable(dropped, 'connection_lost');
-    owner.failures.push(dropped);
-    const replacement = mockClient();
-    replacement.failures.push(dropped);
-    mockClients.splice(0, mockClients.length, replacement, owner);
-    try {
-      deliver(request);
-      await waitFor(() => replacement.calls.length === 1);
-      // The first send carried the header; it was lost with its session.
-      expect(JSON.stringify(owner.calls[0])).toContain(HEADER);
-      // The resend on the new client carries none.
-      expect(JSON.stringify(replacement.calls[0])).not.toContain(HEADER);
-      expect(replacement.calls[0]?.[1]).toMatchObject({
-        result: { value: { kind: 'mcp.authorize', grantId: null } },
-      });
-    } finally {
-      mockClients.splice(0, mockClients.length, owner);
-      setDaemonPipelineOwnerRequestHandler(null);
-    }
-    // The daemon replays it to the new subscription: the held answer has no header either.
-    const before = owner.calls.length;
-    deliver(request);
-    await waitFor(() => owner.calls.length === before + 1);
-    expect(JSON.stringify(owner.calls[before])).not.toContain(HEADER);
   });
 
   it('a refusal on the replacement client sends the redacted failure there, not a held answer', async () => {

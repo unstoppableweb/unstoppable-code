@@ -135,7 +135,6 @@ type _QueryNamesAreExact = Expect<
     | 'core.workspace.repoRules.scan'
     | 'core.workspace.repoRules.preview'
     | 'core.workspace.repoRules.status'
-    | 'core.workspace.repoRules.check'
     | 'core.worktree.list'
     | 'core.worktree.get'
     | 'core.ledger.entries.search'
@@ -264,7 +263,6 @@ type _CoreNamesAreExact = Expect<
     | 'core.workspace.repoRules.scan'
     | 'core.workspace.repoRules.preview'
     | 'core.workspace.repoRules.status'
-    | 'core.workspace.repoRules.check'
     | 'core.worktree.list'
     | 'core.worktree.get'
   >
@@ -1399,7 +1397,6 @@ describe('universal Canopy query registry', () => {
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.status',
-      'core.workspace.repoRules.check',
       'core.script.definition.list',
       'core.script.definition.get',
       'core.worktree.list',
@@ -1559,7 +1556,6 @@ describe('universal Canopy query registry', () => {
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.status',
-      'core.workspace.repoRules.check',
     ] as const) {
       expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
         kind: 'query',
@@ -1945,37 +1941,6 @@ describe('universal Canopy query registry', () => {
     );
   });
 
-  it('keeps a root mountPath only when it is workspace-relative', () => {
-    const root = { fileRootId: 'repo-1', name: 'repo', kind: 'git-repo' };
-    for (const mountPath of ['', 'repos/repo-1', 'sibling']) {
-      expect(
-        WorkerFilesystemRootsListResultSchema.parse({
-          roots: [{ ...root, mountPath }],
-        }).roots[0],
-      ).toEqual({ ...root, mountPath });
-    }
-    // Missing means no translation: the root's paths are the workspace's.
-    expect(
-      WorkerFilesystemRootsListResultSchema.parse({ roots: [root] }).roots[0],
-    ).not.toHaveProperty('mountPath');
-    for (const mountPath of [
-      '/vercel/sandbox/repos/repo-1',
-      '../outside',
-      'repos/../..',
-      'repos/./repo-1',
-      'repos//repo-1',
-      'repos/repo-1/',
-      'C:\\repo',
-      7,
-    ]) {
-      expect(
-        WorkerFilesystemRootsListResultSchema.safeParse({
-          roots: [{ ...root, mountPath }],
-        }).success,
-      ).toBe(false);
-    }
-  });
-
   it('retains additive fields at the result and row levels', () => {
     expect(
       WorkerFilesystemRootsListResultSchema.parse({
@@ -2266,7 +2231,6 @@ describe('common request and error contracts', () => {
       'core.workspace.item.get',
       'core.workspace.item.list',
       'core.workspace.list',
-      'core.workspace.repoRules.check',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.status',
@@ -2365,7 +2329,6 @@ describe('common request and error contracts', () => {
       // CAN-4143.
       'worker.script.execute',
       'worker.script.execution.cancel',
-      'worker.script.execution.clear',
     ]);
     expect(Object.keys(CANOPY_STREAM_DEFINITIONS)).toEqual([
       'core.chat.events',

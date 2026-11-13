@@ -8,13 +8,10 @@ import {
   usePanelLayoutStore,
   type WorktreePanelLayout,
 } from '@/stores/panelLayoutStore';
-import { requireTerminalClient } from '@canopy/app-state/terminal';
 import { useTerminalStore } from '@/stores/terminalStore';
 import { ensureTerminalWorktreeHydrated } from '@/stores/terminalStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { disposeInstance } from '@/lib/terminal-instances';
-import { isWebCoreScope } from '@/lib/chat-authority';
-import { layoutScopeServesPanelKind } from './scope-panel-kinds';
 
 let installed = false;
 let pending = false;
@@ -56,11 +53,6 @@ async function closeTerminalBinding(
   worktreeId: string,
   terminalId: string,
 ): Promise<void> {
-  // A cloud chat's shells belong to its terminal client, never to main
-  // (CAN-6175 R10). With its terminals off that client has already ended
-  // them, so there is nothing here to read or close.
-  const cloud = isWebCoreScope(worktreeId);
-  if (cloud && !layoutScopeServesPanelKind(ownerKey, 'terminal')) return;
   let session =
     useTerminalStore.getState().worktrees[ownerKey]?.sessions[terminalId];
   if (session === undefined) {
@@ -79,14 +71,7 @@ async function closeTerminalBinding(
   }
   if (session === undefined || session.live) {
     useTerminalActivityStore.getState().markUserInitiatedClose(terminalId);
-    void (
-      cloud
-        ? requireTerminalClient().command('terminal.kill', {
-            terminalId,
-            scope: { projectId, worktreeId },
-          })
-        : window.api.terminal.kill({ terminalId })
-    ).catch(() => undefined);
+    void window.api.terminal.kill({ terminalId }).catch(() => undefined);
   }
   useTerminalStore.getState().removeTerminal(projectId, worktreeId, terminalId);
   disposeInstance(terminalId);

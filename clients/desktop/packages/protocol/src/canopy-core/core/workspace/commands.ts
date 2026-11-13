@@ -14,12 +14,7 @@ import {
   CanopyQueryRetryDirectiveSchema,
 } from '../../errors';
 import { OperationStatusSchema } from '../operation/schemas';
-import {
-  CoreCloudRecordSchema,
-  CoreWorkspaceEgressAllowedHostsSchema,
-  CoreWorkspaceHostPortsSchema,
-  CoreWorkspaceSchema,
-} from './reads';
+import { CoreWorkspaceSchema } from './reads';
 
 const id = z.string().min(1).max(512);
 const timestamp = z.iso.datetime({ offset: true });
@@ -89,12 +84,6 @@ export const CoreWorkspaceUpdateParamsSchema = z.strictObject({
           z.null(),
         ])
         .optional(),
-      // A cloud project's sandbox host settings (CAN-6114). The web core
-      // validates them as its REST save does (at most 4 distinct ports;
-      // hostnames without a URL, port or wildcard); desktop refuses them.
-      hostModeEnabled: z.boolean().optional(),
-      hostPorts: CoreWorkspaceHostPortsSchema.optional(),
-      egressAllowedHosts: CoreWorkspaceEgressAllowedHostsSchema.optional(),
     })
     .refine((patch) => Object.keys(patch).length > 0, 'Patch is empty.')
     .meta({ minProperties: 1 }),
@@ -109,9 +98,6 @@ export type CoreWorkspaceUpdateParams = z.output<
 // (DM-2): a host omits a revision or time it lacks. The web core returns all.
 export const CoreWorkspaceUpdateResultSchema = CoreWorkspaceSchema.safeExtend({
   name: z.string().min(1).max(256),
-  // The save landed but a best-effort side effect did not, such as syncing
-  // host ports to the project's sandbox (CAN-6114). Absent when none failed.
-  warnings: z.array(z.string()).optional(),
 });
 export type CoreWorkspaceUpdateResult = z.output<
   typeof CoreWorkspaceUpdateResultSchema
@@ -161,14 +147,6 @@ const repositoryWorkspaceKind = z.enum(['single_repo', 'multi_repo']);
 const nullableText = (max: number): z.ZodNullable<z.ZodString> =>
   z.string().max(max).nullable();
 
-/**
- * The minor schema revision `core.workspace.create` serves (protocol rule 5,
- * CAN-6093): revision 2 adds the `workspaceId` claim. A runtime advertises
- * it in its manifest; a client sends `revision` and a claim only when it is
- * advertised, and a runtime that does not serve it refuses `revision`.
- */
-export const CORE_WORKSPACE_CREATE_SCHEMA_REVISION = 2;
-
 export const CoreWorkspaceCreateParamsSchema = z.strictObject({
   name: z.string().min(1).max(512),
   source: z.discriminatedUnion('kind', [
@@ -198,22 +176,6 @@ export const CoreWorkspaceCreateParamsSchema = z.strictObject({
     }),
   ]),
   temporary: z.boolean(),
-  // CAN-6114, the REST create's fields: the owning organization's id (absent
-  // is personal), and the account's first project only. Only `true` selects
-  // the latter, which may create nothing.
-  ownerOrganizationId: id.optional(),
-  firstWorkspaceOnly: z.boolean().optional(),
-  // CAN-6111, the REST create's project template seed: the share and its
-  // pinned content hash, together, on a Cowork create only. A template wins
-  // over `firstWorkspaceOnly`; absent `blueprintSeed` is a curated template.
-  blueprintExternalId: id.optional(),
-  blueprintContentHash: z.string().min(1).max(512).optional(),
-  blueprintSeed: z.enum(['curated', 'shared']).optional(),
-  // Revision 2 (CAN-6093): the caller's project id claim, which REST takes as
-  // `externalId`. A retry under any key with the same claim answers the same
-  // project; a claim another request holds is refused, never a second one.
-  workspaceId: id.optional(),
-  revision: z.literal(CORE_WORKSPACE_CREATE_SCHEMA_REVISION).optional(),
   _meta: keyedMeta,
 });
 export type CoreWorkspaceCreateParams = z.output<
@@ -221,34 +183,30 @@ export type CoreWorkspaceCreateParams = z.output<
 >;
 
 export const CoreWorkspaceCreateResultSchema = z.strictObject({
-  // Null only for `firstWorkspaceOnly`, once the account has had its first
-  // project (CAN-6114).
-  workspace: z
-    .strictObject({
-      workspaceId: id,
-      name: z.string().min(1).max(512),
-      kind: workspaceKind,
-      temporary: z.boolean(),
-      repositories: z.array(
-        z.strictObject({
-          repoId: id,
-          name: z.string().min(1).max(512),
-          remoteUrl: nullableText(4096),
-          branch: nullableText(512),
-          headSha: z
-            .string()
-            .regex(/^[a-fA-F0-9]{7,64}$/)
-            .nullable(),
-        }),
-      ),
-      // D-2 (W7b-3): a host omits a revision or time it lacks, as the
-      // `core.workspace.get` read does. The web core returns all four.
-      settingsRevision: revision.optional(),
-      revision: revision.optional(),
-      createdAt: timestamp.optional(),
-      updatedAt: timestamp.optional(),
-    })
-    .nullable(),
+  workspace: z.strictObject({
+    workspaceId: id,
+    name: z.string().min(1).max(512),
+    kind: workspaceKind,
+    temporary: z.boolean(),
+    repositories: z.array(
+      z.strictObject({
+        repoId: id,
+        name: z.string().min(1).max(512),
+        remoteUrl: nullableText(4096),
+        branch: nullableText(512),
+        headSha: z
+          .string()
+          .regex(/^[a-fA-F0-9]{7,64}$/)
+          .nullable(),
+      }),
+    ),
+    // D-2 (W7b-3): a host omits a revision or time it lacks, as the
+    // `core.workspace.get` read does. The web core returns all four.
+    settingsRevision: revision.optional(),
+    revision: revision.optional(),
+    createdAt: timestamp.optional(),
+    updatedAt: timestamp.optional(),
+  }),
   operation: z
     .strictObject({
       operationId: id,
@@ -262,9 +220,6 @@ export const CoreWorkspaceCreateResultSchema = z.strictObject({
       ]),
     })
     .nullable(),
-  // A template-seeded create only: the template's references this project
-  // could not resolve, as REST answers them (CAN-6111).
-  unresolvedRefs: z.array(z.string()).optional(),
 });
 export type CoreWorkspaceCreateResult = z.output<
   typeof CoreWorkspaceCreateResultSchema
@@ -374,24 +329,6 @@ export const CoreWorktreeCreateParamsSchema = z
       .optional(),
     baseHeadSha: z.string().nullable().optional(),
     targetId: z.string().nullable().optional(),
-    // CAN-6114, what the web's REST create sends: the caller's worktree id
-    // claim, the first chat's claim and defaults, and New Task's first
-    // message. The web core checks them as that route does.
-    worktreeId: id.optional(),
-    firstChat: z
-      .strictObject({
-        chatId: id.optional(),
-        model: id.optional(),
-        modelSelectionMode: z.literal('auto').optional(),
-        // A level, or null for the model's default.
-        thinkingLevel: id.nullable().optional(),
-        fastMode: z.boolean().optional(),
-        pluginSelections: CanopyJsonValueSchema.optional(),
-      })
-      .optional(),
-    firstMessage: z
-      .strictObject({ text: z.string().min(1), clientRequestId: id })
-      .optional(),
     _meta: keyedMeta,
   })
   .superRefine((params, context) => {
@@ -498,19 +435,6 @@ export const CoreWorktreeArchiveParamsSchema = z.strictObject({
   expectedCreatedAt: expectedCreatedAt.optional(),
   // Web restores with false; the desktop refuses it (D-6(1)).
   archived: z.boolean(),
-  // The cloud lifecycle route's archive bodies (CAN-6110), web core only:
-  // the desktop refuses each with capability_unavailable. `wake` and the
-  // `wake` choice are the billable consent to wake the sandbox.
-  wake: z.boolean().optional(),
-  cancelProvisioning: z.boolean().optional(),
-  choice: z.enum(['retry', 'discard', 'cancel', 'wake']).optional(),
-  continueArchive: z.literal(true).optional(),
-  expectedArchiveAttempt: z
-    .number()
-    .int()
-    .min(1)
-    .max(Number.MAX_SAFE_INTEGER)
-    .optional(),
 });
 export type CoreWorktreeArchiveParams = z.output<
   typeof CoreWorktreeArchiveParamsSchema
@@ -537,18 +461,6 @@ export const CoreWorktreeCommandResultSchema = z
   .catchall(CanopyJsonValueSchema);
 export type CoreWorktreeCommandResult = z.output<
   typeof CoreWorktreeCommandResultSchema
->;
-
-// An archive with a lifecycle param (CAN-6110) also answers whether its job
-// still works (the route's 202, with its Retry-After) and the archive state.
-export const CoreWorktreeArchiveResultSchema =
-  CoreWorktreeCommandResultSchema.extend({
-    pending: z.boolean().optional(),
-    retryAfterMs: z.number().int().positive().optional(),
-    archive: CoreCloudRecordSchema.nullable().optional(),
-  });
-export type CoreWorktreeArchiveResult = z.output<
-  typeof CoreWorktreeArchiveResultSchema
 >;
 
 const worktreeError = CanopyErrorPayloadSchema.extend({
@@ -648,7 +560,7 @@ export const CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS =
       idempotency: 'inherent',
       requiredGrants: ['core.worktree.write'],
       params: CoreWorktreeArchiveParamsSchema,
-      result: CoreWorktreeArchiveResultSchema,
+      result: CoreWorktreeCommandResultSchema,
       error: worktreeError.extend({ retry: CanopyQueryRetryDirectiveSchema }),
     }),
   });

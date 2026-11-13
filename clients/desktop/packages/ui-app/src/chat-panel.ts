@@ -10,3 +10,8 @@ export {
   QueuedMessageComposer,
   type QueuedMessageEditControls,
 } from './code/composer/QueuedMessageComposer';
+export {
+  CloudChatComposer,
+  type CloudChatComposerProps,
+  type CloudComposerAttachment,
+} from './code/composer/CloudChatComposer';

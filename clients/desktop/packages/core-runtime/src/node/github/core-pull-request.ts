@@ -662,8 +662,6 @@ export function createCorePullRequestInstructionHandlers(
           params.expectedRevision,
           params.expectedHeadSha,
           params.strategy,
-          params.expectedBaseBranch,
-          params.expectedHeadBranch,
         ]),
         identity.repository,
         async () => {
@@ -698,19 +696,6 @@ export function createCorePullRequestInstructionHandlers(
               'conflict',
               'core.pullRequest.merge.revisionConflict',
               'The pull request changed since the expected revision.',
-              'pull-request',
-            );
-          // As the cloud panel's merge refuses a moved branch (stale-state).
-          if (
-            (params.expectedBaseBranch !== undefined &&
-              current.baseBranch !== params.expectedBaseBranch) ||
-            (params.expectedHeadBranch !== undefined &&
-              current.headBranch !== params.expectedHeadBranch)
-          )
-            throw failure(
-              'conflict',
-              'core.pullRequest.merge.headMismatch',
-              'The pull request branches changed.',
               'pull-request',
             );
           let policy: Awaited<

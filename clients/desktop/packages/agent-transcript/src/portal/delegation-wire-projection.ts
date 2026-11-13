@@ -1085,11 +1085,7 @@ function projectQueueState(
     return undefined;
   }
   copySafeCount(value, 'position', queue, 1);
-  if (
-    value.waitingFor === 'queue' ||
-    value.waitingFor === 'app' ||
-    value.waitingFor === 'slot'
-  ) {
+  if (value.waitingFor === 'queue' || value.waitingFor === 'app') {
     queue.waitingFor = value.waitingFor;
   }
   copySafeCount(value, 'running', queue);

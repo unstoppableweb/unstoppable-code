@@ -10,7 +10,6 @@ import {
   type ForwardedRef,
   type JSX,
   type KeyboardEvent,
-  type ReactNode,
 } from 'react';
 import type { Descendant } from 'slate';
 import {
@@ -99,8 +98,6 @@ export interface ComposerEditorProps {
    */
   initialFileReferences?: SerializedFileReference[];
   placeholder?: string;
-  /** Drawn after the placeholder text, such as a key hint. */
-  placeholderSuffix?: ReactNode;
   /**
    * Vertical density step (see `COMPOSER_DENSITY_CLASS_NAMES`). Desktop picks
    * a smaller step as its panel gets shorter; web stays comfortable.
@@ -190,7 +187,6 @@ function ComposerEditorInner(
     initialText,
     initialFileReferences,
     placeholder,
-    placeholderSuffix,
     density = 'comfortable',
     containerClassName,
     className,
@@ -369,7 +365,6 @@ function ComposerEditorInner(
         value={value}
         readOnly={disabled}
         placeholder={resolvedPlaceholder}
-        placeholderSuffix={placeholderSuffix}
         onChange={handleChange}
         onSelectionChange={onSelectionChange}
         onKeyDown={handleKeyDown}

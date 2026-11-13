@@ -3,7 +3,6 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -14,22 +13,11 @@ import { useShallow } from 'zustand/shallow';
 import {
   Button,
   DialogModal,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemTrailing,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
   getModelCatalogProviderLabel,
   InterruptedSessionRow,
-  usageLimitedSessionOpenLabel,
 } from '@canopy/ui-shared';
-import {
-  CODE_REVIEW_CHAT_PROJECT_ID,
-  COWORK_HOME_WORKTREE_ID,
-} from '@canopy/desktop-shared/types';
 import type {
   AgentProviderType,
-  AiCreditsScopeRequest,
   ListUsageLimitedIdleSessionsRequest,
   ScheduledActivity,
   UsageLimitedSessionGroup,
@@ -63,23 +51,14 @@ import {
 import { installUsageLimitResumeTestApi } from '@/lib/usage-limit/test-api';
 import {
   directResumeEntry,
-  openInterruptedChatWithoutResuming,
   openResumeQueueEntry,
-  usageLimitedChatDestination,
 } from '@/lib/usage-limit/open-resumed-session';
-import { requestContinueOnAiCredits } from '@/lib/usage-limit/continueOnAiCreditsRequest';
-import { chatAiCreditsScope } from '@/lib/aiCreditsScope';
-import { resolveAiCreditsCoverage } from '@/lib/openBillingPage';
-import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { createDiffStatsKey } from '@/stores/projectsStore.diffStats';
 import { ProjectIcon } from '../shared/ProjectIcon';
 import { filterSessionGroupsByWorkspace } from './usageLimitResumeScope';
-import {
-  BranchIcon as AppCatalogBranchIcon,
-  ChevronDownIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { BranchIcon as AppCatalogBranchIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import {
   sessionResumeReadiness,
@@ -87,10 +66,7 @@ import {
   type SessionResumeReadiness,
 } from '@/lib/usage-limit/resume-availability';
 import { resolveInterruptedSessionProviders } from '@/lib/interruptedSessions';
-import {
-  allWaitingResetSentence,
-  resumeReadinessSummaryText,
-} from '@/lib/usage-limit/resume-readiness-copy';
+import { resumeReadinessSummaryText } from '@/lib/usage-limit/resume-readiness-copy';
 import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
 import {
   countInterruptedWork,
@@ -146,153 +122,7 @@ interface ReadinessOpening {
   initialRequestStarted: boolean;
   initialSessionKeys: Set<string> | null;
   selectionInitialized: boolean;
-  /** AI Credits scopes already read, so a refreshed listing never re-reads. */
-  creditsScopesRequested: Set<string>;
   cancelled: boolean;
-}
-
-/** Providers whose chats the composer can continue on AI Credits. */
-const CREDITS_PROVIDERS: ReadonlySet<AgentProviderType> =
-  new Set<AgentProviderType>(['claude', 'codex']);
-
-/**
- * The AI Credits scope a waiting chat would spend in if continued on credits
- * now (CAN-5013), or null when its chat view can't: App Advisor runs in its
- * own window, code review and pipelines have no live chat banner, and only
- * Claude and Codex route through credits. Main may settle the owner from the
- * chat's captured owner, so `key` names the chat, not only its worktree. A
- * cowork chat is read under the work entry its banner mounts in, resolved the
- * way `openResumeQueueEntry` does.
- */
-function continueOnCreditsScope(session: UsageLimitedSessionItem): {
-  key: string;
-  scope: () => Promise<AiCreditsScopeRequest | undefined>;
-} | null {
-  if (
-    session.kind !== 'chat' ||
-    !session.provider ||
-    !CREDITS_PROVIDERS.has(session.provider)
-  ) {
-    return null;
-  }
-  const destination = usageLimitedChatDestination(session);
-  if (destination.kind === 'worktree-chat') {
-    const scope = chatAiCreditsScope(
-      destination.projectId,
-      destination.worktreeId,
-      destination.chatId,
-    );
-    return scope
-      ? {
-          key: `${destination.projectId}/${destination.worktreeId}/${destination.chatId}`,
-          scope: () => Promise.resolve(scope),
-        }
-      : null;
-  }
-  if (destination.kind === 'cowork-chat') {
-    const { workspaceId, chatId } = destination;
-    if (!chatAiCreditsScope(workspaceId, undefined, chatId)) return null;
-    return {
-      key: `${workspaceId}//${chatId}`,
-      scope: async () => {
-        const owner = await window.api.workEntries.resolveChat({
-          projectId: workspaceId,
-          chatId,
-        });
-        return chatAiCreditsScope(
-          workspaceId,
-          owner.entryId ?? owner.archivedInEntryId ?? COWORK_HOME_WORKTREE_ID,
-          chatId,
-        );
-      },
-    };
-  }
-  return null;
-}
-
-/** Code-review chats open in a retained-review dialog this modal can't host. */
-function canOpenWithoutResuming(session: UsageLimitedSessionItem): boolean {
-  return (
-    session.kind === 'pipeline' ||
-    session.projectId !== CODE_REVIEW_CHAT_PROJECT_ID
-  );
-}
-
-/**
- * A waiting row's one control (CAN-5013): `Continue`, opening a menu of the
- * row's ways forward. The host owns which menu is open, so only one is.
- */
-function ResumeRowContinueMenu({
-  suffix,
-  open,
-  onOpenChange,
-  label,
-  busy,
-  disabled,
-  describedBy,
-  registerTrigger,
-  children,
-}: {
-  suffix: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  label: string;
-  busy: boolean;
-  disabled: boolean;
-  describedBy: string;
-  /** Registers the trigger as the row's schedule and undo focus target. */
-  registerTrigger: (element: HTMLButtonElement | null) => void;
-  children: JSX.Element[];
-}): JSX.Element {
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuId = useId();
-  const visible = open && !disabled;
-  // A row that stops rendering its trigger takes its open menu with it.
-  const closeOnUnmount = useRef<(() => void) | null>(null);
-  closeOnUnmount.current = open ? (): void => onOpenChange(false) : null;
-  useEffect(
-    () => (): void => {
-      closeOnUnmount.current?.();
-    },
-    [],
-  );
-  return (
-    <>
-      <Button
-        ref={(element: HTMLButtonElement | null): void => {
-          triggerRef.current = element;
-          registerTrigger(element);
-        }}
-        variant="ghost-quiet"
-        size="compact"
-        data-testid={`usage-limit-resume-continue-${suffix}`}
-        aria-haspopup="menu"
-        aria-expanded={visible}
-        aria-controls={visible ? menuId : undefined}
-        aria-describedby={describedBy}
-        aria-busy={busy}
-        disabled={disabled}
-        onClick={(): void => onOpenChange(!open)}
-      >
-        {label}
-        <ChevronDownIcon size="sm" aria-hidden="true" />
-      </Button>
-      <FloatingMenu
-        id={menuId}
-        open={visible}
-        onOpenChange={onOpenChange}
-        anchorRef={triggerRef}
-        placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
-        interaction="menu"
-        aria-label="Continue"
-        data-testid={`usage-limit-resume-continue-menu-${suffix}`}
-        className="w-max min-w-48"
-      >
-        {children}
-      </FloatingMenu>
-    </>
-  );
 }
 
 /** A schedule created through the current opening's "Resume at reset". */
@@ -605,12 +435,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
   );
   const [readinessReady, setReadinessReady] = useState(false);
   const openingRef = useRef<ReadinessOpening | null>(null);
-  // AI Credits owners whose coverage can spend, read once per opening.
-  const [spendableScopes, setSpendableScopes] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  // The waiting row whose Continue menu is open, by session key.
-  const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
 
   const closePrompt = useCallback((): void => {
     if (
@@ -787,42 +611,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
     [groups],
   );
 
-  // Which waiting chats can offer "On AI Credits now": the same coverage read
-  // the chat's banner makes. Advisory only; the banner reads it again. Each
-  // owner is read once per opening, and a late answer from an earlier opening
-  // never lands.
-  useEffect(() => {
-    const opening = openingRef.current;
-    if (!readinessActive || !opening) return;
-    for (const session of allSessions) {
-      const credits = continueOnCreditsScope(session);
-      if (!credits || opening.creditsScopesRequested.has(credits.key)) {
-        continue;
-      }
-      opening.creditsScopesRequested.add(credits.key);
-      void credits
-        .scope()
-        .then((scope) =>
-          scope ? window.api.loadNativeAiCreditsAvailability(scope) : null,
-        )
-        .then(
-          (availability) => {
-            if (opening.cancelled) return;
-            if (!resolveAiCreditsCoverage(availability).canSpendCredits) return;
-            setSpendableScopes((current) => new Set(current).add(credits.key));
-          },
-          (error: unknown) => {
-            if (opening.cancelled) return;
-            // The item stays hidden; the chat's own banner still offers credits.
-            reportRendererConsoleError(
-              'Failed to read AI Credits coverage for the resume dialog',
-              { error },
-            );
-          },
-        );
-    }
-  }, [readinessActive, allSessions]);
-
   // Each opening refreshes usage for its own providers; reopening starts over.
   // A Home context switch reloads the listing, so it starts a new opening too.
   useEffect(() => {
@@ -832,13 +620,10 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       initialRequestStarted: false,
       initialSessionKeys: null,
       selectionInitialized: false,
-      creditsScopesRequested: new Set(),
       cancelled: false,
     };
     openingRef.current = opening;
     setReadinessReady(false);
-    setSpendableScopes(new Set());
-    setOpenMenuKey(null);
     setNowMs(Date.now());
     const startOwnership = (): void => {
       generationRef.current += 1;
@@ -849,7 +634,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
     return (): void => {
       opening.cancelled = true;
       if (openingRef.current === opening) openingRef.current = null;
-      setOpenMenuKey(null);
       // Closing keeps any created schedule; it only ends local ownership.
       startOwnership();
     };
@@ -1160,22 +944,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
   const title = resumeDialogTitle(
     listed === null ? null : countInterruptedWork(listed),
   );
-  // When nothing can resume yet, say when the one blocking limit resets.
-  const waitingWindowLabels = new Set(
-    Array.from(readinessByKey.values()).flatMap((readiness) =>
-      readiness.state === 'waiting' ? [readiness.windowLabel] : [],
-    ),
-  );
-  const resetSentence =
-    gated && !readinessPending && listed !== null && listed.length > 0
-      ? allWaitingResetSentence(
-          readinessSummary,
-          waitingWindowLabels.size === 1
-            ? Array.from(waitingWindowLabels)[0]
-            : undefined,
-          nowMs,
-        )
-      : undefined;
   // Authentication and account-change prompts keep their guidance; the effect
   // disclosure below still describes the selection.
   const subtitle =
@@ -1186,9 +954,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       : origin === 'account-change'
         ? `You switched ${providerLabel} accounts. Resume work that was interrupted on the previous account.`
         : listed !== null && listed.length > 0
-          ? [interruptedWorkReasonSummary(listed), resetSentence]
-              .filter(Boolean)
-              .join(' ')
+          ? interruptedWorkReasonSummary(listed)
           : undefined;
   if (automationsLoadFailed) {
     return (
@@ -1382,7 +1148,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
     // leaves confirmation locked.
     confirmingRef.current = true;
     setSubmitting(true);
-    setOpenMenuKey(null);
     setError(null);
     try {
       if (typeof window.api.enqueueResumeQueue === 'function') {
@@ -1606,45 +1371,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
     settleFocusHandoff(handoff, result.kind === 'failed' ? 'undo' : 'schedule');
   };
 
-  /** Close the dialog and open the session without resuming it. */
-  const openWithoutResuming = (session: UsageLimitedSessionItem): void => {
-    setOpenMenuKey(null);
-    close();
-    if (session.kind === 'pipeline') {
-      void openPipelineExecutionFromUi({
-        executionId: session.executionId,
-        ...(session.projectId && session.worktreeId
-          ? {
-              owner: {
-                projectId: session.projectId,
-                worktreeId: session.worktreeId,
-              },
-            }
-          : {}),
-      });
-      return;
-    }
-    openInterruptedChatWithoutResuming(session);
-  };
-
-  /**
-   * Open the chat and let its usage-limit banner continue on AI Credits: the
-   * same routing and resend as choosing credits there (CAN-4756).
-   */
-  const continueOnAiCredits = (
-    session: Extract<UsageLimitedSessionItem, { kind: 'chat' }>,
-  ): void => {
-    setOpenMenuKey(null);
-    const target = {
-      projectId: session.projectId,
-      worktreeId: session.worktreeId,
-      chatId: session.chatId,
-    };
-    requestContinueOnAiCredits(target);
-    close();
-    openInterruptedChatWithoutResuming(target);
-  };
-
   const controlRef =
     (key: string, control: InterruptedResumeOperation) =>
     (element: HTMLButtonElement | null): void => {
@@ -1688,168 +1414,60 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       readiness.resetMs !== undefined &&
       Date.parse(scheduledAt) < readiness.resetMs;
     const busy = operation !== undefined || submitting;
-    const status = (
-      <span
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        data-testid={`usage-limit-resume-schedule-status-${suffix}`}
-        className={scheduledAt ? 'text-xs fg-secondary' : 'sr-only'}
-      >
-        {scheduledAt ? (
-          <span data-testid={`usage-limit-resume-scheduled-${suffix}`}>
-            Scheduled for {formatUsageLimitTimeLabel(scheduledAt)}
-            {beforeReset ? ', before the reset' : ''}
-          </span>
-        ) : operation === 'schedule' ? (
-          'Scheduling…'
-        ) : null}
-      </span>
-    );
-    // A row whose menu would hold only the schedule item keeps its direct
-    // button (CAN-5013); the choice is fixed per row, so it never flips.
-    if (!canOpenWithoutResuming(session)) {
-      return (
-        <span className="shrink-0">
-          {status}
-          {!scheduledAt ? (
-            <Button
-              ref={controlRef(key, 'schedule')}
-              variant="ghost-quiet"
-              size="compact"
-              data-testid={`usage-limit-resume-schedule-${suffix}`}
-              aria-describedby={describedBy}
-              aria-busy={operation === 'schedule'}
-              disabled={busy}
-              onClick={(event): void => {
-                void scheduleFromRow(session, event.currentTarget);
-              }}
-            >
-              {operation === 'schedule' ? 'Scheduling…' : 'Resume at reset'}
-            </Button>
-          ) : ownedActivity ? (
-            <>
-              <span aria-hidden="true" className="text-xs fg-secondary">
-                {' · '}
-              </span>
-              <Button
-                ref={controlRef(key, 'undo')}
-                variant="ghost-quiet"
-                size="compact"
-                data-testid={`usage-limit-resume-undo-schedule-${suffix}`}
-                aria-describedby={describedBy}
-                aria-busy={operation === 'undo'}
-                disabled={busy}
-                onClick={(event): void => {
-                  void undoSchedule(session, event.currentTarget);
-                }}
-              >
-                {operation === 'undo' ? 'Undoing…' : 'Undo'}
-              </Button>
-            </>
+    return (
+      <span className="shrink-0">
+        <span
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-testid={`usage-limit-resume-schedule-status-${suffix}`}
+          className={scheduledAt ? 'text-xs fg-secondary' : 'sr-only'}
+        >
+          {scheduledAt ? (
+            <span data-testid={`usage-limit-resume-scheduled-${suffix}`}>
+              Scheduled for {formatUsageLimitTimeLabel(scheduledAt)}
+              {beforeReset ? ', before the reset' : ''}
+            </span>
+          ) : operation === 'schedule' ? (
+            'Scheduling…'
           ) : null}
         </span>
-      );
-    }
-
-    const credits =
-      readiness.state === 'waiting' ? continueOnCreditsScope(session) : null;
-    const offersCredits = credits !== null && spendableScopes.has(credits.key);
-    const resetHint =
-      readiness.state === 'waiting'
-        ? formatUsageLimitTimeLabel(readiness.displayResetMs)
-        : null;
-    // Items run with focus on the trigger, so the focus handoff that follows
-    // a schedule or undo finds the control it started from.
-    const fromTrigger =
-      (
-        run: (
-          session: UsageLimitedSessionItem,
-          control: HTMLButtonElement,
-        ) => Promise<void>,
-      ) =>
-      (): void => {
-        setOpenMenuKey(null);
-        const trigger = controlRefs.current.get(`${key}:schedule`);
-        if (!trigger) return;
-        trigger.focus();
-        void run(session, trigger);
-      };
-    const items: JSX.Element[] = [];
-    if (offersCredits && session.kind === 'chat') {
-      items.push(
-        <DropdownMenuItem
-          key="credits"
-          data-testid={`usage-limit-resume-credits-${suffix}`}
-          onClick={(): void => continueOnAiCredits(session)}
-        >
-          On AI Credits now
-        </DropdownMenuItem>,
-      );
-    }
-    if (!scheduledAt) {
-      items.push(
-        <DropdownMenuItem
-          key="schedule"
-          data-testid={`usage-limit-resume-schedule-${suffix}`}
-          onClick={fromTrigger(scheduleFromRow)}
-        >
-          At reset
-          {resetHint ? (
-            <DropdownMenuItemTrailing>{resetHint}</DropdownMenuItemTrailing>
-          ) : null}
-        </DropdownMenuItem>,
-      );
-    } else if (ownedActivity) {
-      items.push(
-        <DropdownMenuItem
-          key="undo"
-          data-testid={`usage-limit-resume-undo-schedule-${suffix}`}
-          onClick={fromTrigger(undoSchedule)}
-        >
-          Undo scheduled resume
-        </DropdownMenuItem>,
-      );
-    }
-    if (items.length > 0) items.push(<DropdownMenuDivider key="divider" />);
-    items.push(
-      <DropdownMenuItem
-        key="open"
-        data-testid={`usage-limit-resume-open-${suffix}`}
-        onClick={(): void => openWithoutResuming(session)}
-      >
-        {usageLimitedSessionOpenLabel(session.kind)}
-      </DropdownMenuItem>,
-    );
-    const registerTrigger = (element: HTMLButtonElement | null): void => {
-      controlRef(key, 'schedule')(element);
-      controlRef(key, 'undo')(element);
-    };
-    return (
-      <span className="flex shrink-0 items-center gap-1">
-        {status}
-        <ResumeRowContinueMenu
-          suffix={suffix}
-          open={openMenuKey === key}
-          onOpenChange={(next): void =>
-            setOpenMenuKey((current) =>
-              next ? key : current === key ? null : current,
-            )
-          }
-          label={
-            operation === 'schedule'
-              ? 'Scheduling…'
-              : operation === 'undo'
-                ? 'Undoing…'
-                : 'Continue'
-          }
-          busy={operation !== undefined}
-          disabled={busy}
-          describedBy={describedBy}
-          registerTrigger={registerTrigger}
-        >
-          {items}
-        </ResumeRowContinueMenu>
+        {!scheduledAt ? (
+          <Button
+            ref={controlRef(key, 'schedule')}
+            variant="ghost-quiet"
+            size="compact"
+            data-testid={`usage-limit-resume-schedule-${suffix}`}
+            aria-describedby={describedBy}
+            aria-busy={operation === 'schedule'}
+            disabled={busy}
+            onClick={(event): void => {
+              void scheduleFromRow(session, event.currentTarget);
+            }}
+          >
+            {operation === 'schedule' ? 'Scheduling…' : 'Resume at reset'}
+          </Button>
+        ) : ownedActivity ? (
+          <>
+            <span aria-hidden="true" className="text-xs fg-secondary">
+              {' · '}
+            </span>
+            <Button
+              ref={controlRef(key, 'undo')}
+              variant="ghost-quiet"
+              size="compact"
+              data-testid={`usage-limit-resume-undo-schedule-${suffix}`}
+              aria-describedby={describedBy}
+              aria-busy={operation === 'undo'}
+              disabled={busy}
+              onClick={(event): void => {
+                void undoSchedule(session, event.currentTarget);
+              }}
+            >
+              {operation === 'undo' ? 'Undoing…' : 'Undo'}
+            </Button>
+          </>
+        ) : null}
       </span>
     );
   };
@@ -1912,10 +1530,6 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       </InterruptedSessionRow>
     );
   };
-
-  // Nothing can resume now: the rows' Continue menus are the ways forward,
-  // so the footer only closes (CAN-5013).
-  const closeOnly = gated && !readinessPending && eligibleSessions.length === 0;
 
   return (
     <DialogModal
@@ -2088,29 +1702,27 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
             data-testid="usage-limit-resume-cancel"
             onClick={closePrompt}
           >
-            {closeOnly ? 'Close' : 'Cancel'}
+            Cancel
           </Button>
-          {closeOnly ? null : (
-            <Button
-              variant="primary"
-              size="compact"
-              data-testid="usage-limit-resume-confirm"
-              disabled={
-                selectedCount === 0 ||
-                submitting ||
-                (origin === 'authentication' &&
-                  (authentication?.phase !== 'complete' ||
-                    !authentication.account?.authenticated))
-              }
-              onClick={(): void => {
-                void confirm();
-              }}
-            >
-              {submitting
-                ? 'Adding to queue…'
-                : resumeConfirmLabel(countInterruptedWork(selectedSessions))}
-            </Button>
-          )}
+          <Button
+            variant="primary"
+            size="compact"
+            data-testid="usage-limit-resume-confirm"
+            disabled={
+              selectedCount === 0 ||
+              submitting ||
+              (origin === 'authentication' &&
+                (authentication?.phase !== 'complete' ||
+                  !authentication.account?.authenticated))
+            }
+            onClick={(): void => {
+              void confirm();
+            }}
+          >
+            {submitting
+              ? 'Adding to queue…'
+              : resumeConfirmLabel(countInterruptedWork(selectedSessions))}
+          </Button>
         </div>
       </div>
     </DialogModal>

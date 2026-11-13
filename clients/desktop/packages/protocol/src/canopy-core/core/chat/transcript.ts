@@ -577,17 +577,6 @@ export const CoreChatTranscriptMessageSchema = z
      * so `blocks` is empty; read its logical blocks by block page.
      */
     blocksOmitted: z.strictObject({ blockCount: ordinal }).optional(),
-    /**
-     * A shared cloud chat's user turn: the member who sent it (CAN-6106).
-     * Absent for an unattributed turn and on hosts that keep no attribution.
-     */
-    author: z
-      .strictObject({
-        userId: z.string().min(1),
-        name: z.string(),
-        image: z.string().nullable(),
-      })
-      .optional(),
   })
   .catchall(z.unknown())
   .refine(

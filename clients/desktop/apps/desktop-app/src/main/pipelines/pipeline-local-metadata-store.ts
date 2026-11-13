@@ -590,24 +590,6 @@ export function markUserPipelineWorkflowPage(pipelineId: string): void {
   });
 }
 
-/**
- * CAN-6065: hides an Orchestrator pipeline from denied agents by the
- * pipeline itself (`agentHidden`), not by the record its owner marker
- * names. Returns whether the flag is read back.
- */
-export function markUserPipelineAgentHidden(pipelineId: string): boolean {
-  if (readMetadataFile().entries[userPipelineKey(pipelineId)]?.agentHidden)
-    return true;
-  updateUserPipelineEntry(pipelineId, (entry) => ({
-    ...entry,
-    agentHidden: true,
-  }));
-  return (
-    readMetadataFile().entries[userPipelineKey(pipelineId)]?.agentHidden ===
-    true
-  );
-}
-
 export function deleteUserPipelineLocalMetadata(pipelineId: string): void {
   const file = readMetadataFile();
   const key = userPipelineKey(pipelineId);

@@ -3,34 +3,6 @@ import worldJson from './fixtures/world.json';
 
 const idSchema = z.string().min(1);
 
-const pullRequestStatusSchema = z.strictObject({
-  url: z.string().min(1),
-  title: z.string(),
-  state: z.enum(['open', 'closed', 'merged']),
-  isDraft: z.boolean(),
-  headBranch: z.string(),
-  baseBranch: z.string(),
-  headSha: z.string(),
-  headRepository: z.string().nullable(),
-  mergeable: z.enum(['mergeable', 'conflicting', 'unknown']),
-  reviewDecision: z
-    .enum(['approved', 'changes_requested', 'review_required'])
-    .nullable(),
-  checks: z.strictObject({
-    state: z.enum(['success', 'failure', 'pending', 'none']),
-    total: z.number().int().nonnegative(),
-    passed: z.number().int().nonnegative(),
-    failed: z.number().int().nonnegative(),
-    pending: z.number().int().nonnegative(),
-    failedNames: z.array(z.string()),
-    available: z.boolean(),
-  }),
-  mergeQueue: z.strictObject({
-    inQueue: z.boolean(),
-    position: z.number().int().positive().nullable(),
-  }),
-});
-
 const conformanceWorldSchema = z.strictObject({
   brand: z.strictObject({
     displayName: z.string().min(1),
@@ -65,14 +37,6 @@ const conformanceWorldSchema = z.strictObject({
       lastResponse: z.string().nullable(),
     }),
   ),
-  chatHistory: z.array(
-    z.strictObject({
-      chatId: idSchema,
-      matchId: z.string().uuid(),
-      date: z.string().datetime(),
-      text: z.string(),
-    }),
-  ),
   models: z.array(
     z.strictObject({
       id: idSchema,
@@ -104,24 +68,6 @@ const conformanceWorldSchema = z.strictObject({
         ),
       }),
     ),
-  }),
-  /**
-   * GitHub.com pull requests the signed-in owner can read, with the status
-   * each host must return (without `fetchedAt`, which the host stamps), and
-   * one the owner cannot see.
-   */
-  pullRequests: z.strictObject({
-    readable: z.array(
-      z.strictObject({
-        repository: z.string().min(1),
-        number: z.number().int().positive(),
-        status: pullRequestStatusSchema,
-      }),
-    ),
-    inaccessible: z.strictObject({
-      repository: z.string().min(1),
-      number: z.number().int().positive(),
-    }),
   }),
   defaultModelId: idSchema,
   /** The signed-in account's current organization memberships. */

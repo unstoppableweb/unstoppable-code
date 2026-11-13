@@ -314,7 +314,6 @@ const DEFAULT_REPLIES: Replies = {
   [C.managedDelegationExtendLifetimeLimit]: () => ({ ok: true }),
   [C.repoRulesScan]: () => ({ rules: [] }),
   [C.repoRulesStatus]: () => ({ status: 'none' }),
-  [C.repoRulesCheck]: () => ({ blocked: [] }),
   [C.repoRulesPreview]: () => ({ files: [] }),
   [C.repoRulesApply]: () => ({ applied: true }),
   [C.editorSetupPresence]: () => ({ present: false }),
@@ -375,7 +374,6 @@ const CAPABILITIES: CanopyCapabilities = {
   pipelines: 'execute',
   routing: 'in-memory',
   overviewNotifications: true,
-  worktreeRecovery: true,
 };
 
 interface Harness {
@@ -2160,10 +2158,6 @@ const QUERY_SCENARIOS: QueryScenarios = {
     C.repoRulesStatus,
     'status',
   ),
-  'repoRules.check': passthroughQuery<'repoRules.check'>(
-    C.repoRulesCheck,
-    'check',
-  ),
   'repoRules.preview': [
     ...passthroughQuery<'repoRules.preview'>(C.repoRulesPreview, 'preview'),
     {
@@ -3255,36 +3249,6 @@ const COMMAND_SCENARIOS: CommandScenarios = {
     ),
   'worktree.discard.describe': [
     {
-      name: 'refreshes recovery with explicit intent and incarnation',
-      args: {
-        workspaceId: 'single',
-        worktreeId: 'wt-a',
-        recovery: { intent: 'delete', expectedCreatedAt: NOW },
-      },
-      calls: [
-        call(IPC_CHANNELS.worktreeDiscardDescribe, {
-          projectId: 'single',
-          worktreeId: 'wt-a',
-          recovery: { intent: 'delete', expectedCreatedAt: NOW },
-        }),
-      ],
-    },
-    {
-      name: 'refreshes unattributable recovery without inventing an incarnation',
-      args: {
-        workspaceId: 'single',
-        worktreeId: 'wt-a',
-        recovery: { intent: 'archive', expectedCreatedAt: null },
-      },
-      calls: [
-        call(IPC_CHANNELS.worktreeDiscardDescribe, {
-          projectId: 'single',
-          worktreeId: 'wt-a',
-          recovery: { intent: 'archive', expectedCreatedAt: null },
-        }),
-      ],
-    },
-    {
       name: 'describes with retained archives',
       args: {
         workspaceId: 'single',
@@ -3432,71 +3396,6 @@ const COMMAND_SCENARIOS: CommandScenarios = {
     },
   ],
   'worktree.archive': [
-    {
-      name: 'settles row-less cleanup and preserves recovery identity and safety choices',
-      args: {
-        workspaceId: 'multi',
-        worktreeId: 'removed',
-        mode: 'delete',
-        recovery: { intent: 'delete', expectedCreatedAt: NOW },
-        deleteBranch: false,
-        expectedBranchName: 'confirmed-branch',
-        deleteWithoutRetentionIfMissing: true,
-      },
-      replies: {
-        [C.workspaceArchiveWorktree]: () => ({
-          success: true,
-          warnings: ['cleanup warning'],
-        }),
-      },
-      calls: [
-        call(C.projectsLoad),
-        call(C.workspaceArchiveWorktree, {
-          workspaceId: 'multi',
-          worktreeId: 'removed',
-          expectedCreatedAt: NOW,
-          remainingWorktreeOrder: ['wt-a', 'wt-b'],
-          expectedRemainingWorktreeOrder: ['wt-a', 'wt-b'],
-          lockAfterArchive: false,
-          typedRefusal: true,
-          deleteBranch: false,
-          expectedBranchName: 'confirmed-branch',
-          deleteWithoutRetentionIfMissing: true,
-        }),
-        call(C.desktopSessionSnapshotInvalidate),
-      ],
-      result: (value) =>
-        expect(value).toEqual({
-          status: 'completed',
-          warnings: ['cleanup warning'],
-        }),
-    },
-    {
-      name: 'unconfirmed recovery never invalidates the successful-removal snapshot',
-      args: {
-        workspaceId: 'single',
-        worktreeId: 'wt-a',
-        recovery: { intent: 'archive', expectedCreatedAt: NOW },
-      },
-      replies: { [C.worktreeArchive]: () => undefined },
-      channels: [C.projectsLoad, C.worktreeArchive],
-      result: (value) => expect(value).toEqual({ status: 'unconfirmed' }),
-    },
-    {
-      name: 'a recovery transport rejection is settled, not a wrapped exception',
-      args: {
-        workspaceId: 'single',
-        worktreeId: 'wt-a',
-        recovery: { intent: 'archive', expectedCreatedAt: NOW },
-      },
-      replies: {
-        [C.worktreeArchive]: () => {
-          throw new Error('Error invoking remote method');
-        },
-      },
-      channels: [C.projectsLoad, C.worktreeArchive],
-      result: (value) => expect(value).toEqual({ status: 'transport-failed' }),
-    },
     {
       name: 'archives in a single-repo project',
       args: { workspaceId: 'single', worktreeId: 'wt-a' },
@@ -4958,7 +4857,7 @@ describe('portable CanopyClient adapter (golden)', () => {
 });
 
 describe('scoped file queries (CAN-6175)', () => {
-  test("a scoped work entry's file reads and saves reach its port, never the transport", async () => {
+  test("a scoped work entry's file reads reach its port, never the transport", async () => {
     const preview = {
       workspaceLocalId: 'project-1',
       worktreeLocalId: 'web-core:chat-1',
@@ -5001,10 +4900,6 @@ describe('scoped file queries (CAN-6175)', () => {
                   seen.push('roots');
                   return Promise.resolve([root]);
                 },
-                'file.save': (): Promise<typeof preview> => {
-                  seen.push('save');
-                  return Promise.resolve(preview);
-                },
               }
             : undefined,
       },
@@ -5023,16 +4918,7 @@ describe('scoped file queries (CAN-6175)', () => {
     await expect(context.client.query('file.roots', scope)).resolves.toEqual([
       root,
     ]);
-    await expect(
-      context.client.command('file.save', {
-        ...scope,
-        fileRootLocalId: 'workspace',
-        relativePath: 'a.ts',
-        content: 'a',
-        expectedVersion: 'v1',
-      }),
-    ).resolves.toEqual(preview);
-    expect(seen).toEqual(['read', 'link', 'roots', 'save']);
+    expect(seen).toEqual(['read', 'link', 'roots']);
     expect(context.fake.calls).toEqual([]);
   });
 });

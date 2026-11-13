@@ -177,9 +177,7 @@ export async function agentHiddenOwnedPipelineIds(
         import('./service'),
         import('./owned-chat-projection'),
       ]);
-    // Every stored owner (CAN-6065): one the selected context leaves out
-    // still hides its pipeline.
-    const activities = await getAutomationsService().allActivities();
+    const { activities } = await getAutomationsService().list();
     for (const activity of activities) {
       const pipelineId = ownedPipelineId(activity);
       if (

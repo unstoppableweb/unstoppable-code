@@ -19,7 +19,6 @@ import type { CodexRuntimeService } from '../../codex-runtime';
 import { runCodexPipelinePromptWith } from '../codex-pipeline-prompt';
 import type { DaemonPipelineOwnerPorts } from './owner-ports';
 import { launchPluginCollectionResolver } from './plugin-collections';
-import { PIPELINE_HOST_RUN_TEMP_DIR } from './run-temp';
 import type { ResolvedPipelinePluginCollectionSnapshot } from '@canopy/execution-engine/types/pipeline';
 
 /** The worktree a launch runs in, as the daemon verified it (CAN-5086 D17). */
@@ -108,7 +107,7 @@ export function createDaemonPipelineRuntime(
   return {
     bundledActionsDir: options.bundledActionsDir,
     executionsDir: options.executionsDir,
-    tempRootDir: path.join(os.tmpdir(), PIPELINE_HOST_RUN_TEMP_DIR),
+    tempRootDir: path.join(os.tmpdir(), 'canopy-exec'),
     getProjectActionsDir,
     getProjectActionsDirCandidates,
     getProjectPipelinesDir,

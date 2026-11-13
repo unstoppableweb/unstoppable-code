@@ -15,16 +15,6 @@
  * reason instead of guessing at a substitute.
  */
 import {
-  AutomationAgentNotShareableError,
-  resolveAutomationSharedAgent,
-} from '@canopy/desktop-shared/lib/automation-agent';
-import { getAgentModel } from '../../agents/agent-model-store';
-import {
-  automationAgentPluginsMatch,
-  automationAgentPackageMatches,
-  getSharedAgent,
-} from '../../agents/canopy-server-client';
-import {
   LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
   pipelineDeclaresLocalOnlyTrigger,
 } from '@canopy/pipeline-interop/portability';
@@ -69,7 +59,6 @@ import {
   buildSharedAutomationDocument,
   type BuildSharedAutomationDocumentOptions,
 } from '@canopy/desktop-shared/lib/automation-sharing';
-import { sharedAutomationActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   ChatTabPluginSelections,
@@ -171,10 +160,6 @@ export type SharedContainerDefinitionBuildResult =
     };
 
 export interface SharedContainerDefinitionBuilderDependencies {
-  getAgentModel: typeof getAgentModel;
-  getSharedAgent: typeof getSharedAgent;
-  automationAgentPluginsMatch: typeof automationAgentPluginsMatch;
-  automationAgentPackageMatches: typeof automationAgentPackageMatches;
   loadInventory: typeof loadPipelinePackageInventorySources;
   buildPortablePipelineResources: typeof buildPortablePipelineResources;
   capabilityInventoryEntryIdsByKey: typeof capabilityInventoryEntryIdsByKey;
@@ -190,10 +175,6 @@ export interface SharedContainerDefinitionBuilderDependencies {
 }
 
 const defaultDependencies: SharedContainerDefinitionBuilderDependencies = {
-  getAgentModel,
-  getSharedAgent,
-  automationAgentPluginsMatch,
-  automationAgentPackageMatches,
   loadInventory: loadPipelinePackageInventorySources,
   buildPortablePipelineResources,
   capabilityInventoryEntryIdsByKey,
@@ -668,7 +649,7 @@ export async function buildAutomationDefinitionResource(
   source: AutomationDefinitionSource,
   deps: SharedContainerDefinitionBuilderDependencies = defaultDependencies,
 ): Promise<SharedContainerDefinitionBuildResult> {
-  const activity = sharedAutomationActivity(source.activity);
+  const { activity } = source;
   const action = activity.action;
   if (action.type === 'pipeline_execution_resume')
     return { resource: undefined, reason: 'execution_bound' };
@@ -735,32 +716,6 @@ export async function buildAutomationDefinitionResource(
     }
   }
 
-  try {
-    options.resolvedAgent = await resolveAutomationSharedAgent(
-      'model' in action ? action.model : undefined,
-      {
-        get: deps.getAgentModel,
-        getShared: deps.getSharedAgent,
-        pluginsMatch: deps.automationAgentPluginsMatch,
-        packageMatches: deps.automationAgentPackageMatches,
-      },
-    );
-  } catch (error: unknown) {
-    // Private or edited Agents still travel through the package's uses.agent binding.
-    // Lookup failures cannot establish that snapshot and omit only this automation.
-    if (!(error instanceof AutomationAgentNotShareableError)) {
-      return {
-        resource: undefined,
-        reason: 'not_portable',
-        detail:
-          error instanceof Error
-            ? error.message
-            : 'Agent could not be resolved.',
-      };
-    }
-  }
-  if (options.resolvedAgent) agentId = undefined;
-  options.packagedAgentId = agentId;
   const built = buildSharedAutomationDocument(activity, options);
   if (!built.ok)
     return {

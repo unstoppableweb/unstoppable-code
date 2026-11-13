@@ -83,18 +83,14 @@ describe('createWorkerFilesystemAdapter', () => {
       listFileTreeDirectory,
     });
 
-    const projected = await adapter['worker.filesystem.roots.list'](
-      {
-        scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-      },
-      undefined,
-    );
-    // Desktop roots are host paths: it never sends the optional `mountPath`.
-    expect(projected.roots.map((root) => Object.keys(root))).toEqual([
-      ['fileRootId', 'name', 'kind'],
-      ['fileRootId', 'name', 'kind'],
-    ]);
-    expect(projected).toEqual({
+    await expect(
+      adapter['worker.filesystem.roots.list'](
+        {
+          scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
+        },
+        undefined,
+      ),
+    ).resolves.toEqual({
       roots: [
         {
           fileRootId: WORKSPACE_ROOT_REPO_ID,
@@ -250,30 +246,6 @@ describe('createWorkerFilesystemAdapter', () => {
       expect(services.listFileTreeDirectory).not.toHaveBeenCalled();
     },
   );
-
-  it('treats wake as satisfied: a local listing never sleeps, so the request is unchanged (CAN-6114)', async () => {
-    const listFileTreeDirectory = jest.fn(() =>
-      Promise.resolve({ entries: [] }),
-    );
-    const adapter = createWorkerFilesystemAdapter({
-      listFileTreeRoots: () => Promise.resolve({ roots: [] }),
-      listFileTreeDirectory,
-    });
-    const params = {
-      scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-      fileRootId: 'repo-1',
-      relativePath: 'src',
-    };
-    for (const wake of [undefined, true, false])
-      await expect(
-        adapter['worker.filesystem.directory.list'](
-          wake === undefined ? params : { ...params, wake },
-          undefined,
-        ),
-      ).resolves.toEqual({ entries: [] });
-    const [plain, ...woken] = listFileTreeDirectory.mock.calls;
-    expect(woken).toEqual([plain, plain]);
-  });
 
   it('accepts an explicit local authority without changing the service request', async () => {
     const services = {

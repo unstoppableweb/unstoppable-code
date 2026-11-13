@@ -75,12 +75,16 @@ export async function composeWorktreeRepoRules(
 ): Promise<string> {
   // Policy is consulted before resolving or touching checkout directories.
   if (!(await repoRulesService.status(workspaceId)).enabled) return '';
-  const repos = await resolveRepoRuleCheckouts({ workspaceId, worktreeId });
-  return repoRulesService.compose(
-    workspaceId,
-    repos.map((repo) => ({
-      ...repo,
-      prefix: relative(cwd, repo.root).split(sep).join('/'),
-    })),
-  );
+  try {
+    const repos = await resolveRepoRuleCheckouts({ workspaceId, worktreeId });
+    return await repoRulesService.compose(
+      workspaceId,
+      repos.map((repo) => ({
+        ...repo,
+        prefix: relative(cwd, repo.root).split(sep).join('/'),
+      })),
+    );
+  } catch {
+    return '';
+  }
 }

@@ -7,7 +7,6 @@ import {
 import { closeWebCoreChatBackend } from '@/stores/chat/web-core';
 import { splitWorktreeKey } from '@/stores/chat/utils';
 import { useChatStore } from '@/stores/chatStore';
-import { installWebCoreAgentTasksPublisher } from './web-core-agent-tasks-publisher';
 
 let installed = false;
 
@@ -22,7 +21,6 @@ let installed = false;
 export function ensureCloudScopeLifecycle(): void {
   if (installed) return;
   installed = true;
-  installWebCoreAgentTasksPublisher();
   subscribeWebCoreCoworkDirectory(() => {
     if (isWebCoreCoworkOnline()) return;
     closeWebCoreChatBackend();

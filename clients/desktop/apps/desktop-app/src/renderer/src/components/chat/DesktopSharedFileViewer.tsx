@@ -270,12 +270,6 @@ function DesktopSharedFileViewerImpl({
   // Read-only scopes (a shared-container recipient) get the read-only viewer:
   // no editor, no comment authoring, no Show in Finder / Open in.
   const readOnly = useWorkspaceIsReadOnly();
-  // A cloud chat's sandbox files resolve through the web core, and the OS
-  // can't reveal, open or render them (CAN-6175 R9).
-  const localFiles = workspaceFileSourceFor(worktreeId).onThisComputer;
-  // Main keeps file comments, review artifacts and git diffs for local
-  // worktrees only, so a cloud file has none of them yet.
-  const commentsAvailable = !readOnly && localFiles;
   const setFileTabViewMode = useChatStore((state) => state.setFileTabViewMode);
   const openFileTab = useChatStore((state) => state.openFileTab);
   const createEmptyFileTab = useChatStore((state) => state.createEmptyFileTab);
@@ -303,12 +297,7 @@ function DesktopSharedFileViewerImpl({
   ) {
     setupRetryEligibleRef.current = true;
   }
-  const diffTarget = useOpenFileDiffTarget(
-    projectId,
-    worktreeId,
-    filePath,
-    localFiles,
-  );
+  const diffTarget = useOpenFileDiffTarget(projectId, worktreeId, filePath);
   const storedDiffContext = useChatTabRenderState(
     { projectId, worktreeId, chatId: tabId },
     ({ tab }) => tab?.fileDiffContext,
@@ -374,7 +363,7 @@ function DesktopSharedFileViewerImpl({
   const artifacts = useWorktreeReview(
     projectId,
     worktreeId,
-    localFiles,
+    true,
     active && viewMode === 'diff',
   );
   const availableAnnotations = useMemo(
@@ -400,7 +389,6 @@ function DesktopSharedFileViewerImpl({
     viewMode === 'diff' ? 'diff' : 'file',
     snapshot?.identity,
     annotations,
-    localFiles,
   );
   const legacyComments = useReviewComments(
     { projectId, worktreeId },
@@ -499,7 +487,7 @@ function DesktopSharedFileViewerImpl({
         cancelled = true;
       };
     }
-    void workspaceFileSourceFor(worktreeId)
+    void window.api
       .getFileTreeRoots({ projectId, worktreeId })
       .then(({ roots, imageSaveSupport: support }) => {
         if (cancelled) return;
@@ -605,14 +593,12 @@ function DesktopSharedFileViewerImpl({
   // scoped reveal also canonicalizes the path against the workspace roots.
   const localFileRequest = useMemo(
     () =>
-      localFiles
-        ? resolveLocalFileActionRequest({
-            absolutePath: filePath,
-            surfaceScope: { projectId, worktreeId },
-            surfaceReadOnly: readOnly,
-          })
-        : undefined,
-    [filePath, localFiles, projectId, readOnly, worktreeId],
+      resolveLocalFileActionRequest({
+        absolutePath: filePath,
+        surfaceScope: { projectId, worktreeId },
+        surfaceReadOnly: readOnly,
+      }),
+    [filePath, projectId, readOnly, worktreeId],
   );
   // Keyed by the file so a failure never follows the tab to another file.
   const localActionScope = `${projectId}/${worktreeId}/${filePath}`;
@@ -1125,7 +1111,7 @@ function DesktopSharedFileViewerImpl({
 
   const openSelectionComposer = useCallback(
     (selection: FileEditorCommentSelection | null): void => {
-      if (!selection || !commentsAvailable) {
+      if (!selection) {
         setCommentPopover((current) =>
           current?.mode === 'selection' ? null : current,
         );
@@ -1144,7 +1130,7 @@ function DesktopSharedFileViewerImpl({
         },
       });
     },
-    [commentsAvailable, filePath],
+    [filePath],
   );
 
   const handleRichSelection = useCallback((): void => {
@@ -1573,7 +1559,7 @@ function DesktopSharedFileViewerImpl({
       ref={panelRootRef}
       className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col outline-none"
       {...fileFind.surfaceProps}
-      onMouseUp={commentsAvailable ? handleRichSelection : undefined}
+      onMouseUp={readOnly ? undefined : handleRichSelection}
     >
       <div
         className="relative min-h-0 w-full min-w-0 flex-1 overflow-hidden"
@@ -1762,7 +1748,7 @@ function DesktopSharedFileViewerImpl({
                         onSplitChange={setDiffSplit}
                         annotations={comments.document.annotations}
                         onOpenLine={(side, line, anchorRect): void => {
-                          if (!commentsAvailable) return;
+                          if (readOnly) return;
                           setCommentPopover({
                             mode: 'line',
                             side,
@@ -1772,7 +1758,7 @@ function DesktopSharedFileViewerImpl({
                         }}
                         threads={comments.document.commentThreads}
                         onComment={(anchor, anchorRect): void => {
-                          if (!commentsAvailable) return;
+                          if (readOnly) return;
                           setCommentPopover({
                             mode: 'selection',
                             anchor: { ...anchor, repoId: diffContext.repoId },
@@ -1821,7 +1807,7 @@ function DesktopSharedFileViewerImpl({
           resolveImageSrc={resolveImageSrc}
           imageRetryGeneration={imageRetryGeneration}
           documentRetryGeneration={documentRetryGeneration}
-          resolveDocumentBytes={localFiles ? resolveDocumentBytes : undefined}
+          resolveDocumentBytes={resolveDocumentBytes}
           renderRichDocument={renderRichDocument}
           supportedDocumentKinds={SUPPORTED_DOCUMENT_KINDS}
           documentRecoveryHint={pt(uiText.officePreview.parseFailedRecovery)}
@@ -1831,7 +1817,7 @@ function DesktopSharedFileViewerImpl({
         />
         {!rendersAsDocument && viewMode !== 'diff' && richAnnotationMarkers}
       </div>
-      {commentsAvailable && (!rendersAsDocument || viewMode === 'diff') && (
+      {!readOnly && (!rendersAsDocument || viewMode === 'diff') && (
         <FileCommentsDrawer
           tabId={tabId}
           active={active}

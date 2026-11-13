@@ -1,5 +1,3 @@
-import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
-import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import {
   getExecutionHarnessForModel,
   getModelSource,
@@ -14,7 +12,9 @@ import type {
   PipelineAiCreditsRoutingOverride,
   PipelineModelPolicyScope,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
-import { resolveAgentModelRuntime } from '../agents/agent-model-runtime';
+import { isAgentDefaultBaseModel } from '@canopy/protocol/agents';
+import { resolveAgentDestinationDefaultModel } from '../agents/agent-default-model';
+import { getAgentModel } from '../agents/agent-model-store';
 import { resolveAiCreditsRoutingOverride } from '../agents/ai-credits-routing';
 import { resolveBackgroundWorkOwner } from '../agents/work-owner';
 import {
@@ -192,61 +192,17 @@ export async function resolveDesktopPipelineAgentModelAlias(
   agentId: string,
   scope?: PipelineModelPolicyScope,
 ): Promise<PipelineAgentModelAliasResolution | null> {
-  const resolved = await resolveAgentModelRuntime({
-    model: agentId,
-    projectId: scope?.projectId,
-    inheritDefaultFrom: { projectId: scope?.projectId },
-  }).catch((error: unknown) => {
-    if (
-      error instanceof AgentModelSelectionError &&
-      error.code === 'agent_unavailable'
-    ) {
-      return null;
-    }
-    throw error;
-  });
-  if (!resolved) return null;
-  const agent = resolved.agent;
+  const agent = await getAgentModel(agentId);
   if (!agent) return null;
-  if (
-    scope &&
-    (await isDesktopPipelineModelBlocked(resolved.runtimeModel, scope))
-  ) {
-    throw new AgentModelSelectionError(
-      'policy_blocked',
-      `Model "${resolved.runtimeModel}" is blocked by your organization policy. Choose another model.`,
-    );
-  }
-  let pluginSelections = agent.pluginSelections;
-  if (parseAgentRouteModelId(agentId)) {
-    const { resolveEffectivePluginSelectionRefs } =
-      await import('../plugins/plugin-resolver');
-    const refs = await resolveEffectivePluginSelectionRefs(
-      pluginSelections,
-      [],
-      scope?.projectId,
-    );
-    if (refs.warnings.length)
-      throw new AgentModelSelectionError(
-        'plugins_incompatible',
-        'Some Agent resources could not be checked. Choose another model or edit the Agent.',
-      );
-    pluginSelections = {
-      collectionIds: [],
-      skillRefs: refs.skillRefs,
-      pluginRefs: refs.pluginRefs,
-      mcpServerRefs: refs.mcpServerRefs,
-      ...(pluginSelections?.mcpHttpAuthPreferences !== undefined
-        ? { mcpHttpAuthPreferences: pluginSelections.mcpHttpAuthPreferences }
-        : {}),
-    };
-  }
   return {
     agentId: agent.id,
     name: agent.name,
-    base: resolved.runtimeModel,
+    // An inheriting Agent takes the default of the step's workspace.
+    base: isAgentDefaultBaseModel(agent.baseModel)
+      ? await resolveAgentDestinationDefaultModel(scope?.projectId)
+      : agent.baseModel,
     instructions: agent.instructions,
-    pluginSelections,
+    pluginSelections: agent.pluginSelections,
   };
 }
 

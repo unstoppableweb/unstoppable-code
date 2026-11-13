@@ -379,7 +379,6 @@ export function computeIncrementalTurnGroups(
   messages: ChatMessage[],
   agentUsage: Record<string, AgentUsage> | undefined,
   cache: TurnGroupCache,
-  trailingTurnSettled = false,
 ): TurnGroupOrMessage[] {
   const finishPerformanceStage = beginTranscriptPerformanceStage(
     'turn_grouping',
@@ -400,7 +399,7 @@ export function computeIncrementalTurnGroups(
     cache.displayMessages,
   );
   cache.displayMessages = displayMessages;
-  const groups = groupIntoTurns(displayMessages, { trailingTurnSettled });
+  const groups = groupIntoTurns(displayMessages);
 
   // Preserve referential identity of completed groups
   const nextCompleted = new Map<string, TurnGroup>();

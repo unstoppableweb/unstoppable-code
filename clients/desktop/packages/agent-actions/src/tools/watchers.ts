@@ -14,7 +14,6 @@ import {
 import type { AgentJsonSchema } from './definition';
 import {
   listInProse,
-  offersScheduledWakeups,
   workspaceChatWatchersOnly,
   workspacePipelineWatchers,
   type AgentActionDescriptionCapabilities,
@@ -128,8 +127,6 @@ export type SetupWatcherTargetInput<THook extends string = string> =
       executionId?: string;
       pipelineId?: string;
       terminalStatuses?: ('success' | 'failure' | 'cancelled')[];
-      /** Where the watched runs run; this computer when omitted (CAN-6391). */
-      runOn?: 'local' | 'cloud';
     }
   | { automationId: string }
   | { projectId: string; worktreeId?: string; chatId?: string };
@@ -179,7 +176,6 @@ export function createSetupWatchersInputSchema<THook extends string>(options: {
       executionId: z.string().optional(),
       pipelineId: z.string().optional(),
       terminalStatuses: z.array(watcherPipelineTerminalStatusSchema).optional(),
-      runOn: z.enum(['local', 'cloud']).optional(),
     })
     .strict()
     .refine(
@@ -375,9 +371,7 @@ export function buildSearchWatchersJsonSchema(
             description: pipelines
               ? 'Optional trigger filter. Chat-completion watchers on chats in the current project, and pipeline-completion watchers on workflow runs this chat started, are available here.'
               : chatOnly
-                ? offersScheduledWakeups(capabilities)
-                  ? 'Optional trigger filter. Chat-completion watchers on chats in the current project, and wakeups this chat scheduled with ScheduleWakeup, are available here.'
-                  : 'Optional trigger filter. Only chat-completion watchers on chats in the current project are available here.'
+                ? 'Optional trigger filter. Only chat-completion watchers on chats in the current project are available here.'
                 : 'Optional trigger filter. Chats support pipeline/hook watchers scoped to their own worktree plus chat-completion, new-chat-started, and automation-run watchers targeting any project by id.',
           },
       includeActive: {
@@ -406,35 +400,23 @@ export function buildSearchWatchersJsonSchema(
   };
 }
 
-/**
- * The workflow runs this chat started that a project-scoped host watches:
- * one run, or the ones it starts later.
- */
+/** A workflow run this chat started, as a project-scoped host watches it. */
 const RUN_WATCHER_TARGET_JSON_SCHEMA: AgentJsonSchema = {
   type: 'object',
-  anyOf: [
-    { required: ['executionId'] },
-    { required: ['pipelineId'] },
-    { required: ['terminalStatuses'] },
-  ],
+  required: ['executionId'],
   description:
-    'The watched workflow runs: one run by the executionId pipeline.run returned, or, without executionId, the runs this chat starts later. Do not include kind, destination chatId, or display names.',
+    'The watched workflow run: the executionId pipeline.run returned. Do not include kind, destination chatId, or display names.',
   properties: {
     executionId: {
       type: 'string',
       description: 'Execution id of a run this chat started.',
-    },
-    pipelineId: {
-      type: 'string',
-      description:
-        'Workflow id. Omit executionId and set pipelineId to watch the runs of this workflow this chat starts later.',
     },
     terminalStatuses: {
       type: 'array',
       minItems: 1,
       items: { type: 'string', enum: ['success', 'failure', 'cancelled'] },
       description:
-        'Optional terminal statuses that consume the watcher. Defaults to success, failure, and cancelled. Paused runs also notify the watcher without consuming it.',
+        'Optional terminal statuses that fire the watcher. Defaults to success, failure, and cancelled.',
     },
   },
   additionalProperties: false,
@@ -485,9 +467,7 @@ export function buildSetupWatchersJsonSchema(
       trigger: {
         type: 'string',
         pattern: `^(?!(?:${canonicalTriggers.join('|')})$)`,
-        description: workspaceChatWatchersOnly(capabilities)
-          ? `Watcher trigger from SearchWatchers: ${advertised}. Chat triggers require an explicit value.`
-          : `Watcher trigger from SearchWatchers: ${advertised}. Chat triggers require an explicit value. When omitted, defaults to worktree_hook_triggered when target.triggerName is supplied, automation_run when target.automationId is supplied, otherwise worktree_pipeline_completion.`,
+        description: `Watcher trigger from SearchWatchers: ${advertised}. Chat triggers require an explicit value. When omitted, defaults to worktree_hook_triggered when target.triggerName is supplied, automation_run when target.automationId is supplied, otherwise worktree_pipeline_completion.`,
       },
       projectId: {
         type: 'string',
@@ -554,7 +534,7 @@ function targetWatcherSetupJsonSchema(
                     RUN_WATCHER_TARGET_JSON_SCHEMA,
                   ],
                   description:
-                    'A chat in the current project (projectId, worktreeId, chatId), or workflow runs this chat started (executionId, or pipelineId or terminalStatuses for the runs it starts later).',
+                    'A chat in the current project (projectId, worktreeId, chatId) or a workflow run this chat started (executionId).',
                 }
               : chatOnly
                 ? CHAT_WATCHER_TARGET_JSON_SCHEMA
@@ -590,12 +570,6 @@ function targetWatcherSetupJsonSchema(
                         },
                         description:
                           'Optional terminal statuses that should consume the watcher. Defaults to success, failure, and cancelled. Paused executions also notify the watcher without consuming it.',
-                      },
-                      runOn: {
-                        type: 'string',
-                        enum: ['local', 'cloud'],
-                        description:
-                          'Optional. Set "cloud" to watch cloud runs: the executionId pipeline.run returned for a runOn "cloud" run, or, without executionId, the cloud runs this task\'s chats start later. Omit for runs on this computer.',
                       },
                       triggerName: {
                         type: 'string',
@@ -697,11 +671,9 @@ export const DELETE_WATCHERS_JSON_SCHEMA: AgentJsonSchema =
 export function buildDeleteWatchersJsonSchema(
   capabilities?: AgentActionDescriptionCapabilities,
 ): AgentJsonSchema {
-  if (!workspaceChatWatchersOnly(capabilities))
-    return DELETE_WATCHERS_JSON_SCHEMA;
-  return deleteWatchersJsonSchemaWith(
-    offersScheduledWakeups(capabilities)
-      ? 'Watcher ids returned for this chat by SearchWatchers, SetupWatchers, or ScheduleWakeup.'
-      : 'Watcher ids returned for this chat by SearchWatchers or SetupWatchers.',
-  );
+  return workspaceChatWatchersOnly(capabilities)
+    ? deleteWatchersJsonSchemaWith(
+        'Watcher ids returned for this chat by SearchWatchers or SetupWatchers.',
+      )
+    : DELETE_WATCHERS_JSON_SCHEMA;
 }

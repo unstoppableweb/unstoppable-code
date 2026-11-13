@@ -6,15 +6,10 @@
  * such a run a new chat's plugins, approval mode and Orchestrator model. The
  * native action ran with them, so its conversion records them, main-only, as
  * the owned pipeline's grant, bound to the automation and to the pipeline's
- * revision and content as saved. The send step honors the grant only for a
- * top-level run of exactly that definition; any other write (an agent's
- * `pipeline.update`, a person's editor save) fails it closed. Everything else
- * about the run stays agent-originated.
- *
- * CAN-6065: the grant is the pipeline's, so every schedule of its workflow
- * page runs with it: a person's, or one its own agent author wrote, and
- * after the schedule it was minted for is removed. Another agent's schedule
- * never takes it.
+ * revision and content as saved. The send step honors the grant only for
+ * that automation's own top-level run of exactly that definition; any other
+ * write (an agent's `pipeline.update`, a person's editor save) fails it
+ * closed. Everything else about the run stays agent-originated.
  */
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -26,34 +21,12 @@ import type {
   AutomationAction,
   ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
-import type {
-  Pipeline,
-  PipelineAgentAuthor,
-} from '@canopy/execution-engine/types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelineLocalMetadata,
   PipelineNativeGrant,
   PipelineNativeGrantAuthority,
 } from '../pipelines/pipeline-local-metadata-store';
-
-/**
- * Whether a schedule written by `author` runs as `pipelineAuthor`'s
- * (CAN-6065): a person's schedule (no author) always does, an agent's only
- * when it is the same agent chat. Another agent never takes what the
- * workflow was granted or installed with.
- */
-export function runsAsAuthor(
-  author: PipelineAgentAuthor | undefined,
-  pipelineAuthor: PipelineAgentAuthor | undefined,
-): boolean {
-  return (
-    author === undefined ||
-    (pipelineAuthor !== undefined &&
-      author.chat.projectId === pipelineAuthor.chat.projectId &&
-      author.chat.worktreeId === pipelineAuthor.chat.worktreeId &&
-      author.chat.chatId === pipelineAuthor.chat.chatId)
-  );
-}
 
 /** `values` in a fixed order, so the same set always compares equal. */
 function sortedBy<T>(values: readonly T[], key: (value: T) => string): T[] {
@@ -256,17 +229,6 @@ export interface NativeGrantRunFacts {
   >;
   /** A stored definition as the executor normalizes it. */
   normalize: (content: Pipeline) => unknown;
-  /**
-   * The run's schedule as stored: the user pipeline it runs, and who wrote
-   * it. `undefined` when the record is gone.
-   */
-  runRecord: (automationId: string) => Promise<
-    | {
-        pipelineId: string | undefined;
-        agentAuthor?: PipelineAgentAuthor;
-      }
-    | undefined
-  >;
 }
 
 async function defaultFacts(): Promise<NativeGrantRunFacts> {
@@ -277,8 +239,6 @@ async function defaultFacts(): Promise<NativeGrantRunFacts> {
     { normalizePipeline },
     { getDefaultShellTypeForCurrentProcess },
     { getDataDir },
-    { getAutomationsService },
-    { scheduledUserPipelineId },
   ] = await Promise.all([
     import('../pipelines/pipeline-local-metadata-store'),
     import('../pipelines/pipeline-service'),
@@ -286,8 +246,6 @@ async function defaultFacts(): Promise<NativeGrantRunFacts> {
     import('@canopy/execution-engine/pipelines/normalize-pipeline'),
     import('@canopy/execution-engine/node/pipelines/default-shell'),
     import('../lib/paths'),
-    import('./service'),
-    import('./workflow-schedules'),
   ]);
   return {
     metadata: (pipelineId) =>
@@ -326,37 +284,22 @@ async function defaultFacts(): Promise<NativeGrantRunFacts> {
       normalizePipeline(content, {
         defaultShell: getDefaultShellTypeForCurrentProcess(),
       }),
-    runRecord: async (automationId) => {
-      const activity =
-        await getAutomationsService().findActivityForBackgroundAuthorization(
-          automationId,
-        );
-      return activity
-        ? {
-            pipelineId: scheduledUserPipelineId(activity),
-            ...(activity.agentAuthor
-              ? { agentAuthor: activity.agentAuthor }
-              : {}),
-          }
-        : undefined;
-    },
   };
 }
 
 /**
  * The native grant a send step may honor, or `undefined`: only an
- * agent-originated run that a schedule of the granted pipeline started (a
- * person's, or one its agent author wrote, CAN-6065), of that pipeline
- * (never a child run), executing exactly the revision and content the grant
- * was minted for. Anything unreadable fails closed.
+ * agent-originated run that the grant's own automation started, of the
+ * pipeline that automation owns (never a child run), executing exactly the
+ * revision and content the grant was minted for. Anything unreadable fails
+ * closed.
  */
 export async function resolvePipelineNativeGrant(
   caller: Pick<
     PipelineHostActionCaller,
     'executionId' | 'pipelineId' | 'agentOrigin' | 'initiator'
   >,
-  /** Overrides for the stored facts, read from main otherwise. */
-  facts?: Partial<NativeGrantRunFacts>,
+  facts?: NativeGrantRunFacts,
 ): Promise<PipelineNativeGrant | undefined> {
   const { initiator, pipelineId, agentOrigin } = caller;
   if (
@@ -366,18 +309,13 @@ export async function resolvePipelineNativeGrant(
   )
     return undefined;
   try {
-    const read: NativeGrantRunFacts = { ...(await defaultFacts()), ...facts };
+    const read = facts ?? (await defaultFacts());
     const metadata = read.metadata(pipelineId);
     const grant = metadata.nativeGrant;
-    if (grant === undefined || metadata.agentAuthor === undefined)
-      return undefined;
-    // The run's own schedule, as stored now: it still runs this pipeline,
-    // and runs as the agent the grant is for.
-    const record = await read.runRecord(initiator.automationId);
     if (
-      record === undefined ||
-      record.pipelineId !== pipelineId ||
-      !runsAsAuthor(record.agentAuthor, metadata.agentAuthor)
+      grant === undefined ||
+      grant.automationId !== initiator.automationId ||
+      metadata.ownerAutomationId !== initiator.automationId
     )
       return undefined;
     const stored = read.stored(pipelineId);

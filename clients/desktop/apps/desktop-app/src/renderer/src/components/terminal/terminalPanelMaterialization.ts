@@ -9,8 +9,6 @@ import {
   useTerminalStore,
 } from '@/stores/terminalStore';
 import { ensureTerminalPanelVisible } from '@/lib/panels/terminal-panel-activation';
-import { isWebCoreScope } from '@/lib/chat-authority';
-import { layoutScopeServesPanelKind } from '@/lib/panels/scope-panel-kinds';
 
 const materializations = new Map<string, Promise<void>>();
 registerTerminalClientReset(() => materializations.clear());
@@ -24,14 +22,6 @@ export function ensureLegacyTerminalPanelsMaterialized(
   worktreeId: string,
   worktreeKey: string,
 ): Promise<void> {
-  // A cloud chat's terminals are its terminal client's. With them off, a
-  // panel still mounted while the cowork page closes it has nothing to load,
-  // and main must never be asked with the chat's ids (CAN-6175 R10).
-  if (
-    isWebCoreScope(worktreeId) &&
-    !layoutScopeServesPanelKind(worktreeKey, 'terminal')
-  )
-    return Promise.resolve();
   const existing = materializations.get(worktreeKey);
   if (existing) return existing;
 

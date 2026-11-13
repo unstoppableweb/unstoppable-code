@@ -83,8 +83,6 @@ class FakeWebCore implements CoreCoworkInvoker {
   selectionRevision = 7;
   selectedItemIds: string[] = ['skill:curated/review'];
   updateRefusal: CanopyErrorPayload | null = null;
-  /** What a pluginSelections save answers beside its receipt (CAN-6092). */
-  updateCapabilities: unknown = undefined;
 
   request(
     method: string,
@@ -143,9 +141,6 @@ class FakeWebCore implements CoreCoworkInvoker {
             revision: 0,
             outcome: 'applied',
             entityId: SCOPE.chatId,
-            ...(this.updateCapabilities === undefined
-              ? {}
-              : { capabilities: this.updateCapabilities }),
           },
         });
       }
@@ -171,34 +166,6 @@ class FakeWebCore implements CoreCoworkInvoker {
 }
 
 describe('cloud chat catalog over the web core (CAN-5972)', () => {
-  it("accepts a save's capability state beyond the 32 KiB JSON detail bound (CAN-6092)", async () => {
-    const core = new FakeWebCore();
-    const catalog = createCloudChatCatalog(core, SCOPE);
-    await catalog.refresh();
-    const pruned = Array.from({ length: 400 }, (_, index) => ({
-      kind: 'plugin',
-      marketplaceId: `marketplace-${index}`,
-      pluginName: `a-plugin-with-a-long-name-${index}`,
-    }));
-    expect(JSON.stringify(pruned).length).toBeGreaterThan(32_768);
-    core.updateCapabilities = {
-      capabilityBundles: {},
-      capabilityBundleStateVersion: 3,
-      outcome: 'staged',
-      capabilityPruned: pruned,
-      warnings: [],
-    };
-    await expect(
-      catalog.setSelections({
-        collectionIds: [],
-        skillRefs: [{ sourceId: 'curated', skillName: 'review' }],
-        pluginRefs: [],
-        mcpServerRefs: [],
-      }),
-    ).resolves.toBeUndefined();
-    expect(catalog.store.getState().selectionConflict).toBe(false);
-  });
-
   it('a capability selection writes through core.chat.update and re-reads on conflict', async () => {
     const core = new FakeWebCore();
     const logDev = jest.fn<void, [string]>();

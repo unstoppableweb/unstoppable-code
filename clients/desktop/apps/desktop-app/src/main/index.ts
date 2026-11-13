@@ -638,7 +638,6 @@ import { getExecutionHostPort } from './execution-host/utility-process-host';
 import { registerPluginHandlers } from './plugins';
 import { shutdownCodexPluginMaterializationWorker } from './plugins/codex-plugin-materialization-runner';
 import { startProviderPluginBackfill } from './plugins/provider-plugin-backfill';
-import { startCloudReachBack } from './mcp/cloud-reach-back/start';
 import {
   getCanopyPortalState,
   resumeCanopyPortalIfPossible,
@@ -663,10 +662,6 @@ import { getBackgroundExecutionContextRebinder } from './services/background-exe
 import { getChatStateService } from './services/chat-state-service';
 import { getDesktopInventorySyncService } from './services/desktop-inventory-sync-service';
 import { startOnboardingProfileSync } from './services/onboarding-profile-sync-service';
-import {
-  startLocalModelGatewayMigration,
-  startLocalModelGatewayPolicySync,
-} from './services/local-model-gateway-migration';
 import {
   startOrgEnforcedSettingsSync,
   stopOrgEnforcedSettingsSync,
@@ -922,12 +917,9 @@ let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
 let disposeOnboardingProfileSync: (() => void) | null = null;
-let disposeLocalModelGatewayPolicySync: (() => void) | null = null;
-let disposeLocalModelGatewayMigration: (() => void) | null = null;
 let childToolsSettlement: ReturnType<typeof startChildToolsSettlement> | null =
   null;
 let disposeProviderPluginBackfill: (() => void) | null = null;
-let disposeCloudReachBack: (() => void) | null = null;
 let disposeNativeAccountChangeTracking: (() => void) | null = null;
 let disposeProviderAccountConnectTelemetry: (() => void) | null = null;
 let aiGatewayModelCatalogService: AiGatewayModelCatalogService | null = null;
@@ -2033,9 +2025,6 @@ function unlockStartupWork(): void {
     },
   );
   disposeOnboardingProfileSync ??= startOnboardingProfileSync();
-  // A device AI gateway set up while signed out moves to the account that
-  // signs in, when that account has none.
-  disposeLocalModelGatewayMigration ??= startLocalModelGatewayMigration();
   // Flush turn ratings queued while signed out (CAN-1521). Sign-in is the
   // trigger that makes rate-as-guest → sign in work.
   disposeTurnFeedbackFlush ??= subscribeTurnFeedbackFlush();
@@ -2049,9 +2038,6 @@ function unlockStartupWork(): void {
   disposeProviderPluginBackfill ??= startProviderPluginBackfill({
     subscribe: subscribeConfirmedProviderAuth,
   });
-  // Cloud chats reach this computer's allowed MCP servers (CAN-6176); it
-  // holds nothing until a server is allowed.
-  disposeCloudReachBack ??= startCloudReachBack();
   // A sign-in to a different Claude or Codex account ends session-scoped AI
   // Credits routing (CAN-4200). Startup replay covers a switch made while the
   // app was closed.
@@ -2236,16 +2222,10 @@ async function cleanupRuntimeResources(
     stopOrgEnforcedSettingsSync();
     disposeOnboardingProfileSync?.();
     disposeOnboardingProfileSync = null;
-    disposeLocalModelGatewayMigration?.();
-    disposeLocalModelGatewayMigration = null;
-    disposeLocalModelGatewayPolicySync?.();
-    disposeLocalModelGatewayPolicySync = null;
     disposeCuratedMcpRefresh?.();
     disposeCuratedMcpRefresh = null;
     disposeProviderPluginBackfill?.();
     disposeProviderPluginBackfill = null;
-    disposeCloudReachBack?.();
-    disposeCloudReachBack = null;
     disposeNativeAccountChangeTracking?.();
     disposeNativeAccountChangeTracking = null;
     disposeProviderAccountConnectTelemetry?.();
@@ -5521,9 +5501,6 @@ void app.whenReady().then(async (): Promise<void> => {
   startOrgEnforcedSettingsSync(async (): Promise<void> => {
     await reprobeAndApplyCanopyCloudEnforcedSettings();
   });
-  // Signed out the re-probe never applies, so the device AI gateway reaches
-  // the catalog through its own pass, after the model registries above.
-  disposeLocalModelGatewayPolicySync ??= startLocalModelGatewayPolicySync();
   installOrgProjectsCapabilityRefresh({
     flags: {
       isEnabled: (): boolean =>

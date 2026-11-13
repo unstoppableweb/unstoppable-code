@@ -1,8 +1,5 @@
 import { useLayoutEffect } from 'react';
 import { bindTerminalClient } from '@canopy/app-state/terminal';
-import { cloudTerminalsEnabled } from '@/lib/web-core-scope-capabilities';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { createDesktopCloudTerminalClient } from './cloud-terminal-client';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   canopyCloudAccountIdentity,
@@ -12,23 +9,11 @@ import { ipcTerminalClient } from './ipc-terminal-client';
 
 /** Owns the local terminal binding before sibling renderer effects use it. */
 export function DesktopTerminalRuntime(): null {
-  const cloudTerminals = useFeatureFlagsStore((s) =>
-    cloudTerminalsEnabled(s.isEnabled),
-  );
   useLayoutEffect(() => {
-    const bind = (): (() => void) => {
-      if (!cloudTerminals) return bindTerminalClient(ipcTerminalClient);
-      const cloud = createDesktopCloudTerminalClient(ipcTerminalClient);
-      const unbind = bindTerminalClient(cloud.client);
-      return (): void => {
-        unbind();
-        cloud.dispose();
-      };
-    };
     // Local terminals remain available while signed out, offline, or waiting
     // for secure storage. Identity changes reset the old lifetime, then bind
     // the same local transport so existing consumers can reacquire their feeds.
-    let dispose = bind();
+    let dispose = bindTerminalClient(ipcTerminalClient);
     let active = true;
     let sequence = 0;
     let identity: string | null | undefined;
@@ -47,7 +32,7 @@ export function DesktopTerminalRuntime(): null {
           const nextIdentity = canopyCloudAccountIdentity(account);
           if (!initial && nextIdentity !== identity) {
             dispose();
-            dispose = bind();
+            dispose = bindTerminalClient(ipcTerminalClient);
           }
           identity = nextIdentity;
         })
@@ -69,6 +54,6 @@ export function DesktopTerminalRuntime(): null {
       );
       dispose();
     };
-  }, [cloudTerminals]);
+  }, []);
   return null;
 }

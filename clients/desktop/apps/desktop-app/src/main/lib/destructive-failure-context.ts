@@ -93,7 +93,6 @@ export function rememberDestructiveFailure(
         trigger: record.trigger,
         workspaceId: record.workspaceId,
         worktreeId: record.worktreeId,
-        createdAt: record.createdAt,
         directoryIdentity: null,
         state: record.state,
         steps: record.steps.map(({ phase, state, code }) => ({

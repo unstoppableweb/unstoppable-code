@@ -105,8 +105,6 @@ export function useOpenFileDiffTarget(
   projectId: string,
   worktreeId: string,
   filePath: string,
-  /** False where main has no git state for the scope: never fetched. */
-  enabled = true,
 ): OpenFileDiffTarget | null {
   const key = `${projectId}/${worktreeId}`;
   const changedFiles = useActivityStore((state) => state.changedFiles[key]);
@@ -122,7 +120,6 @@ export function useOpenFileDiffTarget(
   // stale entries indefinitely. Keep cached data visible while refreshing,
   // coalesce concurrent panels, and retry transient failures with backoff.
   useEffect(() => {
-    if (!enabled) return undefined;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = CHANGED_FILES_RETRY_INITIAL_MS;
@@ -157,7 +154,6 @@ export function useOpenFileDiffTarget(
   }, [
     diffStats?.deletions,
     diffStats?.insertions,
-    enabled,
     hasCommitsAhead,
     hasUncommittedChanges,
     key,

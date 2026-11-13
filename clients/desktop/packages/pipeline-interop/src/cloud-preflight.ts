@@ -1,6 +1,4 @@
-import { AGENT_MODEL_PREFIX } from '@canopy/protocol/agents';
 import type { Pipeline, ShellType, Step } from './document';
-import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 import { normalizePipelineScopes } from './scope';
 
 /*
@@ -280,9 +278,9 @@ const MESSAGES: Readonly<Record<CloudRunRefusalReason, string>> = {
   dynamic_model:
     "Cloud runs can't use a model chosen by an expression. Name the model in this step.",
   model_alias:
-    "Cloud runs can't use a model alias that names an Agent or has no default model. Name the model in this step, or run the workflow on This computer.",
+    "Cloud runs can't use this workflow's model aliases yet. Name the model in this step, or run the workflow on This computer.",
   plugin_collections:
-    "Cloud runs can't load this plugin collection. Remove it, or run the workflow on This computer.",
+    "Cloud runs can't use plugin collections yet. Remove the plugin collection, or run the workflow on This computer.",
   host_paths:
     "Cloud runs can't attach files to a message yet. Put the text in text or text_file, or run the workflow on This computer.",
   host_inputs:
@@ -388,106 +386,32 @@ function checkHostAction(name: string, at: StepAt, refuse: Refuse): void {
     refuse('host_paths', 'R11', at, DESKTOP_FILES_MESSAGE);
   else if (input.attachments !== undefined) refuse('host_paths', 'G6', at);
   if (SEND_APP_RESOLVED_INPUTS.some((key) => input[key] !== undefined))
-    refuse('host_inputs', 'CP-32', at);
+    refuse('host_inputs', 'CP-24', at);
 }
 
 /**
- * What a cloud run resolves a step's model alias to (CAN-6439): its inline
- * default's base model and the plugin collection it adds. `undefined` when
- * `model` names no alias of the workflow; `null` for an alias a cloud run
- * can't resolve: one that names an Agent, whose definition lives on a
- * computer, or one with no default, which only a desktop preference fills.
- * The web core resolves the rest before the run starts.
- */
-export function cloudModelAliasOf(
-  pipeline: Pick<Pipeline, 'model_aliases'>,
-  model: string,
-):
-  | { readonly base: string; readonly pluginCollectionId?: string }
-  | null
-  | undefined {
-  const alias = pipeline.model_aliases?.find(
-    // Normalization trims alias ids, which the executor then resolves.
-    (candidate) => candidate.id.trim() === model.trim(),
-  );
-  if (alias === undefined) return undefined;
-  const defaults = alias.defaults;
-  if (defaults === undefined || 'agent_id' in defaults) return null;
-  const written = String(defaults.base).trim();
-  // A built-in `$` alias names its model, as pipeline normalization
-  // resolves it, so the host resolves the alias to a model it knows.
-  const base = Object.prototype.hasOwnProperty.call(
-    STATIC_MODEL_REFERENCE_ALIASES,
-    written,
-  )
-    ? (STATIC_MODEL_REFERENCE_ALIASES[written] ?? written)
-    : written;
-  if (base === '' || base.startsWith(AGENT_MODEL_PREFIX)) return null;
-  const collection = defaults.plugin_collection_id?.trim();
-  return {
-    base,
-    ...(collection !== undefined &&
-      collection !== '' && {
-        pluginCollectionId: collection,
-      }),
-  };
-}
-
-/**
- * The model actions that take a model alias or a plugin collection of their
- * own on the pipeline host (`DAEMON_ALIAS_MODEL_ACTIONS`, CAN-5832); the host
- * parity golden keeps them equal.
- */
-export const CLOUD_RUN_ALIAS_MODEL_ACTIONS: ReadonlySet<string> = new Set([
-  'agent-prompt',
-  'agent-resume',
-]);
-
-/** A step's alias or collection on a model action the host doesn't take them on. */
-const ALIAS_ACTION_MESSAGE =
-  'Cloud runs use model aliases only in agent-prompt and agent-resume steps. Name the model in this step, or run the workflow on This computer.';
-const COLLECTION_ACTION_MESSAGE =
-  'Cloud runs load a plugin collection only in agent-prompt and agent-resume steps. Remove it from this step, or run the workflow on This computer.';
-/** A step's collection the workflow doesn't declare, which fails at start on desktop too. */
-const UNDECLARED_COLLECTION_MESSAGE =
-  "This step names a plugin collection the workflow doesn't declare. Add it to plugin_collections, or remove it from this step.";
-
-/**
- * A model step's checks, as the host makes them. Plugin collections and
- * inline model aliases are the web core's to resolve before the run starts
- * (CAN-6439); the host takes them on agent-prompt and agent-resume steps
- * only, a composite's through the model step inside it.
- * `cloud-model-preflight` lists a step that loads a collection on a Codex
- * model, which the host refuses (CAN-6012).
+ * A model step's checks, as the host makes them. A composite step's own
+ * `plugin_collection_id` reaches no step inside it, so only its `model` is
+ * checked.
  */
 function checkModelAction(
   pipeline: Pipeline,
   at: StepAt,
   refuse: Refuse,
-  action: string,
   composite: boolean,
 ): void {
   const input = at.step.with ?? {};
-  const model = input.model === undefined ? '' : String(input.model);
-  // A composite's own plugin collection reaches none of its steps.
-  const collection = composite ? undefined : input.plugin_collection_id;
-  if (collection !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
-    refuse('plugin_collections', 'CP-25', at, COLLECTION_ACTION_MESSAGE);
-  else if (
-    collection !== undefined &&
-    !pipeline.plugin_collections?.some(
-      ({ id }) => id.trim() === String(collection).trim(),
-    )
-  )
-    refuse('plugin_collections', 'CP-25', at, UNDECLARED_COLLECTION_MESSAGE);
-  if (isExpression(model)) {
-    refuse('dynamic_model', 'G4', at);
+  if (
+    (pipeline.plugin_collections?.length ?? 0) > 0 ||
+    (!composite && input.plugin_collection_id !== undefined)
+  ) {
+    refuse('plugin_collections', 'CP-25', at);
     return;
   }
-  const alias = cloudModelAliasOf(pipeline, model);
-  if (alias === null) refuse('model_alias', 'CP-25', at);
-  else if (alias !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
-    refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
+  const model = input.model === undefined ? '' : String(input.model);
+  if (isExpression(model)) refuse('dynamic_model', 'G4', at);
+  else if (pipeline.model_aliases?.some((alias) => alias.id === model.trim()))
+    refuse('model_alias', 'CP-24', at);
 }
 
 function checkStep(
@@ -552,20 +476,14 @@ function checkStep(
   }
   if (CLOUD_RUN_HOST_ACTIONS.has(name)) checkHostAction(name, at, refuse);
   else if (CLOUD_RUN_PORTABLE_MODEL_ACTIONS.has(name))
-    checkModelAction(pipeline, at, refuse, name, false);
+    checkModelAction(pipeline, at, refuse, false);
   else if (
     Object.prototype.hasOwnProperty.call(
       CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
       name,
     )
   )
-    checkModelAction(
-      pipeline,
-      at,
-      refuse,
-      CLOUD_RUN_COMPOSITE_MODEL_ACTIONS[name]?.action ?? '',
-      true,
-    );
+    checkModelAction(pipeline, at, refuse, true);
   else if (step.log_format_hint === 'agent') refuse('model_action', 'G3', at);
 }
 

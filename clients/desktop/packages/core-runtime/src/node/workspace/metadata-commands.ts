@@ -21,7 +21,6 @@ import {
   type ScriptValue,
 } from '@canopy/protocol/scripts';
 import { isProjectStartPage } from '@canopy/protocol/start-page';
-import { CanopyOperationError } from '../../runtime/errors';
 import type {
   CanopyDispatcherInstructionHandlerMap,
   CanopyHandlerContext,
@@ -187,27 +186,9 @@ function startPageChange(
   return { kind: 'set', startPage };
 }
 
-/** A cloud project's sandbox host settings, which only the web core saves (CAN-6114). */
-const CLOUD_PROJECT_FIELDS = [
-  'hostModeEnabled',
-  'hostPorts',
-  'egressAllowedHosts',
-] as const;
-
 function updatePatch(
   patch: CoreWorkspaceUpdateParams['patch'],
 ): WorkspaceMetadataPatch<string> {
-  // Refused rather than dropped: the patch below keeps only the fields W5 stores.
-  const cloud = CLOUD_PROJECT_FIELDS.filter(
-    (field) => patch[field] !== undefined,
-  );
-  if (cloud.length > 0)
-    throw new CanopyOperationError({
-      kind: 'capability_unavailable',
-      message: "A cloud project's host settings are unavailable on this host.",
-      details: { reason: 'unserved', fields: cloud },
-      retry: { kind: 'never' },
-    });
   const { name, color, pinned, collapsed, itemSortMode, alwaysShow } = patch;
   const startPage = startPageChange(patch.startPage);
   return {

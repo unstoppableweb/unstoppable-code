@@ -14,9 +14,7 @@ import {
 import type { LiveChat } from './live-follower';
 import { clearTaskCreations } from './task-creations';
 import { useWebCoreLiveReplyStore } from './live-replies';
-import { cloudChatBackgroundProcesses } from './agent-task-processes';
 import type { CoreCoworkInvoker } from '@canopy/app-state/core-cowork';
-import type { BackgroundProcess } from '@canopy/desktop-shared/types';
 import {
   clearWebCoreModelCatalog,
   loadWebCoreModelCatalog,
@@ -98,29 +96,6 @@ const relayInvoker = (): CoreCoworkInvoker | null =>
     ? createRelayCoreCoworkInvoker(window.canopyCore)
     : null;
 
-/**
- * Where a web core chat's background processes go: the activity tray. The
- * renderer wires it where it installs the cloud chat runtime, so this module
- * never imports the activity store, whose import chain reaches the chat store
- * that imports this backend.
- */
-export interface WebCoreAgentTasksPublisher {
-  publish(
-    scope: { readonly projectId: string; readonly worktreeId: string },
-    chatId: string,
-    processes: readonly BackgroundProcess[],
-  ): void;
-}
-
-let agentTasksPublisher: WebCoreAgentTasksPublisher | null = null;
-
-/** Sets, or with `null` clears, where web core agent tasks are published. */
-export function setWebCoreAgentTasksPublisher(
-  publisher: WebCoreAgentTasksPublisher | null,
-): void {
-  agentTasksPublisher = publisher;
-}
-
 let backend: ChatBackend | null = null;
 let core: WebCoreChatBackendCore | null = null;
 
@@ -139,22 +114,6 @@ export function webCoreChatBackend(): ChatBackend {
       ),
     uploadAttachment: (target, file) =>
       window.api.cloudChats.uploadAttachment(target, file),
-    publishAgentTasks: (scope, chatId, tasks) => {
-      if (agentTasksPublisher === null) {
-        // A debug note, not an error: with no publisher there is no tray.
-        // eslint-disable-next-line no-console
-        console.debug(
-          'Dropped web core agent tasks: no publisher is installed',
-          chatId,
-        );
-        return;
-      }
-      agentTasksPublisher.publish(
-        scope,
-        chatId,
-        cloudChatBackgroundProcesses(chatId, tasks),
-      );
-    },
   });
   backend = createWebCoreChatBackend(core);
   return backend;

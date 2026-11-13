@@ -386,20 +386,6 @@ export const AI_CREDITS_WORK_OWNER_HEADER = 'x-canopy-work-owner';
 export const AI_CREDITS_ORG_PROJECT_HEADER = 'x-canopy-org-project';
 
 /**
- * The route id (`route_…`) a cloud workflow run's model step calls the LLM
- * proxy under (CP-68). The web core issued it to the run's AI Credits
- * session, so the proxy attributes the step's usage to its run, job, step and
- * attempt. Not a credential; stripped before forwarding.
- */
-export const AI_CREDITS_PIPELINE_ROUTE_HEADER = 'x-canopy-pipeline-route';
-
-/**
- * The prefix of a cloud workflow run's AI Credits session id (CP-68):
- * `pipeline-run:<operationId>`. Its owner is the run's owner.
- */
-export const AI_CREDITS_PIPELINE_RUN_SESSION_PREFIX = 'pipeline-run:';
-
-/**
  * Set to `1` on Codex Responses requests from a session running multi-agent
  * v2. The proxy keeps such a request on OpenAI, because only OpenAI can read
  * the encrypted task a v2 child receives. Stripped before forwarding.

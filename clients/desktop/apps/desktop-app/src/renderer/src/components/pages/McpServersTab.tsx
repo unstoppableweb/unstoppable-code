@@ -38,7 +38,6 @@ import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows
 import {
   type AccountMcpClientSetup,
   type AccountMcpOAuthClientCredentials,
-  mcpServerCommandRefusal,
 } from '@canopy/protocol/mcp-servers';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -864,9 +863,6 @@ export function McpServerDialog({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [command, setCommand] = useState('');
-  // Whether the person has finished with the Command field, by leaving it or
-  // pressing Save: only then does it say why a command can't be used.
-  const [commandChecked, setCommandChecked] = useState(false);
   const [args, setArgs] = useState('');
   const [url, setUrl] = useState('');
   const [headers, setHeaders] = useState<Record<string, SecretValueInput>>({});
@@ -1086,7 +1082,6 @@ export function McpServerDialog({
       setName(curated?.name ?? cloud?.displayName ?? '');
       setDescription(curated?.shortDescription ?? '');
       setCommand('');
-      setCommandChecked(false);
       setArgs('');
       const reopenedUrl = curated?.urlOptions?.find(
         (option): boolean => option.url === initialEndpointUrl,
@@ -1172,7 +1167,6 @@ export function McpServerDialog({
         setName(server.definition.name);
         setDescription(server.definition.description);
         setCommand(server.definition.command ?? '');
-        setCommandChecked(false);
         setArgs((server.definition.args ?? []).join(' '));
         setUrl(server.definition.url ?? '');
         setHeaders(server.definition.headers ?? {});
@@ -1319,13 +1313,6 @@ export function McpServerDialog({
   const handleSave = async (): Promise<void> => {
     if (!name.trim() || (serverType === 'http' && !effectiveAuthHandler))
       return;
-    if (
-      serverType === 'command' &&
-      mcpServerCommandRefusal(command.trim()) !== null
-    ) {
-      setCommandChecked(true);
-      return;
-    }
     if (initialCurated && isCreate) {
       const setupError = validateCuratedSetup(initialCurated, url, oauthForm);
       if (setupError) {
@@ -1922,9 +1909,6 @@ export function McpServerDialog({
       setSavedCloudToken(undefined);
     }
   };
-  const commandRefusal = commandChecked
-    ? mcpServerCommandRefusal(command.trim())
-    : null;
   const canSave =
     name.trim().length > 0 &&
     !saving &&
@@ -2812,19 +2796,13 @@ export function McpServerDialog({
   );
   const commandFields = serverType === 'command' && (
     <>
-      <DialogFormField
-        label="Command"
-        htmlFor={`${fieldId}-command`}
-        error={commandRefusal}
-        dataTestId="mcp-server-command-field"
-      >
+      <DialogFormField label="Command" htmlFor={`${fieldId}-command`}>
         <TextInput
           id={`${fieldId}-command`}
           value={command}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
             setCommand(e.target.value)
           }
-          onBlur={(): void => setCommandChecked(true)}
           placeholder="npx"
         />
       </DialogFormField>

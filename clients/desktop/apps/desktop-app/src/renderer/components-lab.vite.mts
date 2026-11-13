@@ -1,7 +1,6 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
-import { componentsLabScriptedPointer } from './components-lab-pointer.mts';
 
 const configDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(configDir, '../../../..');
@@ -43,7 +42,23 @@ export default defineConfig({
     jsx: 'automatic',
   },
   plugins: [
-    componentsLabScriptedPointer(),
+    {
+      // The lab's stageshow stages move an authored cursor, not the real
+      // pointer: the kit marks what it hovers `data-hover` and what it
+      // presses `data-pressed`. Matching those marks wherever the compiled
+      // CSS says `:hover` or `:active` lets the real shared components show
+      // their own hover and press under it. Lab only; production CSS never
+      // passes through this config.
+      name: 'components-lab-scripted-pointer',
+      enforce: 'post',
+      transform(code, id) {
+        if (!/\.css(?:$|\?)/.test(id)) return null;
+        // An escaped colon is part of a class name, never a pseudo-class.
+        return code
+          .replace(/(?<!\\):hover\b/g, ':is(:hover,[data-hover])')
+          .replace(/(?<!\\):active\b/g, ':is(:active,[data-pressed])');
+      },
+    },
     {
       name: 'components-lab-root',
       configureServer(server) {

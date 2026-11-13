@@ -527,12 +527,6 @@ const DEFERRED_TOOLS_CODE_MODE_DRAIN_MS = 250;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_INTERVAL_MS = 100;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_CHARS = 16 * 1024;
 const CODEX_PROCESS_RECOVERY_MAX_ATTEMPTS = 3;
-/**
- * The `thread/sample` prompt for a next prompt suggestion: the person's own
- * likely next message, short, in their words, or nothing.
- */
-const CODEX_PROMPT_SUGGESTION_PROMPT =
-  'Predict the next message the user will send in this conversation. Reply with only that message, written as the user would type it, in under 20 words. Do not use tools. If there is no clear next step, reply with nothing.';
 const CODEX_PROCESS_RECOVERY_RETRY_DELAYS_MS: readonly number[] = [0, 250, 750];
 
 function recoveryDelay(ms: number): Promise<void> {
@@ -3976,30 +3970,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
   getThreadId(): string | undefined {
     return this.threadId;
-  }
-
-  /**
-   * Codex's prediction of the person's next message after a completed turn
-   * (the `prompt-suggestions` Labs experiment), from one `thread/sample` on
-   * the turn's cached context at low effort. Null when Codex has none. Rejects
-   * when Codex refuses the sample, as it does once a newer turn has started.
-   */
-  async samplePromptSuggestion(input: {
-    threadId: string;
-    turnId: string;
-  }): Promise<string | null> {
-    const response = await this.connection.request('thread/sample', {
-      threadId: input.threadId,
-      expectedTurnId: input.turnId,
-      prompt: CODEX_PROMPT_SUGGESTION_PROMPT,
-      effort: 'low',
-    });
-    // ThreadSampleResponse: `text` is null when Codex attempted a tool call
-    // or replied with nothing.
-    const text =
-      (isRecord(response) ? readString(response, 'text') : undefined)?.trim() ??
-      '';
-    return text.length > 0 ? text : null;
   }
 
   getIngestionLag(): CodexIngestionLagSnapshot | undefined {

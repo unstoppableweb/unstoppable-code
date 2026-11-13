@@ -42,7 +42,6 @@ import type {
   SharedContainerType,
 } from '@canopy/protocol/shared-containers';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
-import { useSharedContainerOwnerDeparturesStore } from '@/stores/sharedContainerOwnerDeparturesStore';
 import { useSharedContainersStore } from '@/stores/sharedContainersStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -1698,7 +1697,6 @@ export function initializeSharedContainerReplicasStore(): () => void {
     // Any inbox signal, including this device's own remove or restore
     // (`local`), can move a share into or out of the removed list.
     void useSharedContainerReplicasStore.getState().loadRemoved();
-    void useSharedContainerOwnerDeparturesStore.getState().load();
   };
   const unsubscribeInboxChanges = useSharedContainerReplicasStore
     .getState()
@@ -1735,14 +1733,6 @@ export function initializeSharedContainerReplicasStore(): () => void {
     ].join('\0');
     if (nextFingerprint === organizationFingerprint) return;
     organizationFingerprint = nextFingerprint;
-    // Before anything that closes a viewer, and never awaited: a slow notice
-    // request must not hold up the close of a revoked copy. One account-wide
-    // read, because a recipient keeps notices from an organization they left.
-    if (accountState.accountKind === 'connected') {
-      void useSharedContainerOwnerDeparturesStore.getState().load();
-    } else if (accountState.accountKind !== 'unknown') {
-      useSharedContainerOwnerDeparturesStore.getState().reset();
-    }
     const store = useSharedContainerReplicasStore.getState();
     // Only an organization the open share actually belongs to leaving the
     // authorized set is a reason to close it. Membership churn elsewhere, or a
@@ -1873,7 +1863,6 @@ export function initializeSharedContainerReplicasStore(): () => void {
     const store = useSharedContainerReplicasStore.getState();
     store.closeViewer();
     store.reset();
-    useSharedContainerOwnerDeparturesStore.getState().reset();
     // An account refresh may resolve to the same organization snapshot and
     // therefore produce no later store transition for this subscriber. Start
     // a fresh listing now; if hydration changes the account snapshot, that
@@ -1896,6 +1885,5 @@ export function initializeSharedContainerReplicasStore(): () => void {
     const store = useSharedContainerReplicasStore.getState();
     store.closeViewer();
     store.reset();
-    useSharedContainerOwnerDeparturesStore.getState().reset();
   };
 }

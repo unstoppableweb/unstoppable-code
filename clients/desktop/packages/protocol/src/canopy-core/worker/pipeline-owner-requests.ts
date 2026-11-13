@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { canopyJsonValueSchemaWithin } from '../errors';
-import { LedgerErrorDetailsSchema } from '../core/ledger/schemas';
 
 /*
  * Pipeline owner requests (CAN-5095): what a model step asks the core that
@@ -21,13 +20,6 @@ import { LedgerErrorDetailsSchema } from '../core/ledger/schemas';
  * owner's plans: desktop's tracked plans, or the web core's cloud plans. The
  * owner knows the run's scope, so a request names no workspace or path, and
  * it refuses a plan id that is not the run's own.
- *
- * `owner.mcp.*` (CAN-6168) present a plugin MCP server's OAuth credential to
- * one upstream request without the token ever being stored in the worker. The
- * worker names a plugin server and the hash of the declaration it read; the
- * owner reads the declaration itself, refuses any difference, and decides the
- * credential and upstream from its own read. One authorization's header
- * returns host-locally in _execution.pipelineOwnerValues, never here.
  */
 
 const id = z.string().min(1).max(512);
@@ -54,14 +46,10 @@ export const WORKER_PIPELINE_OWNER_ACTIONS = [
   'owner.ledger.codexToolAuthorize',
   'owner.ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose',
-  'owner.ledger.operation',
   'owner.claude.modAdmission',
   'owner.model.agentAlias',
   'owner.plan.create',
   'owner.plan.update',
-  'owner.mcp.bind',
-  'owner.mcp.authorize',
-  'owner.mcp.rejected',
 ] as const;
 export type WorkerPipelineOwnerAction =
   (typeof WORKER_PIPELINE_OWNER_ACTIONS)[number];
@@ -71,13 +59,9 @@ export type WorkerPipelineOwnerAction =
  * worker with a remote owner answers them itself and never raises them.
  * `owner.claude.modAdmission` reads the Claude config folder on the host the
  * step runs on, and its answer carries that folder's install paths.
- * `owner.mcp.*` present a credential the host's own app holds (CAN-6168).
  */
 export const WORKER_PIPELINE_LOCAL_OWNER_ACTIONS = [
   'owner.claude.modAdmission',
-  'owner.mcp.bind',
-  'owner.mcp.authorize',
-  'owner.mcp.rejected',
 ] as const satisfies readonly WorkerPipelineOwnerAction[];
 export type WorkerPipelineLocalOwnerAction =
   (typeof WORKER_PIPELINE_LOCAL_OWNER_ACTIONS)[number];
@@ -97,27 +81,6 @@ const toolJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 );
 const toolSpec = canopyJsonValueSchemaWithin(65_536);
-
-/**
- * The Ledger operations a remote owner serves for an open attempt
- * (`owner.ledger.operation`, CAN-6422): what the Feed tools runtime
- * dispatches when it runs beside the step instead of in its owner.
- */
-export const WORKER_PIPELINE_OWNER_LEDGER_OPERATIONS = [
-  'core.ledger.entries.search',
-  'core.ledger.entry.get',
-  'core.ledger.owners.list',
-  'core.ledger.entry.add',
-  'core.ledger.entry.update',
-] as const;
-export type WorkerPipelineOwnerLedgerOperation =
-  (typeof WORKER_PIPELINE_OWNER_LEDGER_OPERATIONS)[number];
-
-/** The longest Ledger operation params or result that crosses, as UTF-8 JSON. */
-export const WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES = 1024 * 1024;
-const ledgerJson = canopyJsonValueSchemaWithin(
-  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
-);
 
 /** The longest plan content a plan request carries, as UTF-8: a shared plan's limit. */
 export const WORKER_PIPELINE_OWNER_PLAN_CONTENT_MAX_BYTES = 1024 * 1024;
@@ -170,16 +133,6 @@ const agentModelId = z
   .min(1)
   .max(512)
   .refine((value) => value.startsWith('agent_model_'));
-
-/** An owner's opaque handle on one MCP route it bound for one run (CAN-6168). */
-export const WORKER_PIPELINE_MCP_ROUTE_REF_PATTERN =
-  /^mcpr1_[A-Za-z0-9_-]{22}$/;
-/** An owner's handle on one authorization it presented (CAN-6168). */
-export const WORKER_PIPELINE_MCP_GRANT_ID_PATTERN = /^mcpg1_[A-Za-z0-9_-]{22}$/;
-/** SHA-256 of a plugin MCP server's declaration, as lowercase hex. */
-export const WORKER_PIPELINE_MCP_CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
-const mcpRouteRef = z.string().regex(WORKER_PIPELINE_MCP_ROUTE_REF_PATTERN);
-const mcpGrantId = z.string().regex(WORKER_PIPELINE_MCP_GRANT_ID_PATTERN);
 
 /** At most this much plugin selection JSON crosses for one Agent (CAN-5832). */
 export const WORKER_PIPELINE_OWNER_AGENT_PLUGINS_MAX_BYTES = 65_536;
@@ -282,19 +235,6 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
     action: z.literal('owner.ledger.codexToolsDispose'),
     toolsKey: id,
   }),
-  /**
-   * One Ledger operation for an open attempt, as the attempt's agent
-   * (CAN-6422). Only a remote owner receives it: the runner's Feed tools
-   * dispatch through it. The owner validates `params` with the operation's
-   * own params schema, and acts as the attempt's binding, never as anyone
-   * the params name.
-   */
-  z.strictObject({
-    action: z.literal('owner.ledger.operation'),
-    attemptKey: id,
-    operation: z.enum(WORKER_PIPELINE_OWNER_LEDGER_OPERATIONS),
-    params: ledgerJson,
-  }),
   z.strictObject({
     action: z.literal('owner.claude.modAdmission'),
     cwd: hostPath,
@@ -327,28 +267,6 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
     content: planContent.optional(),
     approve: z.boolean(),
   }),
-  /**
-   * Binds the OAuth credential of one plugin HTTP MCP server for the run
-   * (CAN-6168). Names the server and the hash of the declaration the worker
-   * read; nothing else, so no OAuth definition, URL or client crosses.
-   */
-  z.strictObject({
-    action: z.literal('owner.mcp.bind'),
-    marketplaceId: id,
-    pluginName: id,
-    serverName: z.string().min(1).max(256),
-    contentHash: z.string().regex(WORKER_PIPELINE_MCP_CONTENT_HASH_PATTERN),
-  }),
-  /** One authorization for one upstream request on a bound route. */
-  z.strictObject({
-    action: z.literal('owner.mcp.authorize'),
-    routeRef: mcpRouteRef,
-  }),
-  /** The upstream answered 401 to the authorization `grantId` presented. */
-  z.strictObject({
-    action: z.literal('owner.mcp.rejected'),
-    grantId: mcpGrantId,
-  }),
 ] as const;
 
 /** What core answers an owner request with, apart from host-local values. */
@@ -362,8 +280,6 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     modelGatewayRouted: z.boolean(),
     accountProxyRouted: z.boolean(),
     accountProxyConnectionId: id.optional(),
-    /** A remote owner's route (P9, CP-68): the worker resolves it to the step's provider environment. */
-    routeId: routeId.optional(),
   }),
   z.strictObject({
     kind: z.literal('model.routing'),
@@ -427,17 +343,6 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('ledger.codexToolsDispose') }),
   z.strictObject({
-    kind: z.literal('ledger.operation'),
-    /** The operation's result, or the Ledger's typed refusal of it. */
-    outcome: z.discriminatedUnion('kind', [
-      z.strictObject({ kind: z.literal('result'), result: ledgerJson }),
-      z.strictObject({
-        kind: z.literal('refused'),
-        error: LedgerErrorDetailsSchema,
-      }),
-    ]),
-  }),
-  z.strictObject({
     kind: z.literal('claude.modAdmission'),
     /** Null while Claude Mod admission is off for this app. */
     context: ClaudeModAdmissionContextSchema.nullable(),
@@ -464,17 +369,6 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     planId: id.nullable(),
   }),
   z.strictObject({ kind: z.literal('plan.update') }),
-  z.strictObject({
-    kind: z.literal('mcp.bind'),
-    /** Null when the owner refuses: the step does not reach that server. */
-    routeRef: mcpRouteRef.nullable(),
-  }),
-  z.strictObject({
-    kind: z.literal('mcp.authorize'),
-    /** Null when the owner holds no usable credential; the header is a host-local value. */
-    grantId: mcpGrantId.nullable(),
-  }),
-  z.strictObject({ kind: z.literal('mcp.rejected') }),
 ]);
 export type WorkerPipelineOwnerResult = z.output<
   typeof WorkerPipelineOwnerResultSchema
@@ -499,14 +393,10 @@ export const WORKER_PIPELINE_OWNER_RESULT_KIND: Readonly<
   'owner.ledger.codexToolAuthorize': 'ledger.codexToolAuthorize',
   'owner.ledger.codexToolExecute': 'ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose': 'ledger.codexToolsDispose',
-  'owner.ledger.operation': 'ledger.operation',
   'owner.claude.modAdmission': 'claude.modAdmission',
   'owner.model.agentAlias': 'model.agentAlias',
   'owner.plan.create': 'plan.create',
   'owner.plan.update': 'plan.update',
-  'owner.mcp.bind': 'mcp.bind',
-  'owner.mcp.authorize': 'mcp.authorize',
-  'owner.mcp.rejected': 'mcp.rejected',
 });
 
 const OWNER_ACTIONS: ReadonlySet<string> = new Set(

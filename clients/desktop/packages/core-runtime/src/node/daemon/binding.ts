@@ -6,7 +6,6 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type {
   PlatformEndpointListener,
-  PlatformEndpointPathIdentity,
   PlatformNamedPipeAddress,
   PlatformServices,
   PlatformUnixSocketAddress,
@@ -58,51 +57,6 @@ async function publishedDescriptor(
   }
 }
 
-/** Decision only: caller holds the startup claim and revalidates before unlink. */
-export async function assertCanopyDaemonEndpointStale({
-  descriptorPath,
-  address,
-  identity,
-  supervision,
-  recoveredEndpointBind = false,
-  signal,
-}: {
-  readonly descriptorPath: string;
-  readonly address: PlatformUnixSocketAddress;
-  readonly identity: PlatformEndpointPathIdentity;
-  readonly supervision: PlatformServices['supervision'];
-  readonly recoveredEndpointBind?: boolean;
-  readonly signal?: AbortSignal;
-}): Promise<void> {
-  // Refusal also occurs with a live full backlog; it is never owner-death proof.
-  const previous = await publishedDescriptor(descriptorPath);
-  // Owner death alone could authorize unlinking a later listener's live socket.
-  const published =
-    previous?.endpoint.kind === 'socket' &&
-    previous.endpoint.path === address.path &&
-    previous.socketIdentity?.device === String(identity.device) &&
-    previous.socketIdentity.inode === String(identity.inode);
-  if (published) {
-    const owner = await supervision.inspectProcess({
-      pid: previous.pid,
-      ...(signal && { signal }),
-    });
-    if (
-      owner.state === 'unverifiable' ||
-      (owner.state === 'running' &&
-        owner.startIdentity === previous.startIdentity)
-    )
-      throw new Error('Stale owner unproven; offline repair required.');
-  } else if (!recoveredEndpointBind) {
-    throw new Error(
-      previous
-        ? 'Foreign endpoint; offline repair required.'
-        : 'Stale owner unproven; offline repair required.',
-    );
-  }
-  // Otherwise only the departed marker's lineage could bind here, and it never published.
-}
-
 /** Binds under an already-held claim; the caller owns claim release and discovery publication. */
 export async function bindCanopyDaemonEndpoint({
   dataRoot,
@@ -137,13 +91,32 @@ export async function bindCanopyDaemonEndpoint({
     if (observed.state === 'ambiguous')
       throw new Error('Endpoint identity is ambiguous.');
     if (observed.state === 'refused') {
-      await assertCanopyDaemonEndpointStale({
-        descriptorPath: join(directory, 'core.json'),
-        address,
-        identity: observed.identity,
-        supervision: platform.supervision,
-        recoveredEndpointBind,
-      });
+      // Refusal also occurs with a live full backlog; it is never owner-death proof.
+      const previous = await publishedDescriptor(join(directory, 'core.json'));
+      // Owner death alone could authorize unlinking a later listener's live socket.
+      const published =
+        previous?.endpoint.kind === 'socket' &&
+        previous.endpoint.path === address.path &&
+        previous.socketIdentity?.device === String(observed.identity.device) &&
+        previous.socketIdentity.inode === String(observed.identity.inode);
+      if (published) {
+        const owner = await platform.supervision.inspectProcess({
+          pid: previous.pid,
+        });
+        if (
+          owner.state === 'unverifiable' ||
+          (owner.state === 'running' &&
+            owner.startIdentity === previous.startIdentity)
+        )
+          throw new Error('Stale owner unproven; offline repair required.');
+      } else if (!recoveredEndpointBind) {
+        throw new Error(
+          previous
+            ? 'Foreign endpoint; offline repair required.'
+            : 'Stale owner unproven; offline repair required.',
+        );
+      }
+      // Otherwise only the departed marker's lineage could bind here, and it never published.
     }
     if (
       observed.state === 'refused' &&

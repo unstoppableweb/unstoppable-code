@@ -117,8 +117,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     appWindowReload: 'local',
     // relaunches this machine's app
     appWindowRestart: 'local',
-    // the dictionary for a selection in this machine's window
-    appWindowLookUpSelection: 'local',
     // unsaved-edit report for this machine's main window
     appWindowSetUnsavedChanges: 'local',
     // asks this machine's main window before close or quit
@@ -263,8 +261,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     sharedContainersReadForkProvenance: 'tunnel',
     sharedContainersDismiss: 'tunnel',
     sharedContainersListDismissed: 'tunnel',
-    sharedContainersListOwnerDepartures: 'tunnel',
-    sharedContainersDismissOwnerDeparture: 'tunnel',
     sharedContainersRestore: 'tunnel',
     sharedContainersRetry: 'tunnel',
     sharedContainersClose: 'tunnel',
@@ -317,8 +313,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // entities Portal's worktree snapshot carries (CAN-5985).
     worktreeActivityEntities: 'tunnel',
     worktreeCheckRemovalAdmission: 'tunnel',
-    // CAN-6476: local diagnosis contract; paired UI wiring follows in CAN-6479.
-    worktreeRecoveryList: 'blocked',
     worktreeDiscardDescribe: 'tunnel',
     worktreeDiscard: 'tunnel',
     workspaceDeleteDiscardDescribe: 'tunnel',
@@ -666,15 +660,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     settingsValidateLinearToken: 'tunnel',
     // returns raw secret/API key to caller
     modelGatewayLoadCredential: 'blocked',
-    // The device AI gateway's config belongs to this computer: a controller
-    // never reads or edits it. Key save and validate below tunnel as for any
-    // gateway the host routes, so a paired controller can set the key for the
-    // host's active Personal gateway, device or account, but never read it.
-    localModelGatewayRead: 'blocked',
-    localModelGatewayUpdate: 'blocked',
-    localModelGatewayConnect: 'blocked',
-    localModelGatewayChanged: 'blocked',
-    localModelGatewayMigrationConflict: 'blocked',
     modelGatewaySaveCredential: 'tunnel',
     modelGatewayValidateCredential: 'tunnel',
     modelGatewayCredentialChanged: 'tunnel',
@@ -1250,7 +1235,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     repoRulesScan: 'blocked',
     repoRulesApply: 'blocked',
     repoRulesStatus: 'blocked',
-    repoRulesCheck: 'blocked',
     repoRulesPreview: 'blocked',
     editorSetupPresence: 'blocked',
     // Read-only menus and the picker catalog Portal's executor serves; the

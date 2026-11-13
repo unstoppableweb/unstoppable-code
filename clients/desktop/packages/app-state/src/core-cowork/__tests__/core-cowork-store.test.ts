@@ -415,40 +415,6 @@ describe('core cowork store', () => {
     ]);
   });
 
-  it('a task re-read the web core answers unavailable is read again, and the section stays online (CAN-6394)', async () => {
-    const core = new FakeWebCore();
-    const store = await connected(core);
-    // As the transport answers a request a gateway lost mid-flight.
-    core.taskListFailures.push({
-      kind: 'unavailable',
-      message: 'The web core answered HTTP 503.',
-      retry: { kind: 'same_request' },
-    });
-    core.tasks = [
-      {
-        worktreeId: 'task-2',
-        title: 'Later',
-        updatedAt: '2026-11-07T12:00:00Z',
-      },
-      ...core.tasks,
-    ];
-    core.stream.item(1, {
-      kind: 'task',
-      workspaceId: PROJECT,
-      worktreeId: 'task-2',
-      batchId: '1',
-    });
-    const reads = core.count('core.chat.task.list');
-    await jest.advanceTimersByTimeAsync(250);
-    expect(core.count('core.chat.task.list')).toBe(reads + 1);
-    expect(store.getState().status).toBe('online');
-    expect(taskTitles(store)).toEqual(['First']);
-    await jest.advanceTimersByTimeAsync(1_000);
-    expect(core.count('core.chat.task.list')).toBe(reads + 2);
-    expect(store.getState().status).toBe('online');
-    expect(taskTitles(store)).toEqual(['Later', 'First']);
-  });
-
   it('a task created for the cloud chat page shows only once the web core created it, and a refused one leaves no row (CAN-6099, CAN-6098)', async () => {
     const core = new FakeWebCore();
     const store = await connected(core);
@@ -652,56 +618,6 @@ describe('core cowork store', () => {
     await jest.advanceTimersByTimeAsync(0);
 
     expect(taskTitles(store)).toEqual(['Newer']);
-  });
-
-  it('a store whose connection was lost reconnects by itself, waiting longer each time (CAN-6442)', async () => {
-    const lost: CanopyErrorPayload = {
-      kind: 'unavailable',
-      message: 'The web core is unreachable.',
-      retry: { kind: 'same_request' },
-    };
-    const down: CoreCoworkInvoker = {
-      request: () => Promise.resolve({ ok: false, error: lost }),
-      openStream: () => Promise.reject(new CoreCoworkRequestError(lost)),
-    };
-    const first = new FakeWebCore();
-    const later = new FakeWebCore();
-    const opens: CoreCoworkInvoker[] = [down, later];
-    let reconnects = 0;
-    const store = createCoreCoworkStore({
-      reconnect: () => {
-        reconnects += 1;
-        return opens.shift() ?? null;
-      },
-    });
-    await store.getState().connect(first);
-    expect(store.getState().status).toBe('online');
-
-    first.stream.push({
-      kind: 'end',
-      cursor: { daemonEpoch: EPOCH, sequence: 0 },
-      outcome: 'error',
-      error: lost,
-    });
-    await jest.advanceTimersByTimeAsync(0);
-    expect(store.getState().status).toBe('offline');
-    await jest.advanceTimersByTimeAsync(999);
-    expect(reconnects).toBe(0);
-    // The first try finds the web core still down: offline, and it waits longer.
-    await jest.advanceTimersByTimeAsync(1);
-    expect(reconnects).toBe(1);
-    expect(store.getState().status).toBe('offline');
-    await jest.advanceTimersByTimeAsync(1_999);
-    expect(reconnects).toBe(1);
-    await jest.advanceTimersByTimeAsync(1);
-    expect(reconnects).toBe(2);
-    expect(store.getState().status).toBe('online');
-    expect(taskTitles(store)).toEqual(['First']);
-
-    // Turned off, it stays off: nothing reconnects it.
-    store.getState().disconnect('disabled');
-    await jest.advanceTimersByTimeAsync(60_000);
-    expect(reconnects).toBe(2);
   });
 
   it('a snapshotRequired reopen after a clean end re-lists instead of going offline', async () => {

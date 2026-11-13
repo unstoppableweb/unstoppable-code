@@ -72,26 +72,6 @@ export function MonacoFileDiff({
       listeners.forEach((listener) => listener.dispose());
     };
   }, [editor, snapshot.identity.snapshotId, viewState]);
-  // @monaco-editor/react disposes a diff's text models before the widget
-  // that still shows them, which throws "TextModel got disposed before
-  // DiffEditorWidget model got reset" (CAN-6408). It keeps the models
-  // instead, and this lets the live widget go of them before disposing
-  // them. React runs this cleanup before the DiffEditor child's own, and
-  // after the view-state save above, which needs the models attached.
-  useEffect(() => {
-    if (!editor) return;
-    const models = editor.getModel();
-    let widgetDisposed = false;
-    const watch = editor.getModifiedEditor().onDidDispose(() => {
-      widgetDisposed = true;
-    });
-    return (): void => {
-      watch.dispose();
-      if (!widgetDisposed) editor.setModel(null);
-      models?.original.dispose();
-      models?.modified.dispose();
-    };
-  }, [editor]);
   const callbacks = useRef({
     onComment,
     onOpenLine,
@@ -270,8 +250,6 @@ export function MonacoFileDiff({
         theme={theme}
         originalModelPath={`canopy-diff://${encodeURIComponent(tabId)}/${snapshot.identity.snapshotId}/old`}
         modifiedModelPath={`canopy-diff://${encodeURIComponent(tabId)}/${snapshot.identity.snapshotId}/new`}
-        keepCurrentOriginalModel
-        keepCurrentModifiedModel
         onMount={(instance) => {
           if (
             viewState.current.snapshotId === snapshot.identity.snapshotId &&

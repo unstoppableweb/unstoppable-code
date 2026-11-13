@@ -1609,26 +1609,6 @@ describe('daemon pipeline route (CAN-5086)', () => {
     await routed(aliasPipeline('agent_model_missing'), 'user', preferences);
     expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
     expect(daemon.instructions).toHaveLength(2);
-    const resolveAgent = jest.spyOn(
-      executionRuntime,
-      'resolvePipelineAgentModelAlias',
-    );
-    await routed(aliasPipeline('agent_model_reviewer'), 'user', {
-      modelAliasPreferences: {
-        fast: { mode: 'inline', base: DEFAULT_CLAUDE_MODEL },
-        reviewer: {
-          mode: 'agent',
-          agent_id: 'agent_model_reviewer',
-          base: DEFAULT_CLAUDE_MODEL,
-        },
-      },
-    });
-    expect(resolveAgent).toHaveBeenCalledWith(
-      `agent_model_reviewer@${DEFAULT_CLAUDE_MODEL}`,
-      expect.any(Object),
-    );
-    expect(daemon.instructions).toHaveLength(3);
-    resolveAgent.mockRestore();
   });
 
   it("a Codex step's launch carries the run's Codex environment (CAN-5095)", async () => {

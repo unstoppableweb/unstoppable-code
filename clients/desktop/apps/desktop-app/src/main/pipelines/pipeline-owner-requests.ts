@@ -1,4 +1,3 @@
-import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -38,13 +37,6 @@ import {
   resolveClaudeModConfigDirectory,
 } from '../agents/claude-mod-admission-launch';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { getMcpOAuthCredentials } from '../mcp/oauth-credentials';
-import { resolvePluginMcpOAuthRoute } from '../plugins/plugin-resolver';
-import {
-  PipelineOwnerMcpCredentials,
-  type PipelineOwnerMcpDeps,
-} from './pipeline-owner-mcp';
-import { daemonPipelineOwnerGeneration } from './daemon-pipeline-owner';
 import {
   createDesktopPipelineLedgerPort,
   openPipelineLedgerCodexTools,
@@ -233,16 +225,9 @@ async function canonicalPath(target: string): Promise<string> {
   }
 }
 
-const DESKTOP_MCP_DEPS: PipelineOwnerMcpDeps = {
-  broker: getMcpOAuthCredentials,
-  generation: daemonPipelineOwnerGeneration,
-  resolve: resolvePluginMcpOAuthRoute,
-};
-
-/** One daemon run's owner-held resources: routes, Ledger attempts, Codex tool sessions, MCP credentials. */
+/** One daemon run's owner-held resources: routes, Ledger attempts, Codex tool sessions. */
 export class PipelineOwnerRunContext {
   private readonly routes = new Set<string>();
-  private readonly mcp: PipelineOwnerMcpCredentials;
   private readonly attempts = new Map<string, OpenAttempt>();
   private readonly codexTools = new Map<string, OpenCodexTools>();
   /** The tracked plans this run kept (CAN-6327), which its writes may revise. */
@@ -251,12 +236,7 @@ export class PipelineOwnerRunContext {
   private readonly ended = new AbortController();
   private closed = false;
 
-  constructor(
-    private readonly run: PipelineOwnerRun,
-    mcpDeps: PipelineOwnerMcpDeps = DESKTOP_MCP_DEPS,
-  ) {
-    this.mcp = new PipelineOwnerMcpCredentials(mcpDeps);
-  }
+  constructor(private readonly run: PipelineOwnerRun) {}
 
   /** Settle one owner request for this run. Never throws: failures settle redacted. */
   async apply(
@@ -278,10 +258,8 @@ export class PipelineOwnerRunContext {
     try {
       const settlement = await settling;
       return this.closed ? failed(RUN_ENDED) : settlement;
-    } catch (error) {
+    } catch {
       if (this.closed) return failed(RUN_ENDED);
-      if (error instanceof AgentModelSelectionError)
-        return failed(error.message);
       logMainProcessWarn('Pipeline owner request failed', {
         action: request.request.action,
         executionId: request.executionId,
@@ -695,31 +673,6 @@ export class PipelineOwnerRunContext {
         });
         return settled({ kind: 'plan.update' });
       }
-      case 'owner.mcp.bind': {
-        const routeRef = await this.mcp.bind({
-          marketplaceId: action.marketplaceId,
-          pluginName: action.pluginName,
-          serverName: action.serverName,
-          contentHash: action.contentHash,
-        });
-        return settled({ kind: 'mcp.bind', routeRef });
-      }
-      case 'owner.mcp.authorize': {
-        const granted = await this.mcp.authorize(action.routeRef, signal);
-        if (granted === null)
-          return settled({ kind: 'mcp.authorize', grantId: null });
-        return settled(
-          { kind: 'mcp.authorize', grantId: granted.grantId },
-          {
-            requestId: request.requestId,
-            mcpAuthorization: { authorization: granted.authorization },
-          },
-        );
-      }
-      case 'owner.mcp.rejected': {
-        await this.mcp.rejected(action.grantId);
-        return settled({ kind: 'mcp.rejected' });
-      }
       default:
         return failed(NOT_THIS_RUN);
     }
@@ -749,7 +702,6 @@ export class PipelineOwnerRunContext {
     this.closed = true;
     this.ended.abort();
     await Promise.allSettled([...this.inFlight]);
-    this.mcp.close();
     for (const routeSessionId of this.routes)
       getCodexGatewayProxyService().unregisterRoutesForSession(routeSessionId);
     this.routes.clear();

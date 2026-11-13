@@ -4,7 +4,6 @@ import {
   hostPlatformServices,
 } from '@canopy/core-platform';
 import type {
-  ScriptRunChildReap,
   ScriptRunWriter,
   ScriptRunWriterFence,
   ScriptRunWriterState,
@@ -43,19 +42,6 @@ export const desktopScriptRunWriterFence: ScriptRunWriterFence = {
       return found.state === 'absent' ? 'gone' : 'unverifiable';
     } catch {
       return 'unverifiable';
-    }
-  },
-  /**
-   * Never kills (CAN-6485 brings the proven reap to Electron main): it only
-   * notices a recorded process the daemon left that has since exited, so its
-   * orphaned run then reads lost (CAN-6482).
-   */
-  async reapChild(child): Promise<ScriptRunChildReap> {
-    try {
-      const found = await getSupervision().inspectProcess({ pid: child.pid });
-      return found.state === 'absent' ? 'gone' : 'unproven';
-    } catch {
-      return 'unproven';
     }
   },
 };

@@ -27,34 +27,18 @@ export const CoreWorkspaceInstructionsGetParamsSchema = z.strictObject({
   workspaceId: z.string(),
 });
 
-/**
- * The minor schema revision `core.workspace.instructions.update` serves
- * (protocol rule 5, CAN-6093): revision 2 answers the save's `warnings`. A
- * client sends `revision` only when the runtime advertises it; a client that
- * does not gets the revision 1 result.
- */
-export const CORE_WORKSPACE_INSTRUCTIONS_UPDATE_SCHEMA_REVISION = 2;
-
 // Content has no size bound: today's editor saves any string, and a bound
 // would refuse saves that succeed now.
 export const CoreWorkspaceInstructionsUpdateParamsSchema = z.strictObject({
   workspaceId: z.string(),
   content: z.string(),
-  /** Revision 2 output, sent only when the runtime advertises it. */
-  revision: z
-    .literal(CORE_WORKSPACE_INSTRUCTIONS_UPDATE_SCHEMA_REVISION)
-    .optional(),
 });
 
 export const CoreWorkspaceInstructionsGetResultSchema = z.strictObject({
   content: z.string(),
 });
 
-export const CoreWorkspaceInstructionsUpdateResultSchema = z.strictObject({
-  // Revision 2: the save landed but a best-effort side effect did not, such
-  // as syncing host ports to the project's sandbox. Absent when none failed.
-  warnings: z.array(z.string()).optional(),
-});
+export const CoreWorkspaceInstructionsUpdateResultSchema = z.strictObject({});
 
 export const CoreWorkspaceInstructionsErrorSchema =
   CanopyErrorPayloadSchema.extend({

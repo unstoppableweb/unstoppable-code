@@ -1,8 +1,3 @@
-import {
-  formatWorktreeRecoveryReason,
-  type WorktreeRecoveryAsset,
-  type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
 import type {
   WorktreeDiscardDeletedData,
   WorktreeDiscardDescription,
@@ -192,46 +187,3 @@ export function worktreeDiscardRefusalCopy(
 
 export const WORKTREE_DISCARD_FAILED =
   "Couldn't discard this worktree. Try again.";
-
-/** Batches only point at recovery; they never open or confirm extra removals. */
-export function worktreeRecoveryBatchPointer(
-  recovery: WorktreeRecoveryDescription,
-): string {
-  return `${formatWorktreeRecoveryReason(recovery)} Open the worktree's row menu to review recovery.`;
-}
-
-export const WORKTREE_REMOVAL_UNCONFIRMED =
-  "The removal hasn't been confirmed. Check the worktree list before you try again.";
-
-const RECOVERY_ASSET_LABELS: Record<
-  keyof WorktreeRecoveryDescription['retained'],
-  string
-> = {
-  checkout: 'Working files',
-  stagedCopy: 'Temporary copy',
-  gitSnapshot: 'Git snapshots',
-  committedArchive: 'Saved archive',
-  chats: 'Chats',
-};
-
-/** Presence is not completeness or restorability; unknown is never absent. */
-export function worktreeRecoveryRetainedFact(
-  key: keyof WorktreeRecoveryDescription['retained'],
-  asset: WorktreeRecoveryAsset,
-): string {
-  const label = RECOVERY_ASSET_LABELS[key];
-  if (asset.presence === 'unknown') return `${label}: couldn't check.`;
-  if (asset.presence === 'absent') return `${label}: not found.`;
-  if (key === 'gitSnapshot')
-    return 'Some repositories have saved Git snapshots.';
-  if (asset.presence === 'partial') return `${label}: incomplete.`;
-  if (key === 'committedArchive') return 'The saved archive remains.';
-  if (key === 'stagedCopy')
-    return asset.verification === 'verified'
-      ? 'A temporary copy remains.'
-      : "A temporary copy remains. It hasn't been verified.";
-  if (asset.verification !== 'verified') return `${label}: not verified.`;
-  return key === 'checkout'
-    ? 'Working files are still in place.'
-    : 'Chats are still saved.';
-}

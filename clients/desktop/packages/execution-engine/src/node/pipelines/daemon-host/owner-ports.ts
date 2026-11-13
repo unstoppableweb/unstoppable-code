@@ -1,14 +1,12 @@
 import type { PipelineOwnerSettlement } from '@canopy/core-runtime/node/pipeline';
 import type {
   CanopyJsonValue,
-  LedgerGlobalOwner,
   WorkerPipelineHostRequest,
   WorkerPipelineOwnerRequest,
   WorkerPipelineOwnerResult,
 } from '@canopy/protocol/canopy-core';
 import {
   canopyJsonValueSchemaWithin,
-  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 } from '@canopy/protocol/canopy-core';
 import { getExecutionHarnessForModel } from '@canopy/execution-engine/model-catalog';
@@ -22,17 +20,6 @@ import { pipelinePluginSelectionsAddPlugins } from '../executor/step-runner';
 import type { DynamicToolCallParams } from '../../codex-runtime/generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from '../../codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { DynamicToolSpec } from '../../codex-runtime/generated/v2/DynamicToolSpec';
-import { ledgerCodexToolPolicy } from '../../ledger-tools/codex';
-import { headlessLedgerToolAllowed } from '../../ledger-tools/headless-approval';
-import {
-  startLedgerToolsMcpRoute,
-  type LedgerToolsMcpRoute,
-} from '../../ledger-tools/mcp-route';
-import {
-  openRemoteLedgerTools,
-  type RemoteLedgerOperate,
-} from '../../ledger-tools/remote-session';
-import type { LedgerChatToolsSession } from '../../ledger-tools/runtime';
 import type {
   CodexPipelineEnvironmentProfile,
   CodexPipelineLedgerTools,
@@ -78,9 +65,6 @@ const UNANSWERED = 'The app could not answer this workflow step.';
 const toolCallJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 );
-const ledgerOperationJson = canopyJsonValueSchemaWithin(
-  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
-);
 
 /** A tool call as JSON, or a refusal the policy reports as a failed call. */
 function toolCall(call: DynamicToolCallParams): CanopyJsonValue {
@@ -89,16 +73,6 @@ function toolCall(call: DynamicToolCallParams): CanopyJsonValue {
   return json;
 }
 const NEVER = new AbortController().signal;
-
-/** The run owner as a global Ledger's owner, or null for one that can't be parsed. */
-function ledgerGlobalOwnerOf(
-  owner: WorkerPipelineHostRequest['owner'],
-): LedgerGlobalOwner | null {
-  if (owner === 'personal') return { kind: 'personal' };
-  if (owner?.startsWith('org:') === true)
-    return { kind: 'organization', organizationId: owner.slice('org:'.length) };
-  return null;
-}
 
 type Kind = WorkerPipelineOwnerResult['kind'];
 type ResultOf<K extends Kind> = Extract<WorkerPipelineOwnerResult, { kind: K }>;
@@ -132,11 +106,6 @@ export function createDaemonPipelineOwnerPorts(
     readonly codexEnvironment?: CodexPipelineEnvironmentProfile;
     /** Aborts when the run is paused or cancelled: its pending requests are withdrawn. */
     readonly signal?: AbortSignal;
-    /**
-     * The owner is remote (a cloud run's web core, CAN-6422): the Feed tools
-     * run here, over `owner.ledger.operation`, instead of in the owner.
-     */
-    readonly remoteLedgerTools?: boolean;
   },
 ): DaemonPipelineOwnerPorts {
   const step = (
@@ -231,51 +200,8 @@ export function createDaemonPipelineOwnerPorts(
       'model.policy',
     ).answer;
 
-  /** The Feed tools of this run's open attempts, when they run here. */
-  const hostedAttempts = new Map<
-    string,
-    {
-      readonly session: LedgerChatToolsSession;
-      readonly permissionPreset: string;
-    }
-  >();
-  const hostedOwner = ledgerGlobalOwnerOf(run.owner);
-
-  /** One Ledger operation as the attempt the remote owner opened. */
-  const operate =
-    (
-      attemptKey: string,
-      at: Partial<
-        Pick<PipelineOwnerStep, 'jobId' | 'stepId' | 'attempt' | 'iteration'>
-      >,
-    ): RemoteLedgerOperate =>
-    async (operation, params, signal) => {
-      const json = ledgerOperationJson.safeParse(params).data;
-      // Params no request can carry are the agent's to fix.
-      if (json === undefined)
-        return { kind: 'refused', error: { reason: 'INVALID_INPUT' } };
-      return expectKind(
-        await ask(
-          {
-            action: 'owner.ledger.operation',
-            attemptKey,
-            operation,
-            params: json,
-          },
-          PIPELINE_OWNER_DEADLINE_MS.long,
-          signal,
-          at,
-        ),
-        'ledger.operation',
-      ).outcome;
-    };
-
   const pipelineLedger: PipelineLedgerPort = {
     openAttempt: async (request) => {
-      // The background service hosts no OpenCode step (daemon eligibility
-      // keeps them in the app), and the owner request names only the
-      // harnesses it hosts; an OpenCode attempt here opens nothing.
-      if (request.harness === 'opencode') return null;
       const at = {
         jobId: request.physicalJobId,
         stepId: request.stepId,
@@ -322,8 +248,6 @@ export function createDaemonPipelineOwnerPorts(
         'ledger.open',
       ).attempt;
       if (opened === null) return null;
-      if (run.remoteLedgerTools === true)
-        return hostedAttempt(request, opened, at);
       const attempt: PipelineLedgerAttempt = {
         attemptKey: opened.attemptKey,
         agentSessionId: opened.agentSessionId,
@@ -363,118 +287,11 @@ export function createDaemonPipelineOwnerPorts(
     noteResuming: () => Promise.resolve(),
   };
 
-  /**
-   * An attempt whose Feed tools run here (CAN-6422): the shared tools runtime,
-   * dispatching through `owner.ledger.operation`, served to a Claude
-   * subprocess on a loopback MCP route and to Codex as dynamic tools.
-   */
-  function hostedAttempt(
-    request: Parameters<PipelineLedgerPort['openAttempt']>[0],
-    opened: { readonly attemptKey: string; readonly agentSessionId: string },
-    at: Partial<
-      Pick<PipelineOwnerStep, 'jobId' | 'stepId' | 'attempt' | 'iteration'>
-    >,
-  ): PipelineLedgerAttempt | null {
-    if (hostedOwner === null) return null;
-    let live = true;
-    const name = request.pipelineName?.trim()
-      ? `${request.stepName} · ${request.pipelineName.trim()}`
-      : request.stepName;
-    const session = openRemoteLedgerTools({
-      executionId: run.executionId,
-      harness: request.harness,
-      owner: hostedOwner,
-      pipelineAgent: {
-        physicalJobId: request.physicalJobId,
-        logicalJobId: request.logicalJobId,
-        stepId: request.stepId,
-        attempt: Math.max(1, request.attempt),
-        iteration: request.iteration,
-        agentSessionId: opened.agentSessionId,
-        ...(request.predecessorAgentSessionId === undefined
-          ? {}
-          : { predecessorAgentSessionId: request.predecessorAgentSessionId }),
-        ...(request.checkpointId === undefined
-          ? {}
-          : { checkpointId: request.checkpointId }),
-        displayName:
-          request.attempt > 1
-            ? `${name} (attempt ${String(request.attempt)})`
-            : name,
-        isLive: () => live,
-      },
-      settings: {
-        model: request.model ?? null,
-        thinkingEffort: request.thinkingEffort ?? null,
-        mode: request.permissionPreset,
-      },
-      operate: operate(opened.attemptKey, at),
-    });
-    hostedAttempts.set(opened.attemptKey, {
-      session,
-      permissionPreset: request.permissionPreset,
-    });
-    let route: Promise<LedgerToolsMcpRoute> | undefined;
-    return {
-      attemptKey: opened.attemptKey,
-      agentSessionId: opened.agentSessionId,
-      instructions: session.systemPrompt(),
-      openSubprocessTools: async () => {
-        if (!live) throw new Error('The pipeline agent attempt has ended.');
-        route ??= startLedgerToolsMcpRoute(session, (tool) =>
-          headlessLedgerToolAllowed(request.permissionPreset, tool),
-        );
-        const open = await route;
-        return {
-          mcpServers: open.mcpServers,
-          allowedTools: [...open.allowedTools],
-          secretValues: [open.token],
-        };
-      },
-      close: (outcome) => {
-        if (!live) return;
-        live = false;
-        hostedAttempts.delete(opened.attemptKey);
-        session.dispose();
-        void route?.then((open) => open.close()).catch(() => undefined);
-        void ask(
-          {
-            action: 'owner.ledger.close',
-            attemptKey: opened.attemptKey,
-            outcome,
-          },
-          PIPELINE_OWNER_DEADLINE_MS.short,
-          undefined,
-          at,
-        ).catch(() => undefined);
-      },
-    };
-  }
-
   const openLedgerTools: CodexPipelinePromptPorts['openLedgerTools'] = async (
     attemptKey,
     cwd,
   ) => {
     if (attemptKey === undefined) return undefined;
-    const hosted = hostedAttempts.get(attemptKey);
-    if (hosted !== undefined) {
-      // A remote owner's attempt: the tools run here, and an unattended step
-      // may call exactly the three Feed tools.
-      const { specs, policy } = ledgerCodexToolPolicy(
-        hosted.session,
-        (_call, tool) =>
-          Promise.resolve(
-            headlessLedgerToolAllowed(hosted.permissionPreset, tool),
-          ),
-      );
-      return {
-        instructions: hosted.session.systemPrompt(),
-        specs,
-        policy,
-        dispose: () => undefined,
-      };
-    }
-    if (run.remoteLedgerTools === true) return undefined;
     const { tools } = expectKind(
       await ask(
         { action: 'owner.ledger.codexTools', attemptKey, cwd },

@@ -5,6 +5,7 @@ import {
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
   type CoreWorkspaceHooksUpdateParams,
+  type CoreWorkspacePluginsUpdateParams,
   type CoreWorkspacePluginsUpdateResult,
   type CoreWorktreeCommandResult,
   type CoreWorktreeHooksSetPausedResult,
@@ -13,7 +14,6 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import type {
   CoreWorkspaceGuardedCall,
   CoreWorkspaceGuardedHost,
-  CoreWorkspaceHostPluginsChange,
   CoreWorktreeMetadataPatch,
 } from '@canopy/core-runtime/node/workspace/guarded-commands';
 import {
@@ -207,7 +207,7 @@ function pluginsResult(
 
 /** The page's change, as the desktop boundary takes it. */
 function pluginsChange(
-  change: CoreWorkspaceHostPluginsChange,
+  change: CoreWorkspacePluginsUpdateParams['change'],
 ): WorkspacePluginsUserChange {
   return change.kind === 'setDefaults'
     ? {

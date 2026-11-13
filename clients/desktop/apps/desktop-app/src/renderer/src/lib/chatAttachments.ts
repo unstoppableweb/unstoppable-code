@@ -258,7 +258,7 @@ export async function importWebCoreChatFiles(
       });
       if (result.ok) return result.attachment;
       problems.push(
-        `${file.name}: ${result.message ?? UPLOAD_FAILURE[result.reason] ?? UPLOAD_FAILURE.rejected}`,
+        `${file.name}: ${UPLOAD_FAILURE[result.reason] ?? UPLOAD_FAILURE.rejected}`,
       );
       return null;
     } catch (error) {

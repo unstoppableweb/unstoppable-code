@@ -143,7 +143,7 @@ export function ModelGatewayKeyBanner({
   const personalGateway = gateway.organizationId === personal?.organizationId;
   const message = personalGateway
     ? keyState.status === 'missing'
-      ? `Add your ${gateway.organizationName} key in Providers to send this.`
+      ? 'Add your AI gateway key in Providers to send this.'
       : keyState.status === 'stale-endpoint'
         ? 'Add a key for your new AI gateway endpoint in Providers.'
         : "Your AI gateway didn't accept this key. Save a current key in Providers."
@@ -163,15 +163,7 @@ export function ModelGatewayKeyBanner({
         <NoticeButton
           variant="primary"
           data-testid="chat-input-model-gateway-key-banner-action"
-          onClick={(): void =>
-            // Your own gateway's row leads Providers.
-            openSettings(
-              'account',
-              personalGateway
-                ? { scrollTo: 'settings-model-gateway-credential' }
-                : undefined,
-            )
-          }
+          onClick={(): void => openSettings('account')}
         >
           Add your gateway key
         </NoticeButton>

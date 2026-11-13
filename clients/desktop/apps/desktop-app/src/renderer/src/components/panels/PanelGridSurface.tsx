@@ -67,7 +67,6 @@ import { initTerminalPanelSync } from '@/lib/panels/terminal-panel-sync';
 import { panelKindsUnavailableFor } from '@/lib/panels/scope-panel-kinds';
 import { webCoreLocalId } from '@/lib/chat-authority';
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
-import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 import { installPanelTestApi } from '@/lib/panels/test-api';
 import { pt } from '@/lib/platform-text';
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
@@ -262,11 +261,8 @@ export function PanelGridSurface({
   );
   const [startPageRoots, setStartPageRoots] = useState<FileTreeRoot[]>([]);
   const scopeCapabilities = useScopeCapabilities({ projectId });
-  // Start pages are files and URLs in a local project's own folder; a cloud
-  // chat's files are in its sandbox.
-  const scopeHasLocalFiles =
-    scopeCapabilities.fileSystemAccess !== 'none' &&
-    workspaceFileSourceFor(worktreeId).onThisComputer;
+  // Start pages are files and URLs in a local project's own folder.
+  const scopeHasLocalFiles = scopeCapabilities.fileSystemAccess !== 'none';
   // A cloud task's first chat is the task: closing it would archive the
   // whole task, so a scope that can't close it keeps its tab.
   const rootChatTabKept = scopeCapabilities.chatRootTabLifecycle !== true;

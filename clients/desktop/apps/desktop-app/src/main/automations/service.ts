@@ -1,5 +1,3 @@
-import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
-import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import {
   assertCoworkChatRootPresent,
   assertCoworkWorkspaceRootPresent,
@@ -282,12 +280,7 @@ import {
   WORKFLOW_DELETE_FAILED,
   WORKFLOW_DELETE_RUNNING,
   WORKFLOW_RELEASE_FAILED,
-  INSTALLED_OWNER_RETARGET_REFUSED,
   addedScheduleRefusal,
-  handOffInstall,
-  hideOrchestratorPipelineForSchedule,
-  inheritedInstallOwner,
-  installSuccessor,
   isSharedByOtherSchedules,
   isWorkflowPagePipeline,
   keepLastScheduleValues,
@@ -392,15 +385,7 @@ function isPipelineModelAliasPreference(
 ): value is PipelineModelAliasPreference {
   if (!isRecord(value)) return false;
   if (value.mode === 'reset') return true;
-  if (value.mode === 'agent') {
-    return (
-      typeof value.agent_id === 'string' &&
-      parsePipelineAgentAliasRoute({
-        agent_id: value.agent_id.trim(),
-        base: value.base,
-      }).ok
-    );
-  }
+  if (value.mode === 'agent') return typeof value.agent_id === 'string';
   return (
     value.mode === 'inline' &&
     typeof value.base === 'string' &&
@@ -2131,15 +2116,6 @@ export class AutomationsService {
         },
       },
     ];
-    // CAN-6065: another schedule of an installed workflow runs the owner's
-    // install, so it passes the owner's install check too: a revoked share
-    // denies every schedule, not only the owner.
-    const installOwner = inheritedInstallOwner(
-      (await this.ensureFile()).activities,
-      activity,
-    );
-    if (installOwner !== undefined)
-      resources.push(automationDefinitionResource(installOwner));
     let sharedPipelineReadFailure:
       | {
           error: unknown;
@@ -3052,27 +3028,17 @@ export class AutomationsService {
             return { ok: false, error: globalOwner.error };
           activity.executionContext = globalOwner.context ?? 'personal';
         }
-        // CAN-6065: an agent's schedule only joins a workflow it may run as.
+        // CAN-5782: a single-schedule workflow page takes no second schedule.
         const scheduledPipeline = scheduledUserPipelineId(activity);
         const addedRefusal =
           scheduledPipeline === undefined
             ? undefined
             : addedScheduleRefusal(
                 file.activities,
+                undefined,
                 scheduledPipeline,
-                activity.agentAuthor,
               );
         if (addedRefusal) return { ok: false, error: addedRefusal };
-        // CAN-6065: an Orchestrator pipeline is hidden by its own flag
-        // before it takes another schedule; one that didn't persist refuses.
-        if (
-          scheduledPipeline !== undefined &&
-          !hideOrchestratorPipelineForSchedule(
-            file.activities,
-            scheduledPipeline,
-          )
-        )
-          return { ok: false, error: WORKFLOW_RELEASE_FAILED };
         const destinationRefusal =
           await this.workflowScheduleDestinationRefusal(
             activity,
@@ -3233,37 +3199,23 @@ export class AutomationsService {
       const normalizedRequestedAction = request.action
         ? normalizeAutomationAction(request.action)
         : undefined;
-      // CAN-6065: retargeting is refused where a create is.
+      // CAN-5782: retargeting onto a single-schedule workflow page that
+      // already has a schedule is refused, as a create is.
       const retargetedPipeline =
         normalizedRequestedAction === undefined
           ? undefined
           : scheduledUserPipelineId({ action: normalizedRequestedAction });
-      const currentPipeline = scheduledUserPipelineId(activity);
       const startsTargeting =
-        retargetedPipeline !== currentPipeline ? retargetedPipeline : undefined;
-      // CAN-6065: an installed owner leaving the pipeline other schedules
-      // run would take their install along; only Remove hands it on.
-      if (
-        normalizedRequestedAction !== undefined &&
-        retargetedPipeline !== currentPipeline &&
-        currentPipeline !== undefined &&
-        installSuccessor(file.activities, activity, currentPipeline) !==
-          undefined
-      )
-        return { ok: false, error: INSTALLED_OWNER_RETARGET_REFUSED };
+        retargetedPipeline !== scheduledUserPipelineId(activity)
+          ? retargetedPipeline
+          : undefined;
       if (startsTargeting !== undefined) {
         const refusal = addedScheduleRefusal(
           file.activities,
+          activity.id,
           startsTargeting,
-          trusted.agentAuthor === null
-            ? undefined
-            : (trusted.agentAuthor ?? activity.agentAuthor),
         );
         if (refusal) return { ok: false, error: refusal };
-        if (
-          !hideOrchestratorPipelineForSchedule(file.activities, startsTargeting)
-        )
-          return { ok: false, error: WORKFLOW_RELEASE_FAILED };
       }
       const effectiveAction = normalizedRequestedAction ?? activity.action;
       const sharedUpdateRebinds =
@@ -3629,32 +3581,20 @@ export class AutomationsService {
       const cloudRefusal = await this.deleteCloudRecord(file.activities[index]);
       if (cloudRefusal !== null) return { ok: false, error: cloudRefusal };
       // CAN-5782: Remove on a workflow page's last schedule may keep its
-      // pipeline, unless its package binding can't outlive the record.
+      // pipeline, unless its package binding or agent grant can't outlive
+      // the record.
       const keep = keptWorkflowPipeline(
         file.activities,
         file.activities[index],
         request.keepPipeline === true,
       );
       if (keep?.refusal) return { ok: false, error: keep.refusal };
-      const target = file.activities[index];
-      const owned = ownedPipelineId(target);
-      // CAN-6065: an installed owner hands its install and owner marker to a
-      // schedule that stays, before it goes; one that didn't land refuses.
-      const successor =
-        owned === undefined
-          ? undefined
-          : installSuccessor(file.activities, target, owned);
-      const handoff =
-        successor === undefined || owned === undefined
-          ? undefined
-          : await handOffInstall(target, successor, owned);
-      if (successor !== undefined && handoff === undefined)
-        return { ok: false, error: WORKFLOW_RELEASE_FAILED };
       // CAN-5782: a pipeline that stays is released before its owner goes,
       // so its hiding facts are durable first; one that didn't persist
       // refuses the delete.
+      const target = file.activities[index];
+      const owned = ownedPipelineId(target);
       if (
-        handoff === undefined &&
         owned !== undefined &&
         (keep !== undefined ||
           isSharedByOtherSchedules(file.activities, target, owned)) &&
@@ -3669,40 +3609,12 @@ export class AutomationsService {
         !keepLastScheduleValues(keep.pipelineId, keep.lastScheduleValues)
       )
         return { ok: false, error: WORKFLOW_RELEASE_FAILED };
-      // What the cache goes back to when the write below fails.
-      const storedSuccessor =
-        successor === undefined ? undefined : cloneActivity(successor);
-      const storedRuns = file.recentRuns;
-      if (successor !== undefined) {
-        successor.installedFrom = structuredClone(target.installedFrom);
-        if (target.publicInstallContext !== undefined)
-          successor.publicInstallContext = target.publicInstallContext;
-        else delete successor.publicInstallContext;
-        // An owner names its pipeline's source, as ownership reads it; one
-        // that omits it would hand nothing on when it is removed in turn.
-        if (successor.action.type === 'worktree_pipeline')
-          successor.action = { ...successor.action, pipelineSource: 'user' };
-        successor.updatedAt = new Date().toISOString();
-      }
       const [activity] = file.activities.splice(index, 1);
+      this.enabledIntentRevisions.delete(activity.id);
       file.recentRuns = file.recentRuns.filter(
         (run) => run.activityId !== request.id,
       );
-      try {
-        await this.persistAndNotify(file);
-      } catch (error) {
-        if (successor !== undefined && storedSuccessor !== undefined) {
-          file.activities[file.activities.indexOf(successor)] = storedSuccessor;
-          file.activities.splice(index, 0, activity);
-          file.recentRuns = storedRuns;
-          await handoff?.undo();
-        }
-        throw error;
-      }
-      this.enabledIntentRevisions.delete(activity.id);
-      // The install's subscription names the schedule that holds it first,
-      // so it never reads as uninstalled in between.
-      if (successor !== undefined) registerAutomationInstall(successor);
+      await this.persistAndNotify(file);
       await this.cleanUpDeletedActivity(activity);
       // A converted chat automation's own pipeline goes with it (CAN-4551),
       // unless another schedule runs it or Remove keeps it (CAN-5782).
@@ -4974,12 +4886,8 @@ export class AutomationsService {
         : undefined;
     // A converted install's package is verified before its run starts, as
     // its native prompt's was; the generated send step applies it (CAN-5479).
-    // Another schedule of its workflow runs with the owner's (CAN-6065).
     if (action.type === 'worktree_pipeline')
-      await verifyOwnedPipelinePackage(
-        (await this.ensureFile()).activities,
-        activity,
-      );
+      await verifyOwnedPipelinePackage(activity);
     switch (action.type) {
       case 'app_advisor_prompt': {
         if (!this.surfaces) {
@@ -5021,11 +4929,6 @@ export class AutomationsService {
             preferences.appAdvisorThinkingLevel,
             preferences.providerModelConfigDefaults,
           );
-        await assertAgentModelAdmission(model, {
-          projectId: APP_ADVISOR_PROJECT_ID,
-          worktreeId: APP_ADVISOR_WORKTREE_ID,
-          executionHarness,
-        });
         // App Advisor runs Cursor on the managed runtime like a worktree chat;
         // gate before the window opens so a disconnected runtime fails here.
         if (
@@ -5192,10 +5095,6 @@ export class AutomationsService {
             undefined,
             preferences.providerModelConfigDefaults,
           );
-        await assertAgentModelAdmission(model, {
-          projectId: coworkWorkspaceId,
-          executionHarness,
-        });
         // Cowork runs Cursor on the managed runtime like a worktree chat;
         // gate before the Work Entry and prompt are persisted.
         if (
@@ -5366,10 +5265,6 @@ export class AutomationsService {
               undefined,
               preferences.providerModelConfigDefaults,
             );
-          await assertAgentModelAdmission(model, {
-            projectId: action.workspaceId,
-            executionHarness,
-          });
           // Only now, and only for a dispatch that actually resolved to Cursor.
           if (
             executionHarness === 'cursor' &&

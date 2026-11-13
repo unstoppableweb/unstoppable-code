@@ -15,7 +15,6 @@ import {
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   APP_ADVISOR_PROJECT_ID,
-  getProviderForChatModel,
   type ChatCommand,
   type ChatCommandEnvelope,
 } from '@canopy/desktop-shared/types';
@@ -180,6 +179,12 @@ async function create(
     trusted.kind === 'pipeline' ? definedSeed(context.newChatSeed) : undefined;
   const agentOriginated =
     trusted.kind === 'pipeline' && trusted.source.agentOrigin !== undefined;
+  // CAN-5379: an automation's own chat keeps what its native send used: the
+  // Agent route the automations service resolved, and automatic billing.
+  const automationOwnChat =
+    trusted.kind === 'pipeline' &&
+    trusted.source.kind === 'automation' &&
+    !agentOriginated;
   // CAN-4551: a converted automation's send step starts its chat as the
   // automation's own send would, apart from the Agent route (the step
   // resolves its own model).
@@ -232,22 +237,10 @@ async function create(
     action.type === 'projects.create_task_chat'
       ? action.model
       : undefined;
-  const actionHarness =
-    action.type === 'projects.create_task' ||
-    action.type === 'projects.create_task_chat'
-      ? action.executionHarness
-      : undefined;
   if (actionModel !== undefined && newChatSeed?.model !== undefined)
     throw new AgentChatSendError(
       'validation_failed',
       'A new chat takes its model from the action or its seed, not both.',
-    );
-  // The harness is a property of a named model: the project default's
-  // harness options are not known until the seed resolves.
-  if (actionHarness !== undefined && actionModel === undefined)
-    throw new AgentChatSendError(
-      'validation_failed',
-      'executionHarness needs model: name the model from models.list it applies to.',
     );
   // A seed's model gets the same checks as an explicit one.
   const requestedModel = actionModel ?? newChatSeed?.model;
@@ -313,23 +306,8 @@ async function create(
       selection = await resolveCreationModelSelection(
         requestedModel,
         { projectId, taskId },
-        {
-          ...(actionHarness === undefined
-            ? {}
-            : { executionHarness: actionHarness }),
-        },
+        { acceptAgentRoute: automationOwnChat },
       );
-      // The pin after creation needs a provider for the harness; refuse
-      // here, before any scaffold, rather than after the tab exists.
-      if (
-        selection.executionHarness !== undefined &&
-        getProviderForChatModel(selection.model, selection.executionHarness) ===
-          undefined
-      )
-        throw new AgentChatSendError(
-          'validation_failed',
-          `No provider is available for model "${requestedModel}" on the ${selection.executionHarness} harness.`,
-        );
     }
     // Renderer project selection awaits this scaffold through standaloneChat.init.
     // Agent creation bypasses selection, but the first turn needs the same cwd.
@@ -355,8 +333,6 @@ async function create(
     action.type === 'bots.create_task';
   let chatId: string | undefined;
   let replayedTab = false;
-  /** The harness the replayed chat already holds, to re-apply a missed pin. */
-  let replayedHarness: string | undefined;
   // A host-step replay finds the chat it already created.
   const fixedTabId = context.fixedIds?.tabId;
   if (!taskCreated && fixedTabId) {
@@ -374,7 +350,6 @@ async function create(
         );
       chatId = fixedTabId;
       replayedTab = true;
-      replayedHarness = replayed.executionHarness;
     }
   }
   // An explicit model or any seed setting always gets a new chat: an empty
@@ -434,88 +409,24 @@ async function create(
   let allocatedEntry = false;
   let allocatedEntryCreatedAt: string | undefined;
   let ambiguousInput = false;
-  // Main-owned chat commands on the task, under the creation's own client
-  // identity: the tab creation, a starter replacement and the harness pin.
-  const dispatchCreationCommand = (
-    commandId: string,
-    command: ChatCommand,
-  ): ReturnType<typeof dispatchTrustedChatCommand> => {
-    const port = getChatStateCommandPort();
-    if (!port)
-      throw new AgentChatSendError(
-        'target_not_ready',
-        'Chat command dispatch is unavailable.',
-      );
-    return dispatchTrustedChatCommand(
-      {
-        schemaVersion: 1,
-        commandId,
-        projectId,
-        worktreeId: taskId,
-        command,
-      } satisfies ChatCommandEnvelope,
-      {
-        ...createChatCommandDispatchOptions(port, getActiveDesktopRuntime(), {
-          principalId: 'local-desktop-user',
-          clientInstanceId: 'agent-chat-creation',
-          authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-          interfaceKind: 'mcp',
-          grants: ['core.chat.write'],
-        }),
-        executionOptions: { preserveActiveTab: true },
-      },
-    );
-  };
-  // A named harness is pinned on an unstarted tab through the same
-  // main-owned transition the pickers use, before its first message captures
-  // the harness; the create-tab seed cannot carry it.
-  const pinHarness = async (
-    tabId: string,
-    executionHarness: NonNullable<CreationModelSelection['executionHarness']>,
-    model: CreationModelSelection['model'],
-  ): Promise<void> => {
-    const providerType = getProviderForChatModel(model, executionHarness);
-    if (providerType === undefined)
-      throw new AgentChatSendError(
-        'target_not_ready',
-        `No provider is available for model "${model}".`,
-      );
-    const pinned = await dispatchCreationCommand(randomUUID(), {
-      type: 'chat.set_model',
-      tabId,
-      model,
-      providerType,
-      executionHarness,
-    });
-    if (pinned.outcome !== 'applied' && pinned.outcome !== 'already_applied')
-      throw new AgentChatSendError(
-        'target_not_ready',
-        pinned.reason ?? 'The target refused the execution harness.',
-      );
-  };
   try {
     if (chatCreated && !replayedTab) {
+      const port = getChatStateCommandPort();
+      if (!port)
+        throw new AgentChatSendError(
+          'target_not_ready',
+          'Chat command dispatch is unavailable.',
+        );
       let seed: Omit<
         Extract<ChatCommand, { type: 'chat.create_tab' }>,
         'type' | 'tabId'
       > = {};
       if (projectAction) {
         const seedModel = selection?.model;
-        // A named harness seeds the tab with that harness's provider, so the
-        // pin after creation keeps the provider and the settings seeded here.
-        const seedProvider =
-          seedModel !== undefined && selection?.executionHarness !== undefined
-            ? getProviderForChatModel(seedModel, selection.executionHarness)
-            : undefined;
         const defaults = seedModel
           ? await (
               await import('./creation-model')
-            ).resolveCreationModelSeed(
-              projectId,
-              seedModel,
-              selection?.fromDestinationDefault,
-              seedProvider,
-            )
+            ).resolveCreationModelSeed(projectId, seedModel)
           : await (
               await import('../portal/adapters/chat-adapter')
             ).resolveRemoteCreateTabSeed(projectId);
@@ -624,7 +535,33 @@ async function create(
       // A created task's founding tab shares its id; the pipeline host journal relies on this (host-create-entry.ts).
       const tabId = taskCreated ? taskId : (fixedTabId ?? randomUUID());
       const createTab = { type: 'chat.create_tab' as const, tabId, ...seed };
-      const dispatchCommand = dispatchCreationCommand;
+      const dispatchCommand = (
+        commandId: string,
+        command: ChatCommand,
+      ): ReturnType<typeof dispatchTrustedChatCommand> =>
+        dispatchTrustedChatCommand(
+          {
+            schemaVersion: 1,
+            commandId,
+            projectId,
+            worktreeId: taskId,
+            command,
+          } satisfies ChatCommandEnvelope,
+          {
+            ...createChatCommandDispatchOptions(
+              port,
+              getActiveDesktopRuntime(),
+              {
+                principalId: 'local-desktop-user',
+                clientInstanceId: 'agent-chat-creation',
+                authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+                interfaceKind: 'mcp',
+                grants: ['core.chat.write'],
+              },
+            ),
+            executionOptions: { preserveActiveTab: true },
+          },
+        );
       if (starterTabId !== undefined) {
         // Refused when the starter is no longer blank, and only creates the
         // replacement in place of the task's last tab: either way the chat
@@ -670,40 +607,12 @@ async function create(
           'target_not_ready',
           'The created chat is not available.',
         );
-      if (selection?.executionHarness !== undefined) {
-        try {
-          await pinHarness(chatId, selection.executionHarness, selection.model);
-        } catch (error) {
-          // The tab exists but never started: discard it, and the entry this
-          // creation allocated, so a retry does not leave a duplicate behind.
-          await dispatchCommand(randomUUID(), {
-            type: 'chat.close_tab',
-            tabId: chatId,
-            mode: 'discard_empty',
-          }).catch(() => undefined);
-          if (allocatedEntryCreatedAt !== undefined)
-            await removeUnstartedWorkEntry(
-              projectId,
-              taskId,
-              allocatedEntryCreatedAt,
-            ).catch(() => undefined);
-          throw error;
-        }
-      }
     }
     if (!chatId)
       throw new AgentChatSendError(
         'target_not_ready',
         'The created chat is not available.',
       );
-    // A replay that was interrupted between creating the tab and pinning it
-    // finds the tab on the model's own harness; apply the pin it missed.
-    if (
-      replayedTab &&
-      selection?.executionHarness !== undefined &&
-      replayedHarness !== selection.executionHarness
-    )
-      await pinHarness(chatId, selection.executionHarness, selection.model);
     const address = projectAction
       ? { projectId, taskId, chatId }
       : { botId: action.botId, taskId, chatId };

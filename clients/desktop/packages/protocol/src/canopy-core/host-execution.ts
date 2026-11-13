@@ -459,14 +459,6 @@ export const WorkerPipelineOwnerValuesSchema = z.strictObject({
       secretValues: z.array(z.string().min(1).max(4096)).max(64),
     })
     .optional(),
-  /**
-   * One `owner.mcp.authorize` answer's `Authorization` header (CAN-6168),
-   * for one upstream request: the worker writes it once and keeps it no
-   * longer than MCP_AUTHORIZATION_TTL_MS.
-   */
-  mcpAuthorization: z
-    .strictObject({ authorization: z.string().min(1).max(16_384) })
-    .optional(),
 });
 export type WorkerPipelineOwnerValues = z.output<
   typeof WorkerPipelineOwnerValuesSchema

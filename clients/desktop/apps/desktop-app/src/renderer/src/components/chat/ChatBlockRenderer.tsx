@@ -47,7 +47,6 @@ import {
   markdownOptions,
   type MarkdownOverrides,
   markdownTableCellProps,
-  AskUserQuestionPreparingRow,
   Notice,
   resolveAskUserQuestionPresentation,
   Surface,
@@ -1576,14 +1575,21 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
             block.toolUseId,
             block.input,
           ),
-          turnSettled ? false : undefined,
         );
         switch (presentation.kind) {
           case 'awaiting':
             // The composer owns the unanswered prompt.
             return null;
           case 'preparing':
-            return <AskUserQuestionPreparingRow />;
+            return (
+              <div
+                className="flex items-center gap-1.5 py-1 text-xs fg-secondary"
+                data-testid="ask-user-question-preparing"
+              >
+                <ThinkingSpinner tone="accent" />
+                <span>Preparing question…</span>
+              </div>
+            );
           case 'answered':
             return (
               <>

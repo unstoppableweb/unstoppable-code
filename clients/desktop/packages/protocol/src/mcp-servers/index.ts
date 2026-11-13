@@ -815,4 +815,3 @@ export {
   type McpExtraHeadersProblem,
 } from './extra-headers';
 export * from './availability';
-export * from './command-policy';

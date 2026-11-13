@@ -692,7 +692,6 @@ export function SidebarItemGroupEditor({
               if (color) onColorChange(color);
             }}
             testId="sidebar-item-group-colors"
-            label="Group color"
           />
         </div>
       </div>

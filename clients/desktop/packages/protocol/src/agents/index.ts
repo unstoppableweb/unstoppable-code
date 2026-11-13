@@ -122,8 +122,8 @@ export function describeAgentBaseModel(
 export const AGENT_ROUTE_SEPARATOR = '@';
 
 /**
- * Chat model id with an explicit model override for any Agent. Also retains
- * a destination default resolved at chat creation, independent of later settings.
+ * Chat model id that retains the concrete route an inheriting Agent resolved
+ * when the chat was instantiated, so later Settings changes cannot reroute it.
  */
 export function formatAgentRouteModelId(
   agentId: string,

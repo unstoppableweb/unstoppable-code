@@ -6,12 +6,6 @@ import type {
   WorktreeDiscardResult,
 } from '@canopy/protocol/portal/worktree-discard';
 import type { WorktreeDiscardOffer } from './discard-offer';
-import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
-import {
-  unavailableWorktreeRecovery,
-  type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
-import { offerLifecycleJournalQuarantine } from '../lifecycle-journal/quarantine-offer';
 
 /**
  * Why the last discard attempt didn't finish. Reason codes only: the shared
@@ -24,7 +18,6 @@ export type WorktreeDiscardAttemptError =
 
 /** A finished discard's report for the host's own cleanup. */
 interface WorktreeDiscardFinished {
-  readonly expectedCreatedAt?: string;
   readonly warnings: string[];
   /** CAN-5338: a retained archive was discarded; no row was listed. */
   readonly retainedArchive?: true;
@@ -36,13 +29,6 @@ interface WorktreeDiscardFinished {
 export type WorktreeDiscardView =
   | { readonly phase: 'closed' }
   | { readonly phase: 'describing'; readonly offer: WorktreeDiscardOffer }
-  | {
-      readonly phase: 'recovery';
-      readonly offer: WorktreeDiscardOffer;
-      readonly recovery: WorktreeRecoveryDescription;
-      readonly busy: 'refresh' | 'retry' | 'finishArchive' | 'discard' | null;
-      readonly error: 'transport-failed' | 'unconfirmed' | null;
-    }
   | {
       readonly phase: 'open';
       readonly offer: WorktreeDiscardOffer;
@@ -66,12 +52,6 @@ export interface WorktreeDiscardState {
    * `worktreeRemovalRetryable` says that removal isn't the way back.
    */
   readonly retry: () => void;
-  readonly recover: (
-    action: 'retry' | 'finishArchive',
-  ) => Promise<WorktreeDiscardFinished | null>;
-  readonly confirmDiscard: () => Promise<void>;
-  readonly refresh: () => Promise<void>;
-  readonly deactivate: () => void;
   readonly close: () => void;
 }
 
@@ -86,9 +66,7 @@ export type WorktreeDiscardStore = UseBoundStore<
  */
 export function worktreeRemovalRetryable(view: WorktreeDiscardView): boolean {
   if (view.phase === 'closed') return false;
-  if (view.phase === 'describing') return view.offer.retry !== undefined;
-  if (view.phase === 'recovery') return view.recovery.actions.retry.eligible;
-  if (view.offer.recovery || !view.offer.retry) return false;
+  if (view.phase === 'describing') return true;
   const refusal = view.description.refusal;
   return (
     refusal?.retry !== 'delete-project' &&
@@ -119,362 +97,116 @@ export function failureText(error: unknown): string | null {
   return text || null;
 }
 
-function sameRecoverySubject(
-  description: WorktreeDiscardDescription | undefined,
-  recovery: WorktreeRecoveryDescription,
-): boolean {
-  return (
-    description?.workspaceId === recovery.subject.workspaceId &&
-    description.worktreeId === recovery.subject.worktreeId &&
-    description.createdAt === recovery.subject.createdAt
-  );
-}
-
 function createWorktreeDiscardStore(
   client: CanopyClient,
 ): WorktreeDiscardStore {
   // Each opening owns its answers; a late answer to an older one is dropped.
   let generation = 0;
-  return create<WorktreeDiscardState>()((set, get) => {
-    const unavailable = (
-      view: Extract<WorktreeDiscardView, { phase: 'recovery' }>,
-    ): WorktreeRecoveryDescription =>
-      unavailableWorktreeRecovery(
-        view.recovery.subject,
-        {
-          intent: view.recovery.intent,
-          expectedCreatedAt: view.recovery.subject.createdAt,
-        },
-        'refresh-unavailable',
-      );
-    const inspect = async (
-      view: Extract<WorktreeDiscardView, { phase: 'recovery' }>,
-    ): Promise<WorktreeDiscardDescription | undefined> =>
-      client
-        .command('worktree.discard.describe', {
+  return create<WorktreeDiscardState>()((set, get) => ({
+    view: { phase: 'closed' },
+    open: async (offer): Promise<boolean> => {
+      // A running discard keeps its dialog; the later refusal shows its message.
+      const showing = get().view;
+      if (showing.phase === 'open' && showing.busy) return false;
+      generation += 1;
+      const current = generation;
+      let description = offer.description;
+      if (!description) {
+        set({ view: { phase: 'describing', offer } });
+        description = await client
+          .command('worktree.discard.describe', {
+            workspaceId: offer.workspaceId,
+            worktreeId: offer.worktreeId,
+            ...(offer.retainedArchives === true
+              ? { retainedArchives: true }
+              : {}),
+          })
+          .catch(() => undefined);
+        if (current !== generation) return false;
+      }
+      if (description?.status !== 'discardable') {
+        set({ view: { phase: 'closed' } });
+        return false;
+      }
+      set({
+        view: { phase: 'open', offer, description, busy: false, error: null },
+      });
+      return true;
+    },
+    discard: async (): Promise<WorktreeDiscardFinished | null> => {
+      const view = get().view;
+      if (view.phase !== 'open' || view.busy) return null;
+      if (view.description.status !== 'discardable') return null;
+      const current = generation;
+      set({ view: { ...view, busy: true, error: null } });
+      const retainedArchive = describesRetainedArchive(view.description);
+      let result: WorktreeDiscardResult;
+      try {
+        result = await client.command('worktree.discard', {
           workspaceId: view.offer.workspaceId,
           worktreeId: view.offer.worktreeId,
-          recovery: {
-            intent: view.recovery.intent,
-            expectedCreatedAt: view.recovery.subject.createdAt,
-          },
-        })
-        .catch(() => undefined);
-    const admitted = (
-      view: Extract<WorktreeDiscardView, { phase: 'recovery' }>,
-      value: unknown,
-    ): WorktreeRecoveryDescription => {
-      const parsed = WorktreeRecoveryDescriptionSchema.safeParse(value);
-      if (
-        !parsed.success ||
-        parsed.data.subject.workspaceId !== view.offer.workspaceId ||
-        parsed.data.subject.worktreeId !== view.offer.worktreeId ||
-        parsed.data.subject.createdAt !== view.recovery.subject.createdAt ||
-        parsed.data.intent !== view.recovery.intent
-      )
-        return unavailable(view);
-      return parsed.data;
-    };
-    const routeReview = (recovery: WorktreeRecoveryDescription): boolean => {
-      if (recovery.destination.kind !== 'journal-review') return false;
-      offerLifecycleJournalQuarantine(undefined, recovery.destination.reason);
-      set({ view: { phase: 'closed' } });
-      return true;
-    };
-    return {
-      view: { phase: 'closed' },
-      open: async (offer): Promise<boolean> => {
-        // A running discard keeps its dialog; the later refusal shows its message.
-        const showing = get().view;
-        if (
-          (showing.phase === 'open' || showing.phase === 'recovery') &&
-          showing.busy
-        )
-          return false;
-        generation += 1;
-        const current = generation;
-        if (offer.recovery) {
-          if (client.capabilities.worktreeRecovery !== true) return false;
-          const initial: Extract<WorktreeDiscardView, { phase: 'recovery' }> = {
-            phase: 'recovery',
-            offer,
-            recovery: offer.recovery,
-            busy: null,
-            error: null,
-          };
-          const recovery = admitted(initial, offer.recovery);
-          if (routeReview(recovery)) return true;
-          set({ view: { ...initial, recovery } });
-          return true;
-        }
-        let description = offer.description;
-        if (!description) {
-          set({ view: { phase: 'describing', offer } });
-          description = await client
-            .command('worktree.discard.describe', {
-              workspaceId: offer.workspaceId,
-              worktreeId: offer.worktreeId,
-              ...(offer.retainedArchives === true
-                ? { retainedArchives: true }
-                : {}),
-            })
-            .catch(() => undefined);
-          if (current !== generation) return false;
-        }
-        if (description?.status !== 'discardable') {
-          set({ view: { phase: 'closed' } });
-          return false;
-        }
-        set({
-          view: { phase: 'open', offer, description, busy: false, error: null },
+          confirmation: view.description.confirmation,
+          ...(retainedArchive ? { retainedArchives: true } : {}),
         });
-        return true;
-      },
-      discard: async (): Promise<WorktreeDiscardFinished | null> => {
-        const view = get().view;
-        if (view.phase !== 'open' || view.busy) return null;
-        if (view.description.status !== 'discardable') return null;
-        const current = generation;
-        set({ view: { ...view, busy: true, error: null } });
-        const retainedArchive = describesRetainedArchive(view.description);
-        let result: WorktreeDiscardResult;
-        try {
-          result = await client.command('worktree.discard', {
-            workspaceId: view.offer.workspaceId,
-            worktreeId: view.offer.worktreeId,
-            confirmation: view.description.confirmation,
-            ...(retainedArchive ? { retainedArchives: true } : {}),
-          });
-        } catch (error) {
-          if (current === generation)
-            set({
-              view: {
-                ...view,
-                busy: false,
-                error: { kind: 'failed', message: failureText(error) },
-              },
-            });
-          return null;
-        }
-        if (current !== generation) return null;
-        if (result.status === 'discarded') {
-          generation += 1;
-          set({ view: { phase: 'closed' } });
-          return {
-            warnings: result.warnings,
-            ...(view.offer.recovery?.subject.createdAt
-              ? { expectedCreatedAt: view.offer.recovery.subject.createdAt }
-              : {}),
-            ...(retainedArchive ? { retainedArchive: true } : {}),
-            ...(result.removedTemporaryWorkspaceId
-              ? {
-                  removedTemporaryWorkspaceId:
-                    result.removedTemporaryWorkspaceId,
-                }
-              : {}),
-          };
-        }
-        if (
-          view.offer.recovery &&
-          (result.description.status !== 'discardable' ||
-            !sameRecoverySubject(result.description, view.offer.recovery))
-        ) {
-          const previous: Extract<WorktreeDiscardView, { phase: 'recovery' }> =
-            {
-              phase: 'recovery',
-              offer: view.offer,
-              recovery: view.offer.recovery,
-              busy: null,
-              error: null,
-            };
-          if (!sameRecoverySubject(result.description, previous.recovery)) {
-            // A token for a replacement is never a continuation of this offer.
-            set({ view: { ...previous, recovery: unavailable(previous) } });
-            return null;
-          }
-          const description = await inspect(previous);
-          if (current !== generation) return null;
-          const recovery = admitted(
-            previous,
-            sameRecoverySubject(description, previous.recovery)
-              ? description?.recovery
-              : undefined,
-          );
-          if (!routeReview(recovery)) set({ view: { ...previous, recovery } });
-          return null;
-        }
-        // The new description replaces the reviewed one; confirming again is
-        // the user's choice, never automatic.
-        set({
-          view: {
-            ...view,
-            description: result.description,
-            busy: false,
-            error:
-              result.reason === 'changed'
-                ? { kind: 'changed' }
-                : { kind: 'refused', reason: result.reason },
-          },
-        });
-        return null;
-      },
-      refresh: async (): Promise<void> => {
-        const view = get().view;
-        if (view.phase !== 'recovery' || view.busy) return;
-        const current = generation;
-        set({ view: { ...view, busy: 'refresh' } });
-        const description = await inspect(view);
-        if (current !== generation) return;
-        const recovery = admitted(view, description?.recovery);
-        if (!routeReview(recovery))
+      } catch (error) {
+        if (current === generation)
           set({
             view: {
               ...view,
-              recovery,
-              busy: null,
-              error: description?.recovery ? null : 'transport-failed',
-            },
-          });
-      },
-      confirmDiscard: async (): Promise<void> => {
-        const view = get().view;
-        if (
-          view.phase !== 'recovery' ||
-          view.busy ||
-          !view.recovery.actions.discard.eligible
-        )
-          return;
-        const current = generation;
-        set({ view: { ...view, busy: 'discard' } });
-        const description = await inspect(view);
-        if (current !== generation) return;
-        const recovery = admitted(
-          view,
-          sameRecoverySubject(description, view.recovery)
-            ? description?.recovery
-            : undefined,
-        );
-        if (routeReview(recovery)) return;
-        if (
-          description?.status === 'discardable' &&
-          recovery.actions.discard.eligible
-        ) {
-          set({
-            view: {
-              phase: 'open',
-              offer: { ...view.offer, recovery },
-              description,
               busy: false,
-              error: null,
+              error: { kind: 'failed', message: failureText(error) },
             },
           });
-        } else
-          set({
-            view: {
-              ...view,
-              recovery,
-              busy: null,
-              error: description ? null : 'transport-failed',
-            },
-          });
-      },
-      recover: async (action): Promise<WorktreeDiscardFinished | null> => {
-        const view = get().view;
-        if (
-          view.phase !== 'recovery' ||
-          view.busy ||
-          !view.recovery.actions[action].eligible
-        )
-          return null;
-        if (!view.recovery.subject.createdAt) return null;
-        const current = generation;
-        set({ view: { ...view, busy: action, error: null } });
-        const result = await client
-          .command('worktree.archive', {
-            ...view.offer.removal,
-            workspaceId: view.offer.workspaceId,
-            worktreeId: view.offer.worktreeId,
-            mode: view.recovery.intent,
-            typedRefusal: true,
-            recovery: {
-              intent: view.recovery.intent,
-              expectedCreatedAt: view.recovery.subject.createdAt,
-            },
-          })
-          .catch(() => ({ status: 'unconfirmed' as const }));
-        if (current !== generation) return null;
-        if (result?.status === 'completed') {
+        return null;
+      }
+      if (result.status === 'discarded') {
+        // Reported even after a newer opening: the host must drop the row.
+        if (current === generation) {
           generation += 1;
           set({ view: { phase: 'closed' } });
-          return {
-            warnings: result.warnings,
-            expectedCreatedAt: view.recovery.subject.createdAt,
-            ...(result.removedTemporaryWorkspaceId
-              ? {
-                  removedTemporaryWorkspaceId:
-                    result.removedTemporaryWorkspaceId,
-                }
-              : {}),
-          };
         }
-        const recovery =
-          result?.status === 'refused'
-            ? admitted(view, result.refusal.recovery)
-            : unavailable(view);
-        if (routeReview(recovery)) return null;
-        set({
-          view: {
-            ...view,
-            recovery,
-            busy: null,
-            error:
-              result?.status === 'refused'
-                ? null
-                : result?.status === 'transport-failed'
-                  ? 'transport-failed'
-                  : 'unconfirmed',
-          },
-        });
-        return null;
-      },
-      deactivate: (): void => {
-        generation += 1;
-        set({ view: { phase: 'closed' } });
-      },
-      retry: (): void => {
-        const view = get().view;
-        if (
-          view.phase === 'closed' ||
-          view.phase === 'recovery' ||
-          (view.phase === 'open' && view.busy)
-        )
-          return;
-        if (!worktreeRemovalRetryable(view)) return;
-        generation += 1;
-        set({ view: { phase: 'closed' } });
-        view.offer.retry?.();
-      },
-      close: (): void => {
-        const view = get().view;
-        if ((view.phase === 'open' || view.phase === 'recovery') && view.busy)
-          return;
-        if (view.phase === 'open' && view.offer.recovery) {
-          set({
-            view: {
-              phase: 'recovery',
-              offer: view.offer,
-              recovery: view.offer.recovery,
-              busy: null,
-              error: null,
-            },
-          });
-          return;
-        }
-        generation += 1;
-        set({ view: { phase: 'closed' } });
-      },
-    };
-  });
+        return {
+          warnings: result.warnings,
+          ...(retainedArchive ? { retainedArchive: true } : {}),
+          ...(result.removedTemporaryWorkspaceId
+            ? {
+                removedTemporaryWorkspaceId: result.removedTemporaryWorkspaceId,
+              }
+            : {}),
+        };
+      }
+      if (current !== generation) return null;
+      // The new description replaces the reviewed one; confirming again is
+      // the user's choice, never automatic.
+      set({
+        view: {
+          ...view,
+          description: result.description,
+          busy: false,
+          error:
+            result.reason === 'changed'
+              ? { kind: 'changed' }
+              : { kind: 'refused', reason: result.reason },
+        },
+      });
+      return null;
+    },
+    retry: (): void => {
+      const view = get().view;
+      if (view.phase === 'closed' || (view.phase === 'open' && view.busy))
+        return;
+      if (!worktreeRemovalRetryable(view)) return;
+      generation += 1;
+      set({ view: { phase: 'closed' } });
+      view.offer.retry();
+    },
+    close: (): void => {
+      const view = get().view;
+      if (view.phase === 'open' && view.busy) return;
+      generation += 1;
+      set({ view: { phase: 'closed' } });
+    },
+  }));
 }
 
 const storesByClient = new WeakMap<CanopyClient, WorktreeDiscardStore>();

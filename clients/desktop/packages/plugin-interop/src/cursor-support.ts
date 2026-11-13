@@ -22,9 +22,6 @@
 
 export type CursorPluginProvider = 'claude' | 'codex';
 
-/** Cursor-family projection discovers children of each configured skill root. */
-export const CURSOR_PLUGIN_SKILL_ROOT_MODE = 'children-only';
-
 /** Facet presence is all the precedence rule reads. */
 export interface CursorPluginFacetPresence {
   claude?: unknown;

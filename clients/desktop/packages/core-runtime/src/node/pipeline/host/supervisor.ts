@@ -109,9 +109,9 @@ export interface PipelineRemoteOwner {
     answer: WorkerPipelineOwnerResult,
   ) => Promise<Omit<WorkerPipelineOwnerValues, 'requestId'> | undefined>;
   /**
-   * Answers the local-only owner requests (`owner.claude.modAdmission`,
-   * `owner.mcp.*`), which a remote owner never receives. Default: Claude Mod
-   * admission is off for the run, and no MCP credential is bound or presented.
+   * Answers the local-only owner requests (`owner.claude.modAdmission`),
+   * which a remote owner never receives. Default: Claude Mod admission is
+   * off for the run.
    */
   readonly answerLocally?: (
     request: WorkerPipelineHostRequest,
@@ -123,25 +123,6 @@ const MOD_ADMISSION_OFF: WorkerPipelineOwnerResult = {
   kind: 'claude.modAdmission',
   context: null,
 };
-
-/**
- * What a runner with a remote owner answers a local-only request with when it
- * has no answer of its own: nothing admitted, bound or presented (CAN-6168).
- */
-function localRefusal(
-  request: WorkerPipelineHostRequest,
-): WorkerPipelineOwnerResult {
-  switch (request.request.action) {
-    case 'owner.mcp.bind':
-      return { kind: 'mcp.bind', routeRef: null };
-    case 'owner.mcp.authorize':
-      return { kind: 'mcp.authorize', grantId: null };
-    case 'owner.mcp.rejected':
-      return { kind: 'mcp.rejected' };
-    default:
-      return MOD_ADMISSION_OFF;
-  }
-}
 
 /**
  * An owner request as a remote owner receives it (CAN-6161): the Ledger tool
@@ -720,47 +701,6 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         retryable: this.options.remoteOwner !== undefined,
       });
     return null;
-  }
-
-  /**
-   * Takes a portable start sent again for a run the store already holds
-   * (CAN-6376): on a new runner incarnation, its owner restored the run
-   * from its handoff, and this start is the launch its resume and retry run
-   * with from now on. Nothing starts and no secret is redeemed; the run
-   * answers as `stored` holds it. A start that names another workflow, run
-   * owner, scope or workspace than the stored run is refused, and so is one
-   * this supervisor would refuse to start.
-   */
-  public adoptStart(
-    params: WorkerPipelineExecutionStartParams,
-    stored: WorkerPipelineExecution,
-  ): Promise<WorkerPipelineExecution> {
-    // Checked first, so a start refused here leaves no lease TTL behind.
-    if (
-      stored.executionId !== params.executionId ||
-      stored.pipelineId !== params.pipelineId ||
-      stored.owner !== params.owner ||
-      stored.runScope !== params.runScope ||
-      stored.workspaceId !== params.workspaceId ||
-      stored.worktreeId !== params.worktreeId
-    )
-      throw pipelineStartFailedError(
-        new Error('The stored workflow run does not match this start.'),
-      );
-    const { recoverable } = this.prepareStart(params, undefined);
-    if (!recoverable) return Promise.resolve(stored);
-    // A start this incarnation already ran keeps its own launch.
-    if (!this.recoverable.has(params.executionId))
-      this.keepRecoverable(recoverable);
-    return Promise.resolve(stored);
-  }
-
-  /**
-   * Whether this incarnation still holds its delegation lease (CAN-6198):
-   * true without one. A runner restores no run once it is over.
-   */
-  public leaseHeld(): boolean {
-    return !this.leaseEnded();
   }
 
   private async runStart(
@@ -1602,9 +1542,9 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     try {
       value = remote.answerLocally
         ? await remote.answerLocally(request)
-        : localRefusal(request);
+        : MOD_ADMISSION_OFF;
     } catch {
-      value = localRefusal(request);
+      value = MOD_ADMISSION_OFF;
     }
     return ownerSettlement(request, { status: 'owner', value }, undefined);
   }

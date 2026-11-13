@@ -53,17 +53,8 @@ export interface ChildLedgerRunContext {
   readonly host?: LedgerToolsHost;
 }
 
-/**
- * The runners that serve a child's Ledger tools: Claude and Codex on their
- * child projections, OpenCode on its delegate route. Cursor and Copilot
- * children have no Ledger route.
- */
 function ledgerHarnessOf(harnessId: string): LedgerHarness | null {
-  return harnessId === 'claude' ||
-    harnessId === 'codex' ||
-    harnessId === 'opencode'
-    ? harnessId
-    : null;
+  return harnessId === 'claude' || harnessId === 'codex' ? harnessId : null;
 }
 
 /**

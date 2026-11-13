@@ -1,7 +1,4 @@
-import { toAppError } from '@canopy/protocol/app-errors';
-import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { isOpenCodeHarnessEnabled } from '../../opencode/feature-flag';
-import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { delegationRuntimeUnavailableReason } from './runtime-support';
 import { isCopilotHarnessEnabled } from '../../copilot/feature-flag';
 import { peekCursorAccount } from '../../cursor/connection';
@@ -23,10 +20,7 @@ import {
 } from '../../auth/provider-auth-state';
 import { resolveCodexRuntimeEnvironmentProfile } from '../../lib/user-environment-runtime';
 import { resolveAiCreditsRoutingAttempt } from '../ai-credits-routing';
-import { isSelectableAgentOverrideModel } from '@canopy/execution-engine/model-catalog';
-import { getExecutionHarnessForModel } from '@canopy/desktop-shared/types';
-import { agentModelPluginIncompatibility } from '../../plugins/agent-model-compatibility';
-import { getAgentModel, listAgentModels } from '../agent-model-store';
+import { listAgentModels } from '../agent-model-store';
 import { resolveAgentModelRuntime } from '../agent-model-runtime';
 import type { AgentSessionOptions } from '../types';
 import { resolveSessionWorkOwner } from '../work-owner';
@@ -67,69 +61,22 @@ export async function discoverManagedDelegationModels(
     workspaceId: owner.projectId,
   }).environment;
   const nativeAuth = peekFreshProviderNativeAuthAvailability();
-  const agentAdmission = new Map<string, Promise<boolean>>();
   return discoverDelegationModels({
     modelIds: [
       ...baseModels
         .filter((model) => model.selectable || !model.enabled)
         .map((model) => model.id),
+      ...agents.map((agent) => agent.id),
     ],
-    agents: agents.map((agent) => ({ agentId: agent.id, label: agent.name })),
     preferredModelId: owner.selectedModel ?? owner.model,
     signal,
-    canRunAgent: (agentId, model) => {
-      if (!isSelectableAgentOverrideModel(model.modelId))
-        return Promise.resolve(false);
-      const harness = getExecutionHarnessForModel(model.modelId);
-      if (!harness) return Promise.resolve(false);
-      const key = `${agentId}:${harness}`;
-      let admission = agentAdmission.get(key);
-      if (!admission) {
-        admission = (async (): Promise<boolean> => {
-          try {
-            const agent = await getAgentModel(agentId, owner.projectId);
-            if (
-              !agent ||
-              (await agentModelPluginIncompatibility(
-                agent.pluginSelections,
-                harness,
-                owner.projectId,
-              ))
-            )
-              return false;
-            await materializeDelegationAgentPlugins(
-              agent.pluginSelections,
-              (directory) =>
-                openDelegationFiles(
-                  directory,
-                  signal ?? new AbortController().signal,
-                ),
-              harness,
-            );
-            return true;
-          } catch (error: unknown) {
-            const failure = toAppError(error);
-            if (failure?.kind === 'defect')
-              logMainProcessWarn(
-                'Could not inspect delegated Agent capabilities',
-                failure,
-              );
-            // Discovery is advisory; unreadable or unauthorized Agent resources are omitted.
-            return false;
-          }
-        })();
-        agentAdmission.set(key, admission);
-      }
-      return admission;
-    },
     inspect: async (id): Promise<DelegationModelChoice> => {
       let choice: DelegationModelChoice = {
         modelId: id,
         label:
-          baseModels.find(
-            (model) =>
-              model.id === (parseAgentRouteModelId(id)?.baseModel ?? id),
-          )?.label ?? id,
+          baseModels.find((model) => model.id === id)?.label ??
+          agents.find((agent) => agent.id === id)?.name ??
+          id,
         harnessId: '',
         runtimeKind: '',
         capabilities: [],
@@ -165,7 +112,6 @@ export async function discoverManagedDelegationModels(
       try {
         const runtime = await resolveAgentModelRuntime({
           model: id,
-          projectId: owner.projectId,
           inheritDefaultFrom: { projectId: owner.projectId },
         });
         const model = getAuthoritativeConfiguredModel(runtime.runtimeModel);

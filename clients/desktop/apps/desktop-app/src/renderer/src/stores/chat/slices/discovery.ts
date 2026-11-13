@@ -48,7 +48,6 @@ import {
   isCapabilityUnavailable,
   reportUnlessUnavailable,
 } from '../backend';
-import { isWebCoreScope } from '@/lib/chat-authority';
 
 export const createDiscoverySlice: StateCreator<
   ChatState,
@@ -255,9 +254,6 @@ export const createDiscoverySlice: StateCreator<
     const modelDefaults = await get().ensureModelDefaultsLoaded();
     const sel = get().selectedWorktree;
     if (!sel) return;
-    // A cloud chat runs the model, thinking level and plugins its web core
-    // holds; this computer's defaults never stand in for them (CAN-6365).
-    if (isWebCoreScope(sel.projectId)) return;
 
     const key = worktreeKey(sel);
     const wc = get().worktreeChats[key];

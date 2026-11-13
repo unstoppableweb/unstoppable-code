@@ -210,8 +210,6 @@ export function useFileComments(
   view: 'file' | 'diff' = 'file',
   diff?: ReviewCommentAnchor['diff'],
   diffAnnotations?: ReviewAnnotation[],
-  /** False where main keeps no comments for the scope: nothing loads or saves. */
-  enabled = true,
 ): UseFileComments {
   const [document, setDocument] = useState<FileAnnotationDocument>(() =>
     emptyDocument(filePath),
@@ -308,11 +306,6 @@ export function useFileComments(
   );
 
   useEffect(() => {
-    if (!enabled) {
-      sessionRef.current = null;
-      replaceDocument(emptyDocument(filePath));
-      return undefined;
-    }
     const session: CommentSession = {
       projectId,
       worktreeId,
@@ -344,7 +337,7 @@ export function useFileComments(
       if (sessionRef.current === session) sessionRef.current = null;
       unsubscribe();
     };
-  }, [acknowledge, enabled, filePath, projectId, replaceDocument, worktreeId]);
+  }, [acknowledge, filePath, projectId, replaceDocument, worktreeId]);
 
   const persist = useCallback(
     (update: DocumentUpdate): Promise<void> => {

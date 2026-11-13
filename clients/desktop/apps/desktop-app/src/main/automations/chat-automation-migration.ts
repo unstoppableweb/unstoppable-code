@@ -5,9 +5,9 @@
  * conversion as a person's save. Its ID, name, trigger, gate command, enabled
  * state and agent author stay, so it behaves the same to the person.
  *
- * It runs at startup while {@link CHAT_AUTOMATION_MIGRATION_RELEASED} is set;
- * docs/planning/2026-10-29-can-4530-5c-and-7/deferred.md, item 1, records
- * the release.
+ * Shipped dark: it runs only once {@link CHAT_AUTOMATION_MIGRATION_RELEASED}
+ * is set. Release it only once the preconditions in
+ * docs/planning/2026-10-29-can-4530-5c-and-7/deferred.md, item 1, hold.
  *
  * Shared, public and curated installs convert too: conversion keeps the
  * automation, and with it the install's context and receipt checks. An
@@ -25,8 +25,8 @@ import {
 } from './chat-automation-conversion';
 import type { AutomationsService } from './service';
 
-/** The release lever; setting it false stops the migration on startup. */
-export const CHAT_AUTOMATION_MIGRATION_RELEASED = true;
+/** The release lever; off until deferred.md's preconditions hold. */
+export const CHAT_AUTOMATION_MIGRATION_RELEASED = false;
 
 /** Whether the migration converts `activity`: a convertible chat automation. */
 export function migratesChatAutomation(activity: ScheduledActivity): boolean {

@@ -36,11 +36,6 @@ export interface CopyButtonProps {
   variant?: ButtonVariant;
   /** Button size; the glyph follows it. Defaults to the small button. */
   size?: ButtonSize;
-  /**
-   * The glyph's step on the icon scale, when it should be smaller than the
-   * size's own (an inline copy beside a short value, such as a reference ID).
-   */
-  glyphSize?: IconSize;
   /** Optional label. With one, this is a labeled button; without, icon-only. */
   label?: string;
   /** Label and accessible name while the copied confirmation shows. */
@@ -73,7 +68,6 @@ function CopyButtonControl({
   title,
   variant = 'ghost',
   size = 'sm',
-  glyphSize: glyphSizeOverride,
   label,
   copiedLabel = 'Copied',
   className,
@@ -98,7 +92,7 @@ function CopyButtonControl({
     [copy, value],
   );
 
-  const glyphSize = glyphSizeOverride ?? GLYPH_SIZE[size];
+  const glyphSize = GLYPH_SIZE[size];
   const glyph = copied ? (
     <CheckIcon size={glyphSize} aria-hidden="true" />
   ) : (

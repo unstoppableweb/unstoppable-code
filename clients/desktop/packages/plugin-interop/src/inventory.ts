@@ -16,7 +16,6 @@ import { parseFrontmatter } from './frontmatter';
 import type {
   BuildPluginMemberInventoryInput,
   ClaudePluginManifest,
-  PluginFileContent,
   PluginHookMember,
   PluginLspServerMember,
   PluginMarkdownMember,
@@ -142,20 +141,9 @@ function resolvedManifestPaths(
   return resolved;
 }
 
-/** Shared root selection for file-map inventory and on-disk discovery. */
-export function selectPluginSkillDirectories(
-  root: string,
-  children: readonly string[],
-  hasRootSkill: boolean,
-  mode: BuildPluginMemberInventoryInput['skillRootMode'],
-): readonly string[] {
-  return mode !== 'children-only' && hasRootSkill ? [root] : children;
-}
-
 function scanSkills(
   files: ReadonlyMap<string, string | Uint8Array>,
   manifest: ClaudePluginManifest | null,
-  rootMode: BuildPluginMemberInventoryInput['skillRootMode'],
 ): PluginSkillMember[] {
   const results: PluginSkillMember[] = [];
   const visited = new Set<string>();
@@ -163,14 +151,11 @@ function scanSkills(
     // A manifest may name a skill itself or a directory containing skills.
     // A skill's supporting files remain inside that skill, even when a support
     // directory contains its own SKILL.md example.
-    const directories = selectPluginSkillDirectories(
-      root,
-      directChildDirectories(files, root).map((name) =>
-        joinPluginPath(root, name),
-      ),
-      files.has(joinPluginPath(root, 'SKILL.md')),
-      rootMode,
-    );
+    const directories = files.has(joinPluginPath(root, 'SKILL.md'))
+      ? [root]
+      : directChildDirectories(files, root).map((name) =>
+          joinPluginPath(root, name),
+        );
     for (const directory of directories) {
       if (visited.has(directory)) continue;
       visited.add(directory);
@@ -421,7 +406,7 @@ export function buildPluginMemberInventory(
 ): PluginMemberInventory {
   const files = normalizePluginFiles(input.files);
   return {
-    skills: scanSkills(files, input.manifest, input.skillRootMode),
+    skills: scanSkills(files, input.manifest),
     commands: scanMarkdownMembers(files, input.manifest?.commands, 'commands'),
     agents: scanMarkdownMembers(files, input.manifest?.agents, 'agents'),
     apps: scanMarkdownMembers(files, input.manifest?.apps, 'apps'),
@@ -430,11 +415,4 @@ export function buildPluginMemberInventory(
     mcpServers: scanMcpServers(files, input.manifest),
     lspServers: scanLspServers(files, input.manifest),
   };
-}
-
-/** Root app configs are projected even without a manifest apps declaration. */
-export function pluginAppConfigPaths(
-  files: ReadonlyMap<string, PluginFileContent>,
-): string[] {
-  return files.has('.app.json') ? ['.app.json'] : [];
 }

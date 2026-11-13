@@ -1767,7 +1767,10 @@ export class ChatInputDeliveryCoordinator {
           );
       } catch (error) {
         if (!isAgentSenderContextError(error)) throw error;
-        await markNeverSentAndRelease(`agent_send:${error.code}`, undefined);
+        await markNeverSentAndRelease(
+          `agent_send:${error.code === 'authorization_conflict' ? 'owner_boundary' : error.code}`,
+          undefined,
+        );
         return false;
       }
     }
@@ -3193,18 +3196,7 @@ export class ChatInputDeliveryCoordinator {
         )
           throw new Error('This model is blocked by your organization policy.');
         await this.authorize({ ...target, tab: latest });
-        let text: string;
-        try {
-          text = await this.prepare(request, session);
-        } catch (error) {
-          if (!isAgentSenderContextError(error)) throw error;
-          return {
-            commandId: envelope.commandId,
-            revision: await this.repository.getRevision(target),
-            outcome: 'rejected',
-            reason: error.message,
-          };
-        }
+        const text = await this.prepare(request, session);
         const steeringRead = await readSteeringApproval(request, latest);
         const approvalRefused =
           session !== undefined &&

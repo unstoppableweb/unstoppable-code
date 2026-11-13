@@ -70,7 +70,6 @@ import { registerApprovalHandlers } from './approvals';
 import { registerCopilotConnectionHandlers } from './copilot-connection';
 import { registerOpenCodeConnectionHandlers } from './opencode-connection';
 import { registerAccountProxyHandlers } from './account-proxy';
-import { registerLocalModelGatewayHandlers } from './local-model-gateway';
 import { registerCursorConnectionHandlers } from './cursor-connection';
 import { registerCursorApprovalCheckHandlers } from './cursor-approval-check';
 import { registerFileAnnotationsHandlers } from './file-annotations';
@@ -311,7 +310,6 @@ export function registerAllIpcHandlers(
   registerCopilotConnectionHandlers();
   registerOpenCodeConnectionHandlers();
   registerAccountProxyHandlers();
-  registerLocalModelGatewayHandlers();
   registerFileAnnotationsHandlers(
     () => [accessors.getMainWindow(), accessors.getAppAdvisorWindow()],
     canopyRuntime.dispatcher,
@@ -335,7 +333,7 @@ export function registerAllIpcHandlers(
   registerRepoHandlers(canopyRuntime);
   registerCloneJobHandlers();
   registerWorktreeHandlers(getMainWindow, canopyRuntime);
-  registerWorktreeDiscardHandlers(canopyRuntime);
+  registerWorktreeDiscardHandlers();
   registerWorktreeDiscoveryHandlers(getMainWindow);
   registerHomeSurfaceHandlers(canopyRuntime);
   registerFileTreeHandlers(

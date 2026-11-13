@@ -2,10 +2,7 @@ import { isOrchestratorLabel, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
 import type { AppError } from '@canopy/protocol/app-errors';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
-import {
-  captureToastFailure,
-  readRecordedToastFailure,
-} from '@/lib/renderer-app-error';
+import { captureToastFailure } from '@/lib/renderer-app-error';
 import {
   maybeFireOsNotification,
   shouldShowInAppNotification,
@@ -87,11 +84,6 @@ export interface ToastAction {
   onClick: () => unknown;
   /** The label while a returned promise runs (`Trying again…`). */
   busyLabel?: string;
-  /**
-   * The work runs outside the button and its producer tracks it, such as a
-   * pinned condition's retry: the button spins while this is true.
-   */
-  busy?: boolean;
   /**
    * The toast stays up once the action has run, for a pinned condition
    * whose card reports the outcome itself (it leaves when the condition
@@ -260,11 +252,7 @@ export interface PinnedToastInput {
   type: Extract<ToastType, 'error' | 'warning'>;
   meta?: Pick<
     ToastMeta,
-    | 'title'
-    | 'action'
-    | 'copyDetails'
-    | 'blockMessageFromReplay'
-    | 'messageContext'
+    'title' | 'action' | 'copyDetails' | 'blockMessageFromReplay'
   >;
   /** The card's `data-testid`. */
   testId?: string;
@@ -274,17 +262,6 @@ export interface PinnedToastInput {
    * `Report this` for a defect.
    */
   reference?: AppError;
-  /**
-   * `reference` is already the recorder's answer: its producer recorded the
-   * episode (the standing conditions do, once per episode), so the card shows
-   * it without recording it again.
-   */
-  referenceRecorded?: boolean;
-  /**
-   * Leave the reference row off the card. `Report this` still carries the
-   * reference, and the error is still recorded.
-   */
-  hideReference?: boolean;
   /** Runs once when the person closes the card. */
   onDismiss?: () => void;
 }
@@ -297,8 +274,6 @@ export type PinnedToast = Toast & {
   readonly referenceTelemetry?: FeedbackReportTelemetry;
   /** The `referenceId` the producer passed, to record each error once. */
   readonly referenceSourceId?: string;
-  /** The card leaves the reference row off; `Report this` still has it. */
-  readonly hideReference?: boolean;
 };
 
 let pinned: readonly PinnedToast[] = [];
@@ -338,10 +313,11 @@ export function pinToast(input: PinnedToastInput): void {
           : { referenceTelemetry: previous.referenceTelemetry }),
       };
     } else {
-      const { error, telemetry } =
-        input.referenceRecorded === true
-          ? readRecordedToastFailure(input.reference)
-          : captureToastFailure(input.reference, identifier, true);
+      const { error, telemetry } = captureToastFailure(
+        input.reference,
+        identifier,
+        true,
+      );
       reference = {
         reference: error,
         referenceSourceId: input.reference.referenceId,
@@ -368,7 +344,6 @@ export function pinToast(input: PinnedToastInput): void {
     ...(input.meta === undefined ? {} : { meta: input.meta }),
     ...(input.testId === undefined ? {} : { testId: input.testId }),
     ...reference,
-    ...(input.hideReference === true ? { hideReference: true } : {}),
     ...(input.onDismiss === undefined
       ? {}
       : { onDismiss: runOnce(input.onDismiss) }),

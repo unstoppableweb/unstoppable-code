@@ -19,10 +19,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
-import type {
-  CanopyCallerDescriptor,
-  WorkerGitPullResult,
-} from '@canopy/protocol/canopy-core';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
   SINGLE_REPO_USAGE_REPO_ID,
@@ -651,46 +648,6 @@ describe('github:pull (single repository)', () => {
     ).resolves.toBe(
       'IdentifierValidationError: Invalid operationId: must be lowercase alphanumeric with hyphens',
     );
-  });
-});
-
-// CAN-6093: the head the caller saw is compared right before the pull.
-describe('worker.git.pull expectedHeadSha', () => {
-  const pullAt = (
-    worktreeId: string,
-    expectedHeadSha: string,
-  ): Promise<WorkerGitPullResult> => {
-    if (!runtime) throw new Error('no runtime');
-    return runtime.instruction(
-      'worker.git.pull',
-      {
-        scope: { workspaceId: SINGLE, worktreeId },
-        branch: worktreeId,
-        strategy: 'fast-forward',
-        expectedHeadSha,
-      },
-      { caller: { ...desktopCaller, grants: ['worker.git.write'] } },
-    );
-  };
-
-  it('refuses a stale head as headChanged and pulls nothing', async () => {
-    const path = singleWorktree('pin-stale');
-    const head = git(path, ['rev-parse', 'HEAD']);
-    advanceOrigin('pin-stale', 'pin-stale-remote.txt');
-    await expect(pullAt('pin-stale', 'd'.repeat(40))).rejects.toMatchObject({
-      payload: { kind: 'conflict', code: 'worker.git.pull.headChanged' },
-    });
-    expect(git(path, ['rev-parse', 'HEAD'])).toBe(head);
-  });
-
-  it('pulls when the head is the one the caller saw', async () => {
-    const path = singleWorktree('pin-current');
-    const head = git(path, ['rev-parse', 'HEAD']);
-    const tip = advanceOrigin('pin-current', 'pin-current-remote.txt');
-    await expect(pullAt('pin-current', head)).resolves.toEqual({
-      outcome: 'pulled',
-    });
-    expect(git(path, ['rev-parse', 'HEAD'])).toBe(tip);
   });
 });
 

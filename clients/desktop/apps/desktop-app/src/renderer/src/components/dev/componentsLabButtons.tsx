@@ -53,24 +53,21 @@ const ACTION_SIZES: readonly { size: ButtonSize; label: string }[] = [
 export function ButtonsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Button variants, sizes and disabled states">
-        <SpecimenGrid min={320}>
+      <SpecimenPanel title="Variants at md">
+        <SpecimenGrid>
           {VARIANTS.map((variant) => (
             <SpecimenCell key={variant} label={variant}>
-              {ACTION_SIZES.map(({ size }) => (
-                <Button key={size} size={size} variant={variant}>
-                  {size}
-                </Button>
-              ))}
-              <Button
-                variant={variant}
-                iconOnly
-                aria-label={`Add (${variant})`}
-              >
-                <PlusIcon size="md" />
-              </Button>
+              <Button variant={variant}>Save changes</Button>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Disabled">
+        <SpecimenGrid>
+          {VARIANTS.map((variant) => (
+            <SpecimenCell key={variant} label={variant}>
               <Button variant={variant} disabled>
-                Disabled
+                Save changes
               </Button>
             </SpecimenCell>
           ))}
@@ -253,14 +250,6 @@ export function ListRowSpecimen(): JSX.Element {
           Two-line row
         </ListRow>
         <ListRow icon={<FolderIcon />} disabled trailing="Off">
-          Disabled, single line
-        </ListRow>
-        <ListRow
-          icon={<FolderIcon />}
-          description="Add an API key in Settings to connect"
-          disabled
-          trailing="Off"
-        >
           Disabled row
         </ListRow>
         <ListRow trailing="12">
@@ -348,22 +337,10 @@ export function ListRowSpecimen(): JSX.Element {
             <ListRow
               size="lg"
               icon={<FolderIcon />}
-              description="The whole row presses"
               actions={<Button size="compact">Open</Button>}
             >
               Always visible at 40px
             </ListRow>
-            <ListRowLink
-              href="#row"
-              icon={<FolderIcon />}
-              actions={
-                <RowActionButton label="Open settings" onClick={noop}>
-                  <SettingsIcon />
-                </RowActionButton>
-              }
-            >
-              Link with an action
-            </ListRowLink>
             <ListRow
               icon={<FolderIcon />}
               actionsReveal={false}

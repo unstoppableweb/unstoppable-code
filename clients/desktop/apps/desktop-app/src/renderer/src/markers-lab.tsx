@@ -14,6 +14,4 @@ if (!rootElement) {
   throw new Error('Root element not found');
 }
 
-createRoot(rootElement).render(
-  <MarkersLabPage onColorModeChange={(mode) => applyTheme('default', mode)} />,
-);
+createRoot(rootElement).render(<MarkersLabPage />);

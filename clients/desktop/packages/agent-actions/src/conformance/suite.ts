@@ -1,15 +1,6 @@
 import { z } from 'zod';
-import {
-  settingsRouteToPath,
-  type SettingsRoute,
-} from '@canopy/protocol/settings';
-import { MANAGED_DELEGATION_PARENT_TOOL_KEYS } from '../tools/managed-delegation';
 import { TRANSCRIPT_READ_ACTION_TYPES } from '../families/transcript-read/actions';
 import { transcriptReadActionCatalog } from '../families/transcript-read/catalog';
-import {
-  CHAT_HISTORY_ACTION_TYPES,
-  chatHistoryActionCatalog,
-} from '../families/chat-history';
 import {
   ENVIRONMENT_ACTION_TYPES,
   ENVIRONMENT_CHAT_CREATE_PLACEMENTS,
@@ -23,10 +14,6 @@ import {
   SETTINGS_ACTION_TYPES,
   settingsActionCatalog,
 } from '../families/settings';
-import {
-  AI_GATEWAY_ACTION_TYPES,
-  aiGatewayActionCatalog,
-} from '../families/settings/ai-gateway';
 import {
   PULL_REQUEST_ACTION_TYPES,
   pullRequestActionCatalog,
@@ -122,30 +109,6 @@ export interface AgentConformanceCallIdentity {
 export interface AgentConformanceWorldControl {
   /** Counts transcript body reads, excluding metadata and rejected cursors. */
   transcriptReadCount(): number;
-  /**
-   * Counts GitHub requests behind GetGitHubPullRequestStatus. Hosts that
-   * offer the tool supply it, so the suite can check that repeated and
-   * concurrent reads share one request.
-   */
-  pullRequestReadCount?(): number;
-  /**
-   * Disconnects the owner's GitHub credential, so the next pull request read
-   * is refused. Hosts that offer the tool supply it.
-   */
-  disconnectGitHub?(): Promise<void>;
-  /**
-   * Counts the Feed entry revisions the host's Ledger wrote. Hosts that offer
-   * the Feed tools supply it, so the suite can check that refused and
-   * replayed writes write nothing.
-   */
-  feedWriteCount?(): number;
-  /**
-   * Counts the AI gateway changes the host applied. A host that cannot ask
-   * the user to confirm a gateway change (a cloud chat) supplies it; the
-   * suite then checks `connect` and `update` are refused with
-   * `missing_capability` and change nothing.
-   */
-  gatewayWriteCount?(): number;
   archiveChat(chatId: string): Promise<void>;
   /**
    * Makes a seeded chat one the host cannot deliver chat.send_message to,
@@ -181,28 +144,6 @@ export interface AgentConformanceWorldControl {
    * for a write whose turn had already finished.
    */
   firedWatchers(): Promise<readonly string[]>;
-  /**
-   * A person starts a chat in the world's project with a first message, in
-   * the task named or as a new task. Returns the chat's canonical address
-   * and the ids of the new-chat watchers its start fired. Hosts that serve
-   * canonical project chat watchers through `createChatWatcherTools`
-   * provide it; the suite runs the project watcher cases only with it.
-   */
-  startProjectChat?(taskId: string | null): Promise<{
-    readonly address: {
-      readonly projectId: string;
-      readonly taskId: string;
-      readonly chatId: string;
-    };
-    readonly firedWatchers: readonly string[];
-  }>;
-  /**
-   * Delivers the scheduled wakeups due by the host's clock
-   * (`advanceClock`), each once, and returns their watcher ids in due order.
-   * Hosts that offer `scheduled_wakeup` provide it; the suite runs the
-   * wakeup cases only with it.
-   */
-  fireDueWakeups?(): Promise<readonly string[]>;
   /**
    * Every settings destination the host asked its UI to open, in order.
    * Hosts that cannot observe their UI omit it; the suite then checks only
@@ -415,24 +356,6 @@ function expectedToolKeys(
   }
   if (capabilities.split.forked) keys.push('start_forked_agent');
   if (capabilities.split.branched) keys.push('start_branched_agent');
-  if (capabilities.pullRequestStatus === true)
-    keys.push('get_github_pull_request_status');
-  if (
-    capabilities.scheduleWakeup === true &&
-    capabilities.watcherTriggers.includes('scheduled_wakeup')
-  )
-    keys.push('schedule_wakeup');
-  if (capabilities.memory !== undefined)
-    keys.push('save_memory', 'search_memory', 'read_memory');
-  if (capabilities.feed === true)
-    keys.push(
-      'add_ledger_entry',
-      'search_ledger_entries',
-      'update_ledger_entry',
-    );
-  // The world's chat may delegate; it is not itself a delegate.
-  if (capabilities.managedDelegation === true)
-    keys.push(...MANAGED_DELEGATION_PARENT_TOOL_KEYS);
   return keys;
 }
 
@@ -503,19 +426,12 @@ function advertisesProperty(actual: unknown, expected: unknown): boolean {
 function sharedActionOffer(
   world: ConformanceWorld,
   capabilities: AgentActionHostCapabilities,
-  aiGateway = false,
 ): AgentActionDescriptionOffer {
-  // The settings family offers the AI gateway actions only while its host
-  // enables them, whatever its capability list says.
   const supported = new Set<string>([
-    ...(aiGateway ? AI_GATEWAY_ACTION_TYPES : []),
     ...environmentSupportedTypes(capabilities),
     ...TRANSCRIPT_READ_ACTION_TYPES,
-    ...CHAT_HISTORY_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
-    ...SETTINGS_ACTION_TYPES.filter(
-      (type) => aiGateway || !type.startsWith('settings.ai_gateway.'),
-    ),
+    ...SETTINGS_ACTION_TYPES,
     ...PULL_REQUEST_ACTION_TYPES,
     ...PROJECT_ACTION_TYPES,
     ...CHAT_CONTROL_ACTION_TYPES,
@@ -526,10 +442,8 @@ function sharedActionOffer(
     [
       ...environmentActionCatalog(world.brand),
       ...transcriptReadActionCatalog(),
-      ...chatHistoryActionCatalog,
       ...experimentActionCatalog(),
       ...settingsActionCatalog(),
-      ...(aiGateway ? aiGatewayActionCatalog : []),
       ...pullRequestActionCatalog(),
       ...PROJECT_ACTION_CATALOG,
       ...chatControlActionCatalog(),
@@ -555,13 +469,12 @@ function capabilityWordedTool(
   key: AgentActionToolKey,
   world: ConformanceWorld,
   capabilities: AgentActionHostCapabilities,
-  aiGateway: boolean,
 ): Partial<Pick<GoldenTool, 'description' | 'inputSchema'>> | null {
   const offered = (trigger: AgentWatcherTriggerType): boolean =>
     capabilities.watcherTriggers.includes(trigger);
   switch (key) {
     case 'search_actions': {
-      const offer = sharedActionOffer(world, capabilities, aiGateway);
+      const offer = sharedActionOffer(world, capabilities);
       return {
         description: searchActionsDescription(world.brand, offer),
         inputSchema: buildSearchActionsJsonSchema(offer),
@@ -571,7 +484,7 @@ function capabilityWordedTool(
       return {
         description: dispatchActionDescription(
           world.brand,
-          sharedActionOffer(world, capabilities, aiGateway),
+          sharedActionOffer(world, capabilities),
         ),
       };
     case 'search_watchers':
@@ -647,17 +560,6 @@ function checkDispatchSchema(
     'DispatchAction transcript action types',
   );
   const hasTranscripts = transcriptTypes.length > 0;
-  const historyTypes = CHAT_HISTORY_ACTION_TYPES.filter((type) =>
-    capabilities.actionTypes.includes(type),
-  );
-  checkEqual(
-    arrayAt(schema, ...ACTION_PATH, 'properties', 'type', 'enum').filter(
-      (type) => CHAT_HISTORY_ACTION_TYPES.some((history) => history === type),
-    ),
-    historyTypes,
-    'DispatchAction history action types',
-  );
-  const hasHistory = historyTypes.length > 0;
   const transcriptOnly = new Set([
     'target',
     'messageId',
@@ -677,11 +579,7 @@ function checkDispatchSchema(
   for (const [name, property] of Object.entries(
     isJsonRecord(properties) ? properties : {},
   )) {
-    if (
-      name === 'type' ||
-      (!hasTranscripts && transcriptOnly.has(name)) ||
-      (!hasHistory && (name === 'query' || name === 'matchId'))
-    )
+    if (name === 'type' || (!hasTranscripts && transcriptOnly.has(name)))
       continue;
     const actualProperty = at(schema, ...ACTION_PATH, 'properties', name);
     if (name === 'placement' && placementSchema.enum.length === 0) {
@@ -691,21 +589,14 @@ function checkDispatchSchema(
       );
       continue;
     }
-    // The reference host merges environment, transcript and history limits,
-    // in that order. Compare only the families this host advertises.
-    const limitBranches = arrayAt(property, 'anyOf').filter(
-      (_, index) =>
-        index === 0 ||
-        (index === 1 && hasTranscripts) ||
-        (index === 2 && hasHistory),
-    );
-    let expectedProperty = property;
-    if (name === 'placement') expectedProperty = placementSchema;
-    else if (name === 'limit' && limitBranches.length > 0)
-      expectedProperty =
-        limitBranches.length === 1
-          ? limitBranches[0]
-          : { anyOf: limitBranches };
+    const expectedProperty =
+      name === 'placement'
+        ? placementSchema
+        : !hasTranscripts &&
+            name === 'limit' &&
+            arrayAt(property, 'anyOf').length > 0
+          ? at(property, 'anyOf', 0)
+          : property;
     check(
       advertisesProperty(actualProperty, expectedProperty),
       `DispatchAction property ${name}\nexpected to accept: ${canonicalJson(expectedProperty)}\nreceived: ${canonicalJson(actualProperty)}`,
@@ -725,13 +616,6 @@ function checkDispatchSchema(
     if (
       CHAT_CONTROL_ACTION_TYPES.some(
         (type) => type === ruleType && !capabilities.actionTypes.includes(type),
-      )
-    )
-      continue;
-    if (
-      !hasHistory &&
-      CHAT_HISTORY_ACTION_TYPES.some(
-        (type) => type === at(rule, 'if', 'properties', 'type', 'const'),
       )
     )
       continue;
@@ -985,487 +869,6 @@ export function runAgentActionConformance<H>(
             rejected.result.text.includes('Invalid arguments'),
           'pull request fields are refused before dispatch',
         );
-      },
-    );
-  });
-
-  t.describe('pull request status contract', () => {
-    const key = 'get_github_pull_request_status';
-    const offered = (current: Session<H>): boolean =>
-      current.host.surface
-        .toolDefinitions()
-        .some((definition) => definition.key === key);
-    const read = async (
-      current: Session<H>,
-      args: unknown,
-    ): Promise<{ result: AgentActionToolResult; json: unknown }> => {
-      const result = await current.execute(key, args);
-      return { result, json: parseJson(result.text) };
-    };
-    const failureCode = (outcome: { json: unknown }): unknown =>
-      at(outcome.json, 'code');
-    const record = (value: unknown): Record<string, unknown> =>
-      isJsonRecord(value) ? value : {};
-
-    t.it('refuses the tool on a host that does not offer it', async () => {
-      const current = await session();
-      if (offered(current)) return;
-      const outcome = await current.execute(key, {
-        pullRequest: 'conformance/app#42',
-      });
-      check(outcome.isError === true, 'unoffered pull request status fails');
-    });
-
-    t.it('reads a pull request by URL or owner/repository#number', async () => {
-      const current = await session();
-      if (!offered(current)) return;
-      for (const row of world.pullRequests.readable) {
-        const expected = {
-          repository: row.repository,
-          number: row.number,
-          ...row.status,
-        };
-        for (const pullRequest of [
-          `https://github.com/${row.repository}/pull/${row.number}`,
-          `${row.repository}#${row.number}`,
-        ]) {
-          const outcome = await read(current, { pullRequest });
-          check(
-            outcome.result.isError !== true,
-            `${pullRequest} reads without an error`,
-          );
-          checkEqual(at(outcome.json, 'ok'), true, `${pullRequest} ok`);
-          const fetchedAt = at(outcome.json, 'pullRequest', 'fetchedAt');
-          check(
-            typeof fetchedAt === 'string' &&
-              !Number.isNaN(Date.parse(fetchedAt)),
-            `${pullRequest} carries fetchedAt`,
-          );
-          checkEqual(
-            { ...record(at(outcome.json, 'pullRequest')), fetchedAt: 0 },
-            { ...expected, fetchedAt: 0 },
-            `${pullRequest} status`,
-          );
-        }
-      }
-    });
-
-    t.it(
-      'shares one GitHub request across repeated and concurrent reads',
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        const { control } = current.host;
-        check(
-          control.pullRequestReadCount !== undefined,
-          'a host offering pull request status counts its GitHub requests',
-        );
-        const reads = (): number => control.pullRequestReadCount?.() ?? 0;
-        const [row] = world.pullRequests.readable;
-        if (!row) return;
-        const before = reads();
-        const reference = `${row.repository}#${row.number}`;
-        const outcomes = await Promise.all([
-          read(current, { pullRequest: reference }),
-          read(current, {
-            pullRequest: `https://github.com/${row.repository}/pull/${row.number}`,
-          }),
-        ]);
-        const again = await read(current, { pullRequest: reference });
-        for (const outcome of [...outcomes, again])
-          checkEqual(at(outcome.json, 'ok'), true, 'shared read succeeds');
-        checkEqual(reads() - before, 1, 'GitHub requests for three reads');
-      },
-    );
-
-    t.it('refuses invalid input and references before GitHub', async () => {
-      const current = await session();
-      if (!offered(current)) return;
-      const before = current.host.control.pullRequestReadCount?.();
-      for (const args of [
-        {},
-        { pullRequest: '' },
-        { pullRequest: 'conformance/app#42', repository: 'conformance/app' },
-      ]) {
-        const outcome = await read(current, args);
-        check(outcome.result.isError === true, 'invalid input is an error');
-        checkEqual(failureCode(outcome), 'invalid_input', 'invalid input');
-      }
-      for (const pullRequest of [
-        'not a pull request',
-        'https://gitlab.com/conformance/app/-/merge_requests/42',
-        'conformance/app#0',
-      ]) {
-        const outcome = await read(current, { pullRequest });
-        check(outcome.result.isError === true, `${pullRequest} is an error`);
-        checkEqual(
-          failureCode(outcome),
-          'invalid_reference',
-          `${pullRequest} reference`,
-        );
-      }
-      checkEqual(
-        current.host.control.pullRequestReadCount?.(),
-        before,
-        'no GitHub request for refused input',
-      );
-    });
-
-    t.it(
-      'answers not_found for a pull request the owner cannot read',
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        const { repository, number } = world.pullRequests.inaccessible;
-        const outcome = await read(current, {
-          pullRequest: `${repository}#${number}`,
-        });
-        check(outcome.result.isError === true, 'inaccessible is an error');
-        checkEqual(failureCode(outcome), 'not_found', 'inaccessible code');
-        check(
-          typeof at(outcome.json, 'message') === 'string',
-          'inaccessible message',
-        );
-      },
-    );
-
-    t.it('answers not_authenticated once GitHub is disconnected', async () => {
-      const current = await session();
-      if (!offered(current)) return;
-      const { control } = current.host;
-      check(
-        control.disconnectGitHub !== undefined,
-        'a host offering pull request status can disconnect GitHub',
-      );
-      await control.disconnectGitHub?.();
-      const [row] = world.pullRequests.readable;
-      if (!row) return;
-      const outcome = await read(current, {
-        pullRequest: `${row.repository}#${row.number}`,
-      });
-      check(outcome.result.isError === true, 'disconnected is an error');
-      checkEqual(
-        failureCode(outcome),
-        'not_authenticated',
-        'disconnected code',
-      );
-    });
-  });
-
-  t.describe('feed contract', () => {
-    const offered = (current: Session<H>): boolean =>
-      current.host.surface
-        .toolDefinitions()
-        .some((definition) => definition.key === 'add_ledger_entry');
-    const call = async (
-      current: Session<H>,
-      key: 'add_ledger_entry' | 'search_ledger_entries' | 'update_ledger_entry',
-      args: unknown,
-      identity?: Partial<AgentConformanceCallIdentity>,
-    ): Promise<{ result: AgentActionToolResult; json: unknown }> => {
-      const result = await current.execute(key, args, identity);
-      return { result, json: parseJson(result.text.split('\n')[0] ?? '') };
-    };
-    const add = (
-      current: Session<H>,
-      args: Record<string, unknown>,
-      identity?: Partial<AgentConformanceCallIdentity>,
-    ): Promise<{ result: AgentActionToolResult; json: unknown }> =>
-      call(
-        current,
-        'add_ledger_entry',
-        { content: 'Conformance details.', ...args },
-        identity,
-      );
-    const errorCodeOf = (outcome: { json: unknown }): unknown =>
-      at(outcome.json, 'error', 'code');
-    const writes = (current: Session<H>): number | undefined =>
-      current.host.control.feedWriteCount?.();
-
-    t.it(
-      'refuses the Feed tools on a host that does not offer them',
-      async () => {
-        const current = await session();
-        if (offered(current)) return;
-        for (const key of [
-          'add_ledger_entry',
-          'search_ledger_entries',
-          'update_ledger_entry',
-        ] as const) {
-          const outcome = await current.execute(key, {});
-          check(outcome.isError === true, `unoffered ${key} fails`);
-        }
-      },
-    );
-
-    t.it(
-      'adds an entry the calling chat owns, with the default status',
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        check(
-          current.host.control.feedWriteCount !== undefined,
-          'a host offering the Feed tools counts its Ledger writes',
-        );
-        const task = await add(current, {
-          type: 'OPERATION',
-          title: 'Ship it',
-        });
-        check(task.result.isError !== true, 'add succeeds');
-        checkEqual(at(task.json, 'ok'), true, 'add ok');
-        checkEqual(at(task.json, 'changed'), true, 'add changed');
-        checkEqual(
-          at(task.json, 'entry', 'status'),
-          'TODO',
-          'operation status',
-        );
-        checkEqual(at(task.json, 'entry', 'revision'), 1, 'first revision');
-        checkEqual(
-          at(task.json, 'entry', 'owner', 'isSelf'),
-          true,
-          'owner is self',
-        );
-        checkEqual(
-          at(task.json, 'entry', 'content'),
-          undefined,
-          'a receipt leaves out the content the agent wrote',
-        );
-        const note = await add(current, {
-          type: 'OBSERVATION',
-          title: 'Noted',
-        });
-        checkEqual(
-          at(note.json, 'entry', 'status'),
-          'INFO',
-          'observation status',
-        );
-      },
-    );
-
-    t.it('refuses invalid arguments before the Ledger', async () => {
-      const current = await session();
-      if (!offered(current)) return;
-      const before = writes(current);
-      for (const args of [
-        {},
-        { type: 'TASK', content: 'No title.' },
-        { type: 'TASK', title: 'T', content: 'C', projectId: 'p1' },
-      ]) {
-        const outcome = await current.execute('add_ledger_entry', args);
-        check(outcome.isError === true, 'invalid add is an error');
-        check(
-          outcome.text.startsWith('Invalid arguments for AddFeedEntry.'),
-          `invalid add text: ${outcome.text}`,
-        );
-      }
-      const update = await current.execute('update_ledger_entry', {
-        entryId: '00000000-0000-4000-8000-000000000001',
-        expectedRevision: 1,
-      });
-      check(
-        update.text.startsWith('Invalid arguments for UpdateFeedEntry.'),
-        `update with no change: ${update.text}`,
-      );
-      checkEqual(writes(current), before, 'no write for invalid arguments');
-    });
-
-    t.it('replays a requestKey once and refuses its reuse', async () => {
-      const current = await session();
-      if (!offered(current)) return;
-      const args = { type: 'TASK', title: 'Once', requestKey: 'feed-once' };
-      const first = await add(current, args);
-      const before = writes(current);
-      const again = await add(current, args);
-      checkEqual(
-        at(again.json, 'entry', 'entryId'),
-        at(first.json, 'entry', 'entryId'),
-        'a retry with the same requestKey answers the same entry',
-      );
-      checkEqual(writes(current), before, 'a replay writes nothing');
-      const reused = await add(current, { ...args, title: 'Another' });
-      checkEqual(errorCodeOf(reused), 'IDEMPOTENCY_KEY_REUSED', 'reused key');
-    });
-
-    t.it(
-      "searches the chat's own open entries with owners to assign",
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        const added = await add(current, { type: 'TASK', title: 'Find me' });
-        const entryId = at(added.json, 'entry', 'entryId');
-        const search = await call(current, 'search_ledger_entries', {
-          owner: 'self',
-          statuses: ['TODO', 'IN_PROGRESS', 'BLOCKED', 'NEEDS_REVIEW'],
-          includeAssignableOwners: true,
-        });
-        check(search.result.isError !== true, 'search succeeds');
-        const found = arrayAt(search.json, 'entries').find(
-          (entry) => at(entry, 'entryId') === entryId,
-        );
-        check(found !== undefined, 'search finds the added entry');
-        checkEqual(at(found, 'revision'), 1, 'search shows the revision');
-        checkEqual(
-          at(found, 'content'),
-          'Conformance details.',
-          'search content',
-        );
-        checkEqual(at(found, 'author', 'isSelf'), true, 'author is self');
-        const owners = arrayAt(search.json, 'owners', 'candidates');
-        check(
-          owners.some((owner) => at(owner, 'isSelf') === true) &&
-            owners.some((owner) => at(owner, 'isSelf') === false),
-          'owners list the chat and another assignable owner',
-        );
-        check(
-          owners.every(
-            (owner) => typeof at(owner, 'eligibilityToken') === 'string',
-          ),
-          'every owner carries an eligibility token',
-        );
-      },
-    );
-
-    t.it(
-      'updates with revisions, refusing a stale one and a closed entry',
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        const added = await add(current, { type: 'TASK', title: 'Update me' });
-        const entryId = at(added.json, 'entry', 'entryId');
-        const started = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 1,
-          status: 'IN_PROGRESS',
-        });
-        checkEqual(at(started.json, 'entry', 'revision'), 2, 'second revision');
-        checkEqual(
-          at(started.json, 'entry', 'status'),
-          'IN_PROGRESS',
-          'started',
-        );
-        const stale = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 1,
-          status: 'BLOCKED',
-        });
-        check(stale.result.isError === true, 'a stale revision is an error');
-        checkEqual(errorCodeOf(stale), 'REVISION_CONFLICT', 'stale revision');
-        checkEqual(
-          at(stale.json, 'currentEntry', 'revision'),
-          2,
-          'the conflict answers the current entry',
-        );
-        const done = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 2,
-          status: 'COMPLETED',
-        });
-        checkEqual(at(done.json, 'entry', 'status'), 'COMPLETED', 'completed');
-        const closed = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 3,
-          status: 'IN_PROGRESS',
-        });
-        checkEqual(errorCodeOf(closed), 'TERMINAL_ENTRY', 'closed entry');
-        const missing = await call(current, 'update_ledger_entry', {
-          entryId: '00000000-0000-4000-8000-00000000dead',
-          expectedRevision: 1,
-          status: 'COMPLETED',
-        });
-        checkEqual(errorCodeOf(missing), 'NOT_FOUND', 'unknown entry');
-      },
-    );
-
-    t.it(
-      'closes a parent only with a choice for its open children',
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        const operation = await add(current, {
-          type: 'OPERATION',
-          title: 'Parent',
-        });
-        const parentId = at(operation.json, 'entry', 'entryId');
-        const child = await add(current, {
-          type: 'TASK',
-          title: 'Child',
-          parentEntryId: parentId,
-        });
-        const childId = at(child.json, 'entry', 'entryId');
-        checkEqual(
-          at(child.json, 'entry', 'parentEntryId'),
-          parentId,
-          'parent',
-        );
-        const refused = await call(current, 'update_ledger_entry', {
-          entryId: parentId,
-          expectedRevision: 1,
-          status: 'COMPLETED',
-        });
-        checkEqual(errorCodeOf(refused), 'OPEN_CHILDREN', 'open children');
-        checkEqual(
-          at(refused.json, 'openChildEntryIds'),
-          [childId],
-          'the refusal names the open child',
-        );
-        const closed = await call(current, 'update_ledger_entry', {
-          entryId: parentId,
-          expectedRevision: 1,
-          status: 'COMPLETED',
-          openChildren: 'complete',
-        });
-        checkEqual(at(closed.json, 'entry', 'status'), 'COMPLETED', 'closed');
-      },
-    );
-
-    t.it(
-      'hands an entry over with an eligibility token, then leaves it to its owner',
-      async () => {
-        const current = await session();
-        if (!offered(current)) return;
-        const added = await add(current, { type: 'TASK', title: 'Hand over' });
-        const entryId = at(added.json, 'entry', 'entryId');
-        const forged = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 1,
-          owner: {
-            actorId: '00000000-0000-4000-8000-00000000beef',
-            eligibilityToken: 'forged',
-          },
-        });
-        checkEqual(errorCodeOf(forged), 'OWNER_UNAVAILABLE', 'forged token');
-        const search = await call(current, 'search_ledger_entries', {
-          entryIds: [entryId],
-          includeAssignableOwners: true,
-        });
-        const other = arrayAt(search.json, 'owners', 'candidates').find(
-          (owner) => at(owner, 'isSelf') === false,
-        );
-        const handed = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 1,
-          owner: {
-            actorId: at(other, 'actorId'),
-            eligibilityToken: at(other, 'eligibilityToken'),
-          },
-        });
-        check(handed.result.isError !== true, 'hand-over succeeds');
-        checkEqual(
-          at(handed.json, 'entry', 'owner', 'actorId'),
-          at(other, 'actorId'),
-          'the new owner',
-        );
-        checkEqual(
-          at(handed.json, 'entry', 'owner', 'isSelf'),
-          undefined,
-          "no longer the chat's",
-        );
-        const after = await call(current, 'update_ledger_entry', {
-          entryId,
-          expectedRevision: 2,
-          status: 'COMPLETED',
-        });
-        checkEqual(errorCodeOf(after), 'FORBIDDEN', 'not the owner any more');
       },
     );
   });
@@ -1726,30 +1129,32 @@ export function runAgentActionConformance<H>(
         }
         if (before !== null)
           checkEqual(await opened(), before, 'malformed routes open nothing');
-        const accounts: SettingsRoute[] = (
-          ['security', 'plugins', 'mcp'] as const
-        ).map((page) => ({ scope: 'account', page }));
+        const accounts = ['security', 'plugins', 'mcp'].map((page) => ({
+          scope: 'account',
+          page,
+        }));
         for (const account of accounts) {
           const accountResult = await open(account);
           check(at(accountResult.json, 'ok') === true, 'account settings open');
-          checkOpened(at(accountResult.json, 'result'), account);
+          checkEqual(
+            at(accountResult.json, 'result'),
+            { status: 'opened', destination: account },
+            'opened account destination',
+          );
         }
         // Every current membership opens; none is singled out.
-        const organizations: SettingsRoute[] = world.organizations.map(
-          (membership) => ({
-            scope: 'organization',
-            organizationId: membership.organizationId,
-            page: 'settings',
-            subtab: 'billing',
-          }),
-        );
+        const organizations = world.organizations.map((membership) => ({
+          scope: 'organization',
+          organizationId: membership.organizationId,
+          page: 'settings',
+          subtab: 'billing',
+        }));
         for (const organization of organizations) {
           const organizationResult = await open(organization);
           check(
             at(organizationResult.json, 'ok') === true,
-            `member organization ${canonicalJson(organization)} settings open`,
+            `member organization ${organization.organizationId} settings open`,
           );
-          checkOpened(at(organizationResult.json, 'result'), organization);
         }
         const outside = await open({
           scope: 'organization',
@@ -1773,83 +1178,6 @@ export function runAgentActionConformance<H>(
             [...before, ...accounts, ...organizations],
             'only validated member destinations were opened',
           );
-      },
-    );
-  });
-
-  t.describe('AI gateway settings contract', () => {
-    t.it(
-      'reads the Personal gateway without keys, refuses organizations outside membership, and changes nothing a host cannot confirm',
-      async () => {
-        const current = await session();
-        const dispatch = (
-          action: Record<string, unknown>,
-        ): Promise<{ result: AgentActionToolResult; json: unknown }> =>
-          current.dispatch({ type: 'settings.ai_gateway.get', ...action });
-        if (!current.supports('settings.ai_gateway.get')) {
-          checkErrorCode(
-            await dispatch({ scope: { kind: 'personal' } }),
-            ['unsupported_action'],
-            'AI gateway on an unsupported host',
-          );
-          return;
-        }
-        const personal = await dispatch({ scope: { kind: 'personal' } });
-        check(at(personal.json, 'ok') === true, 'Personal gateway reads');
-        const personalId = stringAt(
-          personal.json,
-          'result',
-          'scope',
-          'expectedOrganizationId',
-        );
-        check(
-          stringAt(personal.json, 'result', 'scope', 'kind') === 'personal' &&
-            personalId !== undefined,
-          'the Personal read names its organization',
-        );
-        check(
-          !personal.result.text.toLowerCase().includes('apikey'),
-          'a gateway read carries no key',
-        );
-        checkErrorCode(
-          await dispatch({
-            scope: {
-              kind: 'organization',
-              // Gateway scopes take UUIDs; the account belongs to no
-              // organization with this one.
-              organizationId: '00000000-0000-4000-8000-0000000000ff',
-            },
-          }),
-          ['invalid_target', 'not_found'],
-          'organization outside membership gateway',
-        );
-        const control = current.host.control;
-        if (!control.gatewayWriteCount || personalId === undefined) return;
-        const scope = { kind: 'personal', expectedOrganizationId: personalId };
-        for (const change of [
-          {
-            type: 'settings.ai_gateway.connect',
-            scope,
-            baseUrl: 'https://gateway.example',
-          },
-          {
-            type: 'settings.ai_gateway.update',
-            scope,
-            expectedRevision: 'absent',
-            patch: { enabled: false },
-          },
-        ]) {
-          checkErrorCode(
-            await current.dispatch(change),
-            ['missing_capability'],
-            `${change.type} without a confirmation`,
-          );
-        }
-        checkEqual(
-          control.gatewayWriteCount(),
-          0,
-          'refused gateway changes change nothing',
-        );
       },
     );
   });
@@ -1984,39 +1312,6 @@ export function runAgentActionConformance<H>(
     return writes;
   }
 
-  /**
-   * A settings destination a host opened, or, for a host with no UI to
-   * navigate, the web settings link it answered: the route's own path.
-   */
-  function checkOpened(result: unknown, destination: SettingsRoute): void {
-    if (stringAt(result, 'status') !== 'link') {
-      checkEqual(
-        result,
-        { status: 'opened', destination },
-        'opened settings destination',
-      );
-      return;
-    }
-    checkEqual(
-      at(result, 'destination'),
-      destination,
-      'linked settings destination',
-    );
-    const url = stringAt(result, 'url');
-    let path: string | undefined;
-    try {
-      const parsed = new URL(url ?? '');
-      path = `${parsed.pathname}${parsed.search}`;
-    } catch {
-      path = undefined;
-    }
-    checkEqual(
-      path,
-      settingsRouteToPath(destination),
-      'settings link is the route web path',
-    );
-  }
-
   function checkErrorCode(
     outcome: { result: AgentActionToolResult; json: unknown },
     codes: readonly string[],
@@ -2085,11 +1380,10 @@ export function runAgentActionConformance<H>(
       t.it('matches the golden tool descriptions and schemas', async () => {
         const current = await session();
         const capabilities = current.host.capabilities;
-        const aiGateway = current.supports('settings.ai_gateway.get');
         const goldenWording =
           sameDescriptionCapabilities(capabilities, golden.capabilities) &&
           canonicalJson(
-            sharedActionOffer(world, capabilities, aiGateway).actions.map(
+            sharedActionOffer(world, capabilities).actions.map(
               (action) => action.type,
             ),
           ) === canonicalJson(golden.capabilities.actionTypes);
@@ -2100,12 +1394,7 @@ export function runAgentActionConformance<H>(
           if (!frozen) continue;
           const reworded = goldenWording
             ? null
-            : capabilityWordedTool(
-                definition.key,
-                world,
-                capabilities,
-                aiGateway,
-              );
+            : capabilityWordedTool(definition.key, world, capabilities);
           const expected = reworded ? { ...frozen, ...reworded } : frozen;
           checkEqual(definition.name, expected.name, `${definition.key} name`);
           checkEqual(
@@ -4606,500 +3895,6 @@ export function runAgentActionConformance<H>(
           { results: [{ watcherId, status: 'not_found' }] },
           'DeleteWatchers reports a deleted watcher as not_found',
         );
-      });
-
-      t.it(
-        'arms project chat-completion watchers on the owner’s project chats',
-        async () => {
-          const current = await session();
-          const { capabilities, control } = current.host;
-          if (
-            !capabilities.watcherTriggers.includes(
-              'project_task_chat_completion',
-            ) ||
-            control.startProjectChat === undefined
-          )
-            return;
-          const setup = async (
-            target: Record<string, string>,
-            entry: Record<string, unknown> = {},
-          ): Promise<unknown> =>
-            parseJson(
-              (
-                await current.execute('setup_watchers', {
-                  watchers: [
-                    {
-                      trigger: 'project_task_chat_completion',
-                      target,
-                      ...entry,
-                    },
-                  ],
-                })
-              ).text,
-            );
-          const project = world.current.workspaceId;
-          const task = world.current.worktreeId;
-          checkSubset(
-            await setup({
-              projectId: project,
-              taskId: task,
-              chatId: world.current.chatId,
-            }),
-            {
-              watchers: [
-                {
-                  ok: false,
-                  error: {
-                    code: 'invalid_target',
-                    message: 'A chat cannot watch itself.',
-                  },
-                },
-              ],
-            },
-            'a project watcher on the calling chat',
-          );
-          const foreign = await setup({
-            projectId: world.foreign.workspaceId,
-            taskId: world.foreign.worktreeId,
-            chatId: world.foreign.chatId,
-          });
-          const missing = await setup({
-            projectId: 'conformance-missing-project',
-            taskId: task,
-            chatId: 'c2',
-          });
-          checkSubset(
-            foreign,
-            { watchers: [{ ok: false, error: { code: 'not_found' } }] },
-            'a project watcher on another owner’s project',
-          );
-          checkEqual(
-            at(foreign, 'watchers', 0, 'error'),
-            at(missing, 'watchers', 0, 'error'),
-            'another owner’s project answers as a missing one',
-          );
-          checkSubset(
-            await setup({ projectId: project, taskId: task, chatId: 'c2' }),
-            { watchers: [{ ok: false, error: { code: 'invalid_target' } }] },
-            'a project watcher on an idle chat without armForNextCompletion',
-          );
-          const armed = await setup(
-            { projectId: project, taskId: task, chatId: 'c2' },
-            { armForNextCompletion: true, label: 'Idle chat finished' },
-          );
-          const watcherId = stringAt(
-            armed,
-            'watchers',
-            0,
-            'result',
-            'watcherId',
-          );
-          check(watcherId !== undefined, 'a project watcher is armed');
-          if (watcherId === undefined) return;
-          const listed = parseJson(
-            (
-              await current.execute('search_watchers', {
-                targetChatId: 'c2',
-              })
-            ).text,
-          );
-          checkSubset(
-            listed,
-            {
-              activeWatchers: [
-                {
-                  watcherId,
-                  trigger: 'project_task_chat_completion',
-                  target: { projectId: project, taskId: task, chatId: 'c2' },
-                  label: 'Idle chat finished',
-                },
-              ],
-              activeReturned: 1,
-              activeTotalMatches: 1,
-            },
-            'SearchWatchers lists the project watcher by its canonical target',
-          );
-          checkEqual(
-            stringAt(
-              await setup(
-                { projectId: project, taskId: task, chatId: 'c2' },
-                { armForNextCompletion: true, label: 'Idle chat finished' },
-              ),
-              'watchers',
-              0,
-              'result',
-              'watcherId',
-            ),
-            watcherId,
-            'an identical project watcher is deduped',
-          );
-          await current.dispatch({
-            type: 'chat.send_message',
-            chatId: 'c2',
-            message: 'Run the checks again.',
-          });
-          checkEqual(
-            await control.completeTurn('c2'),
-            [watcherId],
-            'the project watcher fires when the chat’s turn ends',
-          );
-          checkEqual(
-            await control.completeTurn('c2'),
-            [],
-            'a project watcher fires once',
-          );
-        },
-      );
-
-      t.it(
-        'fires a new-chat watcher once, on another chat starting in its scope',
-        async () => {
-          const current = await session();
-          const { capabilities, control } = current.host;
-          if (
-            !capabilities.watcherTriggers.includes(
-              'project_new_chat_started',
-            ) ||
-            control.startProjectChat === undefined
-          )
-            return;
-          const start = (
-            taskId: string | null,
-          ): ReturnType<
-            NonNullable<AgentConformanceWorldControl['startProjectChat']>
-          > =>
-            control.startProjectChat?.(taskId) ??
-            Promise.reject(new Error('startProjectChat is not available.'));
-          const setup = async (
-            target: Record<string, string>,
-          ): Promise<unknown> =>
-            parseJson(
-              (
-                await current.execute('setup_watchers', {
-                  watchers: [{ trigger: 'project_new_chat_started', target }],
-                })
-              ).text,
-            );
-          checkSubset(
-            await setup({ projectId: world.foreign.workspaceId }),
-            { watchers: [{ ok: false, error: { code: 'not_found' } }] },
-            'a new-chat watcher on another owner’s project',
-          );
-          const project = world.current.workspaceId;
-          const inTask = stringAt(
-            await setup({ projectId: project, taskId: 't2' }),
-            'watchers',
-            0,
-            'result',
-            'watcherId',
-          );
-          const anywhere = stringAt(
-            await setup({ projectId: project }),
-            'watchers',
-            0,
-            'result',
-            'watcherId',
-          );
-          check(
-            inTask !== undefined && anywhere !== undefined,
-            'new-chat watchers are armed',
-          );
-          if (inTask === undefined || anywhere === undefined) return;
-          checkSubset(
-            parseJson(
-              (
-                await current.execute('search_watchers', {
-                  targetProjectId: project,
-                  activePageSize: 1,
-                })
-              ).text,
-            ),
-            {
-              activeWatchers: [
-                {
-                  watcherId: inTask,
-                  trigger: 'project_new_chat_started',
-                  target: { projectId: project, taskId: 't2' },
-                },
-              ],
-              activeReturned: 1,
-              activeTotalMatches: 2,
-            },
-            'SearchWatchers pages new-chat watchers by their project',
-          );
-          checkEqual(
-            (await start(null)).firedWatchers,
-            [anywhere],
-            'a chat starting elsewhere in the project fires the project watcher',
-          );
-          checkEqual(
-            (await start('t2')).firedWatchers,
-            [inTask],
-            'a chat starting in the task fires the task watcher',
-          );
-          checkEqual(
-            (await start('t2')).firedWatchers,
-            [],
-            'a new-chat watcher fires once',
-          );
-        },
-      );
-
-      t.it(
-        'schedules a wakeup that arrives once when due, deduped while pending',
-        async () => {
-          const current = await session();
-          const { capabilities, control } = current.host;
-          if (
-            !expectedToolKeys(capabilities).includes('schedule_wakeup') ||
-            control.fireDueWakeups === undefined
-          )
-            return;
-          const fireDue = (): Promise<readonly string[]> =>
-            control.fireDueWakeups?.() ??
-            Promise.reject(new Error('fireDueWakeups is not available.'));
-          // Each call is its own tool call in its own turn, so the turns'
-          // limits never refuse one; a retry reuses its call's ids.
-          let calls = 0;
-          const schedule = async (
-            args: Record<string, unknown>,
-            id = `wakeup-${String((calls += 1))}`,
-          ): Promise<AgentActionToolResult> =>
-            current.execute('schedule_wakeup', args, {
-              toolUseId: `${id}-tool`,
-              turnKey: `${id}-turn`,
-            });
-          for (const delaySeconds of [59, 3601, 90.5]) {
-            check(
-              (await schedule({ delaySeconds })).isError === true,
-              `ScheduleWakeup refuses delaySeconds ${String(delaySeconds)}`,
-            );
-          }
-          check(
-            (await schedule({ delaySeconds: 60, projectId: 'p' })).isError ===
-              true,
-            'ScheduleWakeup refuses fields it does not define',
-          );
-          const first = parseJson(
-            (
-              await schedule(
-                { delaySeconds: 120, followUpInstruction: 'Check the build.' },
-                'wakeup-first',
-              )
-            ).text,
-          );
-          const watcherId = stringAt(first, 'result', 'watcherId');
-          const scheduledFor = stringAt(
-            first,
-            'result',
-            'target',
-            'scheduledFor',
-          );
-          check(
-            watcherId !== undefined && scheduledFor !== undefined,
-            'ScheduleWakeup arms a wakeup with its due time',
-          );
-          if (watcherId === undefined || scheduledFor === undefined) return;
-          checkSubset(
-            first,
-            {
-              ok: true,
-              result: {
-                trigger: 'scheduled_wakeup',
-                target: { delaySeconds: 120 },
-                deduped: false,
-              },
-            },
-            'the armed wakeup',
-          );
-          const replay = await schedule(
-            { delaySeconds: 120, followUpInstruction: 'Check the build.' },
-            'wakeup-first',
-          );
-          checkEqual(
-            parseJson(replay.text),
-            first,
-            'a retried ScheduleWakeup call replays its result',
-          );
-          await control.advanceClock(30_000);
-          checkSubset(
-            parseJson(
-              (
-                await schedule({
-                  delaySeconds: 120,
-                  followUpInstruction: 'Check the build.',
-                })
-              ).text,
-            ),
-            {
-              ok: true,
-              result: { watcherId, target: { scheduledFor }, deduped: true },
-            },
-            'the same delay and instruction while pending returns the pending wakeup',
-          );
-          const other = stringAt(
-            parseJson((await schedule({ delaySeconds: 120 })).text),
-            'result',
-            'watcherId',
-          );
-          const cancelled = stringAt(
-            parseJson((await schedule({ delaySeconds: 600 })).text),
-            'result',
-            'watcherId',
-          );
-          check(
-            other !== undefined &&
-              other !== watcherId &&
-              cancelled !== undefined &&
-              cancelled !== other,
-            'another instruction or delay arms its own wakeup',
-          );
-          if (other === undefined || cancelled === undefined) return;
-          checkSubset(
-            parseJson(
-              (
-                await current.execute('search_watchers', {
-                  trigger: 'scheduled_wakeup',
-                })
-              ).text,
-            ),
-            {
-              activeWatchers: [
-                {
-                  watcherId,
-                  trigger: 'scheduled_wakeup',
-                  target: { delaySeconds: 120, scheduledFor },
-                },
-                { watcherId: other, trigger: 'scheduled_wakeup' },
-                { watcherId: cancelled, trigger: 'scheduled_wakeup' },
-              ],
-            },
-            'SearchWatchers lists the pending wakeups',
-          );
-          checkSubset(
-            parseJson(
-              (
-                await current.execute('delete_watchers', {
-                  watcherIds: [cancelled],
-                })
-              ).text,
-            ),
-            { results: [{ watcherId: cancelled, status: 'deleted' }] },
-            'DeleteWatchers cancels a pending wakeup',
-          );
-          await control.advanceClock(89_000);
-          checkEqual(await fireDue(), [], 'no wakeup arrives before it is due');
-          await control.advanceClock(31_000);
-          checkEqual(
-            await fireDue(),
-            [watcherId, other],
-            'the due wakeups arrive, in due order',
-          );
-          await control.advanceClock(600_000);
-          checkEqual(
-            await fireDue(),
-            [],
-            'a wakeup arrives once, and a cancelled one never',
-          );
-          checkSubset(
-            parseJson(
-              (
-                await schedule({
-                  delaySeconds: 120,
-                  followUpInstruction: 'Check the build.',
-                })
-              ).text,
-            ),
-            { ok: true, result: { deduped: false } },
-            'a wakeup that already arrived no longer dedupes a new one',
-          );
-        },
-      );
-
-      t.it('saves, searches and reads memory', async () => {
-        const current = await session();
-        const { capabilities } = current.host;
-        if (!expectedToolKeys(capabilities).includes('save_memory')) return;
-        let calls = 0;
-        const run = (
-          key: 'save_memory' | 'search_memory' | 'read_memory',
-          args: Record<string, unknown>,
-          id = `memory-${String((calls += 1))}`,
-        ): Promise<AgentActionToolResult> =>
-          current.execute(key, args, {
-            toolUseId: `${id}-tool`,
-            turnKey: `${id}-turn`,
-          });
-        check(
-          (await run('save_memory', { text: '', scope: 'user' })).isError ===
-            true,
-          'SaveMemory refuses empty text',
-        );
-        check(
-          (await run('read_memory', { scope: 'user', file: '../MEMORY.md' }))
-            .isError === true,
-          'ReadMemory refuses a traversal file key',
-        );
-        const text = 'Prefers pnpm over npm in every repository.';
-        const saved = await run(
-          'save_memory',
-          { text, scope: 'user' },
-          'memory-save',
-        );
-        const fileKey = /^Saved user memory to (inbox\/\S+\.md)$/.exec(
-          saved.text,
-        )?.[1];
-        check(
-          saved.isError !== true && fileKey !== undefined,
-          `SaveMemory saves a user note: ${saved.text}`,
-        );
-        if (fileKey === undefined) return;
-        checkEqual(
-          (await run('save_memory', { text, scope: 'user' }, 'memory-save'))
-            .text,
-          saved.text,
-          'a retried SaveMemory call replays the note it saved',
-        );
-        const found = await run('search_memory', { query: 'pnpm' });
-        check(
-          found.isError !== true &&
-            found.text.includes(`[user] ${fileKey}`) &&
-            found.text.includes('Prefers pnpm'),
-          `SearchMemory finds the saved note: ${found.text}`,
-        );
-        const missing = await run('search_memory', {
-          query: 'no such memory anywhere',
-        });
-        check(
-          missing.isError !== true && !missing.text.includes(fileKey),
-          'SearchMemory finds nothing for an unknown query',
-        );
-        const read = await run('read_memory', { scope: 'user', file: fileKey });
-        check(
-          read.isError !== true && read.text.includes(text),
-          'ReadMemory opens the saved note',
-        );
-        check(
-          (
-            await run('read_memory', {
-              scope: 'user',
-              file: 'topics/no-such-topic.md',
-            })
-          ).isError === true,
-          'ReadMemory refuses a file it does not have',
-        );
-        if (capabilities.memory === 'synced_user') {
-          check(
-            (await run('save_memory', { text, scope: 'workspace' })).isError ===
-              true,
-            'SaveMemory refuses workspace scope without workspace memory',
-          );
-          check(
-            (await run('read_memory', { scope: 'workspace', file: fileKey }))
-              .isError === true,
-            'ReadMemory refuses workspace scope without workspace memory',
-          );
-        }
       });
     });
 

@@ -1,8 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type JSX } from 'react';
-import {
-  localPlatform,
-  needsPageTitlebarDragRegion,
-} from '@/lib/local-platform';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import { isDefaultCoworkWorkspaceId } from '@canopy/desktop-shared/types';
 import { useProjectsStore } from '@/stores/projectsStore';
 
@@ -57,7 +55,7 @@ export function HomePage(): JSX.Element {
   const [showFirstRun, dismissFirstRun] = useShowFirstRun();
   return (
     <div data-testid="page-home" className="relative h-full w-full">
-      {needsPageTitlebarDragRegion(localPlatform()) && (
+      {!usesNativeWindowFrame(localPlatform()) && (
         <div
           aria-hidden="true"
           className="electron-drag absolute inset-x-0 top-0 h-10"

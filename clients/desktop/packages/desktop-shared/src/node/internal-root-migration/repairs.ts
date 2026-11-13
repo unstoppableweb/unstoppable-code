@@ -1,11 +1,6 @@
 import { execFile } from 'node:child_process';
-import { constants, lstatSync, rmSync } from 'node:fs';
-import { isUtf8 } from 'node:buffer';
-import {
-  internalRootMigrationAbortSignal,
-  internalRootMigrationProgress,
-  runInternalRootMigrationPhase,
-} from './progress';
+import { lstatSync, rmSync } from 'node:fs';
+import { internalRootMigrationProgress } from './progress';
 import { coordinateInternalRootMigration } from './index';
 import {
   collectInternalRootCleanupCandidates,
@@ -15,21 +10,16 @@ import {
 import { promisify, isDeepStrictEqual } from 'node:util';
 import {
   chmod,
-  copyFile,
   open,
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   readlink,
   realpath,
-  rm,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { DatabaseSync } from 'node:sqlite';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { observeStoragePathSync } from '@canopy/core-platform/storage-path-observation';
 import {
@@ -47,7 +37,6 @@ import {
   projectInternalRootMetadata,
   type InternalRootRepairWorker,
   type InternalRootRepairPlan,
-  type InternalRootLifecycleJournalEvidence,
 } from '@canopy/core-runtime/node/internal-root-repairs';
 import {
   InternalRootMigrationRefused,
@@ -77,14 +66,12 @@ import {
 import {
   W5CommitLog,
   applyW5Commit,
-  w5CommitLogLocation,
 } from '@canopy/core-runtime/node/w5/commit-log';
 import { assertRelocationW5Settled } from '@canopy/core-runtime/node/relocation';
 import { fingerprintW5File } from '@canopy/core-runtime/node/w5/commit-log/fingerprint';
 import type { W5DurabilityPort } from '@canopy/core-runtime/node/w5/commit-log';
 import {
   abandonedArchivePaths,
-  selectedAbandonedArchivePaths,
   assertAbandonedCheckouts,
 } from './abandoned-paths';
 import {
@@ -129,9 +116,7 @@ const git: RelocationGit = async (cwd, args) => {
     return await execute('git', command, {
       cwd,
       env,
-      // Cloned indexes can need minutes to re-hash; the operator watchdog owns stalls.
-      timeout: args[0] === 'status' ? 0 : 30_000,
-      signal: internalRootMigrationAbortSignal(),
+      timeout: 30_000,
       maxBuffer: 64 * 1024 * 1024,
     }).then(({ stdout }) => {
       internalRootMigrationProgress('Git probe completed');
@@ -143,13 +128,9 @@ const git: RelocationGit = async (cwd, args) => {
       'message' in details && typeof details.message === 'string'
         ? details.message
         : String(error);
-    const stderr =
-      'stderr' in details && typeof details.stderr === 'string'
-        ? details.stderr
-        : '';
     throw Object.assign(
       new Error(
-        `Git command failed at ${JSON.stringify(cwd)}: git ${command.join(' ')}\n${message}${stderr ? `\nGit stderr:\n${stderr}` : ''}`,
+        `Git command failed at ${JSON.stringify(cwd)}: git ${command.join(' ')}\n${message}`,
       ),
       {
         code: 'code' in details ? details.code : undefined,
@@ -210,342 +191,6 @@ const readonlyStore: W5FileStore = {
   remove: () => Promise.reject(new Error('Read-only relocation inventory')),
 };
 
-async function relocationWorkspaceIds(source: string): Promise<string[]> {
-  const file = join(source, 'workspaces/index.json');
-  const index = createWorkspaceIndexRepository({
-    store: readonlyStore,
-    filePath: () => file,
-    onCommitted: () => {},
-    onRefused: () => {},
-    storage: { namespace: 'workspace_index', writer: 'electron_main' },
-    normalizeActivitySectionOrder: () => undefined,
-  });
-  const membership = await index.read();
-  if (membership.authority !== 'ok' && membership.authority !== 'absent')
-    refuse('Unreadable workspace membership', file);
-  const ids = membership.entries.map((entry) => entry.id);
-  if (
-    new Set(ids).size !== ids.length ||
-    ids.some((id) => !/^[A-Za-z0-9_-]+$/.test(id))
-  )
-    refuse('Ambiguous workspace membership', file);
-  return ids;
-}
-
-function relocationWorkspaceManifest(
-  source: string,
-): ReturnType<typeof createWorkspaceManifestRepository> {
-  return createWorkspaceManifestRepository({
-    store: readonlyStore,
-    filePath: (id) => join(source, 'workspaces', id, 'workspace.json'),
-    storage: { namespace: 'workspace_manifest', writer: 'electron_main' },
-    knownFields: new Set(),
-    knownRepoFields: new Set(),
-  });
-}
-
-function relocationRepositoryPaths(
-  document: Readonly<Record<string, unknown>>,
-  file: string,
-): string[] {
-  const paths: string[] = [];
-  for (const key of ['repoPath', 'sourceRepoPath'] as const) {
-    const path = document[key];
-    if (typeof path === 'string') paths.push(path);
-  }
-  if (Array.isArray(document.repos))
-    for (const entry of document.repos) {
-      const repo: unknown = entry;
-      if (
-        typeof repo !== 'object' ||
-        repo === null ||
-        !('repoPath' in repo) ||
-        typeof repo.repoPath !== 'string'
-      )
-        refuse('Unreadable repository owner evidence', file);
-      paths.push(repo.repoPath);
-    }
-  return paths;
-}
-
-async function relocationAbandonedPaths(
-  source: string,
-  lifecycleJournals: readonly InternalRootLifecycleJournalEvidence[],
-  abandonCheckouts: readonly string[],
-): Promise<string[]> {
-  return [
-    ...(await abandonedArchivePaths(source, lifecycleJournals)),
-    ...abandonCheckouts,
-  ];
-}
-
-/** Best-effort read scope; canonical preparation and cold proof remain the backstop. */
-async function coldGitScope(
-  source: string,
-  abandonArchives: readonly string[],
-  abandonedCheckouts: readonly string[],
-): Promise<readonly string[]> {
-  const roots = new Set<string>();
-  const gitDirectories = new Set<string>();
-  const repositories = new Set<string>();
-  let workspaceIds: readonly string[] = [];
-  let incomplete = false;
-  async function hint<T>(read: () => Promise<T>): Promise<T | undefined> {
-    try {
-      return await read();
-    } catch {
-      incomplete = true;
-      return undefined;
-    }
-  }
-  const abandonedPaths = await hint(async () =>
-    relocationAbandonedPaths(
-      source,
-      abandonArchives.length
-        ? await freezeInternalRootJournals(source, abandonArchives)
-        : [],
-      abandonedCheckouts,
-    ),
-  );
-  const ignored = (path: string): boolean =>
-    abandonedPaths?.some((root) => isWithin(root, path)) ?? true;
-  async function gitPath(file: string): Promise<string | undefined> {
-    return hint(async () => {
-      const before = await statIfPresent(file);
-      if (!before) return undefined;
-      if (!before.isFile()) {
-        incomplete = true;
-        return undefined;
-      }
-      const handle = await open(
-        file,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      try {
-        const opened = await handle.stat();
-        if (
-          !opened.isFile() ||
-          opened.dev !== before.dev ||
-          opened.ino !== before.ino
-        )
-          throw new Error(`Git census link changed: ${JSON.stringify(file)}`);
-        const bytes = Buffer.alloc(4097);
-        const read = await handle.read(bytes, 0, bytes.length, 0);
-        const contents = bytes.subarray(0, read.bytesRead);
-        if (read.bytesRead > 4096 || !isUtf8(contents) || contents.includes(0))
-          throw new Error(
-            `Unreadable Git census link: ${JSON.stringify(file)}`,
-          );
-        const value = contents.toString('utf8').replace(/\r?\n$/, '');
-        if (!value || /[\r\n]/.test(value)) {
-          incomplete = true;
-          return undefined;
-        }
-        return value;
-      } finally {
-        await hint(() => handle.close());
-      }
-    });
-  }
-  async function directory(root: string): Promise<void> {
-    if (gitDirectories.has(root)) return;
-    gitDirectories.add(root);
-    await hint(async () => {
-      const common = await gitPath(join(root, 'commondir'));
-      if (common) {
-        for (const name of ['gitdir', 'commondir']) {
-          const file = join(root, name);
-          if (!isWithin(source, file)) roots.add(file);
-        }
-        await directory(resolve(root, common));
-        return;
-      }
-      const admin = join(root, 'worktrees');
-      const state = await statIfPresent(admin);
-      if (!state) return;
-      if (!state.isDirectory()) {
-        incomplete = true;
-        return;
-      }
-      for (const name of await readdir(admin))
-        await hint(async () => {
-          const backlink = await gitPath(join(admin, name, 'gitdir'));
-          if (!backlink) return;
-          const target = resolve(admin, name, backlink);
-          if (ignored(dirname(target))) return;
-          if (!(await statIfPresent(target))?.isFile()) return;
-          // Mirror journaled sibling backlinks so apply-peak prediction is not low.
-          await checkout(target, join(admin, name));
-        });
-    });
-  }
-  async function checkout(file: string, expectedAdmin?: string): Promise<void> {
-    await hint(async () => {
-      if (ignored(file) || isWithin(join(source, 'w5'), file)) return;
-      const state = await statIfPresent(file);
-      if (state?.isDirectory()) {
-        // A checkout's .git directory is common, not a linked admin directory.
-        if (await statIfPresent(join(file, 'commondir'))) incomplete = true;
-        else await directory(file);
-      } else if (state?.isFile()) {
-        const link = await gitPath(file);
-        if (link?.startsWith('gitdir: ') && link.slice(8)) {
-          const admin = resolve(dirname(file), link.slice(8));
-          const common = await gitPath(join(admin, 'commondir'));
-          const backlink = await gitPath(join(admin, 'gitdir'));
-          if (
-            (expectedAdmin !== undefined && admin !== expectedAdmin) ||
-            !common ||
-            !backlink ||
-            resolve(admin, backlink) !== file ||
-            !(await statIfPresent(admin))?.isDirectory() ||
-            !(await statIfPresent(resolve(admin, common)))?.isDirectory()
-          ) {
-            incomplete = true;
-            return;
-          }
-          if (!isWithin(source, file)) roots.add(file);
-          await directory(admin);
-        } else incomplete = true;
-      } else if (state) incomplete = true;
-    });
-  }
-  let completed = 0;
-  async function visit(
-    file: string,
-    ancestors: ReadonlySet<string>,
-  ): Promise<void> {
-    await hint(async () => {
-      // Omit interpretation only; the independent metadata census excludes nothing.
-      if (
-        ignored(file) ||
-        isWithin(join(source, 'w5'), file) ||
-        basename(file) === '.git'
-      )
-        return;
-      const state = await lstat(file);
-      internalRootMigrationProgress(
-        `Linux Git census scope: ${++completed} entries completed`,
-      );
-      const local = relative(source, file);
-      if (
-        state.isDirectory() &&
-        dirname(local) === 'workspaces' &&
-        !workspaceIds.includes(basename(file))
-      )
-        return;
-      if (/^workspaces\/[^/]+\/(?:workspace|worktrees)\.json$/.test(local)) {
-        if (!state.isFile()) {
-          incomplete = true;
-          return;
-        }
-        if (state.size > 32 * 1024 * 1024)
-          throw new Error('Oversize owner image');
-        if (basename(file) === 'worktrees.json') {
-          // List paths alone do not grant external checkout interpretation.
-          const list = await createWorktreeListRepository({
-            store: readonlyStore,
-            filePath: () => file,
-            storage: { namespace: 'worktree_list', writer: 'electron_main' },
-            knownRowFields: new Set(),
-            readRow: (row) => row,
-          }).read(basename(dirname(file)));
-          if (list.authority !== 'ok' || !list.complete) incomplete = true;
-          return;
-        }
-        const document = await relocationWorkspaceManifest(source).read(
-          basename(dirname(file)),
-        );
-        if (document.authority !== 'ok') {
-          incomplete = true;
-          return;
-        }
-        for (const path of relocationRepositoryPaths(document.document, file))
-          if (
-            path.startsWith('/') &&
-            !path.includes('\0') &&
-            resolve(path) === path
-          )
-            repositories.add(path);
-          else incomplete = true;
-      }
-      if (!state.isDirectory()) return;
-      const key = `${state.dev}:${state.ino}`;
-      if (ancestors.has(key))
-        throw new Error(`Cyclic Git census scope: ${JSON.stringify(file)}`);
-      const nested = new Set([...ancestors, key]);
-      const names = await readdir(file);
-      // Canonical inventory stops at a checkout; nested repositories are opaque.
-      if (!isWithin(join(source, 'w5'), file) && names.includes('.git')) {
-        await checkout(join(file, '.git'));
-        return;
-      }
-      for (const name of names) await visit(join(file, name), nested);
-    });
-  }
-  const log = w5CommitLogLocation(source).dbPath;
-  let ownersSettled = false;
-  let temporary: string | undefined;
-  let db: DatabaseSync | undefined;
-  try {
-    const state = await statIfPresent(log);
-    if (state) {
-      if (!state.isFile() || !unlinkedStoragePath(log))
-        throw new Error('Unreadable W5 log');
-      // SQLite readOnly may write source WAL/SHM. Query a disposable copy, never the source.
-      temporary = await mkdtemp(join(tmpdir(), 'canopy-cold-scope-'));
-      for (const suffix of ['', '-wal', '-journal']) {
-        const file = `${log}${suffix}`;
-        const before = await statIfPresent(file);
-        if (!before) continue;
-        if (!before.isFile() || !unlinkedStoragePath(file))
-          throw new Error('Unreadable W5 sidecar');
-        await copyFile(
-          file,
-          join(temporary, `commit-log.sqlite${suffix}`),
-          constants.COPYFILE_EXCL,
-        );
-        const after = await lstat(file);
-        if (
-          before.dev !== after.dev ||
-          before.ino !== after.ino ||
-          before.size !== after.size ||
-          before.mtimeMs !== after.mtimeMs ||
-          before.ctimeMs !== after.ctimeMs
-        )
-          throw new Error('W5 log changed during scope discovery');
-      }
-      db = new DatabaseSync(join(temporary, 'commit-log.sqlite'), {
-        readOnly: true,
-      });
-      // Pending images may replace membership; only W5 settlement projects them.
-      ownersSettled =
-        db
-          .prepare("SELECT 1 FROM w5_commits WHERE state != 'applied' LIMIT 1")
-          .get() === undefined;
-    } else ownersSettled = true;
-  } catch {
-    incomplete = true;
-  } finally {
-    await hint(() => Promise.resolve(db?.close()));
-    if (temporary) {
-      const directory = temporary;
-      await hint(() => rm(directory, { recursive: true, force: true }));
-    }
-  }
-  if (ownersSettled)
-    workspaceIds = (await hint(() => relocationWorkspaceIds(source))) ?? [];
-  else incomplete = true;
-  await visit(source, new Set());
-  for (const repository of repositories)
-    await checkout(join(repository, '.git'));
-  if (incomplete)
-    process.stderr.write(
-      'Migration: Linux Git census scope skipped evidence (unreadable, malformed or unsettled); inventory capacity is a lower bound until canonical preparation.\n',
-    );
-  return [...roots];
-}
-
 /** Inventory links and Git roots; W5 supplies the other exact owned path fields. */
 async function inventoryTree(
   root: string,
@@ -599,9 +244,28 @@ async function freeze(
     observation,
   );
   const workspaceRoot = join(identity.source, 'workspaces');
-  const ids = await relocationWorkspaceIds(identity.source);
+  const index = createWorkspaceIndexRepository({
+    store: readonlyStore,
+    filePath: () => join(workspaceRoot, 'index.json'),
+    onCommitted: () => {},
+    onRefused: () => {},
+    storage: { namespace: 'workspace_index', writer: 'electron_main' },
+    normalizeActivitySectionOrder: () => undefined,
+  });
+  const membership = await index.read();
+  if (membership.authority !== 'ok' && membership.authority !== 'absent')
+    refuse(
+      'Unreadable workspace membership',
+      join(workspaceRoot, 'index.json'),
+    );
   const workspaces: RelocationWorkspaceEvidence[] = [];
-  const manifest = relocationWorkspaceManifest(identity.source);
+  const manifest = createWorkspaceManifestRepository({
+    store: readonlyStore,
+    filePath: (id) => join(workspaceRoot, id, 'workspace.json'),
+    storage: { namespace: 'workspace_manifest', writer: 'electron_main' },
+    knownFields: new Set(),
+    knownRepoFields: new Set(),
+  });
   const list = createWorktreeListRepository({
     store: readonlyStore,
     filePath: (id) => join(workspaceRoot, id, 'worktrees.json'),
@@ -609,6 +273,12 @@ async function freeze(
     knownRowFields: new Set(),
     readRow: (row) => row,
   });
+  const ids = membership.entries.map((entry) => entry.id);
+  if (
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !/^[A-Za-z0-9_-]+$/.test(id))
+  )
+    refuse('Ambiguous workspace membership', join(workspaceRoot, 'index.json'));
   // Unindexed sidecars carry no Git/owned-path discovery grant. Lifecycle and
   // indexed records still supply their explicit owner paths below.
   const opaqueDirectories = new Set<string>();
@@ -631,11 +301,10 @@ async function freeze(
     return [];
   });
   await assertAbandonedCheckouts(identity.source, abandonCheckouts, git);
-  const abandonedPaths = await relocationAbandonedPaths(
-    identity.source,
-    lifecycleJournals,
-    abandonCheckouts,
-  );
+  const abandonedPaths = [
+    ...(await abandonedArchivePaths(identity.source, lifecycleJournals)),
+    ...abandonCheckouts,
+  ];
   const ignored = (path: string): boolean =>
     abandonedPaths.some((root) => isWithin(root, path));
   const inventory = await inventoryTree(
@@ -664,6 +333,7 @@ async function freeze(
           'Unreadable workspace owner evidence',
           join(workspaceRoot, workspaceId),
         );
+      const repoPaths: string[] = [];
       const ownerDirectories: string[] = [];
       for (const key of ['folderPath', 'externalPath'] as const) {
         const path = document.document[key];
@@ -677,10 +347,26 @@ async function freeze(
           inventory.paths.push(path);
         }
       }
-      const repoPaths = relocationRepositoryPaths(
-        document.document,
-        join(workspaceRoot, workspaceId, 'workspace.json'),
-      );
+      for (const key of ['repoPath', 'sourceRepoPath'] as const) {
+        const path = document.document[key];
+        if (typeof path === 'string') repoPaths.push(path);
+      }
+      const repos: unknown = document.document.repos;
+      if (Array.isArray(repos))
+        for (const entry of repos) {
+          const repo: unknown = entry;
+          if (
+            typeof repo !== 'object' ||
+            repo === null ||
+            !('repoPath' in repo) ||
+            typeof repo.repoPath !== 'string'
+          )
+            refuse(
+              'Unreadable repository owner evidence',
+              join(workspaceRoot, workspaceId, 'workspace.json'),
+            );
+          repoPaths.push(repo.repoPath);
+        }
       if (trees.authority === 'ok') {
         const abandonedIds = lifecycleJournals.flatMap((entry) =>
           entry.abandoned?.workspaceId === workspaceId
@@ -1236,25 +922,6 @@ export function createInternalRootRelocationRepairs(options: {
   };
   return {
     ...createInternalRootRepairs(worker),
-    // Git admin omissions are discovered later by freeze(); project operator selections only.
-    preflightOmissions: async (identity) => [
-      ...(await selectedAbandonedArchivePaths(
-        identity.source,
-        options.abandonArchives ?? [],
-      )),
-      ...(options.abandonCheckouts ?? []),
-    ],
-    coldExternalFiles: (context) =>
-      runInternalRootMigrationPhase(
-        'Linux Git census scope',
-        () =>
-          coldGitScope(
-            context.identity.source,
-            options.abandonArchives ?? [],
-            options.abandonCheckouts ?? [],
-          ),
-        { announce: false },
-      ),
     inspect: async (
       context: InternalRootRepairContext,
     ): Promise<readonly string[]> => {

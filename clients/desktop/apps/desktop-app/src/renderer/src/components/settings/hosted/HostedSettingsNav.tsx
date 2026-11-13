@@ -24,7 +24,7 @@ import {
   hostedSettingsNavModel,
   hostedSettingsOrganizationId,
   selectHostedSettingsRow,
-  signedOutSettingsNavModel,
+  SIGNED_OUT_SETTINGS_NAV_MODEL,
 } from './hosted-settings-model';
 
 /** Test-id prefix shared with the local rows (`settings-nav-<key>`). */
@@ -103,9 +103,6 @@ export function HostedSettingsNav({
   const freeAccessFlag = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key),
   );
-  const aiGatewayFlag = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
-  );
   // The browsed organization's own bootstrap decides its group once known.
   const organizationKnown = entry.data !== null;
   const organizationName =
@@ -117,7 +114,7 @@ export function HostedSettingsNav({
   const fallback = useMemo(
     () =>
       account.status === 'signed_out'
-        ? signedOutSettingsNavModel(aiGatewayFlag)
+        ? SIGNED_OUT_SETTINGS_NAV_MODEL
         : hostedSettingsNavFallback({
             persisted,
             flags: {
@@ -132,7 +129,6 @@ export function HostedSettingsNav({
           }),
     [
       account.status,
-      aiGatewayFlag,
       persisted,
       billingFlag,
       digestsFlag,

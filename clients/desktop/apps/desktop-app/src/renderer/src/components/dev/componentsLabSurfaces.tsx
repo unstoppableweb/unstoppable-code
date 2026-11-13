@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   Button,
   Divider,
@@ -76,7 +76,7 @@ export function SurfacesSpecimen(): JSX.Element {
         <VariantGrid />
       </SpecimenPanel>
       <SpecimenPanel title="Variants, on the page background">
-        <Surface variant="pane" padding="default">
+        <Surface variant="inset" padding="default">
           <VariantGrid />
         </Surface>
       </SpecimenPanel>
@@ -185,7 +185,7 @@ export function SurfacesSpecimen(): JSX.Element {
               <Sample title="Pull request" />
               <Surface variant="inset" padding="tight">
                 <span
-                  className={`${REPLAY_BLOCK_CLASS} font-mono text-xs fg-secondary`}
+                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-xs fg-secondary`}
                 >
                   git push origin feat/surfaces
                 </span>

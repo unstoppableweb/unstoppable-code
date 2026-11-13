@@ -1,7 +1,3 @@
-import { WorktreeRecoveryListParamsSchema } from '@canopy/protocol/canopy-core';
-import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
-import type { DesktopIpcCallerResolver } from './file-tree';
-import { WorktreeRecoveryRequestSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
 import {
   IPC_CHANNELS,
   type ProjectDeletionDiscardDescribeRequest,
@@ -23,21 +19,7 @@ import { registerIpcHandler } from './register';
  * (the project kind comes from its configuration) and resolve typed refusals
  * instead of throwing them. Shared-container viewer scopes refuse first.
  */
-export function registerWorktreeDiscardHandlers(runtime: {
-  dispatcher: DesktopCanopyDispatcher;
-  resolveCaller: DesktopIpcCallerResolver;
-}): void {
-  registerIpcHandler(
-    IPC_CHANNELS.worktreeRecoveryList,
-    async (event, request: unknown) =>
-      runtime.dispatcher.query(
-        'core.worktree.recovery.list',
-        WorktreeRecoveryListParamsSchema.parse(request),
-        {
-          caller: runtime.resolveCaller(event),
-        },
-      ),
-  );
+export function registerWorktreeDiscardHandlers(): void {
   registerIpcHandler(
     IPC_CHANNELS.worktreeDiscardDescribe,
     async (
@@ -47,22 +29,11 @@ export function registerWorktreeDiscardHandlers(runtime: {
       validateId(request.projectId, 'projectId');
       assertWritableScope(request.projectId);
       validateId(request.worktreeId, 'worktreeId');
-      const recovery =
-        request.recovery === undefined
-          ? undefined
-          : WorktreeRecoveryRequestSchema.parse(request.recovery);
-      const options = {
-        ...(request.retainedArchives === true
-          ? { retainedArchives: true }
-          : {}),
-        ...(recovery ? { recovery } : {}),
-      };
-      return Object.keys(options).length > 0
-        ? describeWorktreeDiscard(
-            request.projectId,
-            request.worktreeId,
-            options,
-          )
+      // Older callers keep their exact call; only the opt-in adds options.
+      return request.retainedArchives === true
+        ? describeWorktreeDiscard(request.projectId, request.worktreeId, {
+            retainedArchives: true,
+          })
         : describeWorktreeDiscard(request.projectId, request.worktreeId);
     },
   );

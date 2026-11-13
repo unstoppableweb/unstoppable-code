@@ -3,7 +3,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useId,
   useRef,
   useState,
   type FormEvent,
@@ -35,7 +34,6 @@ import {
   SettingsSelect,
   SortDropdown,
   Surface,
-  TabBar,
   TextArea,
   TextInput,
   type TextInputDensity,
@@ -48,6 +46,7 @@ import {
   type ThinkingLevel,
 } from '@canopy/protocol/thinking';
 import { SearchIcon, SparkleIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { applyTheme } from '@/lib/theme';
 
 /**
  * Localhost lab for trying every shared form field by hand
@@ -797,68 +796,35 @@ function ChipTriggers(): JSX.Element {
   );
 }
 
-const FIELD_GROUPS = [
-  {
-    id: 'text-input',
-    label: 'Text input',
-    rows: [
-      textInputRow('default', 'TextInput 36px'),
-      textInputRow('compact', 'TextInput compact 28px'),
-      textInputRow('settings', 'TextInput settings 28px'),
-    ],
-  },
-  { id: 'text-area', label: 'Text area', rows: [TEXT_AREA_ROW] },
+const STATE_ROWS: readonly StateRow[] = [
+  textInputRow('default', 'TextInput 36px'),
+  textInputRow('compact', 'TextInput compact 28px'),
+  textInputRow('settings', 'TextInput settings 28px'),
+  TEXT_AREA_ROW,
   {
     id: 'select',
-    label: 'Select',
-    rows: [
-      {
-        id: 'select',
-        name: 'Select 36px',
-        cell: (state, focused): ReactNode =>
-          selectCell('select', state, focused),
-      },
-    ],
+    name: 'Select 36px',
+    cell: (state, focused) => selectCell('select', state, focused),
   },
   {
     id: 'settings-select',
-    label: 'Settings select',
-    rows: [
-      {
-        id: 'settings-select',
-        name: 'SettingsSelect 28px',
-        cell: (state, focused): ReactNode =>
-          selectCell('settings-select', state, focused),
-      },
-    ],
+    name: 'SettingsSelect 28px',
+    cell: (state, focused) => selectCell('settings-select', state, focused),
   },
   {
-    id: 'date',
-    label: 'Date',
-    rows: [
-      {
-        id: 'date-field',
-        name: 'DateField 36px',
-        cell: (state, focused): ReactNode => dateCell(state, focused),
-      },
-    ],
+    id: 'date-field',
+    name: 'DateField 36px',
+    cell: (state, focused) => dateCell(state, focused),
   },
-  { id: 'search', label: 'Search', rows: [searchRow('sm'), searchRow('md')] },
-  { id: 'inline', label: 'Inline input', rows: [INLINE_ROW] },
-  { id: 'dialog-field', label: 'Dialog field', rows: [DIALOG_FIELD_ROW] },
-  { id: 'field-error', label: 'Field error', rows: [FIELD_ERROR_ROW] },
-  { id: 'choice-list', label: 'Choice list', rows: [CHOICE_LIST_ROW] },
-  { id: 'switch', label: 'Switch', rows: [TOGGLE_ROW] },
-  { id: 'composer-chips', label: 'Composer chips', rows: [CAPSULE_ROW] },
-] as const satisfies readonly {
-  readonly id: string;
-  readonly label: string;
-  readonly rows: readonly StateRow[];
-}[];
-
-const STATE_ROWS: readonly StateRow[] = FIELD_GROUPS.flatMap(
-  ({ rows }): readonly StateRow[] => rows,
-);
+  searchRow('sm'),
+  searchRow('md'),
+  INLINE_ROW,
+  DIALOG_FIELD_ROW,
+  FIELD_ERROR_ROW,
+  CHOICE_LIST_ROW,
+  TOGGLE_ROW,
+  CAPSULE_ROW,
+];
 
 const CHOICE_MATRIX_ROWS = [
   {
@@ -911,23 +877,17 @@ const CHOICE_MATRIX_COLUMNS = [
  * marks' `forceState` prop, which applies the same classes as the live
  * states (lab and visual tests only); focus is real browser focus.
  */
-function ChoiceMatrix({
-  kind,
-}: {
-  readonly kind?: 'radio' | 'checkbox';
-}): JSX.Element {
-  // A Focus button moves real focus to one mark at a time.
+function ChoiceMatrix(): JSX.Element {
+  // Nothing here holds focus until a Focus button asks; the grid below
+  // starts with its first row focused. A Focus button is a pointer press, so
+  // the browser draws a mark's :focus-visible ring only after a key press
+  // (Tab, or Shift then Focus).
   const [focusRow, setFocusRow] = useState('');
-  const rows = kind
-    ? CHOICE_MATRIX_ROWS.filter((row) => row.kind === kind)
-    : CHOICE_MATRIX_ROWS;
   return (
-    <div className="flex min-w-0 flex-col gap-2 overflow-x-auto">
-      {kind === undefined ? (
-        <Heading level={2} variant="title">
-          Radio and checkbox
-        </Heading>
-      ) : null}
+    <div className="flex flex-col gap-2">
+      <Heading level={2} variant="title">
+        Radio and checkbox
+      </Heading>
       <Surface variant="group" className="w-max">
         <div
           className="grid gap-px"
@@ -944,7 +904,7 @@ function ChoiceMatrix({
               <span className="text-xs font-medium fg-tertiary">{column}</span>
             </Surface>
           ))}
-          {rows.map((row) => (
+          {CHOICE_MATRIX_ROWS.map((row) => (
             <Fragment key={row.id}>
               <Surface variant="pane" padding="tight">
                 <div className="flex flex-col items-start gap-1 text-xs">
@@ -1007,18 +967,11 @@ function ChoiceMatrix({
 
 function StatesView({
   openMenu,
-  rows = STATE_ROWS,
-  focusFirst = true,
-  showChoiceMatrix = true,
 }: {
   readonly openMenu: OpenMenu;
-  readonly rows?: readonly StateRow[];
-  readonly focusFirst?: boolean;
-  readonly showChoiceMatrix?: boolean;
 }): JSX.Element {
-  const [focusRow, setFocusRow] = useState(
-    focusFirst ? (rows[0]?.id ?? '') : '',
-  );
+  const rows = STATE_ROWS;
+  const [focusRow, setFocusRow] = useState(rows[0]?.id ?? '');
   const [cycle, setCycle] = useState(false);
 
   useEffect(() => {
@@ -1038,22 +991,14 @@ function StatesView({
         <span>
           Focused column: one cell holds focus at a time (now:{' '}
           <span className="fg-primary">
-            {rows.find((row) => row.id === focusRow)?.name ?? 'none'}
+            {rows.find((row) => row.id === focusRow)?.name}
           </span>
           ).
         </span>
-        {rows.length > 1 ? (
-          <>
-            <ToggleSwitch
-              label="Cycle focus"
-              checked={cycle}
-              onChange={setCycle}
-            />
-            <span>Cycle focus</span>
-          </>
-        ) : null}
+        <ToggleSwitch label="Cycle focus" checked={cycle} onChange={setCycle} />
+        <span>Cycle focus</span>
       </div>
-      {showChoiceMatrix ? <ChoiceMatrix /> : null}
+      <ChoiceMatrix />
       <div className="overflow-x-auto">
         <Surface variant="group" className="w-max">
           <div
@@ -1094,67 +1039,17 @@ function StatesView({
   );
 }
 
-const FIELD_TABS = [
-  ...FIELD_GROUPS.map(({ id, label, rows }) => ({
-    id,
-    label,
-    View: (): JSX.Element => (
-      <StatesView
-        openMenu="none"
-        rows={rows}
-        focusFirst={false}
-        showChoiceMatrix={false}
-      />
-    ),
-  })),
-  {
-    id: 'checkbox',
-    label: 'Checkbox',
-    View: (): JSX.Element => <ChoiceMatrix kind="checkbox" />,
-  },
-  {
-    id: 'radio',
-    label: 'Radio',
-    View: (): JSX.Element => <ChoiceMatrix kind="radio" />,
-  },
-  { id: 'playground', label: 'Playground', View: PlaygroundView },
-] as const;
+/**
+ * The states grid on its own, for the components library: no menu forced
+ * open and the lab's All disabled / All invalid flags off.
+ */
+export function FieldsStatesGrid(): JSX.Element {
+  return <StatesView openMenu="none" />;
+}
 
-type FieldTab = (typeof FIELD_TABS)[number]['id'];
-
-export function FieldsSpecimen(): JSX.Element {
-  const [selected, setSelected] = useState<FieldTab>('text-input');
-  const id = useId();
-  const panelId = `${id}-panel`;
-  const tabs = FIELD_TABS.map(({ id: tab, label }) => ({
-    id: tab,
-    label,
-    tabId: `${id}-${tab}`,
-  }));
-  const { View } =
-    FIELD_TABS.find((tab) => tab.id === selected) ?? FIELD_TABS[0];
-
-  return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <TabBar
-        items={tabs}
-        value={selected}
-        onChange={setSelected}
-        label="Field types"
-        density="compact"
-        panelId={panelId}
-        scrollable
-      />
-      <div
-        id={panelId}
-        role="tabpanel"
-        aria-labelledby={`${id}-${selected}`}
-        className="min-w-0"
-      >
-        <View />
-      </div>
-    </div>
-  );
+/** The playground forms on their own, for the components library. */
+export function FieldsPlayground(): JSX.Element {
+  return <PlaygroundView />;
 }
 
 function RowCells({
@@ -1734,11 +1629,7 @@ function PlaygroundView(): JSX.Element {
 
 // ---------------------------------------------------------------- page --
 
-export function FieldsLabPage({
-  onColorModeChange,
-}: {
-  readonly onColorModeChange: (mode: ColorMode) => void;
-}): JSX.Element {
+export function FieldsLabPage(): JSX.Element {
   const [view, setView] = useState<LabView>(initialView);
   const [colorMode, setColorMode] = useState<ColorMode>(initialColorMode);
   const [allDisabled, setAllDisabled] = useState(false);
@@ -1746,8 +1637,8 @@ export function FieldsLabPage({
   const [openMenu, setOpenMenu] = useState<OpenMenu>('none');
 
   useEffect(() => {
-    onColorModeChange(colorMode);
-  }, [colorMode, onColorModeChange]);
+    applyTheme('default', colorMode);
+  }, [colorMode]);
 
   useEffect(() => {
     const url = new URL(window.location.href);

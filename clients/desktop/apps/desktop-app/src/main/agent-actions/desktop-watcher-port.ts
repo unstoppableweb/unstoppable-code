@@ -711,9 +711,6 @@ export async function setupWatchersFor(
         ...('terminalStatuses' in target && target.terminalStatuses
           ? { terminalStatuses: target.terminalStatuses }
           : {}),
-        ...('runOn' in target && target.runOn === 'cloud'
-          ? { runOn: target.runOn }
-          : {}),
       },
     });
   }

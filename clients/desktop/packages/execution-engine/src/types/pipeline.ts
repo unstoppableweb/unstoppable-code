@@ -565,7 +565,6 @@ export interface PipelineInlineModelAliasPreference {
 export interface PipelineAgentModelAliasPreference {
   mode: 'agent';
   agent_id: string;
-  base?: string;
 }
 
 /**
@@ -1006,11 +1005,6 @@ export type PipelineStatusReasonKind =
    * a deadline to finish, so its host can roll over (CAN-6199).
    */
   | 'host_rollover'
-  /**
-   * The daemon core hosting the run was lost; its host ended the steps and
-   * checkpointed the run (CAN-6481).
-   */
-  | 'core_lost'
   | 'input_required'
   | 'action_paused'
   | 'provider_authentication_required'
@@ -1022,7 +1016,6 @@ export type PipelineStatusReasonCode =
   | 'app_shutdown'
   | 'owner_lost'
   | 'host_rollover'
-  | 'core_lost'
   | 'input_requested'
   | 'action_requested_pause'
   | 'authentication_failed'
@@ -1172,7 +1165,7 @@ export interface StepResult {
   agent_harness?: ModelHarness;
   agent_model?: string;
   agent_runtime_model?: string;
-  agent_model_config?: PipelineAgentModelConfig;
+  agent_model_config?: AgentModelConfig;
   model_alias?: string;
   model_alias_name?: string;
   model_alias_plugin_collection_ids?: string[];
@@ -2304,10 +2297,3 @@ export interface ListSharedTeamsRequest {
 
 export type ListSharedTeamsResponse = ProtocolListSharedTeamsResponse;
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
-
-/** Step identity augments, rather than replaces, the effective model options. */
-export interface PipelineAgentModelConfig extends AgentModelConfig {
-  agentId?: string;
-  baseModel?: string;
-  requestedModel?: string;
-}

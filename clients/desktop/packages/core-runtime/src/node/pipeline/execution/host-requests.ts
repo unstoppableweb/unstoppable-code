@@ -114,15 +114,7 @@ export function ownerSettlement(
     result.value.kind !== WORKER_PIPELINE_OWNER_RESULT_KIND[action]
   )
     return { result: UNEXPECTED };
-  if (!values) return { result };
-  // An MCP header rides only the authorization that granted it (CAN-6168).
-  const granted =
-    result.value.kind === 'mcp.authorize' && result.value.grantId !== null;
-  if (values.mcpAuthorization === undefined || granted)
-    return { result, values };
-  const kept: WorkerPipelineOwnerValues = { ...values };
-  delete kept.mcpAuthorization;
-  return { result, values: kept };
+  return values ? { result, values } : { result };
 }
 
 /** The worker side: pending host requests and their subscribers. */
