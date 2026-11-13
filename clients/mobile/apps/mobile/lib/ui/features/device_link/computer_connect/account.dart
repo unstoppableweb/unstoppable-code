@@ -99,6 +99,14 @@ final class ComputerConnectAccount extends ChangeNotifier {
 
   /// Discovery has reached the relay at least once since this screen opened.
   bool get discovered => _relay != null;
+
+  /// A closed or unopened relay cannot tell us whether a computer is online.
+  bool? computerAvailable(String id) {
+    final relay = _relay;
+    if (relay == null || relay.isClosed) return null;
+    return peers[id]?.acceptsControl == true;
+  }
+
   void _notify() {
     if (_disposed) return;
     _reconnectStatus.update(

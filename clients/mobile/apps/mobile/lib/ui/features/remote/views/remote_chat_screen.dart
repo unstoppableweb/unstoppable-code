@@ -11,7 +11,7 @@ import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
 
 import 'package:flutter/material.dart';
-import 'package:mobile/ui/core/app_route_observer.dart';
+import 'package:mobile/ui/core/navigation/app_route_scope.dart';
 import 'package:mobile/ui/features/remote/view_models/pipeline_run_chat_activity_controller.dart';
 import 'package:mobile/ui/features/remote/views/widgets/pipeline_run_agent_activity.dart';
 import 'package:provider/provider.dart';
@@ -29,6 +29,7 @@ import 'package:mobile/services/speech_to_text_recognizer.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_controller.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_chat_attachment_uploader.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
+import 'package:mobile/ui/features/remote/view_models/remote_response_fork.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_chat_draft_coordinator.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_composer_command_source.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_composer_chat_resolver.dart';
@@ -232,6 +233,8 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
   bool _attachmentSendInFlight = false;
   bool _attachmentRestoreScheduled = false;
   bool _routeIsCurrent = true;
+  bool _paneIsCurrent = true;
+  RouteObserver<ModalRoute<Object?>>? _routeObserver;
 
   // ---- In-place creation ([RemoteChatScreen.create]) ----
 
@@ -515,7 +518,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
     _bindChatChanges(viewModel, target);
     _activity = _agentActivity.controllerFor(viewModel, _worktree);
     if (chatId != null) _activity?.bind(chatId);
-    final isCurrent = widget.isActive && (_observedRoute?.isCurrent ?? true);
+    final isCurrent = _isShown && (_observedRoute?.isCurrent ?? true);
     _reopener.show(
       // Restoration can connect without changing the pairing generation.
       // Leave activation pending until its cache has a connected owner.
@@ -575,7 +578,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
 
   /// Whether the user can see this chat: its route is on top and, inside the
   /// home shell, it is the selected destination.
-  bool get _isShown => widget.isActive && _routeIsCurrent;
+  bool get _isShown => widget.isActive && _routeIsCurrent && _paneIsCurrent;
 
   DraftTarget? _draftTargetFor(String? chatId) => _draftCoordinator.targetFor(
     workspace: widget.workspace,
@@ -805,7 +808,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final lifecycle = WidgetsBinding.instance.lifecycleState;
       if (!mounted ||
-          !widget.isActive ||
+          !_isShown ||
           _renderedReadChatId != target.chatId ||
           !(ModalRoute.of(context)?.isCurrent ?? true) ||
           (lifecycle != null && lifecycle != AppLifecycleState.resumed)) {
@@ -818,11 +821,17 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _paneIsCurrent = AppRouteScope.isCurrentOf(context);
+    _syncPrPoll();
+    if (!_paneIsCurrent) unawaited(_voice.abandon());
     final route = ModalRoute.of<Object?>(context);
-    if (!identical(route, _observedRoute)) {
-      appRouteObserver.unsubscribe(this);
+    final observer = AppRouteScope.of(context);
+    if (!identical(route, _observedRoute) ||
+        !identical(observer, _routeObserver)) {
+      _routeObserver?.unsubscribe(this);
+      _routeObserver = observer;
       _observedRoute = route;
-      if (route != null) appRouteObserver.subscribe(this, route);
+      if (route != null) observer.subscribe(this, route);
     }
     ActiveChatTracker? tracker;
     try {
@@ -900,7 +909,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
     _chatChanges?.dispose();
     _agentActivity.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    appRouteObserver.unsubscribe(this);
+    _routeObserver?.unsubscribe(this);
     _activeChatTracker?.release(_activeChatOwner);
     final attachments = _attachments;
     if (attachments != null) {
@@ -1772,8 +1781,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
       },
       appBar: CanopyAppBar(
         automaticallyImplyLeading: true,
-        // Inside the home shell the chat leads with the menu button; a pushed
-        // route sits outside the shell's scope and keeps its back button.
+        // Shell destinations use the menu; pushed routes keep their back button.
         leading: HomeMenuButton.maybeOf(context, designSystem: true),
         content: Text(
           worktree == null && !_worktreeProvisioning
@@ -2089,6 +2097,25 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
                 ? CanopyOverlayAction.stackOffset
                 : 0,
             messages: messages,
+            forkEnabled: viewModel.isConnected && !showReconnecting,
+            onForkResponse: target is! RemoteWorktreeChatTarget
+                ? null
+                : (response) async {
+                    final generation = viewModel.sessionGeneration;
+                    final destination = await forkRemoteResponse(
+                      viewModel,
+                      target,
+                      response.turnKey,
+                    );
+                    if (!mounted ||
+                        generation != viewModel.sessionGeneration ||
+                        _chatIdFor(_tabRows(viewModel)) != response.chatId) {
+                      return;
+                    }
+                    unawaited(_voice.abandon());
+                    _switchDraftTarget(_draftTargetFor(destination));
+                    _tabs.select(destination);
+                  },
             expandedTurns: _expandedTurns,
             turnInProgress: isRunning,
             onToggleTurn: (key) => setState(() {

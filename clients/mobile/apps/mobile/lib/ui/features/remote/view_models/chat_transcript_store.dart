@@ -1,9 +1,11 @@
 import 'package:mobile/data/models/remote_chat.dart';
+import 'package:mobile/data/models/transcript_list.dart';
 import 'package:mobile/data/models/chat_turn_liveness.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/data/repositories/remote_control_repository.dart';
 
 import 'remote_identity.dart';
+import 'user_message_index.dart';
 
 /// Reads one page of older transcript history for a chat.
 typedef RemoteChatHistoryFetch =
@@ -98,9 +100,10 @@ final class IncomingChatRowsUpdate extends RemoteTranscriptUpdate {
 }
 
 final class _PendingSend {
-  _PendingSend(this.message, this.previousMessageIds);
+  _PendingSend(this.message, this.wasPreviouslyShown, this.previousMessageIds);
 
   final RemoteChatMessage message;
+  final bool Function(String) wasPreviouslyShown;
   final Set<String> previousMessageIds;
 }
 
@@ -134,7 +137,9 @@ final class ChatTranscriptStore {
   /// Called whenever [key]'s transcript changes, so a caller can persist it.
   final void Function(RemoteChatKey key) onTranscriptChanged;
 
-  final Map<RemoteChatKey, List<RemoteChatMessage>> _transcripts = {};
+  final Map<RemoteChatKey, TranscriptBuffer<RemoteChatMessage>> _transcripts =
+      {};
+  final Map<RemoteChatKey, UserMessageIndex> _userIds = {};
   final Map<RemoteChatKey, List<_PendingSend>> _pendingSends = {};
 
   /// Live revisions use a session-wide mark so foreground requests can take
@@ -202,15 +207,23 @@ final class ChatTranscriptStore {
   List<RemoteChatMessage> messagesFor(RemoteChatTarget target) {
     final key = remoteChatKeyForTarget(target);
     if (key == null) return const [];
-    return _published[key] ??= List.unmodifiable([
-      ...?_transcripts[key],
-      ...?_pendingSends[key]?.map((send) => send.message),
-    ]);
+    return _published[key] ??= JoinedTranscript(
+      _transcripts[key]?.snapshot ?? const <RemoteChatMessage>[],
+      _pendingSends[key]?.map((send) => send.message) ?? const [],
+    );
   }
 
-  /// The desktop-projected rows for [key], without optimistic sends.
+  /// Immutable desktop-projected rows without optimistic sends.
   List<RemoteChatMessage> projectedRows(RemoteChatKey key) =>
-      List.unmodifiable(_transcripts[key] ?? const <RemoteChatMessage>[]);
+      _transcripts[key]?.snapshot ?? const <RemoteChatMessage>[];
+
+  void _reindexUsers(RemoteChatKey key) {
+    (_userIds[key] ??= UserMessageIndex()).replace(
+      (_transcripts[key] ?? const <RemoteChatMessage>[])
+          .where((row) => row.role == ChatRole.user)
+          .map((row) => row.messageId),
+    );
+  }
 
   /// Whether desktop-projected rows are cached for [key].
   bool hasTranscript(RemoteChatKey key) =>
@@ -268,12 +281,14 @@ final class ChatTranscriptStore {
     _pendingSends
         .putIfAbsent(key, () => [])
         .add(
-          _PendingSend(message, {
-            for (final row in _transcripts[key] ?? const <RemoteChatMessage>[])
-              if (row.role == ChatRole.user) row.messageId,
-            for (final send in _pendingSends[key] ?? const <_PendingSend>[])
-              send.message.messageId,
-          }),
+          _PendingSend(
+            message,
+            (_userIds[key] ??= UserMessageIndex()).capture(),
+            {
+              for (final send in _pendingSends[key] ?? const <_PendingSend>[])
+                send.message.messageId,
+            },
+          ),
         );
     _touch(key);
   }
@@ -385,7 +400,7 @@ final class ChatTranscriptStore {
   }) {
     if (key.chatId.isEmpty || message.messageId.isEmpty) return;
     onEvidence(key, message);
-    final transcript = _transcripts.putIfAbsent(key, () => []);
+    final transcript = _transcripts.putIfAbsent(key, () => TranscriptBuffer());
     final index = transcript.indexWhere(
       (m) => m.messageId == message.messageId,
     );
@@ -400,6 +415,9 @@ final class ChatTranscriptStore {
               (row) => row.positionAt?.isAfter(occurredAt) == true,
             );
       transcript.insert(insertAt < 0 ? transcript.length : insertAt, message);
+      if (message.role == ChatRole.user) {
+        (_userIds[key] ??= UserMessageIndex()).add(message.messageId);
+      }
       if (live) _markLiveRow(key, message.messageId);
       _touch(key);
     } else {
@@ -410,6 +428,7 @@ final class ChatTranscriptStore {
         authoritativeSnapshot: authoritativeSnapshot,
       );
       if (!identical(transcript[index], cached)) {
+        if (cached.role != transcript[index].role) _reindexUsers(key);
         if (live) _markLiveRow(key, message.messageId);
         _touch(key);
       }
@@ -497,9 +516,10 @@ final class ChatTranscriptStore {
         ...?before[null]?.reversed,
       ];
     }
-    _transcripts[key] = truncated
-        ? _mergeTruncatedTail(key, authoritative)
-        : authoritative;
+    _transcripts[key] = TranscriptBuffer(
+      truncated ? _mergeTruncatedTail(key, authoritative) : authoritative,
+    );
+    _reindexUsers(key);
     _cacheSeededRows.remove(key);
     _cacheSources.remove(key);
     _deviceRevisions.remove(key);
@@ -658,7 +678,7 @@ final class ChatTranscriptStore {
     _transcripts[key]?.removeWhere(
       (message) => !ids.contains(message.messageId),
     );
-    final transcript = _transcripts.putIfAbsent(key, () => []);
+    final transcript = _transcripts.putIfAbsent(key, () => TranscriptBuffer());
     final deviceRevisions =
         _deviceRevisions.remove(key) ?? const <RemoteChatMessage>{};
     for (final message in rows) {
@@ -675,6 +695,7 @@ final class ChatTranscriptStore {
     }
     _cacheSeededRows[key] = Set.identity()..addAll(transcript);
     _cacheSources[key] = source;
+    _reindexUsers(key);
     _touch(key);
     return true;
   }
@@ -694,7 +715,7 @@ final class ChatTranscriptStore {
     List<RemoteChatMessage> rows, {
     required RemoteCachedTailSource source,
   }) {
-    final transcript = _transcripts[key] ?? [];
+    final transcript = <RemoteChatMessage>[...?_transcripts[key]];
     final live = {for (final message in transcript) message.messageId};
     final shown = {
       ...live,
@@ -742,7 +763,8 @@ final class ChatTranscriptStore {
       floor = index + 1;
     }
     if (seeded.isEmpty) return false;
-    _transcripts[key] = transcript;
+    _transcripts[key] = TranscriptBuffer(transcript);
+    _reindexUsers(key);
     _cacheSeededRows[key] = seeded;
     _cacheSources[key] = source;
     if (source == RemoteCachedTailSource.device) {
@@ -839,7 +861,10 @@ final class ChatTranscriptStore {
     );
     if (index == -1) {
       index = pending.indexWhere((send) {
-        if (send.previousMessageIds.contains(message.messageId)) return false;
+        if (send.wasPreviouslyShown(message.messageId) ||
+            send.previousMessageIds.contains(message.messageId)) {
+          return false;
+        }
         final sentAt = send.message.occurredAt;
         final echoedAt = message.occurredAt;
         // Legacy hosts timestamp echoes on the desktop, while optimistic
@@ -917,7 +942,9 @@ final class ChatTranscriptStore {
       final chunk = await fetchHistory(target, before: before);
       if (!identical(session, _session) || !isConnected()) return;
       if (_historyGenerations[key] != generation) return;
-      final transcript = _transcripts.putIfAbsent(key, () => []);
+      // Merge a page in one working list rather than copying chunks once
+      // per historical insertion. Publish one immutable buffer afterwards.
+      final transcript = <RemoteChatMessage>[...?_transcripts[key]];
       final rows = [
         for (final message in chunk.messages)
           if (message.messageId.isNotEmpty) message,
@@ -933,6 +960,8 @@ final class ChatTranscriptStore {
         shownEnd: endShown ? end : null,
       );
       _confirmCachedRows(key, transcript, chunk.messages);
+      _transcripts[key] = TranscriptBuffer(transcript);
+      _reindexUsers(key);
       if (rows.firstOrNull case final head?) {
         _historyHeads[key] = head.messageId;
       }
@@ -1060,6 +1089,7 @@ final class ChatTranscriptStore {
   void reset() {
     _session = Object();
     _transcripts.clear();
+    _userIds.clear();
     _pendingSends.clear();
     _liveRowMarks.clear();
     _liveMark = 0;

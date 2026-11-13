@@ -1,9 +1,9 @@
+import 'home_recent_chat_row.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
-import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/brand/brand.g.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
@@ -266,7 +266,7 @@ class HomeNavigationDrawer extends StatelessWidget {
           ),
           ?recentChatsNotice,
           for (final entry in recentChats)
-            _RecentChatRow(
+            HomeRecentChatRow(
               key: ValueKey('home-recent-${entry.key}'),
               entry: entry,
               onTap: onOpenChat == null ? null : () => onOpenChat!(entry),
@@ -436,64 +436,6 @@ class _SettingsButton extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-/// One line of chat history: where it runs, its title, and an attention dot.
-class _RecentChatRow extends StatelessWidget {
-  const _RecentChatRow({required this.entry, this.onTap, super.key});
-
-  final HomeRecentChat entry;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final status = StatusColors.of(context);
-    const glyph = CanopyGlyph.macbook;
-    final location = 'Chat on ${entry.computerName}';
-    final (dotColor, dotLabel) = switch (entry.attention) {
-      RecentChatAttention.none => (null, null),
-      RecentChatAttention.unread => (status.unread, 'Unread'),
-      RecentChatAttention.awaitingAnswer => (
-        status.warning,
-        'Needs your answer',
-      ),
-    };
-    return ListTile(
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      minTileHeight: 44,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      leading: Semantics(
-        label: location,
-        child: CanopyIcon(
-          glyph: glyph,
-          size: 20,
-          tint: colorScheme.onSurfaceVariant,
-        ),
-      ),
-      title: Text(
-        entry.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodyMedium,
-      ),
-      trailing: dotColor == null
-          ? null
-          : Tooltip(
-              message: dotLabel,
-              child: Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: dotColor,
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ),
-      onTap: onTap,
     );
   }
 }

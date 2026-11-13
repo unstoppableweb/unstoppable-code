@@ -16,6 +16,27 @@ For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
 
+## Adaptive mobile navigation
+
+On iOS windows with a vertical navigation-bar edge, the home shell places
+chat-list, new-chat, search and destination controls along that edge. UIKit
+chooses the physical edge, normally the right on iPhone Duo, and the controls
+avoid its status bar, camera occlusions and keyboard.
+
+With enough usable width for a 280-point history sidebar, a 72-point rail and
+at least 400 points of chat, the list and selected conversation appear side by
+side. Compact windows alternate between the list and conversation. Both use
+the same detail navigator so resizing keeps the open route and unsent draft.
+Search filters the existing recent chats (up to 30) by title or computer.
+Other compact phones retain the slide-behind menu.
+
+The Flutter shell reuses its existing destinations, context selector, recent
+chat source and design-system controls. It adds no backend operation or agent
+action. Desktop and web keep their existing React navigation; Flutter cannot
+mount those components. Release builds need the SDK selection described in
+[mobile releases](../../docs/mobile-release.md) for the expanded Duo window
+and native geometry to be available.
+
 ## Computer connect
 
 The **Computer connect** home page is available in every configured build

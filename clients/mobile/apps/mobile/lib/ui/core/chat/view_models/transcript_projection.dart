@@ -7,6 +7,7 @@ import 'package:mobile/ui/core/chat/view_models/incremental_turn_groups.dart';
 import 'package:mobile/ui/core/chat/view_models/step_runs.dart';
 import 'package:mobile/ui/core/chat/view_models/tool_call_display.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
+import 'package:mobile/ui/core/chat/view_models/response_action_target.dart';
 
 /// One row of the turn-structured transcript.
 sealed class TranscriptRow {
@@ -14,6 +15,17 @@ sealed class TranscriptRow {
 
   /// Stable identity across revisions, or null for a row without one.
   String? get key;
+}
+
+/// Actions belong to the completed answer, outside any collapsed steps.
+final class TranscriptResponseActionsRow extends TranscriptRow {
+  const TranscriptResponseActionsRow(this.message, this.target);
+
+  final ChatMessage message;
+  final ResponseActionTarget target;
+
+  @override
+  String get key => 'response-actions-${target.turnKey}';
 }
 
 final class TranscriptMessageRow extends TranscriptRow {
@@ -199,6 +211,11 @@ class TranscriptProjection {
   final IncrementalTurnGroups _groups = IncrementalTurnGroups();
   List<ChatTurn> _turns = const [];
   List<_TurnFacts> _facts = const [];
+  List<ChatMessage>? _messages;
+  bool? _turnInProgress;
+  Set<String> _expandedTurns = const {};
+  Set<String> _footerTurns = const {};
+  List<TranscriptRow> _rows = const [];
 
   /// Rows handed to turn grouping so far.
   int get groupedMessageCount => _groups.groupedMessageCount;
@@ -214,6 +231,17 @@ class TranscriptProjection {
     required Set<String> expandedTurns,
     Set<String> footerTurns = const {},
   }) {
+    if (identical(messages, _messages) &&
+        turnInProgress == _turnInProgress &&
+        setEquals(expandedTurns, _expandedTurns) &&
+        setEquals(footerTurns, _footerTurns)) {
+      return _rows;
+    }
+    _messages = messages;
+    _turnInProgress = turnInProgress;
+    // Callers mutate expansion in place; retain values, not their set.
+    _expandedTurns = Set.of(expandedTurns);
+    _footerTurns = Set.of(footerTurns);
     final turns = _groups.update(messages);
     if (!identical(turns, _turns)) {
       final previous = HashMap<ChatTurn, _TurnFacts>.identity();
@@ -260,7 +288,7 @@ class TranscriptProjection {
     }
     // The newest turn's footer follows that bridge, which belongs to it.
     if (newestFooter != null) rows.add(TranscriptTurnFooterRow(newestFooter));
-    return rows;
+    return _rows = rows;
   }
 
   /// Derives a regrouped turn. [replaced] is the turn it supersedes, if
@@ -443,6 +471,25 @@ final class _TurnFacts {
         streamingSpinner: true,
         expandedKeys: expandedKeys,
       );
+      final response = turn.finalMessages
+          .where(
+            (message) =>
+                message.role == ChatRole.assistant &&
+                message.text.trim().isNotEmpty,
+          )
+          .lastOrNull;
+      if (response != null) {
+        rows.add(
+          TranscriptResponseActionsRow(
+            response,
+            ResponseActionTarget(
+              chatId: response.chatId,
+              turnKey: turn.key,
+              atMessageId: turn.assistantMessages.last.messageId,
+            ),
+          ),
+        );
+      }
     }
     // A running turn closes with its "Thinking" or waiting row. A finished
     // turn's duration reads in its steps header instead, as on desktop.

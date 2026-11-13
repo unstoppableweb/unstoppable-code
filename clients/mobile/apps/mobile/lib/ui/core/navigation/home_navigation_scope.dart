@@ -52,7 +52,10 @@ class HomeMenuButton extends StatelessWidget {
   /// Returns a menu button inside [HomeNavigationScope], otherwise `null` so
   /// independently mounted screens do not reserve empty leading space.
   static Widget? maybeOf(BuildContext context, {bool designSystem = false}) =>
-      HomeNavigationScope.maybeOf(context) == null
+      HomeNavigationScope.maybeOf(context) == null ||
+          ModalRoute.isFirstOf(context) == false ||
+          (HomeRailPresentation.of(context) &&
+              HomeNavigationScope.maybeOf(context)?.goBack == null)
       ? null
       : HomeMenuButton(designSystem: designSystem);
 
@@ -91,4 +94,14 @@ class HomeMenuButton extends StatelessWidget {
       onPressed: scope?.openDrawer,
     );
   }
+}
+
+/// The shell already exposes navigation beside the content in this layout.
+class HomeRailPresentation extends InheritedWidget {
+  const HomeRailPresentation({super.key, required super.child});
+  static bool of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<HomeRailPresentation>() !=
+      null;
+  @override
+  bool updateShouldNotify(HomeRailPresentation oldWidget) => false;
 }

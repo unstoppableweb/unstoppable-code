@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:mobile/data/models/transcript_list.dart';
 import 'package:mobile/data/models/chat_drafts.dart';
 import 'package:mobile/data/models/remote_chat.dart';
 import 'package:mobile/data/models/remote_portal_event.dart';
@@ -591,16 +592,17 @@ final class RemoteClientEngine {
   /// that neither already shows.
   List<RemoteChatMessage> messagesFor(RemoteChatTarget target) {
     final rows = transcripts.messagesFor(target);
-    final records = unsent.recordsFor(target);
+    final records = [
+      for (final record in unsent.recordsFor(target))
+        if (record.status != UnsentStatus.sending) record,
+    ];
     if (records.isEmpty) return rows;
     final shown = {for (final row in rows) row.messageId};
     final extra = [
       for (final record in records)
-        if (record.status != UnsentStatus.sending &&
-            !shown.contains(record.userMessageId))
-          record.toMessage(),
+        if (!shown.contains(record.userMessageId)) record.toMessage(),
     ];
-    return extra.isEmpty ? rows : List.unmodifiable([...rows, ...extra]);
+    return extra.isEmpty ? rows : JoinedTranscript(rows, extra);
   }
 
   Future<Map<String, dynamic>> _awaitPrCommandResult(

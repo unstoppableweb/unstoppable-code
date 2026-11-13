@@ -22,6 +22,7 @@ class CanopySearchField extends StatelessWidget {
     this.onSubmitted,
     this.textInputAction = TextInputAction.search,
     this.autofocus = false,
+    this.focusNode,
   });
 
   /// Magnifier size: reads alongside the 16px body text without outgrowing it.
@@ -37,6 +38,7 @@ class CanopySearchField extends StatelessWidget {
   final ValueChanged<String>? onSubmitted;
   final TextInputAction textInputAction;
   final bool autofocus;
+  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -45,6 +47,7 @@ class CanopySearchField extends StatelessWidget {
       valueListenable: controller,
       builder: (context, value, _) => CanopyTextField(
         controller: controller,
+        focusNode: focusNode,
         autofocus: autofocus,
         textInputAction: textInputAction,
         onChanged: onChanged,

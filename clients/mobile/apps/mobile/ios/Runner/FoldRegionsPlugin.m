@@ -23,6 +23,10 @@
             [weakSelf setNeedsLayout];
           }];
       [self addInteraction:hinge];
+      [self registerForTraitChanges:UITraitCollection.systemTraitsAffectingVerticalBarEdge
+          withHandler:^(id<UITraitEnvironment> environment, UITraitCollection *previous) {
+            [weakSelf setNeedsLayout];
+          }];
     }
 #endif
   }
@@ -39,26 +43,48 @@
   [self publishRegions];
 }
 
+- (void)safeAreaInsetsDidChange {
+  [super safeAreaInsetsDidChange];
+  [self setNeedsLayout];
+}
+
+static NSDictionary *RectSnapshot(CGRect frame) {
+  return @{@"x": @(frame.origin.x), @"y": @(frame.origin.y),
+           @"width": @(frame.size.width), @"height": @(frame.size.height)};
+}
+
 - (void)publishRegions {
   if (!self.window || !self.sink) return;
   NSMutableArray *regions = [NSMutableArray array];
+  NSMutableArray *occlusions = [NSMutableArray array];
+  NSString *verticalBarEdge = @"none";
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
   if (@available(iOS 27.1, *)) {
     for (UIViewReservedRegion *region in
          [self reservedRegionsOfKind:UIViewReservedRegionKind.divisionRegionKind]) {
       if (!region.isActive) continue;
       // UIKit includes the interactive-content margin in this frame.
-      CGRect frame = region.frame;
-      [regions addObject:@{
-        @"x": @(frame.origin.x), @"y": @(frame.origin.y),
-        @"width": @(frame.size.width), @"height": @(frame.size.height)
-      }];
+      [regions addObject:RectSnapshot(region.frame)];
+    }
+    for (UIViewReservedRegion *region in
+         [self reservedRegionsOfKind:UIViewReservedRegionKind.occlusionRegionKind]) {
+      if (region.isActive) [occlusions addObject:RectSnapshot(region.frame)];
+    }
+    UIVerticalBarEdge edge = self.traitCollection.verticalBarEdge;
+    if (edge != UIVerticalBarEdgeUnspecified) {
+      BOOL leading = edge == UIVerticalBarEdgeLeading;
+      BOOL rtl = self.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+      verticalBarEdge = (leading != rtl) ? @"left" : @"right";
     }
   }
 #endif
   NSDictionary *snapshot = @{
     @"width": @(self.bounds.size.width), @"height": @(self.bounds.size.height),
-    @"regions": regions
+    @"regions": regions,
+    @"verticalBarEdge": verticalBarEdge,
+    @"occlusions": occlusions,
+    @"statusBar": RectSnapshot([self convertRect:self.window.windowScene.statusBarManager.statusBarFrame
+                            fromCoordinateSpace:self.window.windowScene.coordinateSpace])
   };
   if (![snapshot isEqual:self.lastSnapshot]) {
     self.lastSnapshot = snapshot;

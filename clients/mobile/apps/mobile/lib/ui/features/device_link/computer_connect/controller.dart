@@ -449,8 +449,10 @@ class ComputerConnectController extends ChangeNotifier {
       await chats.chats.ipc.invoke('chat:set-state-scopes', [
         {'kind': 'all'},
       ]);
+      if (_disposed || !_overview) return;
       await refresh();
     } catch (cause) {
+      if (_disposed || !_overview) return;
       error = _describe(cause);
       _notify();
     }

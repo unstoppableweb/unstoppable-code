@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:mobile/config/app_config.dart';
 import 'package:mobile/data/models/remote_connection.dart';
 import 'package:mobile/data/models/remote_context_scope.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/data/services/push_messaging.dart';
 import 'package:mobile/services/push_deep_link.dart';
 import 'package:mobile/services/push_message_coordinator.dart';
+import 'package:mobile/ui/core/external_links.dart';
 import 'package:mobile/ui/core/workspace_context_copy.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
 import 'package:mobile/ui/features/home/home_tab_controller.dart';
@@ -36,6 +38,7 @@ class PushTapBinding extends StatefulWidget {
     this.workspaceContext,
     this.personalActivityAvailable,
     this.hydrationTimeout = const Duration(seconds: 10),
+    this.openUrl = openExternalUrl,
   });
 
   final PushMessageCoordinator coordinator;
@@ -52,6 +55,9 @@ class PushTapBinding extends StatefulWidget {
   /// treats Personal as having none.
   final bool Function()? personalActivityAvailable;
   final Duration hydrationTimeout;
+
+  /// Opens a cloud run's web link outside the app.
+  final Future<void> Function(String url) openUrl;
 
   @override
   State<PushTapBinding> createState() => _PushTapBindingState();
@@ -86,6 +92,13 @@ class _PushTapBindingState extends State<PushTapBinding> {
     var handled = false;
     VoidCallback? releaseVisibility;
     try {
+      // A cloud run has no desktop to route through: open it on the web.
+      final runUrl = cloudRunPushUrl(message.data, AppConfig.apiBaseUrl);
+      if (runUrl != null) {
+        await widget.openUrl(runUrl);
+        handled = true;
+        return;
+      }
       final viewModel = context.read<RemoteControlViewModel>();
       await viewModel.restoreIfIdle();
       if (!mounted) return;

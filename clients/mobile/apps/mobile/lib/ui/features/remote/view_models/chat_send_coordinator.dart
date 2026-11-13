@@ -689,6 +689,21 @@ final class ChatSendCoordinator {
     );
   }
 
+  Future<String> forkResponse(
+    RemoteWorktreeChatTarget target,
+    String turnKey, {
+    required OwnedCommandCompleted onCompleted,
+    required OwnedCommandFailed onFailed,
+  }) async {
+    if (!isConnected() || isDisposed()) {
+      throw const RemoteControlException('Remote Control is disconnected.');
+    }
+    final generation = sessionGeneration();
+    final id = await repository.responseCommands.fork(target, turnKey);
+    if (isDisposed() || generation != sessionGeneration()) return '';
+    return commands.register(id, onCompleted: onCompleted, onFailed: onFailed);
+  }
+
   /// Closes a chat tab; [onFailed] reports an asynchronous rejection so the
   /// caller can restore its optimistically hidden tab.
   Future<String> closeChatTab(

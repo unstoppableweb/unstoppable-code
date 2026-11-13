@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:mobile/data/models/chat_message.dart';
+import 'package:mobile/data/models/transcript_list.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
 
 /// [groupChatTurns] across successive revisions of one transcript, regrouping
@@ -17,9 +18,9 @@ import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
 /// matched back to their previous objects, so their consumers can keep
 /// derived state keyed on turn identity.
 ///
-/// Finding the first changed row is one identity comparison per unchanged
-/// row; grouping work is limited to the regrouped suffix. The desktop's
-/// `TurnGroupCache` keeps completed group identities the same way, but its
+/// Store snapshots report the first changed position; other lists fall back
+/// to identity comparisons. Grouping is limited to the changed suffix. The
+/// desktop's `TurnGroupCache` keeps completed group identities the same way, but its
 /// merge pipeline still regroups the whole transcript on every pass.
 class IncrementalTurnGroups {
   List<ChatMessage> _messages = const [];
@@ -37,28 +38,37 @@ class IncrementalTurnGroups {
     if (identical(messages, _messages)) return _turns;
     final previous = _messages;
     final limit = math.min(previous.length, messages.length);
-    var unchanged = 0;
-    while (unchanged < limit &&
-        identical(previous[unchanged], messages[unchanged])) {
-      unchanged += 1;
+    final knownChange = messages is TranscriptList<ChatMessage>
+        ? messages.firstChangeSince(previous)
+        : null;
+    var unchanged = knownChange?.clamp(0, limit) ?? 0;
+    if (knownChange == null) {
+      while (unchanged < limit &&
+          identical(previous[unchanged], messages[unchanged])) {
+        unchanged += 1;
+      }
     }
 
     // A turn is final once the row after it opens another turn, so a turn
     // ending at the first changed row is kept only when that row is a prompt
     // or the transcript ends there.
-    var kept = 0;
-    while (kept < _turns.length) {
-      final end = kept + 1 < _starts.length
-          ? _starts[kept + 1]
+    var low = 0;
+    var high = _turns.length;
+    final boundaryClosed =
+        unchanged == messages.length ||
+        messages[unchanged].role == ChatRole.user;
+    while (low < high) {
+      final middle = (low + high) ~/ 2;
+      final end = middle + 1 < _starts.length
+          ? _starts[middle + 1]
           : previous.length;
-      final closed =
-          end < unchanged ||
-          (end == unchanged &&
-              (unchanged == messages.length ||
-                  messages[unchanged].role == ChatRole.user));
-      if (!closed) break;
-      kept += 1;
+      if (end < unchanged || (end == unchanged && boundaryClosed)) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
     }
+    final kept = low;
     if (kept == _turns.length && unchanged == messages.length) {
       // Same rows in a new list: nothing to regroup.
       _messages = messages;

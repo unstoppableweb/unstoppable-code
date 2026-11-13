@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
@@ -6,6 +8,7 @@ import 'package:mobile/device_link/chats/recents.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 import '../chats_screen.dart';
 import 'account.dart';
+import 'recent_chat_inventory.dart';
 
 /// The drawer's Recents across every connected computer, newest first. Rows
 /// follow the phone's selected context, whatever context each computer has
@@ -43,7 +46,12 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
       chats: buildComputerRecentChats([
         for (final computer in computers)
           [
-            for (final chat in computer.controller.recents.chats(context))
+            for (final chat in buildComputerRecentChatInventory(
+              context: context,
+              summaries: computer.controller.recents.chats(context),
+              projects: computer.controller.worktrees.projects,
+              worktrees: computer.controller.worktrees.worktrees,
+            ))
               _row(computer.id, computer.name, chat),
           ],
       ]),
@@ -62,8 +70,13 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
     DeviceRecentChat chat,
   ) => HomeRecentChat(
     key: 'computer-$computerId-${chat.ref.key}',
+    isCurrent: () =>
+        account.engine.selectedId == computerId &&
+        account.engine.sessions[computerId]?.chats.state?.ref.key ==
+            chat.ref.key,
     title: chat.ref.title,
     computerName: computerName,
+    locationLabel: chat.worktreeName,
     activityAt: chat.activityAt,
     attention: switch (chat.attention) {
       DeviceRecentAttention.none => RecentChatAttention.none,
@@ -89,9 +102,11 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
     final workspaceContext = context.read<WorkspaceContext?>();
     _opening = true;
     try {
-      await account.select(computerId);
-      // The context can change, or the shell be replaced, while the
-      // selection is saved. Open only what the current context still shows.
+      // Selection takes effect synchronously. Persisting the next cold-start
+      // choice must not hold up the chat page on secure storage I/O.
+      unawaited(account.select(computerId));
+      // Open only what the current context still shows after switching
+      // computers; selection listeners may have changed the shell.
       if (!context.mounted ||
           context.read<WorkspaceContext?>() != workspaceContext ||
           !controller.scopeFor(workspaceContext).includesChat(ref)) {
@@ -112,9 +127,10 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
         // inside it. Read it as the shell leaves the page:
         // a chat opened after that, while this open finishes, keeps its own.
         generation = controller.chats.chats.selectionGeneration;
-        await opening;
       } finally {
-        await controller.restoreOverview(generation);
+        // Navigation must not wait for hydration or a full overview refresh.
+        // Generation checks keep retiring work off the next chat's selection.
+        unawaited(opening.then((_) => controller.restoreOverview(generation)));
       }
     } finally {
       _opening = false;
@@ -123,19 +139,31 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
 }
 
 /// Interleaves each computer's rows by activity, newest first, then caps them
-/// at [limit]. Rows without a timestamp sort last, keeping their source order.
+/// at [limit] per computer. A busy computer cannot hide every chat from
+/// another one. Rows without a timestamp sort last, keeping their source order.
 List<HomeRecentChat> buildComputerRecentChats(
   List<List<HomeRecentChat>> computers, {
   int limit = recentChatsLimit,
 }) {
-  final indexed = [for (final rows in computers) ...rows].indexed.toList()
-    ..sort((left, right) {
-      final a = left.$2.activityAt, b = right.$2.activityAt;
-      if (a == null && b == null) return left.$1.compareTo(right.$1);
-      if (a == null) return 1;
-      if (b == null) return -1;
-      final byActivity = b.compareTo(a);
-      return byActivity != 0 ? byActivity : left.$1.compareTo(right.$1);
-    });
-  return List.unmodifiable([for (final (_, chat) in indexed.take(limit)) chat]);
+  final indexed =
+      [
+        for (final (computer, rows) in computers.indexed)
+          for (final chat in rows) (computer: computer, chat: chat),
+      ].indexed.toList()..sort((left, right) {
+        final a = left.$2.chat.activityAt, b = right.$2.chat.activityAt;
+        if (a == null && b == null) return left.$1.compareTo(right.$1);
+        if (a == null) return 1;
+        if (b == null) return -1;
+        final byActivity = b.compareTo(a);
+        return byActivity != 0 ? byActivity : left.$1.compareTo(right.$1);
+      });
+  final counts = <int, int>{};
+  final result = <HomeRecentChat>[];
+  for (final (_, entry) in indexed) {
+    final count = counts[entry.computer] ?? 0;
+    if (count >= limit) continue;
+    result.add(entry.chat);
+    counts[entry.computer] = count + 1;
+  }
+  return List.unmodifiable(result);
 }

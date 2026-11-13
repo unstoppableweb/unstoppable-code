@@ -14,7 +14,7 @@ class Shimmer extends StatefulWidget {
   /// Text to paint through the sweep; its own colors are replaced.
   final Widget child;
 
-  /// One sweep, matching `canopy-text-shimmer-sweep` (2.4s).
+  /// One sweep, matching `canopy-text-shimmer-strong` (2.4s).
   static const Duration cycle = Duration(milliseconds: 2400);
 
   @override

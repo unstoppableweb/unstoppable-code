@@ -901,6 +901,18 @@ final class RemoteControlViewModel extends ChangeNotifier
   Future<void> ensureStandaloneChatCreated(RemoteStandaloneChatTarget target) =>
       _engine.sends.ensureStandaloneChatCreated(target);
 
+  Future<String> submitResponseFork(
+    RemoteWorktreeChatTarget target,
+    String turnKey, {
+    required void Function(Map<String, dynamic>?) onCompleted,
+    required void Function(String) onFailed,
+  }) => _engine.sends.forkResponse(
+    target,
+    turnKey,
+    onCompleted: onCompleted,
+    onFailed: onFailed,
+  );
+
   /// Registers a close command so the screen can reconcile optimistic removal.
   Future<String> closeChatTab(RemoteWorktreeChatTarget target) =>
       _engine.sends.closeChatTab(target);

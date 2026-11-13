@@ -1,3 +1,4 @@
+import 'package:mobile/ui/core/navigation/app_route_scope.dart';
 import 'package:mobile/services/speech_recognizer.dart';
 import 'package:mobile/ui/core/chat/widgets/voice_composer_binding.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
@@ -171,7 +172,8 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
       if (_drawerOpen) handlers?.add(_consumeDrawerBack);
     }
     _shellVisible = navigation?.contentVisible ?? true;
-    _routeVisible = ModalRoute.isCurrentOf(context) ?? true;
+    _routeVisible = AppRouteScope.isCurrentOf(context);
+
     _lifecycle = WidgetsBinding.instance.lifecycleState;
     _syncVisibility();
   }
@@ -499,6 +501,14 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                       'device-chat-transcript-${state.ref.key}',
                                     ),
                                     chatId: state.ref.id,
+                                    onForkResponse:
+                                        state.tab['readOnly'] == true
+                                        ? null
+                                        : model.forkResponse,
+                                    forkEnabled:
+                                        model.online &&
+                                        model.chats.ready &&
+                                        !state.closed,
                                     topContentInset: notices.isEmpty
                                         ? CanopyScaffold.contentPaddingOf(
                                             context,

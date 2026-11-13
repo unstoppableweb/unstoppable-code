@@ -9,6 +9,7 @@ import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/widgets/computer_connection_title.dart';
 import 'account.dart';
+import '../desktop_link_model.dart';
 
 /// The app bar title for Computer connect. A tap lists saved computers,
 /// including ones reconnecting in the background, with Manage computers
@@ -38,6 +39,22 @@ class ComputerSwitcher extends StatelessWidget {
       account.engine.sessions[computer.id]?.chats.connection.host?['name']
           as String? ??
       computer.name;
+
+  String _status(SavedComputer computer) {
+    final phase = account.engine.sessions[computer.id]?.chats.connection.phase;
+    if (phase == DesktopLinkPhase.connected) return 'Connected';
+    // An absent peer on a live relay is offline even while retries continue.
+    if (account.computerAvailable(computer.id) == false) return 'Offline';
+    return switch (phase) {
+      DesktopLinkPhase.connected => 'Connected',
+      DesktopLinkPhase.connecting => 'Connecting…',
+      DesktopLinkPhase.pairing => 'Waiting for approval',
+      DesktopLinkPhase.reconnecting => 'Reconnecting…',
+      DesktopLinkPhase.disconnected ||
+      DesktopLinkPhase.failed ||
+      null => 'Offline',
+    };
+  }
 
   /// Opens the menu as a route under the title. A route keeps each option in
   /// one semantics parent; the pinned iOS bridge misplaces overlay-portal
@@ -121,15 +138,15 @@ class ComputerSwitcher extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: labelStyle,
                         ),
-                        Text(
-                          account.engine.sessions[computer.id]?.chats.online ==
-                                  true
-                              ? 'Connected'
-                              : 'Reconnecting…',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colors.foregroundSecondary,
+                        ListenableBuilder(
+                          listenable: account,
+                          builder: (context, _) => Text(
+                            _status(computer),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.foregroundSecondary,
+                            ),
                           ),
                         ),
                       ],

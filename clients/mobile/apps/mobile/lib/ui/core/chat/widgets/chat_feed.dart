@@ -16,6 +16,8 @@ import 'package:mobile/ui/core/widgets/message_markdown.dart';
 import 'package:mobile/ui/core/chat/view_models/attachment_thumbnail_cache.dart';
 import 'package:mobile/ui/core/chat/view_models/transcript_projection.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
+import 'package:mobile/ui/core/chat/view_models/response_action_target.dart';
+import 'package:mobile/ui/core/chat/widgets/response_actions.dart';
 
 import 'package:mobile/ui/core/chat/widgets/attachment_thumbnail_scope.dart';
 import 'package:mobile/ui/core/chat/widgets/delivery_footer.dart';
@@ -23,47 +25,12 @@ import 'package:mobile/ui/core/chat/widgets/head_change_anchor.dart';
 import 'package:mobile/ui/core/chat/widgets/latest_first_scroll_controller.dart';
 import 'package:mobile/ui/core/chat/widgets/message_bubble_surface.dart';
 import 'package:mobile/ui/core/chat/widgets/row_widget_cache.dart';
+import 'package:mobile/ui/core/chat/widgets/feed_items_cache.dart';
 import 'package:mobile/ui/core/chat/widgets/retained_message_attribution.dart';
 import 'package:mobile/ui/core/chat/widgets/step_chevron.dart';
 import 'package:mobile/ui/core/chat/widgets/step_run_row.dart';
 import 'package:mobile/ui/core/chat/widgets/tool_call_row.dart';
 import 'package:mobile/ui/core/chat/widgets/watcher_message_bubble.dart';
-
-/// One row of the feed's list: a transcript row or the feed's own chrome.
-sealed class _TranscriptItem {
-  const _TranscriptItem();
-}
-
-/// A message, steps summary or timer row of the transcript itself.
-final class _RowItem extends _TranscriptItem {
-  const _RowItem(this.row);
-
-  final TranscriptRow row;
-}
-
-/// Progress row pinned above the oldest message while an older-history page
-/// is being fetched.
-final class _HistoryLoadingItem extends _TranscriptItem {
-  const _HistoryLoadingItem();
-}
-
-/// A caller-supplied widget appended after the last turn (today: the awaiting
-/// AskUserQuestion cards). It rides inside the same scrollable as the
-/// transcript so an agent's question reads as the tail of its answer rather
-/// than a shelf pinned above the composer.
-final class _TrailingItem extends _TranscriptItem {
-  const _TrailingItem(this.child);
-
-  final Widget child;
-}
-
-/// The first transcript row. It clears the overlaid app bar while still
-/// allowing messages to scroll beneath that chrome after the user scrolls.
-final class _TopInsetSpacerItem extends _TranscriptItem {
-  const _TopInsetSpacerItem(this.height);
-
-  final double height;
-}
 
 /// Transport-neutral chat transcript presentation: the turn-structured
 /// message feed, collapsed steps rows, the live working indicator, and the
@@ -88,6 +55,8 @@ class ChatFeed extends StatefulWidget {
     this.onResend,
     this.canResend,
     this.onDiscard,
+    this.onForkResponse,
+    this.forkEnabled = true,
   });
 
   /// The resolved chat this transcript belongs to — always non-null here,
@@ -148,21 +117,12 @@ class ChatFeed extends StatefulWidget {
   /// Removes a not-sent or uncertain user row, by message id.
   final ValueChanged<String>? onDiscard;
 
+  final ForkResponse? onForkResponse;
+  final bool forkEnabled;
+
   @override
   State<ChatFeed> createState() => _ChatFeedState();
 }
-
-/// The builder key for an item that carries one, so `findChildIndexCallback`
-/// can remap its element when appended rows shift every index. Items without a
-/// stable identity (the history spinner, the top inset) return null.
-String? _itemKey(_TranscriptItem item) => switch (item) {
-  _RowItem(:final row) => row.key,
-  _TrailingItem(:final child) => switch (child.key) {
-    ValueKey<String>(:final value) => value,
-    _ => null,
-  },
-  _ => null,
-};
 
 class _PrependAnchorKeeper extends StatefulWidget {
   const _PrependAnchorKeeper({
@@ -218,6 +178,7 @@ class _ChatFeedState extends State<ChatFeed> {
   late final bool _ownsController = widget.controller == null;
   final TranscriptProjection _projection = TranscriptProjection();
   final RowWidgetCache _rowWidgets = RowWidgetCache();
+  final FeedItemsCache _items = FeedItemsCache();
   final Map<String, GlobalKey> _messageAnchorKeys = {};
   bool _showScrollToBottom = false;
   bool _scrollToBottomScheduled = false;
@@ -741,6 +702,20 @@ class _ChatFeedState extends State<ChatFeed> {
   /// state it reads are unchanged so streaming elsewhere skips it.
   Widget _buildRow(TranscriptRow row) {
     switch (row) {
+      case TranscriptResponseActionsRow(:final message, :final target):
+        return Padding(
+          key: ValueKey(row.key),
+          padding: const EdgeInsets.symmetric(
+            horizontal: MessageBubbleSurface.textInset,
+          ),
+          child: ResponseActions(
+            text: message.text,
+            target: target,
+            occurredAt: message.occurredAt,
+            forkEnabled: widget.forkEnabled,
+            onFork: widget.onForkResponse,
+          ),
+        );
       case TranscriptMessageRow(:final message):
         final canResend =
             widget.onResend != null &&
@@ -857,28 +832,20 @@ class _ChatFeedState extends State<ChatFeed> {
       (messageId, key) =>
           messageId != _prependAnchor.messageId && key.currentContext == null,
     );
-    final items = <_TranscriptItem>[
-      for (final row in _projection.rows(
+    final changed = _items.update(
+      rows: _projection.rows(
         messages: widget.messages,
         turnInProgress: widget.turnInProgress,
         expandedTurns: widget.expandedTurns,
         footerTurns: widget.turnFooters.keys.toSet(),
-      ))
-        _RowItem(row),
-    ];
-    for (final child in widget.trailing) {
-      items.add(_TrailingItem(child));
-    }
-    if (widget.loadingOlder) {
-      items.insert(0, const _HistoryLoadingItem());
-    }
-    items.insert(0, _TopInsetSpacerItem(widget.topContentInset + 8));
-
-    final builderIndexByKey = <String, int>{
-      for (var position = 0; position < items.length; position++)
-        if (_itemKey(items[position]) case final String key) key: position,
-    };
-    _rowWidgets.retainWhere(builderIndexByKey.containsKey);
+      ),
+      trailing: widget.trailing,
+      loadingOlder: widget.loadingOlder,
+      topInset: widget.topContentInset,
+    );
+    final items = _items.items;
+    final builderIndexByKey = _items.indexByKey;
+    if (changed) _rowWidgets.retainWhere(builderIndexByKey.containsKey);
 
     return Stack(
       children: [
@@ -917,14 +884,14 @@ class _ChatFeedState extends State<ChatFeed> {
                   itemBuilder: (context, index) {
                     final item = items[index];
                     return switch (item) {
-                      _RowItem(:final row) => _buildRow(row),
-                      _TrailingItem(:final child) => child,
-                      _HistoryLoadingItem() => const Padding(
+                      FeedRowItem(:final row) => _buildRow(row),
+                      TrailingItem(:final child) => child,
+                      HistoryLoadingItem() => const Padding(
                         key: ValueKey('transcript-history-loading'),
                         padding: EdgeInsets.symmetric(vertical: 12),
                         child: Center(child: LoadingSpinner(size: 14)),
                       ),
-                      _TopInsetSpacerItem(:final height) => SizedBox(
+                      TopInsetSpacerItem(:final height) => SizedBox(
                         key: const ValueKey('remote-chat-top-inset-space'),
                         height: height,
                       ),

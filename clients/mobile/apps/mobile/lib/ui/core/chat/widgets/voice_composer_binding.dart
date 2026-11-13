@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile/services/speech_recognizer.dart';
 import 'package:mobile/services/speech_to_text_recognizer.dart';
+import 'package:mobile/ui/core/navigation/app_route_scope.dart';
 import '../view_models/voice_dictation_controller.dart';
 import 'voice_dictation_dialog.dart';
 
@@ -68,7 +69,7 @@ class _VoiceComposerBindingState extends State<VoiceComposerBinding>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (ModalRoute.isCurrentOf(context) == false) unawaited(_voice.abandon());
+    if (!AppRouteScope.isCurrentOf(context)) unawaited(_voice.abandon());
   }
 
   @override

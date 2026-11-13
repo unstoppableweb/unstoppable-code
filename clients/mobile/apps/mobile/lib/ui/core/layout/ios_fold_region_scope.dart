@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:mobile/services/ios_fold_regions.dart';
+import 'ios_window_layout.dart';
 
 /// Supplies the active iOS fold until Flutter's engine reports it itself.
 /// Keep this above the navigator so sheets and routes share the same geometry.
@@ -52,7 +53,10 @@ class _IosFoldRegionScopeState extends State<IosFoldRegionScope> {
                 ),
           ],
         ),
-        child: widget.child,
+        child: IosWindowLayout(
+          geometry: matches ? native : null,
+          child: widget.child,
+        ),
       );
     },
   );

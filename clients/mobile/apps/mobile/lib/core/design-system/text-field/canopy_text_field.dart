@@ -20,6 +20,7 @@ class CanopyTextField extends StatefulWidget {
     this.onSubmitted,
     this.prefixIcon,
     this.suffixIcon,
+    this.focusNode,
   });
 
   final TextEditingController controller;
@@ -36,25 +37,38 @@ class CanopyTextField extends StatefulWidget {
   final ValueChanged<String>? onSubmitted;
   final Widget? prefixIcon;
   final Widget? suffixIcon;
+  final FocusNode? focusNode;
 
   @override
   State<CanopyTextField> createState() => _CanopyTextFieldState();
 }
 
 class _CanopyTextFieldState extends State<CanopyTextField> {
-  final _focusNode = FocusNode();
+  late FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
+    _focusNode = widget.focusNode ?? FocusNode();
     _focusNode.addListener(_rebuild);
   }
 
   void _rebuild() => setState(() {});
 
   @override
+  void didUpdateWidget(CanopyTextField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.focusNode == oldWidget.focusNode) return;
+    _focusNode.removeListener(_rebuild);
+    if (oldWidget.focusNode == null) _focusNode.dispose();
+    _focusNode = widget.focusNode ?? FocusNode();
+    _focusNode.addListener(_rebuild);
+  }
+
+  @override
   void dispose() {
-    _focusNode.dispose();
+    _focusNode.removeListener(_rebuild);
+    if (widget.focusNode == null) _focusNode.dispose();
     super.dispose();
   }
 

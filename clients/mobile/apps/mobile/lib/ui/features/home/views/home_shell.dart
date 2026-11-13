@@ -1,3 +1,8 @@
+import 'widgets/home_adaptive_layout.dart';
+import 'widgets/home_chat_sidebar.dart';
+import 'widgets/home_navigation_rail.dart';
+import 'package:mobile/ui/core/navigation/home_detail_pane.dart';
+import 'widgets/home_recent_chats_builder.dart';
 import 'dart:async';
 import 'package:mobile/ui/core/navigation/home_chat_destination.dart';
 import 'dart:math' as math;
@@ -5,12 +10,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:mobile/ui/core/navigation/home_back_handlers.dart';
 import 'package:provider/provider.dart';
-import 'package:mobile/data/models/workspace_context.dart';
-import 'package:mobile/ui/core/workspace_context_label.dart';
-import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
 import 'package:mobile/ui/features/account/views/account_screen.dart';
-import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chat_controller.dart';
+import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 import 'package:mobile/ui/features/home/views/activity_refresh_binding.dart';
 import 'package:mobile/ui/features/feed/views/feed_screen.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
@@ -46,10 +48,10 @@ const double _openCardRadius = 28;
 /// direction instead of settling to the nearest endpoint.
 const double _flingVelocity = 365;
 
-/// Authenticated app shell: ChatGPT-style slide-behind navigation between the
-/// destinations the current [HomeTabController] exposes. The menu panel sits
-/// underneath the main content; opening it slides the content aside as a
-/// rounded, dimmed card. Each screen keeps its state via [IndexedStack].
+/// Authenticated shell with a stable detail navigator and adaptive navigation.
+/// Wide windows show a chat sidebar; UIKit vertical-bar windows use a side
+/// rail in both sizes. Other compact windows retain slide-behind navigation.
+/// Each destination keeps its state via [IndexedStack].
 ///
 /// The visible set is not fixed. A user with no organization gets a shorter
 /// menu (see [noOrganizationHomeTabs]), so the shell renders whatever
@@ -92,18 +94,24 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _menu = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 300),
-    reverseDuration: const Duration(milliseconds: 250),
-  );
+  late final AnimationController _menu;
   HomeTabController? _tabController;
 
   final _backHandlers = HomeBackHandlers();
+  final _detailKey = GlobalKey<HomeDetailPaneState>();
+  final _adaptiveKey = GlobalKey<HomeAdaptiveLayoutState>();
+  final _sidebarKey = GlobalKey<HomeChatSidebarState>();
+  bool _detailCanPop = false;
   late final _recentChat = HomeRecentChatController()
     ..addListener(_recentChatChanged);
 
   void _recentChatChanged() {
+    // The selected chat's chrome replaces detail immediately. Its connection
+    // binds after the outgoing screen unmounts, without revealing other tabs.
+    if (_recentChat.page != null) {
+      _adaptiveKey.currentState?.showDetail();
+      _closeMenu();
+    }
     setState(() {});
     _syncRemoteVisibility();
   }
@@ -114,6 +122,16 @@ class _HomeShellState extends State<HomeShell>
   bool _extraMounted = false;
   HomeTab? get _visibleTab =>
       _extraSelected || _recentChat.page != null ? null : _tabController?.value;
+
+  @override
+  void initState() {
+    super.initState();
+    _menu = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+      reverseDuration: const Duration(milliseconds: 250),
+    );
+  }
 
   @override
   void didChangeDependencies() {
@@ -142,7 +160,9 @@ class _HomeShellState extends State<HomeShell>
   }
 
   void _handleTabChanged() {
+    _adaptiveKey.currentState?.showDetail();
     _recentChat.close();
+    _detailKey.currentState?.reset();
     // Selecting a tab, even the one under it, leaves the extra destination.
     if (_extraSelected) setState(() => _extraSelected = false);
     _syncRemoteVisibility();
@@ -157,16 +177,17 @@ class _HomeShellState extends State<HomeShell>
 
   void _openMenu() {
     if (_menu.isDismissed) _refreshRecents();
+    if (_adaptiveKey.currentState?.isAdaptive ?? false) {
+      _adaptiveKey.currentState?.toggleChats();
+      return;
+    }
     _menu.fling(velocity: 1);
-  }
-
-  void _refreshRecents() {
-    final source = context.read<HomeRecentChatsSource?>();
-    if (source != null) unawaited(source.refresh());
   }
 
   void _openExtraDestination() {
     _recentChat.close();
+    _detailKey.currentState?.reset();
+    _adaptiveKey.currentState?.showDetail();
     setState(() {
       _extraSelected = true;
       _extraMounted = true;
@@ -180,6 +201,11 @@ class _HomeShellState extends State<HomeShell>
     _syncRemoteVisibility();
   }
 
+  void _refreshRecents() {
+    final source = context.read<HomeRecentChatsSource?>();
+    if (source != null) unawaited(source.refresh());
+  }
+
   void _closeMenu() {
     _menu.fling(velocity: -1);
   }
@@ -189,13 +215,71 @@ class _HomeShellState extends State<HomeShell>
   void _openNewChat() {
     // Selecting always notifies, which closes the menu.
     _tabController?.select(HomeTab.chat);
+    _adaptiveKey.currentState?.showDetail();
   }
 
-  /// Opens a chat from the drawer's Recents inside the shell. The shell's
-  /// context, not the drawer's: the drawer unmounts as it closes.
-  void _openRecentChat(HomeRecentChat chat) {
-    _closeMenu();
-    unawaited(_recentChat.open(chat, context));
+  /// Replace the main pane from the tap; route and connection cleanup must
+  /// not hold the selected chat's visible destination behind the drawer.
+  Future<void> _openRecentChat(HomeRecentChat chat) async {
+    if (_recentChat.page != null &&
+        !_recentChat.preparing &&
+        chat.isCurrent()) {
+      _adaptiveKey.currentState?.showDetail();
+      _closeMenu();
+      unawaited(_detailKey.currentState?.reset());
+      return;
+    }
+    unawaited(
+      _recentChat.open(
+        chat,
+        context,
+        prepare: () async {
+          await _adaptiveKey.currentState?.prepareDetail(() async {
+            await _detailKey.currentState?.reset();
+          });
+        },
+      ),
+    );
+  }
+
+  void _selectRailTab(HomeTab tab) {
+    if (tab == HomeTab.chat) {
+      if (_recentChat.page == null && _visibleTab != HomeTab.chat) {
+        _tabController?.select(HomeTab.chat);
+      }
+      _refreshRecents();
+      _adaptiveKey.currentState?.showChats();
+    } else {
+      _tabController?.select(tab);
+      _adaptiveKey.currentState?.showDetail();
+    }
+  }
+
+  void _searchChats() {
+    _refreshRecents();
+    _adaptiveKey.currentState?.showChats();
+    _sidebarKey.currentState?.focusSearch();
+  }
+
+  void _handleSystemBack() {
+    final layout = _adaptiveKey.currentState;
+    final navigator = _detailKey.currentState?.navigator.currentState;
+    if (layout?.compactListVisible ?? false) {
+      layout?.showDetail();
+    } else if (!(layout?.isAdaptive ?? false) && !_menu.isDismissed) {
+      _closeMenu();
+    } else if (_backHandlers.consume()) {
+      return;
+    } else if (navigator?.canPop() ?? false) {
+      unawaited(navigator!.maybePop());
+    } else if (_recentChat.page != null) {
+      _recentChat.close();
+    } else if (_extraSelected) {
+      _leaveExtraDestination();
+    } else if (_tabController case final controller?) {
+      final parent = _parentTabOf(controller.value);
+      if (parent != null) controller.select(parent);
+    }
   }
 
   void _dragMenu(DragUpdateDetails details, double menuWidth) {
@@ -222,257 +306,283 @@ class _HomeShellState extends State<HomeShell>
     final showsRecent = _recentChat.page != null;
     final showsExtra = extra != null && _extraSelected && !showsRecent;
     final outlineColor = Theme.of(context).colorScheme.outlineVariant;
-    return Scaffold(
-      backgroundColor: HomeNavigationDrawer.backgroundColorOf(context),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final menuWidth = math.min(
-            _maxMenuWidth,
-            math.max(0, constraints.maxWidth - _cardPeek).toDouble(),
-          );
-          return AnimatedBuilder(
-            animation: _menu,
-            builder: (context, _) {
-              final t = _menu.value;
-              final menuVisible = t > 0;
-              final parentTab = _parentTabOf(tabController.value);
-              // The shell is the app's root, so system back never pops it:
-              // with nothing to unwind, back does nothing instead of
-              // closing the app on Android.
-              return PopScope(
-                canPop: false,
-                onPopInvokedWithResult: (didPop, _) {
-                  if (didPop) return;
-                  if (menuVisible) {
-                    _closeMenu();
-                  } else if (_backHandlers.consume()) {
-                    return;
-                  } else if (showsRecent) {
-                    _recentChat.close();
-                  } else if (showsExtra) {
-                    _leaveExtraDestination();
-                  } else if (parentTab != null) {
-                    _tabController?.select(parentTab);
-                  }
-                },
-                // Keep one recognizer above the changing menu/card subtree so
-                // revealing the drawer cannot dispose an in-flight drag.
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onHorizontalDragUpdate: (details) =>
-                      _dragMenu(details, menuWidth),
-                  onHorizontalDragEnd: (details) =>
-                      _settleMenu(details, menuWidth),
-                  child: Stack(
-                    children: [
-                      if (menuVisible)
-                        Positioned(
-                          key: const ValueKey('home-navigation-drawer-slot'),
-                          left: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: menuWidth,
-                          // Gentle parallax: the menu drifts in from the left as
-                          // the card slides away, landing flush at the edge.
-                          child: Transform.translate(
-                            offset: Offset(-(1 - t) * menuWidth * 0.25, 0),
-                            child: _RecentChatsBuilder(
-                              builder: (context, recentChats, notice) {
-                                final remoteConnected = context
-                                    .select<RemoteControlViewModel, bool>(
-                                      (remote) => remote.isConnected,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleSystemBack();
+      },
+      child: HomeNavigationScope(
+        openDrawer: _openMenu,
+        backHandlers: _backHandlers,
+        child: HomeAdaptiveLayout(
+          key: _adaptiveKey,
+          initiallyShowChats: _visibleTab == HomeTab.chat,
+          sidebar: HomeChatSidebar(
+            key: _sidebarKey,
+            showsRecentChat: showsRecent,
+            onOpenChat: _openRecentChat,
+          ),
+          railBuilder: (context, listVisible) => HomeNavigationRail(
+            tabs: [
+              for (final tab in tabs)
+                if (tab != HomeTab.remote ||
+                    context.watch<RemoteControlViewModel>().isConnected)
+                  tab,
+            ],
+            selectedTab: showsExtra
+                ? null
+                : showsRecent
+                ? HomeTab.chat
+                : tabController.value,
+            onSelected: _selectRailTab,
+            listVisible: listVisible,
+            onToggleList: _openMenu,
+            onSearch: _searchChats,
+            onNewChat: tabs.contains(HomeTab.chat) ? _openNewChat : null,
+            extraLabel: extra?.label,
+            onExtra: extra == null ? null : _openExtraDestination,
+            extraSelected: showsExtra,
+          ),
+          child: HomeDetailPane(
+            key: _detailKey,
+            onCanPopChanged: (canPop) {
+              if (_detailCanPop != canPop) {
+                setState(() => _detailCanPop = canPop);
+              }
+            },
+            child: IndexedStack(
+              index: showsRecent
+                  ? tabs.length + (extra != null && _extraMounted ? 1 : 0)
+                  : showsExtra
+                  ? tabs.length
+                  : tabController.selectedIndex,
+              children: [
+                for (final tab in tabs) _contentFor(tab),
+                if (extra != null && _extraMounted)
+                  Builder(
+                    key: const ValueKey('home-extra-destination'),
+                    builder: extra.pageBuilder,
+                  ),
+                if (_recentChat.page case final page?)
+                  KeyedSubtree(key: ObjectKey(page), child: page),
+              ],
+            ),
+          ),
+          legacyBuilder: (detail) => Scaffold(
+            backgroundColor: HomeNavigationDrawer.backgroundColorOf(context),
+            body: LayoutBuilder(
+              builder: (context, constraints) {
+                final menuWidth = math.min(
+                  _maxMenuWidth,
+                  math.max(0, constraints.maxWidth - _cardPeek).toDouble(),
+                );
+                return AnimatedBuilder(
+                  animation: _menu,
+                  builder: (context, _) {
+                    final t = _menu.value;
+                    final menuVisible = t > 0;
+                    // Keep one recognizer above the changing menu/card subtree so
+                    // revealing the drawer cannot dispose an in-flight drag.
+                    return GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onHorizontalDragUpdate: _detailCanPop
+                          ? null
+                          : (details) => _dragMenu(details, menuWidth),
+                      onHorizontalDragEnd: _detailCanPop
+                          ? null
+                          : (details) => _settleMenu(details, menuWidth),
+                      child: Stack(
+                        children: [
+                          if (menuVisible)
+                            Positioned(
+                              key: const ValueKey(
+                                'home-navigation-drawer-slot',
+                              ),
+                              left: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: menuWidth,
+                              // Gentle parallax: the menu drifts in from the left as
+                              // the card slides away, landing flush at the edge.
+                              child: Transform.translate(
+                                offset: Offset(-(1 - t) * menuWidth * 0.25, 0),
+                                child: HomeRecentChatsBuilder(
+                                  builder: (context, recentChats, notice) {
+                                    final remoteConnected = context
+                                        .select<RemoteControlViewModel, bool>(
+                                          (remote) => remote.isConnected,
+                                        );
+                                    return HomeNavigationDrawer(
+                                      extraDestination: extra == null
+                                          ? null
+                                          : HomeNavigationDrawerRow(
+                                              key: const ValueKey(
+                                                'home-nav-computer-connect',
+                                              ),
+                                              glyph: CanopyGlyph.macbook,
+                                              label: extra.label,
+                                              subtitle: extra.subtitle,
+                                              selected: showsExtra,
+                                              onTap: _openExtraDestination,
+                                            ),
+                                      contextRow: const WorkspaceContextRow(),
+                                      tabs: [
+                                        for (final tab in tabs)
+                                          if (tab != HomeTab.remote ||
+                                              remoteConnected)
+                                            tab,
+                                      ],
+                                      selectedTab: showsExtra || showsRecent
+                                          ? null
+                                          : tabController.value,
+                                      onSelected: (tab) {
+                                        tabController.select(tab);
+                                        _closeMenu();
+                                      },
+                                      recentChats: recentChats,
+                                      recentChatsNotice: notice,
+                                      onOpenChat: _openRecentChat,
+                                      onNewChat: tabs.contains(HomeTab.chat)
+                                          ? _openNewChat
+                                          : null,
+                                      // Selecting always notifies, which
+                                      // closes the menu.
+                                      onOpenSettings:
+                                          tabs.contains(HomeTab.account)
+                                          ? () => tabController.select(
+                                              HomeTab.account,
+                                            )
+                                          : null,
                                     );
-                                return HomeNavigationDrawer(
-                                  extraDestination: extra == null
-                                      ? null
-                                      : HomeNavigationDrawerRow(
-                                          key: const ValueKey(
-                                            'home-nav-computer-connect',
-                                          ),
-                                          glyph: CanopyGlyph.macbook,
-                                          label: extra.label,
-                                          subtitle: extra.subtitle,
-                                          selected: showsExtra,
-                                          onTap: _openExtraDestination,
-                                        ),
-                                  contextRow: const WorkspaceContextRow(),
-                                  tabs: [
-                                    for (final tab in tabs)
-                                      if (tab != HomeTab.remote ||
-                                          remoteConnected)
-                                        tab,
-                                  ],
-                                  selectedTab: showsExtra || showsRecent
-                                      ? null
-                                      : tabController.value,
-                                  onSelected: (tab) {
-                                    tabController.select(tab);
-                                    _closeMenu();
                                   },
-                                  recentChats: recentChats,
-                                  recentChatsNotice: notice,
-                                  onOpenChat: _openRecentChat,
-                                  onNewChat: tabs.contains(HomeTab.chat)
-                                      ? _openNewChat
-                                      : null,
-                                  // Selecting always notifies, which
-                                  // closes the menu.
-                                  onOpenSettings: tabs.contains(HomeTab.account)
-                                      ? () => tabController.select(
-                                          HomeTab.account,
+                                ),
+                              ),
+                            ),
+                          Positioned.fill(
+                            key: const ValueKey('home-content-slot'),
+                            child: Transform.translate(
+                              offset: Offset(menuWidth * t, 0),
+                              child: DecoratedBox(
+                                // Foreground so the hairline and the open-menu
+                                // tint paint over the card's own content right at
+                                // the clipped edge. The tint lives HERE, as a
+                                // rounded fill, rather than as a full-rect child
+                                // inside the clip: Impeller does not apply a
+                                // rounded ClipRRect to content painted after a
+                                // BackdropFilter (the app bar) unless the whole
+                                // card goes through a save layer, which used to
+                                // cost a full offscreen composite on every frame
+                                // of the slide.
+                                position: DecorationPosition.foreground,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(
+                                    _openCardRadius * t,
+                                  ),
+                                  // Lift the card slightly in dark mode and dim it
+                                  // slightly in light mode.
+                                  color: !menuVisible
+                                      ? null
+                                      : Theme.of(context).brightness ==
+                                            Brightness.dark
+                                      ? Colors.white.withValues(alpha: 0.08 * t)
+                                      : Colors.black.withValues(
+                                          alpha: 0.15 * t,
+                                        ),
+                                  border: menuVisible
+                                      ? Border.all(
+                                          color: outlineColor.withValues(
+                                            alpha: outlineColor.a * t,
+                                          ),
                                         )
                                       : null,
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                      Positioned.fill(
-                        key: const ValueKey('home-content-slot'),
-                        child: Transform.translate(
-                          offset: Offset(menuWidth * t, 0),
-                          child: DecoratedBox(
-                            // Foreground so the hairline and the open-menu
-                            // tint paint over the card's own content right at
-                            // the clipped edge. The tint lives HERE, as a
-                            // rounded fill, rather than as a full-rect child
-                            // inside the clip: Impeller does not apply a
-                            // rounded ClipRRect to content painted after a
-                            // BackdropFilter (the app bar) unless the whole
-                            // card goes through a save layer, which used to
-                            // cost a full offscreen composite on every frame
-                            // of the slide.
-                            position: DecorationPosition.foreground,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(
-                                _openCardRadius * t,
-                              ),
-                              // Lift the card slightly in dark mode and dim it
-                              // slightly in light mode.
-                              color: !menuVisible
-                                  ? null
-                                  : Theme.of(context).brightness ==
-                                        Brightness.dark
-                                  ? Colors.white.withValues(alpha: 0.08 * t)
-                                  : Colors.black.withValues(alpha: 0.15 * t),
-                              border: menuVisible
-                                  ? Border.all(
-                                      color: outlineColor.withValues(
-                                        alpha: outlineColor.a * t,
-                                      ),
-                                    )
-                                  : null,
-                            ),
-                            child: ClipRRect(
-                              // A plain clip layer: no offscreen save layer for
-                              // the whole card on every frame of the slide.
-                              clipBehavior: Clip.antiAlias,
-                              borderRadius: BorderRadius.circular(
-                                _openCardRadius * t,
-                              ),
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  ExcludeSemantics(
-                                    excluding: menuVisible,
-                                    child: FocusScope(
-                                      key: const ValueKey(
-                                        'home-content-focus-scope',
-                                      ),
-                                      canRequestFocus: !menuVisible,
-                                      // The card is translated every frame of
-                                      // the slide; its own layer lets the
-                                      // raster cache reuse the tab content
-                                      // (and its blurred app bar) instead of
-                                      // redrawing it per frame.
-                                      child: RepaintBoundary(
-                                        key: const ValueKey(
-                                          'home-content-repaint-boundary',
-                                        ),
-                                        child: HomeNavigationScope(
-                                          openDrawer: _openMenu,
-                                          backHandlers: _backHandlers,
-                                          contentVisible: !menuVisible,
-                                          child: IndexedStack(
-                                            index: showsRecent
-                                                ? tabs.length +
-                                                      (extra != null &&
-                                                              _extraMounted
-                                                          ? 1
-                                                          : 0)
-                                                : showsExtra
-                                                ? tabs.length
-                                                : tabController.selectedIndex,
-                                            children: [
-                                              for (final tab in tabs)
-                                                _contentFor(tab),
-                                              if (extra != null &&
-                                                  _extraMounted)
-                                                Builder(
-                                                  key: const ValueKey(
-                                                    'home-extra-destination',
-                                                  ),
-                                                  builder: extra.pageBuilder,
-                                                ),
-                                              if (_recentChat.page
-                                                  case final page?)
-                                                KeyedSubtree(
-                                                  key: ObjectKey(page),
-                                                  child: page,
-                                                ),
-                                            ],
+                                ),
+                                child: ClipRRect(
+                                  // A plain clip layer: no offscreen save layer for
+                                  // the whole card on every frame of the slide.
+                                  clipBehavior: Clip.antiAlias,
+                                  borderRadius: BorderRadius.circular(
+                                    _openCardRadius * t,
+                                  ),
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      ExcludeSemantics(
+                                        excluding: menuVisible,
+                                        child: FocusScope(
+                                          key: const ValueKey(
+                                            'home-content-focus-scope',
+                                          ),
+                                          canRequestFocus: !menuVisible,
+                                          // The card is translated every frame of
+                                          // the slide; its own layer lets the
+                                          // raster cache reuse the tab content
+                                          // (and its blurred app bar) instead of
+                                          // redrawing it per frame.
+                                          child: RepaintBoundary(
+                                            key: const ValueKey(
+                                              'home-content-repaint-boundary',
+                                            ),
+                                            child: HomeNavigationScope(
+                                              openDrawer: _openMenu,
+                                              backHandlers: _backHandlers,
+                                              contentVisible: !menuVisible,
+                                              child: detail,
+                                            ),
                                           ),
                                         ),
                                       ),
-                                    ),
+                                      // While the menu is open the card is inert:
+                                      // this scrim swallows every pointer and
+                                      // tapping or dragging it closes the menu. It
+                                      // paints nothing; the tint is the card's
+                                      // rounded foreground decoration above.
+                                      if (menuVisible)
+                                        Semantics(
+                                          button: true,
+                                          label: 'Close navigation menu',
+                                          child: GestureDetector(
+                                            key: const ValueKey(
+                                              'home-menu-scrim',
+                                            ),
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: _closeMenu,
+                                            child: const SizedBox.expand(),
+                                          ),
+                                        ),
+                                    ],
                                   ),
-                                  // While the menu is open the card is inert:
-                                  // this scrim swallows every pointer and
-                                  // tapping or dragging it closes the menu. It
-                                  // paints nothing; the tint is the card's
-                                  // rounded foreground decoration above.
-                                  if (menuVisible)
-                                    Semantics(
-                                      button: true,
-                                      label: 'Close navigation menu',
-                                      child: GestureDetector(
-                                        key: const ValueKey('home-menu-scrim'),
-                                        behavior: HitTestBehavior.opaque,
-                                        onTap: _closeMenu,
-                                        child: const SizedBox.expand(),
-                                      ),
-                                    ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                          // Stay above horizontal descendants in the gesture arena
+                          // so the established edge swipe works over pagers. The
+                          // enclosing recognizer remains mounted across rebuilds
+                          // and handles drags that begin outside this edge zone.
+                          if (!_detailCanPop)
+                            Positioned(
+                              key: const ValueKey('home-edge-drag-zone'),
+                              left: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: _edgeDragZoneWidth,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onHorizontalDragUpdate: (details) =>
+                                    _dragMenu(details, menuWidth),
+                                onHorizontalDragEnd: (details) =>
+                                    _settleMenu(details, menuWidth),
+                              ),
+                            ),
+                        ],
                       ),
-                      // Stay above horizontal descendants in the gesture arena
-                      // so the established edge swipe works over pagers. The
-                      // enclosing recognizer remains mounted across rebuilds
-                      // and handles drags that begin outside this edge zone.
-                      Positioned(
-                        key: const ValueKey('home-edge-drag-zone'),
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: _edgeDragZoneWidth,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onHorizontalDragUpdate: (details) =>
-                              _dragMenu(details, menuWidth),
-                          onHorizontalDragEnd: (details) =>
-                              _settleMenu(details, menuWidth),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          );
-        },
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -532,44 +642,6 @@ class _HomeShellState extends State<HomeShell>
       HomeChatDestination.maybeOf(context)?.builder(context) ??
           widget.accountTab,
   };
-}
-
-/// Reads the drawer's Recents from the app-composed [HomeRecentChatsSource],
-/// rebuilding only the drawer subtree when it changes.
-class _RecentChatsBuilder extends StatelessWidget {
-  const _RecentChatsBuilder({required this.builder});
-
-  /// Builds the drawer from Recents and loading or empty feedback.
-  final Widget Function(
-    BuildContext context,
-    List<HomeRecentChat> recentChats,
-    Widget? notice,
-  )
-  builder;
-
-  @override
-  Widget build(BuildContext context) {
-    final source = context.watch<HomeRecentChatsSource?>();
-    final workspaceContext = context.watch<WorkspaceContext?>();
-    if (source == null) return builder(context, const [], null);
-    final recents = source.read(
-      workspaceContext ?? const WorkspaceContext.personal(),
-    );
-    final label =
-        context.watch<WorkspaceContextLabel?>()?.value ??
-        WorkspaceContextLabel.fallback(workspaceContext);
-    final Widget? notice;
-    if (recents.chats.isNotEmpty || !recents.connected) {
-      notice = null;
-    } else if (recents.loading) {
-      notice = const ChatListNotice(
-        message: 'Loading chats from your computers…',
-      );
-    } else {
-      notice = ChatListNotice(message: 'No recent chats in $label.');
-    }
-    return builder(context, recents.chats, notice);
-  }
 }
 
 /// The account facts Activity shows (CAN-3715): whether Personal is the

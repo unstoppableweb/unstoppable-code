@@ -21,7 +21,6 @@ import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
 import 'worktree_archive_row.dart';
-import 'package:mobile/ui/core/workspaces/attention_sections.dart';
 
 class DeviceProjectsOverview extends StatefulWidget {
   const DeviceProjectsOverview({
@@ -58,11 +57,6 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
         : const <DeviceProjectClone>[];
     final worktrees = scope.worktrees;
     final projects = scope.projects;
-    final attention = scope.attention;
-    final hasAttention = attention.attentionEntries.isNotEmpty;
-    final attentionTargets = {
-      for (final worktree in scope.allWorktrees) worktree.key: worktree,
-    };
     final colors = AppColors.of(context);
     final allChats = scope.chats(controller.chats.chats.catalog);
     final coworkProjectIds = {
@@ -82,23 +76,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
               'Some projects are hidden because their ownership is unavailable.',
           onRetry: controller.refresh,
         ),
-      if (hasAttention) ...[
-        AttentionSections(
-          data: attention,
-          rowBuilder: (entry) {
-            final worktree =
-                attentionTargets['${entry.worktree.workspaceLocalId}/${entry.worktree.localId}']!;
-            return DeviceWorktreeArchiveRow(
-              key: ValueKey('device-attention-actions-${worktree.key}'),
-              controller: controller,
-              worktree: worktree,
-              contextLabel: entry.workspaceName,
-              onTap: () => widget.onOpenWorktree(worktree),
-            );
-          },
-        ),
-        const SizedBox(height: 12),
-      ],
+      // Worktrees belong under their projects, without a duplicate attention queue.
       Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: Row(
@@ -235,7 +213,6 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     } else if (worktrees.isEmpty &&
         standalone.isEmpty &&
         clones.isEmpty &&
-        !hasAttention &&
         (!pending || controller.worktrees.hasInventory) &&
         controller.error == null &&
         !scope.hasUnknownOwners) {

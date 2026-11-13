@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
+import 'package:mobile/ui/core/navigation/app_route_scope.dart';
 
 /// Wraps a chat body and presents a one-off prompt only when [isDue] AND the
 /// chat is [isQuiet] (idle, no error surface, no pending question, visible
@@ -47,9 +48,9 @@ class _QuietPromptHostState extends State<QuietPromptHost>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Registers a dependency, so pushing/popping a route above this one
-    // re-runs didChangeDependencies.
-    _routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    // Includes the outer route and retained pane, not just the nearest
+    // navigator's top route. Visibility changes cancel or restart settling.
+    _routeIsCurrent = AppRouteScope.isCurrentOf(context);
     _evaluate();
   }
 

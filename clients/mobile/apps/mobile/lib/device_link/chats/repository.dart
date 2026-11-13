@@ -423,8 +423,12 @@ final class DeviceChatsRepository {
       id: result['entityId'] as String? ?? id,
       title: 'New chat',
     );
+    final opening = open(ref);
+    // Publish the durable creation after its selection is established, before
+    // awaiting hydration. Callers retain the receipt and its selection owner
+    // even if that first read fails.
     onCreated?.call(ref);
-    await open(ref);
+    await opening;
   }
 
   Future<DeviceChatSendOutcome> send(

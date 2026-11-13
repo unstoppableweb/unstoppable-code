@@ -11,6 +11,8 @@ import 'dart:async';
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/device_link/chats/decisions.dart';
 import 'package:mobile/device_link/chats/navigation.dart';
+import 'package:mobile/device_link/chats/forks.dart';
+import 'package:mobile/ui/core/chat/view_models/response_action_target.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/device_link/chats/repository.dart';
@@ -78,6 +80,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   );
   late final decisions = DeviceChatDecisions(chats.ipc);
   late final navigation = DeviceChatNavigation(chats.ipc);
+  late final forks = DeviceChatForks(chats.ipc);
   late final readReceipts = DeviceChatReadReceipts(navigation);
   late final attachments = DeviceChatAttachments(chats.ipc);
   late final files = DeviceFileLocator(chats.ipc);
@@ -398,6 +401,33 @@ final class DeviceChatsViewModel extends ChangeNotifier {
       }
       return false;
     }
+  }
+
+  Future<void> forkResponse(ResponseActionTarget target) async {
+    final current = state;
+    if (!online ||
+        !chats.ready ||
+        current == null ||
+        current.closed ||
+        current.tab['readOnly'] == true ||
+        current.ref.id != target.chatId) {
+      throw const DeviceLinkException('Reconnect to your computer first.');
+    }
+    final generation = chats.selectionGeneration;
+    final connectionRevision = _connectionRevision;
+    final destination = await forks.fork(current.ref, target.atMessageId);
+    if (_disposed ||
+        !online ||
+        connectionRevision != _connectionRevision ||
+        generation != chats.selectionGeneration) {
+      return;
+    }
+    if (!await open(destination)) {
+      throw const DeviceLinkException(
+        'The fork was created. Open it from the chat list.',
+      );
+    }
+    forks.opened(current.ref, target.atMessageId);
   }
 
   Future<bool> create(DeviceChatWorkspace workspace, {String? title}) async {

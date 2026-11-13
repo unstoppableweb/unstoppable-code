@@ -3,9 +3,8 @@ import 'package:mobile/data/models/remote_context_scope.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import '../desktop/ipc.dart';
-import '../protocol.dart';
-import 'dto.dart';
 import 'models.dart';
+import 'recent_inventory.dart';
 
 /// Why a recent chat carries the attention dot, if it does.
 enum DeviceRecentAttention { none, unread, awaitingAnswer }
@@ -37,18 +36,41 @@ final class DeviceRecentChatsRepository {
   final void Function()? onChanged;
   RemoteSessionSnapshot? _snapshot;
   int _generation = 0;
+  Future<void>? _refreshing;
+  bool _refreshAgain = false;
   bool get hasInventory => _snapshot != null;
 
-  Future<void> refresh() async {
-    final generation = ++_generation;
+  /// Publish each completed observation before re-reading. Superseding a slow
+  /// read on every activity push can otherwise leave a busy computer empty.
+  Future<void> refresh() {
+    final pending = _refreshing;
+    if (pending != null) {
+      _refreshAgain = true;
+      return pending;
+    }
+    return _refreshing = _refresh(++_generation);
+  }
+
+  Future<void> _refresh(int generation) async {
     try {
-      final value = deviceChatDto(
-        await ipc.invoke('desktop:session-snapshot', [
-          {'includeChatSummaries': true},
-        ]),
+      do {
+        _refreshAgain = false;
+        await _read(generation);
+        if (generation != _generation) return;
+      } while (_refreshAgain);
+    } finally {
+      if (generation == _generation) _refreshing = null;
+    }
+  }
+
+  Future<void> _read(int generation) async {
+    try {
+      final snapshot = await readRecentInventory(
+        ipc,
+        isCurrent: () => generation == _generation,
       );
       if (generation != _generation) return;
-      _snapshot = RemoteSessionSnapshot.fromJson(deviceLinkObject(value));
+      _snapshot = snapshot;
       onChanged?.call();
     } catch (_) {
       // Keep the last observation until a later refresh succeeds. Recents
@@ -57,10 +79,14 @@ final class DeviceRecentChatsRepository {
   }
 
   /// Retain the rows while retiring reads from the old session.
-  void pause() => _generation++;
+  void pause() {
+    _generation++;
+    _refreshing = null;
+    _refreshAgain = false;
+  }
 
   void invalidate() {
-    _generation++;
+    pause();
     _snapshot = null;
   }
 

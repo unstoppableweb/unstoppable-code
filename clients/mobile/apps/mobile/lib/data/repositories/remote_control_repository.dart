@@ -20,6 +20,7 @@ import 'package:mobile/data/repositories/mock_remote_watchers.dart';
 import 'package:mobile/data/repositories/remote_watcher_commands.dart';
 import 'package:mobile/data/repositories/remote_app_advisor_commands.dart';
 import 'package:mobile/data/repositories/remote_composer_commands.dart';
+import 'package:mobile/data/repositories/remote_response_commands.dart';
 import 'package:mobile/data/repositories/remote_pairing_failure.dart';
 import 'package:mobile/data/repositories/remote_pipeline_content_commands.dart';
 import 'package:mobile/data/repositories/remote_project_commands.dart';
@@ -422,6 +423,8 @@ abstract interface class RemoteControlRepository {
   /// Slash commands the paired desktop discovered for a worktree, for the
   /// composer's `/` suggestions (CAN-3921).
   RemoteComposerCommands get composerCommands;
+
+  RemoteResponseCommands get responseCommands;
 
   /// Capability announced by desktops whose `pipeline_run` rows carry the
   /// chat turns each run is attributed to (CAN-3619). Without it a chat shows
@@ -1426,6 +1429,12 @@ final class MockRemoteControlRepository implements RemoteControlRepository {
       await Future<void>.delayed(latency);
       return RemotePortalCommandResult(commandId: 'mock-$type');
     },
+  );
+
+  @override
+  late final responseCommands = RemoteResponseCommands(
+    submit: ({required type, required target, required payload}) async =>
+        RemotePortalCommandResult(commandId: 'mock-$type'),
   );
 
   @override
@@ -2553,6 +2562,12 @@ final class HttpRemoteControlRepository implements RemoteControlRepository {
       unknownSendOutcomeOnTransportFailure: type == 'portal.app_advisor.send',
     ),
     request: ({required type, required payload, target}) =>
+        _submit(type: type, target: target, payload: payload),
+  );
+
+  @override
+  late final responseCommands = RemoteResponseCommands(
+    submit: ({required type, required target, required payload}) =>
         _submit(type: type, target: target, payload: payload),
   );
 

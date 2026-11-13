@@ -247,56 +247,49 @@ class _ContentBody extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = AppColors.of(context);
     final text = contents.contents;
+    if (file.kind == FileViewerKind.html) {
+      return Padding(
+        padding: EdgeInsets.only(top: padding.top),
+        child: Column(
+          children: [
+            _header(context),
+            Expanded(child: FileViewerPageView(file: file)),
+          ],
+        ),
+      );
+    }
+    if (file.hasFormattedView) {
+      return _list(
+        itemCount: text.isEmpty ? 0 : 1,
+        itemBuilder: (_) => Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          child: MessageMarkdown(
+            key: const ValueKey('file-viewer-formatted'),
+            text: text,
+            selectable: true,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.foreground,
+            ),
+            // The computer cannot serve images: alt text only, no reads.
+            imageResolver: file.imagesUnavailable ? null : imageResolver,
+            onImageTap: onImageTap,
+          ),
+        ),
+      );
+    }
     final lines = text.isEmpty ? const <String>[] : text.split('\n');
     final lineStyle = AppTypography.code.copyWith(color: colors.foreground);
     // Source lines stay lazy so a large file does not lay out at once.
-    final source = _list(
-      FileViewerMode.source,
+    return _list(
       itemCount: lines.length,
       itemBuilder: (index) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Text(lines[index], style: lineStyle),
       ),
     );
-    if (!file.hasFormattedView) return source;
-    final formatted = file.kind == FileViewerKind.html
-        ? Padding(
-            padding: EdgeInsets.only(top: padding.top),
-            child: Column(
-              children: [
-                _header(context, FileViewerMode.formatted),
-                Expanded(child: FileViewerPageView(file: file)),
-              ],
-            ),
-          )
-        : _list(
-            FileViewerMode.formatted,
-            itemCount: text.isEmpty ? 0 : 1,
-            itemBuilder: (_) => Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-              child: MessageMarkdown(
-                key: const ValueKey('file-viewer-formatted'),
-                text: text,
-                selectable: true,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colors.foreground,
-                ),
-                // The computer cannot serve images: alt text only, no reads.
-                imageResolver: file.imagesUnavailable ? null : imageResolver,
-                onImageTap: onImageTap,
-              ),
-            ),
-          );
-    // Both modes stay mounted, so switching back neither reloads images
-    // nor loses either scroll position.
-    return IndexedStack(
-      index: file.mode == FileViewerMode.formatted ? 0 : 1,
-      children: [formatted, source],
-    );
   }
 
-  Widget _list(
-    FileViewerMode mode, {
+  Widget _list({
     required int itemCount,
     required Widget Function(int index) itemBuilder,
   }) => SelectionArea(
@@ -304,11 +297,11 @@ class _ContentBody extends StatelessWidget {
       padding: padding,
       itemCount: 1 + itemCount,
       itemBuilder: (context, index) =>
-          index == 0 ? _header(context, mode) : itemBuilder(index - 1),
+          index == 0 ? _header(context) : itemBuilder(index - 1),
     ),
   );
 
-  Widget _header(BuildContext context, FileViewerMode mode) {
+  Widget _header(BuildContext context) {
     final noteStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
       color: AppColors.of(context).foregroundSecondary,
     );
@@ -317,26 +310,6 @@ class _ContentBody extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (file.hasFormattedView)
-            SegmentedButton<FileViewerMode>(
-              key: const ValueKey('file-viewer-mode'),
-              showSelectedIcon: false,
-              segments: [
-                ButtonSegment(
-                  value: FileViewerMode.formatted,
-                  label: Text(
-                    file.kind == FileViewerKind.html ? 'Rendered' : 'Formatted',
-                  ),
-                ),
-                ButtonSegment(
-                  value: FileViewerMode.source,
-                  label: Text('Source'),
-                ),
-              ],
-              selected: {mode},
-              onSelectionChanged: (selection) =>
-                  file.showMode(selection.single),
-            ),
           if (contents.truncated)
             _Note(
               key: const ValueKey('file-viewer-truncated'),
@@ -345,7 +318,7 @@ class _ContentBody extends StatelessWidget {
                   'computer to see the rest.',
               style: noteStyle,
             ),
-          if (mode == FileViewerMode.formatted && file.imagesUnavailable)
+          if (file.hasFormattedView && file.imagesUnavailable)
             _Note(
               key: const ValueKey('file-viewer-images-unavailable'),
               text: 'Update the app on your computer to show images.',

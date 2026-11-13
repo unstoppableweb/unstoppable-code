@@ -19,6 +19,7 @@ import 'package:mobile/data/repositories/remote_control_repository.dart';
 import 'package:mobile/data/repositories/remote_pipeline_content_commands.dart';
 import 'package:mobile/data/repositories/remote_app_advisor_commands.dart';
 import 'package:mobile/data/repositories/remote_composer_commands.dart';
+import 'package:mobile/data/repositories/remote_response_commands.dart';
 import 'package:mobile/data/repositories/remote_project_commands.dart';
 import 'package:mobile/data/repositories/remote_provider_usage_commands.dart';
 import 'package:mobile/data/repositories/remote_watcher_commands.dart';
@@ -28,6 +29,12 @@ import 'package:mobile/data/repositories/mock_remote_watchers.dart';
 /// default so per-test fakes override only the behavior under test instead of
 /// re-implementing the whole interface each time it grows.
 base class FakeRemoteControlRepository implements RemoteControlRepository {
+  @override
+  late final responseCommands = RemoteResponseCommands(
+    submit: ({required type, required target, required payload}) async =>
+        const RemotePortalCommandResult(commandId: 'fork-response'),
+  );
+
   bool supportsWatchers = false;
   final watcherDeletes =
       <({String sessionId, String watcherId, bool notifySubscriber})>[];

@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 
-/// Most rows the drawer shows before older history is cut off.
+/// Most rows per computer the drawer shows before older history is cut off.
 const int recentChatsLimit = 30;
 
 /// Why a row carries the attention dot, if it does.
@@ -16,14 +16,20 @@ final class HomeRecentChat {
     required this.attention,
     required this.activityAt,
     required this.open,
+    required this.isCurrent,
+    this.locationLabel,
   });
 
   /// Stable identity across computers, safe for widget keys.
   final String key;
+
+  /// Reads the live selection, including conversation switches inside the page.
+  final bool Function() isCurrent;
   final String title;
 
   /// The computer the chat runs on, which the row is announced with.
   final String computerName;
+  final String? locationLabel;
   final RecentChatAttention attention;
 
   /// Sort key; null when the computer does not say when it was last active.
@@ -32,6 +38,7 @@ final class HomeRecentChat {
   /// Opens the chat from [context], which must outlive the drawer. The shell
   /// hosts [showChat]'s page until another destination is selected; completing
   /// this future releases the chat's selection before the next chat opens.
+  /// Network cleanup retires in the background with selection ownership checks.
   final Future<void> Function(
     BuildContext context,
     Future<void> Function(Widget page) showChat,

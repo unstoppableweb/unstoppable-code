@@ -13,11 +13,8 @@ const _imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'};
 /// Default budget for the encoded image bytes one viewer keeps in memory.
 const fileViewerImageCacheBytes = 20 * 1024 * 1024;
 
-/// How the file is shown. Markdown and HTML also offer their source.
+/// How the file is shown.
 enum FileViewerKind { text, markdown, html, image }
-
-/// `formatted` is rendered Markdown, or the rendered page for HTML.
-enum FileViewerMode { formatted, source }
 
 /// Reads one root-scoped file and the files it links to: the images in its
 /// Markdown, or the assets of a rendered page (CAN-5130). Images are kept in memory only, under an encoded-byte budget,
@@ -43,7 +40,6 @@ class FileViewerViewModel extends ChangeNotifier {
   final String? _path;
 
   bool _online;
-  FileViewerMode _mode = FileViewerMode.formatted;
   bool _loading = false;
   FileViewerText? _contents;
   Uint8List? _image;
@@ -92,12 +88,11 @@ class FileViewerViewModel extends ChangeNotifier {
 
   bool get isMarkdown => kind == FileViewerKind.markdown;
 
-  /// Markdown and HTML open formatted and can switch to their source.
+  /// Markdown and HTML show only their formatted view: rendered Markdown, or
+  /// the rendered page. Other text shows as source.
   bool get hasFormattedView =>
       kind == FileViewerKind.markdown || kind == FileViewerKind.html;
 
-  /// Other text is always source.
-  FileViewerMode get mode => hasFormattedView ? _mode : FileViewerMode.source;
   bool get loading => _loading;
   FileViewerText? get contents => _contents;
 
@@ -114,12 +109,6 @@ class FileViewerViewModel extends ChangeNotifier {
 
   @visibleForTesting
   int get retainedImageBytes => _retainedBytes;
-
-  void showMode(FileViewerMode mode) {
-    if (!hasFormattedView || mode == _mode) return;
-    _mode = mode;
-    notifyListeners();
-  }
 
   /// Reading again when the computer returns replaces the offline notice.
   void setOnline(bool online) {

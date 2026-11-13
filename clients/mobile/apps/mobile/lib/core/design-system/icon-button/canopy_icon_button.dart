@@ -15,6 +15,9 @@ enum CanopyIconButtonSize {
   final double glyphSize;
 }
 
+/// Keep interaction feedback aligned with the surrounding control chrome.
+enum CanopyIconButtonShape { rounded, circular }
+
 /// Transparent glyph action with a rounded, bounded Material ripple.
 ///
 /// [tooltip] also supplies the accessible action label. A null [onPressed]
@@ -30,6 +33,7 @@ class CanopyIconButton extends StatelessWidget {
     required this.tooltip,
     required this.onPressed,
     this.size = CanopyIconButtonSize.medium,
+    this.shape = CanopyIconButtonShape.rounded,
     this.compactTouchTarget = false,
     this.tint,
     this.glyphSize,
@@ -41,6 +45,7 @@ class CanopyIconButton extends StatelessWidget {
     required this.tooltip,
     required this.onPressed,
     this.size = CanopyIconButtonSize.medium,
+    this.shape = CanopyIconButtonShape.rounded,
     this.compactTouchTarget = false,
     this.tint,
     this.glyphSize,
@@ -53,6 +58,7 @@ class CanopyIconButton extends StatelessWidget {
   final String tooltip;
   final VoidCallback? onPressed;
   final CanopyIconButtonSize size;
+  final CanopyIconButtonShape shape;
 
   /// Opt into a touch target matching the visual size for compact toolbars.
   final bool compactTouchTarget;
@@ -87,9 +93,12 @@ class CanopyIconButton extends StatelessWidget {
               ? MaterialTapTargetSize.shrinkWrap
               : MaterialTapTargetSize.padded,
           visualDensity: VisualDensity.standard,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadii.md),
-          ),
+          shape: switch (shape) {
+            CanopyIconButtonShape.rounded => RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            CanopyIconButtonShape.circular => const CircleBorder(),
+          },
         ).copyWith(splashFactory: InkRipple.splashFactory),
         icon: switch ((glyph, iconBuilder)) {
           (final CanopyGlyph glyph, _) => CanopyIcon(

@@ -90,6 +90,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     });
     final controller = widget.controller;
     controller.enterChat();
+    var generation = controller.chats.chats.selectionGeneration;
     try {
       await controller.worktrees.load(worktree);
       if (!_includes(worktree)) {
@@ -110,13 +111,22 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
         // The repository establishes the target before its first await. Open
         // the shared chat shell now, so loading and failures are visible.
         final opening = controller.chats.open(ref);
+        generation = controller.chats.chats.selectionGeneration;
         if (mounted) await _showChat(worktree);
+        generation = controller.chats.chats.selectionGeneration;
         await opening;
         return;
       } else {
-        await controller.chats.chats.createTab(worktree.projectId, worktree.id);
+        await controller.chats.chats.createTab(
+          worktree.projectId,
+          worktree.id,
+          onCreated: (_) =>
+              generation = controller.chats.chats.selectionGeneration,
+        );
+        if (generation != controller.chats.chats.selectionGeneration) return;
       }
       if (mounted) await _showChat(worktree);
+      generation = controller.chats.chats.selectionGeneration;
     } catch (cause) {
       if (mounted) {
         setState(
@@ -127,8 +137,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       }
     } finally {
       if (mounted) setState(() => _opening = false);
-      await controller.chats.leaveChat();
-      await controller.watchOverview();
+      await controller.restoreOverview(generation);
     }
   }
 
@@ -145,8 +154,10 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     });
     final controller = widget.controller;
     controller.enterChat();
+    var generation = controller.chats.chats.selectionGeneration;
     try {
       await controller.chats.leaveChat();
+      generation = controller.chats.chats.selectionGeneration;
       if (mounted && controller.chats.online && _includesProject(project)) {
         await Navigator.of(context).push<void>(
           MaterialPageRoute(
@@ -154,13 +165,13 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                 DeviceNewTaskScreen(controller: controller, project: project),
           ),
         );
+        generation = controller.chats.chats.selectionGeneration;
       } else {
         _explainPendingScope();
       }
     } finally {
       if (mounted) setState(() => _opening = false);
-      await controller.chats.leaveChat();
-      await controller.watchOverview();
+      await controller.restoreOverview(generation);
     }
   }
 
@@ -173,15 +184,18 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       _opening = true;
       _openError = null;
     });
-    widget.controller.enterChat();
+    final controller = widget.controller;
+    controller.enterChat();
+    var generation = controller.chats.chats.selectionGeneration;
     try {
-      final opening = widget.controller.chats.open(ref);
+      final opening = controller.chats.open(ref);
+      generation = controller.chats.chats.selectionGeneration;
       if (mounted) await _showChat();
+      generation = controller.chats.chats.selectionGeneration;
       await opening;
     } finally {
       if (mounted) setState(() => _opening = false);
-      await widget.controller.chats.leaveChat();
-      await widget.controller.watchOverview();
+      await controller.restoreOverview(generation);
     }
   }
 

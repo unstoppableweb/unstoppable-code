@@ -1,10 +1,9 @@
+import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
-import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
-import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/device_link/store.dart';
 import 'package:mobile/services/attachment_picker.dart';
@@ -142,7 +141,6 @@ class _ComputerChatHomeState extends State<ComputerChatHome> {
       final workspaceContext =
           context.watch<WorkspaceContext?>() ??
           const WorkspaceContext.personal();
-      final navigation = HomeNavigationScope.maybeOf(context);
       final hasComputers = account.hasSelectedComputer;
       final launcher = account.engine.selectedId == null
           ? null
@@ -168,13 +166,7 @@ class _ComputerChatHomeState extends State<ComputerChatHome> {
                     onManage: () => unawaited(_manage()),
                   )
                 : const Text('Computer connect'),
-            leading: navigation == null
-                ? null
-                : CanopyIconButton(
-                    glyph: CanopyGlyph.barsThree,
-                    tooltip: 'Open navigation menu',
-                    onPressed: navigation.openDrawer,
-                  ),
+            leading: HomeMenuButton.maybeOf(context, designSystem: true),
           ),
           body: !hasComputers
               ? ComputerConnectionView(account: account)

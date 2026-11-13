@@ -220,7 +220,9 @@ class ComputerConnectionView extends StatelessWidget {
                     const SizedBox(height: 16),
                   ],
                   const _SetupSteps(),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 8),
+                  const _DesktopLinks(),
+                  const SizedBox(height: 16),
                 ],
                 CanopyButton(
                   expand: true,
@@ -299,38 +301,43 @@ class _NoComputersFound extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          'If you already have the desktop app, open Remote Control from its '
-          'account menu and choose Enable. Otherwise, download it or build it '
-          'from source.',
+          'If you already have the desktop app, turn on Remote Control in its '
+          'Settings. Otherwise, download it or build it from source.',
           textAlign: TextAlign.center,
           style: theme.textTheme.bodyMedium?.copyWith(
             color: AppColors.of(context).foregroundSecondary,
           ),
         ),
-        const SizedBox(height: 8),
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 8,
-          children: [
-            CanopyButton(
-              key: const ValueKey('computer-connect-download'),
-              label: 'Download the desktop app',
-              glyph: CanopyGlyph.squareArrowTopRight,
-              variant: CanopyButtonVariant.inline,
-              onPressed: () => unawaited(openExternalUrl(desktopDownloadUrl())),
-            ),
-            CanopyButton(
-              key: const ValueKey('computer-connect-github'),
-              label: 'View on GitHub',
-              glyph: CanopyGlyph.github,
-              variant: CanopyButtonVariant.inline,
-              onPressed: () => unawaited(openExternalUrl(sourceRepositoryUrl)),
-            ),
-          ],
-        ),
       ],
     );
   }
+}
+
+/// Where to get the desktop app: the download, or the source to build it.
+class _DesktopLinks extends StatelessWidget {
+  const _DesktopLinks();
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    alignment: WrapAlignment.center,
+    spacing: 8,
+    children: [
+      CanopyButton(
+        key: const ValueKey('computer-connect-download'),
+        label: 'Download the desktop app',
+        glyph: CanopyGlyph.squareArrowTopRight,
+        variant: CanopyButtonVariant.inline,
+        onPressed: () => unawaited(openExternalUrl(desktopDownloadUrl())),
+      ),
+      CanopyButton(
+        key: const ValueKey('computer-connect-github'),
+        label: 'View on GitHub',
+        glyph: CanopyGlyph.github,
+        variant: CanopyButtonVariant.inline,
+        onPressed: () => unawaited(openExternalUrl(sourceRepositoryUrl)),
+      ),
+    ],
+  );
 }
 
 /// The three things a person does on the desktop before a computer appears.
@@ -339,9 +346,10 @@ class _SetupSteps extends StatelessWidget {
 
   static const _steps = [
     'Open ${Brand.productDisplayName} on your computer',
-    // Matches the desktop's single opt-in and the web's connect list
-    // (CAN-5985): the account menu's Remote Control dialog turns it on.
-    'In the account menu, choose Remote Control, then Enable',
+    // Names the desktop's Settings → Remote Control switch
+    // (ALLOW_INCOMING_LABEL in the desktop's remote-access-copy.ts).
+    'In the settings menu, open Remote Control and turn on '
+        '"Allow your other devices to control this computer"',
     'Sign in with this account on both devices',
   ];
 
