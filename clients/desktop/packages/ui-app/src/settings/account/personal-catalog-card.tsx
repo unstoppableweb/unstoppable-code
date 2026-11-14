@@ -181,6 +181,7 @@ export function PersonalCatalogCard(): JSX.Element | null {
                 {brand.displayName} desktop app.
               </p>
               <ErrorBanner
+                errorSource="personal-catalog-remove-error"
                 className=""
                 error={error?.copy}
                 {...(error?.details === undefined

@@ -273,16 +273,32 @@ function dismissalNotFound(response) {
   });
 }
 
+/** Notices addressed to the recipient, newest first. Seeded state may omit it. */
+function ownerDeparturesFor(state) {
+  state.ownerDepartures ??= [];
+  return state.ownerDepartures;
+}
+
 function inboxStreamSnapshot(state) {
   return new Map(
     state.containers.map((container) => [container.id, container.revision]),
   );
 }
 
+/**
+ * A container gone from the listing yields a frame too: the real stream reports
+ * the revocation, and that frame is what refreshes the recipient's inbox.
+ */
 function changedInboxContainers(previous, state) {
-  return state.containers.filter(
-    (container) => previous.get(container.id) !== container.revision,
-  );
+  const present = new Set(state.containers.map((container) => container.id));
+  return [
+    ...state.containers.filter(
+      (container) => previous.get(container.id) !== container.revision,
+    ),
+    ...[...previous]
+      .filter(([id]) => !present.has(id))
+      .map(([id, revision]) => ({ id, revision })),
+  ];
 }
 
 function ciphertextLengthFor(plaintextSizeBytes) {
@@ -438,6 +454,15 @@ export async function handleSharedContainersRequest(request, response, url) {
     jsonResponse(response, 200, { containers: [], nextCursor: null });
     return true;
   }
+  if (
+    request.method === 'GET' &&
+    pathname === '/api/v1/shared-containers/owner-departures' &&
+    signedInKey &&
+    !isSharedContainersCloudApiKey(signedInKey)
+  ) {
+    jsonResponse(response, 200, { notices: [] });
+    return true;
+  }
 
   if (!requireFixtureKey(request, response)) return true;
 
@@ -445,6 +470,72 @@ export async function handleSharedContainersRequest(request, response, url) {
   const method = request.method;
   const state = stateFor(request);
   const organizationId = url.searchParams.get('organizationId');
+
+  if (
+    pathname === '/api/v1/shared-containers/owner-departures' &&
+    method === 'GET'
+  ) {
+    recordScenarioActivity(key, 'sharedContainersListOwnerDepartures');
+    jsonResponse(response, 200, { notices: ownerDeparturesFor(state) });
+    return true;
+  }
+
+  const ownerDepartureMatch =
+    /^\/api\/v1\/shared-containers\/owner-departures\/([^/]+)$/.exec(pathname);
+  if (ownerDepartureMatch && method === 'DELETE') {
+    recordScenarioActivity(key, 'sharedContainersDismissOwnerDeparture');
+    const notices = ownerDeparturesFor(state);
+    if (!notices.some((notice) => notice.id === ownerDepartureMatch[1])) {
+      jsonResponse(response, 404, {
+        error: 'Notice not found',
+        code: 'shared_container_owner_departure_not_found',
+      });
+      return true;
+    }
+    state.ownerDepartures = notices.filter(
+      (notice) => notice.id !== ownerDepartureMatch[1],
+    );
+    response.writeHead(204);
+    response.end();
+    return true;
+  }
+
+  // Test control, not a server route: the owner's membership ended. The share
+  // and its grants go, and the recipient gets a notice, as one change that
+  // leaves the rest of the scenario alone.
+  const departureMatch =
+    /^\/api\/v1\/shared-containers\/([^/]+)\/owner-departure$/.exec(pathname);
+  if (departureMatch && method === 'POST') {
+    const container = state.containers.find(
+      (candidate) => candidate.id === departureMatch[1],
+    );
+    if (!container) {
+      jsonResponse(response, 404, { error: 'Not found.' });
+      return true;
+    }
+    const body = await readJsonBody(request);
+    state.containers = state.containers.filter(
+      (candidate) => candidate !== container,
+    );
+    state.grants = state.grants.filter(
+      (grant) => grant.containerId !== container.id,
+    );
+    state.ownerDepartures = [
+      {
+        id: body.noticeId,
+        organizationId: container.organizationId,
+        containerId: container.id,
+        containerType: container.containerType,
+        title: container.title,
+        ownerName: body.ownerName,
+        reason: body.reason,
+        createdAt: new Date().toISOString(),
+      },
+      ...ownerDeparturesFor(state),
+    ];
+    jsonResponse(response, 200, { ok: true });
+    return true;
+  }
 
   if (
     pathname === '/api/v1/shared-containers/shared-with-me/stream' &&

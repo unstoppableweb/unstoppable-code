@@ -22,8 +22,8 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     import.meta.url,
   );
   expect(gates.isW5RecoveryEntryEnabled()).toBe(true);
-  expect(isW5DaemonFlipCompiled()).toBe(false);
-  expect(gates.isW5RecoveryAvailable()).toBe(false);
+  expect(isW5DaemonFlipCompiled()).toBe(true);
+  expect(gates.isW5RecoveryAvailable()).toBe(true);
   const { electronApp, userDataDir, productMainEntryPath } =
     await launchCanopy();
   const secureDir = `${userDataDir}-secure`;
@@ -152,8 +152,8 @@ test('launches the built Electron shell', async ({}, testInfo) => {
       }
     }
     // Exercise w5-recovery:status and w5-recovery:prepare through the real
-    // preload/main boundary. Exposure is compiled on after registration;
-    // actual legacy W5 ownership must still hide entry and prevent intent.
+    // preload/main boundary. A healthy daemon-owned root has nothing to recover:
+    // preparation must not quiesce the app or persist restart intent.
     const recovery = await window.evaluate(async () => ({
       status: await window.api.w5Recovery.getStatus(),
       prepared: await window.api.w5Recovery.prepare(),
@@ -260,13 +260,28 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     // that replaced the old welcome empty state.
     const homePage = window.getByTestId('page-home');
     await expect(homePage).toBeVisible();
+    // The window drags from the shell's title-bar strip on macOS, Home's own
+    // strip on Windows, and the native frame on Linux. Home starts 46px down,
+    // so on macOS its own strip would only cover the top notification corner
+    // (CAN-5711), and the corner stays no-drag for the Windows strip.
     const homeDragRegion = homePage.getByTestId('home-titlebar-drag-region');
-    if (process.platform === 'linux') {
-      await expect(homeDragRegion).toHaveCount(0);
-    } else {
+    const shellDragRegion = window.getByTestId('app-main-titlebar-drag-region');
+    if (process.platform === 'win32') {
       await expect(homeDragRegion).toBeVisible();
       await expect(homeDragRegion).toHaveCSS('-webkit-app-region', 'drag');
+    } else {
+      await expect(homeDragRegion).toHaveCount(0);
     }
+    if (process.platform === 'darwin') {
+      await expect(shellDragRegion).toBeVisible();
+      await expect(shellDragRegion).toHaveCSS('-webkit-app-region', 'drag');
+    } else {
+      await expect(shellDragRegion).toHaveCount(0);
+    }
+    await expect(window.getByTestId('in-app-notification-corner')).toHaveCSS(
+      '-webkit-app-region',
+      'no-drag',
+    );
     // Scope to page-home: the always-mounted (hidden) MainPage hosts a
     // second embedded HomeSurface.
     await expect(homePage.getByTestId('home-composer')).toBeVisible();

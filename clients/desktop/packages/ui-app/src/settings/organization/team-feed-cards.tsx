@@ -994,7 +994,11 @@ function WorktreeSummaryHistory({
             </DelayedLoadingPlaceholder>
           )}
           {status === 'error' && (
-            <ErrorBanner className="" error="Couldn't load history." />
+            <ErrorBanner
+              errorSource="worktree-summary-history-load"
+              className=""
+              error="Couldn't load history."
+            />
           )}
           {status === 'loaded' && entries.length === 0 && (
             <p className="text-xs fg-secondary">No earlier versions.</p>
@@ -1018,6 +1022,7 @@ function WorktreeSummaryHistory({
           )}
           {status === 'loaded' && loadMoreFailed && (
             <ErrorBanner
+              errorSource="worktree-summary-history-load-more"
               className="mt-2"
               error="Couldn't load more. Try again."
             />

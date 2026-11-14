@@ -94,6 +94,13 @@ export interface PortalAdapterContext {
   sessionId?: string | null;
   /** Validated server-attested sender metadata from the Portal envelope. */
   origin?: ExternalAgentSender;
+  /** Trusted active paired-session authority; asset-read access is insufficient. */
+  canArchiveStandaloneChats?: () => boolean;
+  /**
+   * Confirms the pairing with the server (a live heartbeat) right before an
+   * archive's first destructive step. Missing or false fails closed.
+   */
+  confirmArchivePairing?: () => Promise<boolean>;
   canReadAssets?: () => boolean;
   canMutateResources?: () => boolean;
   canReadTranscripts?: () => boolean;

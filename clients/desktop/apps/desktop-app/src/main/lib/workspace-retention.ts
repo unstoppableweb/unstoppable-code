@@ -7,7 +7,7 @@ import {
 import { acquireWorkspaceArchiveRetentionLease } from '../services/split-lock-service';
 import { withArchivedWorkspaceOperationLock } from './archived-containers';
 import { validateId } from './validation';
-import { getWorkspaceConfigPath, getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import {
   checkW5ExpectedRevision,
   w5ExpectedRevision,
@@ -208,10 +208,13 @@ export async function updateWorkspaceRetention(
               ...options,
               fenceLockedFiles: true,
               locks: [
-                { kind: 'manifest', path: getWorkspaceConfigPath(workspaceId) },
+                {
+                  kind: 'manifest',
+                  path: w5RecordReadPaths.manifest(workspaceId),
+                },
                 {
                   kind: 'list',
-                  path: getWorkspaceWorktreesFilePath(workspaceId),
+                  path: w5RecordReadPaths.worktrees(workspaceId),
                 },
               ],
               expectedRevisions: w5ExpectedRevision(

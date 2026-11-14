@@ -1,3 +1,10 @@
+import { listW5RootPresencePeers } from '@canopy/core-platform/w5-root-presence';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  lifecycleJournalSlotName,
+  withSharedLifecycleJournalAccess,
+} from '../lib/w5-destructive-recovery';
+import { inspectDestructiveJournals } from '@canopy/desktop-shared/node/w5-destructive-journal';
 import { electronW5RecoveryObservations } from './w5-recovery-observations';
 import {
   createPlatformEndpointServices,
@@ -30,14 +37,19 @@ import {
   type W5RecoveryController,
 } from './w5-recovery-controller';
 
-let controller: W5RecoveryController | undefined;
+interface DesktopW5RecoveryController extends W5RecoveryController {
+  refreshJournals(): Promise<W5RecoveryStatus>;
+}
+
+let controller: DesktopW5RecoveryController | undefined;
 
 /** Native interface intent; the cold writer is never callable from this process. */
-export function getDesktopW5RecoveryController(): W5RecoveryController {
+export function getDesktopW5RecoveryController(): DesktopW5RecoveryController {
   if (controller) return controller;
   let lease: ElectronW5RecordPortLease | undefined;
   let lastResult: W5RecoveryStatus | null | undefined;
-  controller = createW5RecoveryController({
+  let journalsRemain = true;
+  const recovery = createW5RecoveryController({
     enabled: isW5RecoveryAvailable,
     supported: () => hostPlatformOperatingSystem() !== 'win32',
     live: async (): Promise<readonly W5RecoveryEntry[]> => {
@@ -46,15 +58,16 @@ export function getDesktopW5RecoveryController(): W5RecoveryController {
       const retained =
         lastResult?.entries.filter(
           (entry) =>
-            entry.id === 'journals' ||
+            (entry.id === 'journals' && journalsRemain) ||
             entry.id === 'log' ||
             entry.id.startsWith('file:'),
         ) ?? [];
       const handoff = getW5FlipHandoffStatus();
-      if (handoff?.state === 'pending') return [];
+      if (handoff?.state === 'pending') return retained;
       if (handoff?.state === 'degraded') {
-        if (handoff.reason === 'daemon_unavailable') return [];
+        if (handoff.reason === 'daemon_unavailable') return retained;
         return [
+          ...retained,
           {
             id: 'handoff',
             operation: 'Workspace records',
@@ -100,8 +113,9 @@ export function getDesktopW5RecoveryController(): W5RecoveryController {
       } catch (error) {
         // An unavailable query cannot undo a completion proved by a write.
         const cached = controller?.peek().entries ?? [];
-        const stillBlocked =
-          electronW5RecoveryObservations.withoutCompleted(cached);
+        const stillBlocked = electronW5RecoveryObservations
+          .withoutCompleted(cached)
+          .filter((entry) => entry.id !== 'journals' || journalsRemain);
         const entries = electronW5RecoveryObservations.withoutCompleted([
           ...stillBlocked,
           ...retained,
@@ -129,12 +143,23 @@ export function getDesktopW5RecoveryController(): W5RecoveryController {
       const platform = hostPlatformServices(
         createPlatformEndpointServices(hostPlatformOperatingSystem()),
       );
-      return listW5HostPeers({
+      const legacy = await listW5HostPeers({
         dataRoot: getCanopyDataDir(),
         secureFiles: platform.secureFiles,
         inspect: (pid, signal) =>
           platform.supervision.inspectProcess({ pid, signal }),
       });
+      const presence = await listW5RootPresencePeers({
+        dataRoot: getCanopyDataDir(),
+        inspect: (pid) => platform.supervision.inspectProcess({ pid }),
+      });
+      // Quiesce releases our daemon lease; cold maintenance checks its exit.
+      return [
+        ...new Set([
+          ...legacy,
+          ...presence.filter((kind) => kind !== 'daemon'),
+        ]),
+      ];
     },
     quiesce: async (): Promise<void> => {
       getElectronDaemonHealth().beginRecovery();
@@ -145,5 +170,34 @@ export function getDesktopW5RecoveryController(): W5RecoveryController {
     },
     request: () => writeW5RecoveryRequest(getCanopyDataDir()),
   });
+  controller = {
+    ...recovery,
+    async refreshJournals(): Promise<W5RecoveryStatus> {
+      // Only an explicit recovery operation scans disk, never startup/status polling.
+      journalsRemain = await withSharedLifecycleJournalAccess(async () => {
+        const evidence = await inspectDestructiveJournals(getCanopyDataDir());
+        const operations = new Map<
+          string,
+          (typeof evidence.records)[number]['record']
+        >();
+        if (evidence.issues.length > 0) return true;
+        for (const { record, name } of evidence.records) {
+          if (
+            record.state !== 'completed' ||
+            record.cleanupRequired === true ||
+            (name !== `${record.operationId}.json` &&
+              name !==
+                lifecycleJournalSlotName(record.workspaceId, record.worktreeId))
+          )
+            return true;
+          const previous = operations.get(record.operationId);
+          if (previous && !isDeepStrictEqual(previous, record)) return true;
+          operations.set(record.operationId, record);
+        }
+        return false;
+      });
+      return recovery.status();
+    },
+  };
   return controller;
 }

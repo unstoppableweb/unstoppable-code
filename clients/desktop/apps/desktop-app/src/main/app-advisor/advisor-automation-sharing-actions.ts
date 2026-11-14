@@ -2,6 +2,13 @@ import {
   SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
   SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
 } from '@canopy/protocol/automations';
+import { resolveAutomationSharedAgent } from '@canopy/desktop-shared/lib/automation-agent';
+import { getAgentModel } from '../agents/agent-model-store';
+import {
+  automationAgentPluginsMatch,
+  automationAgentPackageMatches,
+  getSharedAgent,
+} from '../agents/canopy-server-client';
 import type {
   ListSharedAutomationsResponse,
   SharedAutomationDetail,
@@ -24,7 +31,7 @@ import {
 } from '@canopy/desktop-shared/lib/automation-share/pipeline-document';
 import type { PipelineReadPort } from '@canopy/desktop-shared/lib/automation-share/port';
 import { extractPipelineReferenceTokens } from '@canopy/desktop-shared/lib/invocation-tokens';
-import { storedAutomationActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
+import { sharedAutomationActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
 import type {
   AppAdvisorAction,
   AppAdvisorActionResponse,
@@ -140,8 +147,8 @@ async function share(
   const listed = (await host.list()).activities.find(
     (entry) => entry.id === action.id,
   );
-  // A converted chat automation shares the workflow it runs (CAN-4551).
-  const activity = listed ? storedAutomationActivity(listed) : undefined;
+  // Use the same validated chat/pipeline projection as the share dialog.
+  const activity = listed ? sharedAutomationActivity(listed) : undefined;
   if (!activity)
     return refused(
       `Triggered activity ${action.id} was not found.`,
@@ -207,6 +214,15 @@ async function share(
   // App Advisor path: the builder strips local selections and says so.
   const buildOptions: BuildSharedAutomationDocumentOptions = {
     description,
+    resolvedAgent: await resolveAutomationSharedAgent(
+      'model' in activity.action ? activity.action.model : undefined,
+      {
+        get: getAgentModel,
+        getShared: getSharedAgent,
+        pluginsMatch: automationAgentPluginsMatch,
+        packageMatches: automationAgentPackageMatches,
+      },
+    ),
     ...(declaredTargetContexts ? { declaredTargetContexts } : {}),
   };
   if (activity.action.type === 'worktree_session_prompt') {

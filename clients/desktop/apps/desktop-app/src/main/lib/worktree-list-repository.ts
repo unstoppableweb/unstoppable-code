@@ -1,10 +1,8 @@
 import {
-  createWorktreeListRepository as createCoreWorktreeListRepository,
   parseWorktreeList as parseCoreWorktreeList,
   type W5WorktreeListReadRow,
   type WorktreeListRead as CoreWorktreeListRead,
   type WorktreeListRepository as CoreWorktreeListRepository,
-  type WorktreeListRepositoryDeps as CoreWorktreeListRepositoryDeps,
 } from '@canopy/core-runtime/node/w5/worktree-list-repository';
 import type { WorktreeData } from '@canopy/desktop-shared/types';
 import { afterW5Apply } from './w5-commit-scope';
@@ -19,15 +17,6 @@ export { WorktreeRegistryUnreadableError } from '@canopy/core-runtime/node/w5/wo
 
 export type WorktreeListRead = CoreWorktreeListRead<WorktreeData>;
 export type WorktreeListRepository = CoreWorktreeListRepository<WorktreeData>;
-/** Desktop main reads rows as {@link WorktreeData}. */
-export type WorktreeListRepositoryDeps = Omit<
-  CoreWorktreeListRepositoryDeps<WorktreeData>,
-  'readRow'
-> & {
-  /** Each worktree's discovery file, in its own data directory. */
-  discoveryFilePath: WorktreeDiscoveryPath;
-};
-
 // The row keeps every stored field, as the list reader always has.
 function readRow(row: W5WorktreeListReadRow): WorktreeData {
   return row;
@@ -40,16 +29,11 @@ export function parseWorktreeList(
   return parseCoreWorktreeList(raw, workspaceId, readRow);
 }
 
-/**
- * The desktop `<data>/workspaces/{id}/worktrees.json` repository (CAN-3803).
- * Rows keep their `discovery` in memory, but each worktree's is stored in its
- * own data directory (see `worktree-discovery-cache`), so a write leaves it
- * out of the list and the next write of a legacy list drops it from there.
- */
-export function createWorktreeListRepository(
-  deps: WorktreeListRepositoryDeps,
+/** Discovery sidecars are non-W5 effects, applied only after the list commits. */
+export function withWorktreeDiscovery(
+  list: WorktreeListRepository,
+  discoveryFilePath: WorktreeDiscoveryPath,
 ): WorktreeListRepository {
-  const list = createCoreWorktreeListRepository({ ...deps, readRow });
   const ids = (read: WorktreeListRead): string[] =>
     read.authority === 'ok' ? read.worktrees.map((row) => row.id) : [];
   return {
@@ -61,7 +45,7 @@ export function createWorktreeListRepository(
             worktrees: await withCachedWorktreeDiscovery(
               workspaceId,
               read.worktrees,
-              deps.discoveryFilePath,
+              discoveryFilePath,
             ),
           }
         : read;
@@ -72,7 +56,7 @@ export function createWorktreeListRepository(
       const removed = ids(await list.read(workspaceId));
       await list.remove(workspaceId);
       await afterW5Apply(() =>
-        forgetWorktreeDiscovery(workspaceId, removed, deps.discoveryFilePath),
+        forgetWorktreeDiscovery(workspaceId, removed, discoveryFilePath),
       );
     },
     async replace(workspaceId, worktrees, previous): Promise<string> {
@@ -87,18 +71,10 @@ export function createWorktreeListRepository(
       const kept = new Set(worktrees.map((row) => row.id));
       const removed = ids(previous).filter((id) => !kept.has(id));
       await afterW5Apply(async () => {
-        await storeWorktreeDiscovery(
-          workspaceId,
-          worktrees,
-          deps.discoveryFilePath,
-        );
+        await storeWorktreeDiscovery(workspaceId, worktrees, discoveryFilePath);
         // A removed row's file goes with its data directory; a reused id
         // must not see what this process read for the old worktree.
-        await forgetWorktreeDiscovery(
-          workspaceId,
-          removed,
-          deps.discoveryFilePath,
-        );
+        await forgetWorktreeDiscovery(workspaceId, removed, discoveryFilePath);
       });
       return contents;
     },

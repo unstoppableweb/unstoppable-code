@@ -3,7 +3,13 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 
 export interface DelegationCapabilityTreeKey {
-  readonly harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  readonly harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   readonly identity: string;
   readonly directory: string;
 }

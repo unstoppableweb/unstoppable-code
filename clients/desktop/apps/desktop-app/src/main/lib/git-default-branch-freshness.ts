@@ -60,7 +60,7 @@ function parseEntry(
     typeof commonDir !== 'string' ||
     typeof originHash !== 'string' ||
     typeof defaultBranch !== 'string' ||
-    !defaultBranch.trim() ||
+    !defaultBranch ||
     typeof resolvedAt !== 'string' ||
     !Number.isFinite(Date.parse(resolvedAt))
   ) {

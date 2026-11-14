@@ -5,6 +5,7 @@ import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organiz
 import { buildPreviewQuery } from '@canopy/protocol/settings/memory-preview-query';
 import {
   Stack,
+  Inline,
   Button,
   ChoiceList,
   ChoiceListRow,
@@ -92,6 +93,7 @@ export function RetrievalPreview({
     <Stack gap="group">
       <Surface
         as="form"
+        gap="item"
         variant="card"
         padding="default"
         onSubmit={(event) => void submit(event)}
@@ -101,7 +103,7 @@ export function RetrievalPreview({
           injection cap, and rendered block — and shows what the agent would
           see. Each preview counts against the shared search rate limit.
         </p>
-        <div className="mt-3 flex gap-2">
+        <Inline gap="inline" align="stretch">
           <SearchField
             value={query}
             onValueChange={setQuery}
@@ -117,38 +119,45 @@ export function RetrievalPreview({
           >
             {loading ? 'Previewing…' : 'Preview'}
           </Button>
-        </div>
-        <ChoiceList aria-label="Context prefix" className="mt-3">
-          <ChoiceListRow
-            selected={usePrefix}
-            onClick={() => setUsePrefix((current) => !current)}
-          >
-            Add context prefix (real turns send “repo — worktree — query”)
-          </ChoiceListRow>
-        </ChoiceList>
-        {usePrefix && (
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <TextInput
-              density="settings"
-              type="text"
-              value={repo}
-              onChange={(event) => setRepo(event.target.value)}
-              placeholder="Repo label"
-              aria-label="Context repo label"
-            />
-            <TextInput
-              density="settings"
-              type="text"
-              value={worktree}
-              onChange={(event) => setWorktree(event.target.value)}
-              placeholder="Worktree name"
-              aria-label="Context worktree name"
-            />
-          </div>
-        )}
+        </Inline>
+        <Stack gap="inline">
+          <ChoiceList aria-label="Context prefix">
+            <ChoiceListRow
+              selected={usePrefix}
+              onClick={() => setUsePrefix((current) => !current)}
+            >
+              Add context prefix (real turns send “repo — worktree — query”)
+            </ChoiceListRow>
+          </ChoiceList>
+          {usePrefix && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <TextInput
+                density="settings"
+                type="text"
+                value={repo}
+                onChange={(event) => setRepo(event.target.value)}
+                placeholder="Repo label"
+                aria-label="Context repo label"
+              />
+              <TextInput
+                density="settings"
+                type="text"
+                value={worktree}
+                onChange={(event) => setWorktree(event.target.value)}
+                placeholder="Worktree name"
+                aria-label="Context worktree name"
+              />
+            </div>
+          )}
+        </Stack>
       </Surface>
 
-      <ErrorBanner className="" error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="retrieval-preview"
+        className=""
+        error={error?.copy}
+        details={error?.details}
+      />
 
       {preview === null ? (
         !loading &&

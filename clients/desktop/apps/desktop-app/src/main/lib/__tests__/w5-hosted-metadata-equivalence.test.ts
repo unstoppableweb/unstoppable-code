@@ -1,3 +1,4 @@
+import type * as LegacyStorage from './fixtures/w5-legacy-storage';
 // W5d1 (CAN-5522) temp-root equivalence: each metadata command runs in
 // Electron main in-process on root A and hosted by the daemon over the wire on
 // root B, from twin roots Electron's writers seeded. Bytes, revisions, commit
@@ -16,7 +17,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type * as CoreStorage from '@canopy/core-runtime/storage';
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 jest.mock('node:worker_threads', () =>
   jest
@@ -25,23 +25,11 @@ jest.mock('node:worker_threads', () =>
     >('../../ledger/__tests__/fixtures/tsx-worker-threads')
     .createTsxWorkerThreads(),
 );
-jest.mock('@canopy/core-runtime/storage', () => {
-  const actual = jest.requireActual<typeof CoreStorage>(
-    '@canopy/core-runtime/storage',
-  );
-  const rows: CoreStorage.StorageOwnershipRow[] = [...actual.STORAGE_OWNERSHIP];
-  return {
-    ...actual,
-    STORAGE_OWNERSHIP: rows,
-    setDaemonOwnedForTest: (namespaceIds: readonly string[]): void => {
-      actual.STORAGE_OWNERSHIP.forEach((row, index) => {
-        rows[index] = namespaceIds.includes(row.id)
-          ? { ...row, transitionOwner: 'daemon', currentWriters: [] }
-          : row;
-      });
-    },
-  };
-});
+jest.mock('@canopy/core-runtime/storage', () =>
+  jest
+    .requireActual<typeof LegacyStorage>('./fixtures/w5-legacy-storage')
+    .createLegacyW5StorageMock(),
+);
 jest.mock('../../observability', () => ({
   getObservabilityService: jest.fn(() => ({
     purgeWorktreeData: jest.fn(() => Promise.resolve()),
@@ -109,7 +97,7 @@ const W5_NAMESPACES = [
   'workspace_manifest',
   'worktree_list',
 ];
-const WORKER = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+const WORKER = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
 const RESOURCES = [
   { kind: 'workspaces' },
   ...['a', 'b', 'c', 'd'].map((workspaceId) => ({

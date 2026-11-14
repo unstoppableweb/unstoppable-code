@@ -736,6 +736,54 @@ describe('owner requests over a relay: the supervisor runner', () => {
         result: { value: { kind: 'claude.modAdmission', context: null } },
       },
     });
+    // CAN-6168: nor does a plugin MCP credential: the runner refuses each.
+    const mcp = await Promise.all([
+      raise({
+        action: 'owner.mcp.bind',
+        marketplaceId: 'market',
+        pluginName: 'notes',
+        serverName: 'docs',
+        contentHash: 'a'.repeat(64),
+      }),
+      raise({
+        action: 'owner.mcp.authorize',
+        routeRef: 'mcpr1_AAAAAAAAAAAAAAAAAAAAAA',
+      }),
+      raise({
+        action: 'owner.mcp.rejected',
+        grantId: 'mcpg1_AAAAAAAAAAAAAAAAAAAAAA',
+      }),
+      // No policy to apply: a Codex step's plugins load nothing (null).
+      raise({
+        action: 'owner.codex.pluginRefs',
+        selections: { pluginRefs: [{ marketplaceId: 'm', pluginName: 'p' }] },
+      }),
+    ]);
+    expect(
+      mcp.map((answer) =>
+        answer.kind === 'owner' ? answer.settlement : undefined,
+      ),
+    ).toEqual([
+      {
+        result: {
+          status: 'owner',
+          value: { kind: 'mcp.bind', routeRef: null },
+        },
+      },
+      {
+        result: {
+          status: 'owner',
+          value: { kind: 'mcp.authorize', grantId: null },
+        },
+      },
+      { result: { status: 'owner', value: { kind: 'mcp.rejected' } } },
+      {
+        result: {
+          status: 'owner',
+          value: { kind: 'codex.pluginRefs', selections: null, warnings: [] },
+        },
+      },
+    ]);
 
     expect(seen.map(({ request }) => request)).toEqual([
       { action: 'owner.ledger.subprocessTools', attemptKey: 'attempt-1' },

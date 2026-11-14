@@ -8,6 +8,34 @@ import {
 } from '@canopy/core-runtime/node/relocation';
 import type { InternalRootLifecycleJournalEvidence } from '@canopy/core-runtime/node/internal-root-repairs';
 import { statIfPresent } from './filesystem';
+import { inspectDestructiveJournals } from '../w5-destructive-journal';
+import { isAbandonedArchive } from './lifecycle-policy';
+
+/** Best-effort projection; canonical inspection/preparation still validates selections. */
+export async function selectedAbandonedArchivePaths(
+  source: string,
+  names: readonly string[],
+): Promise<string[]> {
+  if (!names.length) return [];
+  const { records } = await inspectDestructiveJournals(source);
+  // Invalid payload evidence grants no omissions; keep its existing diagnostic path.
+  return abandonedArchivePaths(
+    source,
+    records.flatMap(({ name, record }) =>
+      isAbandonedArchive(record, names) && record.worktreeId
+        ? [
+            {
+              name,
+              abandoned: {
+                workspaceId: record.workspaceId,
+                worktreeId: record.worktreeId,
+              },
+            },
+          ]
+        : [],
+    ),
+  ).catch(() => []);
+}
 
 /** Exact omission inventory, frozen before construction; never follows payload links. */
 export async function abandonedArchivePaths(

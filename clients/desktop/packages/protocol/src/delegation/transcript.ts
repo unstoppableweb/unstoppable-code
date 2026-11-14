@@ -334,12 +334,10 @@ export function isAgentDelegationTranscript(
     return false;
   const route = snapshot.routeSnapshot;
   if (route === undefined) {
-    if (
-      !label(snapshot.requestedModelId) ||
-      snapshot.status === 'running' ||
-      snapshot.status === 'completed'
-    )
-      return false;
+    // A host whose delegates run on a route it doesn't report (cloud chats:
+    // Core resolves the model) still shows them running and finished, by
+    // the model they asked for.
+    if (!label(snapshot.requestedModelId)) return false;
   } else {
     if (
       !record(route) ||
@@ -421,4 +419,23 @@ export function isAgentDelegationCardData(
     snapshot: value,
     transcript: [],
   });
+}
+
+/**
+ * Read-only presentation validation of a bare snapshot (one a delegation
+ * list or tool answer carries), as a card would read it.
+ */
+export function isAgentDelegationSnapshotValue(
+  value: unknown,
+): value is AgentDelegationSnapshot {
+  return (
+    record(value) &&
+    isAgentDelegationCardData({
+      ...value,
+      parentHarnessId: 'snapshot',
+      description: '',
+      prompt: '',
+      executionMode: 'background',
+    })
+  );
 }

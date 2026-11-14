@@ -6,6 +6,7 @@ import {
   type CanopyStreamCursor,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionEventsItem,
+  type WorkerPipelineExecutionStartParams,
 } from '@canopy/protocol/canopy-core';
 
 import {
@@ -484,6 +485,14 @@ export function withPipelineEventJournal(
     // A start it joins is already journaled.
     admitStart: (params, execution) =>
       worker.admitStart?.(params, execution) ?? Promise.resolve(null),
+    // An adopted run starts nothing; the resume that continues it is journaled.
+    ...(worker.adoptStart && {
+      adoptStart: async (
+        params: WorkerPipelineExecutionStartParams,
+        stored: WorkerPipelineExecution,
+      ): Promise<WorkerPipelineExecution> =>
+        (await worker.adoptStart?.(params, stored)) ?? stored,
+    }),
     async start(params, signal, secrets, execution) {
       const started = await worker.start(params, signal, secrets, execution);
       if (!isTerminalPipelineExecution(started))

@@ -185,7 +185,7 @@ import {
   type MarketplaceShareResolution,
   type PluginShareTarget,
 } from '../plugins/marketplaceShareResolution';
-import { pluginNeedsInstall } from '@/lib/pluginInstallStatus';
+import { projectDesktopMarketplaceInventory } from '@/lib/pluginInstallStatus';
 import { CUSTOM_SKILL_SOURCE_ID } from '@/lib/sharedSkillImport';
 import { useSkillsChangedRefresh } from '@/lib/skillsChanged';
 import { COLLECTIONS_CHANGED_EVENT } from '../share/installReveal';
@@ -876,23 +876,20 @@ export function PluginsPage({
           }),
     [skills, shareSourceHashes],
   );
+  const installedStatuses = useDesktopInstalledItemStatuses();
   const entries = useMemo(
     () =>
       buildUnifiedPluginEntries({
         personalOrganizationId,
         viewerId: capabilityInventory.viewerId,
         retainAutomationCatalogEntries: true,
+        retainProviderListings: true,
         publisherSkills: publisherSkills.skills,
         curatedPlugins: curatedCatalogFromMarketplaces(marketplaces),
-        // App availability comes from materialized plugin content. Global
-        // provider installation is separate and remains visible in details.
-        marketplaces: marketplaces.map((marketplace) => ({
-          ...marketplace,
-          plugins: marketplace.plugins.map((plugin) => ({
-            ...plugin,
-            installed: !pluginNeedsInstall(plugin),
-          })),
-        })),
+        marketplaces: projectDesktopMarketplaceInventory(
+          marketplaces,
+          installedStatuses.state,
+        ),
         installedSkills,
         mcpServers: pickerServers,
         mcpStatuses,
@@ -932,6 +929,7 @@ export function PluginsPage({
     [
       personalOrganizationId,
       marketplaces,
+      installedStatuses.state,
       publisherSkills.skills,
       installedSkills,
       pickerServers,
@@ -1286,7 +1284,6 @@ export function PluginsPage({
     );
   }, [entries, savedRoles]);
 
-  const installedStatuses = useDesktopInstalledItemStatuses();
   const [installedStatusError, setInstalledStatusError] = useState<
     string | null
   >(null);
@@ -3680,7 +3677,10 @@ export function PluginsPage({
         ) : sourceDetailOpen && selectedSourceId !== null ? (
           <div data-testid="marketplace-source-page" className="-mt-1.5">
             <>
-              <ErrorBanner error={sourceNavigationError} />
+              <ErrorBanner
+                errorSource="plugins-page-source-navigation"
+                error={sourceNavigationError}
+              />
               <MarketplaceSourceDetail
                 state={marketplaceSources}
                 onBulkStateChange={setSourceBulkState}
@@ -3772,8 +3772,16 @@ export function PluginsPage({
 
               {(sourceNavigationError || installedStatusError) && (
                 <Stack gap="tight">
-                  <ErrorBanner className="" error={sourceNavigationError} />
-                  <ErrorBanner className="" error={installedStatusError} />
+                  <ErrorBanner
+                    errorSource="plugins-page-source-navigation"
+                    className=""
+                    error={sourceNavigationError}
+                  />
+                  <ErrorBanner
+                    errorSource="plugins-page-installed-status"
+                    className=""
+                    error={installedStatusError}
+                  />
                 </Stack>
               )}
             </div>
@@ -3864,9 +3872,10 @@ export function PluginsPage({
               ) : (
                 <Stack gap="group" data-testid="plugins-results-scroll">
                   <div className="flex flex-col gap-0">
-                    <ErrorBanner error={error} />
+                    <ErrorBanner errorSource="plugins-page" error={error} />
                     {inventoryErrorSummary && (
                       <Notice
+                        errorSource="plugins-load-error"
                         className=""
                         intent="destructive"
                         title={inventoryErrorSummary.title}
@@ -3878,6 +3887,7 @@ export function PluginsPage({
                   </div>
                   {publisherSkills.error ? (
                     <Notice
+                      errorSource="publisher-skills-error"
                       className=""
                       intent="destructive"
                       data-testid="publisher-skills-error"
@@ -3895,6 +3905,7 @@ export function PluginsPage({
 
                   {showLocalAgentsError && (
                     <Notice
+                      errorSource="plugins-local-agents-error"
                       className=""
                       intent="destructive"
                       data-testid="plugins-local-agents-error"
@@ -3911,8 +3922,12 @@ export function PluginsPage({
                   {/* The parent keeps this 16px under the page search row. */}
                   <Stack gap="section">
                     <div>
-                      <ErrorBanner error={skillUpdates.error} />
                       <ErrorBanner
+                        errorSource="plugins-page-skill-updates"
+                        error={skillUpdates.error}
+                      />
+                      <ErrorBanner
+                        errorSource="plugins-page-collection-action"
                         error={collectionActionError}
                         blockMessageFromReplay
                       />
@@ -3921,6 +3936,7 @@ export function PluginsPage({
                         data-mcp-error-code={mcpBannerErrorCode ?? undefined}
                       >
                         <ErrorBanner
+                          errorSource="plugins-page-mcp"
                           error={mcpBannerError}
                           blockMessageFromReplay
                         />

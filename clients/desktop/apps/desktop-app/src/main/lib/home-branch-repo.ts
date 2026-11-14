@@ -8,13 +8,15 @@ import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
  */
 export async function resolveHomeBranchRepoPath(
   workspaceId: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const config = await readWorkspaceConfig(workspaceId);
+  signal?.throwIfAborted();
   if (config.type === 'single-repo' && config.repoPath) {
-    return resolveWorkspaceReferenceRepoPath(config.repoPath);
+    return resolveWorkspaceReferenceRepoPath(config.repoPath, signal);
   }
   if (config.type === 'multi-repo' && config.sourceRepoPath) {
-    return resolveWorkspaceReferenceRepoPath(config.sourceRepoPath);
+    return resolveWorkspaceReferenceRepoPath(config.sourceRepoPath, signal);
   }
   return null;
 }

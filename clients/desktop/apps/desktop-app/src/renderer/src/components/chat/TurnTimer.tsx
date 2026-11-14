@@ -1,16 +1,13 @@
 import type { JSX, ReactNode } from 'react';
 import { Button } from '@canopy/ui-shared/components/Button';
 import {
-  AutoRoutedModelPill,
   TurnTimer as SharedTurnTimer,
   type TurnCompletionStatus,
-  useCleanChatLook,
   type PlanCopyState,
 } from '@canopy/ui-shared';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { getModelDisplayName } from '@canopy/desktop-shared/types';
 import { BranchIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import { ActionTooltip } from '../shared/ActionTooltip';
 import { ForkChatButton } from './ForkChatButton';
 
@@ -31,7 +28,6 @@ export function TurnTimer({
   shareButton,
   feedbackControl,
   commentsButton,
-  alwaysVisible = false,
   workingLabel,
   autoRoutedModel,
   copyText,
@@ -70,11 +66,6 @@ export function TurnTimer({
    * footer stays unchanged for the (common) unshared case.
    */
   commentsButton?: ReactNode;
-  /**
-   * Keeps the whole completed row visible at rest. Set where the row has no
-   * per-turn `group/turn` scope to reveal it (CAN-4278).
-   */
-  alwaysVisible?: boolean;
   /** Override the active timer label for a pre-provider lifecycle phase. */
   workingLabel?: string;
   /**
@@ -93,13 +84,11 @@ export function TurnTimer({
   /** How the settled turn ended; omitted while it runs. */
   completionStatus?: TurnCompletionStatus;
 }): JSX.Element {
-  const cleanChatLook = useCleanChatLook();
   if (pending) {
     // Pre-provider phases (Auto model routing) run while the send is still
     // pending, so the label must survive this branch too.
     return (
       <SharedTurnTimer
-        spinner={<ThinkingSpinner tone="accent" />}
         {...(workingLabel ? { workingLabel } : {})}
         liveLine={liveLine}
         inset
@@ -108,7 +97,6 @@ export function TurnTimer({
   }
 
   const hasTrailing =
-    (autoRoutedModel !== undefined && !cleanChatLook) ||
     (showForkAction && onFork !== undefined) ||
     (showBranchAction && onBranch !== undefined) ||
     watcherButton != null ||
@@ -118,9 +106,7 @@ export function TurnTimer({
   const trailing = hasTrailing ? (
     <>
       {/* The clean look names the model in the time's tooltip instead. */}
-      {autoRoutedModel !== undefined && !cleanChatLook && (
-        <AutoRoutedModelPill label={getModelDisplayName(autoRoutedModel)} />
-      )}
+
       {watcherButton}
       {showForkAction && onFork && <ForkChatButton onClick={onFork} />}
       {archiveToggleButton}
@@ -153,17 +139,15 @@ export function TurnTimer({
       accumulatedPausedDurationMs={accumulatedPausedDurationMs}
       waitingForUser={waitingForUser}
       finishedAt={completedAt}
-      spinner={<ThinkingSpinner tone="accent" />}
       trailing={trailing}
       liveLine={liveLine}
       stampAccessory={feedbackControl}
-      alwaysVisible={alwaysVisible}
       {...(completionStatus !== undefined ? { completionStatus } : {})}
       {...(workingLabel ? { workingLabel } : {})}
       {...(copyText !== undefined ? { copyText } : {})}
       {...(planCopy !== undefined ? { planCopy } : {})}
-      {...(cleanChatLook && moreMenu != null ? { moreMenu } : {})}
-      {...(cleanChatLook && autoRoutedModel !== undefined
+      {...(moreMenu != null ? { moreMenu } : {})}
+      {...(autoRoutedModel !== undefined
         ? { modelLabel: getModelDisplayName(autoRoutedModel) }
         : {})}
       inset

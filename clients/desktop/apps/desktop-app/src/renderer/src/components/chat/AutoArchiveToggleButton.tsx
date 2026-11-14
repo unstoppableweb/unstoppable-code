@@ -3,22 +3,12 @@ import {
   Button,
   CLEAN_ICON_BUTTON_VARIANT,
   Tooltip,
-  useCleanChatLook,
 } from '@canopy/ui-shared/components';
 import { ArchiveIcon } from '@canopy/ui-shared/icons';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
-import {
-  BACKGROUND_DEFERS_AUTO_ARCHIVE_TOOLTIP,
-  DELEGATES_DEFER_AUTO_ARCHIVE_TOOLTIP,
-} from '@/stores/chat/close-guard';
 import {
   selectChatHasLiveDelegates,
   useDelegationActivityStore,
 } from '@/stores/delegationActivityStore';
-import {
-  selectChatProviderBlocksClose,
-  useLiveBackgroundTaskStore,
-} from '@/stores/liveBackgroundTaskStore';
 
 export interface AutoArchiveToggleButtonProps {
   enabled: boolean;
@@ -45,63 +35,15 @@ export function AutoArchiveToggleButton({
           target.chatId,
         ),
   );
-  const hasCloseBlockingProviderWork = useLiveBackgroundTaskStore((state) =>
-    target === undefined
-      ? false
-      : selectChatProviderBlocksClose(
-          state,
-          target.projectId,
-          target.worktreeId,
-          target.chatId,
-        ),
-  );
-  const clean = useCleanChatLook();
-  if (clean) {
-    // Clean chat look: the turn actions' shared ghost button and one-line
-    // tooltip; armed, it keeps the accent ink.
-    return (
-      <Tooltip
-        label={
-          enabled
-            ? hasLiveDelegates
-              ? 'Archives after this turn and its delegates finish'
-              : 'Archives after this turn'
-            : 'Auto-archive is off'
-        }
-      >
-        <Button
-          variant={enabled ? 'ghost-accent' : CLEAN_ICON_BUTTON_VARIANT}
-          size="sm"
-          iconOnly
-          onClick={onToggle}
-          aria-pressed={enabled}
-          aria-label={
-            enabled
-              ? 'Disable auto-archive for this turn'
-              : 'Enable auto-archive for this turn'
-          }
-          data-testid="auto-archive-toggle"
-          data-delegates-live={hasLiveDelegates ? 'true' : undefined}
-        >
-          <ArchiveIcon aria-hidden="true" />
-        </Button>
-      </Tooltip>
-    );
-  }
-  const enabledDescription =
-    'This chat will move to the archive when the current turn finishes. Click to keep it open.';
 
   return (
-    <ActionTooltip
-      title={enabled ? 'Auto-archive enabled' : 'Auto-archive disabled'}
-      description={
+    <Tooltip
+      label={
         enabled
           ? hasLiveDelegates
-            ? `${enabledDescription} ${DELEGATES_DEFER_AUTO_ARCHIVE_TOOLTIP}`
-            : hasCloseBlockingProviderWork
-              ? `${enabledDescription} ${BACKGROUND_DEFERS_AUTO_ARCHIVE_TOOLTIP}`
-              : enabledDescription
-          : 'This chat was marked for auto-archive, but will stay open unless you turn it back on before this turn finishes.'
+            ? 'Archives after this turn and its delegates finish'
+            : 'Archives after this turn'
+          : 'Auto-archive is off'
       }
     >
       <Button
@@ -120,6 +62,6 @@ export function AutoArchiveToggleButton({
       >
         <ArchiveIcon aria-hidden="true" />
       </Button>
-    </ActionTooltip>
+    </Tooltip>
   );
 }

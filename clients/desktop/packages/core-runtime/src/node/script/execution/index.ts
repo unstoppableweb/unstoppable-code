@@ -47,6 +47,8 @@ export {
   type ScriptRunLogRef,
   type ScriptRunLogSnapshotResult,
   type ScriptRunWriter,
+  type ScriptRunChild,
+  type ScriptRunChildReap,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,
 } from './script-run-log';
@@ -92,3 +94,21 @@ export {
 } from './remote-script-runs';
 export { scriptRunFileStem } from '../run-log-stem';
 export { scriptContextDirectory } from './context-directory';
+export {
+  forceStopScriptRunGroup,
+  isScriptRunChildIdentified,
+  listScriptRunGroup,
+  SCRIPT_RUN_MARKER_ENV,
+  scriptRunGroupRemains,
+  stopScriptRunChild,
+  type ScriptRunChildStop,
+  type ScriptRunChildStopMode,
+  type ScriptRunChildStopOptions,
+  type ScriptRunGroupListing,
+  type ScriptRunGroupMember,
+  type ScriptRunGroupMemberStop,
+  type ScriptRunGroupOptions,
+  type ScriptRunGroupStop,
+  type ScriptRunGroupStopOptions,
+  type ScriptRunSignal,
+} from './script-run-stop';

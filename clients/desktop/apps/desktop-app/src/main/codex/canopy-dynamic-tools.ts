@@ -43,6 +43,8 @@ import {
   QUERY_CODE_GRAPH_DESCRIPTION,
   READ_PIPELINE_YAML_DESCRIPTION,
   READ_MEMORY_DESCRIPTION,
+  SEARCH_CHATS_DESCRIPTION,
+  READ_CHAT_EXCERPT_DESCRIPTION,
   SAVE_MEMORY_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   SHOW_FILES_DESCRIPTION,
@@ -75,6 +77,8 @@ import {
   queryCodeGraphJsonSchema,
   readPipelineYamlJsonSchema,
   readMemoryJsonSchema,
+  searchChatsJsonSchema,
+  readChatExcerptJsonSchema,
   saveMemoryJsonSchema,
   searchMemoryJsonSchema,
   showFilesJsonSchema,
@@ -89,13 +93,8 @@ import {
   setupWatchersJsonSchema,
   watchGitHubItemsJsonSchema,
   getGitHubPullRequestStatusJsonSchema,
-  ADD_LEDGER_ENTRY_DESCRIPTION,
-  SEARCH_LEDGER_ENTRIES_DESCRIPTION,
-  UPDATE_LEDGER_ENTRY_DESCRIPTION,
-  addLedgerEntryJsonSchema,
-  searchLedgerEntriesJsonSchema,
-  updateLedgerEntryJsonSchema,
 } from '../canopy-tools/definitions';
+import { buildLedgerCodexDynamicToolSpecs } from '@canopy/execution-engine/node/ledger-tools/definitions';
 import {
   LOAD_DEFERRED_TOOLS_DESCRIPTION,
   SEARCH_DEFERRED_TOOLS_DESCRIPTION,
@@ -141,30 +140,7 @@ const immediateTurnRestartJsonSchema = {
   additionalProperties: false,
 } as const;
 
-/**
- * AddLedgerEntry, SearchLedgerEntries and UpdateLedgerEntry as Codex dynamic
- * tools, for a thread whose session passed the Ledger exposure gate: a chat
- * or a pipeline agent's attempt.
- */
-export function buildLedgerCodexDynamicToolSpecs(): DynamicToolSpec[] {
-  return [
-    defineCodexFunctionToolSpec({
-      name: CANOPY_INJECTED_TOOL_REGISTRY.add_ledger_entry.codexToolName,
-      description: ADD_LEDGER_ENTRY_DESCRIPTION,
-      inputSchema: addLedgerEntryJsonSchema,
-    }),
-    defineCodexFunctionToolSpec({
-      name: CANOPY_INJECTED_TOOL_REGISTRY.search_ledger_entries.codexToolName,
-      description: SEARCH_LEDGER_ENTRIES_DESCRIPTION,
-      inputSchema: searchLedgerEntriesJsonSchema,
-    }),
-    defineCodexFunctionToolSpec({
-      name: CANOPY_INJECTED_TOOL_REGISTRY.update_ledger_entry.codexToolName,
-      description: UPDATE_LEDGER_ENTRY_DESCRIPTION,
-      inputSchema: updateLedgerEntryJsonSchema,
-    }),
-  ];
-}
+export { buildLedgerCodexDynamicToolSpecs };
 
 export function buildCanopyDynamicToolSpecs(options: {
   includeWorktreeActions?: boolean;
@@ -287,6 +263,16 @@ export function buildCanopyDynamicToolSpecs(options: {
       name: CANOPY_INJECTED_TOOL_REGISTRY.search_memory.codexToolName,
       description: SEARCH_MEMORY_DESCRIPTION,
       inputSchema: searchMemoryJsonSchema,
+    }),
+    defineCodexFunctionToolSpec({
+      name: CANOPY_INJECTED_TOOL_REGISTRY.search_chats.codexToolName,
+      description: SEARCH_CHATS_DESCRIPTION,
+      inputSchema: searchChatsJsonSchema,
+    }),
+    defineCodexFunctionToolSpec({
+      name: CANOPY_INJECTED_TOOL_REGISTRY.read_chat_excerpt.codexToolName,
+      description: READ_CHAT_EXCERPT_DESCRIPTION,
+      inputSchema: readChatExcerptJsonSchema,
     }),
     defineCodexFunctionToolSpec({
       name: CANOPY_INJECTED_TOOL_REGISTRY.read_memory.codexToolName,

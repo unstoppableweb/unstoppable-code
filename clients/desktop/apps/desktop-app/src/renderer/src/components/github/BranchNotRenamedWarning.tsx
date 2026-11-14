@@ -1,4 +1,4 @@
-import { Stack } from '@canopy/ui-shared/components';
+import { Stack, InlineCode } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
@@ -51,18 +51,14 @@ export function BranchNotRenamedWarning({
             </p>
             {uniqueBranchNames.length === 1 && (
               <p className="text-xs fg-secondary">
-                <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-                  {uniqueBranchNames[0]}
-                </code>
+                <InlineCode>{uniqueBranchNames[0]}</InlineCode>
               </p>
             )}
             {uniqueBranchNames.length > 1 && (
               <ul className="flex flex-col gap-1">
                 {uniqueBranchNames.map((branchName) => (
                   <li key={branchName} className="text-xs">
-                    <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-                      {branchName}
-                    </code>
+                    <InlineCode>{branchName}</InlineCode>
                   </li>
                 ))}
               </ul>

@@ -3,6 +3,19 @@ import * as path from 'node:path';
 import { getCanopyDataDir } from '../../canopy-paths';
 import { validateId } from './validation';
 
+/** Native Google sessions share the owning workflow's artifact retention. */
+export function getPipelineExecutionAntigravitySessionsDir(
+  executionsDir: string,
+  executionId: string,
+): string {
+  validateId(executionId, 'executionId');
+  return path.resolve(
+    executionsDir || path.join(getCanopyDataDir(), 'pipeline-executions'),
+    executionId,
+    'antigravity-sessions',
+  );
+}
+
 /** Copilot conversations share the owning execution's artifact retention. */
 export function getPipelineExecutionCopilotSessionsDir(
   executionsDir: string,

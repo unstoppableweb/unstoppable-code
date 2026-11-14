@@ -8,6 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import { COMPOSER_STOPPING_WAITING_FOR_WAKE_LABEL } from './composer-send-button-copy';
 
 export type ComposerPresentationDensity =
   | 'comfortable'
@@ -599,6 +600,27 @@ export interface ComposerStatusRowProps {
   fill?: 'start' | 'end';
   /** The row element, for `useStatusRowCompact`. */
   rowRef?: RefObject<HTMLDivElement | null>;
+  /**
+   * A sent stop waits for the turn's project to wake: the row says so in
+   * text at its trailing edge, under Stop, as its tooltip does (CAN-6721).
+   */
+  stopWaitsForWake?: boolean;
+}
+
+/**
+ * Why Stop still reads Stopping…, as visible text: the wait can last half
+ * a minute, longer than anyone hovers for a tooltip (CAN-6721).
+ */
+function ComposerStopStatus(): JSX.Element {
+  return (
+    <span
+      role="status"
+      data-testid="chat-composer-stop-status"
+      className="shrink-0 whitespace-nowrap text-xs fg-secondary"
+    >
+      {COMPOSER_STOPPING_WAITING_FOR_WAKE_LABEL}
+    </span>
+  );
 }
 
 /**
@@ -611,7 +633,9 @@ export function ComposerStatusRow({
   end,
   fill = 'end',
   rowRef,
+  stopWaitsForWake = false,
 }: ComposerStatusRowProps): JSX.Element {
+  const stopStatus = stopWaitsForWake ? <ComposerStopStatus /> : null;
   if (fill === 'start') {
     return (
       <div
@@ -628,7 +652,10 @@ export function ComposerStatusRow({
         >
           {start}
         </div>
-        <div className="flex shrink-0 items-center gap-1">{end}</div>
+        <div className="flex shrink-0 items-center gap-1">
+          {end}
+          {stopStatus}
+        </div>
       </div>
     );
   }
@@ -654,6 +681,7 @@ export function ComposerStatusRow({
         className="flex min-w-0 flex-1 items-center justify-end gap-0"
       >
         {end}
+        {stopStatus}
       </div>
     </div>
   );

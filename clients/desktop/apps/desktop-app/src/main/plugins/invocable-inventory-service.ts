@@ -70,7 +70,7 @@ import {
 import { sendToWebContents } from '../lib/web-contents-send';
 
 // A cache written with any other version is rebuilt from disk.
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 
 let cachedInventory: InvocableInventoryCache | null | undefined;
 let cacheMarkedStale = false;
@@ -119,7 +119,8 @@ function isInvocableInventoryProvider(
     value === 'ollama' ||
     value === 'cursor' ||
     value === 'copilot' ||
-    value === 'opencode'
+    value === 'opencode' ||
+    value === 'antigravity'
   );
 }
 
@@ -938,6 +939,16 @@ async function buildInventoryCache(): Promise<InvocableInventoryCache> {
       })),
     );
   }
+  entries.push(
+    ...cursorEntries
+      .filter((entry) => entry.enableRef.kind !== 'none')
+      .map((entry) => ({
+        ...entry,
+        id: entryId(['antigravity', entry.id]),
+        provider: 'antigravity' as const,
+      })),
+  );
+
   return {
     version: CACHE_VERSION,
     builtAt: new Date().toISOString(),
@@ -1555,7 +1566,10 @@ async function resolveCursorSelection(
   const { entry } = request;
   // One discovery serves both an inherited row's own source and the ids the
   // whole inherited set takes below.
-  const inherited = await discoverInheritedForInventory();
+  const inherited =
+    request.providerType === 'antigravity'
+      ? emptyInheritedCursorCapabilities()
+      : await discoverInheritedForInventory();
   let own: CursorInvocationSource;
   let ownInheritedDir: string | undefined;
   if (entry.enableRef.kind === 'skill') {
@@ -1646,16 +1660,18 @@ async function resolveCursorSelection(
   // them. Their members are read from the folder Claude Code installed, the
   // folder the session reads; one that is gone contributes nothing there.
   const policy = await readInstalledItemPolicy();
-  for (const ref of inheritedClaudePluginRefs(
-    marketplaces,
-    effective,
-    request.chatTombstones,
-    readClaudeEnabledPlugins(
-      resolveInheritedCursorRoots().claudeConfigDir,
-      request.projectPath,
-    ),
-    policy.disabledPluginRefs,
-  )) {
+  for (const ref of request.providerType === 'antigravity'
+    ? []
+    : inheritedClaudePluginRefs(
+        marketplaces,
+        effective,
+        request.chatTombstones,
+        readClaudeEnabledPlugins(
+          resolveInheritedCursorRoots().claudeConfigDir,
+          request.projectPath,
+        ),
+        policy.disabledPluginRefs,
+      )) {
     if (!isPluginInstallRoot(ref.installPath)) continue;
     addPluginSources(
       cursorPluginSourcesAt(
@@ -1700,7 +1716,8 @@ export async function resolveInvocableSelection(
   if (
     providerType === 'cursor' ||
     providerType === 'copilot' ||
-    providerType === 'opencode'
+    providerType === 'opencode' ||
+    providerType === 'antigravity'
   ) {
     return resolveCursorSelection(request);
   }

@@ -18,7 +18,8 @@ interface ImportProjectsModalProps {
 function subtitleForPhase(phase: ImportProjectsPhase): string {
   switch (phase) {
     case 'scanning':
-      return 'Reading local Claude and Codex project records';
+      // The panel's status line names the tools; one home for that fact.
+      return 'Reading local project records';
     case 'choose':
       return `Choose what to bring into ${brandText.appName}`;
     case 'importing':
@@ -30,7 +31,7 @@ function subtitleForPhase(phase: ImportProjectsPhase): string {
   }
 }
 
-/** Modal chrome for the bulk Claude/Codex project import flow (CAN-2439). */
+/** Modal chrome for the bulk project import flow (CAN-2439). */
 export function ImportProjectsModal({
   target,
   onClose,

@@ -140,7 +140,7 @@ function DisabledStatusTrigger({
 }): JSX.Element {
   const reasonId = useId();
   return (
-    <Tooltip label={reason}>
+    <Tooltip label={reason} clamp={false}>
       <Button
         variant="ghost-overlay"
         size="compact"

@@ -1,3 +1,4 @@
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   useEffect,
   useMemo,
@@ -14,20 +15,11 @@ import type {
   ExternalProjectImportResponse,
   ExternalProjectProvider,
 } from '@canopy/desktop-shared/types';
-import {
-  Button,
-  Checkbox,
-  Notice,
-  Tooltip,
-} from '@canopy/ui-shared/components';
-import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
+import { Button, Checkbox, Notice } from '@canopy/ui-shared/components';
 import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatCompactAge } from '@canopy/ui-shared/lib';
 import { SourceBranchCommitHint } from '@canopy/ui-shared/components';
-import {
-  POSTHOG_REPLAY_BLOCK_CLASS,
-  POSTHOG_REPLAY_MASK_CLASS,
-} from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FirstRunAccountRowHost } from '@/components/onboarding/FirstRunAccountRowHost';
 import { FirstRunProviderGroup } from '@/components/onboarding/FirstRunProviderGroup';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
@@ -47,6 +39,14 @@ import {
   selectExclusive,
   type PickedSummary,
 } from '@/components/import-projects/pickedFolders';
+import {
+  detectedSources,
+  importSourcesLabel,
+  OTHER_TOOLS_LABEL,
+  sourceProjects,
+} from '@/components/import-projects/importProjectsCopy';
+import { ImportLocation } from '@/components/import-projects/ImportLocation';
+import { ImportSourceLogos } from '@/components/import-projects/ImportSourceLogos';
 import {
   SettingsGroup,
   SettingsLoading,
@@ -79,7 +79,8 @@ import {
 import { useProjectsStore } from '@/stores/projectsStore';
 
 /**
- * Prototype first-run page (v0): import Claude and Codex projects, confirm
+ * Prototype first-run page (v0): import projects from the tools found on this
+ * computer (Claude, Codex, T3 Code, OpenCode), confirm
  * the signed-in providers, and land in a chat. Replaces the old wizard once
  * the UX settles.
  */
@@ -87,10 +88,6 @@ import { useProjectsStore } from '@/stores/projectsStore';
 export const FIRST_RUN_IMPORT_MARKER = 'first-run-import-v0';
 
 const OLD_PROJECT_MS = 90 * 24 * 60 * 60 * 1000;
-const HARNESS_NAMES: Record<ExternalProjectProvider, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-};
 
 function activityMs(value: string | null): number {
   return value ? Date.parse(value) : 0;
@@ -106,14 +103,6 @@ function isScratchSession(candidate: ExternalProjectCandidate): boolean {
   return candidate.rootPath.includes('local-agent-mode-sessions');
 }
 
-// Display only: shows the home folder as `~` on macOS, Linux, and Windows.
-function displayPath(rootPath: string): string {
-  return rootPath.replace(
-    /^(\/Users\/[^/]+|\/home\/[^/]+|[A-Z]:\\Users\\[^\\]+)/,
-    '~',
-  );
-}
-
 function RowDetail({
   candidate,
   now,
@@ -121,10 +110,6 @@ function RowDetail({
   candidate: ExternalProjectCandidate;
   now: number;
 }): JSX.Element {
-  const shown = displayPath(candidate.rootPath);
-  const split = Math.max(shown.lastIndexOf('/'), shown.lastIndexOf('\\')) + 1;
-  const parent = shown.slice(0, split);
-  const name = shown.slice(split);
   // A picked folder says what kind it is, ahead of any chat history.
   const pickedType = isPickerCandidate(candidate)
     ? candidate.kind === 'git'
@@ -137,28 +122,26 @@ function RowDetail({
       ? 'No chat history'
       : null;
   return (
-    <span className="flex min-w-0 gap-1.5 max-sm:flex-wrap">
-      {/* The folder name tells projects apart, so the parents truncate and
-          the name stays whole. */}
-      <span
-        className={`flex min-w-0 font-mono ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-        title={candidate.rootPath}
-      >
-        <span className="min-w-0 truncate">{parent}</span>
-        <span className="max-w-full shrink-0">{name}</span>
-      </span>
-      {pickedType !== null && <span className="shrink-0">· {pickedType}</span>}
-      {/* Advisory only: the repository stays selectable and importable. */}
-      {candidate.kind === 'git' && (
-        <SourceBranchCommitHint
-          headUnborn={candidate.headUnborn}
-          className="shrink-0"
-          testId={`first-run-import-row-no-commits-${candidate.id}`}
-          leadingSeparator
-        />
-      )}
-      {activity !== null && <span className="shrink-0">· {activity}</span>}
-    </span>
+    <ImportLocation
+      rootPath={candidate.rootPath}
+      suffix={
+        <>
+          {pickedType !== null && (
+            <span className="shrink-0">· {pickedType}</span>
+          )}
+          {/* Advisory only: the repository stays selectable and importable. */}
+          {candidate.kind === 'git' && (
+            <SourceBranchCommitHint
+              headUnborn={candidate.headUnborn}
+              className="shrink-0"
+              testId={`first-run-import-row-no-commits-${candidate.id}`}
+              leadingSeparator
+            />
+          )}
+          {activity !== null && <span className="shrink-0">· {activity}</span>}
+        </>
+      }
+    />
   );
 }
 
@@ -172,32 +155,6 @@ async function markFirstRunDone(): Promise<void> {
       onboardingCompleted: [...prior, FIRST_RUN_IMPORT_MARKER],
     });
   }
-}
-
-/** The harnesses a project was used with, as their logos. */
-function HarnessTags({
-  providers,
-}: {
-  providers: ExternalProjectProvider[];
-}): JSX.Element | null {
-  // A picked folder has no harness of its own.
-  if (providers.length === 0) return null;
-  return (
-    <span
-      className="flex shrink-0 items-center gap-1.5 fg-secondary"
-      aria-label={`Used with ${providers.map((p) => HARNESS_NAMES[p]).join(' and ')}`}
-    >
-      {providers.map((provider) => (
-        <Tooltip key={provider} label={HARNESS_NAMES[provider]}>
-          {provider === 'claude' ? (
-            <ClaudeLogo className="size-3.5" aria-hidden />
-          ) : (
-            <CodexLogo className="size-3.5" aria-hidden />
-          )}
-        </Tooltip>
-      ))}
-    </span>
-  );
 }
 
 // A folder holding repositories, or one whose scan is uncertain, waits for an
@@ -250,7 +207,6 @@ async function collapseInSidebar(workspaceIds: string[]): Promise<void> {
 const PROJECTS_DESCRIPTION =
   'A project is a folder you work in. Its chats, settings, and instructions stay together.';
 
-const PROVIDER_ORDER: readonly ExternalProjectProvider[] = ['claude', 'codex'];
 // `formatCompactAge` buckets, spelled out as singular and plural words.
 const AGE_UNIT_WORDS = new Map<string, readonly [string, string]>([
   ['m', ['minute', 'minutes']],
@@ -288,25 +244,19 @@ function ageRange(newest: WordedAge, oldest: WordedAge): string {
 
 /**
  * Says what was found when every project is older, such as `Found 3 Claude
- * projects · last used 3–5 months ago`. A provider is named only when every
- * project has one, and the age covers only parseable activity.
+ * projects · last used 3–5 months ago`. Tools are named only when every
+ * project has one and there are at most two of them, and the age covers only
+ * parseable activity.
  */
 function foundProjectsDescription(
   importable: ExternalProjectCandidate[],
   now: number,
 ): string {
   const count = importable.length;
-  const harnesses = importable.every(
-    (c) =>
-      c.providers.length > 0 &&
-      c.providers.every((provider) => PROVIDER_ORDER.includes(provider)),
-  )
-    ? PROVIDER_ORDER.filter((provider) =>
-        importable.some((c) => c.providers.includes(provider)),
-      )
-        .map((provider) => HARNESS_NAMES[provider])
-        .join(' and ')
-    : '';
+  const label = importable.every((c) => c.providers.length > 0)
+    ? importSourcesLabel(importable.flatMap((c) => c.providers))
+    : OTHER_TOOLS_LABEL;
+  const harnesses = label === OTHER_TOOLS_LABEL ? '' : label;
   const found = `Found ${count} ${harnesses ? `${harnesses} ` : ''}${count === 1 ? 'project' : 'projects'}`;
   const known = importable
     .filter((c) => c.lastActivityAt)
@@ -415,7 +365,10 @@ function CandidateRows({
                 <span className={`truncate ${POSTHOG_REPLAY_MASK_CLASS}`}>
                   {candidate.displayName}
                 </span>
-                <HarnessTags providers={candidate.providers} />
+                <ImportSourceLogos
+                  providers={candidate.providers}
+                  dataTestId="first-run-import-row-tools"
+                />
               </span>
             )
           }
@@ -621,10 +574,22 @@ export function FirstRunImportPage({
           ),
         );
       })
-      .catch(() => {
+      .catch(async () => {
         if (cancelled || pickRequest.current > 0) return;
         setScanFailed(true);
-        setError("Couldn't look for Claude and Codex projects. Try again.");
+        // Names the tools found on this computer; without that answer it
+        // says "projects from other tools".
+        const found = await window.api.externalProjects
+          .readProviderPresence()
+          .then((presence) => detectedSources(presence.providers))
+          .catch((presenceError: unknown): ExternalProjectProvider[] => {
+            reportClientAppError(presenceError);
+            return [];
+          });
+        if (cancelled || pickRequest.current > 0) return;
+        setError(
+          `Couldn't look for ${sourceProjects(importSourcesLabel(found))}. Try again.`,
+        );
       });
     return (): void => {
       cancelled = true;
@@ -862,7 +827,10 @@ export function FirstRunImportPage({
             <>
               {/* A project name can be one long word; it wraps in the box. */}
               {error && (
-                <Notice intent="destructive">
+                <Notice
+                  errorSource="first-run-import-page"
+                  intent="destructive"
+                >
                   <span className="wrap-anywhere">{error}</span>
                 </Notice>
               )}

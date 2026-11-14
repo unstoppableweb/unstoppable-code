@@ -2548,6 +2548,7 @@ export function WorkspaceSettingsModal({
                         </Button>
                       </div>
                       <ErrorBanner
+                        errorSource="workspace-settings-add-repo-refusal"
                         className=""
                         error={addRepoRefusal}
                         testId="workspace-settings-add-repo-refusal"
@@ -2604,6 +2605,7 @@ export function WorkspaceSettingsModal({
                       )}
 
                       <ErrorBanner
+                        errorSource="workspace-settings-add-repo-refusal"
                         className=""
                         error={addRepoRefusal}
                         testId="workspace-settings-add-repo-refusal"
@@ -4260,6 +4262,7 @@ export function WorkspaceSettingsModal({
             </Stack>
             {claudeMdLoadFailed && (
               <Notice
+                errorSource="workspace-instructions-load-error"
                 className=""
                 intent="destructive"
                 title="Couldn't load instructions"
@@ -4461,11 +4464,12 @@ export function WorkspaceSettingsModal({
               description="This will remove the project and all its worktrees. Repository source code is not affected."
               warnings={[
                 removalDisabledReason ? (
-                  <p className="text-xs fg-destructive/80">
-                    {removalDisabledReason}
-                  </p>
+                  // Why delete is unavailable: a blocking condition in the
+                  // same attention ink as the convert block's warnings, not
+                  // an error line.
+                  <p className="text-xs fg-warning">{removalDisabledReason}</p>
                 ) : hasActiveWorktrees ? (
-                  <p className="text-xs fg-destructive/80">
+                  <p className="text-xs fg-warning">
                     Cannot delete while worktrees have active sessions.
                   </p>
                 ) : undefined,
@@ -4488,8 +4492,11 @@ export function WorkspaceSettingsModal({
 
       {/* Save footer */}
       {showAddToWorktreeFooter && (
-        <div
-          className={`flex items-center border-t px-6 py-3 ${
+        <Surface
+          variant="section"
+          boundary="top"
+          padding="dialog-footer"
+          className={`flex items-center ${
             isTemporaryWorkspace ? 'justify-end' : 'justify-between'
           }`}
         >
@@ -4534,17 +4541,18 @@ export function WorkspaceSettingsModal({
               onAddToWorktree={(target) => void handleAddToWorktree(target)}
             />
           </div>
-        </div>
+        </Surface>
       )}
 
       {error && (
-        <div className="border-t px-6 py-3">
+        <Surface variant="section" boundary="top" padding="dialog-footer">
           <ErrorBanner
+            errorSource="workspace-settings-modal"
             className=""
             error={error}
             details={detailsFor(error, errorFailure)}
           />
-        </div>
+        </Surface>
       )}
 
       <SettingsTeardownFailureDialog
@@ -4657,6 +4665,7 @@ function TemporaryWorkspacePromotionCard({
           </Button>
         </div>
         <ErrorBanner
+          errorSource="temporary-workspace-promotion-error"
           className=""
           error={errorMessage}
           details={detailsFor(errorMessage, errorFailure)}

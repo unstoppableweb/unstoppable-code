@@ -63,6 +63,7 @@ export function ShareBlockedState({
       )}
       {children}
       <ErrorBanner
+        errorSource="shared-container-invite-github-error"
         className=""
         error={actionError}
         testId="shared-container-invite-github-error"

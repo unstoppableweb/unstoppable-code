@@ -104,6 +104,7 @@ export function MarketplaceSourceAddPreview({
         )}
       </div>
       <ErrorBanner
+        errorSource="marketplace-source-add-preview-review-sync"
         className=""
         error={review.syncError}
         blockMessageFromReplay
@@ -122,6 +123,7 @@ export function MarketplaceSourceAddPreview({
       </div>
       {review.pluginsReported && !review.canConfirm && (
         <ErrorBanner
+          errorSource="cloud-marketplace-no-usable-plugins"
           className=""
           testId="cloud-marketplace-no-usable-plugins"
           error="This marketplace preview has no usable plugins. Add or fix a plugin before confirming."

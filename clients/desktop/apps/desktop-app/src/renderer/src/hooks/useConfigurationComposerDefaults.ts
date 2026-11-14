@@ -9,6 +9,7 @@ import type {
 import {
   APP_ADVISOR_PROJECT_ID,
   getProviderForChatModel,
+  pinInheritingAgentModel,
 } from '@canopy/desktop-shared/types';
 import type { ConfigurationComposerContext } from '@/lib/configurationComposerTargets';
 import { useChatStore } from '@/stores/chatStore';
@@ -115,9 +116,13 @@ export function useConfigurationComposerDefaults(
     const inheritedCompatible =
       !model ||
       !inheritedModel ||
-      getProviderForChatModel(model) ===
-        getProviderForChatModel(inheritedModel);
-    const thinkingLevel = resolveHomeEffectiveModelSettings(
+      getProviderForChatModel(
+        pinInheritingAgentModel(model, defaults.model),
+      ) ===
+        getProviderForChatModel(
+          pinInheritingAgentModel(inheritedModel, defaults.model),
+        );
+    const resolvedModel = resolveHomeEffectiveModelSettings(
       workspaceId,
       effectiveModel,
       modelConfig?.thinkingLevel ??
@@ -127,11 +132,11 @@ export function useConfigurationComposerDefaults(
         (context.kind === 'advisor' && !modelDefaults
           ? advisorPreferences?.appAdvisorThinkingLevel
           : undefined),
-    ).thinkingLevel;
+    );
     // Each record resolves on its own (exact speed, then its legacy boolean)
     // before the next one, so a draft's explicit Regular beats an inherited
     // or default Ultra fast.
-    const speed = resolveHomeSpeed(effectiveModel, {
+    const speed = resolveHomeSpeed(resolvedModel.model, {
       speed:
         readCodexSpeedRecord(modelConfig) ??
         (inheritedCompatible
@@ -139,9 +144,9 @@ export function useConfigurationComposerDefaults(
           : undefined),
     });
     return {
-      model: effectiveModel,
+      model: resolvedModel.model,
       modelConfig: {
-        thinkingLevel,
+        thinkingLevel: resolvedModel.thinkingLevel,
         ...(speed === undefined
           ? {}
           : { speed, fastMode: codexSpeedFastMode(speed) }),

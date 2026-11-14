@@ -14,6 +14,7 @@ import {
   type TrackedPlanData,
   type TrackedPlanGetRequest,
   type TrackedPlanListRequest,
+  type TrackedPlanListWithSkippedResult,
   type UnshareTrackedPlanRequest,
   type UpdateTrackedPlanRequest,
 } from '@canopy/desktop-shared/types';
@@ -21,6 +22,7 @@ import {
   createTrackedPlanData,
   deleteTrackedPlanData,
   listTrackedPlanData,
+  listTrackedPlanDataWithSkipped,
   readTrackedPlanData,
   saveTrackedPlanCommentsData,
   shareTrackedPlanData,
@@ -137,6 +139,16 @@ export function registerPlansHandlers(
       }
       return listTrackedPlanData(request);
     },
+  );
+
+  registerIpcHandler<
+    [TrackedPlanListRequest],
+    TrackedPlanListWithSkippedResult
+  >(IPC_CHANNELS.trackedPlansListWithSkipped, async (_event, request) =>
+    // As tracked-plans:list: a cowork workspace has no tracked plans.
+    isCoworkWorkspace(request.projectId)
+      ? { plans: [] }
+      : listTrackedPlanDataWithSkipped(request),
   );
 
   registerIpcHandler<[TrackedPlanGetRequest], TrackedPlanData | null>(

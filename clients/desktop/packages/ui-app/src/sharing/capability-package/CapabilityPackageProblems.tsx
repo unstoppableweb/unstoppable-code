@@ -186,6 +186,7 @@ export function CapabilityPackageProblems({
       {single !== undefined ? (
         <div {...problemAttributes(single, testIdPrefix)}>
           <Notice
+            errorSource="capability-package-problems-single-title"
             intent="destructive"
             surface="none"
             title={single.title}
@@ -208,6 +209,7 @@ export function CapabilityPackageProblems({
         </div>
       ) : problems.length > 0 ? (
         <Notice
+          errorSource="capability-package-problems"
           intent="destructive"
           surface="none"
           {...(fixWithAI !== undefined ? { actions: fixWithAI } : {})}
@@ -233,6 +235,7 @@ export function CapabilityPackageProblems({
 
       {problems.length > 0 && onFixWithAI !== undefined && fixWithAIFailed && (
         <ErrorBanner
+          errorSource="capability-package-problems-fix-with-ai-label"
           className="mb-2"
           error={FIX_WITH_AI_FAILURE_LABEL}
           testId={`${testIdPrefix}-dependency-problems-fix-with-ai-error`}

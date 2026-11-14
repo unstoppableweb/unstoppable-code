@@ -206,7 +206,11 @@ function CloudRunDetailBody({
       </p>
     ) : (
       <div className="px-6">
-        <Notice intent="destructive" data-testid="cloud-run-detail-error">
+        <Notice
+          errorSource="cloud-run-detail-error"
+          intent="destructive"
+          data-testid="cloud-run-detail-error"
+        >
           {error.message}
         </Notice>
       </div>
@@ -349,7 +353,11 @@ function CloudRunFacts({
         </Notice>
       ))}
       {execution.status === 'failure' && execution.error !== null && (
-        <Notice intent="destructive" data-testid="cloud-run-error">
+        <Notice
+          errorSource="cloud-run-error"
+          intent="destructive"
+          data-testid="cloud-run-error"
+        >
           <span className={REPLAY_BLOCK_CLASS}>{execution.error}</span>
         </Notice>
       )}
@@ -564,7 +572,12 @@ function CloudRunArtifacts({
                 Loading report…
               </p>
             ) : open.state === 'failed' ? (
-              <Notice intent="destructive">{open.message}</Notice>
+              <Notice
+                errorSource="cloud-run-artifacts-open"
+                intent="destructive"
+              >
+                {open.message}
+              </Notice>
             ) : (
               <div className={`flex flex-col gap-2 ${REPLAY_BLOCK_CLASS}`}>
                 {open.content.artifact.kind === 'report' ? (

@@ -93,6 +93,10 @@ export interface W5CommitLogHostOptions {
    * the waiting calls as `unavailable`. Production hosts must pass one.
    */
   admission?: () => Promise<void>;
+  /** Cold compositions revalidate operation authority immediately before dispatch. */
+  requestAdmission?: (request: W5CommitLogRequest) => Promise<void>;
+  /** Pre-handoff backup: launch recovery and snapshots only, never new decisions. */
+  snapshotOnly?: true;
 }
 
 /**
@@ -266,6 +270,11 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   private readonly maxQueuedCalls: number;
   private readonly workerExitWaitMs: number;
   private readonly admission: (() => Promise<void>) | undefined;
+  private readonly requestAdmission:
+    | ((request: W5CommitLogRequest) => Promise<void>)
+    | undefined;
+  private checkingRequest = false;
+  private readonly snapshotOnly: boolean;
   private readonly queue: PendingCall[] = [];
   /** Settles when a started worker exits; removed once it has. */
   private readonly runningWorkers = new Set<Promise<void>>();
@@ -329,6 +338,8 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       'workerExitWaitMs',
     );
     this.admission = options.admission;
+    this.requestAdmission = options.requestAdmission;
+    this.snapshotOnly = options.snapshotOnly === true;
   }
 
   /**
@@ -524,6 +535,10 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     method: W5CommitLogMethod,
     args: readonly unknown[],
   ): Promise<unknown> {
+    if (this.snapshotOnly && method !== 'snapshot')
+      return Promise.reject(
+        unavailable('The W5 backup host permits snapshots only'),
+      );
     if (this.closing) {
       return Promise.reject(unavailable('The W5 commit log is shut down'));
     }
@@ -610,6 +625,7 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   private pump(): void {
+    if (this.checkingRequest) return;
     while (!this.closing && this.queue.length > 0) {
       const session = this.session;
       if (!session) {
@@ -631,8 +647,42 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
         this.replaceIdle(session);
         continue;
       }
+      if (next && this.requestAdmission) {
+        void this.admitRequest(session, next, this.requestAdmission);
+        return;
+      }
       const call = this.queue.shift();
       if (!call || this.send(session, call)) return;
+    }
+  }
+
+  private async admitRequest(
+    session: WorkerSession,
+    call: PendingCall,
+    admission: (request: W5CommitLogRequest) => Promise<void>,
+  ): Promise<void> {
+    this.checkingRequest = true;
+    try {
+      const admitted = await isAdmitted(() => admission(call.request));
+      // Shutdown, failure or a queued deadline may retire this call while checking.
+      if (this.closing || this.session !== session || this.queue[0] !== call)
+        return;
+      if (
+        call.queuedDeadline !== undefined &&
+        performance.now() >= call.queuedDeadline
+      ) {
+        this.expireQueuedRead(call);
+        return;
+      }
+      this.queue.shift();
+      if (admitted) this.send(session, call);
+      else {
+        this.clearQueuedTimer(call);
+        call.reject(unavailable('The W5 request is not admitted'));
+      }
+    } finally {
+      this.checkingRequest = false;
+      this.pump();
     }
   }
 

@@ -1,3 +1,4 @@
+import type * as LegacyStorage from '../../../lib/__tests__/fixtures/w5-legacy-storage';
 // CAN-5527 (W5d2 O-7): `portal.worktree.update` and `portal.worktree.reorder`
 // write through the unkeyed `updateWorktree` and `moveWorktree` boundaries,
 // keeping the Portal's codes, messages, broadcasts, golden bytes, labels and
@@ -24,7 +25,6 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type * as TsxWorkerThreads from '../../../ledger/__tests__/fixtures/tsx-worker-threads';
-import type * as CoreStorage from '@canopy/core-runtime/storage';
 jest.mock('node:worker_threads', () =>
   jest
     .requireActual<
@@ -33,23 +33,13 @@ jest.mock('node:worker_threads', () =>
     .createTsxWorkerThreads(),
 );
 // W6g: the daemon side marks the W5 namespaces daemon-owned.
-jest.mock('@canopy/core-runtime/storage', () => {
-  const actual = jest.requireActual<typeof CoreStorage>(
-    '@canopy/core-runtime/storage',
-  );
-  const rows: CoreStorage.StorageOwnershipRow[] = [...actual.STORAGE_OWNERSHIP];
-  return {
-    ...actual,
-    STORAGE_OWNERSHIP: rows,
-    setDaemonOwnedForTest: (namespaceIds: readonly string[]): void => {
-      actual.STORAGE_OWNERSHIP.forEach((row, index) => {
-        rows[index] = namespaceIds.includes(row.id)
-          ? { ...row, transitionOwner: 'daemon', currentWriters: [] }
-          : row;
-      });
-    },
-  };
-});
+jest.mock('@canopy/core-runtime/storage', () =>
+  jest
+    .requireActual<
+      typeof LegacyStorage
+    >('../../../lib/__tests__/fixtures/w5-legacy-storage')
+    .createLegacyW5StorageMock(),
+);
 const { setDaemonOwnedForTest } = jest.requireMock<{
   setDaemonOwnedForTest: (namespaceIds: readonly string[]) => void;
 }>('@canopy/core-runtime/storage');
@@ -276,7 +266,10 @@ async function seed(side: (typeof W5_STORE_SIDES)[number]): Promise<void> {
   host = new W5CommitLogHost({
     dbPath,
     root,
-    workerEntry: join(__dirname, '../../../w5-commit-log/commit-log-worker.ts'),
+    workerEntry: join(
+      __dirname,
+      '../../../lib/__tests__/fixtures/w5-commit-log-source-worker.ts',
+    ),
   });
   teardownStoreSide = await installW5StoreSide(side, {
     host,

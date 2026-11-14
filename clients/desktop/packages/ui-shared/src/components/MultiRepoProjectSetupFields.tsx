@@ -148,12 +148,18 @@ export function MultiRepoProjectSetupFields({
                         {option.name}
                       </span>
                       {option.description && (
-                        <span
-                          className={`min-w-0 truncate fg-tertiary ${REPLAY_MASK_CLASS}`}
-                          title={option.description}
+                        <Tooltip
+                          label={option.description}
+                          clamp
+                          allowShrink
+                          replayBlock
                         >
-                          {option.description}
-                        </span>
+                          <span
+                            className={`min-w-0 truncate fg-tertiary ${REPLAY_MASK_CLASS}`}
+                          >
+                            {option.description}
+                          </span>
+                        </Tooltip>
                       )}
                       {option.locked && (
                         <span className="shrink-0 text-xs fg-secondary">

@@ -7,7 +7,24 @@
 // outputs also feed the legacy observability:event push to both windows;
 // this golden covers their data, not Electron window delivery.
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { isRecord } from '@canopy/core-runtime/observability';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import {
+  nodeCrashDumpSweepFs,
+  sweepCrashDumps,
+  sweepStartupCrashDumps,
+} from '../crash-dump-sweep';
 import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
@@ -22,6 +39,8 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { OpenAiPricingCacheState } from '../../openai-pricing/pricing-client';
 import {
+  GOLDEN_CODEX_MODEL,
+  GOLDEN_START_TIME,
   captureAggregates,
   captureStores,
   diffGolden,
@@ -43,6 +62,19 @@ import {
   type DesktopHost,
 } from './golden/desktop-host';
 import { CHUNKING_SCENARIO, GOLDEN_SCENARIOS } from './golden/scenarios';
+import {
+  PROJECT,
+  WORKTREE,
+  chatStart,
+  codexChatEvent,
+  codexTurnEvents,
+  delegationEvent,
+  agentStep,
+  job,
+  pipelineState,
+  helperEntry,
+} from './golden/fixtures';
+import { ObservabilityAuditEntrySchema } from '@canopy/protocol/canopy-core';
 
 const mockPricing = GOLDEN_PRICING_STATE;
 const mockAccount = goldenAccount;
@@ -571,4 +603,551 @@ describe('observability golden: disposed hosts', () => {
     // The host stays referenced to here, as a scenario's capture is.
     expect(host.incarnations).toHaveLength(0);
   });
+});
+
+it('keeps a moved Crashpad dump eligible for the next sweep', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'canopy-crash-move-'));
+  try {
+    const pending = join(root, 'pending');
+    const completed = join(root, 'completed');
+    await mkdir(pending);
+    await mkdir(completed);
+    const listed = join(pending, 'report.dmp');
+    const moved = join(completed, 'report.dmp');
+    await writeFile(listed, 'fixture');
+    const { mtimeMs } = await stat(listed);
+    const first = await sweepCrashDumps({
+      crashDumpsDir: root,
+      fs: {
+        ...nodeCrashDumpSweepFs,
+        lstat: async (path) => {
+          if (path === listed) await rename(path, moved);
+          return nodeCrashDumpSweepFs.lstat(path);
+        },
+      },
+    });
+    expect(first).toMatchObject({ listed: 1, errors: 0, complete: false });
+    const kept = jest.fn();
+    const next = await sweepCrashDumps({ crashDumpsDir: root, onKept: kept });
+    expect(next).toMatchObject({ listed: 1, errors: 0, complete: true });
+    expect(kept).toHaveBeenCalledWith(moved, mtimeMs);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('keeps a Crashpad dump eligible when it completes after enumeration', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'canopy-crash-finalizing-'));
+  try {
+    const staging = join(root, 'new');
+    const completed = join(root, 'completed');
+    await mkdir(staging);
+    await mkdir(completed);
+    const pending = join(staging, 'finishing.dmp');
+    const moved = join(completed, 'finishing.dmp');
+    await writeFile(pending, 'pending fixture');
+    await writeFile(join(completed, 'visible.dmp'), 'retained fixture');
+    const { mtimeMs } = await stat(pending);
+    const first = await sweepCrashDumps({
+      crashDumpsDir: root,
+      fs: {
+        ...nodeCrashDumpSweepFs,
+        readdir: async (path, options) => {
+          const entries = await nodeCrashDumpSweepFs.readdir(path, options);
+          if (path === completed) await rename(pending, moved);
+          return entries;
+        },
+      },
+    });
+    expect(first).toMatchObject({ listed: 1, kept: 1, complete: false });
+    const kept = jest.fn();
+    const next = await sweepCrashDumps({ crashDumpsDir: root, onKept: kept });
+    expect(next).toMatchObject({ listed: 2, complete: true });
+    expect(kept).toHaveBeenCalledWith(moved, mtimeMs);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('enforces local Crashpad retention across launches with reporting blocked', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'canopy-crash-retention-'));
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  let acknowledged: ReadonlySet<string> = new Set();
+  const receipts = {
+    read: jest.fn(
+      (): Promise<ReadonlySet<string>> => Promise.resolve(acknowledged),
+    ),
+    save: jest.fn((ids: ReadonlySet<string>): void => {
+      acknowledged = ids;
+    }),
+  };
+  const report = jest
+    .fn<Promise<boolean>, [readonly string[], (name: string) => void]>()
+    .mockResolvedValue(true);
+  let policy: 'allow' | 'deny' | 'unavailable' = 'deny';
+  const launch = (): Promise<unknown> =>
+    sweepStartupCrashDumps({
+      crashDumpsDir: root,
+      policy: () => policy,
+      receipts,
+      report,
+    });
+  const addDump = async (name: string, age: number): Promise<void> => {
+    const path = join(root, name);
+    await writeFile(path, 'local crash fixture');
+    const time = new Date(now - age);
+    await utimes(path, time, time);
+  };
+
+  try {
+    await addDump('expired.dmp', 31 * day);
+    await addDump('kept.dmp', 29 * day);
+    await launch();
+    expect(await readdir(root)).toEqual(['kept.dmp']);
+
+    const newest = Array.from(
+      { length: 20 },
+      (_, index) => `recent-${String(index).padStart(2, '0')}.dmp`,
+    );
+    await Promise.all(
+      newest.map((name, index) => addDump(name, day + index * 1_000)),
+    );
+    policy = 'unavailable';
+    await launch();
+    expect((await readdir(root)).sort()).toEqual(newest);
+
+    await addDump('oldest-recent.dmp', 3 * day);
+    policy = 'allow';
+    receipts.read.mockRejectedValueOnce(new Error('Unreadable receipts'));
+    await launch();
+    expect((await readdir(root)).sort()).toEqual(newest);
+    expect(report).not.toHaveBeenCalled();
+    expect(receipts.save).not.toHaveBeenCalled();
+
+    report.mockImplementationOnce((_paths, delivered): Promise<boolean> => {
+      delivered('recent-00.dmp');
+      return Promise.resolve(true);
+    });
+    await launch();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledWith(
+      newest.map((name) => join(root, name)),
+      expect.any(Function),
+    );
+    expect(receipts.save).toHaveBeenCalledWith(new Set(['recent-00.dmp']));
+    await launch();
+    expect(report).toHaveBeenLastCalledWith(
+      newest.slice(1).map((name) => join(root, name)),
+      expect.any(Function),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+describe('observability Agent and model identity', () => {
+  const agentId = 'agent_model_reviewer';
+  const model = GOLDEN_CODEX_MODEL;
+  const route = `${agentId}@${model}`;
+
+  beforeEach(() => useGoldenTimers());
+  afterEach(() => restoreGoldenEnvironment(setCurrentService));
+
+  it.each([
+    { selected: route, runtime: route },
+    { selected: route, runtime: model },
+    { selected: agentId, runtime: model },
+  ])(
+    'stores and serves $selected on $runtime separately, with real-model usage and cost rollups after restart',
+    async ({ selected, runtime }) => {
+      const captured = await captureScenario({
+        name: 'Agent on an overridden model',
+        run: async (context) => {
+          context.ingest.startChatTurn(
+            chatStart('agent-chat', 'codex', {
+              model: runtime,
+              requestedModel: selected,
+            }),
+          );
+          for (const event of codexTurnEvents({
+            threadId: 'agent-thread',
+            turnId: 'agent-turn',
+            input: 100,
+            cachedInput: 20,
+            output: 10,
+            reasoning: 2,
+          })) {
+            context.ingest.observeChatEvent(
+              PROJECT,
+              WORKTREE,
+              'agent-chat',
+              codexChatEvent(event),
+            );
+          }
+          context.host.advanceClock(1_000);
+          context.ingest.completeChatTurn(
+            PROJECT,
+            WORKTREE,
+            'agent-chat',
+            'success',
+          );
+          await context.settle();
+          context.host.advanceClock(1);
+        },
+      });
+      try {
+        expect(captured.auditEntries).toHaveLength(1);
+        const entry = captured.auditEntries[0];
+        expect(entry).toMatchObject({
+          agentId,
+          model,
+          requestedModel: selected,
+        });
+        expect(ObservabilityAuditEntrySchema.parse(entry)).toMatchObject({
+          agentId,
+          model,
+        });
+        expect(entry && classifyAuditEntry(entry)).toMatchObject({
+          agentId,
+          model,
+        });
+        expect(captured.stores).toContain(`"agentId": "${agentId}"`);
+        const usageLines = await readFile(
+          join(
+            captured.host.dataRoot,
+            'agent-observability',
+            'usage-events',
+            '2026-10-20.jsonl',
+          ),
+          'utf8',
+        );
+        expect(
+          usageLines
+            .trim()
+            .split('\n')
+            .map((line): unknown => JSON.parse(line)),
+        ).toEqual([
+          expect.objectContaining({
+            type: 'chat_turn_started',
+            agentId,
+            model,
+          }),
+          expect.objectContaining({
+            type: 'chat_turn_completed',
+            agentId,
+            model,
+          }),
+        ]);
+        const restarted = captured.host.incarnations.at(-1)?.service;
+        if (!restarted) throw new Error('Expected a restarted service');
+        expect((await restarted.loadHistory({})).entries).toEqual(
+          expect.arrayContaining([expect.objectContaining({ agentId, model })]),
+        );
+        for (const search of [agentId, selected.toUpperCase(), model]) {
+          expect((await restarted.loadHistory({ search })).entries).toEqual([
+            expect.objectContaining({ agentId, model }),
+          ]);
+        }
+        expect(
+          (await restarted.loadHistory({ search: 'agent_model_unrelated' }))
+            .entries,
+        ).toEqual([]);
+        const view = await restarted.loadUsageMetricsView({
+          tab: 'cost',
+          metric: 'cost_total_usd',
+          groupBy: 'model',
+          window: { kind: 'allTime' },
+        });
+        expect(view.rows).toHaveLength(1);
+        expect(view.rows[0]?.key).toBe(model);
+        expect(captured.costIndex.scopeViews.size).toBeGreaterThan(0);
+        for (const result of captured.costIndex.scopeViews.values()) {
+          if (result.status !== 'ok') throw new Error('Expected a cost view');
+          expect(result.value.chats.flatMap((chat) => chat.models)).toEqual([
+            model,
+          ]);
+        }
+      } finally {
+        await disposeAll(captured.host);
+      }
+    },
+  );
+
+  it.each([route, agentId])(
+    'finds historical Agent selection %s loaded from disk',
+    async (legacyModel) => {
+      const host = createDesktopHost(setCurrentService);
+      try {
+        host.setClock(GOLDEN_START_TIME);
+        const auditDir = join(host.dataRoot, 'agent-observability', 'audit');
+        await mkdir(auditDir, { recursive: true });
+        const legacyEntry: AgentAuditEntry = {
+          ...helperEntry({
+            taskKey: 'legacy-agent-turn',
+            eventType: 'worktree_chat',
+            provider: 'codex',
+            model: legacyModel,
+            label: 'Historical turn',
+            startedAt: GOLDEN_START_TIME,
+          }),
+          status: 'success',
+          completedAt: GOLDEN_START_TIME,
+        };
+        await writeFile(
+          join(auditDir, '2026-10-20.jsonl'),
+          `${JSON.stringify(legacyEntry)}\n`,
+        );
+        const restarted = await host.boot();
+        await restarted.start();
+        for (const search of [
+          agentId.toUpperCase(),
+          legacyModel.toUpperCase(),
+        ]) {
+          expect((await restarted.loadHistory({ search })).entries).toEqual([
+            expect.objectContaining({
+              id: legacyEntry.id,
+              agentId,
+              model: legacyModel === route ? model : undefined,
+            }),
+          ]);
+        }
+        if (legacyModel === route) {
+          expect(
+            (await restarted.loadHistory({ search: model })).entries,
+          ).toEqual([
+            expect.objectContaining({ requestedModel: route, model }),
+          ]);
+        }
+      } finally {
+        await disposeAll(host);
+      }
+    },
+  );
+
+  it('keeps a delegation Agent when its route already names a real runtime model', async () => {
+    const captured = await captureScenario({
+      name: 'Agent delegation',
+      run: async (context) => {
+        context.ingest.startChatTurn(chatStart('parent', 'claude'));
+        const event = delegationEvent({
+          delegationId: 'agent-delegation',
+          parentTurnId: 'parent-turn',
+          status: 'completed',
+          sequence: 1,
+          createdAt: Date.parse(GOLDEN_START_TIME),
+          itemTimes: [],
+          usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 },
+        });
+        if (
+          !isRecord(event.delegation) ||
+          !isRecord(event.delegation.snapshot)
+        ) {
+          throw new Error('Expected a delegation fixture');
+        }
+        const snapshot = event.delegation.snapshot;
+        if (!isRecord(snapshot.routeSnapshot)) {
+          throw new Error('Expected a route snapshot');
+        }
+        snapshot.routeSnapshot = {
+          ...snapshot.routeSnapshot,
+          selectedModelId: route,
+          runtimeModelId: model,
+        };
+        context.ingest.observeChatEvent(PROJECT, WORKTREE, 'parent', event);
+        context.ingest.completeChatTurn(PROJECT, WORKTREE, 'parent', 'success');
+        await context.settle();
+      },
+    });
+    try {
+      const entry = captured.auditEntries.find(
+        (candidate) => candidate.eventType === 'managed_delegation',
+      );
+      expect(entry).toMatchObject({ agentId, model });
+      expect(entry && classifyAuditEntry(entry)).toMatchObject({
+        agentId,
+        model,
+      });
+    } finally {
+      await disposeAll(captured.host);
+    }
+  });
+
+  it('projects alias metadata for current, retried and iterated steps without losing fast mode', async () => {
+    const host = createDesktopHost(setCurrentService);
+    try {
+      const ingest = await host.boot();
+      await ingest.start();
+      const step = {
+        ...agentStep({
+          provider: 'codex',
+          harness: 'codex',
+          model: 'review-alias',
+          startedAt: GOLDEN_START_TIME,
+          status: 'success',
+        }),
+        agent_runtime_model: model,
+        agent_model_config: { agentId, baseModel: model, fastMode: true },
+      };
+      const state = pipelineState({
+        id: 'agent-run',
+        status: 'success',
+        startedAt: GOLDEN_START_TIME,
+        jobs: {
+          review: {
+            ...job('success', { current: step }),
+            retry_count: 1,
+            iteration_count: 1,
+            iteration_history: [
+              { iteration: 0, status: 'success', steps: { iteration: step } },
+            ],
+            retry_history: [
+              {
+                attempt: 0,
+                status: 'success',
+                steps: { retry: step },
+                iteration_history: [
+                  {
+                    iteration: 0,
+                    status: 'success',
+                    steps: { retryIteration: step },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      state.model_config = { thinkingLevel: 'high', fastMode: false };
+      ingest.syncPipelineExecutionState(state);
+      await ingest.flush();
+      await ingest.flush();
+      const entries = (await ingest.loadHistory({})).entries;
+      expect(entries).toHaveLength(4);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({
+          agentId,
+          model,
+          serviceTier: 'priority',
+        });
+      }
+    } finally {
+      await disposeAll(host);
+    }
+  });
+});
+
+test('Google pipeline patches and native result persist under Google attribution', async () => {
+  useGoldenTimers();
+  const host = createDesktopHost(setCurrentService);
+  host.setClock(GOLDEN_START_TIME);
+  try {
+    const ingest = await host.boot();
+    await ingest.start();
+    const state = pipelineState({
+      id: 'google-run',
+      status: 'running',
+      startedAt: GOLDEN_START_TIME,
+      jobs: {
+        main: job('running', {
+          prompt: agentStep({
+            provider: 'antigravity',
+            harness: 'antigravity',
+            model: 'antigravity:gemini-3.8-flash',
+            startedAt: GOLDEN_START_TIME,
+          }),
+        }),
+      },
+    });
+    ingest.syncPipelineExecutionState(state);
+    const events = [
+      {
+        type: 'system',
+        subtype: 'init',
+        provider: 'antigravity',
+        session_id: 'google-session',
+      },
+      {
+        type: 'canopy_assistant_patch',
+        provider: 'antigravity',
+        messageId: 'google-message',
+        timestamp: Date.parse(GOLDEN_START_TIME),
+        role: 'assistant',
+        revision: 1,
+        patches: [
+          {
+            op: 'set',
+            index: 0,
+            block: { type: 'text', text: 'Google answer' },
+          },
+          {
+            op: 'set',
+            index: 1,
+            block: {
+              type: 'tool_use',
+              toolUseId: 'tool-1',
+              toolName: 'read_file',
+              input: 'file.txt',
+              display: { toolName: 'Read', input: 'file.txt' },
+            },
+          },
+        ],
+      },
+      {
+        type: 'result',
+        provider: 'antigravity',
+        is_error: false,
+        session_id: 'google-session',
+        result: 'Google answer',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          reasoning_tokens: 10,
+          cache_read_input_tokens: 3,
+        },
+      },
+    ];
+    for (const event of events)
+      ingest.observePipelineOutput({
+        executionId: state.id,
+        jobId: 'main',
+        stepId: 'prompt',
+        attempt: 0,
+        data: JSON.stringify(event) + '\n',
+      });
+    state.jobs.main.steps.prompt.status = 'success';
+    state.jobs.main.status = 'success';
+    state.status = 'success';
+    ingest.syncPipelineExecutionState(state);
+    await ingest.flush();
+    const entries = (await ingest.loadHistory({})).entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      provider: 'antigravity',
+      executionHarness: 'antigravity',
+      sdkSessionId: 'google-session',
+      messageCount: 1,
+      assistantMessageCount: 1,
+      toolUseCount: 1,
+      tokens: {
+        input: 100,
+        output: 20,
+        reasoningOutputTokens: 10,
+        cacheReadInputTokens: 3,
+      },
+    });
+    expect(entries[0].totalCostUsd).toBeUndefined();
+    const stores = await captureStores(host.dataRoot);
+    expect(JSON.stringify(stores)).toContain('Google answer');
+    const reboot = await host.boot();
+    await reboot.start();
+    expect((await reboot.loadHistory({})).entries[0]).toMatchObject({
+      provider: 'antigravity',
+      toolUseCount: 1,
+      tokens: { input: 100, output: 20 },
+    });
+  } finally {
+    await disposeAll(host);
+    restoreGoldenEnvironment(setCurrentService);
+  }
 });

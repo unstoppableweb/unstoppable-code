@@ -90,8 +90,8 @@ export const DAEMON_PORTABLE_MODEL_ACTIONS: ReadonlyMap<
 
 /**
  * Model actions whose post-processing their owner runs from the stored
- * outputs, portable only under `commitHooks: 'owner'` (CAN-6012 D3). Cloud
- * runs leave them `model_action` until CP-30 brokers their credentials.
+ * outputs, portable only under `commitHooks: 'owner'` (CAN-6012 D3), or on a
+ * brokered cloud host (`repositoryActions: 'brokered'`, CAN-6739).
  */
 export const DAEMON_OWNER_HOOK_MODEL_ACTIONS: ReadonlyMap<
   string,
@@ -107,11 +107,37 @@ const DAEMON_OWNER_HOOK_PORTABLE_MODEL_ACTIONS: ReadonlyMap<
 ]);
 
 /**
+ * The model actions that commit, push or open a pull request, portable only
+ * under `repositoryActions: 'brokered'` (CAN-6739): a cloud runner's sandbox
+ * holds the run's brokered GitHub credentials, and the host reports
+ * `git-commit-push`'s pre-commit failures to its owner itself. Both write
+ * their text with a Claude helper on the step's route. `github-create-pr`
+ * opens its pull request with gh, as the in-process executor does, not
+ * through its owner's `core.pullRequest.create`: recorded compatibility debt
+ * until CAN-6748.
+ */
+export const DAEMON_BROKERED_REPOSITORY_MODEL_ACTIONS: ReadonlyMap<
+  string,
+  readonly DaemonModelHarness[]
+> = new Map([
+  ['git-commit-push', ['claude']],
+  ['github-create-pr', ['claude']],
+]);
+
+const DAEMON_BROKERED_PORTABLE_MODEL_ACTIONS: ReadonlyMap<
+  string,
+  readonly DaemonModelHarness[]
+> = new Map([
+  ...DAEMON_PORTABLE_MODEL_ACTIONS,
+  ...DAEMON_BROKERED_REPOSITORY_MODEL_ACTIONS,
+]);
+
+/**
  * Portable model actions whose model input is not `model`, with the runner's
  * own fallback chain: the step's input, then the run's preference variable,
- * then the runner's default (CAN-6012).
+ * then the runner's default (CAN-6012, CAN-6739).
  */
-const DAEMON_ACTION_MODEL_INPUTS: ReadonlyMap<
+export const DAEMON_ACTION_MODEL_INPUTS: ReadonlyMap<
   string,
   {
     readonly input: string;
@@ -125,6 +151,14 @@ const DAEMON_ACTION_MODEL_INPUTS: ReadonlyMap<
       input: 'commit_model',
       preferenceEnvSuffix: 'PREF_COMMIT_GENERATION_MODEL',
       runnerDefault: 'haiku',
+    },
+  ],
+  [
+    'github-create-pr',
+    {
+      input: 'pr_model',
+      preferenceEnvSuffix: 'PREF_PR_GENERATION_MODEL',
+      runnerDefault: 'sonnet',
     },
   ],
 ]);
@@ -153,6 +187,11 @@ export interface DaemonModelAliasResolution {
   readonly base: string;
   /** The alias adds plugins (an inline plugin collection or an Agent's plugins). */
   readonly plugins: boolean;
+  /**
+   * The daemon can serve every MCP server those plugins bring to a Codex
+   * step (CAN-6168). Absent: it can't, and a Codex step stays in process.
+   */
+  readonly codexPlugins?: boolean;
 }
 
 export interface DaemonPipelineClassifierOptions {
@@ -162,6 +201,14 @@ export interface DaemonPipelineClassifierOptions {
   readonly hostSteps?: 'refuse' | 'owner';
   /** `'refuse'` (default): `git-commit-push` is `model_action`. `'owner'`: its owner runs the precommit-failure hook (CAN-6012 D3). */
   readonly commitHooks?: 'refuse' | 'owner';
+  /**
+   * `'refuse'` (default): `git-commit-push` (unless `commitHooks: 'owner'`)
+   * and `github-create-pr` are `model_action`. `'brokered'`: both are
+   * portable Claude model actions, for a cloud runner whose sandbox holds
+   * the run's GitHub credentials and whose host reports pre-commit failures
+   * to the owner (CAN-6739).
+   */
+  readonly repositoryActions?: 'refuse' | 'brokered';
   /**
    * `'refuse'` (default): a model step inside a composite action whose model
    * names one of the composite's inputs is `dynamic_model`. `'resolve'`: it
@@ -211,6 +258,24 @@ export interface DaemonPipelineClassifierContext {
    * `plugin_collections`.
    */
   readonly pluginCollections?: ReadonlySet<string>;
+  /**
+   * The collections whose every MCP server the daemon can serve to a Codex
+   * step (CAN-6168): plugin servers only, stdio without env or HTTP without
+   * static headers. A Codex step adding any other collection is
+   * `plugin_collections`.
+   */
+  readonly codexPluginCollections?: ReadonlySet<string>;
+  /**
+   * The launch's decision for a Codex step with plugins (CAN-6168), by the
+   * step's own collection and model alias, either possibly absent: whether
+   * the daemon serves that merge's MCP servers as Electron main would
+   * (admitCodexPluginSteps). Absent, as in the daemon, which can't read the
+   * owner's auth settings: only the per-source checks apply.
+   */
+  readonly codexPluginAdmission?: (
+    collectionId: string | undefined,
+    aliasId: string | undefined,
+  ) => boolean;
   /**
    * The run's inputs as its executor resolves them at start (CAN-6012): a
    * top-level step whose model is exactly `${{ inputs.NAME }}` is classified
@@ -570,12 +635,20 @@ function classifyModelStep(
     value = resolved;
   }
   let model = value.trim();
+  // Whether the daemon can serve a Codex step every plugin it adds (CAN-6168).
+  let codexServable =
+    collectionId === undefined ||
+    (typeof collectionId === 'string' &&
+      context.codexPluginCollections?.has(collectionId.trim()) === true);
+  let aliasId: string | undefined;
   if (pipeline.model_aliases?.some((alias) => alias.id === model)) {
+    aliasId = model;
     const target = DAEMON_ALIAS_MODEL_ACTIONS.has(name)
       ? context.modelAliases?.[model]
       : undefined;
     if (target === undefined) return 'model_alias';
     addsPlugins ||= target.plugins;
+    if (target.plugins && target.codexPlugins !== true) codexServable = false;
     model = target.base.trim();
   }
   let harness: DaemonModelHarness;
@@ -593,9 +666,26 @@ function classifyModelStep(
     if (admitted === undefined) return 'model_provider';
     harness = admitted;
   }
-  // Only Claude steps load plugins in the daemon; Codex plugins stay in
-  // process (CAN-6012).
-  if (addsPlugins && harness !== 'claude') return 'plugin_collections';
+  // Claude steps load plugins in the daemon (CAN-5832); Codex steps only
+  // those whose MCP servers it can serve (CAN-6168), judged on the merge of
+  // the step's collection and alias when the launch decided it.
+  if (
+    addsPlugins &&
+    harness === 'codex' &&
+    codexServable &&
+    context.codexPluginAdmission !== undefined &&
+    !context.codexPluginAdmission(
+      typeof collectionId === 'string' ? collectionId.trim() : undefined,
+      aliasId,
+    )
+  )
+    codexServable = false;
+  if (
+    addsPlugins &&
+    harness !== 'claude' &&
+    !(harness === 'codex' && codexServable)
+  )
+    return 'plugin_collections';
   tally.count += 1;
   tally.harnesses.add(harness);
   return null;
@@ -646,7 +736,8 @@ function classifyStepAdmittingModels(
       // Case-insensitive volumes resolve `builtin/Condenser` to `condenser`.
       const name = builtinActionName(uses, resolved, context)?.toLowerCase();
       // Its owner's hook reads persisted step results, and a composite keeps
-      // its nested ones in memory (CAN-6012 D3).
+      // its nested ones in memory (CAN-6012 D3); a brokered host reports
+      // only top-level results too (CAN-6739).
       if (
         name !== undefined &&
         depth > 0 &&
@@ -727,9 +818,11 @@ export function classifyDaemonPipeline(
     count: 0,
     harnesses: new Set(),
     actions:
-      options?.commitHooks === 'owner'
-        ? DAEMON_OWNER_HOOK_PORTABLE_MODEL_ACTIONS
-        : DAEMON_PORTABLE_MODEL_ACTIONS,
+      options?.repositoryActions === 'brokered'
+        ? DAEMON_BROKERED_PORTABLE_MODEL_ACTIONS
+        : options?.commitHooks === 'owner'
+          ? DAEMON_OWNER_HOOK_PORTABLE_MODEL_ACTIONS
+          : DAEMON_PORTABLE_MODEL_ACTIONS,
     compositeModels: options?.compositeModels === 'resolve',
   };
   const hosts: HostStepTally = {

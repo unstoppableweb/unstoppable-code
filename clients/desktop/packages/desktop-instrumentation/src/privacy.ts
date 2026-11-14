@@ -10,7 +10,7 @@ const HOME_PATH_PATTERNS: RegExp[] = [
 ];
 
 const RENDERER_ASSET_FILE_URL_PATTERN =
-  /file:\/\/\/[^\s'"`)]*\/out\/renderer\/assets\/([^:\s'"`)?#]+?\.(?:js|css))(?=[:\s'"`)?#]|$)/g;
+  /file:\/\/\/[^\s'"`?#]*\/out\/renderer\/assets\/([^:\s'"`)?#]+?\.(?:js|css))(?=[:\s'"`)?#]|$)/g;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

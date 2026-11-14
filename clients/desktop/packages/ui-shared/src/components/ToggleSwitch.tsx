@@ -1,4 +1,4 @@
-import { useId, type JSX, type ReactNode } from 'react';
+import { forwardRef, useId, type JSX, type ReactNode } from 'react';
 
 export type ToggleSwitchSize = 'md' | 'sm';
 
@@ -11,10 +11,18 @@ export interface ToggleSwitchProps {
    * because WAI-ARIA does not allow `mixed` on `switch`.
    */
   readonly busy?: boolean;
+  /**
+   * Shown and focusable, so a tooltip can say why, but not operable: the
+   * switch keeps `aria-disabled` and the tab order, and a press does nothing.
+   * Use `disabled` when there is no reason to show.
+   */
+  readonly unavailable?: boolean;
   /** Accessible name. Required: the track renders no text of its own. */
   readonly label: string;
   /** Id of an element that describes the switch, such as a note beside it. */
   readonly describedBy?: string;
+  /** Set by a `Tooltip` around the switch; adds to `describedBy`. */
+  readonly 'aria-describedby'?: string;
   readonly onChange: (next: boolean) => void;
   readonly dataTestId?: string;
   /**
@@ -89,39 +97,55 @@ function SwitchTrack({
  * the Home composer's Pipeline toggle (`CompactToggleIndicator`), so every
  * switch in the app is the same control.
  */
-export function ToggleSwitch({
-  id,
-  checked,
-  disabled,
-  busy,
-  label,
-  describedBy,
-  onChange,
-  dataTestId,
-  size = 'md',
-}: ToggleSwitchProps): JSX.Element {
-  return (
-    <button
-      id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-busy={busy || undefined}
-      aria-label={label}
-      aria-describedby={describedBy}
-      disabled={disabled}
-      data-testid={dataTestId}
-      onClick={() => onChange(!checked)}
-      // `pointer-events-none` while disabled also stops the hover stretch. The
-      // track's color changes at once, like every hover and selection color;
-      // only the knob moves. On a coarse pointer the 32×18 track reaches a
-      // 44×42 hit area.
-      className="group focus-ring relative inline-flex shrink-0 rounded-full before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-x-1.5 pointer-coarse:before:-inset-y-3 disabled:pointer-events-none disabled:opacity-60"
-    >
-      <SwitchTrack checked={checked} size={size} />
-    </button>
-  );
-}
+export const ToggleSwitch = forwardRef<HTMLButtonElement, ToggleSwitchProps>(
+  function ToggleSwitch(
+    {
+      id,
+      checked,
+      disabled,
+      busy,
+      unavailable,
+      label,
+      describedBy,
+      'aria-describedby': tooltipDescribedBy,
+      onChange,
+      dataTestId,
+      size = 'md',
+    },
+    ref,
+  ): JSX.Element {
+    return (
+      <button
+        ref={ref}
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-busy={busy || undefined}
+        aria-disabled={unavailable || undefined}
+        aria-label={label}
+        aria-describedby={
+          [describedBy, tooltipDescribedBy].filter(Boolean).join(' ') ||
+          undefined
+        }
+        disabled={disabled}
+        data-testid={dataTestId}
+        // Inert by having no handler, not by a guard inside one.
+        onClick={unavailable ? undefined : () => onChange(!checked)}
+        // `pointer-events-none` while disabled also stops the hover stretch;
+        // an unavailable switch keeps its pointer events for its tooltip, so
+        // it leaves out `group` instead. The track's color changes at once,
+        // like every hover and selection color; only the knob moves. On a
+        // coarse pointer the 32×18 track reaches a 44×42 hit area.
+        className={`${unavailable ? 'cursor-not-allowed opacity-60' : 'group'} focus-ring relative inline-flex shrink-0 rounded-full before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-x-1.5 pointer-coarse:before:-inset-y-3 disabled:pointer-events-none disabled:opacity-60`}
+      >
+        <SwitchTrack checked={checked} size={size} />
+      </button>
+    );
+  },
+);
+
+ToggleSwitch.displayName = 'ToggleSwitch';
 
 /**
  * Visual toggle for an existing switch or menu checkbox. The parent owns

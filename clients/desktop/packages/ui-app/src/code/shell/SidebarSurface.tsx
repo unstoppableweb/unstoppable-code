@@ -6,7 +6,12 @@ import {
   useSidebarAutoDeleteMenu,
 } from './SidebarAutoDelete';
 
-import { Surface, Stack, Heading } from '@canopy/ui-shared/components';
+import {
+  Surface,
+  Stack,
+  Heading,
+  workspaceChildUnitLabel,
+} from '@canopy/ui-shared/components';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
 import {
@@ -65,6 +70,7 @@ import {
   type PipelineStatusPopoverEntry,
   type TerminalPopoverRow,
   EmptyStateRow,
+  type WorkspaceSectionHeaderContextAction,
 } from '@canopy/ui-shared/components';
 import { SidebarMoreControl } from '@canopy/ui-shared';
 import {
@@ -86,12 +92,14 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   ArchiveBoxIcon,
+  ArchiveIcon,
   ChevronDownMediumIcon,
   ListChecks,
   EditBigIcon,
   PinFilledIcon,
   PinIcon,
   SearchIcon,
+  TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   getSidebarNavItemDefs,
@@ -113,6 +121,8 @@ import {
 } from './StandaloneChatsSidebarSection';
 import type {
   WorkEntryNotificationHandlers,
+  StandaloneChatsSidebarChat,
+  StandaloneChatsSidebarSectionProps,
   StandaloneChatsSidebarRowsState,
   StandaloneChatsSidebarSnapshot,
 } from './StandaloneChatsSidebarSection';
@@ -192,6 +202,14 @@ import type {
   WorktreeRowSlotContext,
 } from './WorkspacesSidebarSections';
 import type { SidebarWorkspace, SnapshotWorktree } from './worktree-status';
+import {
+  publishSidebarMoreWorkspaces,
+  registerSidebarHiddenWorktreeHandler,
+  type SidebarHiddenWorktreeAbilities,
+  type SidebarHiddenWorktreeEntry,
+  type SidebarHiddenWorktreeRequest,
+  type SidebarMoreWorkspace,
+} from './sidebar-more-bridge';
 import { sidebarRowLabel, workspaceLayout } from './worktree-status';
 import {
   derivePrBadgeStatus,
@@ -461,6 +479,17 @@ export interface SidebarSurfaceProps {
     groupId: string,
   ) => void;
   readonly onGroupError?: (workspaceLocalId: string, error: unknown) => void;
+  /**
+   * Archives a standalone chat's whole Work Entry, locked and restorable on
+   * desktop (CAN-5461). Offered only for rows whose owning project's
+   * capabilities include `standaloneChatArchive` and whose commands are
+   * enabled; never in a read-only list or for a cloud project. Settle once
+   * the removal is confirmed or failed; the host reports failures.
+   */
+  readonly onArchiveStandaloneChat?: (
+    chat: StandaloneChatsSidebarChat & { readonly projectLocalId: string },
+  ) => void | Promise<void>;
+  readonly standaloneChatArchiveErrorFor?: StandaloneChatsSidebarSectionProps['archiveErrorFor'];
   readonly onCreateBranchWorktree?: (
     workspaceLocalId: string,
     baseWorktreeLocalId: string,
@@ -470,11 +499,18 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => void;
+  /**
+   * A handler that returns a promise keeps the confirmation open, busy, until
+   * it settles, and shows `removalFailedMessage` in it when it rejects
+   * (CAN-6511); one that returns nothing closes it at once.
+   */
   readonly onArchiveWorktree?: (
     workspaceLocalId: string,
     worktreeLocalId: string,
     mode?: 'archive' | 'delete',
-  ) => void;
+  ) => void | Promise<void>;
+  /** What the removal confirmation says when its removal rejects. */
+  readonly removalFailedMessage?: string;
   /**
    * Bulk removal (CAN-3975): removes one worktree of a confirmed batch and
    * settles when that removal has finished, rejecting with the reason when
@@ -950,6 +986,12 @@ export interface SidebarSurfaceProps {
   readonly isWorkspaceCommandDisabled?: (workspaceLocalId: string) => boolean;
   /** Host-identified recipient placeholders rendered outside Projects. */
   readonly sharedWorkspaceIds?: ReadonlySet<string>;
+  /**
+   * Notices about shares that ended, at the top of Shared with you. Present
+   * (not nullish) keeps the section even with nothing else in it, and before
+   * the rows are ready: they do not depend on any workspace.
+   */
+  readonly sharedWithMeNotices?: ReactNode;
   /** Host-withheld rows that remain mounted elsewhere, such as an active revoked chat. */
   readonly hiddenWorktreeIds?: ReadonlySet<string>;
   /** Optional host policy for adding or suppressing row-menu entries. */
@@ -1171,6 +1213,14 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
   ) => number | undefined;
   readonly renderArchivedSection?: WorkspacesSidebarSectionsProps['renderArchivedSection'];
+  readonly renderCoworkArchivedSection?: (workspaceId: string) => ReactNode;
+  /**
+   * Per workspace, `'more'` moves hidden worktrees out of the list and onto
+   * the More page: the sidebar publishes them and serves the page's Open,
+   * Unhide, Archive and Delete through `sidebar-more-bridge`. Omitted, every
+   * workspace keeps its Hidden row.
+   */
+  readonly hiddenWorktreesPlacement?: WorkspacesSidebarSectionsProps['hiddenWorktreesPlacement'];
   readonly archivedCount?: WorkspacesSidebarSectionsProps['archivedCount'];
   readonly archivedEntries?: WorkspacesSidebarSectionsProps['archivedEntries'];
   readonly onLoadArchived?: WorkspacesSidebarSectionsProps['onLoadArchived'];
@@ -2227,6 +2277,9 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     /** The row's client asks for its own removal wording. */
     copy?: CanopyCapabilities['worktreeRemovalCopy'];
   } | null>(null);
+  const [pendingDeleteStatus, setPendingDeleteStatus] = useState<
+    'idle' | 'busy' | 'failed'
+  >('idle');
   const pendingRetentionDays = pendingDelete
     ? props.worktreeRetentionDaysFor?.(pendingDelete.workspaceId)
     : undefined;
@@ -2595,6 +2648,36 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     [hostRemovalInProgress, isQueuedForRemoval],
   );
   const queuedRemovalFor = bulk.queuedRemovalFor;
+  // Archive all and Delete all on a project's Hidden worktrees row: the same
+  // confirm and background queue as a selection, over every hidden row.
+  const hiddenWorktreeActions = (
+    workspaceLocalId: string,
+    worktreeLocalIds: readonly string[],
+  ): readonly WorkspaceSectionHeaderContextAction[] => {
+    if (!worktreeBulk.binding.enabled) return [];
+    const keys = worktreeLocalIds.map((worktreeLocalId) =>
+      worktreeRowKey(workspaceLocalId, worktreeLocalId),
+    );
+    const availability = worktreeBulk.binding.availabilityFor(keys);
+    const actions: WorkspaceSectionHeaderContextAction[] = [];
+    if (availability.archive.offered !== false && availability.archive.enabled)
+      actions.push({
+        id: 'archive-hidden',
+        label: 'Archive all',
+        icon: <ArchiveIcon />,
+        onSelect: () => bulk.removeRows('worktree', keys, 'archive'),
+        testId: `hidden-worktrees-archive-all-${workspaceLocalId}`,
+      });
+    if (availability.delete.offered !== false && availability.delete.enabled)
+      actions.push({
+        id: 'delete-hidden',
+        label: 'Delete all',
+        icon: <TrashIcon />,
+        onSelect: () => bulk.removeRows('worktree', keys, 'delete'),
+        testId: `hidden-worktrees-delete-all-${workspaceLocalId}`,
+      });
+    return actions;
+  };
   const queuedWorktreeRemoval = useCallback(
     (
       workspaceLocalId: string,
@@ -2722,6 +2805,145 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     openSettingsRef.current = { snapshot, open: openSettings };
   });
 
+  // Hidden worktrees behind More (sidebar-more-bridge): what this sidebar
+  // can do for each, by the same gates as the row menu.
+  const hiddenWorktreeAbilities = (
+    workspace: SidebarWorkspace,
+    worktree: SnapshotWorktree,
+  ): SidebarHiddenWorktreeAbilities & {
+    readonly retention: boolean;
+  } => {
+    const commandsDisabled =
+      props.isWorkspaceCommandDisabled?.(workspace.localId) === true;
+    const rowCapabilities = capabilitiesOf(worktree.localId);
+    const removal =
+      commandsDisabled ||
+      props.onArchiveWorktree === undefined ||
+      rowCapabilities.worktreeRemoval === undefined ||
+      rowCapabilities.worktreeRemoval === false
+        ? false
+        : rowCapabilities.worktreeRemoval;
+    const presentation =
+      removal === 'archive' || removal === 'delete'
+        ? removal
+        : removalPresentation;
+    const retention = rowCapabilities.worktreeRetention === 'archive-or-delete';
+    // The row menu's removal locks: a running session, a split PR, or a
+    // removal already under way.
+    const removalBlocked =
+      worktree.isStreaming === true ||
+      props.hasActiveWorktreeSession?.(workspace.localId, worktree.localId) ===
+        true ||
+      worktree.splitPrLocked === true ||
+      isRowRemovalInProgress(workspace.localId, worktree.localId);
+    return {
+      unhide: !commandsDisabled && props.onUpdateWorktree !== undefined,
+      archive: removal !== false && (retention || presentation === 'archive'),
+      delete: removal !== false && (retention || presentation === 'delete'),
+      removalLocked: removalBlocked,
+      retention,
+    };
+  };
+  const hiddenWorktreeRequestRef = useRef<
+    (request: SidebarHiddenWorktreeRequest) => void
+  >(() => undefined);
+  useEffect(() => {
+    hiddenWorktreeRequestRef.current = (request): void => {
+      const workspace = snapshot.workspaces.find(
+        (entry) => entry.localId === request.workspaceLocalId,
+      );
+      const worktree = snapshot.worktrees.find(
+        (entry) =>
+          entry.localId === request.worktreeLocalId &&
+          entry.workspaceLocalId === request.workspaceLocalId,
+      );
+      if (workspace === undefined || worktree === undefined) return;
+      const abilities = hiddenWorktreeAbilities(workspace, worktree);
+      if (request.kind !== 'remove') {
+        if (request.kind === 'open') {
+          onSelect({
+            kind: 'worktree',
+            workspaceLocalId: workspace.localId,
+            worktreeLocalId: worktree.localId,
+          });
+        } else if (abilities.unhide) {
+          props.onUpdateWorktree?.(workspace.localId, worktree.localId, {
+            hidden: false,
+          });
+        }
+        return;
+      }
+      if (!abilities[request.mode] || abilities.removalLocked) return;
+      const mode = abilities.retention ? request.mode : undefined;
+      const label = sidebarRowLabel(workspace, worktree);
+      if (
+        props.onConfirmWorktreeRemovalOverride?.(
+          workspace.localId,
+          worktree.localId,
+          label,
+          mode,
+        ) === true
+      ) {
+        return;
+      }
+      const copy = capabilitiesOf(worktree.localId).worktreeRemovalCopy;
+      setPendingDelete({
+        workspaceId: workspace.localId,
+        worktreeId: worktree.localId,
+        label,
+        subject: workspace.type === 'cowork' ? 'session' : 'worktree',
+        ...(mode === undefined ? {} : { mode }),
+        ...(worktree.backend === undefined
+          ? {}
+          : { backend: worktree.backend }),
+        presentation: request.mode,
+        ...(copy === undefined ? {} : { copy }),
+      });
+    };
+  });
+  const hiddenWorktreesPlacement = props.hiddenWorktreesPlacement;
+  const hiddenWorktreesBehindMore = hiddenWorktreesPlacement !== undefined;
+  useEffect(() => {
+    if (!hiddenWorktreesBehindMore) return undefined;
+    return registerSidebarHiddenWorktreeHandler((request) =>
+      hiddenWorktreeRequestRef.current(request),
+    );
+  }, [hiddenWorktreesBehindMore]);
+  useEffect(() => {
+    if (!hiddenWorktreesBehindMore) return;
+    const published = new Map<string, SidebarMoreWorkspace>();
+    for (const workspace of snapshot.workspaces) {
+      if (hiddenWorktreesPlacement?.(workspace.localId) !== 'more') continue;
+      const hidden = snapshot.worktrees
+        .filter(
+          (worktree) =>
+            worktree.hidden === true &&
+            worktree.workspaceLocalId === workspace.localId,
+        )
+        .map((worktree): SidebarHiddenWorktreeEntry => {
+          const {
+            unhide,
+            archive,
+            delete: remove,
+            removalLocked,
+          } = hiddenWorktreeAbilities(workspace, worktree);
+          return {
+            worktree,
+            label: sidebarRowLabel(workspace, worktree),
+            abilities: { unhide, archive, delete: remove, removalLocked },
+          };
+        });
+      published.set(workspace.localId, {
+        name: workspace.name,
+        unitLabelPlural: workspaceChildUnitLabel(
+          workspace.type === 'cowork' ? 'cowork' : 'single-repo',
+          'plural',
+        ),
+        hidden,
+      });
+    }
+    publishSidebarMoreWorkspaces(published);
+  });
   const renderActions = ({
     workspace,
     worktree,
@@ -3470,6 +3692,41 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     : scopedSnapshot.worktrees;
   const hiddenWorkspacesToggleId =
     testIds?.hiddenWorkspacesToggle ?? 'portal-hidden-workspaces-toggle';
+  // Archive is judged per chat by its owning project, so a fallback row never
+  // borrows another project's capability (CAN-5461).
+  const canArchiveStandaloneChat = (chat: {
+    readonly projectLocalId: string;
+  }): boolean => {
+    const owner = scopedSnapshot.workspaces.find(
+      (workspace) => workspace.localId === chat.projectLocalId,
+    );
+    return (
+      owner !== undefined &&
+      owner.type === 'cowork' &&
+      owner.backend !== 'cloud' &&
+      owner.sharedFrom !== true &&
+      !props.sharedWorkspaceIds?.has(chat.projectLocalId) &&
+      !props.isWorkspaceCommandDisabled?.(chat.projectLocalId) &&
+      (props.capabilitiesFor?.(chat.projectLocalId) ?? capabilities)
+        .standaloneChatArchive === true
+    );
+  };
+  const standaloneChatArchiveProps = (
+    readOnly: boolean,
+  ): {
+    readonly onArchiveChat?: SidebarSurfaceProps['onArchiveStandaloneChat'];
+    readonly archiveErrorFor?: SidebarSurfaceProps['standaloneChatArchiveErrorFor'];
+    readonly canArchiveChat?: (chat: {
+      readonly projectLocalId: string;
+    }) => boolean;
+  } =>
+    readOnly
+      ? {}
+      : {
+          archiveErrorFor: props.standaloneChatArchiveErrorFor,
+          onArchiveChat: props.onArchiveStandaloneChat,
+          canArchiveChat: canArchiveStandaloneChat,
+        };
 
   const renderWorkspaceList = (
     listWorkspaces: typeof sections,
@@ -3747,7 +4004,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               <StandaloneChatsSidebarSection
                 snapshot={scopedSnapshot}
                 workspace={workspace}
+                archivedNav={props.renderCoworkArchivedSection?.(
+                  workspace.localId,
+                )}
                 workEntryMultiSelect={workEntryMultiSelect}
+                {...standaloneChatArchiveProps(readOnly)}
                 itemGroupCommands={
                   !readOnly &&
                   !props.isWorkspaceCommandDisabled?.(workspace.localId) &&
@@ -3792,6 +4053,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             ) : null)
         }
         renderArchivedSection={props.renderArchivedSection}
+        hiddenWorktreesPlacement={props.hiddenWorktreesPlacement}
+        hiddenWorktreeActions={hiddenWorktreeActions}
         archivedCount={props.archivedCount}
         archivedEntries={props.archivedEntries}
         onLoadArchived={props.onLoadArchived}
@@ -3924,7 +4187,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     (defaultChatsWorkspace !== undefined &&
       (props.renderChatsSectionRows !== undefined ||
         props.onCreateChatsSectionChat !== undefined ||
-        defaultChatsCount > 0));
+        defaultChatsCount > 0 ||
+        Boolean(
+          props.renderCoworkArchivedSection?.(defaultChatsWorkspace.localId),
+        )));
   const cloudChatsRows = cloudChatsWorkspace
     ? visibleWorktrees.filter(
         (worktree) => worktree.workspaceLocalId === cloudChatsWorkspace.localId,
@@ -4053,6 +4319,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             props.onGroupError?.(chatsOwner.localId, error)
           }
           headerPresentation="section"
+          {...standaloneChatArchiveProps(cloudChatsWorkspace !== undefined)}
           workEntryNotifications={workEntryNotifications}
           selectionActions={selectionActionsFor('chats')}
           onEnterSelection={
@@ -4065,6 +4332,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               : undefined
           }
           workEntryMultiSelect={workEntryMultiSelectFor(chatsOwner.localId)}
+          archivedNav={
+            cloudChatsWorkspace
+              ? undefined
+              : props.renderCoworkArchivedSection?.(chatsOwner.localId)
+          }
           // Desktop's Chats header carries a settings control; wiring it
           // here gives both hosts the same one. Passed only when the action
           // can actually run — the host either overrides it or supplies the
@@ -4397,7 +4669,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           // own gap.
           <div aria-hidden="true" className="h-3" />
         )}
-      {contentState === 'ready' && sharedSections.length > 0 && (
+      {((contentState === 'ready' && sharedSections.length > 0) ||
+        props.sharedWithMeNotices) && (
         <section
           data-testid="portal-shared-with-me-section"
           aria-labelledby="portal-shared-with-me-heading"
@@ -4414,16 +4687,19 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               {SHARED_WITH_YOU_SECTION_LABEL}
             </Heading>
           </div>
-          <Stack gap="tight">
-            {renderWorkspaceList(
-              sharedSections,
-              {
-                root: 'portal-shared-with-me-list',
-                hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
-              },
-              true,
-            )}
-          </Stack>
+          {props.sharedWithMeNotices}
+          {contentState === 'ready' && sharedSections.length > 0 && (
+            <Stack gap="tight">
+              {renderWorkspaceList(
+                sharedSections,
+                {
+                  root: 'portal-shared-with-me-list',
+                  hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
+                },
+                true,
+              )}
+            </Stack>
+          )}
         </section>
       )}
       {/* A host rail seats the header inside its own sticky band, HERE
@@ -4489,6 +4765,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             {showStandaloneChats && (
               <StandaloneChatsSidebarSection
                 snapshot={scopedSnapshot}
+                {...standaloneChatArchiveProps(false)}
                 selectedStandaloneChatId={
                   selection?.kind === 'standalone-chat'
                     ? selection.standaloneChatId
@@ -4714,9 +4991,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         )}
         <div className="relative min-h-0 flex-1">
           {chatSearchActive && props.chatSearch && (
-            <div
+            <Surface
+              variant="rail"
+              padding="tight"
               data-testid="portal-sidebar-chat-search-results"
-              className="absolute inset-0 z-10 overflow-y-auto overflow-x-hidden overscroll-contain bg-sidebar px-2 py-2"
+              className="absolute inset-0 z-10 overflow-y-auto overflow-x-hidden overscroll-contain"
             >
               {props.chatSearch.hydrating === true && (
                 <p
@@ -4761,7 +5040,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                   ))}
                 </ul>
               )}
-            </div>
+            </Surface>
           )}
           <div
             ref={scrollViewportRef}
@@ -4882,16 +5161,17 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           // so the rule would be a second divider inside one small block of
           // chrome — three lines in as many rows, which is what the card was
           // supposed to make the sidebar quieter than.
-          <div
+          <Surface
+            variant="section"
+            padding="tight"
+            boundary={
+              props.footerCallout || bulk.notice !== null ? 'none' : 'top'
+            }
             data-testid="portal-sidebar-footer"
-            // Desktop's `SidebarAccountFooter` framing: 8px sides and bottom,
-            // 8px above the row, full-width rule.
-            className={`relative flex shrink-0 items-center px-2 pb-2 pt-2${
-              props.footerCallout || bulk.notice !== null ? '' : ' border-t'
-            }`}
+            className="relative flex shrink-0 items-center"
           >
             {props.footer}
-          </div>
+          </Surface>
         )}
       </SidebarChrome>
       {createOpen && props.onCreateWorkspace && (
@@ -5005,15 +5285,35 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             pendingDelete.workspaceId,
             pendingDelete.worktreeId,
           )(testIds?.worktreeRemovalConfirm, 'portal-delete-worktree-confirm')}
+          busy={pendingDeleteStatus === 'busy'}
+          errorMessage={
+            pendingDeleteStatus === 'failed'
+              ? (props.removalFailedMessage ?? "Couldn't remove it. Try again.")
+              : null
+          }
           onConfirm={() => {
-            props.onArchiveWorktree?.(
+            const removal = props.onArchiveWorktree?.(
               pendingDelete.workspaceId,
               pendingDelete.worktreeId,
               ...(pendingDelete.mode ? [pendingDelete.mode] : []),
             );
+            if (!(removal instanceof Promise)) {
+              setPendingDelete(null);
+              return;
+            }
+            setPendingDeleteStatus('busy');
+            removal.then(
+              () => {
+                setPendingDeleteStatus('idle');
+                setPendingDelete(null);
+              },
+              () => setPendingDeleteStatus('failed'),
+            );
+          }}
+          onCancel={() => {
+            setPendingDeleteStatus('idle');
             setPendingDelete(null);
           }}
-          onCancel={() => setPendingDelete(null)}
         />
       )}
       {bulk.dialog}

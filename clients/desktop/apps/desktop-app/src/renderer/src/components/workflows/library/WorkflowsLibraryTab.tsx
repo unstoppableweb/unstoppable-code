@@ -624,6 +624,7 @@ export function WorkflowsLibraryTab({
       {shownFailure?.scope === 'part' && (
         <div data-testid="workflows-library-load-error">
           <ErrorBanner
+            errorSource="workflows-library-tab-shown"
             className=""
             error={shownFailure.message}
             onRetry={retryLoad}
@@ -633,6 +634,7 @@ export function WorkflowsLibraryTab({
       )}
       {pipelines.shareError !== null && (
         <Notice
+          errorSource="workflows-library-action-error"
           intent="destructive"
           data-testid="workflows-library-action-error"
         >

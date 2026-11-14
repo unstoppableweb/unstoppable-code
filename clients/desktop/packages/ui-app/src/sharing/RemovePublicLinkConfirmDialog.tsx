@@ -71,6 +71,7 @@ export function RemovePublicLinkConfirmDialog({
           {removePublicLinkMessage(remainingAudience)}
         </p>
         <ErrorBanner
+          errorSource="remove-public-link-confirm-dialog"
           className=""
           error={errorMessage}
           testId={`${p}-remove-public-link-error`}

@@ -13,6 +13,7 @@ interface FakeProvider {
   frames: unknown[];
   contexts: Array<ReturnType<typeof currentAgentWorkerContext>>;
   sent: number;
+  sentTexts: string[];
   onAcquire: (() => void) | undefined;
   onRemoved: (() => void) | undefined;
   disposed: boolean;
@@ -22,10 +23,16 @@ const provider: FakeProvider = {
   frames: [],
   contexts: [],
   sent: 0,
+  sentTexts: [],
   onAcquire: undefined,
   onRemoved: undefined,
   disposed: false,
 };
+/** The canonical tab's dispatch metadata says a provider-switch seed is owed. */
+let seedOwed = false;
+const consumeProviderSwitchSeed = jest.fn(
+  (): Promise<void> => Promise.resolve(),
+);
 
 jest.mock('../../agent-runs/turn-runs', () =>
   jest
@@ -49,8 +56,9 @@ jest.mock('../../agents/session-event-router', () => ({
     provider.onAcquire?.();
     const methods: Partial<AgentSession> = {
       isDisposed: () => provider.disposed,
-      sendMessage: () => {
+      sendMessage: (text: string) => {
         provider.sent += 1;
+        provider.sentTexts.push(text);
         provider.contexts.push(currentAgentWorkerContext());
         // Providers report output as it arrives, before the send returns.
         for (const frame of provider.frames) void provider.handler?.(frame);
@@ -71,7 +79,28 @@ jest.mock('../../services/chat-state-service', () => ({
   getChatStateService: (): object => ({
     holdRuntimeHost: (): (() => void) => () => undefined,
     runWithScopeActivity: <T>(_scope: unknown, run: () => T): T => run(),
+    consumeProviderSwitchSeed,
   }),
+}));
+jest.mock('../chat-tabs-reader', () => ({
+  ...jest.requireActual<object>('../chat-tabs-reader'),
+  readPersistedChatDispatchMetadata: (): Promise<object> =>
+    Promise.resolve(seedOwed ? { providerSwitchSeedPending: true } : {}),
+  readChatTranscript: (): Promise<object[]> =>
+    Promise.resolve([
+      {
+        id: 'earlier-question',
+        role: 'user',
+        timestamp: 1,
+        blocks: [{ type: 'text', text: 'Earlier question on Codex' }],
+      },
+      {
+        id: 'earlier-answer',
+        role: 'assistant',
+        timestamp: 2,
+        blocks: [{ type: 'text', text: 'Earlier answer from Codex' }],
+      },
+    ]),
 }));
 jest.mock('../../services/chat-dispatch-authorization', () => ({
   ...jest.requireActual<object>('../../services/chat-dispatch-authorization'),
@@ -128,9 +157,37 @@ beforeEach(() => {
   provider.frames = [];
   provider.contexts = [];
   provider.sent = 0;
+  provider.sentTexts = [];
+  seedOwed = false;
+  consumeProviderSwitchSeed.mockClear();
   provider.onAcquire = undefined;
   provider.onRemoved = undefined;
   provider.disposed = false;
+});
+
+it('an owed provider-switch seed rides the turn even when a session id was recorded first (CAN-6519)', async () => {
+  seedOwed = true;
+  // The new provider recorded its session id before an earlier send of this
+  // turn failed, so the retry resumes it while the seed is still owed.
+  await dispatchWorktreeChatTurn({
+    ...scope,
+    userMessageId: 'message',
+    text: 'hello',
+    planMode: false,
+    model: 'claude-sonnet-4-6',
+    providerType: 'claude',
+    sdkSessionId: 'recorded-session',
+    initiationSource: 'user',
+    getWindow: () => null,
+    onBeforeChatEvent: () => Promise.resolve(),
+  });
+  await waitFor(() => provider.sent === 1);
+
+  expect(provider.sentTexts[0]).toContain('Earlier answer from Codex');
+  expect(consumeProviderSwitchSeed).toHaveBeenCalledWith(
+    { projectId: 'ws', worktreeId: 'wt' },
+    'chat',
+  );
 });
 
 it('a dispatched turn records exactly one core.chat.turn.run', async () => {

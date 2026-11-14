@@ -15,6 +15,7 @@ const AUDIT_PROVIDERS = [
   'cursor',
   'opencode',
   'copilot',
+  'antigravity',
 ] as const;
 
 const AUDIT_EVENT_TYPES = [
@@ -476,13 +477,14 @@ const results = memoized(() => {
         'codex-managed',
         'cursor-managed',
         'copilot-managed',
+        'antigravity-managed',
         'opencode-managed',
         'ai-gateway',
         'ollama',
       ])
       .optional(),
     executionHarness: z
-      .enum(['claude', 'codex', 'cursor', 'opencode', 'copilot'])
+      .enum(['claude', 'codex', 'cursor', 'opencode', 'copilot', 'antigravity'])
       .optional(),
     label: z.string(),
     startedAt: z.string(),
@@ -490,6 +492,7 @@ const results = memoized(() => {
     durationMs: optionalCount,
     model: z.string().optional(),
     requestedModel: z.string().optional(),
+    agentId: z.string().optional(),
     totalCostUsd: optionalCount,
     observedCost: ObservedCostSchema.optional(),
     modelRouting: ModelRoutingAttributionSchema.optional(),
@@ -694,6 +697,7 @@ const results = memoized(() => {
               cursor: providerTokens,
               opencode: providerTokens,
               copilot: providerTokens,
+              antigravity: providerTokens.default({ in: 0, out: 0 }),
             }),
           }),
         ),

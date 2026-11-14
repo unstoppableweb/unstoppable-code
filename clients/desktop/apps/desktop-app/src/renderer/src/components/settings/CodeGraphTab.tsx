@@ -269,7 +269,11 @@ export function CodeGraphTab(): JSX.Element {
       dataTestId="settings-tab-code-graph"
     >
       <SettingsSection title="Generation">
-        <ErrorBanner className="" error={saveError} />
+        <ErrorBanner
+          errorSource="code-graph-tab-save"
+          className=""
+          error={saveError}
+        />
         <SettingsGroup>
           <SettingsRow
             label="Availability"

@@ -1,7 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   LEDGER_LIMITS,
-  LedgerDisplayNameSchema,
   LedgerOpaqueIdSchema,
   LedgerOwnerPipelineAgentSchema,
   type LedgerActorKind,
@@ -10,6 +9,7 @@ import {
   type LedgerOwnerCandidate,
   type LedgerOwnerCandidatePage,
   type LedgerOwnerPipelineAgent,
+  toLedgerDisplayName,
 } from '@canopy/protocol/canopy-core';
 import type { LedgerViewActorHost } from '@canopy/protocol/ledger-view';
 import { chatDisplayLabel } from '@canopy/desktop-shared/lib/chat-display-label';
@@ -80,30 +80,6 @@ export function ledgerActorOriginKey(actor: {
   return actor.kind === 'user'
     ? LEDGER_USER_ACTOR_ORIGIN_KEY
     : `${actor.kind}:${actor.originKey}`;
-}
-
-function replaceControlCharacters(value: string): string {
-  let result = '';
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    result +=
-      codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
-        ? ' '
-        : character;
-  }
-  return result;
-}
-
-/** A single-line display name within the Ledger limit, or the fallback. */
-export function toLedgerDisplayName(value: string, fallback: string): string {
-  const singleLine = replaceControlCharacters(value).replace(/\s+/g, ' ');
-  const bounded = Array.from(singleLine.trim())
-    .slice(0, LEDGER_LIMITS.displayNameMaxCodePoints)
-    .join('')
-    .trim();
-  return LedgerDisplayNameSchema.safeParse(bounded).success
-    ? bounded
-    : fallback;
 }
 
 /** A nondeleted, nonarchived persisted chat in a container. */

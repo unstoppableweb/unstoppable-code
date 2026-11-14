@@ -283,7 +283,13 @@ export async function prepareDelegationCapabilities(input: {
     layers: readonly DelegationCapabilityLayer[],
   ) => Promise<MaterializedDelegationCapabilities>;
   readonly loadCatalog: (
-    harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+    harness:
+      | 'claude'
+      | 'codex'
+      | 'cursor'
+      | 'copilot'
+      | 'antigravity'
+      | 'opencode',
   ) => Promise<DelegationCapabilityCatalog>;
 }): Promise<PreparedDelegationCapabilities> {
   const { task, caller } = input;

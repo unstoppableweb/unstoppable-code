@@ -39,6 +39,7 @@ import {
   type TabContextMenuItem,
 } from '@canopy/ui-shared/components';
 import {
+  ArchiveIcon,
   CopyIcon,
   DownloadIcon,
   FolderIcon,
@@ -163,6 +164,14 @@ export interface PanelTabContextMenuProps {
    * unchanged. Defaults to the developer ordering.
    */
   fileActionsFirst?: boolean;
+  /**
+   * The tab's archive row, last among the close rows, when the host offers
+   * one: a cloud task's own chat tab, which can't close, archives the task
+   * (CAN-6511). Absent leaves the menu unchanged.
+   */
+  getArchiveAction?: (
+    tab: PanelTabModel,
+  ) => { readonly label: string; readonly onSelect: () => void } | undefined;
 }
 
 const SPLIT_DIRECTIONS: readonly PanelSplitDirection[] = [
@@ -219,6 +228,7 @@ export function PanelTabContextMenu({
   layoutLocked = false,
   tabStyle = 'classic',
   fileActionsFirst = false,
+  getArchiveAction,
 }: PanelTabContextMenuProps): JSX.Element | null {
   // Classic tabs in a fixed layout keep the single Close item.
   const closeOnly = layoutLocked && tabStyle !== 'fill';
@@ -335,6 +345,20 @@ export function PanelTabContextMenu({
     onSelect: (): void => onCloseTab(layoutKey, target.groupId, target.panelId),
   };
 
+  const archiveAction = getArchiveAction?.(tab);
+  const archiveItems: TabContextMenuItem[] =
+    archiveAction === undefined
+      ? []
+      : [
+          {
+            key: 'archive',
+            label: archiveAction.label,
+            icon: <ArchiveIcon />,
+            tone: closeTone,
+            testId: 'panel-tab-context-archive',
+            onSelect: archiveAction.onSelect,
+          },
+        ];
   const closeItems: TabContextMenuItem[] = [
     closeItem,
     {
@@ -379,6 +403,7 @@ export function PanelTabContextMenu({
               onCloseTabs(layoutKey, target.groupId, idsAll),
           },
         ]),
+    ...archiveItems,
   ];
 
   const chatTabId = tab.kind === 'chat' ? tab.instance?.chatTabId : undefined;
@@ -488,7 +513,7 @@ export function PanelTabContextMenu({
   // Each group starts a new section; empty groups drop out, and the divider
   // goes on the first row of every group after the first.
   const groups: TabContextMenuItem[][] = closeOnly
-    ? [[closeItem]]
+    ? [[closeItem, ...archiveItems]]
     : (fileFirstGroups ?? [
         [
           pinItem,

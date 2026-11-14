@@ -3,8 +3,12 @@ import {
   PanelSection,
 } from '@/components/shared/panel-section';
 import { useActivityEventSubscriptions } from '@/hooks/useActivityEventSubscriptions';
-import { useAiCreditsOnlyBilling } from '@/hooks/useAiCreditsOnlyBilling';
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import {
+  OPT_IN_ACTIVITY_SECTION_IDS,
+  projectServesActivitySection,
+  scopeServesActivitySection,
+} from '@/lib/panels/scope-panel-kinds';
 import { requestComposerAction } from '@/lib/composerShortcutRequests';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { earlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -65,10 +69,16 @@ import {
   type ReactNode,
 } from 'react';
 import { useShallow } from 'zustand/shallow';
+import { CloudMcpServersSectionBody } from './CloudMcpServersSection';
+import {
+  useCloudMcpServersHeaderChrome,
+  useCloudMcpServersModel,
+} from './cloud-mcp-servers-model';
 import {
   getActivitySectionsForSurface,
   McpServersActivitySectionBody,
   useAttachmentsHeaderChrome,
+  useCloudWorkspaceFilesHeaderChrome,
   useBackgroundProcessesHeaderChrome,
   useHooksHeaderChrome,
   useMcpServersActivityModel,
@@ -167,6 +177,7 @@ const EXTRA_SECTION_IDS = new Set<ActivitySectionId>([
   'notes',
   'prompts',
   'attachments',
+  'workspace-files',
 ]);
 
 /**
@@ -201,18 +212,15 @@ export function SharedActivityPanelAdapter({
   const selectedWorktree =
     worktreeSelection !== undefined ? worktreeSelection : storedSelection;
 
-  // App Advisor keeps no cost, and an account that bills every turn to AI
-  // Credits sees no USD (CAN-5028), so neither rail gets a cost scope. The
-  // rail sums the whole worktree, so unlike the composer it gates on the
-  // account alone, not on how any one chat was billed.
-  const creditsOnly = useAiCreditsOnlyBilling();
+  // App Advisor keeps no cost. An account that bills every turn to AI
+  // Credits (CAN-5028) sees the rail's cost in credits, never USD
+  // (DesktopCostCurrencyProvider, CAN-6180).
   const { costInsights } = useScopeCapabilities({
     projectId: selectedWorktree?.projectId ?? '',
   });
   const costEntry =
     selectedWorktree &&
     selectedWorktree.projectId !== APP_ADVISOR_PROJECT_ID &&
-    !creditsOnly &&
     costInsights === true
       ? selectedWorktree
       : null;
@@ -438,15 +446,19 @@ function SharedActivityPanelAdapterContents({
   // Detection restarts on every switch. Hold the last known answer until it
   // lands so the section neither flashes in empty nor offers "Add MCP server"
   // early; with nothing known yet, assume content.
-  const mcpHasContent = detectedMcp.initializing
-    ? (recallMcpSectionContent(worktreeKey) ?? true)
-    : mcpDetectedContent;
+  // A cloud task's servers come from its web core catalog (CAN-6608).
+  const cloudMcp = useCloudMcpServersModel(chromeScope);
+  const mcpHasContent = cloudMcp.active
+    ? cloudMcp.loading || cloudMcp.servers.length > 0 || cloudMcp.error !== null
+    : detectedMcp.initializing
+      ? (recallMcpSectionContent(worktreeKey) ?? true)
+      : mcpDetectedContent;
   const mcpRefreshAction = (
     <RefreshButton
       onClick={(): void => {
-        void detectedMcp.refresh();
+        void (cloudMcp.active ? cloudMcp.refresh() : detectedMcp.refresh());
       }}
-      busy={detectedMcp.loading}
+      busy={cloudMcp.active ? cloudMcp.loading : detectedMcp.loading}
       ariaLabel="Refresh MCP servers"
       dataTestId="mcp-servers-card-refresh"
     />
@@ -495,6 +507,8 @@ function SharedActivityPanelAdapterContents({
         <LazyCostActivityTotalLabel store={costActivity.store} />
       </Suspense>
     ) : null;
+  const localMcpChrome = useMcpServersHeaderChrome(detectedMcp);
+  const cloudMcpChrome = useCloudMcpServersHeaderChrome(cloudMcp);
   const headerChrome = {
     summary: useSummaryHeaderChrome(selectedChromeScope),
     'changed-files': {
@@ -504,7 +518,7 @@ function SharedActivityPanelAdapterContents({
     },
     'pull-request': usePullRequestHeaderChrome(chromeScope),
     'background-processes': useBackgroundProcessesHeaderChrome(processes),
-    'mcp-servers': useMcpServersHeaderChrome(detectedMcp),
+    'mcp-servers': cloudMcp.active ? cloudMcpChrome : localMcpChrome,
     plans: usePlansHeaderChrome(selectedChromeScope),
     'pipeline-runs': usePipelineRunsHeaderChrome(selectedChromeScope),
     cost: {
@@ -522,6 +536,9 @@ function SharedActivityPanelAdapterContents({
       chromeScope.worktreeId,
     ),
     attachments: useAttachmentsHeaderChrome(chromeScope),
+    'workspace-files': useCloudWorkspaceFilesHeaderChrome(
+      chromeScope.projectId,
+    ),
     terminals: { subtitle: undefined, collapsedIconColor: 'muted' as const },
   } as const;
   const sectionHasContent: Partial<Record<ActivitySectionId, boolean>> = {
@@ -546,6 +563,7 @@ function SharedActivityPanelAdapterContents({
     notes: headerChrome.notes.collapsedIconColor !== 'muted',
     prompts: headerChrome.prompts.collapsedIconColor !== 'muted',
     attachments: headerChrome.attachments.hasContent,
+    'workspace-files': headerChrome['workspace-files'].hasContent,
     terminals: false,
   };
   const sectionHasAction: Partial<Record<ActivitySectionId, boolean>> = {
@@ -591,18 +609,18 @@ function SharedActivityPanelAdapterContents({
     (state) => state.reorderActivitySections,
   );
 
-  const creditsOnly = useAiCreditsOnlyBilling();
   const sections = useMemo(
     () =>
       getActivitySectionsForSurface(surface).filter(
         (section) =>
           isActivitySectionAllowedForAccess(section.id, access) &&
-          !(
-            section.id === 'cost' &&
-            (projectId === APP_ADVISOR_PROJECT_ID || creditsOnly)
-          ),
+          (!OPT_IN_ACTIVITY_SECTION_IDS.has(section.id) ||
+            (scopeServesActivitySection(scopeCapabilities, section.id) &&
+              projectServesActivitySection(projectId ?? '', section.id))) &&
+          // A credits-only account sees cost in credits (CAN-6180).
+          !(section.id === 'cost' && projectId === APP_ADVISOR_PROJECT_ID),
       ),
-    [access, creditsOnly, projectId, surface],
+    [access, projectId, scopeCapabilities, surface],
   );
   const renderedSections = useMemo(
     () =>
@@ -630,7 +648,11 @@ function SharedActivityPanelAdapterContents({
                       onEmptyChange={onMemoryEmptyChange}
                     />
                   ) : section.id === 'mcp-servers' ? (
-                    <McpServersActivitySectionBody model={detectedMcp} />
+                    cloudMcp.active ? (
+                      <CloudMcpServersSectionBody model={cloudMcp} />
+                    ) : (
+                      <McpServersActivitySectionBody model={detectedMcp} />
+                    )
                   ) : (
                     section.render({
                       projectId: selectedWorktree.projectId,
@@ -643,6 +665,7 @@ function SharedActivityPanelAdapterContents({
           }))
         : [],
     [
+      cloudMcp,
       costActivity,
       detectedMcp,
       layout,
@@ -726,7 +749,11 @@ function SharedActivityPanelAdapterContents({
               String(changedFilesTotalFileCount ?? 0)
             ),
           'pull-request': String(prCount),
-          'mcp-servers': String(detectedMcp.servers.length),
+          'mcp-servers': String(
+            cloudMcp.active
+              ? cloudMcp.servers.length
+              : detectedMcp.servers.length,
+          ),
           scripts: String(scriptsSection.entries.length),
           hooks: String(hooksSection.entries.length),
           ...(costActivity?.hasContent === true

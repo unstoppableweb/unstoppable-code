@@ -24,10 +24,11 @@ export const DEFAULT_BRANCH_FRESHNESS_TTL_MS = GIT_DEFAULT_BRANCH_HINT_TTL_MS;
 
 async function resolveIdentity(
   repoPath: string,
+  signal?: AbortSignal,
 ): Promise<GitDefaultBranchFreshnessIdentity | null> {
   const [commonDir, originUrl] = await Promise.all([
-    getGitCommonDir(repoPath).catch(() => null),
-    getRemoteUrl(repoPath).catch(() => null),
+    getGitCommonDir(repoPath, signal).catch(() => null),
+    getRemoteUrl(repoPath, signal).catch(() => null),
   ]);
   return commonDir && originUrl ? { commonDir, originUrl } : null;
 }
@@ -41,8 +42,9 @@ export interface DefaultBranchObservation {
 export async function readDefaultBranchHint(
   repoPath: string,
   observation: DefaultBranchObservation,
+  signal?: AbortSignal,
 ): Promise<GitDefaultBranchHint | null> {
-  const identity = await resolveIdentity(repoPath);
+  const identity = await resolveIdentity(repoPath, signal);
   observation.identity = identity;
   const stored = identity
     ? await readGitDefaultBranchFreshness(identity).catch(() => null)
@@ -59,13 +61,14 @@ export async function readDefaultBranchHint(
 export function createDesktopDefaultBranchFacts(
   repoPath: string,
   readHint: () => Promise<GitDefaultBranchHint | null>,
+  signal?: AbortSignal,
 ): GitDefaultBranchFacts {
   return {
     readHint,
-    readRemoteHead: () => getRemoteHeadBranch(repoPath),
-    readLocalOriginHead: () => getLocalRemoteHeadBranch(repoPath),
+    readRemoteHead: () => getRemoteHeadBranch(repoPath, { signal }),
+    readLocalOriginHead: () => getLocalRemoteHeadBranch(repoPath, { signal }),
     readConventional: () =>
-      getRemoteDefaultBranch(repoPath, { allowNetwork: false }),
+      getRemoteDefaultBranch(repoPath, { allowNetwork: false, signal }),
   };
 }
 

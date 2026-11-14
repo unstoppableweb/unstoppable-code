@@ -337,13 +337,19 @@ function ModelGatewayCard({
           loadError?.copy ||
           (loadError === null && entitlementError?.copy) ? (
             <Stack gap="item">
-              <ErrorBanner error={error?.copy} details={error?.details} />
               <ErrorBanner
+                errorSource="team-model-gateway-request"
+                error={error?.copy}
+                details={error?.details}
+              />
+              <ErrorBanner
+                errorSource="model-gateway-card-load"
                 error={loadError?.copy}
                 details={loadError?.details}
                 onRetry={retryLoad}
               />
               <ErrorBanner
+                errorSource="team-model-gateway-entitlement"
                 // One load banner: both share the same copy and Retry.
                 error={loadError === null ? entitlementError?.copy : null}
                 details={

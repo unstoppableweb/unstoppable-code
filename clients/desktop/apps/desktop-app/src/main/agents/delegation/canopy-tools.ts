@@ -25,6 +25,8 @@ import {
   GET_SCRIPT_OUTPUT_DESCRIPTION,
   QUERY_CODE_GRAPH_DESCRIPTION,
   READ_MEMORY_DESCRIPTION,
+  SEARCH_CHATS_DESCRIPTION,
+  READ_CHAT_EXCERPT_DESCRIPTION,
   READ_PIPELINE_YAML_DESCRIPTION,
   SAVE_MEMORY_DESCRIPTION,
   SEARCH_CODE_GRAPH_DESCRIPTION,
@@ -44,6 +46,8 @@ import {
   getScriptOutputJsonSchema,
   queryCodeGraphJsonSchema,
   readMemoryJsonSchema,
+  searchChatsJsonSchema,
+  readChatExcerptJsonSchema,
   readPipelineYamlJsonSchema,
   saveMemoryJsonSchema,
   searchCodeGraphJsonSchema,
@@ -70,6 +74,8 @@ import {
   readLocalMemory,
   saveLocalMemory,
   searchLocalMemory,
+  searchChats,
+  readChatExcerpt,
 } from '../../canopy-tools/session-runtime';
 import { buildDelegateDeferredToolsGuidance } from '../../canopy-tools/prompting';
 import type { DelegateDeferredToolsSource } from './delegate-deferred-tools';
@@ -210,6 +216,14 @@ const DELEGATE_TOOL_DEFINITIONS: Readonly<
     description: SEARCH_MEMORY_DESCRIPTION,
     inputSchema: searchMemoryJsonSchema,
   },
+  search_chats: {
+    description: SEARCH_CHATS_DESCRIPTION,
+    inputSchema: searchChatsJsonSchema,
+  },
+  read_chat_excerpt: {
+    description: READ_CHAT_EXCERPT_DESCRIPTION,
+    inputSchema: readChatExcerptJsonSchema,
+  },
   read_memory: {
     description: READ_MEMORY_DESCRIPTION,
     inputSchema: readMemoryJsonSchema,
@@ -315,7 +329,13 @@ export interface DelegateCanopyToolScope {
   /** Display-only task name and depth; the user's watcher list shows them. */
   readonly delegationDescription?: string;
   readonly delegationDepth?: number;
-  readonly provider: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  readonly provider:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   /** An isolated child works in its own checkout, so the parent worktree's
    * script actions do not apply to it. */
   readonly isolated: boolean;
@@ -407,6 +427,15 @@ function delegateRuntime(
         sessionId: `delegation:${scope.delegationId}`,
         ...request,
       }),
+    searchChats: (request) =>
+      searchChats({ ...request, projectId, worktreeId, chatId: scope.chatId }),
+    readChatExcerpt: (request) =>
+      readChatExcerpt({
+        ...request,
+        projectId,
+        worktreeId,
+        chatId: scope.chatId,
+      }),
     searchLocalMemory: (request) =>
       searchLocalMemory({ projectId, worktreeId, ...request }),
     readLocalMemory: (request) =>
@@ -455,7 +484,13 @@ function delegateRuntime(
 /** One system-prompt line naming the app tools this child actually has. */
 export function delegateAppToolGuidance(
   appTools: DelegateCanopyTools | undefined,
-  harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
 ): string {
   if (!appTools?.tools.length) return '';
   const names = appTools.tools.map((tool) =>
@@ -472,7 +507,7 @@ export function delegateAppToolGuidance(
       tool.key === 'search_deferred_tools' ||
       tool.key === 'load_deferred_tools',
   );
-  return `\nApp tools from the parent project are available: ${names.join(', ')}. Use them for this project's saved memory, script output, pipeline definitions, review comments, and code graph${runsScripts ? ", and to list or run the parent worktree's configured scripts" : ''}.${appTools.isolated ? " Script output, review comments, and the code graph describe the parent's worktree, which can differ from this checkout." : ''}${watches ? ' Watchers and wakeups you create notify this delegated task, not the parent chat: a notification resumes you by steering your active run or starting a follow-up run, so end your run after registering one instead of waiting.' : ''} Each call follows the parent's approval policy.${hasDeferredTools ? ` ${buildDelegateDeferredToolsGuidance(harness === 'cursor' || harness === 'copilot' || harness === 'opencode' ? 'claude' : harness)}` : ''}`;
+  return `\nApp tools from the parent project are available: ${names.join(', ')}. Use them for this project's saved memory, script output, pipeline definitions, review comments, and code graph${runsScripts ? ", and to list or run the parent worktree's configured scripts" : ''}.${appTools.isolated ? " Script output, review comments, and the code graph describe the parent's worktree, which can differ from this checkout." : ''}${watches ? ' Watchers and wakeups you create notify this delegated task, not the parent chat: a notification resumes you by steering your active run or starting a follow-up run, so end your run after registering one instead of waiting.' : ''} Each call follows the parent's approval policy.${hasDeferredTools ? ` ${buildDelegateDeferredToolsGuidance(harness === 'antigravity' || harness === 'cursor' || harness === 'copilot' || harness === 'opencode' ? 'claude' : harness)}` : ''}`;
 }
 
 function unavailable(name: string): CanopyInjectedToolTextResult {

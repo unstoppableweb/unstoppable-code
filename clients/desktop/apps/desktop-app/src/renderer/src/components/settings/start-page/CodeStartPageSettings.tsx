@@ -435,7 +435,11 @@ export function CodeStartPageSettings({
               allowUseTeamSetting={mode === 'local'}
             />
           </SettingsGroup>
-          <ErrorBanner className="" error={error} />
+          <ErrorBanner
+            errorSource="code-start-page-settings"
+            className=""
+            error={error}
+          />
         </SettingsSection>
       </Stack>
     );
@@ -462,7 +466,11 @@ export function CodeStartPageSettings({
           />
         </SettingsGroup>
       </Stack>
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="code-start-page-settings"
+        className=""
+        error={error}
+      />
       <div
         className={`flex items-center ${mode === 'source' ? 'justify-between' : 'justify-end'}`}
       >

@@ -163,11 +163,22 @@ export const CorePullRequestMergeParamsSchema = z.strictObject({
   expectedHeadSha: GitObjectIdSchema,
   /** Absent, the repository's preferred method. */
   strategy: z.enum(CORE_PULL_REQUEST_MERGE_STRATEGIES).optional(),
+  /** The base and head branches the caller saw; another refuses the merge. */
+  expectedBaseBranch: z.string().max(512).optional(),
+  expectedHeadBranch: z.string().max(512).optional(),
 });
 
 export type CorePullRequestMergeParams = z.output<
   typeof CorePullRequestMergeParamsSchema
 >;
+
+/**
+ * The minor schema revision `core.pullRequest.refresh` serves (protocol rule
+ * 5, CAN-6093): revision 2 adds what the cloud pull request panel shows that
+ * revision 1 leaves out. A client asks for it with `revision` only when the
+ * runtime advertises it; a client that does not ask gets revision 1 output.
+ */
+export const CORE_PULL_REQUEST_REFRESH_SCHEMA_REVISION = 2;
 
 export const CorePullRequestRefreshParamsSchema = z.strictObject({
   /** The caller's worktree. */
@@ -182,6 +193,8 @@ export const CorePullRequestRefreshParamsSchema = z.strictObject({
    * repository of the worktree.
    */
   repoId: OpaqueIdSchema.optional(),
+  /** Revision 2 output, sent only when the runtime advertises it. */
+  revision: z.literal(CORE_PULL_REQUEST_REFRESH_SCHEMA_REVISION).optional(),
 });
 
 export type CorePullRequestRefreshParams = z.output<
@@ -206,6 +219,20 @@ export const CorePullRequestRefreshSummarySchema = z.strictObject({
       name: z.string().max(512),
       status: z.enum(['success', 'failure', 'pending', 'neutral']),
       url: z.string().max(8192).nullable(),
+      /** Revision 2: GitHub's finer state; absent when unrecognized. */
+      executionState: z
+        .enum([
+          'queued',
+          'running',
+          'success',
+          'failure',
+          'cancelled',
+          'timed_out',
+          'skipped',
+          'action_required',
+          'neutral',
+        ])
+        .optional(),
     }),
   ),
   reviewDecision: CorePullRequestSchema.shape.reviewDecision,
@@ -216,11 +243,33 @@ export const CorePullRequestRefreshSummarySchema = z.strictObject({
   unresolvedReviewThreadCount: z.number().int().min(0).nullable(),
   /** As `core.pullRequest.get` projects it; merge sends it back. */
   revision: CorePullRequestSchema.shape.revision,
+  /** Revision 2: the pull request's base branch on GitHub. */
+  baseBranch: z.string().max(512).optional(),
+  /** Revision 2: its labels, in GitHub's order. */
+  labels: z
+    .array(
+      z.strictObject({
+        name: z.string().max(512),
+        /** Hex without `#`; empty when GitHub gave none. */
+        color: z.string().max(64),
+        description: z.string().max(4096).nullable(),
+      }),
+    )
+    .optional(),
+  /** Revision 2: conversation and review comments together. */
+  commentCount: z.number().int().min(0).optional(),
+  /** Revision 2: GitHub's last update, as GitHub wrote it. */
+  updatedAt: TimestampSchema.optional(),
 });
 
 /** One repository's pull request and action eligibility, the root first. */
 export const CorePullRequestRefreshRepositorySchema = z.strictObject({
   repositoryId: OpaqueIdSchema,
+  /**
+   * Revision 2: the id a Git checkout scope names this repository by (its
+   * checkout id in a multi-repository worktree), which `repoId` takes.
+   */
+  repoId: OpaqueIdSchema.optional(),
   /** The name the repository shows in a multi-repository worktree. */
   repoName: z.string().max(512),
   /** False when this repository could not be read; the others still answer. */
@@ -288,10 +337,54 @@ export const CorePullRequestRefreshRepositorySchema = z.strictObject({
 export const CorePullRequestRefreshResultSchema = z.strictObject({
   repositories: z.array(CorePullRequestRefreshRepositorySchema).min(1),
   refreshedAt: TimestampSchema,
+  /**
+   * Revision 2: the first repository's checkout as sampled, without waking:
+   * its branch (null when detached) and upstream (null without one). Null
+   * when it could not be sampled.
+   */
+  checkout: z
+    .strictObject({
+      branch: z.string().max(512).nullable(),
+      upstream: z.string().max(1024).nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export type CorePullRequestRefreshResult = z.output<
   typeof CorePullRequestRefreshResultSchema
+>;
+
+/**
+ * Align base (the cloud panel's "Align base branch with PR?"): the worktree
+ * repository adopts the base its open pull request targets. The pull
+ * request is never retargeted and nothing is rebased. The caller fetches
+ * first (`worker.git.fetch`).
+ */
+export const CorePullRequestAlignBaseParamsSchema = z.strictObject({
+  /** A repository a refresh listed; re-resolved for the caller each call. */
+  repositoryId: OpaqueIdSchema,
+  /** The open pull request whose base the repository adopts. */
+  expectedPrNumber: z.number().int().min(1),
+  /** The base the caller saw on it; another base refuses the call. */
+  baseBranch: z.string().min(1).max(512),
+});
+
+export type CorePullRequestAlignBaseParams = z.output<
+  typeof CorePullRequestAlignBaseParamsSchema
+>;
+
+export const CorePullRequestAlignBaseResultSchema = z.strictObject({
+  /**
+   * The worktree as `core.pullRequest.refresh` revision 2 answers it, after
+   * the base was recorded; null when that read failed (the base is still
+   * recorded, and a refresh shows it).
+   */
+  refresh: CorePullRequestRefreshResultSchema.nullable(),
+});
+
+export type CorePullRequestAlignBaseResult = z.output<
+  typeof CorePullRequestAlignBaseResultSchema
 >;
 
 const CORE_PULL_REQUEST_READ_CODES = [
@@ -347,6 +440,12 @@ export const CORE_PULL_REQUEST_MERGE_ERROR_CODES = [
 export const CORE_PULL_REQUEST_REFRESH_ERROR_CODES = [
   'core.pullRequest.repositoryUnavailable',
   'core.pullRequest.notAuthenticated',
+] as const;
+
+export const CORE_PULL_REQUEST_ALIGN_BASE_ERROR_CODES = [
+  ...CORE_PULL_REQUEST_READ_CODES,
+  'core.pullRequest.alignBase.baseMismatch',
+  'core.pullRequest.idempotencyKeyReused',
 ] as const;
 
 /** Pull request reads, served by the desktop dispatcher (CAN-4109). */
@@ -442,6 +541,28 @@ export const CORE_PULL_REQUEST_REFRESH_INSTRUCTION_DEFINITIONS =
         CORE_PULL_REQUEST_REFRESH_ERROR_CODES,
       ),
       idempotency: 'inherent',
+      requiredGrants: ['core.pullRequest.write'],
+    }),
+  });
+
+/**
+ * Served by the web core only (CAN-6093): the cloud Git panel's Align base.
+ * The desktop dispatcher does not compose it, so it answers
+ * `capability_unavailable`; desktop aligns its base locally.
+ */
+export const CORE_PULL_REQUEST_ALIGN_BASE_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.pullRequest.alignBase': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'pullRequest',
+      version: 1,
+      placement: 'core-only',
+      params: CorePullRequestAlignBaseParamsSchema,
+      result: CorePullRequestAlignBaseResultSchema,
+      error: keyedOperationErrorSchema(
+        CORE_PULL_REQUEST_ALIGN_BASE_ERROR_CODES,
+      ),
+      idempotency: 'keyed',
       requiredGrants: ['core.pullRequest.write'],
     }),
   });

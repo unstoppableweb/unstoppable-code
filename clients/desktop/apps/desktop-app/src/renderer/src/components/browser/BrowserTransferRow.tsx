@@ -169,7 +169,11 @@ export function BrowserTransferRow({
           </RowButton>
         </div>
       )}
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="browser-transfer-row"
+        className=""
+        error={error}
+      />
     </li>
   );
 }

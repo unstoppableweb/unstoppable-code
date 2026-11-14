@@ -132,6 +132,11 @@ export interface UpdateSharedSkillRequest {
   revokePublicShare?: PublicShareVersion;
   /** As on {@link CreateSharedSkillRequest}. */
   expectedSourceSha256?: string;
+  /**
+   * Who the person was told sees the copy; the cloud refuses the update
+   * (409 `audience_changed`) when that is no longer so.
+   */
+  expectedAudience?: 'private' | 'public_link' | 'team' | 'organization';
 }
 
 /**

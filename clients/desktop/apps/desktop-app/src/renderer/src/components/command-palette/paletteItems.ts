@@ -3,41 +3,26 @@ import type {
   ChatSearchSource,
 } from '@canopy/desktop-shared/types';
 import type { WorktreeUiStatus } from '@/lib/worktree-status';
-import type { WorkspaceKind } from '@canopy/ui-shared/components';
 import type { SettingsSection } from '@/components/settings/SettingsNav';
-import { WORKFLOW_TYPE_TAB_LABELS } from '@canopy/ui-shared/lib/workflow-labels';
+import type {
+  SearchPaletteItemKind,
+  SearchPaletteProjectBadge,
+} from '@canopy/ui-app/search-palette';
 import type { CommandExecutionResult } from './paletteCommands';
 
 /**
- * Every searchable/actionable target in the unified Cmd+K palette. The union is
- * discriminated by {@link PaletteItem.kind}; entity kinds are sourced from
- * renderer stores/hooks (tier 0) and the chat-search catalog (tier 1), while
+ * Every searchable/actionable target in the unified Cmd+K palette, one of
+ * the shared palette's kinds. Entity kinds are sourced from renderer
+ * stores/hooks (tier 0) and the chat-search catalog (tier 1), while
  * `chat-content` rows come from the deferred transcript query (tier 2).
  */
-export type PaletteItemKind =
-  | 'command'
-  | 'worktree'
-  | 'archive'
-  | 'chat'
-  | 'chat-content'
-  | 'plan'
-  | 'pipeline'
-  | 'automation'
-  | 'watcher'
-  | 'agent'
-  | 'plugin'
-  | 'skill'
-  | 'setting';
+type PaletteItemKind = SearchPaletteItemKind;
 
 /**
- * The owning project's badge, drawn as the sidebar draws it: its kind, its
- * colour (stored or derived), and the repository whose owner avatar it may
- * show.
+ * The owning project's badge, plus the repository whose owner avatar the
+ * desktop resolves over IPC (`ProjectIcon`).
  */
-export interface PaletteProjectBadge {
-  kind: WorkspaceKind;
-  color: string;
-  temporary: boolean;
+export interface PaletteProjectBadge extends SearchPaletteProjectBadge {
   repoPath?: string;
 }
 
@@ -143,69 +128,3 @@ export type PaletteItem = {
     navigation: PaletteNavigationByKind[Kind];
   };
 }[PaletteItemKind];
-
-export interface PaletteSectionMeta {
-  /** Stable section key (also used as a `data-testid` suffix). */
-  id: string;
-  /** User-facing section header. */
-  label: string;
-}
-
-/**
- * Section a given item kind belongs to. `chat` and `chat-content` are distinct
- * sections: title matches live under "Chats" (stable indices), transcript
- * matches are appended under "In transcripts" once the deferred query resolves.
- */
-export const PALETTE_SECTION_BY_KIND: Record<
-  PaletteItemKind,
-  PaletteSectionMeta
-> = {
-  chat: { id: 'chats', label: 'Chats' },
-  worktree: { id: 'worktrees', label: 'Worktrees' },
-  archive: { id: 'archives', label: 'Archived and deleted' },
-  plan: { id: 'plans', label: 'Plans' },
-  pipeline: { id: 'pipelines', label: WORKFLOW_TYPE_TAB_LABELS.pipeline },
-  automation: {
-    id: 'automations',
-    label: WORKFLOW_TYPE_TAB_LABELS.automation,
-  },
-  watcher: { id: 'watchers', label: 'Watchers' },
-  agent: { id: 'agents', label: 'Agents' },
-  plugin: { id: 'plugins', label: 'Plugins' },
-  skill: { id: 'skills', label: 'Skills' },
-  setting: { id: 'settings', label: 'Settings' },
-  command: { id: 'commands', label: 'Commands' },
-  // Mixed deferred FTS results (chat transcripts + plan content). The section
-  // id predates plan docs and is kept for `data-palette-section` stability.
-  'chat-content': { id: 'transcripts', label: 'In content' },
-};
-
-/**
- * Canonical section order, used as the tie-breaker when two sections' best
- * matches score equally. At query time sections are ordered by their strongest
- * match (see `rankPaletteItems`) with commands pinned last (search-first), and
- * the deferred transcript section is always appended at the very end so
- * existing indices and the keyboard selection stay stable when tier-2 results
- * arrive.
- */
-export const PALETTE_SECTION_ORDER: readonly PaletteItemKind[] = [
-  'chat',
-  'worktree',
-  'archive',
-  'plan',
-  'pipeline',
-  'automation',
-  'watcher',
-  'agent',
-  'plugin',
-  'skill',
-  'setting',
-  'command',
-  'chat-content',
-];
-
-/** Max rows shown per grouped section before truncation. */
-export const PALETTE_SECTION_CAP = 6;
-
-/** Max rows shown in the empty-query "Recent" section. */
-export const PALETTE_RECENT_CAP = 8;

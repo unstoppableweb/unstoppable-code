@@ -119,7 +119,10 @@ interface Harness {
   readonly lives: ReturnType<typeof controlledStream>[];
   /** Holds the next live open until the returned function is called. */
   readonly deferLive: () => () => void;
-  readonly project: jest.Mock;
+  readonly project: jest.Mock<
+    unknown[],
+    [{ chatKey: string; messages: readonly unknown[] }]
+  >;
 }
 
 function harness(
@@ -391,6 +394,774 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       messages: [message('m1', 'Hello'), message('m2', 'From the web')],
       tasks: [],
     });
+  });
+
+  it('tells its host the messages its transcript holds, as each batch lands, so accepted sends can retire (CAN-6509)', async () => {
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hello'))),
+    });
+    await flush();
+    expect([...thread.getMessageIds()]).toEqual(['m1']);
+    const seen: string[][] = [];
+    thread.subscribeMessageIds(() => seen.push([...thread.getMessageIds()]));
+    stream.push({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: 5 },
+      item: {
+        schemaVersion: 1,
+        eventId: 'ev-5',
+        occurredAt: '2026-11-07T15:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: 4,
+        revision: 5,
+        changes: [
+          {
+            type: 'message.upserted',
+            chatId: 'chat-1',
+            message: message('m2', 'Sent from this tab'),
+          },
+        ],
+      },
+    });
+    await flush();
+    expect(seen.at(-1)).toEqual(['m1', 'm2']);
+  });
+
+  it("holds the snapshot's queue and reads the snapshot again when the queued messages change (CAN-6509)", async () => {
+    const entry = (
+      id: string,
+      messageId: string,
+    ): Record<string, unknown> & { messageId: string } => ({
+      id,
+      origin: 'portal',
+      enqueuedAtMs: 1,
+      revision: 1,
+      text: `Prompt ${messageId}`,
+      clientRequestId: `request-${messageId}`,
+      messageId,
+      queueOrder: '1',
+      promptSource: 'human',
+      hasAttachments: false,
+    });
+    const reads = [
+      {
+        sessionId: 'session-1',
+        stateVersion: '9007199254740993',
+        entries: [entry('t1', 'q1')],
+      },
+      {
+        sessionId: 'session-1',
+        stateVersion: '9007199254740995',
+        entries: [entry('t1', 'q1'), entry('t2', 'q2')],
+      },
+      // The chat continued on a new session, whose versions start again.
+      {
+        sessionId: 'session-2',
+        stateVersion: '3',
+        entries: [entry('t3', 'q3')],
+      },
+    ];
+    let read = 0;
+    const { thread, stream, calls } = harness({
+      'core.chat.snapshot.get': () => {
+        const queue = reads[Math.min(read, reads.length - 1)];
+        read += 1;
+        return ok({
+          ...snapshot('streaming'),
+          runtimeByChatId: {
+            'chat-1': {
+              status: 'streaming',
+              queuedMessageIds: queue.entries.map((each) => each.messageId),
+            },
+          },
+          queue: [{ chatId: 'chat-1', ...queue }],
+        });
+      },
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hello'))),
+    });
+    await flush();
+    expect(thread.getQueue()).toEqual(reads[0]);
+    const seen: unknown[] = [];
+    thread.subscribeQueue(() => seen.push(thread.getQueue()));
+    const runtime = (
+      queuedMessageIds: string[],
+      revision: number,
+    ): Record<string, unknown> => ({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: revision },
+      item: {
+        schemaVersion: 1,
+        eventId: `ev-${revision}`,
+        occurredAt: '2026-11-07T15:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: revision - 1,
+        revision,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: { status: 'streaming', queuedMessageIds },
+          },
+        ],
+      },
+    });
+    // The same queued messages: nothing to read again.
+    stream.push(runtime(['q1'], 5));
+    await flush();
+    expect(
+      calls.filter((call) => call.method === 'core.chat.snapshot.get'),
+    ).toHaveLength(1);
+    // Another send queued: only the snapshot is read again, for its row.
+    stream.push(runtime(['q1', 'q2'], 6));
+    await flush();
+    await flush();
+    expect(
+      calls.filter((call) => call.method === 'core.chat.snapshot.get'),
+    ).toHaveLength(2);
+    expect(
+      calls.filter((call) => call.method === 'core.chat.transcript.page'),
+    ).toHaveLength(1);
+    expect(seen.at(-1)).toEqual(reads[1]);
+    // A new session's lower version still replaces the old session's queue.
+    stream.push(runtime(['q3'], 7));
+    await flush();
+    await flush();
+    expect(thread.getQueue()).toEqual(reads[2]);
+  });
+
+  it('reads the queue again when the queued prompts change during a read, so a read that went stale meanwhile never stays (CAN-6509)', async () => {
+    const queueWith = (
+      messageIds: string[],
+      stateVersion: string,
+    ): Record<string, unknown> => ({
+      ...snapshot('streaming'),
+      runtimeByChatId: {
+        'chat-1': { status: 'streaming', queuedMessageIds: messageIds },
+      },
+      queue: [
+        {
+          chatId: 'chat-1',
+          sessionId: 'session-1',
+          stateVersion,
+          entries: messageIds.map((messageId) => ({
+            id: `turn-${messageId}`,
+            origin: 'portal',
+            enqueuedAtMs: 1,
+            text: messageId,
+            clientRequestId: `request-${messageId}`,
+            messageId,
+            queueOrder: '1',
+            promptSource: 'human',
+            hasAttachments: false,
+          })),
+        },
+      ],
+    });
+    const answers: (() => Promise<CanopyCoreRelayLikeReply>)[] = [
+      () => Promise.resolve(ok(queueWith([], '1'))),
+    ];
+    let release = (): void => undefined;
+    // The read the first change starts answers late, with the prompt queued.
+    answers.push(
+      () =>
+        new Promise((resolve) => {
+          release = (): void => resolve(ok(queueWith(['q1'], '2')));
+        }),
+    );
+    answers.push(() => Promise.resolve(ok(queueWith([], '3'))));
+    let reads = 0;
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () => {
+        const answer = answers[Math.min(reads, answers.length - 1)];
+        reads += 1;
+        return answer();
+      },
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hello'))),
+    });
+    await flush();
+    const runtime = (
+      queuedMessageIds: string[],
+      revision: number,
+    ): Record<string, unknown> => ({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: revision },
+      item: {
+        schemaVersion: 1,
+        eventId: `ev-${revision}`,
+        occurredAt: '2026-11-07T15:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: revision - 1,
+        revision,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: { status: 'streaming', queuedMessageIds },
+          },
+        ],
+      },
+    });
+    stream.push(runtime(['q1'], 5));
+    await flush();
+    // The prompt leaves the queue before that read answers.
+    stream.push(runtime([], 6));
+    await flush();
+    release();
+    await flush();
+    await flush();
+    expect(thread.getQueue()?.entries).toEqual([]);
+    expect(reads).toBe(3);
+  });
+
+  describe('meters and compactions for the host (CAN-6509)', () => {
+    const meter = (inputTokens: number): Record<string, unknown> => ({
+      usage: { inputTokens },
+      costUsd: '0.01',
+    });
+    const metered = (
+      id: string,
+      inputTokens?: number,
+    ): Record<string, unknown> => ({
+      ...message(id, id),
+      ...(inputTokens === undefined ? {} : { meter: meter(inputTokens) }),
+    });
+    const batch = (revision: number, ...changes: unknown[]): unknown => ({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: revision },
+      item: {
+        schemaVersion: 1,
+        eventId: `ev-${revision}`,
+        occurredAt: '2026-11-12T19:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: revision - 1,
+        revision,
+        changes,
+      },
+    });
+    const upserted = (message: Record<string, unknown>): unknown => ({
+      type: 'message.upserted',
+      chatId: 'chat-1',
+      message,
+    });
+
+    it("reports a live answer's meter once, never one a page read already held", async () => {
+      const { thread, stream } = harness({
+        'core.chat.snapshot.get': () => ok(snapshot('idle')),
+        // History: its meter is never reported.
+        'core.chat.transcript.page': () => ok(transcript(metered('m1', 5))),
+      });
+      await flush();
+      const meters: unknown[] = [];
+      thread.subscribeMeters((each) => meters.push(each));
+      stream.push(batch(5, upserted(metered('m2', 7))));
+      // The same answer again, an edit of the read one, and an answer first
+      // seen without its meter.
+      stream.push(
+        batch(
+          6,
+          upserted(metered('m2', 7)),
+          upserted(metered('m1', 5)),
+          upserted(metered('m3')),
+        ),
+      );
+      stream.push(batch(7, upserted(metered('m3', 9))));
+      // A subagent's reply is its task's, never the chat's own answer.
+      stream.push(
+        batch(8, upserted({ ...metered('m4', 3), parentToolUseId: 'toolu_1' })),
+      );
+      await flush();
+      expect(meters).toEqual([
+        { messageId: 'm2', meter: meter(7) },
+        { messageId: 'm3', meter: meter(9) },
+      ]);
+    });
+
+    it("reports each page read's latest compaction, the first read flagged", async () => {
+      const compactions = [{ tokensAfter: 100 }, { tokensAfter: 40 }];
+      let read = 0;
+      const { thread, stream } = harness({
+        'core.chat.snapshot.get': () => ok(snapshot('idle')),
+        'core.chat.transcript.page': () => {
+          const latestCompaction =
+            compactions[Math.min(read, compactions.length - 1)];
+          read += 1;
+          return ok({ ...transcript(message('m1', 'Hi')), latestCompaction });
+        },
+      });
+      const reads: unknown[] = [];
+      thread.subscribeCompactionReads((each) => reads.push(each));
+      await flush();
+      stream.push(
+        batch(5, {
+          type: 'transcript.updated',
+          chatId: 'chat-1',
+          transcript: {},
+          reset: false,
+        }),
+      );
+      await flush();
+      await flush();
+      expect(reads).toEqual([
+        { latestCompaction: { tokensAfter: 100 }, first: true },
+        { latestCompaction: { tokensAfter: 40 }, first: false },
+      ]);
+    });
+  });
+
+  it('tells its host each turn that stops running, by Core turn id and how it ended (CAN-6509)', async () => {
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hello'))),
+    });
+    await flush();
+    const settled: unknown[] = [];
+    thread.subscribeTurnSettled((turn) => settled.push(turn));
+    const runtime = (
+      revision: number,
+      status: string,
+      activeTurnId?: string,
+    ): Record<string, unknown> => ({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: revision },
+      item: {
+        schemaVersion: 1,
+        eventId: `ev-${revision}`,
+        occurredAt: '2026-11-07T15:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: revision - 1,
+        revision,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: {
+              status,
+              queuedMessageIds: [],
+              ...(activeTurnId === undefined ? {} : { activeTurnId }),
+            },
+          },
+        ],
+      },
+    });
+    stream.push(runtime(5, 'streaming', 'turn-1'));
+    // The next queued turn starts as the first ends.
+    stream.push(runtime(6, 'streaming', 'turn-2'));
+    stream.push(runtime(7, 'failed'));
+    stream.push(runtime(8, 'idle'));
+    await flush();
+    expect(settled).toEqual([
+      { turnId: 'turn-1', status: 'complete' },
+      { turnId: 'turn-2', status: 'failed' },
+    ]);
+  });
+
+  it('tells its host when its turn starts and stops running, so the rail can mark it without REST (CAN-6509)', async () => {
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hello'))),
+    });
+    await flush();
+    expect(thread.isTurnRunning()).toBe(false);
+    const running: boolean[] = [];
+    thread.subscribeTurnRunning(() => running.push(thread.isTurnRunning()));
+    const patched = (
+      revision: number,
+      status: string,
+      activeTurnId?: string,
+    ): Record<string, unknown> => ({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: revision },
+      item: {
+        schemaVersion: 1,
+        eventId: `ev-${revision}`,
+        occurredAt: '2026-11-12T21:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: revision - 1,
+        revision,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: {
+              status,
+              queuedMessageIds: [],
+              ...(activeTurnId === undefined ? {} : { activeTurnId }),
+            },
+          },
+        ],
+      },
+    });
+    stream.push(patched(5, 'streaming', 'turn-1'));
+    await flush();
+    // The next queued turn starts as the first ends: still running.
+    stream.push(patched(6, 'streaming', 'turn-2'));
+    await flush();
+    stream.push(patched(7, 'idle'));
+    await flush();
+    // An idle session Core parks as awaiting input runs no turn.
+    stream.push(patched(8, 'awaiting_input'));
+    await flush();
+    expect(running).toEqual([true, false]);
+    expect(thread.isTurnRunning()).toBe(false);
+  });
+
+  it("names the chat's Core session and runtime for its host, once a read names one (CAN-6509)", async () => {
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () =>
+        ok({ ...snapshot('idle'), sessionId: 'session-1' }),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hello'))),
+    });
+    await flush();
+    expect(thread.getSession()).toEqual({
+      sessionId: 'session-1',
+      runtimeStatus: 'idle',
+      activeTurnId: null,
+    });
+    const sessions: unknown[] = [];
+    thread.subscribeSession(() => sessions.push(thread.getSession()));
+    stream.push({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: 5 },
+      item: {
+        schemaVersion: 1,
+        eventId: 'ev-5',
+        occurredAt: '2026-11-13T09:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: 4,
+        revision: 5,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: { status: 'failed', queuedMessageIds: [] },
+          },
+        ],
+      },
+    });
+    await flush();
+    expect(sessions).toEqual([
+      { sessionId: 'session-1', runtimeStatus: 'failed', activeTurnId: null },
+    ]);
+  });
+
+  it('names no session while its reads name none, as a desktop core or an older web core answers', async () => {
+    const { thread } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript()),
+    });
+    expect(thread.getSession()).toBeUndefined(); // not read yet
+    await flush();
+    expect(thread.getSession()).toBeNull();
+  });
+
+  it("names the thread's running turn with its session, and none once it ends (CAN-6509)", async () => {
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () =>
+        ok({ ...snapshot('idle'), sessionId: 'session-1' }),
+      'core.chat.transcript.page': () => ok(transcript()),
+    });
+    await flush();
+    const turns: unknown[] = [];
+    thread.subscribeSession(() =>
+      turns.push(thread.getSession()?.activeTurnId),
+    );
+    const patch = (revision: number, runtime: Record<string, unknown>): void =>
+      stream.push({
+        kind: 'item',
+        cursor: { daemonEpoch: 'e1', sequence: revision },
+        item: {
+          schemaVersion: 1,
+          eventId: `ev-${revision}`,
+          occurredAt: '2026-11-13T09:00:00.000Z',
+          projectId: 'ws-1',
+          worktreeId: 'chat-1',
+          baseRevision: revision - 1,
+          revision,
+          changes: [
+            {
+              type: 'runtime.patched',
+              chatId: 'chat-1',
+              runtime: { queuedMessageIds: [], ...runtime },
+            },
+          ],
+        },
+      });
+    patch(5, { status: 'streaming', activeTurnId: 'turn-1' });
+    await flush();
+    patch(6, { status: 'idle' });
+    await flush();
+    expect(turns).toEqual(['turn-1', null]);
+  });
+
+  it("names a continued chat's new session, with its runtime, from a queue re-read (CAN-6509)", async () => {
+    let sessionId = 'session-1';
+    let status = 'failed';
+    const { thread, lives } = harness({
+      'core.chat.snapshot.get': () => {
+        const read = { ...snapshot(status), sessionId };
+        // The continued session runs a turn as it is read.
+        return ok(
+          status === 'streaming'
+            ? {
+                ...read,
+                runtimeByChatId: {
+                  'chat-1': {
+                    status,
+                    activeTurnId: 'turn-2',
+                    queuedMessageIds: [],
+                  },
+                },
+              }
+            : read,
+        );
+      },
+      'core.chat.transcript.page': () => ok(transcript()),
+    });
+    await flush();
+    const sessions: unknown[] = [];
+    const running: boolean[] = [];
+    thread.subscribeSession(() => sessions.push(thread.getSession()));
+    thread.subscribeTurnRunning(() => running.push(thread.isTurnRunning()));
+    thread.setLive(true); // the chat is on screen
+    sessionId = 'session-2';
+    status = 'streaming';
+    thread.refreshQueue();
+    await flush();
+    expect(sessions).toEqual([
+      {
+        sessionId: 'session-2',
+        runtimeStatus: 'streaming',
+        activeTurnId: 'turn-2',
+      },
+    ]);
+    // The running turn shows, and its live reply is followed.
+    expect(running).toEqual([true]);
+    expect(lives).toHaveLength(1);
+  });
+
+  it('keeps a newer runtime than a queue re-read that names a continued session (CAN-6509)', async () => {
+    let reread: (reply: CanopyCoreRelayLikeReply) => void = () => {};
+    let reads = 0;
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () => {
+        reads += 1;
+        if (reads === 1)
+          return ok({ ...snapshot('failed'), sessionId: 'session-1' });
+        return new Promise<CanopyCoreRelayLikeReply>((resolve) => {
+          reread = resolve;
+        });
+      },
+      'core.chat.transcript.page': () => ok(transcript()),
+    });
+    await flush();
+    const running: boolean[] = [];
+    thread.subscribeTurnRunning(() => running.push(thread.isTurnRunning()));
+    thread.refreshQueue();
+    await flush();
+    // Newer events say the continued session's turn already ended.
+    stream.push({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: 6 },
+      item: {
+        schemaVersion: 1,
+        eventId: 'ev-6',
+        occurredAt: '2026-11-13T09:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: 4,
+        revision: 6,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: { status: 'idle', queuedMessageIds: [] },
+          },
+        ],
+      },
+    });
+    await flush();
+    // The re-read, taken at revision 5, lands after them.
+    reread(
+      ok({
+        ...snapshot('streaming', 5),
+        sessionId: 'session-2',
+        runtimeByChatId: {
+          'chat-1': {
+            status: 'streaming',
+            activeTurnId: 'turn-2',
+            queuedMessageIds: [],
+          },
+        },
+      }),
+    );
+    await flush();
+    // It is dropped, and the next read decides.
+    expect(thread.getSession()?.sessionId).toBe('session-1');
+    reread(
+      ok({
+        ...snapshot('idle', 6),
+        sessionId: 'session-2',
+      }),
+    );
+    await flush();
+    expect(thread.getSession()).toEqual({
+      sessionId: 'session-2',
+      runtimeStatus: 'idle',
+      activeTurnId: null,
+    });
+    expect(running).not.toContain(true);
+  });
+
+  it("takes a continued session's runtime from a queue re-read that only other changes passed (CAN-6509)", async () => {
+    let reread: (reply: CanopyCoreRelayLikeReply) => void = () => {};
+    let reads = 0;
+    const { thread, stream, lives } = harness({
+      'core.chat.snapshot.get': () => {
+        reads += 1;
+        if (reads === 1)
+          return ok({ ...snapshot('failed'), sessionId: 'session-1' });
+        return new Promise<CanopyCoreRelayLikeReply>((resolve) => {
+          reread = resolve;
+        });
+      },
+      'core.chat.transcript.page': () => ok(transcript()),
+    });
+    await flush();
+    const running: boolean[] = [];
+    thread.subscribeTurnRunning(() => running.push(thread.isTurnRunning()));
+    thread.setLive(true);
+    thread.refreshQueue();
+    await flush();
+    // Newer events change the transcript and the tab, not the runtime.
+    const frame = (revision: number, change: unknown): unknown => ({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: revision },
+      item: {
+        schemaVersion: 1,
+        eventId: `ev-${revision}`,
+        occurredAt: '2026-11-13T09:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: revision - 1,
+        revision,
+        changes: [change],
+      },
+    });
+    stream.push(
+      frame(5, {
+        type: 'transcript.updated',
+        chatId: 'chat-1',
+        transcript: {},
+        reset: false,
+      }),
+    );
+    stream.push(
+      frame(6, {
+        type: 'tab.metadata_patched',
+        tabId: 'chat-1',
+        patch: { title: 'Renamed' },
+      }),
+    );
+    await flush();
+    await flush();
+    reread(
+      ok({
+        ...snapshot('streaming', 5),
+        sessionId: 'session-2',
+        runtimeByChatId: {
+          'chat-1': {
+            status: 'streaming',
+            activeTurnId: 'turn-2',
+            queuedMessageIds: [],
+          },
+        },
+      }),
+    );
+    await flush();
+    expect(thread.getSession()).toEqual({
+      sessionId: 'session-2',
+      runtimeStatus: 'streaming',
+      activeTurnId: 'turn-2',
+    });
+    expect(running).toEqual([true]);
+    expect(lives).toHaveLength(1);
+  });
+
+  it('reads again when a continued session is read under an older revision than its last runtime patch (CAN-6509)', async () => {
+    const pending: ((reply: CanopyCoreRelayLikeReply) => void)[] = [];
+    let reads = 0;
+    const { thread, stream, lives } = harness({
+      'core.chat.snapshot.get': () => {
+        reads += 1;
+        if (reads === 1)
+          return ok({ ...snapshot('failed'), sessionId: 'session-1' });
+        return new Promise<CanopyCoreRelayLikeReply>((resolve) => {
+          pending.push(resolve);
+        });
+      },
+      'core.chat.transcript.page': () => ok(transcript()),
+    });
+    await flush();
+    const running: boolean[] = [];
+    thread.subscribeTurnRunning(() => running.push(thread.isTurnRunning()));
+    thread.setLive(true);
+    thread.refreshQueue();
+    await flush();
+    // The ended session's runtime is patched after the read took its revision.
+    stream.push({
+      kind: 'item',
+      cursor: { daemonEpoch: 'e1', sequence: 5 },
+      item: {
+        schemaVersion: 1,
+        eventId: 'ev-5',
+        occurredAt: '2026-11-13T09:00:00.000Z',
+        projectId: 'ws-1',
+        worktreeId: 'chat-1',
+        baseRevision: 4,
+        revision: 5,
+        changes: [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: { status: 'failed', queuedMessageIds: [] },
+          },
+        ],
+      },
+    });
+    await flush();
+    const continued = (revision: number): CanopyCoreRelayLikeReply =>
+      ok({
+        ...snapshot('streaming', revision),
+        sessionId: 'session-2',
+        runtimeByChatId: {
+          'chat-1': {
+            status: 'streaming',
+            activeTurnId: 'turn-2',
+            queuedMessageIds: [],
+          },
+        },
+      });
+    // The continuation landed between the read's feed head and its load.
+    pending.shift()?.(continued(4));
+    await flush();
+    expect(reads).toBe(3);
+    pending.shift()?.(continued(5));
+    await flush();
+    expect(thread.getSession()).toEqual({
+      sessionId: 'session-2',
+      runtimeStatus: 'streaming',
+      activeTurnId: 'turn-2',
+    });
+    expect(running).toEqual([true]);
+    expect(lives).toHaveLength(1);
   });
 
   it('skips the replayed batch of a cursorless open and follows live, without re-reading', async () => {
@@ -1508,6 +2279,129 @@ describe('cloud chat thread binding (CAN-4185)', () => {
     ]);
   });
 
+  it("names the model Auto picked on its prompt's committed timer, only that one, and moves its revision when it lands later (CAN-6092)", async () => {
+    const timer = (id: string): Record<string, unknown> => ({
+      id,
+      role: 'system',
+      blocks: [],
+      timestamp: 1,
+    });
+    const { thread, state, project } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () =>
+        ok(transcript(timer('p1:turn-timer'), timer('p2:turn-timer'))),
+    });
+    project.mockImplementation(
+      ({ messages }: { readonly messages: readonly unknown[] }) =>
+        messages.map((each) => ({
+          messageId: (each as { id: string }).id,
+          createdAtMs: 1,
+          parts: [{ kind: 'turn_timer', data: { completedAt: 2 } }],
+        })),
+    );
+    await flush();
+    thread.noteAutoRouting('p1', {
+      autoRoutedModel: 'model-x',
+      autoRoutedModelLabel: 'Model X',
+    });
+    await flush();
+    const shown = state.hydrate.mock.calls.at(-1)?.[1] as PortalChatMessage[];
+    expect(shown.map((each) => each.parts?.[0]?.data)).toEqual([
+      {
+        completedAt: 2,
+        autoRoutedModel: 'model-x',
+        autoRoutedModelLabel: 'Model X',
+      },
+      { completedAt: 2 },
+    ]);
+    // The store takes a row only when its revision moves.
+    expect(shown[0]?.updatedAtMs).toBeGreaterThan(1);
+  });
+
+  it('names the Auto pick on a committed timer the chat store already holds, though its completion is ahead of the browser clock (CAN-6092)', async () => {
+    const store = createChatStore({
+      subscribe: (): (() => void) => () => undefined,
+      command: () => Promise.resolve({}),
+    } as never);
+    // The server's clock runs ahead: the timer's completion outranks Date.now().
+    const completedAt = Date.now() + 60_000;
+    const thread = bindCloudChatThread({
+      invoker: {
+        request: (method) =>
+          Promise.resolve(
+            method === 'core.chat.snapshot.get'
+              ? ok(snapshot('idle'))
+              : ok(
+                  transcript({
+                    id: 'p1:turn-timer',
+                    role: 'system',
+                    blocks: [],
+                    timestamp: 1,
+                  }),
+                ),
+          ),
+        openStream: () => Promise.resolve(controlledStream()),
+      },
+      target,
+      chatStore: store,
+      project: ({ messages }) =>
+        messages.map((each) => ({
+          messageId: (each as { id: string }).id,
+          chatId: target.key,
+          role: 'system',
+          status: 'complete',
+          text: '',
+          createdAtMs: 1,
+          parts: [{ kind: 'turn_timer', data: { startedAt: 1, completedAt } }],
+        })),
+      hostOwnsRuntime: true,
+    });
+    await flush();
+    const timer = (): PortalChatMessage | undefined =>
+      store
+        .getState()
+        .threads[
+          target.key
+        ]?.messages.find((each) => each.messageId === 'p1:turn-timer');
+    expect(timer()).toBeDefined();
+    thread.noteAutoRouting('p1', {
+      autoRoutedModel: 'model-x',
+      autoRoutedModelLabel: 'Model X',
+    });
+    await flush();
+    expect(timer()?.parts?.[0]?.data).toEqual({
+      startedAt: 1,
+      completedAt,
+      autoRoutedModel: 'model-x',
+      autoRoutedModelLabel: 'Model X',
+    });
+    thread.close();
+  });
+
+  it("keeps a failed thread's error when an Auto pick lands after the failure (CAN-6092)", async () => {
+    const { thread, state, stream } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hi'))),
+    });
+    await flush();
+    stream.push({
+      kind: 'end',
+      error: {
+        kind: 'permission_denied',
+        message: 'Access ended.',
+        retry: { kind: 'never' },
+      },
+    });
+    await flush();
+    expect(state.hydrate.mock.calls.at(-1)?.[2]).toMatchObject({
+      status: 'error',
+    });
+    const publishes = state.hydrate.mock.calls.length;
+    thread.noteAutoRouting('p1', { autoRoutedModel: 'model-x' });
+    await flush();
+    expect(state.hydrate.mock.calls.length).toBe(publishes);
+  });
+
   it("shows a prompt's attachments the web core serves (CAN-6116)", async () => {
     const attachment = {
       attachmentId: 'att-1',
@@ -1882,6 +2776,217 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       expect(shown(state)[1]).toMatchObject({
         text: 'Hello',
         parts: [{ kind: 'thinking', data: { text: 'Thinking...' } }],
+      });
+    });
+
+    describe('revision 2 (CAN-6116)', () => {
+      const STARTED_AT = '2026-11-07T17:59:30.000Z';
+      const liveTool = (
+        tool: Record<string, unknown>,
+      ): Record<string, unknown> => ({
+        kind: 'item',
+        cursor: { daemonEpoch: 'web-core-chat-live-1', sequence: 2 },
+        item: { kind: 'tool', chatId: 'chat-1', turnId: 'turn-1', ...tool },
+      });
+      const timerRow = {
+        id: 'p1:turn-timer',
+        role: 'system',
+        blocks: [
+          {
+            type: 'turn_timer',
+            turnId: 'turn-1',
+            userMessageId: 'p1',
+            startedAt: Date.parse(STARTED_AT),
+            pausedAt: null,
+            resumedAt: null,
+            accumulatedPausedDurationMs: 0,
+            completedAt: null,
+          },
+        ],
+        timestamp: Date.parse(STARTED_AT),
+      };
+
+      it("a running turn shows REST's steps, each tool card after its text, and its running timer", async () => {
+        const { thread, state, lives, project } = harness({
+          'core.chat.snapshot.get': () => ok(snapshot('streaming')),
+          'core.chat.transcript.page': () => ok(transcript(prompt('p1', 'Hi'))),
+        });
+        thread.setLive(true);
+        await flush();
+        lives[0]?.push(liveTurn('Looking. Next.', { startedAt: STARTED_AT }));
+        lives[0]?.push(
+          liveTool({
+            toolUseId: 'call-1',
+            toolName: 'Read',
+            input: 'a.ts',
+            textOffset: 8,
+            result: { output: 'contents', isError: false },
+          }),
+        );
+        lives[0]?.push(
+          liveTool({
+            toolUseId: 'call-2',
+            toolName: 'Bash',
+            input: 'ls',
+            textOffset: 14,
+          }),
+        );
+        await flush();
+        const rows = project.mock.calls.flatMap(([{ messages }]) => messages);
+        // A tool step is projected as a committed reply's tool blocks are.
+        expect(rows).toContainEqual({
+          id: `${LIVE_ID}:1`,
+          role: 'assistant',
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'call-1',
+              toolName: 'Read',
+              input: 'a.ts',
+            },
+            {
+              type: 'tool_result',
+              toolUseId: 'call-1',
+              toolName: 'Read',
+              output: 'contents',
+              isError: false,
+            },
+          ],
+          timestamp: expect.any(Number) as unknown,
+        });
+        // As REST's live view: a message per step, text and cards in turn,
+        // the earlier steps done, and the running timer after them.
+        expect(shown(state)).toEqual([
+          { messageId: 'p1', createdAtMs: 1, presentationOrder: 0 },
+          expect.objectContaining({
+            messageId: LIVE_ID,
+            text: 'Looking.',
+            status: 'complete',
+            presentationOrder: 1,
+          }),
+          expect.objectContaining({
+            messageId: `${LIVE_ID}:1`,
+            text: '',
+            status: 'complete',
+            presentationOrder: 2,
+          }),
+          expect.objectContaining({
+            messageId: `${LIVE_ID}:2`,
+            text: ' Next.',
+            status: 'complete',
+            presentationOrder: 3,
+          }),
+          expect.objectContaining({
+            messageId: `${LIVE_ID}:3`,
+            status: 'streaming',
+            presentationOrder: 4,
+          }),
+          {
+            messageId: 'p1:turn-timer',
+            chatId: 'web-core:chat-1',
+            role: 'system',
+            status: 'streaming',
+            text: '',
+            parts: [
+              {
+                kind: 'turn_timer',
+                data: {
+                  startedAt: Date.parse(STARTED_AT),
+                  pausedAt: null,
+                  resumedAt: null,
+                  accumulatedPausedDurationMs: 0,
+                  completedAt: null,
+                },
+              },
+            ],
+            createdAtMs: Date.parse(STARTED_AT),
+            updatedAtMs: expect.any(Number) as unknown,
+            presentationOrder: 5,
+          },
+        ]);
+        // The timer is never left to a projection that drops running ones.
+        expect(rows).not.toContainEqual(
+          expect.objectContaining({ id: 'p1:turn-timer' }),
+        );
+      });
+
+      it("a held reply's live timer never brings back a turn the runtime ended", async () => {
+        let status = 'streaming';
+        const { thread, turn, lives, push, runtime, ids } = hostOwnedOnStore(
+          () => status,
+        );
+        thread.setLive(true);
+        await flush();
+        const reply = (state: string, text: string): Record<string, unknown> =>
+          liveTurn(text, {
+            promptMessageId: 'm1',
+            startedAt: STARTED_AT,
+            state,
+          });
+        lives[0]?.push(reply('streaming', 'Hel'));
+        await flush();
+        expect(ids()).toContain('m1:turn-timer');
+        status = 'idle';
+        push(runtime('idle'));
+        await flush();
+        // The live stream's finish comes after the runtime said idle.
+        lives[0]?.push(reply('finished', 'Hello'));
+        await flush();
+        expect(turn()).toMatchObject({ turnActive: false });
+        expect(ids()).not.toContain('m1:turn-timer');
+      });
+
+      it("a running turn's timer names the model Auto picked for its prompt, as REST's does (CAN-6092)", async () => {
+        const { thread, state, lives } = harness({
+          'core.chat.snapshot.get': () => ok(snapshot('streaming')),
+          'core.chat.transcript.page': () => ok(transcript(prompt('p1', 'Hi'))),
+        });
+        thread.setLive(true);
+        await flush();
+        thread.noteAutoRouting('p1', {
+          autoRoutedModel: 'model-x',
+          autoRoutedModelLabel: 'Model X',
+        });
+        lives[0]?.push(liveTurn('Hello', { startedAt: STARTED_AT }));
+        await flush();
+        const timer = (shown(state) as PortalChatMessage[]).find(
+          (each) => each.messageId === 'p1:turn-timer',
+        );
+        expect(timer?.parts).toEqual([
+          {
+            kind: 'turn_timer',
+            data: {
+              startedAt: Date.parse(STARTED_AT),
+              pausedAt: null,
+              resumedAt: null,
+              accumulatedPausedDurationMs: 0,
+              completedAt: null,
+              autoRoutedModel: 'model-x',
+              autoRoutedModelLabel: 'Model X',
+            },
+          },
+        ]);
+      });
+
+      it('a timer the transcript already shows is not shown twice', async () => {
+        const { thread, state, lives } = harness({
+          'core.chat.snapshot.get': () => ok(snapshot('streaming')),
+          'core.chat.transcript.page': () =>
+            ok(
+              transcript(prompt('p1', 'Hi'), {
+                ...timerRow,
+                blocks: [{ ...timerRow.blocks[0], completedAt: 1 }],
+              }),
+            ),
+        });
+        thread.setLive(true);
+        await flush();
+        lives[0]?.push(liveTurn('Hello', { startedAt: STARTED_AT }));
+        await flush();
+        const ids = (shown(state) as { messageId: string }[]).map(
+          (each) => each.messageId,
+        );
+        expect(ids).toEqual(['p1', 'p1:turn-timer', LIVE_ID]);
       });
     });
 
@@ -2391,5 +3496,203 @@ describe('cloud chat thread binding (CAN-4185)', () => {
         turnActive: true,
       });
     });
+  });
+});
+
+describe('committed reply steps (CAN-6116)', () => {
+  // As REST's transcript: a finished reply is a message per step, its text
+  // and its tool calls in turn, so the turn folds as REST's does.
+  it("a finished reply shows REST's steps, each tool card after its text", async () => {
+    const reply = {
+      id: 'a1',
+      role: 'assistant',
+      blocks: [
+        { type: 'thinking', text: 'Plan.' },
+        { type: 'text', text: 'Starting.' },
+        { type: 'tool_use', toolUseId: 'c1', toolName: 'Bash', input: 'echo' },
+        {
+          type: 'tool_result',
+          toolUseId: 'c1',
+          toolName: 'Bash',
+          output: 'one',
+          isError: false,
+        },
+        { type: 'text', text: 'Middle.' },
+        { type: 'tool_use', toolUseId: 'c2', toolName: 'Agent', input: 'go' },
+        { type: 'text', text: 'All done.' },
+      ],
+      timestamp: 1,
+    };
+    const { project } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(reply)),
+    });
+    await flush();
+    const rows = (project.mock.calls.at(-1)?.[0].messages ?? []) as {
+      id: string;
+      blocks: { type: string }[];
+    }[];
+    expect(
+      rows.map(({ id, blocks }) => [id, blocks.map((b) => b.type)]),
+    ).toEqual([
+      ['a1', ['thinking', 'text']],
+      ['a1:step-1', ['tool_use', 'tool_result']],
+      ['a1:step-2', ['text']],
+      ['a1:step-3', ['tool_use']],
+      ['a1:step-4', ['text']],
+    ]);
+  });
+
+  it('a reply without tools stays one message', async () => {
+    const { project } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(message('a1', 'Hi'))),
+    });
+    await flush();
+    const rows = (project.mock.calls.at(-1)?.[0].messages ?? []) as {
+      id: string;
+    }[];
+    expect(rows.map(({ id }) => id)).toEqual(['a1']);
+  });
+
+  it('a later step takes its row update in the same millisecond as its card change', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(5_000);
+    const store = createChatStore({
+      subscribe: (): (() => void) => () => undefined,
+      command: () => Promise.resolve({}),
+    } as never);
+    const events = controlledStream();
+    const row = (result?: string): Record<string, unknown> => ({
+      id: 'a1',
+      role: 'assistant',
+      timestamp: 1,
+      blocks: [
+        { type: 'text', text: 'Start.' },
+        { type: 'tool_use', toolUseId: 'c1', toolName: 'Agent', input: 'go' },
+        ...(result === undefined
+          ? []
+          : [
+              {
+                type: 'tool_result',
+                toolUseId: 'c1',
+                toolName: 'Agent',
+                output: result,
+                isError: false,
+              },
+            ]),
+      ],
+    });
+    let card = 'running';
+    const thread = bindCloudChatThread({
+      invoker: {
+        request: (method) =>
+          Promise.resolve(
+            method === 'core.chat.snapshot.get'
+              ? ok(snapshot('idle'))
+              : ok(transcript(row())),
+          ),
+        openStream: (method) =>
+          Promise.resolve(
+            method === 'core.chat.live.events' ? controlledStream() : events,
+          ),
+      },
+      target,
+      chatStore: store,
+      reopenDelayMs: 5,
+      liveReopenDelayMs: 5,
+      // The tool step's card changes with the test's `card`, as with a task.
+      project: ({ messages }) =>
+        messages.map((each) => {
+          const step = each as {
+            id: string;
+            blocks: { type: string; output?: string }[];
+          };
+          const tool = step.blocks.some((block) => block.type === 'tool_use');
+          return {
+            messageId: step.id,
+            chatId: target.key,
+            role: 'assistant' as const,
+            status: 'complete' as const,
+            text: step.blocks.map((block) => block.output ?? '').join(''),
+            createdAtMs: 1,
+            ...(tool ? { parts: [{ kind: 'agent', card }] as never } : {}),
+          };
+        }),
+    });
+    const push = (revision: number, change: Record<string, unknown>): void =>
+      events.push({
+        kind: 'item',
+        cursor: { daemonEpoch: 'e1', sequence: revision },
+        item: {
+          schemaVersion: 1,
+          eventId: `ev-${revision}`,
+          occurredAt: '2026-11-11T12:00:00.000Z',
+          projectId: 'ws-1',
+          worktreeId: 'chat-1',
+          baseRevision: revision - 1,
+          revision,
+          changes: [change],
+        },
+      });
+    const step = (): string | undefined =>
+      store
+        .getState()
+        .threads[
+          target.key
+        ]?.messages.find((each) => each.messageId === 'a1:step-1')?.text;
+    try {
+      await flush();
+      expect(step()).toBe('');
+      card = 'done';
+      push(5, {
+        type: 'runtime.patched',
+        chatId: 'chat-1',
+        runtime: { status: 'idle', queuedMessageIds: [] },
+      });
+      await flush();
+      push(6, {
+        type: 'message.upserted',
+        chatId: 'chat-1',
+        message: row('Found it.'),
+      });
+      await flush();
+      expect(step()).toBe('Found it.');
+    } finally {
+      thread.close();
+      now.mockRestore();
+    }
+  });
+
+  it("a finished reply's served artifacts sit where REST puts them: a deliverable on its last step", async () => {
+    const document = { kind: 'attachment', data: { text: 'notes.md' } };
+    const deliverable = {
+      kind: 'attachment',
+      data: { text: 'deliverable-8826.txt', deliverable: { filename: 'x' } },
+    };
+    const reply = {
+      id: 'a1',
+      role: 'assistant',
+      blocks: [
+        { type: 'text', text: 'Starting.' },
+        { type: 'tool_use', toolUseId: 'c1', toolName: 'Bash', input: 'echo' },
+        { type: 'text', text: 'All done.' },
+      ],
+      parts: [document, deliverable],
+      timestamp: 1,
+    };
+    const { state } = harness({
+      'core.chat.snapshot.get': () => ok(snapshot('idle')),
+      'core.chat.transcript.page': () => ok(transcript(reply)),
+    });
+    await flush();
+    const shown = state.hydrate.mock.calls.at(-1)?.[1] as {
+      messageId: string;
+      parts?: unknown[];
+    }[];
+    expect(shown.map(({ messageId, parts }) => [messageId, parts])).toEqual([
+      ['a1', [document]],
+      ['a1:step-1', undefined],
+      ['a1:step-2', [deliverable]],
+    ]);
   });
 });

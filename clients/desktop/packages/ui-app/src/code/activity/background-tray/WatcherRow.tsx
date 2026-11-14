@@ -170,6 +170,7 @@ export function WatcherRow({
               </FactList>
               {watcher.deliveryError && (
                 <Notice
+                  errorSource="watcher-row"
                   intent="destructive"
                   role="none"
                   title="Follow-up wasn’t delivered"

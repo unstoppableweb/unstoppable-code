@@ -256,6 +256,38 @@ function resolvePreferredBaseForRepo(
   };
 }
 
+/**
+ * Fetches the branch into its remote-tracking ref, which the diff and log
+ * reads below use, and says whether the remote has it. A host that leaves a
+ * preferred base's existence unset (a cloud run's recorded base, CAN-6739)
+ * has it checked here, with the run's own credentials; any failure counts as
+ * absent, so the pull request falls back to the default branch.
+ */
+async function fetchRemoteBranch(
+  repoPath: string,
+  branch: string,
+): Promise<boolean> {
+  try {
+    await execFileAsync(
+      'git',
+      [
+        'fetch',
+        '--no-tags',
+        'origin',
+        `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+      ],
+      {
+        cwd: repoPath,
+        maxBuffer: MAX_BUFFER_BYTES,
+        windowsHide: process.platform === 'win32',
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runGh(args: string[], cwd: string): Promise<string> {
   const result = await execFileAsync('gh', args, {
     cwd,
@@ -600,8 +632,12 @@ async function processRepo(
     branchName = await getCurrentBranch(repo.repoPath);
     const preferredBase = resolvePreferredBaseForRepo(process.env, repo.repoId);
     const defaultBase = await getDefaultBranch(repo.repoPath);
+    const preferredOnRemote =
+      preferredBase.existsInRemote ??
+      (preferredBase.baseBranch !== null &&
+        (await fetchRemoteBranch(repo.repoPath, preferredBase.baseBranch)));
     baseBranch =
-      preferredBase.baseBranch && preferredBase.existsInRemote === true
+      preferredBase.baseBranch && preferredOnRemote
         ? preferredBase.baseBranch
         : defaultBase;
 

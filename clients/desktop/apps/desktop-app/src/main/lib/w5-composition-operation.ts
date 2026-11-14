@@ -4,11 +4,7 @@ import {
   createW5CompositionRevisionCheck,
   type W5CompositionLockInput,
 } from '@canopy/core-runtime/node/w5/composition-operation';
-import {
-  getWorkspaceConfigPath,
-  getWorkspaceWorktreesFilePath,
-  getWorkspaceIndexFilePath,
-} from './paths';
+import { w5RecordReadPaths } from './paths';
 import type { W5CommitOptions } from './w5-commit-scope';
 import type { W5RepositoryLock } from './w5-repository-locks';
 import { checkW5ExpectedRevision } from './w5-boundary-operation';
@@ -58,8 +54,8 @@ export function w5CompositionLocks(
   input: W5CompositionLockInput,
 ): W5RepositoryLock[] {
   return createW5CompositionLocks({
-    workspaceIndex: () => getWorkspaceIndexFilePath(),
-    workspaceManifest: (workspaceId) => getWorkspaceConfigPath(workspaceId),
-    worktreeList: (workspaceId) => getWorkspaceWorktreesFilePath(workspaceId),
+    workspaceIndex: () => w5RecordReadPaths.index(),
+    workspaceManifest: (workspaceId) => w5RecordReadPaths.manifest(workspaceId),
+    worktreeList: (workspaceId) => w5RecordReadPaths.worktrees(workspaceId),
   })(input);
 }

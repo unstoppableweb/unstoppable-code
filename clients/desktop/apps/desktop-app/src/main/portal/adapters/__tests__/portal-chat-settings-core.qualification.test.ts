@@ -6,6 +6,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type { BrowserWindow } from 'electron';
+import { CoreChatUpdateParamsSchema } from '@canopy/protocol/canopy-core';
 import { getActiveDesktopRuntimeIfAccepting } from '../../../canopy-runtime/desktop-runtime';
 import type { DesktopCanopyDispatcher } from '../../../canopy-runtime/desktop-runtime';
 import { requestPortalComposerCommand } from '../../../ipc/portal-composer-command';
@@ -16,15 +17,22 @@ import {
   handlePortalChatSetThinkingLevel,
 } from '../chat-adapter';
 import { queryPortalChatState } from '../chat-state-query';
+import { handlePortalStandaloneChatSend } from '../standalone-chat-adapter';
 import type { PortalAdapterContext } from '../types';
 
 jest.mock('@canopy/desktop-shared/types', () => ({
   ...jest.requireActual<object>('@canopy/desktop-shared/types'),
   resolveKnownModel: jest.fn((model: string) => model),
   getProviderForModel: jest.fn((model: string) =>
-    model.startsWith('copilot-') ? 'copilot' : 'claude',
+    model.startsWith('antigravity:')
+      ? 'antigravity'
+      : model.startsWith('copilot-')
+        ? 'copilot'
+        : 'claude',
   ),
-  requireProviderForModel: jest.fn(() => 'claude'),
+  requireProviderForModel: jest.fn((model: string) =>
+    model.startsWith('antigravity:') ? 'antigravity' : 'claude',
+  ),
 }));
 jest.mock('../../../canopy-runtime/desktop-runtime', () => ({
   ...jest.requireActual<object>('../../../canopy-runtime/desktop-runtime'),
@@ -309,33 +317,42 @@ describe('Portal settings changes through the core (CAN-4110)', () => {
     expect(mockTerminalService.restartForSettingsChange).not.toHaveBeenCalled();
   });
 
-  it('changes the model through the core only when no window can take it', async () => {
-    const windowless = makeContext(null);
-    await handlePortalChatSetModel(
-      envelope('portal-model', { ...target, model: 'claude-sonnet-4-6' }),
-      windowless.context,
-    );
-    expect(lastUpdate()).toMatchObject({
-      commandId: 'portal-model',
-      action: {
-        type: 'chat.set_model',
-        tabId: 'chat-1',
-        model: 'claude-sonnet-4-6',
-      },
-    });
-    expect(requestPortalComposerCommand).not.toHaveBeenCalled();
+  it.each(['claude-sonnet-4-6', 'antigravity:gemini-capture'])(
+    'changes %s through the core only when no window can take it',
+    async (model) => {
+      const windowless = makeContext(null);
+      await handlePortalChatSetModel(
+        envelope('portal-model', { ...target, model }),
+        windowless.context,
+      );
+      expect(lastUpdate()).toMatchObject({
+        commandId: 'portal-model',
+        action: {
+          type: 'chat.set_model',
+          tabId: 'chat-1',
+          model,
+        },
+      });
+      expect(
+        CoreChatUpdateParamsSchema.safeParse(instruction.mock.calls.at(-1)?.[1])
+          .success,
+      ).toBe(true);
+      expect(windowless.fail).not.toHaveBeenCalled();
+      expect(windowless.complete).toHaveBeenCalled();
+      expect(requestPortalComposerCommand).not.toHaveBeenCalled();
 
-    instruction.mockClear();
-    const withWindow = makeContext({
-      isDestroyed: () => false,
-    } as unknown as BrowserWindow);
-    await handlePortalChatSetModel(
-      envelope('portal-model-2', { ...target, model: 'claude-sonnet-4-6' }),
-      withWindow.context,
-    );
-    expect(requestPortalComposerCommand).toHaveBeenCalledTimes(1);
-    expect(instruction).not.toHaveBeenCalled();
-  });
+      instruction.mockClear();
+      const withWindow = makeContext({
+        isDestroyed: () => false,
+      } as unknown as BrowserWindow);
+      await handlePortalChatSetModel(
+        envelope('portal-model-2', { ...target, model }),
+        withWindow.context,
+      );
+      expect(requestPortalComposerCommand).toHaveBeenCalledTimes(1);
+      expect(instruction).not.toHaveBeenCalled();
+    },
+  );
 
   it('reports refused and conflicting changes as the renderer did', async () => {
     instruction.mockResolvedValueOnce({
@@ -423,4 +440,30 @@ describe('Portal settings changes through the core (CAN-4110)', () => {
     expect(requestPortalComposerCommand).toHaveBeenCalledTimes(1);
     expect(instruction).not.toHaveBeenCalled();
   });
+});
+
+test('portal.standalone_chat.send accepts Google identity and retains asset authorization before dispatch', async () => {
+  const { context, fail, complete } = makeContext();
+  const command = {
+    ...envelope('google-assets', {
+      chatId: 'chat-1',
+      userMessageId: 'message-1',
+      message: 'Read the attachment',
+      model: 'antigravity:gemini-capture',
+      providerType: 'antigravity',
+      cloudAttachments: [],
+    }),
+    type: 'portal.standalone_chat.send' as const,
+  };
+  if (!context.chatStatePort) throw new Error('Missing fixture chat port');
+  const mutate = jest.spyOn(context.chatStatePort, 'command');
+  await handlePortalStandaloneChatSend(command, context);
+  expect(fail).toHaveBeenCalledWith(
+    command,
+    'invalid_target',
+    'This paired session cannot send chat attachments.',
+    false,
+  );
+  expect(complete).not.toHaveBeenCalled();
+  expect(mutate).not.toHaveBeenCalled();
 });

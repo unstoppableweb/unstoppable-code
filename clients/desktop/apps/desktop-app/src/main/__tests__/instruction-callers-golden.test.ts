@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-4070 rule: captured on the unchanged create/regenerate callers before
 // CAN-4106 routed their instruction-file decisions through the core-runtime
 // library functions. Each case runs a caller end to end against a real data
@@ -222,6 +223,8 @@ const LAYOUTS: Record<string, Layout> = {
 let root: string;
 let originalDataDir: string | undefined;
 
+let closeW5Store: (() => Promise<void>) | undefined;
+
 beforeEach(async () => {
   __resetSidebarItemsStateForTests();
   mockPlatform = process.platform;
@@ -236,9 +239,11 @@ beforeEach(async () => {
   await write(join(root, 'outside.md'), '# Outside\n');
   originalDataDir = process.env.CANOPY_DATA_DIR;
   process.env.CANOPY_DATA_DIR = dataDir;
+  closeW5Store = await installRoutedW5GoldenStore();
 });
 
 afterEach(async () => {
+  await closeW5Store?.();
   mockRoot.path = '';
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;

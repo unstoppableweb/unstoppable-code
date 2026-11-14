@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-4070 rule: captured on the unchanged `worktree:health-check` IPC handler
 // before CAN-5136 routed it through `worker.git.worktree.health.get`. Real
 // data root, workspace records, registries and Git checkouts; only IPC
@@ -146,6 +147,8 @@ const STALE_ISSUE = {
 };
 
 const repos: Record<string, string> = {};
+
+let closeW5Store: (() => Promise<void>) | undefined;
 
 beforeAll(async () => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'worktree-health-golden-')));
@@ -332,6 +335,7 @@ beforeAll(async () => {
   ]);
 
   registerHandlers();
+  closeW5Store = await installRoutedW5GoldenStore();
 });
 
 // The grants every desktop IPC caller carries (desktop-ipc-caller.ts).
@@ -360,6 +364,7 @@ function registerHandlers(): void {
 }
 
 afterAll(async () => {
+  await closeW5Store?.();
   await runtime?.shutdown();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;

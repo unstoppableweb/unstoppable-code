@@ -622,6 +622,7 @@ function InvitationAlert({
     return (
       <>
         <Notice
+          errorSource="sidebar-context-invitations-error"
           intent="destructive"
           className="mx-1 my-1"
           data-testid="sidebar-context-invitations-error"
@@ -646,6 +647,7 @@ function InvitationAlert({
   }
   return (
     <Notice
+      errorSource="sidebar-context-invitations-error"
       intent="destructive"
       className="mt-1"
       data-testid="sidebar-context-invitations-error"

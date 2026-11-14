@@ -89,9 +89,8 @@ export interface TurnAuthPreflightInput {
   /**
    * The provider the turn will run on, when the caller knows it.
    *
-   * Accepted but deliberately unused as a blocking signal — see
-   * {@link resolveTurnAuthBlockers}. It is part of the input so the seam exists
-   * for a later slice that can prove a provider dead end from cache.
+   * Used to exclude extensions that the provider cannot load. It does not
+   * establish provider sign-in or billing eligibility.
    */
   providerType?: AgentProviderType;
 }
@@ -356,7 +355,8 @@ async function resolveMcpBlockers(
  *     AND no credits lane) is a BILLING verdict already owned by
  *     `resolveConcreteModelDispatchability`, and reaching it requires the
  *     provider CLI probe this module may not run. So no provider blocker is
- *     emitted here; `input.providerType` exists as the seam, not as a signal.
+ *     emitted here. `input.providerType` only excludes unloaded extension
+ *     dependencies; it is not an authentication signal.
  *   - INTEGRATIONS. Nothing declares that a chat turn needs GitHub or Linear —
  *     `resolveGitHubTokenWithSource` / `resolveLinearToken` are consumed only
  *     by pipeline `secretEnv` — so no turn can be *known* to require them.

@@ -8,8 +8,8 @@ import type {
 import {
   Badge,
   Button,
-  buttonClassName,
   ExecutionActionButton,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL } from '@canopy/ui-shared/lib';
@@ -142,9 +142,8 @@ function SourceLink({ source }: { source: InstalledShareSource }): JSX.Element {
   }
   const { onNavigate } = source;
   return (
-    <a
+    <TextLink
       href={source.href}
-      className={buttonClassName({ variant: 'link' })}
       data-testid="installed-share-source-link"
       onClick={
         onNavigate
@@ -166,7 +165,7 @@ function SourceLink({ source }: { source: InstalledShareSource }): JSX.Element {
       }
     >
       {VIEW_SHARED_SKILL_LABEL}
-    </a>
+    </TextLink>
   );
 }
 

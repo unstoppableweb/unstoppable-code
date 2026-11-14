@@ -8,6 +8,7 @@ export type PlanSource =
   | 'ollama'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | 'pipeline'
   | 'imported'

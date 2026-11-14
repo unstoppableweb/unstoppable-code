@@ -686,6 +686,7 @@ export function WatcherManagementModal({
                           )}
                           {deleteError && (
                             <ErrorBanner
+                              errorSource="watcher-management-modal"
                               className=""
                               testId={`watcher-management-delete-error-${watcher.id}`}
                               error="Could not delete watcher."
@@ -693,6 +694,7 @@ export function WatcherManagementModal({
                           )}
                           {rowJumpError && (
                             <ErrorBanner
+                              errorSource="watcher-management-modal-row-jump"
                               className=""
                               testId={`watcher-management-jump-error-${watcher.id}`}
                               error={rowJumpError}

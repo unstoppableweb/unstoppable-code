@@ -1,3 +1,5 @@
+import { useDesktopAutoDeleteAttention } from '@/components/worktree/useDesktopAutoDeleteAttention';
+import { DesktopAutoDeleteAttention } from '@/components/worktree/DesktopAutoDeleteAttention';
 import {
   useSidebarAutoDelete,
   SidebarAutoDeleteProvider,
@@ -311,6 +313,7 @@ export const AppAdvisorNav = memo(function AppAdvisorNav(
 });
 
 function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
+  const attention = useDesktopAutoDeleteAttention();
   const workEntries = useStandaloneChatStore((s) => s.workEntries);
   // Advisor chats key as `(app-advisor, <workEntryId>)`, so a waiting
   // question's worktreeId is its entry. Joined to keep the selection stable.
@@ -767,6 +770,7 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
                   commands={commands}
                   unitLabel={{ singular: 'chat', plural: 'chats' }}
                   rowGap="hairline"
+                  itemGap="hairline"
                   canDragRow={(): boolean => true}
                   // A drag of a selected entry carries the whole selection.
                   selectionCount={selectionBinding.selection.count}
@@ -875,6 +879,9 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
         >
           {bulk.notice}
         </div>
+      )}
+      {!collapsed && (
+        <DesktopAutoDeleteAttention attention={attention} announce={false} />
       )}
       {/* Outside the collapsed-unmount block: results stay viewable while the
           nav collapses. */}

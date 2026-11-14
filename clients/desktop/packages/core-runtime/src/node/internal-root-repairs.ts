@@ -28,6 +28,8 @@ export interface InternalRootLifecycleJournalEvidence {
 }
 
 export interface InternalRootRepairPlan {
+  /** Worker-validated recovery storage preimage, frozen in the transaction sidecar. */
+  readonly archiveRecovery?: string;
   /** In-memory evidence; persistence keeps it in a transaction-bound sidecar. */
   readonly lifecycleJournals?: readonly InternalRootLifecycleJournalEvidence[];
   readonly abandonedPaths?: readonly string[];

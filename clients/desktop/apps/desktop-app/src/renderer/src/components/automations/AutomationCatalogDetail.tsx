@@ -190,6 +190,7 @@ export function AutomationCatalogDetail({
 
       {update.error !== null && (
         <Notice
+          errorSource="automation-catalog-update-error"
           intent="destructive"
           title="Couldn't load the update."
           data-testid="automation-catalog-update-error"
@@ -420,6 +421,7 @@ export function SharedAutomationMarketplaceDetail({
   if (error !== null) {
     return (
       <Notice
+        errorSource="shared-automation-load"
         intent="destructive"
         title="Couldn't load this automation."
         data-testid="automation-source-error"
@@ -525,6 +527,7 @@ export function CuratedAutomationMarketplaceDetail({
   if (error !== null) {
     return (
       <Notice
+        errorSource="curated-automation-load"
         intent="destructive"
         title="Couldn't load this automation."
         data-testid="automation-source-error"

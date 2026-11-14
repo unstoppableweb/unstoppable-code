@@ -70,6 +70,7 @@ import { registerApprovalHandlers } from './approvals';
 import { registerCopilotConnectionHandlers } from './copilot-connection';
 import { registerOpenCodeConnectionHandlers } from './opencode-connection';
 import { registerAccountProxyHandlers } from './account-proxy';
+import { registerLocalModelGatewayHandlers } from './local-model-gateway';
 import { registerCursorConnectionHandlers } from './cursor-connection';
 import { registerCursorApprovalCheckHandlers } from './cursor-approval-check';
 import { registerFileAnnotationsHandlers } from './file-annotations';
@@ -152,6 +153,8 @@ import { registerSharedMultiRepoHandlers } from './org-shared-multi-repo';
 import { registerOrgProjectsHandlers } from './org-projects';
 import { registerCloudProjectsHandlers } from './cloud-projects';
 import { registerCloudChatsHandlers } from './cloud-chats';
+import { registerCloudCopyHandlers } from './cloud-copy';
+import { registerCloudReachBackHandlers } from './cloud-reach-back';
 import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
 import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
 import { registerLaunchAtLoginHandlers } from './launch-at-login';
@@ -310,6 +313,7 @@ export function registerAllIpcHandlers(
   registerCopilotConnectionHandlers();
   registerOpenCodeConnectionHandlers();
   registerAccountProxyHandlers();
+  registerLocalModelGatewayHandlers();
   registerFileAnnotationsHandlers(
     () => [accessors.getMainWindow(), accessors.getAppAdvisorWindow()],
     canopyRuntime.dispatcher,
@@ -333,7 +337,7 @@ export function registerAllIpcHandlers(
   registerRepoHandlers(canopyRuntime);
   registerCloneJobHandlers();
   registerWorktreeHandlers(getMainWindow, canopyRuntime);
-  registerWorktreeDiscardHandlers();
+  registerWorktreeDiscardHandlers(canopyRuntime);
   registerWorktreeDiscoveryHandlers(getMainWindow);
   registerHomeSurfaceHandlers(canopyRuntime);
   registerFileTreeHandlers(
@@ -479,6 +483,8 @@ export function registerAllIpcHandlers(
   registerOrgProjectsHandlers();
   registerCloudProjectsHandlers();
   registerCloudChatsHandlers(canopyRuntime.resolveRelaySurface);
+  registerCloudCopyHandlers(canopyRuntime.resolveRelaySurface);
+  registerCloudReachBackHandlers(canopyRuntime.resolveRelaySurface);
   registerSharedMultiRepoHandlers(canopyRuntime);
   const closeAccountOrganizationSettings =
     registerAccountOrganizationSettingsHandlers();

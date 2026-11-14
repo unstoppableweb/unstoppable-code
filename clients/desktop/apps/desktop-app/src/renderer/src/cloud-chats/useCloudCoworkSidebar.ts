@@ -23,7 +23,6 @@ import {
   markTaskCreated,
   trackTaskCreation,
 } from '@/stores/chat/web-core/task-creations';
-import { cloudChatsUseStandalonePage } from './cloud-chat-routing';
 import {
   markCloudTaskClick,
   markCloudTaskCreateSettled,
@@ -272,31 +271,46 @@ function followTaskListing(scope: {
 }
 
 /**
- * A cloud project's "+". On the cowork page the new task opens at once,
+ * A cloud project's "+". The new task opens at once on the cowork page,
  * through the work-entry seam, while the web core creates it (CAN-6098): its
  * row shows the create pending, then failed with a retry if the web core
- * refuses it. CloudChatPage reads a task as soon as it opens and holds a
- * missing one as gone, and the list opens a row as soon as it shows, so
- * there the task's row shows once it exists, as before, and a refused create
- * rejects with no row left.
+ * refuses it.
  */
-export async function createCloudSidebarTask(
+export function createCloudSidebarTask(
   projectId: string,
 ): Promise<WorktreeCreateResult> {
+  try {
+    const { worktreeId } = beginCloudTask(projectId);
+    return Promise.resolve({ status: 'completed', worktreeId });
+  } catch (error) {
+    return Promise.reject(
+      error instanceof Error ? error : new Error('Not a cloud project.'),
+    );
+  }
+}
+
+/**
+ * Starts a cloud task and opens it, as a cloud project's "+" does.
+ * `beforeOpen` runs once the task has its id, before its page opens, such
+ * as to hand its composer a draft. Throws for a project that isn't a cloud
+ * one, or while cloud chats are offline.
+ */
+export function beginCloudTask(
+  projectId: string,
+  beforeOpen?: (target: {
+    readonly projectId: string;
+    readonly worktreeId: string;
+  }) => void,
+): { readonly worktreeId: string; readonly created: Promise<unknown> } {
   const workspaceId = webCoreLocalId(projectId);
   if (workspaceId === null) throw new Error('Not a cloud project.');
-  if (!cloudChatsUseStandalonePage) {
-    const task = await cloudCoworkStore.getState().createTask(workspaceId);
-    const worktreeId = webCoreScopeId(task.worktreeId);
-    openCoworkWorkEntryFromSidebar(projectId, worktreeId);
-    return { status: 'completed', worktreeId };
-  }
   const { task, created } = cloudCoworkStore.getState().beginTask(workspaceId);
   markCloudTaskClick(task.worktreeId);
   const worktreeId = webCoreScopeId(task.worktreeId);
   followTaskCreation({ projectId, worktreeId }, created);
+  beforeOpen?.({ projectId, worktreeId });
   openCoworkWorkEntryFromSidebar(projectId, worktreeId);
-  return { status: 'completed', worktreeId };
+  return { worktreeId, created };
 }
 
 /** Creates a cloud task the web core refused again, under the same id. */

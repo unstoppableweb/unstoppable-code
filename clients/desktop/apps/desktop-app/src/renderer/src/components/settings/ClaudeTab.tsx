@@ -422,6 +422,7 @@ export function ClaudeTab({
   return (
     <SettingsPage title="Claude" dataTestId="settings-tab-claude">
       <DesktopErrorBanner
+        errorSource="settings-claude-save-error"
         className=""
         error={saveError?.error}
         {...(saveError?.details === undefined

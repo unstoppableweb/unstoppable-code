@@ -1,9 +1,12 @@
-import type { JSX, KeyboardEvent } from 'react';
+import { useRef, useState, type JSX, type KeyboardEvent } from 'react';
 import type { ModelCatalogProvider } from '@canopy/protocol/models';
-import { ArchiveIcon } from '../icons/AppIcons';
-import { Button } from './Button';
+import { ArchiveIcon, MoreHorizontalIcon } from '../icons/AppIcons';
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { RailIconButton } from './RailIconButton';
+import { FloatingMenu } from './FloatingMenu';
+import { ActionMenuRowStyle } from './ActionMenuItems';
+import { WorkEntryRowMenuItems } from './WorkEntryRow';
 
 export type StandaloneChatProviderType = ModelCatalogProvider;
 
@@ -56,8 +59,20 @@ export function StandaloneChatRow({
   dataChatId,
   touchTarget = false,
 }: StandaloneChatRowProps): JSX.Element {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuAnchor = useRef<HTMLButtonElement>(null);
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (archivingInFlight) return;
+    // Keys on the nested Archive button are that button's own activation.
+    if (archivingInFlight || event.target !== event.currentTarget) return;
+    if (
+      onArchive &&
+      !archived &&
+      (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
+    ) {
+      event.preventDefault();
+      setMenuOpen(true);
+      return;
+    }
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       onSelect?.();
@@ -72,7 +87,7 @@ export function StandaloneChatRow({
     : modelLabel
       ? 'min-h-8 py-1'
       : 'h-8 py-0';
-  const wrapperBaseClass = `group flex w-full min-w-0 cursor-pointer items-center ${heightClass} gap-1.5 rounded-row px-1.5 text-left text-s transition-colors`;
+  const wrapperBaseClass = `group group/sidebar-item flex w-full min-w-0 cursor-pointer items-center ${heightClass} gap-1.5 rounded-row px-1.5 text-left text-s transition-colors`;
   const stateClass = selected
     ? 'bg-muted fg-primary'
     : archived
@@ -86,10 +101,21 @@ export function StandaloneChatRow({
       data-testid={dataTestId}
       data-standalone-chat-id={dataChatId}
       data-archived={archived ? 'true' : 'false'}
+      aria-disabled={archivingInFlight || undefined}
+      aria-busy={archivingInFlight || undefined}
       onClick={() => {
         if (!archivingInFlight) onSelect?.();
       }}
       onKeyDown={handleKeyDown}
+      onContextMenu={
+        onArchive && !archived
+          ? (event): void => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!archivingInFlight) setMenuOpen(true);
+            }
+          : undefined
+      }
       className={`${wrapperBaseClass} ${stateClass} ${archivingInFlight ? 'pointer-events-none opacity-50' : ''}`}
     >
       {providerType ? (
@@ -109,22 +135,55 @@ export function StandaloneChatRow({
         )}
       </div>
       {onArchive && !archived && (
-        // The wrapper owns the reveal; the 28px quiet icon button overhangs
-        // the row's 6px end inset (`-mx-1`), so the title keeps its width.
-        <span className="-mx-1 inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
-          <Button
-            variant="ghost-quiet"
-            size="sm"
-            iconOnly
-            onClick={(e) => {
-              e.stopPropagation();
-              onArchive();
-            }}
+        <span
+          className="flex shrink-0 items-center"
+          onClick={(event): void => event.stopPropagation()}
+          onKeyDown={(event): void => event.stopPropagation()}
+        >
+          <RailIconButton
+            icon={ArchiveIcon}
+            iconSize={14}
+            disabled={archivingInFlight}
+            onClick={onArchive}
+            revealOnItemHover
             aria-label="Archive chat"
+            tooltipLabel="Archive this entry and all of its chats"
             data-testid="standalone-chat-row-archive"
+          />
+          <RailIconButton
+            ref={menuAnchor}
+            icon={MoreHorizontalIcon}
+            disabled={archivingInFlight}
+            coarsePointerTarget
+            touchTarget={touchTarget}
+            onClick={(): void => setMenuOpen((open) => !open)}
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            data-testid="standalone-chat-row-menu"
+          />
+          <FloatingMenu
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            anchorRef={menuAnchor}
+            placement="bottom-right"
+            interaction="menu"
           >
-            <ArchiveIcon size={14} aria-hidden="true" />
-          </Button>
+            <ActionMenuRowStyle>
+              <WorkEntryRowMenuItems
+                menu={{
+                  close: (): void => setMenuOpen(false),
+                  testIdFor: (suffix): string =>
+                    `standalone-chat-row-menu${suffix}`,
+                }}
+                archiveTitle="Archive this entry and all of its chats"
+                removalDisabledReason={
+                  archivingInFlight ? 'Archiving…' : undefined
+                }
+                onArchive={onArchive}
+              />
+            </ActionMenuRowStyle>
+          </FloatingMenu>
         </span>
       )}
     </div>

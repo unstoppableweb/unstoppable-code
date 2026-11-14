@@ -357,6 +357,7 @@ export function WindowsGitRequiredScreen({
           </p>
           {state.kind === 'error' && (
             <ErrorBanner
+              errorSource="git-gate-error"
               className="w-full"
               error={state.message}
               testId="git-gate-error"

@@ -452,6 +452,8 @@ export function DisclosureChevron({
  *   would misalign them with their siblings.
  * - `tree-icon`: a row's icon that turns into the chevron on hover.
  * - `row`: a label and a value on one line, with the body further down.
+ * - `usage-section`: a section label whose hit area covers its row, with
+ *   independent actions and the chevron placed after it by the parent.
  * - `summary`, `summary-wrapping`: a card's title row, whose hit area
  *   stretches over the card; `summary-wrapping` gives the row to its actions
  *   below 32rem.
@@ -464,6 +466,7 @@ export type DisclosureToggleVariant =
   | 'tree'
   | 'tree-icon'
   | 'row'
+  | 'usage-section'
   | 'summary'
   | 'summary-wrapping';
 
@@ -486,6 +489,8 @@ const DISCLOSURE_TOGGLE_CLASS: Readonly<
   'tree-icon':
     'focus-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11 flex rounded-sm fg-tertiary hover:fg-primary',
   row: 'group focus-ring flex items-center justify-between gap-3 rounded-sm text-left text-xs pointer-coarse:min-h-11 pointer-coarse:min-w-11',
+  'usage-section':
+    "group peer focus-ring flex flex-1 items-center rounded-sm text-left text-xs pointer-coarse:min-h-11 pointer-coarse:min-w-11 after:absolute after:inset-0 after:content-['']",
   summary: SUMMARY_TOGGLE_CLASS,
   'summary-wrapping': `${SUMMARY_TOGGLE_CLASS} basis-full @min-[32rem]/turn-files:basis-0`,
 };

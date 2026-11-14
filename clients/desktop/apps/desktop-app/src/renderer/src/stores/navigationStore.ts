@@ -1204,6 +1204,12 @@ export const useNavigationStore = create<NavigationState>(
         });
         return;
       }
+      // CAN-6175 R2b: cloud tasks open on the cowork page; the retired cloud
+      // chat page's id still arrives from older controllers.
+      if (requestedPage === 'cloud-chat') {
+        get().navigate('chat');
+        return;
+      }
       const apply = (): void => {
         // CAN-4269: the Environments page moved into Settings → Environments.
         if (requestedPage === 'environments') {

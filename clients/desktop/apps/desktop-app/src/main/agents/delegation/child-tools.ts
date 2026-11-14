@@ -60,7 +60,7 @@ export function childDelegationGuidance(
  * descriptions and advertised schemas as the chat's. Their names follow the
  * injected-tool registry, so a child's calls render like a chat's.
  */
-const CHILD_LEDGER_TOOLS: readonly {
+export const CHILD_LEDGER_TOOLS: readonly {
   readonly key: LedgerToolKey;
   readonly description: string;
   readonly inputSchema: JsonValue;

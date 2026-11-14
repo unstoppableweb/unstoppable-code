@@ -1,3 +1,5 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import type { IpcMainInvokeEvent } from 'electron';
 import { DESKTOP_FILE_IMAGE_SAVE_SUPPORT } from '@canopy/protocol/file-image-save';
 import { posix, resolve, sep, win32 } from 'node:path';
@@ -283,6 +285,19 @@ export function registerFileTreeHandlers(
   registerIpcHandler<[FileIndexRequest], FileIndexResponse>(
     IPC_CHANNELS.fileIndexGet,
     async (event, request) => {
+      if (!request || typeof request !== 'object')
+        throw classifyError(
+          new Error('Expected a file-index request.'),
+          'input.not_accepted',
+        );
+      try {
+        validateId(request.projectId, 'projectId');
+        validateId(request.worktreeId, 'worktreeId');
+      } catch (error) {
+        if (error instanceof IdentifierValidationError)
+          throw classifyError(error, 'input.not_accepted');
+        throw error;
+      }
       try {
         return await dispatcher.queryFileIndexForLegacyIpc(
           request,
@@ -290,6 +305,21 @@ export function registerFileTreeHandlers(
           { sender: event.sender },
         );
       } catch (error) {
+        if (error instanceof CanopyOperationError) {
+          const { code, message } = error.payload;
+          if (
+            code === 'worker.filesystem.roots.notFound' ||
+            code === 'worker.filesystem.roots.revisionConflict' ||
+            code === 'worker.filesystem.search.notFound' ||
+            code === 'worker.filesystem.search.revisionConflict'
+          ) {
+            const legacy =
+              error.runtimeCause instanceof Error
+                ? error.runtimeCause
+                : new Error(message);
+            throw classifyError(legacy, 'external.state_changed');
+          }
+        }
         return rethrowLegacyFileTreeError(error);
       }
     },

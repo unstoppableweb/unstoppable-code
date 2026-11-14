@@ -536,6 +536,7 @@ function ReadinessNotice({
   }
   return (
     <Notice
+      errorSource="code-graph-summary"
       intent="destructive"
       shape="settings"
       data-testid={`${testId}-message`}
@@ -608,6 +609,7 @@ export function CodeGraphSummaryView({
           />
         ) : (
           <Notice
+            errorSource="code-graph-summary-load"
             intent="destructive"
             shape="settings"
             actions={
@@ -623,6 +625,7 @@ export function CodeGraphSummaryView({
         )}
         {buildErrorMessage && (
           <Notice
+            errorSource="code-graph-summary-build"
             intent="destructive"
             shape="settings"
             data-testid={`${testId}-build-error`}
@@ -696,6 +699,7 @@ export function CodeGraphSummaryView({
         <div className="flex flex-col gap-4">
           {buildErrorMessage && (
             <Notice
+              errorSource="code-graph-summary-build"
               intent="destructive"
               shape="settings"
               data-testid={`${testId}-build-error`}
@@ -736,6 +740,7 @@ export function CodeGraphSummaryView({
         <div className="flex flex-col gap-4" data-testid={`${testId}-missing`}>
           {buildErrorMessage && (
             <Notice
+              errorSource="code-graph-summary-build"
               intent="destructive"
               shape="settings"
               data-testid={`${testId}-build-error`}
@@ -767,6 +772,7 @@ export function CodeGraphSummaryView({
           <EmptyStateRow title="No Code Graph has been generated yet." />
           {buildErrorMessage && (
             <Notice
+              errorSource="code-graph-summary-build"
               intent="destructive"
               shape="settings"
               data-testid={`${testId}-build-error`}
@@ -816,6 +822,7 @@ export function CodeGraphSummaryView({
           )}
           {buildErrorMessage && (
             <Notice
+              errorSource="code-graph-summary-build"
               intent="destructive"
               shape="settings"
               data-testid={`${testId}-build-error`}

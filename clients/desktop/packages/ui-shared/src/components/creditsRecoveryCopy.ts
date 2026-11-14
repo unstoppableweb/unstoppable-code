@@ -29,6 +29,10 @@ export const MESSAGE_QUEUED_TITLE = 'Message queued';
 export const QUEUED_MESSAGE_RETAINED_COPY =
   'Your queued message is still saved. Add credits, then click Try again.';
 
+/** Saved queue status while the account needs credits. */
+export const CREDIT_HELD_MESSAGE_WARNING_COPY =
+  'Your queued message is still saved. Add credits to continue.';
+
 /** The web recovery notice's title. */
 export const OUT_OF_CREDITS_TITLE = "You're out of AI credits";
 

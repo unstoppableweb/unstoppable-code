@@ -1,3 +1,4 @@
+import { toAppError } from '@canopy/protocol/app-errors';
 import { randomBytes } from 'node:crypto';
 import {
   decodeDeviceRelayDataFrame,
@@ -582,10 +583,18 @@ describe('session resume across relay drops', () => {
     const link = await connect(env);
     env.relay.drop(env.host.identity.deviceId);
     await env.relay.settle();
+    // The request is sent once the controller knows the host dropped, so its
+    // deadline never starts before the hold.
+    expect(link.controllerSession.state).toBe('suspended');
+    // Suspended for longer than the deadline, which must not run meanwhile,
+    // and well inside the controller's 1.5 s resume deadline, with slack on
+    // both sides. After the resume the deadline's full 500 ms covers the
+    // resume handshake and the answer, even on a loaded machine.
     const answer = link.controllerRpc.request('echo', 'held', {
-      timeoutMs: 100,
+      timeoutMs: 500,
     });
-    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    await new Promise<void>((resolve) => setTimeout(resolve, 650));
+    expect(link.controllerSession.state).toBe('suspended');
     env.relay.connect(env.host.identity.deviceId);
     await expect(answer).resolves.toBe('held');
   });
@@ -752,6 +761,7 @@ class SocketRelay {
   private readonly hellos = new Map<string, number>();
   /** How old each connection was when its client closed it. */
   readonly clientClosedAges: number[] = [];
+  bufferedAmount = 0;
 
   constructor(private readonly maxConnectionAgeMs: number) {}
 
@@ -765,8 +775,11 @@ class SocketRelay {
     setImmediate(() => {
       if (connection.open) handlers.onOpen();
     });
+    const getBufferedAmount = (): number => this.bufferedAmount;
     return {
-      bufferedAmount: 0,
+      get bufferedAmount(): number {
+        return getBufferedAmount();
+      },
       transmit: (data): void => this.receive(connection, data),
       close: (): void => this.close(connection),
     };
@@ -855,7 +868,7 @@ class SocketRelay {
   }
 }
 
-describe('planned relay rotation', () => {
+describe('socket-backed relay sessions', () => {
   const clients: RelayClient[] = [];
   const diagnostics: RelayClientDiagnostic[] = [];
 
@@ -886,7 +899,8 @@ describe('planned relay rotation', () => {
     relay: SocketRelay,
     identity: DeviceKeyPair,
     name: string,
-  ): Ends['host'] & { manager: RemoteSessionManager } {
+    maxQueuedBytes?: number,
+  ): Ends['host'] & { manager: RemoteSessionManager; client: RelayClient } {
     const client = new RelayClient({
       fetchToken: (): Promise<DeviceRelayTokenResponse> =>
         Promise.resolve({
@@ -907,6 +921,7 @@ describe('planned relay rotation', () => {
         diagnostics.push(diagnostic);
       },
       minConnectionAgeMs: 0,
+      maxQueuedBytes,
     });
     clients.push(client);
     const incoming: SecureSession[] = [];
@@ -922,8 +937,56 @@ describe('planned relay rotation', () => {
     });
     managers.push(manager);
     client.start();
-    return { identity, manager, incoming };
+    return { identity, manager, incoming, client };
   }
+
+  it.each([
+    { reason: 'disconnected', code: 'external.offline' },
+    { reason: 'queue-full', code: 'app.unexpected' },
+  ])(
+    'classifies a $reason relay send during remote-control:invoke',
+    async ({ reason, code }) => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const relay = new SocketRelay(600_000);
+      const controller = rotatingSide(
+        relay,
+        generateDeviceKeyPair(),
+        'Controller',
+        1,
+      );
+      const peer = generateDeviceKeyPair();
+      await advanceUntil(
+        relay,
+        () => controller.client.connectionStatus === 'connected',
+        'controller ready',
+      );
+
+      if (reason === 'disconnected') {
+        controller.client.stop();
+      } else {
+        relay.bufferedAmount = 16 * 1024 * 1024;
+        expect(controller.client.connectionStatus).toBe('connected');
+      }
+
+      await expect(
+        controller.manager
+          .connect({
+            peerDeviceId: peer.deviceId,
+            purpose: 'control',
+            pinnedPeerPublicKey: peer.publicKey,
+          })
+          .catch((error: unknown) => toAppError(error)),
+      ).resolves.toMatchObject({ code });
+      expect(
+        controller.client.sendFrame(peer.deviceId, Buffer.from('test')),
+      ).toBe(false);
+      expect(
+        controller.client.sendFrame(peer.deviceId, Buffer.from('test'), {
+          includeFailureReason: true,
+        }),
+      ).toBe(reason);
+    },
+  );
 
   it('reconnects before the advertised maximum age, and sessions resume with no loss', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });

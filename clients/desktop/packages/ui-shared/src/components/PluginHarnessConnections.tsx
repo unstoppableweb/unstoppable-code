@@ -11,12 +11,12 @@ import { DataTable } from './DataTable';
 import { Tooltip } from './Tooltip';
 
 /**
- * Every harness's name and mark, in display order. Keyed by the full harness
- * union, so a new harness fails typecheck until it has both.
+ * Plugin harness names and marks, in display order. Antigravity is chat-only
+ * and rejects plugins, so it has no plugin connection entry.
  */
 const HARNESSES: Readonly<
   Record<
-    AgentExecutionHarness,
+    Exclude<AgentExecutionHarness, 'antigravity'>,
     { name: string; Logo: ComponentType<SVGProps<SVGSVGElement>> }
   >
 > = {

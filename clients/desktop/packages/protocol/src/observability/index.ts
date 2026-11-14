@@ -16,7 +16,8 @@ export type AgentAuditProvider =
   | 'ollama'
   | 'cursor'
   | 'opencode'
-  | 'copilot';
+  | 'copilot'
+  | 'antigravity';
 
 /** Mirrors desktop-shared `ModelHarnessSource`. */
 export type AgentAuditModelSource =
@@ -24,6 +25,7 @@ export type AgentAuditModelSource =
   | 'codex-managed'
   | 'cursor-managed'
   | 'copilot-managed'
+  | 'antigravity-managed'
   | 'opencode-managed'
   | 'ai-gateway'
   | 'ollama';
@@ -501,6 +503,8 @@ export interface AgentAuditEntry {
    * model's registry id.
    */
   model?: string;
+  /** Agent identity, independent of the model that served the turn. */
+  agentId?: string;
   /**
    * The selection the turn was started with, which may be an Agent id rather
    * than a model id. Set once at turn start and never overwritten by provider
@@ -1214,6 +1218,7 @@ export interface ChatTurnUsageEvent extends UsageMetricEventBase {
   chatId: string;
   auditEntryId?: string;
   model?: string;
+  agentId?: string;
   turnStartedAt: string;
   turnCompletedAt?: string;
   turnDurationMs?: number;

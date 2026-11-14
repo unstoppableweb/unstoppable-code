@@ -1,16 +1,48 @@
-import type { ApprovalsApi, ChatApi } from '@canopy/desktop-shared/types';
+import type {
+  ApprovalsApi,
+  ChatApi,
+  ChatCancelRequest,
+  ChatCancelResult,
+} from '@canopy/desktop-shared/types';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { reportUnhandledRendererRejection } from '@/lib/renderer-error-logging';
 import { webCoreChatBackend } from './web-core';
 
+/**
+ * A Stop as a chat backend reports it. A cloud chat's backend also answers
+ * `not_stopped` when the turn may still run but nothing could name it to
+ * cancel, so Stop stays to try again (CAN-6592). Only the renderer's web core
+ * backend says it: main's `chat:cancel` reply, which remote controllers read,
+ * keeps `ChatCancelResult`.
+ */
+export interface ChatBackendCancelResult extends Omit<
+  ChatCancelResult,
+  'outcome'
+> {
+  outcome?: ChatCancelResult['outcome'] | 'not_stopped';
+}
+
+/**
+ * A Stop as the chat store asks a backend for it. A cloud chat's Stop names
+ * its attempt: a later attempt is a retry, which sends its own cancel rather
+ * than wait on an earlier one (CAN-6592). Main's `chat:cancel` never gets it.
+ */
+export interface ChatBackendCancelRequest extends ChatCancelRequest {
+  readonly attempt?: number;
+}
+
 /** The chat I/O a scope's authority must serve for the chat store. */
-export type ChatBackendChatApi = Pick<
+export type ChatBackendChatApi = ChatBackendChatIo & {
+  cancel(req: ChatBackendCancelRequest): Promise<ChatBackendCancelResult>;
+};
+
+type ChatBackendChatIo = Pick<
   ChatApi,
   | 'activeSessions'
   | 'archiveTab'
-  | 'cancel'
   | 'cancelDeferredToolsReload'
+  | 'cancelTranscriptSearch'
   | 'cancelQueuedMessage'
   | 'changeModel'
   | 'command'
@@ -36,6 +68,7 @@ export type ChatBackendChatApi = Pick<
   | 'resetToPoint'
   | 'restoreArchive'
   | 'resumeStoppedTurn'
+  | 'searchTranscript'
   | 'sendMessage'
   | 'setQueuedHookChatInterfaceMode'
   | 'setQueuedMessageEditLock'

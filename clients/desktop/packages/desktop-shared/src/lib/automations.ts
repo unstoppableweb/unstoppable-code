@@ -1,3 +1,4 @@
+import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
 // ---------------------------------------------------------------------------
 // Automations — shared trigger + automation helpers
 // ---------------------------------------------------------------------------
@@ -1054,6 +1055,12 @@ function validateAutomationModelAliasPreferences(
       if (!agentId || !agentId.startsWith('agent_model_')) {
         return `modelAliasPreferences.${trimmedAliasId}.agent_id must be an Agent model id.`;
       }
+      const parsed = parsePipelineAgentAliasRoute({
+        agent_id: agentId,
+        base: rawPreference.base,
+      });
+      if (!parsed.ok)
+        return `modelAliasPreferences.${trimmedAliasId}: ${parsed.error}`;
       continue;
     }
     if (rawPreference.mode === 'inline') {

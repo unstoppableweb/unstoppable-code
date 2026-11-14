@@ -1,4 +1,4 @@
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type * as WorkerThreads from 'node:worker_threads';
 import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
 
@@ -27,10 +27,21 @@ export function startW5TestCommitLogHost(options: {
   readonly root: string;
   readonly logDirectory: string;
 }): W5CommitLogHost {
+  const repositoryRoot = resolve(__dirname, '../../../../../../..');
+  // Match the native CI addon override and build-owned-child.mjs default output.
+  const confinementAddon =
+    process.platform === 'win32'
+      ? resolve(
+          repositoryRoot,
+          process.env.CANOPY_OWNED_CHILD_ADDON ||
+            `.cache/native-owned-child/win32-${process.arch}/core-owned-child.node`,
+        )
+      : undefined;
   return new W5CommitLogHost({
     dbPath: join(options.logDirectory, 'commit-log.sqlite'),
     root: options.root,
     dataRoot: dirname(options.root),
     workerEntry: join(__dirname, 'w5-commit-log-test-worker.ts'),
+    confinementAddon,
   });
 }

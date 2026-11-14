@@ -54,7 +54,12 @@ function AutomationInstallContinuationModal(): JSX.Element | null {
             <p>Refreshing the share and your projects…</p>
           ) : (
             <>
-              <Notice intent="destructive">{state.error}</Notice>
+              <Notice
+                errorSource="automation-install-continuation-modal"
+                intent="destructive"
+              >
+                {state.error}
+              </Notice>
               <Button
                 className="self-start"
                 variant="secondary"

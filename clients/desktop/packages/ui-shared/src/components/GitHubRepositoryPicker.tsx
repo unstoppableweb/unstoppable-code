@@ -227,7 +227,11 @@ function PagingFooter({
   return (
     <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t bg-base px-3 py-2">
       {error ? (
-        <ErrorBanner className="min-w-0 flex-1" error={error} />
+        <ErrorBanner
+          errorSource="paging-footer"
+          className="min-w-0 flex-1"
+          error={error}
+        />
       ) : (
         <span aria-hidden="true" />
       )}

@@ -14,4 +14,6 @@ if (!rootElement) {
   throw new Error('Root element not found');
 }
 
-createRoot(rootElement).render(<FieldsLabPage />);
+createRoot(rootElement).render(
+  <FieldsLabPage onColorModeChange={(mode) => applyTheme('default', mode)} />,
+);

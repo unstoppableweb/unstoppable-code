@@ -20,6 +20,7 @@ import type {
   CoworkWorkspaceSettings,
   DependentBaseBranchUpdate,
   SidebarItem,
+  SidebarItemsFile,
   WorkspaceConfigFile,
   WorkspaceIndexEntry,
   WorkspaceOwnerBinding,
@@ -409,7 +410,7 @@ export interface W5RecordDecisionPort {
   // W6a1 (CAN-4815), in `workspace-creation-decision-port.ts`.
   applyWorkspaceAdditionDecision(
     decision: WorkspaceAdditionDecision,
-  ): Promise<void>;
+  ): Promise<SidebarItemsFile>;
   applyWorkspaceCreationDecision(
     decision: WorkspaceCreationDecision,
     beforeEffects: () => void,

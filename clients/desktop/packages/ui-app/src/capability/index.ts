@@ -37,6 +37,8 @@ export * from './sharedByYouCopyLinkMenuItem';
 export * from './CuratedMcpDetail';
 export * from './McpServerReadDetail';
 export * from './McpServerManagement';
+export * from './CloudReachBackSection';
+export * from './ReachBackApprovalDialog';
 export * from './ProviderConnectorDetail';
 
 export {
@@ -68,3 +70,4 @@ export * from './MarketplaceOwnerRow';
 export * from './marketplaceCopyLinkMenuItem';
 export * from './claude-mods';
 export { githubRepoRef } from './pluginProvenance';
+export * from './CloudCopyConsentDialog';

@@ -235,6 +235,13 @@ export function PipelineEditAdapter({
   );
 
   const projects = useProjectsStore((state) => state.projects);
+  // CAN-6065: Remove on an installed workflow's last schedule opens the
+  // page's Delete confirmation.
+  const [deleteRequest, setDeleteRequest] = useState(0);
+  const requestDelete = useCallback(
+    (): void => setDeleteRequest((count) => count + 1),
+    [],
+  );
   // CAN-5782: a workflow page's schedules, edited on its Trigger tab.
   const listedInfo = session.pipelineInfo
     ? pipelines.pipelines.find(
@@ -252,6 +259,9 @@ export function PipelineEditAdapter({
     automations,
     pipelines,
     ...(session.canDuplicate ? { onDuplicateWorkflow: session.duplicate } : {}),
+    ...(session.pipelineInfo !== null
+      ? { onDeleteWorkflow: requestDelete }
+      : {}),
     ...(target.focusScheduleId !== undefined
       ? { focusScheduleId: target.focusScheduleId }
       : {}),
@@ -433,6 +443,7 @@ export function PipelineEditAdapter({
     if (!info) return;
     openWorkflowsRunModal({
       initialPipelineId: info.id,
+      startOnSettings: true,
       ...(selectedWorktree
         ? {
             currentTarget: {
@@ -445,11 +456,18 @@ export function PipelineEditAdapter({
   }, [info, openWorkflowsRunModal, selectedWorktree]);
 
   // The shell confirms first, and shows a failure in its confirmation.
+  const scheduleRecords = schedules.records;
   const handleDelete = useCallback(
     async (pipeline: PipelineInfo): Promise<void> => {
       setDeleting(true);
       try {
-        await pipelines.remove(pipeline);
+        // A workflow page with schedules goes in one write, every schedule
+        // and its install with it, as the Library's Delete does (CAN-6065).
+        const first = scheduleRecords[0];
+        if (first !== undefined) {
+          await automations.remove(first, { workflow: true });
+          await pipelines.refresh();
+        } else await pipelines.remove(pipeline);
       } catch (error: unknown) {
         throw error instanceof Error
           ? error
@@ -461,7 +479,7 @@ export function PipelineEditAdapter({
       session.discard();
       runWithoutNavigationGuard(goBack);
     },
-    [pipelines, session],
+    [automations, pipelines, scheduleRecords, session],
   );
 
   const handleToggle = useCallback(
@@ -708,6 +726,7 @@ export function PipelineEditAdapter({
           session.error === null &&
           session.rawYamlError === null ? (
             <Notice
+              errorSource="pipeline-editor-save-error"
               intent="destructive"
               data-testid="pipeline-editor-save-error"
             >
@@ -727,6 +746,7 @@ export function PipelineEditAdapter({
                 : {}),
             }
           : {})}
+        deleteRequest={deleteRequest}
         enabled={enabled}
         onToggleEnabled={handleToggle}
         actionTestIds={{

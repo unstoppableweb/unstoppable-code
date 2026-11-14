@@ -34,6 +34,8 @@ export const TEAM_UPGRADE_COPY = {
   inviteSubmit: 'Send invite',
   inviting: 'Sending invite…',
   manage: 'Manage',
+  createAnotherTeam: 'Create another team',
+  restartUnavailable: "Couldn't open a new team setup. Try again.",
   retryProjects: 'Try projects again',
   checkAgain: 'Check again',
   retryInvite: 'Try the invite again',

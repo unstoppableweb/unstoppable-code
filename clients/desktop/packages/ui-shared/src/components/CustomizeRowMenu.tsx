@@ -2,8 +2,11 @@ import { type JSX, Fragment, useRef, useState } from 'react';
 import { Button } from './Button';
 import { DropdownMenuDivider, DropdownMenuItem } from './DropdownMenu';
 import { FloatingMenu } from './FloatingMenu';
+import { Tooltip } from './Tooltip';
 import { isMenuOpenBodyFlagSet } from '../lib/menu-open-body-flag';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
+import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
+import type { MarketplaceEntryShareStates } from '../lib/marketplace-share';
 
 export interface CustomizeRowMenuItem {
   readonly id: string;
@@ -13,6 +16,53 @@ export interface CustomizeRowMenuItem {
   readonly disabledReason?: string;
   /** Destructive items render last, after a divider. */
   readonly destructive?: boolean;
+}
+
+export function marketplaceListingMenuItems(
+  entry: UnifiedPluginEntry,
+  itemFor: (listing: UnifiedPluginEntry) => CustomizeRowMenuItem | null,
+): CustomizeRowMenuItem[] {
+  const actions = (entry.marketplaceListings ?? [entry]).flatMap((listing) => {
+    const item = itemFor(listing);
+    return item ? [{ listing, item }] : [];
+  });
+  return actions.map(({ listing, item }) => {
+    if (actions.length === 1 || !listing.marketplaceProvider) return item;
+    const provider = listing.marketplaceProvider;
+    const ambiguous = actions.some(
+      (action) =>
+        action.listing !== listing &&
+        action.listing.marketplaceProvider === provider,
+    );
+    const source =
+      ambiguous && listing.ref.type === 'marketplace-plugin'
+        ? `${provider}, ${listing.ref.marketplaceId}`
+        : provider;
+    return {
+      ...item,
+      id: `${item.id}-${listing.id}`,
+      label: `${item.label.replace(/…$/, '')} (${source})…`,
+    };
+  });
+}
+
+export function marketplaceShareMenuItems(
+  entry: UnifiedPluginEntry,
+  states: MarketplaceEntryShareStates | undefined,
+  onShare: ((entry: UnifiedPluginEntry) => void) | undefined,
+): CustomizeRowMenuItem[] {
+  if (!states || !onShare) return [];
+  return marketplaceListingMenuItems(entry, (listing) => {
+    const share = states.get(listing.id);
+    if (!share) return null;
+    return {
+      id: 'share',
+      label: 'Share…',
+      disabled: share.status === 'blocked',
+      disabledReason: share.status === 'blocked' ? share.reason : undefined,
+      onSelect: () => onShare(listing),
+    };
+  });
 }
 
 export interface CustomizeRowMenuProps {
@@ -71,27 +121,33 @@ export function CustomizeRowMenu({
           <Fragment key={index}>
             {index > 0 && <DropdownMenuDivider />}
             {group.map((item) => (
-              <DropdownMenuItem
+              <Tooltip
                 key={item.id}
-                data-testid={testId ? `${testId}-${item.id}` : undefined}
-                tone={item.destructive ? 'destructive' : 'default'}
-                disabled={item.disabled}
-                aria-disabled={item.disabled || undefined}
-                title={item.disabledReason}
-                aria-description={item.disabledReason}
-                aria-label={
-                  item.disabledReason
-                    ? `${item.label}: ${item.disabledReason}`
-                    : item.label
-                }
-                onClick={() => {
-                  if (item.disabled) return;
-                  setOpen(false);
-                  item.onSelect();
-                }}
+                label={item.disabledReason}
+                clamp={false}
+                disabled={!item.disabledReason}
+                className="w-full"
               >
-                {item.label}
-              </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid={testId ? `${testId}-${item.id}` : undefined}
+                  tone={item.destructive ? 'destructive' : 'default'}
+                  disabled={item.disabled}
+                  aria-disabled={item.disabled || undefined}
+                  aria-description={item.disabledReason}
+                  aria-label={
+                    item.disabledReason
+                      ? `${item.label}: ${item.disabledReason}`
+                      : item.label
+                  }
+                  onClick={() => {
+                    if (item.disabled) return;
+                    setOpen(false);
+                    item.onSelect();
+                  }}
+                >
+                  {item.label}
+                </DropdownMenuItem>
+              </Tooltip>
             ))}
           </Fragment>
         ))}

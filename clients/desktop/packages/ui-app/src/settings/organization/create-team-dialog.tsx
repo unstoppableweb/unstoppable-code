@@ -78,7 +78,11 @@ export function CreateTeamDialog({
       dataTestId="create-team-dialog"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <ErrorBanner error={error?.copy} details={error?.details} />
+        <ErrorBanner
+          errorSource="create-team-dialog"
+          error={error?.copy}
+          details={error?.details}
+        />
         <DialogFormField label="Organization name" htmlFor={nameId}>
           <TextInput
             id={nameId}

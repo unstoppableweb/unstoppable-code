@@ -1,7 +1,12 @@
 import { Buffer } from 'node:buffer';
 import { createReadStream } from 'node:fs';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
-import { findClaudeCodeSessionTranscriptCandidates } from '../lib/claude-project-paths';
+import {
+  claudeProjectDirCandidates,
+  findClaudeCodeSessionTranscriptCandidates,
+  getClaudeCodeProjectsDir,
+} from '../lib/claude-project-paths';
 
 export type DeliveryHistoryVerdict = 'found' | 'not-found' | 'unreadable';
 
@@ -35,10 +40,15 @@ export async function readClaudeDeliveryHistory(query: {
       query.cwd,
       query.configDir,
     );
-    const [transcriptPath] = candidates.paths;
+    const projectsDir = getClaudeCodeProjectsDir(query.configDir, query.cwd);
+    // Claude resumes the first current-cwd slug; migration retains old originals.
+    const currentPath = (await claudeProjectDirCandidates(query.cwd))
+      .map((slug) => path.join(projectsDir, slug, `${query.sessionId}.jsonl`))
+      .find((candidate) => candidates.paths.includes(candidate));
+    const transcriptPath = currentPath ?? candidates.paths[0];
     if (
-      candidates.scanExhausted ||
-      candidates.paths.length !== 1 ||
+      (!currentPath &&
+        (candidates.scanExhausted || candidates.paths.length !== 1)) ||
       !transcriptPath
     ) {
       return 'unreadable';

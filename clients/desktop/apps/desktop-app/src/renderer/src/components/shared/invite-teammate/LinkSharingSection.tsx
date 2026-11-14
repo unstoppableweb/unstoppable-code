@@ -327,6 +327,7 @@ export function LinkSharingSection({
           </Button>
         )}
         <ErrorBanner
+          errorSource="link-sharing-section"
           className=""
           error={link.error}
           testId={`${TEST_ID}-error`}

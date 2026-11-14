@@ -540,6 +540,7 @@ function LedgerChangeNotice({
   const copy = ledgerChangeNoticeCopy(notice);
   return (
     <Notice
+      errorSource="ledger-entry-change-notice"
       data-testid="ledger-entry-change-notice"
       data-notice={notice}
       intent={copy.intent}
@@ -567,6 +568,7 @@ export function LedgerEntryReadProblem({
   const copy = problemCopy(problem, 'entry');
   return (
     <Notice
+      errorSource="ledger-detail-problem"
       data-testid="ledger-detail-problem"
       intent={copy.retry ? 'destructive' : 'neutral'}
       actions={

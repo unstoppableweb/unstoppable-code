@@ -13,6 +13,7 @@ import type {
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { getTelemetryToolCategoryLabel } from '@canopy/ui-shared/lib/telemetry-tool-category';
 import {
+  Surface,
   ArchivedStateIcon,
   HeaderActionButton,
   SegmentedControl,
@@ -21,18 +22,20 @@ import {
   Heading,
 } from '@canopy/ui-shared/components';
 import {
-  CostFreshness,
-  CostObservedTotal,
-  CostSplitBar,
+  billedOnlyToAiCredits,
+  CONTEXT_SERIES_COLORS,
   COST_NOT_PRICED_LABEL,
   COST_SOURCE_COLORS,
   COST_SOURCE_LABELS,
-  CONTEXT_SERIES_COLORS,
-  USAGE_SERIES_NEUTRALS,
+  CostFreshness,
+  CostObservedTotal,
   costSourceSegments,
-  formatCostAmount,
+  CostSplitBar,
+  formatCostAmountIn,
   formatCostShare,
-  formatCostTotal,
+  formatCostTotalIn,
+  USAGE_SERIES_NEUTRALS,
+  useCostCurrency,
 } from '@canopy/ui-shared/components/cost';
 import { ValueRow } from '@canopy/ui-shared/components/settings/ValueRows';
 import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -87,6 +90,7 @@ function ModelRows({
   readonly total: number;
   readonly showTurns: boolean;
 }): JSX.Element {
+  const currency = useCostCurrency();
   return (
     <CostValueRows>
       {rows.map((row) => (
@@ -98,7 +102,7 @@ function ModelRows({
               ? plural(row.turnCount, 'turn', 'turns')
               : formatCostShare(row.usd, total)
           }
-          value={formatCostTotal(row)}
+          value={formatCostTotalIn(row, currency)}
         />
       ))}
     </CostValueRows>
@@ -110,10 +114,11 @@ function BackgroundItemRow({
 }: {
   readonly row: CostBackgroundRow;
 }): JSX.Element {
+  const currency = useCostCurrency();
   const amount =
     row.usd === 0 && row.notPricedCount > 0
       ? COST_NOT_PRICED_LABEL
-      : formatCostAmount(row.usd);
+      : formatCostAmountIn(row.usd, currency);
   return (
     <li className="flex items-baseline gap-3 px-2 py-1 text-xs">
       <span className="fg-primary">{BACKGROUND_KIND_LABELS[row.kind]}</span>
@@ -138,6 +143,7 @@ function SourceRow({
   readonly count: string;
   readonly details?: ReactNode;
 }): JSX.Element {
+  const currency = useCostCurrency();
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
   const canExpand = details !== undefined;
@@ -160,7 +166,7 @@ function SourceRow({
       <span className="fg-primary">{COST_SOURCE_LABELS[source]}</span>
       <span className="tabular-nums fg-tertiary">{count}</span>
       <span className="ml-auto shrink-0 tabular-nums fg-primary">
-        {formatCostAmount(amount)}
+        {formatCostAmountIn(amount, currency)}
       </span>
     </>
   );
@@ -210,6 +216,7 @@ function WhereItWent({
   readonly scope: CostScopeRef;
   readonly chatId: string;
 }): JSX.Element {
+  const currency = useCostCurrency();
   const { bySource } = view;
   const subagents = bySource.subagents.items;
   const delegations = bySource.delegations.items;
@@ -296,7 +303,11 @@ function WhereItWent({
   return (
     <CostDetailSection
       title="Where it went"
-      aside={formatCostAmount(view.chat.totals.usd)}
+      aside={formatCostAmountIn(
+        view.chat.totals.usd,
+        currency,
+        billedOnlyToAiCredits(view.chat.totals.byBilling),
+      )}
       testId="session-breakdown-where-it-went"
     >
       <CostSplitBar
@@ -766,6 +777,7 @@ function Header({
   onRefresh,
   now,
 }: SessionBreakdownContentProps): JSX.Element {
+  const currency = useCostCurrency();
   const models = modelList(view.chat.models);
   const metaSuffix = [
     plural(view.chat.turnCount, 'turn', 'turns'),
@@ -792,7 +804,7 @@ function Header({
           className="flex min-w-0 items-baseline gap-1.5 text-xs tabular-nums"
         >
           <CostObservedTotal
-            amountLabel={formatCostTotal(view.chat.totals)}
+            amountLabel={formatCostTotalIn(view.chat.totals, currency)}
             coverageStart={view.chat.coverageStart}
             size="inline"
             testId="session-breakdown-observed-total"
@@ -847,9 +859,11 @@ export function SessionBreakdownContent({
   const handleRefresh = (): void => onRefresh();
 
   return (
-    <div
+    <Surface
+      variant="pane"
+      extent="parent"
       data-testid="session-breakdown-view"
-      className="flex h-full min-h-0 w-full flex-col bg-base"
+      className="flex min-h-0 w-full flex-col"
     >
       {/* The header and tabs stay in view; only the chosen tab scrolls. */}
       <div className="flex w-full max-w-2xl shrink-0 flex-col gap-6 px-3 pt-3">
@@ -924,6 +938,6 @@ export function SessionBreakdownContent({
           )}
         </div>
       </div>
-    </div>
+    </Surface>
   );
 }

@@ -335,7 +335,11 @@ function AutomationEditor({
   // sections, whichever one is open.
   const requestError =
     shownError !== null && shownError.section === null ? (
-      <Notice intent="destructive" data-testid="automations-form-error">
+      <Notice
+        errorSource="automations-form-error-shown"
+        intent="destructive"
+        data-testid="automations-form-error"
+      >
         {shownError.message}
       </Notice>
     ) : null;

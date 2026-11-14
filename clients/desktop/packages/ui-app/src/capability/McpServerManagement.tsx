@@ -473,6 +473,7 @@ function TestResultPanel({
   const showTools = tools.length > 0;
   return (
     <Notice
+      errorSource="mcp-health-result"
       intent={outcome.success ? 'positive' : 'destructive'}
       role="status"
       data-testid="mcp-health-result"
@@ -789,7 +790,12 @@ function McpServerManagementActionsForTarget({
         className={`${DETAIL_FACT_VALUE_OFFSET_CLASS} flex flex-col gap-2 empty:hidden`}
       >
         {reasonLines}
-        <ErrorBanner className="" error={error} testId="mcp-management-error" />
+        <ErrorBanner
+          errorSource="mcp-management-error"
+          className=""
+          error={error}
+          testId="mcp-management-error"
+        />
         {!deleteInHostMenu && deleteItems.length > 0 && (
           <DetailPageActions
             more={

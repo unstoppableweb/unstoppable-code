@@ -4,10 +4,12 @@
 // checkouts and policy file; only IPC registration is mocked.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -77,6 +79,7 @@ jest.mock('../ipc/register', () => ({
 import { registerRepoRulesHandlers } from '../ipc/repo-rules';
 import { GIT_ELIGIBILITY_KEYS } from '../repo-rules/eligibility';
 import { composeWorktreeRepoRules } from '../repo-rules/host';
+import { selectSessionInstructions } from '../repo-rules/session';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -930,5 +933,137 @@ describe('CAN-6352 Git config includes in session reads', () => {
   it('fails closed on an included file over the size bound', async () => {
     write('huge', `[core]\n${'# padding\n'.repeat(8_000)}`);
     expect(await composeWith('[include]\n\tpath = huge\n')).toBe('');
+  });
+});
+
+describe('CAN-6368 blocked session reads', () => {
+  // Check reaches core.workspace.repoRules.check, one bounded session read of
+  // the source checkouts; status (core.workspace.repoRules.status) keeps
+  // reading only the saved policy.
+  const BLOCKING_INCLUDE = `[includeIf "gitdir:/elsewhere/"]\n\tpath = blocking\n`;
+  const check = (request: unknown): Promise<Outcome> =>
+    ipc(IPC_CHANNELS.repoRulesCheck, request);
+
+  function resultOf(outcome: Outcome): unknown {
+    if (!('result' in outcome)) throw new Error(JSON.stringify(outcome));
+    return outcome.result;
+  }
+
+  async function enable(): Promise<void> {
+    const result = await scanned({ workspaceId: RULES_WS });
+    const applied = await apply({
+      workspaceId: RULES_WS,
+      enabled: true,
+      scanId: result.scanId,
+      disabledRuleIds: [],
+    });
+    expect('result' in applied).toBe(true);
+  }
+
+  afterEach(() => {
+    writeFileSync(globalConfig, '');
+    rmSync(join(dir, 'blocking'), { force: true });
+  });
+
+  it('check reports a blocked repository and its reason, and status reads only the policy', async () => {
+    await enable();
+    const clear = await check({ workspaceId: RULES_WS });
+    writeFileSync(join(dir, 'blocking'), '[core]\n\texcludesfile = excludes\n');
+    writeFileSync(globalConfig, BLOCKING_INCLUDE);
+    const blocked = await check({ workspaceId: RULES_WS });
+    const statusWhileBlocked = await status({ workspaceId: RULES_WS });
+    const composed = await composeWorktreeRepoRules(
+      RULES_WS,
+      WORKTREE,
+      checkout,
+    );
+    writeFileSync(globalConfig, '');
+    const fixed = await check({ workspaceId: RULES_WS });
+    expect({ clear, blocked, composed, fixed }).toEqual({
+      clear: { result: { blocked: [] } },
+      blocked: {
+        result: {
+          blocked: [{ repoId: '__single_repo__', reason: 'unsupported-git' }],
+        },
+      },
+      composed: '',
+      fixed: { result: { blocked: [] } },
+    });
+    // Status still returns the saved policy only, with no checkout read.
+    const policy = resultOf(statusWhileBlocked);
+    expect(policy).toHaveProperty('enabled', true);
+    expect(
+      typeof policy === 'object' && policy !== null
+        ? Object.keys(policy).sort()
+        : policy,
+    ).toEqual(['disabledRuleIds', 'enabled', 'reviewedAt', 'revision']);
+  });
+
+  it('check reports a missing checkout as a reason, and status and turn-off still work', async () => {
+    await enable();
+    renameSync(repo, `${repo}.away`);
+    try {
+      const gone = await check({ workspaceId: RULES_WS });
+      const statusGone = await status({ workspaceId: RULES_WS });
+      const turnedOff = await apply({ workspaceId: RULES_WS, enabled: false });
+      expect(gone).toEqual({
+        result: {
+          blocked: [{ repoId: '__single_repo__', reason: 'missing-checkout' }],
+        },
+      });
+      expect(resultOf(statusGone)).toHaveProperty('enabled', true);
+      expect(resultOf(turnedOff)).toHaveProperty('enabled', false);
+    } finally {
+      renameSync(`${repo}.away`, repo);
+    }
+  });
+
+  // Root ignores directory permissions, so the unreadable root can't be built.
+  const unlessRoot = process.getuid?.() === 0 ? it.skip : it;
+  unlessRoot(
+    'check reports an unreadable checkout as blocked, not as an error',
+    async () => {
+      await enable();
+      const record = join(workspaceDir(RULES_WS), 'workspace.json');
+      const saved = readFileSync(record, 'utf8');
+      const sealed = join(dir, 'sealed');
+      mkdirSync(join(sealed, 'repo'), { recursive: true });
+      writeJson(record, {
+        version: 1,
+        type: 'single-repo',
+        repoPath: join(sealed, 'repo'),
+        repos: [],
+      });
+      chmodSync(sealed, 0o000);
+      try {
+        expect(await check({ workspaceId: RULES_WS })).toEqual({
+          result: {
+            blocked: [{ repoId: '__single_repo__', reason: 'unavailable' }],
+          },
+        });
+      } finally {
+        chmodSync(sealed, 0o700);
+        writeFileSync(record, saved);
+      }
+    },
+  );
+
+  // Rules compose in process for each chat:send-message turn
+  // (IPC_CHANNELS.chatSendMessage) through selectSessionInstructions.
+  it('starts the chat without rules and records why when composing fails', async () => {
+    await enable();
+    const errors: unknown[] = [];
+    const instructions = await selectSessionInstructions({
+      provider: 'claude',
+      isInteractiveCode: true,
+      resumed: false,
+      currentGlobal: 'Global instructions.',
+      // The workspace's records are gone: resolving its checkout rejects.
+      compose: () =>
+        composeWorktreeRepoRules(RULES_WS, 'no-such-worktree', checkout),
+      onComposeError: (error) => errors.push(error),
+    });
+    expect(instructions).toBe('Global instructions.');
+    expect(errors).toHaveLength(1);
   });
 });

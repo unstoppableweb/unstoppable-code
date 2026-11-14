@@ -4,6 +4,7 @@ import { useDelegationTranscriptStore } from '../../delegationTranscriptStore';
 import {
   reconcilePendingQueueMessages,
   restoreDispatchedQueueRow,
+  withdrawQueuedSends,
 } from '../optimistic-presentation';
 import {
   canReceiveWorktreeChatActivity,
@@ -366,7 +367,10 @@ export const createEventsSlice: StateCreator<
           ...mirroredRows,
           ...awaitingCanonical,
         ];
-        tab = restoreDispatchedQueueRow(tab, mirroredRows);
+        tab = withdrawQueuedSends(
+          restoreDispatchedQueueRow(tab, mirroredRows),
+          mirroredRows,
+        );
         const editingQueuedMessageIndex = editingEntryId
           ? queuedMessages.findIndex(
               (message) => message.hostQueueEntryId === editingEntryId,
@@ -707,6 +711,7 @@ export const createEventsSlice: StateCreator<
             tabId: chatId,
             patch: { globalInstructionsSnapshot },
           },
+          { quietIfUnavailable: true },
         );
       }
       return;

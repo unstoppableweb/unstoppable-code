@@ -35,7 +35,11 @@ import {
   normalizeShareablePluginRef,
   type ShareablePluginRef,
 } from '../plugins';
-import { AGENT_MODEL_ID_PREFIX, serializedByteLength } from '../agents';
+import {
+  AGENT_MODEL_ID_PREFIX,
+  parseAgentRouteModelId,
+  serializedByteLength,
+} from '../agents';
 import {
   PIPELINE_PACKAGE_MAX_FILE_BYTES,
   isPipelineContentHash,
@@ -364,16 +368,22 @@ export type SharedAutomationTrigger =
 export type SharedAutomationTriggerKind = SharedAutomationTrigger['kind'];
 
 /**
- * Portable model tuning. `model` must be a provider model id — a value with
- * the `agent_model_` prefix references a local custom Agent and is rejected.
+ * Portable model tuning. Agent routes require a hosted reference, never a
+ * machine-local Agent definition. Recipients resolve their own installed ID.
  */
 export interface SharedAutomationModelConfig {
   model?: string;
+  agent?: SharedAutomationAgentReference;
   thinkingLevel?: SharedAutomationThinkingLevel;
   /** Requested Codex speed. Takes precedence over the legacy `fastMode`. */
   speed?: CodexSpeed;
   /** Legacy projection: always `speed === 'fast'` when `speed` is present. */
   fastMode?: boolean;
+}
+
+export interface SharedAutomationAgentReference {
+  remoteId: string;
+  contentHash: string;
 }
 
 /**
@@ -886,7 +896,7 @@ function validateModelConfig(
   }
   const unexpected = unexpectedFieldError(
     config,
-    ['model', 'thinkingLevel', 'speed', 'fastMode'],
+    ['model', 'agent', 'thinkingLevel', 'speed', 'fastMode'],
     'the automation modelConfig',
   );
   if (unexpected) {
@@ -900,14 +910,42 @@ function validateModelConfig(
         error: 'Automation model must be a non-empty string.',
       };
     }
-    if (config.model.startsWith(AGENT_MODEL_ID_PREFIX)) {
+    if (
+      config.model.startsWith(AGENT_MODEL_ID_PREFIX) &&
+      !parseAgentRouteModelId(config.model)
+    ) {
       return {
         ok: false,
         error:
-          'Automation model must be a provider model, not a local custom Agent.',
+          'Choose a model for the shared Agent before sharing this automation.',
       };
     }
     result.model = config.model;
+  }
+  const route =
+    typeof config.model === 'string'
+      ? parseAgentRouteModelId(config.model)
+      : null;
+  if (route || config.agent !== undefined) {
+    const agent = asRecord(config.agent);
+    if (
+      !route ||
+      !agent ||
+      Object.keys(agent).some(
+        (key) => key !== 'remoteId' && key !== 'contentHash',
+      ) ||
+      typeof agent.remoteId !== 'string' ||
+      agent.remoteId.trim().length === 0 ||
+      agent.remoteId.length > 200 ||
+      !isPipelineContentHash(agent.contentHash)
+    ) {
+      return {
+        ok: false,
+        error:
+          'An Agent route requires a shared Agent reference and a chosen model.',
+      };
+    }
+    result.agent = { remoteId: agent.remoteId, contentHash: agent.contentHash };
   }
   if (config.thinkingLevel !== undefined) {
     const level = SHARED_AUTOMATION_THINKING_LEVELS.find(

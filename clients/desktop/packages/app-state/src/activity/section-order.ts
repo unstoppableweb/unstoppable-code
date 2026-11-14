@@ -118,7 +118,7 @@ export function isActivitySectionVisibleForWorkspaceType(
  */
 export type ActivitySectionCapabilities = Pick<
   CanopyCapabilities,
-  'activitySectionIds'
+  'activitySectionIds' | 'taskSummary'
 >;
 
 /**
@@ -139,6 +139,9 @@ export function isActivitySectionVisibleForTarget(
   workspaceType: ActivityWorkspaceType | undefined,
   capabilities: ActivitySectionCapabilities,
 ): boolean {
+  // A target without a task summary shows no Summary, nor its Refresh.
+  if (sectionId === 'summary' && capabilities.taskSummary !== true)
+    return false;
   return (
     isActivitySectionVisibleForWorkspaceType(sectionId, workspaceType) &&
     (capabilities.activitySectionIds === undefined ||

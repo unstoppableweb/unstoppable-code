@@ -32,10 +32,10 @@ export function buildLocalMemoryPromptNudge(
  * outside this folder in app-level storage, so it is intentionally not
  * listed as a location the agent can browse.
  *
- * For Cursor, Copilot and OpenCode only the common Cowork guidance is returned;
+ * For Cursor, Copilot, OpenCode and Google only common Cowork guidance is returned;
  * see the inline comment. Production dispatchers do not call this directly: they go
  * through `buildCoworkDispatchSystemPromptAppend`, which selects the harness
- * variant, so a caller cannot forget the Cursor option.
+ * variant for the selected runtime.
  */
 // `localMemoryEnabled` is deliberately required: an optional default let the
 // Codex capability-transition call site silently rebuild instructions
@@ -43,7 +43,13 @@ export function buildLocalMemoryPromptNudge(
 export function buildCoworkSystemPromptAppend(
   localMemoryEnabled: boolean,
   options: {
-    harness?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+    harness?:
+      | 'claude'
+      | 'codex'
+      | 'cursor'
+      | 'copilot'
+      | 'antigravity'
+      | 'opencode';
   } = {},
   privateMemory = false,
 ): string {
@@ -57,10 +63,12 @@ Default to writing durable generated outputs directly into the folder root unles
 Write diagrams in Mermaid fenced blocks. Use the supported diagram families: flowchart/graph, sequence, class, state, entity relationship and Gantt. Styling support varies by family. Highlight nodes with classDef/class or style using only fill, stroke, color, stroke-width, stroke-dasharray and font-weight. Use hex, rgb or named colours for colour properties, numeric widths, space-separated dash patterns (stroke-dasharray:5 5), and supported font weights. Avoid click/link directives, HTML, images, icons, config blocks and url() values. Add a text cue such as “(pain point)” as well as colour so the meaning survives without highlighting.`;
   // Cursor, Copilot and OpenCode cannot call the deferred-tool loaders (they are
   // not on their surfaces), and each session appends the local-memory nudge itself
-  // once the app's MCP servers are known to have reached the CLI.
+  // once the app's MCP servers are known to have reached the CLI. Google has
+  // native tools only and must not receive this steering.
   if (
     options.harness === 'cursor' ||
     options.harness === 'copilot' ||
+    options.harness === 'antigravity' ||
     options.harness === 'opencode'
   )
     return coworkPrompt;
@@ -100,12 +108,23 @@ Write diagrams in Mermaid fenced blocks. Use the supported diagram families: flo
  * the common Cowork guidance here.
  */
 export function buildCoworkDispatchSystemPromptAppend(
-  harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
   localMemoryEnabled: boolean,
   privateMemory: boolean,
   includeChatVisuals: boolean,
 ): string {
-  if (harness === 'cursor' || harness === 'copilot' || harness === 'opencode')
+  if (
+    harness === 'cursor' ||
+    harness === 'copilot' ||
+    harness === 'antigravity' ||
+    harness === 'opencode'
+  )
     return buildCoworkSystemPromptAppend(
       localMemoryEnabled,
       {

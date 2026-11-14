@@ -95,6 +95,12 @@ export interface ScriptRunState {
    * Cleared once hydrated (the snapshot-derived run does not set it).
    */
   outputIsRetainedTail?: boolean;
+  /** The persisted run's id, for a user's Stop or Clear of it (CAN-6482). */
+  executionId?: string;
+  /** Set while a restart's orphaned run still runs: see ScriptRunSnapshot. */
+  orphan?: ScriptRunSnapshot['orphan'];
+  /** A lost run whose record names no process: it may still be running. */
+  lostFrom?: 'unrecorded';
 }
 
 function isWorkspaceLifecycleRun(
@@ -175,6 +181,18 @@ interface ScriptsState {
   completeRunFromEvent: (event: ScriptCompleteEvent) => boolean;
   claimFailureNotification: (event: ScriptCompleteEvent) => boolean;
   loadWorktreeRuns: (projectId: string, worktreeId: string) => Promise<void>;
+  /**
+   * Applies a user's Stop or Clear of the persisted run `executionId`
+   * (CAN-6482): `lost` once its process is stopped or gone, `cleared` once
+   * its record is removed. A newer run of the script key is left alone.
+   */
+  settlePersistedRun: (
+    projectId: string,
+    worktreeId: string,
+    scriptKey: string,
+    executionId: string,
+    outcome: 'lost' | 'cleared',
+  ) => void;
   unloadWorktreeRuns: (projectId: string, worktreeId: string) => void;
   cleanupWorktree: (projectId: string, worktreeId: string) => void;
 }
@@ -230,6 +248,9 @@ function runStateFromSnapshot(snapshot: ScriptRunSnapshot): ScriptRunState {
       lines: snapshot.outputLines,
       existingHits: [],
     }),
+    ...(snapshot.runId !== undefined && { executionId: snapshot.runId }),
+    ...(snapshot.orphan !== undefined && { orphan: snapshot.orphan }),
+    ...(snapshot.lostFrom !== undefined && { lostFrom: snapshot.lostFrom }),
   };
 }
 
@@ -670,6 +691,34 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
             [wk]: mergedRuns,
           },
         };
+      });
+    },
+
+    settlePersistedRun: (
+      projectId,
+      worktreeId,
+      scriptKey,
+      executionId,
+      outcome,
+    ): void => {
+      const wk = worktreeKey(projectId, worktreeId);
+      set((state) => {
+        const worktreeRuns = state.runs[wk];
+        const run = worktreeRuns?.[scriptKey];
+        if (!worktreeRuns || run?.executionId !== executionId) return state;
+        const next = { ...worktreeRuns };
+        if (outcome === 'cleared') {
+          delete next[scriptKey];
+        } else {
+          const lost: ScriptRunState = {
+            ...run,
+            status: 'failed',
+            exitCode: null,
+          };
+          delete lost.orphan;
+          next[scriptKey] = lost;
+        }
+        return { runs: { ...state.runs, [wk]: next } };
       });
     },
 

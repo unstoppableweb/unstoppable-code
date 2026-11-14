@@ -30,8 +30,10 @@ import { PIPELINE_GRANTS } from './operations';
  * The web core serves it for its cloud target only
  * (`CLOUD_PIPELINE_RUN_TARGET_ID`), through the cloud run service's start
  * (CAN-6169): admission, the definition pin and the confirmed cloud models
- * (CAN-6174). Any other target, or a scope naming anything else, is
- * `capability_unavailable`. Desktop and the daemon don't serve it: a local
+ * (CAN-6174). Beside its target, the scope may name the cloud project
+ * (`workspaceId`) whose folder the run executes in, and one of its
+ * worktrees (`worktreeId`, CAN-6672). Any other target, or a scope naming
+ * anything else, is `capability_unavailable`. Desktop and the daemon don't serve it: a local
  * run starts through their own start paths.
  */
 
@@ -70,7 +72,11 @@ export const CloudPipelineRunPlanSchema = z.union([
 export type CloudPipelineRunPlan = z.output<typeof CloudPipelineRunPlanSchema>;
 
 export const CloudPipelineRunStartParamsSchema = z.strictObject({
-  /** `targetId` names where the run executes; nothing else is served. */
+  /**
+   * `targetId` names the execution target; `workspaceId` and `worktreeId`
+   * the cloud project and worktree the run executes in. Nothing else is
+   * served.
+   */
   scope: CanopyWorkspaceScopeSchema,
   /** `shared:canopy-cloud:<id>` or `curated:<key>`. */
   definitionId: id,
@@ -93,6 +99,17 @@ export const CloudPipelineRunStartParamsSchema = z.strictObject({
       policyFingerprint: z.string().length(64),
       choices: CloudModelChoicesSchema,
     })
+    .optional(),
+  /**
+   * The chat whose agent started the run, as the calling host names it
+   * (CAN-6391): a desktop project, task and chat. The serving core reports
+   * it as the run's agent initiator, so that host's watchers know which of
+   * its chats started the run. It grants nothing: it is never the run's
+   * agent origin (D11), which only the serving core sets for its own chats,
+   * and it may not name one of the serving core's projects.
+   */
+  chat: z
+    .strictObject({ projectId: id, worktreeId: id, chatId: id })
     .optional(),
 });
 export type CloudPipelineRunStartParams = z.output<
@@ -119,6 +136,12 @@ export type CloudPipelineRunStartResult = z.output<
   typeof CloudPipelineRunStartResultSchema
 >;
 
+/**
+ * An administrator stopped new cloud runs for the caller's brand (CAN-6377):
+ * nothing was recorded; the run may be started once the stop is lifted.
+ */
+export const CLOUD_RUNS_STOPPED_CODE = 'core.pipeline.cloudRunsStopped';
+
 /** Codes a cloud run start may fail with. */
 export const CLOUD_PIPELINE_RUN_START_ERROR_CODES = [
   'core.pipeline.targetUnavailable',
@@ -130,6 +153,7 @@ export const CLOUD_PIPELINE_RUN_START_ERROR_CODES = [
   'core.pipeline.cloudRunRefused',
   'core.pipeline.planNotFound',
   CLOUD_MODEL_UNCONFIRMED_CODE,
+  CLOUD_RUNS_STOPPED_CODE,
 ] as const;
 
 export const CloudPipelineRunStartErrorSchema = CanopyErrorPayloadSchema.extend(

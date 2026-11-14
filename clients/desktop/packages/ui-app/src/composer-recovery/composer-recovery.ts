@@ -474,6 +474,68 @@ export function canRestoreComposerDraft(input: {
   );
 }
 
+/**
+ * What a host says once a refused send's draft is back in the composer
+ * (CAN-5972, CAN-6364, CAN-6401). The reason is the server's own sentence.
+ */
+export function composerRefusalNotice(reason?: string): string {
+  const trimmed = reason?.trim();
+  return trimmed
+    ? `Your message wasn't sent: ${trimmed}`
+    : "Your message wasn't sent.";
+}
+
+/**
+ * A chat deleted on another device while its composer held unsent work
+ * (CAN-6614). The host keeps the draft and attachments, and offers
+ * {@link CHAT_DELETED_ELSEWHERE_ACTION} to carry them into a new chat.
+ */
+export const CHAT_DELETED_ELSEWHERE_TITLE = 'Chat deleted.';
+export const CHAT_DELETED_ELSEWHERE_ACTION = 'Start new chat';
+
+function listOf(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1] ?? ''}`;
+}
+
+/**
+ * What a deleted chat's composer still holds, after
+ * {@link CHAT_DELETED_ELSEWHERE_TITLE}. `attachAgain` names the files the
+ * new chat can't take by itself (a paste has no file to read again): all of
+ * them asks for "your files", some of them names each.
+ */
+export function chatDeletedElsewhereNotice(kept: {
+  readonly draft: boolean;
+  readonly attachments: number;
+  readonly attachAgain: readonly string[];
+}): string {
+  const draft = kept.draft ? 'Your draft is still here. ' : '';
+  if (kept.attachAgain.length > 0)
+    return kept.attachAgain.length >= kept.attachments
+      ? `${draft}Attach your files again in the new chat.`
+      : `${draft}Attach ${listOf(kept.attachAgain)} again in the new chat.`;
+  const held =
+    kept.draft && kept.attachments > 0
+      ? ' Your draft and attachments are still here.'
+      : kept.draft
+        ? ' Your draft is still here.'
+        : kept.attachments > 0
+          ? ' Your attachments are still here.'
+          : '';
+  return `It was deleted on another device.${held}`;
+}
+
+/**
+ * What the new chat says about files it couldn't take from the deleted one
+ * (CAN-6614): a pasted file has nothing to read again, and a file on disk
+ * may have moved since.
+ */
+export function chatFilesNotAttachedNotice(names: readonly string[]): string {
+  return `Couldn't attach ${listOf(names)} to the new chat. Attach ${
+    names.length === 1 ? 'it' : 'them'
+  } again.`;
+}
+
 /** Explicit host-projected refusal; neither text nor message position grants recovery. */
 export function composerRefusedUserMessageId(
   message: PortalChatMessage,

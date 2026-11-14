@@ -89,6 +89,7 @@ const w5Owned = new Set([
   'backups',
   'restore-evidence',
   'destructive-lifecycles',
+  'archive-recovery',
   'quarantined-lifecycles',
 ]);
 

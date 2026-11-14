@@ -110,6 +110,9 @@ const files = (): RuntimeModule =>
         'worker.script.execution.list': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.script.execution.groupMembers': (): never => {
+          throw new Error('Not exercised.');
+        },
         'worker.pipeline.execution.get': (): never => {
           throw new Error('Not exercised.');
         },

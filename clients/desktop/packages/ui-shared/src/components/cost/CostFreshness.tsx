@@ -59,7 +59,7 @@ export function CostFreshness({
         failureReason !== undefined &&
         failureReason !== null &&
         sealedAt === undefined ? (
-          <Tooltip label={failureReason}>
+          <Tooltip label={failureReason} clamp={false}>
             <span
               data-testid={`${testId}-label`}
               className="text-xs fg-warning"

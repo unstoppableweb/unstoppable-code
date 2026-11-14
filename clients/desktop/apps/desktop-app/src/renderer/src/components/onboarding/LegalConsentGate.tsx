@@ -116,6 +116,7 @@ export function LegalConsentGate({
           </div>
 
           <ErrorBanner
+            errorSource="legal-consent-error"
             className="w-full"
             error={error}
             testId="legal-consent-error"

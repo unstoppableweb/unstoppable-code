@@ -41,7 +41,8 @@ export type AgentExecutionHarness =
   | AiGatewayHarness
   | 'cursor'
   | 'opencode'
-  | 'copilot';
+  | 'copilot'
+  | 'antigravity';
 
 export type ModelCatalogProvider =
   | 'claude'
@@ -50,6 +51,7 @@ export type ModelCatalogProvider =
   | 'cursor'
   | 'opencode'
   | 'copilot'
+  | 'antigravity'
   | 'unknown';
 
 /** Source registry for grouping; separate from the effective harness. */
@@ -60,6 +62,7 @@ export type ModelCatalogSource =
   | 'cursor'
   | 'opencode'
   | 'copilot'
+  | 'antigravity'
   | 'ai-gateway';
 
 /**
@@ -143,6 +146,13 @@ export interface ModelCatalogOption {
   /** Capabilities after resolving a per-chat choice. */
   supportsImages?: boolean;
   funding?: 'ai-credits' | 'org-gateway';
+  /**
+   * For an `org-gateway` row, the well-known gateway preset that serves it
+   * (`openrouter`, `vercel`, …), recognized from the gateway's base URL, so a
+   * picker can show that gateway's own icon. Absent for a custom gateway and
+   * on older hosts; the picker then shows the generic gateway glyph.
+   */
+  gatewayPresetId?: string;
   /** True when this exact model has a host-declared Fast-mode route. */
   supportsFastMode?: boolean;
   /** `'model'` for a plain provider model, `'agent'` for a custom Agent. */
@@ -460,6 +470,8 @@ export function getModelCatalogProviderLabel(
       return 'OpenCode';
     case 'copilot':
       return 'GitHub Copilot';
+    case 'antigravity':
+      return 'Antigravity';
     case 'unknown':
       return 'Model';
   }

@@ -256,6 +256,7 @@ export function LedgerLeftOpenNote({
           </Button>
         </div>
         <ErrorBanner
+          errorSource="ledger-left-open-error"
           className=""
           error={failure}
           testId="ledger-left-open-error"

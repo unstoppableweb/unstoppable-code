@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   TrackedPlanImplementationInputSchema,
   ChatPlanReviewApprovalSchema,
@@ -14,6 +15,7 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import type { ChatScopeKey } from '../services/chat-state-contracts';
+import { isChatScopeDeletingError } from '../services/chat-scope-lifecycle';
 import { isDeepStrictEqual } from 'node:util';
 import {
   IPC_CHANNELS,
@@ -802,6 +804,7 @@ function validateSeededChatTab(
     seed.providerType !== 'ollama' &&
     seed.providerType !== 'cursor' &&
     seed.providerType !== 'copilot' &&
+    seed.providerType !== 'antigravity' &&
     seed.providerType !== 'opencode'
   ) {
     failInvalidRequest('command.seedTab.providerType is unsupported.');
@@ -812,6 +815,7 @@ function validateSeededChatTab(
     seed.executionHarness !== 'codex' &&
     seed.executionHarness !== 'cursor' &&
     seed.executionHarness !== 'copilot' &&
+    seed.executionHarness !== 'antigravity' &&
     seed.executionHarness !== 'opencode'
   ) {
     failInvalidRequest('command.seedTab.executionHarness is unsupported.');
@@ -935,6 +939,7 @@ function validateSeededChatTab(
         'ollama',
         'cursor',
         'copilot',
+        'antigravity',
         'opencode',
         'pipeline',
         'imported',
@@ -1023,6 +1028,7 @@ function validateSeededChatTab(
       seed.forkedFrom.continuedFromProvider !== 'ollama' &&
       seed.forkedFrom.continuedFromProvider !== 'cursor' &&
       seed.forkedFrom.continuedFromProvider !== 'copilot' &&
+      seed.forkedFrom.continuedFromProvider !== 'antigravity' &&
       seed.forkedFrom.continuedFromProvider !== 'opencode'
     ) {
       failInvalidRequest(
@@ -1077,6 +1083,7 @@ const PROVIDER_TYPE_KEYS: Record<AgentProviderType, true> = {
   ollama: true,
   cursor: true,
   copilot: true,
+  antigravity: true,
   opencode: true,
 };
 const PROVIDER_TYPES: ReadonlySet<unknown> = new Set(
@@ -1395,6 +1402,7 @@ function validateCommand(
       command.providerType !== 'ollama' &&
       command.providerType !== 'cursor' &&
       command.providerType !== 'copilot' &&
+      command.providerType !== 'antigravity' &&
       command.providerType !== 'opencode'
     ) {
       failInvalidRequest('command.providerType is unsupported.');
@@ -1739,6 +1747,7 @@ function validateCommand(
       command.patch.providerType !== 'ollama' &&
       command.patch.providerType !== 'cursor' &&
       command.patch.providerType !== 'copilot' &&
+      command.patch.providerType !== 'antigravity' &&
       command.patch.providerType !== 'opencode'
     ) {
       failInvalidRequest('command.patch.providerType is unsupported.');
@@ -1954,6 +1963,7 @@ function validateCommand(
           'ollama',
           'cursor',
           'copilot',
+          'antigravity',
           'opencode',
           'pipeline',
           'imported',
@@ -2142,6 +2152,7 @@ function validateCommand(
       command.providerType !== 'ollama' &&
       command.providerType !== 'cursor' &&
       command.providerType !== 'copilot' &&
+      command.providerType !== 'antigravity' &&
       command.providerType !== 'opencode'
     ) {
       failInvalidRequest('command.providerType is unsupported.');
@@ -2152,6 +2163,7 @@ function validateCommand(
       command.executionHarness !== 'codex' &&
       command.executionHarness !== 'cursor' &&
       command.executionHarness !== 'copilot' &&
+      command.executionHarness !== 'antigravity' &&
       command.executionHarness !== 'opencode'
     ) {
       failInvalidRequest('command.executionHarness is unsupported.');
@@ -2365,6 +2377,7 @@ function validateCommand(
         command.source.providerType !== 'ollama' &&
         command.source.providerType !== 'cursor' &&
         command.source.providerType !== 'copilot' &&
+        command.source.providerType !== 'antigravity' &&
         command.source.providerType !== 'opencode'
       ) {
         failInvalidRequest('command.source.providerType is unsupported.');
@@ -3307,15 +3320,24 @@ export function registerChatStateHandlers(
   );
   registerIpcHandler<[unknown], ChatCommandResult>(
     IPC_CHANNELS.chatCommand,
-    (event, value) =>
-      dispatchChatCommandForLegacyIpc(
-        value,
-        createChatCommandDispatchOptions(
-          port,
-          runtime.dispatcher,
-          runtime.resolveCaller(event),
-        ),
-      ),
+    async (event, value) => {
+      try {
+        return await dispatchChatCommandForLegacyIpc(
+          value,
+          createChatCommandDispatchOptions(
+            port,
+            runtime.dispatcher,
+            runtime.resolveCaller(event),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof InvalidChatStateRequestError)
+          throw classifyError(error, 'input.not_accepted');
+        if (isChatScopeDeletingError(error))
+          throw classifyError(error, 'external.state_changed');
+        throw error;
+      }
+    },
   );
   registerIpcHandler<[unknown], void>(
     IPC_CHANNELS.chatSetStateScopes,

@@ -884,28 +884,6 @@ function syncLocalRepoBindings(
   };
 }
 
-/**
- * Binds the workspace's repositories to the applied `canopy.json` in the
- * background. The decision is reported from the configuration the apply read,
- * and the binding is applied to the manifest read inside its write queue, so
- * a repository or setting changed since is kept (CAN-3819). A missing
- * manifest is not created.
- */
-function syncLocalRepoBindingsInBackground(
-  workspaceId: string,
-  config: WorkspaceConfigFile,
-  bindings: SourceChangeBindingsDecision,
-): void {
-  if (!syncLocalRepoBindings(config, bindings).updated) return;
-
-  trackDetachedWork(() =>
-    applyWorkspaceManifestDecision(workspaceId, bindings).catch((error) => {
-      // eslint-disable-next-line no-console
-      console.error('Failed to sync workspace repo bindings:', error);
-    }),
-  );
-}
-
 async function rollbackCreatedWorktree(
   git: SourceChangeGit,
   workspaceId: string,
@@ -1165,13 +1143,17 @@ async function applyAdmittedWorkspaceSourceChanges(
       localRepoBindingsUpdated: syncedBindings.updated,
       referenceRepoPath,
     };
-    acceptanceStarted = transition !== undefined;
+    // Canonical bindings must settle before admission and the accepted receipt retire.
+    if (syncedBindings.updated) {
+      // An uncertain canonical decision must not delete the already-applied checkout.
+      acceptanceStarted = true;
+      await applyWorkspaceManifestDecision(
+        normalizedRequest.workspaceId,
+        bindings,
+      );
+    }
+    acceptanceStarted ||= transition !== undefined;
     const accepted = transition ? await transition.complete(result) : result;
-    syncLocalRepoBindingsInBackground(
-      normalizedRequest.workspaceId,
-      config,
-      bindings,
-    );
 
     // Tracked, so it stays admitted after the apply returns.
     trackDetachedWork(() =>

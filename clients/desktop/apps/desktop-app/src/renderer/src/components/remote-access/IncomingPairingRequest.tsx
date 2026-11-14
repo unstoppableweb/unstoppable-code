@@ -50,6 +50,7 @@ export function IncomingPairingRequestBody({
         {hosted ? HOSTED_AGENTS_EFFECTS : CONTROL_EFFECTS}
       </p>
       <DesktopErrorBanner
+        errorSource="remote-access-incoming-pairing-error"
         className=""
         error={error?.error}
         {...(error?.details === undefined ? {} : { details: error.details })}

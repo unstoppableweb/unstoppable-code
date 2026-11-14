@@ -157,6 +157,11 @@ export interface WorktreeCreationFailure {
   readonly reason: string;
   /** Creates the task again under the same id; absent offers no retry. */
   readonly onRetry?: () => void;
+  /**
+   * Discards what the row still keeps, such as the draft of a task deleted
+   * on another device (CAN-6614); absent offers no Discard.
+   */
+  readonly onDiscard?: () => void;
 }
 
 export type WorktreeRowRuntimeState = 'fresh' | 'done' | 'archived';
@@ -320,8 +325,9 @@ export interface WorktreeRowProps {
   /** Coarse-grained setup phase. */
   setupPhase?: WorktreeSetupPhase;
   /**
-   * A cloud task the web core refused to create (CAN-6098): the status line
-   * reads why, with Try again when the host offers it.
+   * A cloud task the web core refused to create (CAN-6098), or one deleted
+   * on another device whose draft the host keeps (CAN-6614): the status
+   * line reads why, with Try again or Discard when the host offers it.
    */
   creationFailure?: WorktreeCreationFailure;
   /**
@@ -671,47 +677,6 @@ function statusDotTokens(status: WorktreeRowUiStatus): {
 }
 
 /**
- * Solid 6px classic-layout dot fills, using the generic hue roles from
- * {@link SIDEBAR_INDICATOR_COLORS}'s vocabulary: unread is blue, planning is
- * orange. Idle renders no dot at all (empty leading space), and working and
- * done render their status glyphs, so none of those reach here in practice;
- * they keep safe fallbacks.
- */
-function classicStatusDotTokens(status: WorktreeRowUiStatus): {
-  className: string;
-  label: string;
-} {
-  switch (status) {
-    case 'planning':
-      return {
-        className: 'bg-fg-warning',
-        label: 'Planning',
-      };
-    case 'working':
-      return {
-        className: 'bg-fg-purple',
-        label: 'Working',
-      };
-    case 'unread':
-      return {
-        className: 'bg-fg-blue',
-        label: 'Unread',
-      };
-    case 'done':
-      return {
-        className: 'bg-fg-success-strong',
-        label: 'Done',
-      };
-    case 'idle':
-    default:
-      return {
-        className: 'bg-fg-quaternary/40',
-        label: 'Idle',
-      };
-  }
-}
-
-/**
  * Canonical right-rail status: active setup phases use one loader; idle
  * attention states use one solid 8px dot. The wrapper stays 24px so its center
  * exactly matches the right-most compact action button.
@@ -862,28 +827,17 @@ export function WorktreeRowPrimaryIndicator({
     );
   }
 
-  if (layout === 'classic') {
-    const classicTokens = classicStatusDotTokens(uiStatus);
-    return withStatusTooltip(
-      classicTokens.label,
-      <span
-        aria-label={classicTokens.label}
-        className={`inline-flex h-1.5 w-1.5 rounded-full ${classicTokens.className}`}
-      />,
-    );
-  }
-
-  const tokens = statusDotTokens(uiStatus);
   return withStatusTooltip(
-    tokens.label,
+    'Unread',
     <span
-      aria-label={tokens.label}
-      className="inline-flex h-6 w-6 items-center justify-center"
+      aria-label="Unread"
+      className={
+        layout === 'classic'
+          ? 'inline-flex'
+          : 'inline-flex h-6 w-6 items-center justify-center'
+      }
     >
-      <span
-        className={`h-1.5 w-1.5 rounded-full bg-current ${tokens.color}`}
-        aria-hidden="true"
-      />
+      <Dot tone="unread" />
     </span>,
   );
 }
@@ -1510,11 +1464,13 @@ export function WorktreeRowActionChip({
         inline
           ? 'relative inline-flex shrink-0 items-center justify-end gap-0.5'
           : displayMode === 'list'
-            ? // Fine-pointer controls align with the label line: the subtitle
+            ? // The controls sit as far from the row's right edge as from its
+              // top: 2px beside the label line, 4px centered in a one-line row.
+              // Fine-pointer controls align with the label line: the subtitle
               // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
               // pointers instead center the 44px hitbox in the 44px row; lifting
               // that full hitbox overlaps the workspace-header actions above it.
-              `absolute right-1 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
+              `absolute right-0.5 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:right-1 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
                 // While the row's own menu is open the actions are hidden: the
                 // menu already identifies its row, and its trigger holds focus,
                 // so `group-focus-within` would otherwise keep the whole cluster
@@ -3024,14 +2980,14 @@ function WorktreeRowImpl(
               : focusedRowStatus === 'background'
                 ? backgroundTasksLabel(backgroundTasks)
                 : null;
-    const focusedDotClassName =
+    const focusedDotTone: DotTone =
       focusedRowStatus === 'needs-input'
-        ? 'bg-fg-warning'
+        ? 'attention'
         : focusedRowStatus === 'failed'
-          ? OPERATIONAL_STATUS_COLORS.failed.background
+          ? 'danger'
           : focusedRowStatus === 'unread'
-            ? 'bg-fg-blue'
-            : 'bg-fg-quaternary/50';
+            ? 'unread'
+            : 'filter';
     const focusedGlyph =
       focusedRowStatus === 'working' || focusedRowStatus === 'background' ? (
         // Follows Labs → Comet spinners; the comet keeps its 12px slot.
@@ -3040,10 +2996,7 @@ function WorktreeRowImpl(
           sizePx={12}
         />
       ) : (
-        <span
-          className={`rounded-full h-1.5 w-1.5 ${focusedDotClassName}`}
-          aria-hidden="true"
-        />
+        <Dot tone={focusedDotTone} />
       );
     const focusedIndicatorClassName =
       'relative inline-flex h-6 w-6 items-center justify-center rounded-sm';
@@ -3844,6 +3797,23 @@ function WorktreeRowImpl(
                         }}
                       >
                         Try again
+                      </Button>
+                    )}
+                    {creationFailure.onDiscard && (
+                      <Button
+                        variant="link"
+                        className="shrink-0"
+                        data-testid={withTestIdSuffix(
+                          'worktree-row-creation-discard',
+                          testIdSuffix,
+                        )}
+                        onClick={(event): void => {
+                          // The row opens the task; this only discards it.
+                          event.stopPropagation();
+                          creationFailure.onDiscard?.();
+                        }}
+                      >
+                        Discard
                       </Button>
                     )}
                   </span>

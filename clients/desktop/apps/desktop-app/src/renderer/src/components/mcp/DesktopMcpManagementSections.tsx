@@ -27,6 +27,7 @@ import {
   AccountMcpCredentialDialog,
   type AccountMcpCredentialKind,
 } from './AccountMcpControls';
+import { CloudReachBackPanel } from './CloudReachBackPanel';
 import { McpPromoteDialog } from './McpPlacementDialogs';
 import {
   CLOUD_REGISTRATION_UNAVAILABLE,
@@ -486,7 +487,20 @@ export function DesktopMcpManagementSections({
           onConfirmationChange: captureDeleteAccount,
         }}
       />
-      <ErrorBanner className="" error={refreshError} blockMessageFromReplay />
+      {server && !provider && (
+        <CloudReachBackPanel
+          serverId={server.definition.id}
+          serverName={server.definition.name}
+          configs={server.configs}
+          busy={busy || operating || managing}
+        />
+      )}
+      <ErrorBanner
+        errorSource="desktop-mcp-management-sections-refresh"
+        className=""
+        error={refreshError}
+        blockMessageFromReplay
+      />
       {promotion && server && (
         <McpPromoteDialog
           serverId={server.definition.id}

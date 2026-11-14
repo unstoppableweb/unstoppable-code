@@ -1001,14 +1001,52 @@ export function createCoreChatCommandAdapter(
     instructions: {
       'core.chat.create': (params: unknown) =>
         execute('core.chat.create', CoreChatCreateParamsSchema.parse(params)),
-      'core.chat.update': (params: unknown) =>
-        execute('core.chat.update', CoreChatUpdateParamsSchema.parse(params)),
+      'core.chat.update': (params: unknown) => {
+        const update = CoreChatUpdateParamsSchema.parse(params);
+        // A cloud chat's capability-state revision; desktop advertises none.
+        if (update.revision !== undefined)
+          return Promise.reject(
+            new CanopyOperationError({
+              kind: 'capability_unavailable',
+              message: 'Desktop chats do not serve this revision.',
+              details: { unsupported: ['revision'], reason: 'unserved' },
+              retry: {
+                kind: 'after_refresh',
+                resource: 'core.runtime.manifest.get',
+              },
+            }),
+          );
+        return execute('core.chat.update', update);
+      },
       'core.chat.archive': (params: unknown) =>
         execute('core.chat.archive', CoreChatArchiveParamsSchema.parse(params)),
       'core.chat.delete': (params: unknown) =>
         execute('core.chat.delete', CoreChatDeleteParamsSchema.parse(params)),
-      'core.chat.fork': (params: unknown) =>
-        execute('core.chat.fork', CoreChatForkParamsSchema.parse(params)),
+      'core.chat.fork': async (params: unknown) => {
+        const fork = CoreChatForkParamsSchema.parse(params);
+        // A cloud chat's in-place continue; a desktop chat resumes its own.
+        if (
+          fork.action.cloneMode === 'in-place' ||
+          fork.action.fastMode !== undefined
+        )
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'Desktop chats do not serve these fields.',
+            details: {
+              unsupported: [
+                fork.action.cloneMode === 'in-place'
+                  ? 'action.cloneMode'
+                  : 'action.fastMode',
+              ],
+              reason: 'unserved',
+            },
+            retry: {
+              kind: 'after_refresh',
+              resource: 'core.runtime.manifest.get',
+            },
+          });
+        return execute('core.chat.fork', fork);
+      },
     },
   };
 }

@@ -591,11 +591,21 @@ export function parsePipelineRunnerActivation(
  * reports renewals, that is the lease's end; a newer epoch ends it sooner.
  */
 export function pipelineRunnerLeaseOf(
-  activation: Pick<CloudRunnerActivation, 'leaseEpoch' | 'expiresAt'>,
+  activation: Pick<
+    CloudRunnerActivation,
+    'leaseEpoch' | 'expiresAt' | 'leaseExpiresAt'
+  >,
 ): PipelineOwnerLease {
+  const credentialEnds = Date.parse(activation.expiresAt);
+  // The delegation lease's own end, when the activation names it: the
+  // fence then lapses with the lease unless a renewal is reported.
+  const leaseEnds =
+    activation.leaseExpiresAt === undefined
+      ? credentialEnds
+      : Date.parse(activation.leaseExpiresAt);
   return {
     leaseEpoch: activation.leaseEpoch,
-    expiresAt: Date.parse(activation.expiresAt),
+    expiresAt: Math.min(credentialEnds, leaseEnds),
   };
 }
 

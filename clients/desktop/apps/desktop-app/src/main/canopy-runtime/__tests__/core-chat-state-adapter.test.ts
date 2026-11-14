@@ -250,6 +250,16 @@ describe('core chat state read adapter', () => {
       queue: [{ chatId: 'chat-1', entries: [{ id: 'queued-1' }] }],
     });
     expect(JSON.stringify(result.canonicalResult)).not.toContain('/private/');
+    // The web core's queued text, ids and state version (CAN-6509) are
+    // optional: the desktop core leaves them out.
+    expect(result.canonicalResult.queue).toEqual([
+      {
+        chatId: 'chat-1',
+        entries: [
+          { id: 'queued-1', origin: 'desktop', enqueuedAtMs: 7, revision: 1 },
+        ],
+      },
+    ]);
     expect(getStateSpy).toHaveBeenCalledWith({
       projectId: 'project-1',
       worktreeId: 'worktree-1',
@@ -422,6 +432,29 @@ describe('core chat state read adapter', () => {
       longTitle,
       longTitle,
     ]);
+    await runtime.shutdown();
+  });
+
+  it('refuses revision 2 of a snapshot before reading the local port (CAN-6509)', async () => {
+    const port = createPort();
+    const getStateSpy = jest.spyOn(port, 'getState');
+    const runtime = createDesktopRuntime({ getChatStatePort: () => port });
+    await expect(
+      runtime.query(
+        'core.chat.snapshot.get',
+        {
+          scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+          revision: 2,
+        },
+        { caller },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { unsupported: ['revision'], reason: 'unserved' },
+      },
+    });
+    expect(getStateSpy).not.toHaveBeenCalled();
     await runtime.shutdown();
   });
 

@@ -124,7 +124,10 @@ export function createDomSearchExecutor(
     while (traversedTextParts < maxTextParts && (node = walker.nextNode())) {
       traversedTextParts += 1;
       const parent = node.parentElement;
-      if (parent?.closest('[data-markdown-generated]')) continue;
+      // Generated text the reader does not see as content: Mermaid's labels,
+      // and the hidden copies that draw a shimmering step's words.
+      if (parent?.closest('[data-markdown-generated], [data-search-skip]'))
+        continue;
       if (
         options.visibleOnly &&
         (!parent ||
@@ -203,6 +206,23 @@ export function createDomSearchExecutor(
     const range = matchRanges[index];
     const scrollEl = getScrollContainer?.() ?? getContainer();
     if (!range || !scrollEl) return;
+    // A match inside a capped inner scroller (a card's output, say) is first
+    // brought into view there, innermost first, then in the scroll container.
+    const view = scrollEl.ownerDocument.defaultView;
+    for (
+      let node = range.startContainer.parentElement;
+      node && node !== scrollEl;
+      node = node.parentElement
+    ) {
+      if (node.scrollHeight <= node.clientHeight) continue;
+      const overflow = view?.getComputedStyle(node).overflowY ?? '';
+      if (overflow !== 'auto' && overflow !== 'scroll') continue;
+      const inner = range.getBoundingClientRect();
+      const frame = node.getBoundingClientRect();
+      if (inner.top < frame.top || inner.bottom > frame.bottom)
+        node.scrollTop +=
+          inner.top - frame.top - node.clientHeight / 2 + inner.height / 2;
+    }
     const rect = range.getBoundingClientRect();
     const isDocumentScroller =
       scrollEl === scrollEl.ownerDocument.scrollingElement;

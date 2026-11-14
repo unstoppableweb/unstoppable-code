@@ -90,7 +90,12 @@ export function LabsExperimentsSection({
           headingId="settings-experimental-features-heading"
           dataTestId="settings-experimental-features"
         >
-          <ErrorBanner className="" error={error} details={errorDetails} />
+          <ErrorBanner
+            errorSource="labs-experiments-section"
+            className=""
+            error={error}
+            details={errorDetails}
+          />
           <LabsExperimentRows
             rows={earlyAccessRows}
             onToggle={onToggle}
@@ -106,7 +111,12 @@ export function LabsExperimentsSection({
           dataTestId="settings-labs-pages"
         >
           {earlyAccessRows.length === 0 && (
-            <ErrorBanner className="" error={error} details={errorDetails} />
+            <ErrorBanner
+              errorSource="labs-experiments-section"
+              className=""
+              error={error}
+              details={errorDetails}
+            />
           )}
           <LabsExperimentRows
             rows={pageRows}

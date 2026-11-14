@@ -1,3 +1,4 @@
+import { normalizeStoredAgentAliasBase } from '@canopy/pipeline-interop/agent-alias-model';
 import * as fs from 'node:fs';
 import { copyFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -278,7 +279,11 @@ function normalizePipelineModelAliasPreference(
     if (!agentId || !agentId.startsWith('agent_model_')) {
       return undefined;
     }
-    return { mode: 'agent', agent_id: agentId };
+    return {
+      mode: 'agent',
+      agent_id: agentId,
+      ...normalizeStoredAgentAliasBase(raw.base),
+    };
   }
 
   if (raw.mode === 'inline') {

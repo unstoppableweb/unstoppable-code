@@ -82,6 +82,7 @@ export function ChatStateRecoveryBanner({
       )}
       {showRefreshError && (
         <Notice
+          errorSource="chat-state-refresh-error"
           intent="destructive"
           data-testid="chat-state-refresh-error"
           title={CHAT_STATE_REFRESH_ERROR_HEADING}
@@ -100,7 +101,23 @@ export function ChatStateRecoveryBanner({
           {CHAT_STATE_REFRESH_ERROR_HELPER}
         </Notice>
       )}
-      {notice && (
+      {notice && notice.kind === 'unavailable' && (
+        // A change this chat's backend doesn't serve (CAN-6646): nothing
+        // failed, so it says what isn't available and clears by itself.
+        <Notice
+          intent="neutral"
+          role="status"
+          data-testid="chat-state-unavailable-notice"
+          onDismiss={(): void => {
+            dismissChatStateNotice(projectId, worktreeId);
+          }}
+          dismissLabel="Dismiss chat state notice"
+          dismissTestId="chat-state-notice-dismiss"
+        >
+          {notice.message}
+        </Notice>
+      )}
+      {notice && notice.kind !== 'unavailable' && (
         <Notice
           intent="attention"
           // A rejected or failed change is interrupted news, so it is announced

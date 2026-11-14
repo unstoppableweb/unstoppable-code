@@ -199,6 +199,7 @@ export function OpenCodeConnection({
             </p>
           )}
           <DesktopErrorBanner
+            errorSource="opencode-connection-error"
             className=""
             error={error?.error}
             {...(error?.details === undefined

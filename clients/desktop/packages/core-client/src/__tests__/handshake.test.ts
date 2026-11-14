@@ -118,6 +118,28 @@ describe('initialize handshake', () => {
     expect(manifest.has('operations', 'core.runtime.initialize')).toBe(false);
   });
 
+  it('reads the minor schema revisions a runtime advertises, and none when it advertises none', () => {
+    const advertised = acceptCanopyInitializeResult(
+      canonicalResult({
+        capabilities: {
+          operations: [],
+          events: [],
+          streams: ['core.chat.live.events'],
+          schemaRevisions: {
+            'core.chat.live.events': 2,
+            'core.bad.revision': '2',
+          },
+        },
+      }),
+      accept,
+    );
+    expect([...(advertised.manifest.schemaRevisions ?? [])]).toEqual([
+      ['core.chat.live.events', 2],
+    ]);
+    const older = acceptCanopyInitializeResult(canonicalResult(), accept);
+    expect(older.manifest.schemaRevisions?.size ?? 0).toBe(0);
+  });
+
   it('rejects results missing buildVersion or capabilities', () => {
     const bindingOnly = {
       selectedProtocolVersion: 1,

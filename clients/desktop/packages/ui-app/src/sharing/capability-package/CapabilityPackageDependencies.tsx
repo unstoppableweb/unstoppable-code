@@ -34,6 +34,7 @@ import type {
   PipelinePackageResource,
   PipelinePackageWithheldFile,
   PipelinePackageWithheldReason,
+  CapabilityPackageWithheldMemberFile,
 } from '@canopy/protocol/pipelines';
 import {
   computeRequiredResourceIds,
@@ -73,6 +74,8 @@ const ADD_PIPELINE_LABEL = 'Add a pipeline';
 const ADD_PIPELINE_PLACEHOLDER = 'Add a pipeline…';
 const ADD_PIPELINE_FAILED_LABEL = "Couldn't add the pipeline. Try again.";
 const WITHHELD_HEADING = 'Left out of this share';
+const GIT_UNCHECKED_LABEL =
+  "Git couldn't check this folder, so files it would ignore may be included.";
 const WITHHELD_HELPER =
   'These files stay on this computer. Recipients start without them.';
 const WITHHELD_REASON_LABELS: Record<PipelinePackageWithheldReason, string> = {
@@ -81,6 +84,7 @@ const WITHHELD_REASON_LABELS: Record<PipelinePackageWithheldReason, string> = {
   symlink: 'Symbolic link',
   suspected_secret: 'May contain a secret',
   missing_optional_asset: 'Folder not found',
+  git_ignored: 'Ignored by Git',
 };
 const CHOOSE_FILES_LABEL = 'Choose files';
 const HIDE_FILES_LABEL = 'Hide files';
@@ -162,6 +166,11 @@ interface CapabilityPackageDependenciesProps {
   }) => string | null;
   /** Lower-case noun for the resource being shared ("pipeline", "skill"). */
   subjectLabel?: string;
+  /**
+   * Heading and helper for the files left out; a cloud copy (CAN-6176) has
+   * no recipients. Defaults to the share's wording.
+   */
+  withheldCopy?: { heading: string; helper: string };
   /**
    * Test-id prefix of the hosting dialog, e.g. `share-skill`. Sections get
    * `${testIdPrefix}-dependencies*` and `${testIdPrefix}-dependency-problems*`.
@@ -393,6 +402,7 @@ export function CapabilityPackageDependencies({
   pipelineAdd,
   bindingLabelFor = DEFAULT_BINDING_LABEL,
   subjectLabel = 'workflow',
+  withheldCopy = { heading: WITHHELD_HEADING, helper: WITHHELD_HELPER },
   testIdPrefix,
   disabled,
   mode = 'package',
@@ -458,6 +468,7 @@ export function CapabilityPackageDependencies({
         >
           {/* One alert region, so the reason is announced with the failure. */}
           <Notice
+            errorSource="capability-package-dependencies-analysis-label"
             intent="destructive"
             detail={
               <AnalysisFailureReason
@@ -475,7 +486,10 @@ export function CapabilityPackageDependencies({
 
   const manifest = analysis.manifest;
   const packagedPipelines = analysis.packagedPipelines ?? [];
-  const withheldFiles = analysis.withheldFiles ?? [];
+  const withheld: WithheldItem[] = [
+    ...(analysis.withheldFiles ?? []).map(assetWithheldItem),
+    ...(analysis.withheldMemberFiles ?? []).map(memberWithheldItem),
+  ];
   const manifestResourceIds = new Set(
     (manifest?.resources ?? []).map((resource) => resource.id),
   );
@@ -533,7 +547,7 @@ export function CapabilityPackageDependencies({
             includedResources,
             requirementCount: requirements.length,
             pipelineCount: shippedPipelineCount,
-            withheldCount: withheldFiles.length,
+            withheldCount: withheld.length,
           });
 
   return (
@@ -626,8 +640,21 @@ export function CapabilityPackageDependencies({
         />
       )}
 
-      {withheldFiles.length > 0 && (
-        <WithheldFileList files={withheldFiles} testIdPrefix={testIdPrefix} />
+      {analysis.gitIgnoreCheck === 'unavailable' && (
+        <Notice
+          intent="attention"
+          data-testid={`${testIdPrefix}-dependencies-git-unchecked`}
+        >
+          {GIT_UNCHECKED_LABEL}
+        </Notice>
+      )}
+
+      {withheld.length > 0 && (
+        <WithheldFileList
+          items={withheld}
+          copy={withheldCopy}
+          testIdPrefix={testIdPrefix}
+        />
       )}
 
       <Stack
@@ -1050,6 +1077,7 @@ function PackagedPipelineList({
       )}
       {addError !== null && (
         <ErrorBanner
+          errorSource="packaged-pipeline-list-add"
           className=""
           error={addError}
           testId={`${testIdPrefix}-dependencies-pipeline-add-error`}
@@ -1059,18 +1087,40 @@ function PackagedPipelineList({
   );
 }
 
-function withheldFileLabel(file: PipelinePackageWithheldFile): string {
-  return file.relativePath
-    ? `${file.assetId}/${file.relativePath}`
-    : file.assetId;
+interface WithheldItem {
+  key: string;
+  label: string;
+  reason: PipelinePackageWithheldReason;
 }
 
-/** Asset files the analysis left out, so the author knows what stays here. */
+function assetWithheldItem(file: PipelinePackageWithheldFile): WithheldItem {
+  return {
+    key: `asset\0${file.pipelineKey}\0${file.assetId}\0${file.relativePath}`,
+    label: file.relativePath
+      ? `${file.assetId}/${file.relativePath}`
+      : file.assetId,
+    reason: file.reason,
+  };
+}
+
+function memberWithheldItem(
+  file: CapabilityPackageWithheldMemberFile,
+): WithheldItem {
+  return {
+    key: `member\0${file.rootName}\0${file.relativePath}`,
+    label: `${file.rootName}/${file.relativePath}`,
+    reason: file.reason,
+  };
+}
+
+/** Files the analysis left out, so the author knows what stays here. */
 function WithheldFileList({
-  files,
+  items,
+  copy,
   testIdPrefix,
 }: {
-  files: readonly PipelinePackageWithheldFile[];
+  items: readonly WithheldItem[];
+  copy: { heading: string; helper: string };
   testIdPrefix: string;
 }): JSX.Element {
   return (
@@ -1079,21 +1129,19 @@ function WithheldFileList({
       data-testid={`${testIdPrefix}-dependencies-withheld`}
     >
       <Heading level={4} variant="title">
-        {WITHHELD_HEADING}
+        {copy.heading}
       </Heading>
-      <p className="text-xs fg-secondary">{WITHHELD_HELPER}</p>
+      <p className="text-xs fg-secondary">{copy.helper}</p>
       <Stack as="ul" gap="tight">
-        {files.map((file) => (
+        {items.map((item) => (
           <li
-            key={`${file.pipelineKey}\0${file.assetId}\0${file.relativePath}`}
+            key={item.key}
             className="flex flex-wrap items-center gap-1.5 text-xs"
             data-testid={`${testIdPrefix}-dependencies-withheld-item`}
-            data-reason={file.reason}
+            data-reason={item.reason}
           >
-            <span className="min-w-0 break-all fg-primary">
-              {withheldFileLabel(file)}
-            </span>
-            <Badge>{WITHHELD_REASON_LABELS[file.reason]}</Badge>
+            <span className="min-w-0 break-all fg-primary">{item.label}</span>
+            <Badge>{WITHHELD_REASON_LABELS[item.reason]}</Badge>
           </li>
         ))}
       </Stack>

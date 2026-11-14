@@ -526,7 +526,11 @@ export function TwoFactorSetupPanel({
           </form>
         )}
 
-        <ErrorBanner className="mb-3" error={error} />
+        <ErrorBanner
+          errorSource="two-factor-setup-panel"
+          className="mb-3"
+          error={error}
+        />
       </>
     </SettingsCard>
   );

@@ -26,6 +26,8 @@ export const journalSchema = z.object({
   trigger: archiveTriggerSchema.optional(),
   /** Set on a child of {@link runStepFreeChildLifecycles}, which may resume it. */
   parentOperation: operationSchema.optional(),
+  /** A resumed pre-capture archive's successor retains this binding after replacing its slot. */
+  supersedesArchives: z.array(z.string().uuid()).optional(),
   workspaceId: z.string(),
   worktreeId: z.string().optional(),
   createdAt: z.string().optional(),
@@ -44,6 +46,17 @@ export const journalSchema = z.object({
   ),
   outcome: z.unknown().optional(),
   cleanupRequired: z.boolean().optional(),
+  archiveRecoveryCleanup: z
+    .array(
+      z.object({
+        operationId: z.string().uuid(),
+        revision: z.string().regex(/^[a-f0-9]{64}$/),
+        done: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  /** Retains bounded-repair scope across a caught failure; never generic archive replay. */
+  cleanupRepair: z.object({ kind: z.literal('completed-cleanup') }).optional(),
   ownedPaths: z
     .array(z.object({ path: z.string(), identity: z.string().nullable() }))
     .default([]),
@@ -123,6 +136,7 @@ export function isArchiveCleanupPhase(phase: string): boolean {
     phase.startsWith('sidecar:') ||
     [
       'live-state-teardown',
+      'turn-diff-cleanup',
       'browser-retirement',
       'sidecar-cleanup',
       'compatibility-symlinks',

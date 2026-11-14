@@ -4,6 +4,7 @@ import type { CustomizeSharedByMeLine } from '../lib/customize-row-copy';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { SHARED_BY_YOU_PUBLIC_LINK_LABEL } from '../lib/shared-by-you';
 import { Badge } from './Badge';
+import { Tooltip } from './Tooltip';
 
 const SEPARATOR = ' · ';
 
@@ -56,14 +57,15 @@ export function CustomizeSharedByMeSubtitle({
       className={`relative mt-0.5 flex min-w-0 items-center overflow-hidden whitespace-nowrap text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}
     >
       {audience !== undefined && (
-        <span
-          ref={audienceRef}
-          data-testid={`customize-row-audience-${entryId}`}
-          title={audience}
-          className="min-w-0 truncate"
-        >
-          {audience}
-        </span>
+        <Tooltip label={audience} allowShrink replayBlock>
+          <span
+            ref={audienceRef}
+            data-testid={`customize-row-audience-${entryId}`}
+            className="min-w-0 truncate"
+          >
+            {audience}
+          </span>
+        </Tooltip>
       )}
       {publicLink && (
         <span ref={linkRef} className="inline-flex shrink-0 items-center">

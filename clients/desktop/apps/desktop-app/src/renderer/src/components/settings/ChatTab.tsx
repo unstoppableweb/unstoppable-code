@@ -71,7 +71,10 @@ function getSelectedThinkingLevel(
  * `Object.keys`, so the extra key is inert everywhere else.
  */
 type DefaultsRowKey =
-  | Exclude<AgentProviderType, 'cursor' | 'copilot' | 'opencode'>
+  | Exclude<
+      AgentProviderType,
+      'cursor' | 'copilot' | 'opencode' | 'antigravity'
+    >
   | 'aiCredits';
 
 /** The only model whose default rows offer Low (CAN-4646). */
@@ -835,6 +838,25 @@ export function ChatTab(): JSX.Element {
               }
             />
           </SettingsRow>
+        </SettingsGroup>
+      </SettingsSection>
+
+      <SettingsSection title="Composer">
+        <SettingsGroup>
+          <SettingsRow
+            label="Next prompt suggestions"
+            htmlFor="settings-prompt-suggestions-enabled"
+            description="After a Claude or Codex turn, the empty composer shows a likely next message. Press Tab to use it. Each suggestion is a small extra request."
+            control={
+              <ToggleSwitch
+                id="settings-prompt-suggestions-enabled"
+                checked={prefs.promptSuggestionsEnabled !== false}
+                label="Next prompt suggestions"
+                onChange={(next) => save({ promptSuggestionsEnabled: next })}
+                dataTestId="settings-prompt-suggestions-enabled"
+              />
+            }
+          />
         </SettingsGroup>
       </SettingsSection>
     </SettingsPage>

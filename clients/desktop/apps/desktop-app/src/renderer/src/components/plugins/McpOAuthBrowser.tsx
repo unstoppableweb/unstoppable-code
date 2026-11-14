@@ -158,7 +158,9 @@ export function McpOAuthBrowser({
         </p>
       )}
       {error ? (
-        <Notice intent="destructive">{error}</Notice>
+        <Notice errorSource="mcp-o-auth-browser" intent="destructive">
+          {error}
+        </Notice>
       ) : browserId ? (
         <div className="flex min-h-100 flex-1 flex-col">
           <BrowserPane

@@ -125,6 +125,32 @@ export function rememberCloudAttachmentPreview(
 }
 
 /**
+ * Files on this computer's disk that uploaded attachments came from, by
+ * pending attachment path (CAN-6614). A picked or dropped file is backed by
+ * its file on disk, so keeping it holds no bytes: when its chat is deleted
+ * on another device, the file is read again from disk and attached to the
+ * new chat. A pasted file, or one dragged from another app, has no path and
+ * is never kept, so its bytes are never held.
+ */
+const MAX_SOURCES = 64;
+const sources = new Map<string, File>();
+
+/** Keeps the disk file an uploaded attachment came from. */
+export function rememberCloudAttachmentSource(path: string, file: File): void {
+  sources.delete(path);
+  sources.set(path, file);
+  for (const oldest of sources.keys()) {
+    if (sources.size <= MAX_SOURCES) break;
+    sources.delete(oldest);
+  }
+}
+
+/** The disk file a cloud attachment came from, or undefined for none known. */
+export function cloudAttachmentSource(path: string): File | undefined {
+  return sources.get(path);
+}
+
+/**
  * The preview of a cloud attachment path, from memory: no cloud path is ever
  * read through main. Undefined for a local path, which main previews.
  */

@@ -13,6 +13,11 @@ import {
   type CanopyDaemonCapability,
   type CanopyRuntimeDescriptor,
 } from '@canopy/core-client/node';
+import {
+  sameW5RootEvidenceScope,
+  w5RootEvidenceScope,
+  type W5RootEvidenceScope,
+} from '@canopy/core-runtime/node/w5/service-history';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
@@ -49,8 +54,10 @@ let host: Promise<ElectronDaemonHost> | undefined;
 let resolvedHost: ElectronDaemonHost | undefined;
 let lifetime: ElectronDaemonCallerLifetime | undefined;
 let stopped = false;
-let w5HandoffPending = false;
-let w5AttachOnly = false;
+let w5HandoffPhase: 'pending' | 'ready' | 'degraded' | 'cancelled' | undefined;
+let windowsPreparation:
+  | { readonly scope: W5RootEvidenceScope; readonly pending: Promise<void> }
+  | undefined;
 let filesConsumerEnabled = false;
 let w5DegradationAwaitingFiles = false;
 // W5e: every client instance id this process ever leased, so its subscriber
@@ -88,19 +95,97 @@ const W5_FLIP_STEP_TIMEOUT_MS = 120_000;
  * TRANSITIONAL (CAN-5543, GB12): a flip build spawns every daemon with the W5
  * host; where the platform has a startup claim, the claimed spawn first runs
  * the backup and stops the in-process commit log. Windows has no claim; the
- * handoff runs that step itself before its first launch.
+ * connection boundary probes without spawning and freshly prepares each
+ * spawn-capable attempt.
  */
 function w5LaunchInputs(): Parameters<typeof createElectronDaemonHost>[0] {
   if (!isW5DaemonFlipCompiled()) return {};
   if (hostPlatformOperatingSystem() === 'win32') return { w5: {} };
   const beforeSpawn: CanopyDaemonBeforeSpawn = {
     timeoutMs: W5_FLIP_STEP_TIMEOUT_MS,
-    run: async (): Promise<void> => {
+    run: async (signal, protection): Promise<void> => {
+      requireW5SpawnAllowed(signal);
       const { prepareW5FlipSpawn } = await import('../lib/w5-flip-backup');
-      await prepareW5FlipSpawn(app.getVersion());
+      await prepareW5FlipSpawn(app.getVersion(), protection);
+      requireW5SpawnAllowed(signal);
     },
   };
   return { w5: { beforeSpawn } };
+}
+
+function w5SpawnAllowed(): boolean {
+  return (
+    !stopped && (w5HandoffPhase === 'pending' || w5HandoffPhase === 'ready')
+  );
+}
+
+function requireW5SpawnAllowed(signal: AbortSignal): void {
+  signal.throwIfAborted();
+  if (!w5SpawnAllowed())
+    throw new CanopyClientError({
+      kind: 'failed_precondition',
+      message: 'Workspace records startup is not available.',
+      retry: { kind: 'never' },
+    });
+}
+
+/** Coalesce overlapping work only; every later attempt revalidates evidence. */
+async function prepareWindowsW5Spawn(
+  trusted: ElectronDaemonHost,
+): Promise<void> {
+  const { getDataDir } = await import('../lib/paths');
+  const scope = await w5RootEvidenceScope(getDataDir());
+  const requireRoot = async (): Promise<void> => {
+    if (
+      !sameW5RootEvidenceScope(
+        await w5RootEvidenceScope(trusted.canonicalDataRoot),
+        scope,
+      ) ||
+      !sameW5RootEvidenceScope(await w5RootEvidenceScope(getDataDir()), scope)
+    )
+      throw new CanopyClientError({
+        kind: 'failed_precondition',
+        message: 'The workspace records root changed during startup.',
+        retry: { kind: 'never' },
+        details: { w5Handoff: 'backup_refused', detail: 'scope-mismatch' },
+      });
+  };
+  await requireRoot();
+  if (windowsPreparation) {
+    if (!sameW5RootEvidenceScope(windowsPreparation.scope, scope))
+      throw new CanopyClientError({
+        kind: 'failed_precondition',
+        message: 'Another workspace records root is being prepared.',
+        retry: { kind: 'never' },
+      });
+    await windowsPreparation.pending;
+  } else {
+    const pending = (async (): Promise<void> => {
+      const { prepareW5FlipSpawn } = await import('../lib/w5-flip-backup');
+      await prepareW5FlipSpawn(app.getVersion());
+    })();
+    windowsPreparation = { scope, pending };
+    try {
+      await pending;
+    } finally {
+      if (windowsPreparation?.pending === pending)
+        windowsPreparation = undefined;
+    }
+  }
+  await requireRoot();
+}
+
+async function launchTrusted(
+  trusted: ElectronDaemonHost,
+  signal: AbortSignal,
+): Promise<ElectronDaemonClient> {
+  const result = await attachOrStartCanopyDaemon({
+    ...trusted.launch,
+    signal,
+    attach: (endpoint, setup) => connectTrusted(trusted, endpoint, setup),
+    dispose: (connected) => connected.close(),
+  });
+  return result.value;
 }
 
 // One trusted host per process; a failed setup is retried on the next use.
@@ -146,8 +231,9 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
     attach: async (signal): Promise<ElectronDaemonClient> => {
       const trusted = await getHost();
       let client: ElectronDaemonClient;
-      if (flip && w5AttachOnly) {
-        // A failed handoff cannot safely repeat admission or its backup.
+      const windows = hostPlatformOperatingSystem() === 'win32';
+      if (flip && (windows || !w5SpawnAllowed())) {
+        // Attachment cannot create a writer and needs no capture permission.
         const found = await probeCanopyDaemon({
           secureStorageLayout: 'nested-v1',
           dataRootHash: trusted.launch.dataRootHash,
@@ -157,27 +243,42 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
             connectTrusted(trusted, endpoint, setup),
           dispose: (late) => late.close(),
         });
-        if (found.kind !== 'live')
-          throw new CanopyClientError({
-            kind: 'unavailable',
-            message: 'The background service could not be reached.',
-            retry: { kind: 'never' },
-          });
-        client = found.value;
-      } else {
-        // Windows: the launcher cannot run the step, so it must have run.
-        if (flip && hostPlatformOperatingSystem() === 'win32')
-          (await import('../lib/w5-flip-backup')).requireW5FlipSpawnPrepared();
-        const result = await attachOrStartCanopyDaemon({
-          ...trusted.launch,
-          signal,
-          attach: (endpoint, setup) => connectTrusted(trusted, endpoint, setup),
-          dispose: (connected) => connected.close(),
-        });
-        client = result.value;
-      }
+        if (found.kind === 'live') client = found.value;
+        else {
+          // Unreachable/incompatible is not absence; discovery never permits
+          // the combined launcher to turn a failed attachment into a spawn.
+          if (found.kind !== 'absent' && found.kind !== 'stale')
+            throw canopyDaemonRefusalError(
+              found.kind === 'incompatible' ? 'version_skew' : 'peer_held',
+              'The background service cannot serve this app.',
+            );
+          requireW5SpawnAllowed(signal);
+          if (windows) await prepareWindowsW5Spawn(trusted);
+          requireW5SpawnAllowed(signal);
+          client = await launchTrusted(trusted, signal);
+        }
+      } else client = await launchTrusted(trusted, signal);
       // Before the lease, on every connection: a reconnect may find another.
-      if (flip) await requireW5Capability(client, signal);
+      if (flip) {
+        // The connection service owns the client only after this attach returns.
+        const closeOnAbort = (): void => {
+          void client.close().catch(() => undefined);
+        };
+        signal.addEventListener('abort', closeOnAbort, { once: true });
+        try {
+          signal.throwIfAborted();
+          await requireW5Capability(client, signal);
+          // Discovery may disappear; stop only after actual attach or prepared spawn.
+          const { stopInProcessW5Host } = await import('../lib/w5-flip-backup');
+          await stopInProcessW5Host();
+          signal.throwIfAborted();
+        } catch (error) {
+          await client.close();
+          throw error;
+        } finally {
+          signal.removeEventListener('abort', closeOnAbort);
+        }
+      }
       return client;
     },
     onSession: (session, caller) => {
@@ -194,7 +295,7 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
     // The handoff waits a refused daemon out and settles any attach it
     // refuses; after it, a refusal is a failed start that warns and latches.
     isRestartRefusal: (error) => {
-      if (!w5HandoffPending) return false;
+      if (w5HandoffPhase !== 'pending') return false;
       const refusal = canopyDaemonRefusal(error);
       return refusal !== null && refusal !== 'exited_before_ready';
     },
@@ -212,8 +313,7 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
 export function noteElectronW5Handoff(
   phase: 'pending' | 'ready' | 'degraded' | 'cancelled',
 ): void {
-  w5HandoffPending = phase === 'pending';
-  w5AttachOnly = phase === 'degraded' || phase === 'cancelled';
+  w5HandoffPhase = phase;
   w5DegradationAwaitingFiles = phase === 'degraded' && !filesConsumerEnabled;
   if (phase === 'degraded')
     getElectronDaemonHealth().observe({
@@ -235,7 +335,7 @@ export function setElectronDaemonFilesConsumerEnabled(enabled: boolean): void {
 
 /** Files reads bypass the daemon meanwhile, with nothing shown. */
 export function isElectronW5HandoffPending(): boolean {
-  return w5HandoffPending;
+  return w5HandoffPhase === 'pending';
 }
 
 type Endpoint = Parameters<ElectronDaemonHost['connect']>[0]['endpoint'];

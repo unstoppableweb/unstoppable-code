@@ -23,10 +23,16 @@ import { isRecord } from '../lib/type-guards';
 
 export const EXTERNAL_PROJECT_IMPORTS_FILE_VERSION = 1;
 
+type ExternalProjectBackingProvider = 'claude' | 'codex' | 'opencode';
+
 export interface ExternalProjectImportedSession {
   chatId: string;
   worktreeId: string;
   importedAt: string;
+  backingProvider?: ExternalProjectBackingProvider;
+  archived?: boolean;
+  /** Other source ids that resolve to this chat (same session, other store). */
+  aliasIds?: string[];
 }
 
 export interface ExternalProjectImportLedgerEntry {
@@ -68,6 +74,14 @@ function isProvider(value: unknown): value is ExternalProjectProvider {
   return typeof value === 'string' && PROVIDER_NAMES.includes(value);
 }
 
+const BACKING_PROVIDERS: readonly string[] = ['claude', 'codex', 'opencode'];
+
+function isBackingProvider(
+  value: unknown,
+): value is ExternalProjectBackingProvider {
+  return typeof value === 'string' && BACKING_PROVIDERS.includes(value);
+}
+
 function optionalIso(value: unknown): string | null {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
     ? value
@@ -88,10 +102,18 @@ function normalizeSessions(
     ) {
       continue;
     }
+    const aliasIds = Array.isArray(raw.aliasIds)
+      ? Array.from(new Set(raw.aliasIds.filter((id) => typeof id === 'string')))
+      : [];
     sessions[sessionId] = {
       chatId: raw.chatId,
       worktreeId: raw.worktreeId,
       importedAt: raw.importedAt,
+      ...(isBackingProvider(raw.backingProvider)
+        ? { backingProvider: raw.backingProvider }
+        : {}),
+      ...(typeof raw.archived === 'boolean' ? { archived: raw.archived } : {}),
+      ...(aliasIds.length > 0 ? { aliasIds } : {}),
     };
   }
   return sessions;
@@ -255,28 +277,53 @@ export function recordExternalProjectChatDestination(args: {
   });
 }
 
+/** What the import records for one chat: the ledger key plus its session record. */
+export interface ExternalProjectSessionImport extends Omit<
+  ExternalProjectImportedSession,
+  'importedAt'
+> {
+  sessionId: string;
+}
+
 /** One ledger write for every chat an import run produced for a candidate. */
 export function recordExternalProjectSessionImports(args: {
   candidateId: string;
-  sessions: ReadonlyArray<{
-    sessionId: string;
-    chatId: string;
-    worktreeId: string;
-  }>;
+  sessions: ReadonlyArray<ExternalProjectSessionImport>;
   importedAt?: string;
 }): Promise<ExternalProjectImportLedger> {
   return mutateLedger((ledger) => {
     const entry = ledger.imports[args.candidateId];
     if (!entry) return;
     const importedAt = args.importedAt ?? new Date().toISOString();
-    for (const session of args.sessions) {
-      entry.sessions[session.sessionId] = {
-        chatId: session.chatId,
-        worktreeId: session.worktreeId,
-        importedAt,
-      };
+    for (const { sessionId, ...record } of args.sessions) {
+      entry.sessions[sessionId] = { ...record, importedAt };
     }
   });
+}
+
+/**
+ * The ledger record a discovered session already became, if any. A session is
+ * recorded under its store id (T3 `thread_id`, OpenCode `session_v2.id`) or
+ * its own id, and a T3 thread also names its native session as an alias, so
+ * a rescan finds the import whether the conversation now shows up as the T3
+ * thread or as the Codex, Claude, or OpenCode session behind it. The session's
+ * own aliases are looked up as keys too: a chat imported through the agent's
+ * record is keyed by the native id, which a T3 thread still carries after
+ * that record is gone.
+ */
+export function findImportedSession(
+  sessions: Readonly<Record<string, ExternalProjectImportedSession>>,
+  session: { id: string; storeId?: string; aliasIds?: readonly string[] },
+): ExternalProjectImportedSession | undefined {
+  const ids = [session.storeId, session.id, ...(session.aliasIds ?? [])].filter(
+    (id): id is string => id !== undefined,
+  );
+  for (const id of ids) {
+    if (Object.prototype.hasOwnProperty.call(sessions, id)) return sessions[id];
+  }
+  return Object.values(sessions).find((record) =>
+    record.aliasIds?.some((alias) => ids.includes(alias)),
+  );
 }
 
 export function markExternalProjectScan(

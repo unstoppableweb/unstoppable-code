@@ -3,7 +3,7 @@ import {
   repositoryNameFromCloneUrl,
 } from '@canopy/protocol/portal';
 import { realpath, writeFile } from 'node:fs/promises';
-import { basename, join, posix, resolve, win32 } from 'node:path';
+import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { acquireW5DesktopDeleteGate } from '@canopy/core-platform/w5-process-file-lock';
 import { W5CommitRefusedError } from '@canopy/core-runtime/node/w5/commit-log/errors';
@@ -25,7 +25,7 @@ import { hasManifestRepos } from '../lib/canopy-json';
 import { assertImportFolderExists } from '../lib/import-folder';
 import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import { getWorkspacesRootDir } from '../lib/workspace-cli-reads';
-import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
+import { admitRoutedW5Storage } from './record-store';
 import {
   acquireWorkspacePath,
   availableWorkspacePath,
@@ -34,6 +34,7 @@ import {
   initializeWorkspaceSource,
   isWorkspaceGitRepository,
   readWorkspaceSource,
+  workspacePathExists,
 } from './workspace-create-effects';
 import {
   allocateWorkspaceIdentity,
@@ -42,10 +43,21 @@ import {
   matchingWorkspaceBinding,
   publishRoutedWorkspace,
   readWorkspaceCreationSnapshot,
+  requireKnownWorkspaceBindings,
+  workspacePathHasRecordedOwner,
   resolveWorkspaceBindings,
   workspaceIdBase,
 } from './workspace-create-records';
 import { assertNoConflictingW5Reservation } from './worktree-delete-records';
+
+export class CliWorkspaceDestinationExistsError extends Error {
+  readonly code = 'EEXIST';
+  readonly reason = 'destination-exists';
+  constructor(readonly path: string) {
+    super(`Destination already exists: ${path}`);
+    this.name = 'CliWorkspaceDestinationExistsError';
+  }
+}
 
 export type RoutedWorkspaceCreateRequest =
   | { kind: 'import'; repoPath: string }
@@ -57,6 +69,8 @@ export interface RoutedWorkspaceCreateContext {
   store: W5CommitLogFileStore;
   idempotencyKey: string;
   signal: AbortSignal;
+  /** The CLI single-repo command keeps its source-file initialization contract. */
+  initializationProfile?: 'cli';
 }
 
 function decodeWorkspaceOutcome(value: unknown): WorkspaceCliRecord {
@@ -129,6 +143,7 @@ function decodeWorkspaceOutcome(value: unknown): WorkspaceCliRecord {
 
 function normalizeRequest(
   request: RoutedWorkspaceCreateRequest,
+  profile?: 'cli',
 ): RoutedWorkspaceCreateRequest {
   if (request.kind === 'import')
     return { ...request, repoPath: resolve(request.repoPath) };
@@ -138,7 +153,13 @@ function normalizeRequest(
       remoteUrl: normalizeRepositoryCloneUrl(request.remoteUrl.trim()),
       destinationDir: resolve(request.destinationDir),
     };
-  return { ...request, name: request.name.trim() };
+  return {
+    ...request,
+    name:
+      request.kind === 'single' && profile === 'cli'
+        ? request.name
+        : request.name.trim(),
+  };
 }
 
 function assertRepositoryDirectoryName(name: string): void {
@@ -179,7 +200,7 @@ export function createRoutedCliWorkspace(
   request: RoutedWorkspaceCreateRequest,
   context: RoutedWorkspaceCreateContext,
 ): Promise<WorkspaceCliRecord> {
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, context.initializationProfile);
   const { store, signal } = context;
   let identity: string | undefined;
   let name = '';
@@ -201,16 +222,20 @@ export function createRoutedCliWorkspace(
         signal.throwIfAborted();
         if (normalized.kind === 'import') {
           await assertImportFolderExists(normalized.repoPath);
-          source = await realpath(normalized.repoPath);
+          source = normalized.repoPath;
           cowork = !(await isWorkspaceGitRepository(source));
+          if (cowork) source = await realpath(source);
           manifest = cowork ? null : await readWorkspaceSource(source);
           name = basename(source) || 'Repository';
         } else if (normalized.kind === 'remote') {
           if (!normalized.remoteUrl)
             throw new Error('Repository URL is required.');
-          name = remoteRepositoryDirectoryName(normalized.remoteUrl);
-          // Desktop's clone path uses the repository name, independently of its ID.
-          source = join(normalized.destinationDir, name);
+          remoteRepositoryDirectoryName(normalized.remoteUrl);
+          source = normalized.destinationDir;
+          name = basename(source);
+          if (!name) throw new Error('Destination directory is required.');
+          if (await workspacePathExists(source))
+            throw new CliWorkspaceDestinationExistsError(source);
         } else {
           name = normalized.name;
           if (!name) throw new Error('Project name is required.');
@@ -221,6 +246,8 @@ export function createRoutedCliWorkspace(
         for (let attempt = 1; ; attempt += 1) {
           signal.throwIfAborted();
           const snapshot = await readWorkspaceCreationSnapshot(store);
+          if (normalized.kind === 'remote')
+            requireKnownWorkspaceBindings(snapshot);
           if (normalized.kind === 'import')
             await assertWorkspaceImportable(snapshot, source, cowork);
           if (
@@ -273,7 +300,7 @@ export function createRoutedCliWorkspace(
       },
     }),
   });
-  return withStorageAdmission(
+  return admitRoutedW5Storage(
     [
       { namespace: 'workspace_index', writer: 'desktop_cli' },
       { namespace: 'workspace_manifest', writer: 'desktop_cli' },
@@ -291,7 +318,12 @@ export function createRoutedCliWorkspace(
               ? 'core.workspace.import'
               : 'core.workspace.create',
           idempotencyKey: context.idempotencyKey,
-          parameters: normalized,
+          parameters: context.initializationProfile
+            ? {
+                ...normalized,
+                initializationProfile: context.initializationProfile,
+              }
+            : normalized,
           isPreEffectRefusal: () => false,
           hold: async (run) => {
             const gate = await acquireW5DesktopDeleteGate(
@@ -352,6 +384,7 @@ export function createRoutedCliWorkspace(
             role: 'source' | 'member',
             action: 'initialize' | 'clone',
             url?: string,
+            exactDestination = false,
           ): Promise<string> => {
             // Only exclusive mkdir claims ownership; a rival advances the disk suffix.
             for (
@@ -360,10 +393,22 @@ export function createRoutedCliWorkspace(
               attemptNumber += 1
             ) {
               signal.throwIfAborted();
-              const candidate = await availableWorkspacePath(
-                base,
-                preferredName,
-              );
+              const snapshot = await readWorkspaceCreationSnapshot(store);
+              const candidate = exactDestination
+                ? join(base, preferredName)
+                : await availableWorkspacePath(
+                    base,
+                    preferredName,
+                    async (path) =>
+                      !(await workspacePathHasRecordedOwner(snapshot, path)),
+                  );
+              if (
+                exactDestination &&
+                (await workspacePathHasRecordedOwner(snapshot, candidate))
+              )
+                throw attempt.validationError(
+                  new CliWorkspaceDestinationExistsError(candidate),
+                );
               await record({
                 id: repoId,
                 role,
@@ -383,6 +428,10 @@ export function createRoutedCliWorkspace(
                   Reflect.get(error, 'path') !== candidate
                 )
                   throw error;
+                if (exactDestination)
+                  throw attempt.confirmEffectsAbsent(
+                    new CliWorkspaceDestinationExistsError(candidate),
+                  );
                 continue;
               }
               const step = {
@@ -405,6 +454,7 @@ export function createRoutedCliWorkspace(
                   normalized.kind === 'multi',
                   instructions,
                   signal,
+                  context.initializationProfile,
                 );
               await record({ ...step, status: 'completed' });
               return candidate;
@@ -413,12 +463,13 @@ export function createRoutedCliWorkspace(
           };
           if (normalized.kind === 'remote') {
             source = await provision(
-              normalized.destinationDir,
-              name,
+              dirname(normalized.destinationDir),
+              basename(normalized.destinationDir),
               'source',
               'source',
               'clone',
               normalized.remoteUrl,
+              true,
             );
             manifest = await readWorkspaceSource(source);
           } else if (

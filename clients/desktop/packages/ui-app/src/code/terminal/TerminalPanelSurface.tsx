@@ -587,6 +587,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
             {!ownsRecoveryUi && error && (
               <div className="pointer-events-none absolute inset-x-3 top-3 z-10">
                 <ErrorBanner
+                  errorSource="terminal-panel-error"
                   className=""
                   error={error}
                   blockMessageFromReplay
@@ -608,7 +609,12 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
           {error && (
             <div className="w-full max-w-sm px-3">
-              <ErrorBanner className="" error={error} blockMessageFromReplay />
+              <ErrorBanner
+                errorSource="terminal-panel-surface"
+                className=""
+                error={error}
+                blockMessageFromReplay
+              />
             </div>
           )}
           <Button

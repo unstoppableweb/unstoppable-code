@@ -129,7 +129,12 @@ export function McpServersSectionBody({
         Checking MCP servers…
       </p>
     ) : error !== null ? (
-      <ErrorBanner className="" error={error} testId="mcp-servers-card-error" />
+      <ErrorBanner
+        errorSource="mcp-servers-card-error-section-body"
+        className=""
+        error={error}
+        testId="mcp-servers-card-error"
+      />
     ) : servers.length === 0 ? (
       emptyLabel === undefined ? null : (
         <p

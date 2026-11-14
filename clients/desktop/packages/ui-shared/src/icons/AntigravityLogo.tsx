@@ -1,0 +1,22 @@
+import type { JSX, SVGProps } from 'react';
+
+/**
+ * Official Antigravity one-color mark from https://antigravity.google/press.
+ * Source: /assets/image/brand/antigravity-icon__one-color.svg, retrieved
+ * 2026-11-11 (SHA-256 5b5d0cfd07cb79ba5d299d80b754e7c91d782dc1199811688dec67a0a11ba240).
+ * The original path and viewBox are preserved; the ink follows the theme.
+ */
+export function AntigravityLogo(props: SVGProps<SVGSVGElement>): JSX.Element {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 180 180"
+      fill="currentColor"
+      {...props}
+    >
+      <path d="M144.248 149.062C151.748 154.688 162.998 150.938 152.685 140.625C121.748 110.625 128.31 28.125 89.8727 28.125C51.4352 28.125 57.9977 110.625 27.0602 140.625C15.8102 151.875 27.9977 154.688 35.4977 149.062C64.5602 129.375 62.6852 94.6875 89.8727 94.6875C117.06 94.6875 115.185 129.375 144.248 149.062Z" />
+    </svg>
+  );
+}

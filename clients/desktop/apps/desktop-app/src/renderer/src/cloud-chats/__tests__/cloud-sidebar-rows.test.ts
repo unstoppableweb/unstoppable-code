@@ -2,14 +2,10 @@
 import './jsdom-globals';
 import type { CanopyCapabilities, SessionViewModel } from '@canopy/app-core';
 import { appendCloudSidebarRows } from '../append-cloud-sidebar-rows';
+import { batchActionAvailability } from '@canopy/ui-app/code/shell/sidebar-selection-menu-items';
 import { cloudSidebarRowCapabilities } from '../cloud-sidebar-capabilities';
 import { routeSidebarReorder } from '../route-sidebar-reorder';
-import { useCloudChatSelection } from '../cloud-chat-selection';
 import { shouldPrefetchWorktreeChat } from '../cloud-sidebar-intent';
-import {
-  cloudCoworkStore,
-  createCloudSidebarTask,
-} from '../useCloudCoworkSidebar';
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 
@@ -29,6 +25,7 @@ const DESKTOP: CanopyCapabilities = {
   workspaceSettings: 'full',
   workspaceRemoval: 'archive',
   worktreeRemoval: 'archive',
+  worktreeRetention: 'archive-or-delete',
   workspaceMoveToOrganization: true,
   worktreeCreation: true,
   worktreeMetadata: true,
@@ -86,7 +83,6 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
         worktreeReordering: false,
         itemGrouping: false,
         worktreePinning: false,
-        worktreeRemoval: false,
         workspaceMoveToOrganization: false,
         worktreeMetadata: false,
         projectDeletionDiscard: false,
@@ -104,7 +100,27 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
       workspaceReordering: false,
       workspaceSettings: false,
       workspaceRemoval: false,
+      // A task archives through the web core, which keeps it restorable
+      // (CAN-6511); a project's rows never remove a worktree.
+      worktreeRemoval: 'archive',
     });
+    for (const kind of ['cowork', 'git'] as const)
+      expect(cloudSidebarRowCapabilities(DESKTOP, kind)).toMatchObject({
+        worktreeRemoval: false,
+      });
+    // A cloud task is never deleted from here, alone or in a selection
+    // (CAN-6511).
+    const task = cloudSidebarRowCapabilities(DESKTOP, 'task');
+    expect(task).not.toHaveProperty('worktreeRetention');
+    const selected = batchActionAvailability(
+      [
+        { removal: task.worktreeRemoval, retention: task.worktreeRetention },
+        { removal: task.worktreeRemoval, retention: task.worktreeRetention },
+      ],
+      { singular: 'task', plural: 'tasks' },
+    );
+    expect(selected.archive).toMatchObject({ enabled: true, count: 2 });
+    expect(selected.delete).toMatchObject({ enabled: false, offered: false });
     // A project's settings are its name, colour and delete to Trash.
     for (const kind of ['cowork', 'git'] as const)
       expect(cloudSidebarRowCapabilities(DESKTOP, kind)).toMatchObject({
@@ -123,14 +139,9 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
   it('a cloud task opens through the same work-entry seam as a local one', () => {
     const openLocal = jest.fn(() => Promise.resolve());
     useStandaloneChatStore.setState({ openWorkEntryFromSidebar: openLocal });
-    useCloudChatSelection.setState({ selectedChatKey: null });
 
     openCoworkWorkEntryFromSidebar('web-core:p1', 'web-core:t1');
-
-    expect(openLocal).not.toHaveBeenCalled();
-    expect(useCloudChatSelection.getState().selectedChatKey).toBe(
-      'web-core:t1',
-    );
+    expect(openLocal).toHaveBeenCalledWith('web-core:p1', 'web-core:t1');
 
     openCoworkWorkEntryFromSidebar('local-project', 'entry-1');
     expect(openLocal).toHaveBeenCalledWith('local-project', 'entry-1');
@@ -151,38 +162,6 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
     expect(
       shouldPrefetchWorktreeChat('local-a', 'wt-1', snapshotCloudRows),
     ).toBe(true);
-  });
-
-  it('a cloud "+" resolves with the new row, or rejects so the list clears it (CAN-6099)', async () => {
-    useStandaloneChatStore.setState({
-      openWorkEntryFromSidebar: jest.fn(() => Promise.resolve()),
-    });
-    const createTask = jest.fn((workspaceId: string) =>
-      Promise.resolve({
-        key: `web-core:${workspaceId}:wt-9`,
-        workspaceId,
-        worktreeId: 'wt-9',
-        title: 'New task',
-        state: 'idle',
-        updatedAt: '2026-11-10T13:00:00Z',
-      }),
-    );
-    cloudCoworkStore.setState({ createTask });
-    await expect(createCloudSidebarTask('web-core:p1')).resolves.toEqual({
-      status: 'completed',
-      worktreeId: 'web-core:wt-9',
-    });
-    expect(createTask).toHaveBeenCalledWith('p1');
-    expect(useCloudChatSelection.getState().selectedChatKey).toBe(
-      'web-core:wt-9',
-    );
-
-    cloudCoworkStore.setState({
-      createTask: jest.fn(() => Promise.reject(new Error('Refused.'))),
-    });
-    await expect(createCloudSidebarTask('web-core:p1')).rejects.toThrow(
-      'Refused.',
-    );
   });
 
   it('a project drop reaches only its own authority (CAN-6099)', () => {

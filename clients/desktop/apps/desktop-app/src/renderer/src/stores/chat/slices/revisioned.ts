@@ -16,7 +16,8 @@ import {
 // overlays. When the service is unavailable (older main process), callers
 // fall back to the legacy hydration path.
 import type { StateCreator } from 'zustand';
-import { readTryItDraft } from '@/lib/tryItDraftStorage';
+import type { Descendant } from 'slate';
+import { readStoredTabDraft, removeChatDraft } from '@/lib/chatDraftStorage';
 import type {
   ChatCommand,
   ChatGetStateRequest,
@@ -88,12 +89,18 @@ import {
 import { requestChatInterestRedeclare } from '@/lib/chat-interest/redeclare';
 import { sanitizePluginSelectionsWithCachedSupport } from '../plugin-provider-support';
 import type { PendingQuestion } from '../types';
-import type { ChatRevisionedSlice, ChatState } from '../state';
+import type { ChatRevisionedSlice, ChatState, ChatStateNotice } from '../state';
 import { pendingTabCreation } from '../pending-tab-creation';
 import {
   isTaskBeingCreated,
   taskCreationSettled,
 } from '../web-core/task-creations';
+import {
+  isCloudChatDeleted,
+  isCloudTaskDeleted,
+  keptDeletedChatTabs,
+} from '../web-core/task-deletions';
+import { isWindowLocalCommand } from '../web-core/translate';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { pendingApprovalModeTransitions } from './approvals';
 import { useIngestionLagStore } from '@/stores/ingestionLagStore';
@@ -381,6 +388,32 @@ function isRevisionedUnavailableError(error: unknown): boolean {
   return code === 'unavailable';
 }
 
+/** A change the scope's backend refuses before any effect: it isn't served. */
+function isUnavailableCommandError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    error.code === 'capability_unavailable'
+  );
+}
+
+/** How long an "isn't available" notice stays: nothing waits on it. */
+const UNAVAILABLE_NOTICE_MS = 8_000;
+
+function showUnavailableNotice(key: string, message: string): void {
+  const notice: ChatStateNotice = { kind: 'unavailable', message };
+  chatStoreApi().setState((state) => ({
+    chatStateNotices: { ...state.chatStateNotices, [key]: notice },
+  }));
+  setTimeout(() => {
+    chatStoreApi().setState((state) => {
+      if (state.chatStateNotices[key] !== notice) return state;
+      const { [key]: cleared, ...rest } = state.chatStateNotices;
+      return cleared === undefined ? state : { chatStateNotices: rest };
+    });
+  }, UNAVAILABLE_NOTICE_MS);
+}
+
 function getController(): RevisionedChatSync {
   if (controller) return controller;
   controller = new RevisionedChatSync(
@@ -547,6 +580,21 @@ function commandChatIds(command: ChatCommand): string[] {
   return [];
 }
 
+/**
+ * Whether a command would reach the web core for a cloud task, or a chat of
+ * one, deleted on another device; only the window's own changes go on.
+ */
+function deletedTarget(
+  scope: { projectId: string; worktreeId: string },
+  command: ChatCommand,
+): boolean {
+  if (isWindowLocalCommand(command.type)) return false;
+  return (
+    isCloudTaskDeleted(scope) ||
+    commandChatIds(command).some((chatId) => isCloudChatDeleted(scope, chatId))
+  );
+}
+
 /** Keep the legacy request lookup consistent with the canonical tab projection. */
 function reconcilePlanExitRequests(
   current: ChatState,
@@ -674,9 +722,12 @@ function installSnapshotIntoStore(
   }
 
   if (previous) {
+    // A chat deleted on another device while its task stays is kept too,
+    // with its unsent work, though the web core lists it no more (CAN-6614).
     const eagerTabs = previous.tabs.filter(
       (tab) =>
-        tab.pendingInitialCreation &&
+        (tab.pendingInitialCreation ||
+          isCloudChatDeleted({ projectId, worktreeId }, tab.id)) &&
         !chatState.tabs.some((canonical) => canonical.id === tab.id),
     );
     if (eagerTabs.length) {
@@ -685,6 +736,13 @@ function installSnapshotIntoStore(
       chatState.lastActiveEditableChatId = previous.lastActiveEditableChatId;
     }
   }
+
+  // A chat deleted on its own that this window kept through going offline
+  // comes back with its scope, though the web core lists it no more.
+  const keptTabs = keptDeletedChatTabs({ projectId, worktreeId }).filter(
+    (tab) => !chatState.tabs.some((canonical) => canonical.id === tab.id),
+  );
+  if (keptTabs.length > 0) chatState.tabs = [...chatState.tabs, ...keptTabs];
 
   // A manual choice made while this initial snapshot was in flight wins.
   const entry = getWorktreeEntry(key);
@@ -715,12 +773,27 @@ function installSnapshotIntoStore(
     chatState,
   );
 
+  // Every tab's stored draft, background tabs included, so a chat shows its
+  // draft however it is reached.
+  const storedDrafts = new Map<string, Descendant[]>();
+  const unreadableDraftIds: string[] = [];
+  const draftsInMemory = api.getState().tabDrafts;
+  for (const tab of chatState.tabs) {
+    if (tab.id in draftsInMemory) continue;
+    const stored = readStoredTabDraft(tab.id);
+    if (stored.kind === 'draft') storedDrafts.set(tab.id, stored.content);
+    else if (stored.kind === 'unreadable') unreadableDraftIds.push(tab.id);
+  }
+  for (const tabId of unreadableDraftIds) removeChatDraft(tabId);
+
   api.setState((current) => {
     let tabDrafts = current.tabDrafts;
-    for (const tab of chatState.tabs) {
-      if (tab.id in tabDrafts) continue;
-      const restored = readTryItDraft(tab.id);
-      if (restored) tabDrafts = { ...tabDrafts, [tab.id]: restored.content };
+    for (const [tabId, content] of storedDrafts) {
+      if (!(tabId in tabDrafts)) tabDrafts = { ...tabDrafts, [tabId]: content };
+    }
+    let tabDraftRestoreFailures = current.tabDraftRestoreFailures;
+    for (const tabId of unreadableDraftIds) {
+      tabDraftRestoreFailures = { ...tabDraftRestoreFailures, [tabId]: true };
     }
     const pendingQuestions = { ...current.pendingQuestions };
     for (const requestId of scopePendingQuestions(
@@ -747,6 +820,7 @@ function installSnapshotIntoStore(
 
     return {
       tabDrafts,
+      tabDraftRestoreFailures,
       delegationStreamHints: bumpedDelegationHints(current, key),
       pendingPlanExits: reconcilePlanExitRequests(
         current,
@@ -984,6 +1058,10 @@ export const createRevisionedSlice: StateCreator<
     options,
   ): Promise<'installed' | 'unavailable' | 'failed'> => {
     if (availability === 'unavailable') return 'unavailable';
+    if (isCloudTaskDeleted({ projectId, worktreeId }))
+      return get().worktreeChats[chatScopeKey(projectId, worktreeId)]
+        ? 'installed'
+        : 'failed';
     if (typeof chatBackendFor({ projectId }).chat.getState !== 'function') {
       availability = 'unavailable';
       return 'unavailable';
@@ -1050,6 +1128,7 @@ export const createRevisionedSlice: StateCreator<
   },
 
   retryChatStateRefresh: (projectId, worktreeId): void => {
+    if (isCloudTaskDeleted({ projectId, worktreeId })) return;
     const sync = getController();
     if (sync.isTracking(projectId, worktreeId)) {
       sync.retry(projectId, worktreeId);
@@ -1131,6 +1210,10 @@ export const createRevisionedSlice: StateCreator<
     command,
     options,
   ): Promise<ChatCommandDisposition> => {
+    // A cloud task deleted on another device takes no change but this
+    // window's own, such as switching its chats; the composer's notice says
+    // so, never "Change not saved" (CAN-6614).
+    if (deletedTarget(scope, command)) return 'rejected';
     if (
       command.type === 'chat.steer_queued_message' ||
       (command.type === 'chat.input_delivery_action' &&
@@ -1196,7 +1279,7 @@ export const createRevisionedSlice: StateCreator<
     }
 
     const setNotice = (
-      kind: 'conflict' | 'command_failed',
+      kind: ChatStateNotice['kind'],
       message: string,
     ): void => {
       set((state) => ({
@@ -1221,6 +1304,7 @@ export const createRevisionedSlice: StateCreator<
         // not reinterpret a committed command as a transport failure.
       }
       const settled = tracked ? commandTracker.settleResult(result) : null;
+      if (deletedTarget(scope, command)) return 'rejected';
       const disposition =
         options?.acceptNotFound === true && result.outcome === 'not_found'
           ? 'accepted'
@@ -1229,13 +1313,28 @@ export const createRevisionedSlice: StateCreator<
         // Stale destructive command: never auto-retry; refresh the view.
         setNotice('conflict', CHAT_STATE_CONFLICT_NOTICE);
         getController().forceRefresh(scope.projectId, scope.worktreeId);
-      } else if (disposition === 'rejected') {
+      } else if (
+        disposition === 'rejected' &&
+        options?.callerReportsFailure !== true
+      ) {
         setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
       }
       return disposition;
-    } catch {
+    } catch (error) {
       if (tracked) commandTracker.settleTransportFailure(envelope.commandId);
-      setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
+      // The backend does not serve this change: nothing failed, and trying
+      // again can't help, so it says what isn't available, briefly, or
+      // nothing for a background sync (CAN-6646).
+      if (isUnavailableCommandError(error)) {
+        if (
+          options?.callerReportsFailure !== true &&
+          options?.quietIfUnavailable !== true
+        )
+          showUnavailableNotice(key, error.message);
+        return 'rejected';
+      }
+      if (options?.callerReportsFailure !== true)
+        setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);
       return 'transport_failed';
     }
   },
@@ -1248,6 +1347,8 @@ export function refreshChatScopeRevisioned(
   projectId: string,
   worktreeId: string,
 ): void {
+  // A deleted cloud task has no snapshot to read; its kept chat stays.
+  if (isCloudTaskDeleted({ projectId, worktreeId })) return;
   const sync = getController();
   if (sync.isTracking(projectId, worktreeId)) {
     sync.forceRefresh(projectId, worktreeId);

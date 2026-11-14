@@ -279,6 +279,7 @@ function OwnerControl({
     case 'error':
       return (
         <Notice
+          errorSource="pipeline-run-owner-error"
           intent="destructive"
           data-testid="pipeline-run-owner-error"
           actions={

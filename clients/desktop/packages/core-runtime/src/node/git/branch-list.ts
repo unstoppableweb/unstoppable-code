@@ -9,6 +9,7 @@ const LOCAL_REF_PREFIX = 'refs/heads/';
 const REMOTE_HEAD_REF = 'refs/remotes/origin/HEAD';
 const LEGACY_REMOTE_HEAD_SHORT_NAME = 'origin/HEAD';
 const ORIGIN_SHORT_PREFIX = 'origin/';
+const ORIGIN_REF_PREFIX = 'refs/remotes/origin/';
 
 function branchNameUnder(refName: string, prefix: string): string | null {
   if (!refName.startsWith(prefix)) return null;
@@ -34,7 +35,7 @@ export function parseGitWorktreeListPorcelain(
     branchName = null;
   };
   for (const rawLine of output.split('\n')) {
-    const line = rawLine.trim();
+    const line = rawLine.replace(/\r$/, '');
     if (!line) {
       commit();
       continue;
@@ -45,7 +46,7 @@ export function parseGitWorktreeListPorcelain(
       continue;
     }
     if (line.startsWith('branch '))
-      branchName = localBranchName(line.slice('branch '.length).trim());
+      branchName = localBranchName(line.slice('branch '.length));
   }
   commit();
   return entries;
@@ -83,28 +84,34 @@ export function buildGitBranchList(
   forEachRefOutput: string,
   occupiedBranches: ReadonlySet<string>,
   defaultBranch: string | null,
+  useFullRefNames = false,
 ): WorkerGitBranch[] {
   const branchesByName = new Map<string, WorkerGitBranch>();
   for (const rawLine of forEachRefOutput.split('\n')) {
     const tab = rawLine.indexOf('\t');
     if (tab < 0) continue;
-    const refName = rawLine.slice(0, tab).trim();
-    const shortField = rawLine.slice(tab + 1);
-    const isCurrent = shortField.endsWith('*');
-    const shortName = (isCurrent ? shortField.slice(0, -1) : shortField).trim();
+    const refName = rawLine.slice(0, tab);
+    const shortField = rawLine.slice(tab + 1).replace(/\r$/, '');
+    const marker = shortField.slice(-1);
+    const isCurrent = marker === '*';
+    // %(HEAD) contributes exactly one asterisk or ASCII space.
+    const shortName =
+      isCurrent || marker === ' ' ? shortField.slice(0, -1) : shortField;
     if (
       !shortName ||
       refName === REMOTE_HEAD_REF ||
-      shortName === LEGACY_REMOTE_HEAD_SHORT_NAME
+      (!useFullRefNames && shortName === LEGACY_REMOTE_HEAD_SHORT_NAME)
     )
       continue;
     // Today's names: Git's short name, remote when it starts with `origin/`.
     // A shadowed ref keeps Git's qualified spelling (`heads/main`,
     // `remotes/origin/<name>`) as a local entry.
-    const isRemote = shortName.startsWith(ORIGIN_SHORT_PREFIX);
-    const name = isRemote
-      ? shortName.slice(ORIGIN_SHORT_PREFIX.length)
-      : shortName;
+    const remoteName = useFullRefNames
+      ? branchNameUnder(refName, ORIGIN_REF_PREFIX)
+      : branchNameUnder(shortName, ORIGIN_SHORT_PREFIX);
+    const isRemote = remoteName !== null;
+    const name =
+      remoteName ?? (useFullRefNames ? localBranchName(refName) : shortName);
     if (!name) continue;
     const existing = branchesByName.get(name);
     const hasLocalRef = (existing?.hasLocalRef ?? false) || !isRemote;
@@ -149,6 +156,7 @@ export interface GitBranchListSources<DefaultBranch> {
 export async function listGitBranches<DefaultBranch>(
   sources: GitBranchListSources<DefaultBranch>,
   defaultBranchName: (value: DefaultBranch) => string | null,
+  useFullRefNames = false,
 ): Promise<{ branches: WorkerGitBranch[]; defaultBranch: DefaultBranch }> {
   const [refs, occupied, defaultBranch] = await Promise.all([
     sources.readBranchRefs(),
@@ -167,6 +175,7 @@ export async function listGitBranches<DefaultBranch>(
       refs,
       occupied,
       defaultBranchName(defaultBranch),
+      useFullRefNames,
     ),
     defaultBranch,
   };

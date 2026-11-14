@@ -198,6 +198,7 @@ export function OpsView({
           </div>
           {jobsError !== null && visibleJobs.length === 0 ? (
             <ErrorBanner
+              errorSource="ops-jobs"
               className=""
               error={jobsError.copy}
               details={jobsError.details}
@@ -242,49 +243,56 @@ export function OpsView({
               <EmptyStateRow title="No search activity yet." />
             ) : (
               searchEntries.map((entry) => (
-                <article key={entry.id} className="relative">
+                <Stack
+                  as="article"
+                  gap="inline"
+                  key={entry.id}
+                  className="relative"
+                >
                   <span
                     className={`absolute -left-5.25 top-1 h-2.5 w-2.5 rounded-full ${
                       entry.gatePassed ? 'bg-success' : 'bg-fg-tertiary'
                     }`}
                   />
-                  <div className="flex flex-wrap items-center gap-2 text-xs fg-secondary">
-                    <time dateTime={entry.createdAt}>
-                      {new Date(entry.createdAt).toLocaleString()}
-                    </time>
-                    <span>·</span>
-                    <span>{entry.latencyMs} ms</span>
-                    <span
-                      className={
-                        entry.gatePassed ? 'fg-success' : 'fg-secondary'
-                      }
-                    >
-                      {entry.gatePassed ? 'gate passed' : 'gate blocked'}
-                    </span>
-                  </div>
-                  <p
-                    className={withPrivacyClass(
-                      'mt-1 text-s font-medium fg-primary',
-                      blockClassName,
-                    )}
-                  >
-                    {entry.query ??
-                      (entry.queryDecryptFailed
-                        ? 'Encrypted query unavailable'
-                        : 'Empty query')}
-                  </p>
-                  <p className="mt-1 text-xs fg-secondary">
-                    {blockClassName === '' ? (
-                      (entry.user.name ?? entry.user.email)
-                    ) : (
-                      <span className={blockClassName}>
-                        {entry.user.name ?? entry.user.email}
+                  <Stack gap="tight">
+                    <div className="flex flex-wrap items-center gap-2 text-xs fg-secondary">
+                      <time dateTime={entry.createdAt}>
+                        {new Date(entry.createdAt).toLocaleString()}
+                      </time>
+                      <span>·</span>
+                      <span>{entry.latencyMs} ms</span>
+                      <span
+                        className={
+                          entry.gatePassed ? 'fg-success' : 'fg-secondary'
+                        }
+                      >
+                        {entry.gatePassed ? 'gate passed' : 'gate blocked'}
                       </span>
-                    )}{' '}
-                    · {entry.injectedFacts.length} facts injected
-                  </p>
+                    </div>
+                    <p
+                      className={withPrivacyClass(
+                        'text-s font-medium fg-primary',
+                        blockClassName,
+                      )}
+                    >
+                      {entry.query ??
+                        (entry.queryDecryptFailed
+                          ? 'Encrypted query unavailable'
+                          : 'Empty query')}
+                    </p>
+                    <p className="text-xs fg-secondary">
+                      {blockClassName === '' ? (
+                        (entry.user.name ?? entry.user.email)
+                      ) : (
+                        <span className={blockClassName}>
+                          {entry.user.name ?? entry.user.email}
+                        </span>
+                      )}{' '}
+                      · {entry.injectedFacts.length} facts injected
+                    </p>
+                  </Stack>
                   {entry.injectedFacts.length > 0 && (
-                    <Stack as="ul" gap="tight" className="mt-2">
+                    <Stack as="ul" gap="tight">
                       {entry.injectedFacts.map((fact) => (
                         <Surface as="li" variant="inset" key={fact.id}>
                           <div
@@ -299,7 +307,7 @@ export function OpsView({
                       ))}
                     </Stack>
                   )}
-                </article>
+                </Stack>
               ))
             )}
           </div>
@@ -308,6 +316,7 @@ export function OpsView({
 
       <Surface
         as="aside"
+        gap="inline"
         variant="card"
         padding="default"
         className="self-start xl:sticky xl:top-6"
@@ -315,19 +324,17 @@ export function OpsView({
         <Heading level={2} variant="section">
           Effective configuration
         </Heading>
-        <div className="mt-2">
-          <ValueRows>
-            {Object.entries(config).map(([key, value]) => (
-              <ValueRow
-                key={key}
-                label={key}
-                value={value === null ? 'not set' : String(value)}
-                numeric={false}
-                mono
-              />
-            ))}
-          </ValueRows>
-        </div>
+        <ValueRows>
+          {Object.entries(config).map(([key, value]) => (
+            <ValueRow
+              key={key}
+              label={key}
+              value={value === null ? 'not set' : String(value)}
+              numeric={false}
+              mono
+            />
+          ))}
+        </ValueRows>
       </Surface>
     </div>
   );

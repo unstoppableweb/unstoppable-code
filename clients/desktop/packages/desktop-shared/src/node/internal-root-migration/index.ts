@@ -361,6 +361,7 @@ async function proveNativeCold(
   brands: readonly ExecutableBrand[],
   native: ReturnType<typeof internalRootColdHost>,
   maintenanceRoot?: string,
+  predictApplyPeak = false,
 ): Promise<void> {
   const os = hostOperatingSystem();
   if (os !== 'linux' && os !== 'win32')
@@ -393,10 +394,6 @@ async function proveNativeCold(
         return file;
       }),
     ];
-    // CAN-5901 consumes this scope; the legacy no-argument host still ignores it.
-    const observe: (
-      roots: readonly string[],
-    ) => ReturnType<typeof native.observe> = native.observe;
     await assertInternalRootNativeCold({
       os,
       roots,
@@ -405,7 +402,16 @@ async function proveNativeCold(
         identity.source,
         identity.destination,
       ]),
-      rows: await observe(roots),
+      rows: await native.observe(roots, {
+        predictApplyPeak,
+        sourceRoot: identity.source,
+        replicaRoots: [
+          identity.destination,
+          internalRootStaging(identity),
+          join(identity.coordination, 'staging'),
+          join(identity.coordination, 'discarding'),
+        ],
+      }),
     });
     for (const dataRoot of [identity.source, identity.destination]) {
       await assertInternalRootNativeDaemonStopped(dataRoot, os);
@@ -538,15 +544,35 @@ export function createInternalRootMigrationWorker(options: {
     options.nativeColdHost && (os === 'linux' || os === 'win32')
       ? internalRootColdHost(os, options.nativeColdHost)
       : undefined;
+  const journaled = new Set<string>();
+  const capacityAdmitted = new Map<string, ReadonlySet<string>>();
   const coordinationTokens = new Map<string, symbol>();
   const worker: InternalRootMigrationWorker = {
     os,
     diagnose: options.diagnose,
     space: (identity, bytes, reclaim) =>
       internalRootBuildSpace(identity, bytes, reclaim, host),
-    inventory: (identity, destination) =>
-      inspectInternalRoot(identity, destination, host),
-    readJournal: (identity) => readInternalRootJournal(identity, host),
+    inventory: (
+      identity,
+      destination,
+      preflightPaths = false,
+      abandonedPaths,
+    ) =>
+      inspectInternalRoot(
+        identity,
+        destination,
+        host,
+        preflightPaths,
+        abandonedPaths,
+      ),
+    readJournal: async (identity) => {
+      const journal = await readInternalRootJournal(identity, host);
+      if (!coordinationTokens.has(identity.coordination))
+        capacityAdmitted.delete(identity.coordination);
+      if (journal) journaled.add(identity.coordination);
+      else journaled.delete(identity.coordination);
+      return journal;
+    },
     coordinate: async (
       identity,
     ): ReturnType<InternalRootMigrationWorker['coordinate']> => {
@@ -559,22 +585,38 @@ export function createInternalRootMigrationWorker(options: {
         await release();
       };
     },
-    saveJournal: (journal) => saveInternalRootJournal(journal, host),
+    saveJournal: async (journal) => {
+      await saveInternalRootJournal(journal, host);
+      journaled.add(journal.identity.coordination);
+    },
     proveCold:
       options.proveCold ??
-      ((identity, externalFiles = []) =>
-        native
-          ? proveNativeCold(
-              identity,
-              externalFiles,
-              options.executableBrands ?? [],
-              native,
-            )
-          : proveInternalRootCold(
-              identity,
-              externalFiles,
-              options.executableBrands ?? [],
-            )),
+      (async (identity, externalFiles = []) => {
+        if (native) {
+          const admitted = capacityAdmitted.get(identity.coordination);
+          // W5 settlement/preparation can add roots after the prepared journal.
+          const predictApplyPeak =
+            !journaled.has(identity.coordination) ||
+            !admitted ||
+            externalFiles.some((file) => !admitted.has(file));
+          await proveNativeCold(
+            identity,
+            externalFiles,
+            options.executableBrands ?? [],
+            native,
+            undefined,
+            predictApplyPeak,
+          );
+          if (predictApplyPeak)
+            capacityAdmitted.set(identity.coordination, new Set(externalFiles));
+        } else {
+          await proveInternalRootCold(
+            identity,
+            externalFiles,
+            options.executableBrands ?? [],
+          );
+        }
+      }),
     stagingRoot: internalRootStaging,
     validateStaging: (identity, value) =>
       validateInternalRootStaging(identity, value, host),
@@ -583,8 +625,10 @@ export function createInternalRootMigrationWorker(options: {
     build: (journal) => buildInternalRoot(journal, options.cloneTree, host),
     exposeStaging: (journal) => exposeInternalRootStaging(journal, host),
     seal: (journal, identity) => sealInternalRoot(journal, identity, host),
-    publicationRoot: (journal) => internalRootPublicationRoot(journal, host),
-    publish: (journal) => publishInternalRoot(journal, host),
+    publicationRoot: (journal, fingerprint) =>
+      internalRootPublicationRoot(journal, host, fingerprint),
+    publish: (journal, fingerprint) =>
+      publishInternalRoot(journal, host, fingerprint),
     validateRebuild: (journal) =>
       discardInternalRootDestination(journal, true, host),
     discardDestination: (journal) =>

@@ -398,7 +398,11 @@ export function TopUpSheet({
           >
             {outcome}
           </p>
-          <ErrorBanner className="" error={state.error} />
+          <ErrorBanner
+            errorSource="credits-top-up-load"
+            className=""
+            error={state.error}
+          />
           <div className="flex items-center justify-end gap-2">
             {state.status === 'processing' ||
             state.status === 'credits_delayed' ||
@@ -477,6 +481,7 @@ export function TopUpSheet({
             />
           </DialogFormField>
           <ErrorBanner
+            errorSource="credits-top-up-submit"
             className=""
             error={
               state.error ||

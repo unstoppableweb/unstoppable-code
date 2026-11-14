@@ -1,6 +1,8 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { z } from 'zod';
 import { readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { isMissingFileError } from '@canopy/desktop-shared/node/lib/fs-utils';
 import {
   INSTALLED_ITEM_MARKETPLACE_OWNED_REASON,
   canonicalInstalledItemRef,
@@ -8,7 +10,10 @@ import {
   parseInstalledItemKey,
   type InstalledItemRef,
 } from '@canopy/protocol/installed-items';
-import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
+import {
+  AccountMcpConnectionError,
+  normalizeMcpServerFile,
+} from '@canopy/execution-engine/types/mcp-servers';
 import { isBuiltInPluginMarketplaceId } from '@canopy/protocol/plugins';
 import { claudeMarketplaceNames } from '../plugins/inherited-cursor-plugins';
 import { resolvePluginInfoPath } from '../plugins/plugin-resolver';
@@ -89,8 +94,7 @@ async function readDeviceIndex(): Promise<{ servers: Array<{ id: string }> }> {
       })
       .parse(JSON.parse(await readFile(getMcpServersIndexFilePath(), 'utf8')));
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-      return { servers: [] };
+    if (isMissingFileError(error)) return { servers: [] };
     throw error;
   }
 }
@@ -106,6 +110,11 @@ async function accountConnections(): Promise<
   try {
     return await listAccountMcpConnections();
   } catch (error) {
+    if (
+      error instanceof AccountMcpConnectionError &&
+      error.code === 'account-changed'
+    )
+      throw classifyError(error, 'external.state_changed');
     if (
       error instanceof CanopyCloudClientError &&
       (error.code === 'missing-api-key' ||
@@ -263,12 +272,7 @@ async function records(): Promise<InstalledItemRecord[]> {
   for (const server of deviceIndex.servers) {
     const raw = await readFile(getMcpServerFilePath(server.id), 'utf8').catch(
       (error: unknown) => {
-        if (
-          error instanceof Error &&
-          'code' in error &&
-          error.code === 'ENOENT'
-        )
-          return null;
+        if (isMissingFileError(error)) return null;
         throw error;
       },
     );

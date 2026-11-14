@@ -108,12 +108,14 @@ export function TeamSubscriptionPricingSection({
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <ErrorBanner
+          errorSource="team-subscription-pricing-section-load"
           className="mt-3"
           error={loadError?.copy}
           details={loadError?.details}
           onRetry={() => void loadPricing()}
         />
         <ErrorBanner
+          errorSource="team-subscription-pricing-section"
           className="mt-3"
           error={error?.copy}
           details={error?.details}

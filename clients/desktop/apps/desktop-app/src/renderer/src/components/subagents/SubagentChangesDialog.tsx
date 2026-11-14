@@ -1,6 +1,5 @@
 import { useEffect, useState, type JSX } from 'react';
 import type { DelegationWorkspaceChanges } from '@canopy/protocol/delegation';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   Button,
   DialogModal,
@@ -13,6 +12,7 @@ import {
   DELEGATED_AGENT_REFRESH_CHANGES_LABEL,
   delegatedAgentChangesShownLabel,
   ErrorState,
+  CodeBlock,
 } from '@canopy/ui-shared/components';
 import type { SubagentHostScope } from './subagent-scope';
 
@@ -57,11 +57,9 @@ function ChangedFiles({
               dataTestId="subagent-changed-file"
             >
               {file.diff ? (
-                <pre
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary p-3 font-mono text-xs fg-secondary`}
-                >
+                <CodeBlock variant="panel" className="max-h-[50vh]">
                   {file.diff}
-                </pre>
+                </CodeBlock>
               ) : (
                 <p className="text-xs fg-secondary">
                   {DELEGATED_AGENT_NO_DIFF_LABEL}

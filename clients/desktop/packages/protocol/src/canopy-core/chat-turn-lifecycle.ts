@@ -37,7 +37,13 @@ export interface TurnBinding {
 
 export interface ProducerBase {
   version: 1;
-  provider: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  provider:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   projectId: string;
   worktreeId: string;
   chatId: string;
@@ -130,7 +136,14 @@ export const TurnBindingSchema = z.strictObject({
 
 export const ProducerBaseSchema = z.strictObject({
   version: z.literal(1),
-  provider: z.enum(['claude', 'codex', 'cursor', 'copilot', 'opencode']),
+  provider: z.enum([
+    'claude',
+    'codex',
+    'cursor',
+    'copilot',
+    'antigravity',
+    'opencode',
+  ]),
   projectId: identifierSchema,
   worktreeId: identifierSchema,
   chatId: identifierSchema,
@@ -144,7 +157,14 @@ export const ProducerBaseSchema = z.strictObject({
 
 export const TurnStartedSchema = z.strictObject({
   version: z.literal(1),
-  provider: z.enum(['claude', 'codex', 'cursor', 'copilot', 'opencode']),
+  provider: z.enum([
+    'claude',
+    'codex',
+    'cursor',
+    'copilot',
+    'antigravity',
+    'opencode',
+  ]),
   projectId: identifierSchema,
   worktreeId: identifierSchema,
   chatId: identifierSchema,
@@ -170,7 +190,14 @@ export const TurnStartedSchema = z.strictObject({
 
 export const TurnEndedSchema = z.strictObject({
   version: z.literal(1),
-  provider: z.enum(['claude', 'codex', 'cursor', 'copilot', 'opencode']),
+  provider: z.enum([
+    'claude',
+    'codex',
+    'cursor',
+    'copilot',
+    'antigravity',
+    'opencode',
+  ]),
   projectId: identifierSchema,
   worktreeId: identifierSchema,
   chatId: identifierSchema,
@@ -199,7 +226,14 @@ export const TurnEndedSchema = z.strictObject({
 
 export const SessionStateSchema = z.strictObject({
   version: z.literal(1),
-  provider: z.enum(['claude', 'codex', 'cursor', 'copilot', 'opencode']),
+  provider: z.enum([
+    'claude',
+    'codex',
+    'cursor',
+    'copilot',
+    'antigravity',
+    'opencode',
+  ]),
   projectId: identifierSchema,
   worktreeId: identifierSchema,
   chatId: identifierSchema,
@@ -217,7 +251,14 @@ export const SessionStateSchema = z.strictObject({
 
 export const BackgroundSetSchema = z.strictObject({
   version: z.literal(1),
-  provider: z.enum(['claude', 'codex', 'cursor', 'copilot', 'opencode']),
+  provider: z.enum([
+    'claude',
+    'codex',
+    'cursor',
+    'copilot',
+    'antigravity',
+    'opencode',
+  ]),
   projectId: identifierSchema,
   worktreeId: identifierSchema,
   chatId: identifierSchema,

@@ -1,3 +1,49 @@
+import { readClaudeDeliveryHistory } from '../../agents/claude-delivery-history';
+import { copyInternalRootClaudeTranscripts } from '../../../../scripts/internal-root-claude-transcripts';
+import {
+  claudeProjectDirCandidates,
+  currentClaudeProjectSlug,
+  findClaudeCodeSessionTranscriptCandidates,
+  findClaudeCodeSessionTranscriptInProjectsDir,
+  resolveClaudeCodeSessionTranscriptPath,
+} from '../claude-project-paths';
+import * as chatClaudeConfig from '../chat-claude-config-dir';
+import { readDeliveryHistory } from '../../services/chat-input-delivery-history';
+import {
+  rewriteInternalRootFileTabs,
+  repairCompletedInternalRootFileTabs,
+  withInternalRootFileTabRepairs,
+} from '../internal-root-file-tabs';
+import { ChatStorageV2, type ChatMigrationEntry } from '../chat-storage-v2';
+import { ChatStateV2Backend } from '../../services/chat-state-v2-backend';
+import {
+  isChatTabsSnapshot,
+  isArchivedSnapshot,
+} from '../chat-state-snapshots';
+import { isChatJournalRecord } from '../chat-state-journal';
+import {
+  reduceChatState,
+  type CanonicalChatState,
+} from '../../services/chat-state-reducer';
+import type {
+  PersistedChatMessage,
+  PersistedChatTab,
+} from '@canopy/desktop-shared/types';
+import {
+  relocateInternalRootPipelineRecords,
+  repairCompletedInternalRootPipelineRecords,
+} from '@canopy/desktop-shared/node/internal-root-migration/pipeline-records';
+import {
+  loadExecutionState,
+  listExecutionSummaries,
+} from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import { resumePipeline } from '@canopy/execution-engine/node/pipelines/executor';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { normalizePipeline } from '@canopy/pipeline-interop/normalize-pipeline';
+import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
+import { computePipelinePackageDigestSync } from '@canopy/execution-engine/node/pipelines/package-contract';
+import { readExecutionArtifact } from '../../canopy-tools/execution-artifacts';
+import * as migrationProgress from '@canopy/desktop-shared/node/internal-root-migration/progress';
 import { inertArchiveGroup } from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
 import {
   freezeInternalRootJournals,
@@ -16,6 +62,7 @@ import {
 import { scanInterruptedWork } from '../interrupted-work-scan-worker';
 import { defineComposedMigrationCases } from './fixtures/composed-internal-root-migration';
 import {
+  appendFile,
   chmod,
   cp,
   lstat,
@@ -37,6 +84,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import * as authorityHost from '@canopy/core-platform';
+import * as hostPlatform from '@canopy/core-platform/host-platform';
 import * as storageObservation from '@canopy/core-platform/storage-path-observation';
 import { createServer } from 'node:net';
 import {
@@ -48,6 +96,8 @@ import {
   encodeMaintenanceRecord,
 } from '@canopy/execution-engine/node/w5-host-cohort/records';
 import { tmpdir } from 'node:os';
+import * as os from 'node:os';
+import { performance } from 'node:perf_hooks';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -56,7 +106,7 @@ import {
 } from '@canopy/core-platform';
 import { DatabaseSync } from 'node:sqlite';
 import { LedgerRepository } from '@canopy/desktop-shared/node/ledger';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import canopy from '../../../../../../brands/canopy/brand.json';
 import unstoppableCode from '../../../../../../brands/unstoppable-code/brand.json';
 import {
@@ -649,6 +699,36 @@ describe('cold inert archive classification', () => {
 });
 
 describe('offline operator option admission', () => {
+  test('--repair-file-tabs is a standalone completed-migration repair', () => {
+    expect(
+      parseInternalRootMigrationOptions([
+        '--brand=canopy',
+        '--repair-file-tabs',
+      ]).repairFileTabs,
+    ).toBe(true);
+    for (const flag of [
+      '--apply',
+      '--inventory',
+      '--rebuild',
+      '--restart',
+      '--declare-internal',
+      '--skip-migration',
+      '--repair-pipeline-records',
+      '--copy-claude-transcripts',
+      `--claude-config-dir=${join(tmpdir(), 'chat-config')}`,
+      '--abandon-archive=fixture/crow',
+      '--abandon-commit=1',
+      `--abandon-checkout=${join(tmpdir(), 'checkout')}`,
+    ])
+      expect(() =>
+        parseInternalRootMigrationOptions([
+          '--brand=canopy',
+          '--repair-file-tabs',
+          flag,
+        ]),
+      ).toThrow('Usage:');
+  });
+
   test('inventory and resume preserve frozen abandonment with no flags', () => {
     const frozen = ['fixture/crow', 'fixture/gnat-2', 'fixture/crow'];
     expect(selectInternalRootArchiveAbandonments([], frozen)).toEqual([
@@ -1618,6 +1698,1355 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       { mode: 0o600 },
     );
   }
+  async function fileImages(
+    root: string,
+  ): Promise<Record<string, { bytes: string; mtimeMs: number; ino: number }>> {
+    const images: Record<
+      string,
+      { bytes: string; mtimeMs: number; ino: number }
+    > = {};
+    async function visit(directory: string): Promise<void> {
+      for (const name of (await readdir(directory)).sort()) {
+        const path = join(directory, name);
+        if ((await lstat(path)).isDirectory()) await visit(path);
+        else
+          images[relative(root, path)] = {
+            bytes: (await readFile(path)).toString('base64'),
+            mtimeMs: (await lstat(path)).mtimeMs,
+            ino: (await lstat(path)).ino,
+          };
+      }
+    }
+    await visit(root);
+    return images;
+  }
+
+  // Canonical and legacy state are both a core cold-migration invariant.
+  test.each(
+    [2, 3, 4].flatMap((format) =>
+      [
+        'workspaces/fixture',
+        'app-workspaces/app-advisor',
+        'app-workspaces/code-review-chat/archived-containers/retained',
+        'workspaces/fixture/chat-history/retained',
+        'workspaces/fixture/split-recovery/transcripts-retained',
+        'workspaces/fixture/chat-import-retained',
+        'workspaces/fixture/chat-import-retained/chat-history/retained',
+        'standalone-chat/default/history/retained',
+        'standalone-chat/projects/fixture/history/retained',
+      ].map((workspacePath) => ({ format, workspacePath })),
+    ),
+  )(
+    'migration rewrites file tabs in format $format at $workspacePath, retains the source and repairs idempotently',
+    async ({ format, workspacePath }) => {
+      await source();
+      for (const folder of [
+        'workspaces/fixture/archived-containers',
+        'standalone-chat/projects',
+      ]) {
+        const directory = join(identity.source, folder);
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(join(directory, '.DS_Store'), 'retained stray file');
+      }
+      const workspace = join(identity.source, workspacePath);
+      const sourceFileRoot = join(
+        identity.source,
+        'app-workspaces/app-advisor/home',
+      );
+      const destinationFileRoot = join(
+        identity.destination,
+        'app-workspaces/app-advisor/home',
+      );
+      await mkdir(sourceFileRoot, { recursive: true, mode: 0o700 });
+      const at = '2026-11-12T00:00:00.000Z';
+      const tabs: PersistedChatTab[] = [
+        'present',
+        'missing',
+        'outside',
+        'prefix',
+      ].map((id) => ({
+        id,
+        title: id,
+        kind: 'file',
+        messages: [],
+        createdAt: at,
+        filePath:
+          id === 'outside'
+            ? join(home, 'external.txt')
+            : id === 'prefix'
+              ? `${identity.source}-other/file.txt`
+              : join(sourceFileRoot, `${id}.txt`),
+        fileDiffContext: { path: 'present.txt', source: 'uncommitted' },
+      }));
+      const archived = {
+        ...tabs[0],
+        id: 'archived',
+        sdkSessionId: 'retained-session',
+        unread: true,
+        unreadMarkedManually: true,
+      };
+      const store = new ChatStorageV2(workspace, 'home');
+      await store.migrate(() =>
+        Promise.resolve({
+          revision: 0,
+          index: { activeTabId: 'present', runtimeByChatId: {} },
+          recovery: {
+            receipts: [],
+            mutationIds: [],
+            removedTabIds: [],
+            removedArchiveEntryIds: [],
+            removedMessageIds: [],
+          },
+          chats: (async function* (): AsyncGenerator<ChatMigrationEntry> {
+            for (const entry of [...tabs, archived]) {
+              const { messages: _messages, ...metadata } = entry;
+              void _messages;
+              yield Promise.resolve<ChatMigrationEntry>({
+                metadata,
+                ...(entry.id === 'archived'
+                  ? {
+                      archive: {
+                        archivedAt: at,
+                        turnCount: 7,
+                        unread: true,
+                        turnFence: {
+                          version: 1 as const,
+                          archiveEpoch: 'retained-epoch',
+                          archivedAtMs: 123,
+                          closedTurnId: 'retained-turn',
+                          providerSessionId: 'retained-session',
+                        },
+                      },
+                    }
+                  : {}),
+                messages:
+                  (async function* (): AsyncGenerator<PersistedChatMessage> {
+                    yield Promise.resolve<PersistedChatMessage>({
+                      id: 'retained',
+                      role: 'user' as const,
+                      timestamp: 1,
+                      blocks: [
+                        { type: 'text' as const, text: 'retain transcript' },
+                      ],
+                    });
+                  })(),
+              });
+            }
+          })(),
+        }),
+      );
+      const seed = new ChatStateV2Backend(store, {
+        enableFormat4: true,
+        deltaJournal: {},
+      });
+      if (format >= 3) await seed.promoteToDeltaJournal();
+      if (format === 4) await seed.promoteToFormat4();
+      if (format >= 3)
+        await seed.transact(
+          () => [
+            {
+              type: 'tab.metadata_patched',
+              tabId: 'present',
+              patch: { filePath: join(sourceFileRoot, 'present.txt') },
+            },
+          ],
+          { source: 'migration', chatIds: [] },
+        );
+      const originalArchive = (
+        await seed.state({ chatIds: ['archived'], fullTranscript: true })
+      ).archivesFile.archived[0];
+      seed.releaseJournal();
+      await seed.disposeArtifactMaintenance();
+      const legacyPath = join(workspace, 'chats', 'legacy.json');
+      await mkdir(dirname(legacyPath), { recursive: true, mode: 0o700 });
+      const legacyBytes = JSON.stringify({
+        version: 1,
+        activeTabId: 'present',
+        tabs,
+      });
+      await writeFile(legacyPath, legacyBytes);
+      await writeFile(`${legacyPath}.bak`, legacyBytes);
+      await writeFile(join(sourceFileRoot, 'present.txt'), 'retained A');
+      await writeFile(
+        join(sourceFileRoot, 'missing.txt'),
+        'retained missing A',
+      );
+      const original = await fileImages(identity.source);
+      await migrateInternalRoot(
+        worker,
+        identity,
+        apply,
+        withInternalRootFileTabRepairs(repairs, host),
+      );
+      expect(await fileImages(identity.source)).toEqual(original);
+      const current = new ChatStorageV2(
+        join(identity.destination, workspacePath),
+        'home',
+      );
+      const state = await current.indexes();
+      expect(state.live.tabs.map((tab) => tab.filePath)).toEqual([
+        join(destinationFileRoot, 'present.txt'),
+        join(destinationFileRoot, 'missing.txt'),
+        tabs[2].filePath,
+        tabs[3].filePath,
+      ]);
+      expect(state.archive.archived[0].tab.filePath).toBe(
+        join(destinationFileRoot, 'present.txt'),
+      );
+      expect(state.live.tabs[0].fileDiffContext).toEqual(
+        tabs[0].fileDiffContext,
+      );
+      const reader = new ChatStateV2Backend(current, {
+        enableFormat4: true,
+        deltaJournal: {},
+      });
+      expect(
+        (await reader.state({ chatIds: ['archived'], fullTranscript: true }))
+          .archivesFile.archived[0],
+      ).toEqual({
+        ...originalArchive,
+        tab: {
+          ...originalArchive.tab,
+          filePath: join(destinationFileRoot, 'present.txt'),
+        },
+      });
+      reader.releaseJournal();
+      await reader.disposeArtifactMaintenance();
+      await writeFile(join(destinationFileRoot, 'present.txt'), 'current B');
+      expect(await readFile(state.live.tabs[0].filePath ?? '', 'utf8')).toBe(
+        'current B',
+      );
+      await rm(join(destinationFileRoot, 'missing.txt'));
+      expect(await readFile(join(sourceFileRoot, 'missing.txt'), 'utf8')).toBe(
+        'retained missing A',
+      );
+      await expect(
+        readFile(state.live.tabs[1].filePath ?? '', 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      const destination = await fileImages(identity.destination);
+      expect(
+        await repairCompletedInternalRootFileTabs({ identity, worker, host }),
+      ).toEqual({ canonicalTabs: 0, legacyFiles: 0 });
+      expect(await fileImages(identity.destination)).toEqual(destination);
+      expect(await fileImages(identity.source)).toEqual(original);
+      const legacy: unknown = JSON.parse(
+        await readFile(
+          join(identity.destination, workspacePath, 'chats/legacy.json'),
+          'utf8',
+        ),
+      );
+      expect(legacy).toMatchObject({
+        tabs: [
+          { filePath: join(destinationFileRoot, 'present.txt') },
+          { filePath: join(destinationFileRoot, 'missing.txt') },
+          { filePath: tabs[2].filePath },
+          { filePath: tabs[3].filePath },
+        ],
+      });
+    },
+  );
+
+  test('repairs file tabs after an older completed migration without rebuilding', async () => {
+    await source();
+    const tabsPath = join(
+      identity.source,
+      'workspaces/fixture/chats/home.json',
+    );
+    await mkdir(dirname(tabsPath), { recursive: true, mode: 0o700 });
+    const bytes = JSON.stringify({
+      version: 1,
+      activeTabId: 'file',
+      tabs: [
+        {
+          id: 'file',
+          kind: 'file',
+          filePath: join(identity.source, 'absent.txt'),
+        },
+      ],
+    });
+    await writeFile(tabsPath, bytes);
+    await migrateInternalRoot(worker, identity, apply, repairs);
+    expect(
+      await repairCompletedInternalRootFileTabs({ identity, worker, host }),
+    ).toEqual({ canonicalTabs: 0, legacyFiles: 1 });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(identity.destination, 'workspaces/fixture/chats/home.json'),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({
+      tabs: [{ filePath: join(identity.destination, 'absent.txt') }],
+    });
+    expect(await readFile(tabsPath, 'utf8')).toBe(bytes);
+    const before = await fileImages(identity.destination);
+    expect(
+      await repairCompletedInternalRootFileTabs({ identity, worker, host }),
+    ).toEqual({ canonicalTabs: 0, legacyFiles: 0 });
+    expect(await fileImages(identity.destination)).toEqual(before);
+  });
+
+  test.each(['live-index.json', 'archive-index.json', 'recovery-index.json'])(
+    'file-tab repair recovers interrupted canonical publication before %s and keeps clean retries write-free',
+    async (index) => {
+      await source();
+      for (const scopeId of ['home', 'later']) {
+        const store = new ChatStorageV2(identity.source, scopeId);
+        await store.migrate(() =>
+          Promise.resolve({
+            revision: 0,
+            index: { activeTabId: 'file', runtimeByChatId: {} },
+            recovery: {
+              receipts: [],
+              mutationIds: [],
+              removedTabIds: [],
+              removedArchiveEntryIds: [],
+              removedMessageIds: [],
+            },
+            chats: (async function* (): AsyncGenerator<ChatMigrationEntry> {
+              for (const id of ['file', 'archived'])
+                yield Promise.resolve<ChatMigrationEntry>({
+                  metadata: {
+                    id,
+                    kind: 'file',
+                    title: id,
+                    createdAt: '2026-11-12T00:00:00Z',
+                    filePath: join(identity.source, 'missing.txt'),
+                  },
+                  ...(id === 'archived'
+                    ? {
+                        archive: {
+                          archivedAt: '2026-11-12T00:00:00Z',
+                          turnCount: 1,
+                        },
+                      }
+                    : {}),
+                  messages:
+                    (async function* (): AsyncGenerator<PersistedChatMessage> {
+                      yield Promise.resolve<PersistedChatMessage>({
+                        id: 'retained',
+                        role: 'user',
+                        timestamp: 1,
+                        blocks: [{ type: 'text', text: 'retain transcript' }],
+                      });
+                    })(),
+                });
+            })(),
+          }),
+        );
+      }
+      const original = await fileImages(identity.source);
+      await migrateInternalRoot(worker, identity, apply, repairs);
+      const current = new ChatStorageV2(identity.destination, 'home');
+      const renameFile = fs.rename;
+      const fault = jest
+        .spyOn(fs, 'rename')
+        .mockImplementation((from, to): Promise<void> => {
+          if (to === join(current.directory, index))
+            return Promise.reject(new Error('fixture index interruption'));
+          return renameFile(from, to);
+        });
+      try {
+        await expect(
+          repairCompletedInternalRootFileTabs({ identity, worker, host }),
+        ).rejects.toThrow('fixture index interruption');
+      } finally {
+        fault.mockRestore();
+      }
+      const journal = join(current.directory, 'metadata-journal.jsonl');
+      expect((await readFile(journal, 'utf8')).trim()).not.toBe('');
+      if (index === 'archive-index.json')
+        await expect(current.indexes()).rejects.toThrow(
+          'Invalid v2 chat indexes',
+        );
+      else {
+        const indexes = await current.indexes();
+        const root =
+          index === 'live-index.json' ? identity.source : identity.destination;
+        expect(indexes.live.tabs[0].filePath).toBe(join(root, 'missing.txt'));
+        expect(indexes.archive.archived[0].tab.filePath).toBe(
+          join(root, 'missing.txt'),
+        );
+      }
+      expect(
+        await repairCompletedInternalRootFileTabs({ identity, worker, host }),
+      ).toEqual({ canonicalTabs: 2, legacyFiles: 0 });
+      expect(await readFile(journal, 'utf8')).toBe('');
+      for (const scopeId of ['home', 'later']) {
+        const indexes = await new ChatStorageV2(
+          identity.destination,
+          scopeId,
+        ).indexes();
+        expect(indexes.live.tabs[0].filePath).toBe(
+          join(identity.destination, 'missing.txt'),
+        );
+        expect(indexes.archive.archived[0].tab.filePath).toBe(
+          join(identity.destination, 'missing.txt'),
+        );
+        expect(indexes.live.revision).toBe(1);
+        expect(indexes.archive.revision).toBe(1);
+        for (const id of ['file', 'archived']) {
+          const relativePath = join(
+            'chat-storage-v2',
+            scopeId,
+            'transcripts',
+            `${id}.jsonl`,
+          );
+          expect(
+            await readFile(join(identity.destination, relativePath)),
+          ).toEqual(await readFile(join(identity.source, relativePath)));
+        }
+        expect(indexes.recovery.mutationIds).toHaveLength(1);
+      }
+      const repaired = await fileImages(identity.destination);
+      const writes = [
+        jest.spyOn(fs, 'open'),
+        jest.spyOn(fs, 'writeFile'),
+        jest.spyOn(fs, 'rename'),
+        jest.spyOn(fs, 'mkdir'),
+        jest.spyOn(fs, 'rm'),
+      ];
+      try {
+        expect(
+          await rewriteInternalRootFileTabs(
+            identity,
+            identity.destination,
+            host,
+          ),
+        ).toEqual({ canonicalTabs: 0, legacyFiles: 0 });
+        for (const write of writes) expect(write).not.toHaveBeenCalled();
+      } finally {
+        for (const write of writes) write.mockRestore();
+      }
+      expect(await fileImages(identity.destination)).toEqual(repaired);
+      expect(await fileImages(identity.source)).toEqual(original);
+      await writeFile(journal, '{"v":2}');
+      const damaged = await fileImages(identity.destination);
+      await expect(
+        repairCompletedInternalRootFileTabs({ identity, worker, host }),
+      ).rejects.toThrow('Invalid v2 metadata journal');
+      expect(await fileImages(identity.destination)).toEqual(damaged);
+      expect(await fileImages(identity.source)).toEqual(original);
+    },
+  );
+
+  test('file-tab repair rejects an unfinished journal and the source as a write root', async () => {
+    await source();
+    await expect(
+      repairCompletedInternalRootFileTabs({ identity, worker, host }),
+    ).rejects.toThrow('requires a completed migration');
+    await expect(
+      rewriteInternalRootFileTabs(identity, identity.source, host),
+    ).rejects.toThrow('Unsafe or unreadable');
+    await expect(
+      migrateInternalRoot(worker, identity, apply, {
+        ...repairs,
+        repair: () => Promise.reject(new Error('fixture interruption')),
+      }),
+    ).rejects.toThrow('fixture interruption');
+    expect((await worker.readJournal(identity))?.phase).not.toBe('complete');
+    const before = await fileImages(home);
+    await expect(
+      repairCompletedInternalRootFileTabs({ identity, worker, host }),
+    ).rejects.toThrow('requires a completed migration');
+    expect(await fileImages(home)).toEqual(before);
+  });
+
+  test('file-tab legacy snapshots, backups and journals remain readable and unchanged files are not replaced', async () => {
+    await source();
+    const tab: PersistedChatTab = {
+      id: 'file',
+      title: 'file',
+      kind: 'file',
+      createdAt: '2026-11-12T00:00:00Z',
+      filePath: join(identity.source, 'missing.txt'),
+      fileDiffContext: { path: 'missing.txt', source: 'uncommitted' },
+      messages: [
+        {
+          id: 'message',
+          role: 'user',
+          timestamp: 1,
+          blocks: [{ type: 'text', text: 'retained message' }],
+        },
+      ],
+    };
+    const archive = {
+      tab,
+      archivedAt: tab.createdAt,
+      turnCount: 3,
+      unread: true,
+    };
+    const live = { version: 1, activeTabId: tab.id, tabs: [tab] };
+    const archived = { version: 1, archived: [archive] };
+    const journal =
+      [
+        {
+          v: 1,
+          revision: 1,
+          mutationId: 'create',
+          occurredAt: tab.createdAt,
+          source: 'migration',
+          mutations: [{ type: 'tab.created', tab }],
+        },
+        {
+          v: 1,
+          revision: 2,
+          mutationId: 'patch',
+          occurredAt: tab.createdAt,
+          source: 'migration',
+          mutations: [
+            {
+              type: 'tab.metadata_patched',
+              tabId: tab.id,
+              patch: { filePath: tab.filePath },
+            },
+          ],
+        },
+        {
+          v: 1,
+          revision: 3,
+          mutationId: 'archive',
+          occurredAt: tab.createdAt,
+          source: 'migration',
+          mutations: [
+            { type: 'tab.removed', tabId: tab.id },
+            { type: 'archive.upserted', entry: archive },
+          ],
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n') + '\n';
+    const fixtures = {
+      'workspaces/fixture/chats/home.json':
+        JSON.stringify(live, null, 2) + '\n',
+      'workspaces/fixture/chats/home.json.bak':
+        JSON.stringify({
+          ...live,
+          activeTabId: 'backup',
+          tabs: [{ ...tab, id: 'backup' }],
+        }) + '\n',
+      'workspaces/fixture/chat-archives/home.json':
+        JSON.stringify(archived, null, 2) + '\n',
+      'workspaces/fixture/chat-archives/home.json.bak':
+        JSON.stringify(archived) + '\n',
+      'workspaces/fixture/chat-journals/home.jsonl': journal,
+      'workspaces/fixture/chat-journals/home.jsonl.bak': journal,
+      'workspaces/fixture/archived-containers/retained/chats.json':
+        JSON.stringify(live) + '\n',
+      'plan-explore-chats/plan.json': JSON.stringify(live) + '\n',
+      'code-review-chats/review.json': JSON.stringify(live) + '\n',
+      'standalone-chat/default/chat-tabs.json': JSON.stringify(live) + '\n',
+      'standalone-chat/default/chat-tabs.json.bak': JSON.stringify(live) + '\n',
+      'standalone-chat/projects/fixture/chat-tabs.json':
+        JSON.stringify(live) + '\n',
+      'standalone-chat/projects/fixture/chat-tabs.json.bak':
+        JSON.stringify(live) + '\n',
+      'workspaces/fixture/chats/unchanged.json':
+        JSON.stringify(
+          {
+            ...live,
+            tabs: [{ ...tab, filePath: join(home, 'external.txt') }],
+          },
+          null,
+          2,
+        ) + '\n',
+    };
+    const historyFiles = [
+      'workspaces/fixture/chat-history/retained/conversation.json',
+      'workspaces/fixture/chat-import-retained/chat-history/retained/conversation.json',
+      'standalone-chat/default/history/retained/conversation.json',
+      'standalone-chat/projects/fixture/history/retained/conversation.json',
+    ].flatMap((path) => [path, `${path}.bak`]);
+    for (const path of historyFiles)
+      Object.assign(fixtures, {
+        [path]:
+          JSON.stringify({
+            version: 1,
+            projectId: 'fixture',
+            chatId: tab.id,
+            archivedAt: archive.archivedAt,
+            tab,
+          }) + '\n',
+      });
+    for (const [path, bytes] of Object.entries(fixtures)) {
+      await mkdir(dirname(join(identity.source, path)), {
+        recursive: true,
+        mode: 0o700,
+      });
+      await writeFile(join(identity.source, path), bytes);
+    }
+    for (const root of [
+      'app-workspaces/app-advisor',
+      'app-workspaces/pipeline-editor',
+      'app-workspaces/code-review-chat',
+    ]) {
+      for (const suffix of ['', '.bak']) {
+        const appFixtures = {
+          [`${root}/chats/home.json${suffix}`]: JSON.stringify(live) + '\n',
+          [`${root}/chat-archives/home.json${suffix}`]:
+            JSON.stringify(archived) + '\n',
+          [`${root}/chat-journals/home.jsonl${suffix}`]: journal,
+          [`${root}/archived-containers/retained/chats.json${suffix}`]:
+            JSON.stringify(live) + '\n',
+          [`${root}/archived-containers/retained/chat-archives.json${suffix}`]:
+            JSON.stringify(archived) + '\n',
+          [`${root}/archived-containers/retained/chat-journal.jsonl${suffix}`]:
+            journal,
+        };
+        for (const [path, bytes] of Object.entries(appFixtures)) {
+          Object.assign(fixtures, { [path]: bytes });
+          await mkdir(dirname(join(identity.source, path)), {
+            recursive: true,
+            mode: 0o700,
+          });
+          await writeFile(join(identity.source, path), bytes);
+        }
+      }
+    }
+    const original = await fileImages(identity.source);
+    await migrateInternalRoot(worker, identity, apply, repairs);
+    const before = await fileImages(identity.destination);
+    await repairCompletedInternalRootFileTabs({ identity, worker, host });
+    for (const [path, originalRaw] of Object.entries(fixtures)) {
+      const raw = await readFile(join(identity.destination, path), 'utf8');
+      expect(raw.endsWith('\n')).toBe(true);
+      if (historyFiles.includes(path)) {
+        expect(JSON.parse(raw)).toEqual({
+          version: 1,
+          projectId: 'fixture',
+          chatId: tab.id,
+          archivedAt: archive.archivedAt,
+          tab: {
+            ...tab,
+            filePath: join(identity.destination, 'missing.txt'),
+          },
+        });
+      } else if (path.endsWith('.jsonl') || path.endsWith('.jsonl.bak')) {
+        let state: CanonicalChatState = {
+          tabsFile: { version: 1, tabs: [], activeTabId: '' },
+          archivesFile: { version: 1, archived: [] },
+          runtimeByChatId: {},
+        };
+        for (const line of raw.trimEnd().split('\n')) {
+          const record: unknown = JSON.parse(line);
+          if (!isChatJournalRecord(record))
+            throw new Error('Unreadable repaired journal');
+          state = reduceChatState(state, record.mutations);
+        }
+        expect(state.archivesFile.archived).toEqual([
+          {
+            ...archive,
+            tab: {
+              ...tab,
+              filePath: join(identity.destination, 'missing.txt'),
+            },
+          },
+        ]);
+      } else {
+        const value: unknown = JSON.parse(raw);
+        expect(isChatTabsSnapshot(value) || isArchivedSnapshot(value)).toBe(
+          true,
+        );
+        if (isChatTabsSnapshot(value)) {
+          const originalValue: unknown = JSON.parse(originalRaw);
+          if (!isChatTabsSnapshot(originalValue))
+            throw new Error('Invalid original tabs fixture');
+          expect(value).toEqual({
+            ...originalValue,
+            tabs: originalValue.tabs.map((entry) => ({
+              ...entry,
+              filePath: path.endsWith('unchanged.json')
+                ? join(home, 'external.txt')
+                : join(identity.destination, 'missing.txt'),
+            })),
+          });
+        } else if (isArchivedSnapshot(value)) {
+          expect(value.archived).toEqual([
+            {
+              ...archive,
+              tab: {
+                ...tab,
+                filePath: join(identity.destination, 'missing.txt'),
+              },
+            },
+          ]);
+        }
+      }
+    }
+    const after = await fileImages(identity.destination);
+    const unchanged = 'workspaces/fixture/chats/unchanged.json';
+    expect(after[unchanged]).toEqual(before[unchanged]);
+    expect(
+      await repairCompletedInternalRootFileTabs({ identity, worker, host }),
+    ).toEqual({ canonicalTabs: 0, legacyFiles: 0 });
+    expect(await fileImages(identity.destination)).toEqual(after);
+    expect(await fileImages(identity.source)).toEqual(original);
+  });
+
+  test.each(['--apply', '--repair-file-tabs'])(
+    '%s rewrites canonical and legacy file tabs with fixture cold proof',
+    async (mode) => {
+      await source();
+      const tab: PersistedChatTab = {
+        id: 'file',
+        title: 'file',
+        kind: 'file',
+        messages: [],
+        createdAt: '2026-11-12T00:00:00Z',
+        filePath: join(identity.source, 'missing.txt'),
+      };
+      const store = new ChatStorageV2(identity.source, 'home');
+      await store.migrate(() =>
+        Promise.resolve({
+          revision: 0,
+          index: { activeTabId: tab.id, runtimeByChatId: {} },
+          recovery: {
+            receipts: [],
+            mutationIds: [],
+            removedTabIds: [],
+            removedArchiveEntryIds: [],
+            removedMessageIds: [],
+          },
+          chats: (async function* (): AsyncGenerator<ChatMigrationEntry> {
+            for (const entry of [tab, { ...tab, id: 'archived' }]) {
+              const { messages, ...metadata } = entry;
+              yield Promise.resolve<ChatMigrationEntry>({
+                metadata,
+                ...(entry.id === 'archived'
+                  ? { archive: { archivedAt: tab.createdAt, turnCount: 0 } }
+                  : {}),
+                messages:
+                  (async function* (): AsyncGenerator<PersistedChatMessage> {
+                    for (const message of messages)
+                      yield Promise.resolve(message);
+                  })(),
+              });
+            }
+          })(),
+        }),
+      );
+      const seed = new ChatStateV2Backend(store, {
+        enableFormat4: true,
+        deltaJournal: {},
+      });
+      await seed.promoteToDeltaJournal();
+      await seed.promoteToFormat4();
+      seed.releaseJournal();
+      await seed.disposeArtifactMaintenance();
+      const legacy = 'chats/legacy.json';
+      await mkdir(join(identity.source, 'chats'), {
+        recursive: true,
+        mode: 0o700,
+      });
+      await writeFile(
+        join(identity.source, legacy),
+        JSON.stringify({
+          version: 1,
+          tabs: [tab],
+          activeTabId: tab.id,
+        }),
+      );
+      const original = await fileImages(identity.source);
+      if (mode === '--repair-file-tabs')
+        await migrateInternalRoot(worker, identity, apply, repairs);
+      if (mode === '--apply')
+        await migrateInternalRoot(
+          worker,
+          identity,
+          apply,
+          withInternalRootFileTabRepairs(repairs, host),
+        );
+      else
+        await repairCompletedInternalRootFileTabs({ identity, worker, host });
+      const state = await new ChatStorageV2(
+        identity.destination,
+        'home',
+      ).indexes();
+      expect(state.live.tabs[0].filePath).toBe(
+        join(identity.destination, 'missing.txt'),
+      );
+      expect(state.archive.archived[0].tab.filePath).toBe(
+        join(identity.destination, 'missing.txt'),
+      );
+      const legacyState: unknown = JSON.parse(
+        await readFile(join(identity.destination, legacy), 'utf8'),
+      );
+      expect(legacyState).toMatchObject({
+        tabs: [{ filePath: join(identity.destination, 'missing.txt') }],
+      });
+      const rewritten = await fileImages(identity.destination);
+      expect(
+        await repairCompletedInternalRootFileTabs({ identity, worker, host }),
+      ).toEqual({ canonicalTabs: 0, legacyFiles: 0 });
+      expect(await fileImages(identity.destination)).toEqual(rewritten);
+      expect(await fileImages(identity.source)).toEqual(original);
+    },
+  );
+
+  test.each(['--apply', '--repair-file-tabs'])(
+    'published Node operator %s refuses absent migration state without loading Electron',
+    async (mode) => {
+      // Missing state refuses before native cold proof, independent of live host apps.
+      const guard = join(temporaryHome, 'reject-electron.cjs');
+      const attempted = join(temporaryHome, 'electron-import-attempt');
+      await writeFile(
+        guard,
+        `
+        const fs = require('node:fs');
+        require('node:module').registerHooks({
+          resolve(specifier, context, nextResolve) {
+            if (specifier === 'electron' || specifier.startsWith('electron/') || specifier.startsWith('electron-log') || specifier.startsWith('@electron-toolkit/')) {
+              fs.writeFileSync(${JSON.stringify(attempted)}, specifier);
+              throw new Error('Offline operator loaded Electron: ' + specifier);
+            }
+            return nextResolve(specifier, context);
+          }
+        });
+      `,
+      );
+      const environment: NodeJS.ProcessEnv = {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+      };
+      delete environment.NODE_OPTIONS;
+      const execution = promisify(execFile)(
+        process.execPath,
+        [
+          '--require',
+          guard,
+          '--import',
+          'tsx',
+          join(__dirname, '../../../../scripts/internal-root-migration.ts'),
+          '--brand=canopy',
+          mode,
+        ],
+        { env: environment, timeout: 45_000, maxBuffer: 8 * 1024 * 1024 },
+      );
+      const error: unknown = await execution.then(
+        () => {
+          throw new Error('Expected absent migration state to refuse.');
+        },
+        (error: unknown) => error,
+      );
+      if (
+        typeof error !== 'object' ||
+        error === null ||
+        !('code' in error) ||
+        !('stdout' in error) ||
+        !('stderr' in error) ||
+        typeof error.stderr !== 'string'
+      )
+        throw new Error(
+          'Operator refusal lacked code, stdout or string stderr.',
+          { cause: error },
+        );
+      expect(error.code).toBe(1);
+      expect(error.stdout).toBe('');
+      const missingAddon =
+        (windows || process.platform === 'linux') &&
+        !existsSync(
+          resolve(
+            '.cache/native-owned-child',
+            `${process.platform}-${process.arch}`,
+            'core-owned-child.node',
+          ),
+        );
+      if (missingAddon)
+        expect(error.stderr).toContain(
+          'Owned child processes are unavailable on this host.',
+        );
+      else {
+        const refusal: unknown = JSON.parse(
+          error.stderr.trimEnd().split('\n').at(-1) ?? '',
+        );
+        expect(refusal).toMatchObject({
+          kind: 'refused',
+          reason: mode === '--apply' ? 'source-missing' : 'recovery-required',
+        });
+      }
+      expect(existsSync(attempted)).toBe(false);
+      expect(existsSync(identity.source)).toBe(false);
+      expect(existsSync(identity.destination)).toBe(false);
+    },
+  );
+
+  test.each([
+    { version: 10, legacySealed: false },
+    { version: 7, legacySealed: false },
+    { version: 10, legacySealed: true },
+  ])(
+    'CAN-6551 migrates retained v$version records (legacy sealed: $legacySealed), with cold recovery and replay',
+    async ({ version, legacySealed }) => {
+      await source();
+      const id = 'retained';
+      const executions = join(identity.source, 'pipeline-executions');
+      const output = join(executions, id);
+      const checkout = join(identity.source, 'worktrees/retained');
+      const cwd = join(checkout, 'repo');
+      await mkdir(output, { recursive: true, mode: 0o700 });
+      await mkdir(cwd, { recursive: true, mode: 0o700 });
+      const rawPipeline = `
+name: Retained migration run
+on: dispatch
+jobs:
+  work:
+    steps:
+      - id: gather
+        run: echo already completed
+      - id: next
+        run: pwd
+`;
+      const pipeline = normalizePipeline(parsePipelineText(rawPipeline));
+      const packageManifest: PipelinePackageManifestV1 = {
+        version: 1,
+        pipelineContentHash: createHash('sha256')
+          .update(rawPipeline)
+          .digest('hex'),
+        resources: [],
+        bindings: [],
+        environmentRequirements: [],
+        totalFiles: 0,
+        totalBytes: 0,
+      };
+      const packageSnapshot =
+        version === 10
+          ? {
+              digest: computePipelinePackageDigestSync(packageManifest),
+              pipelineContentHash: packageManifest.pipelineContentHash,
+              cachedPackagePath: join(output, 'pipeline-package'),
+              bindings: packageManifest.bindings,
+              capturedAt: '2026-11-01T00:00:00.000Z',
+            }
+          : undefined;
+      if (packageSnapshot) {
+        await mkdir(packageSnapshot.cachedPackagePath, { mode: 0o700 });
+        await writeFile(
+          join(packageSnapshot.cachedPackagePath, 'manifest.json'),
+          JSON.stringify(packageManifest),
+          { mode: 0o600 },
+        );
+        await writeFile(
+          join(packageSnapshot.cachedPackagePath, '.pipeline-package-digest'),
+          packageSnapshot.digest,
+          { mode: 0o600 },
+        );
+      }
+      const report = {
+        report_file: join(output, 'report.md'),
+        report_json_file: join(output, 'report.json'),
+      };
+      const recovery = {
+        version: 2,
+        reason_id: '00000000-0000-4000-8000-000000000001',
+        action: 'agent-prompt',
+        provider: 'claude',
+        harness: 'claude',
+        had_agent_activity: true,
+        session_id: 'retained-session',
+        strategy: 'continue_session',
+        recovery_count: 1,
+        paused_at: '2026-11-01T00:00:00.000Z',
+        transcript_file: join(output, 'transcript.jsonl'),
+        failure_message: `Retained message at ${cwd}`,
+      };
+      const step = {
+        status: 'success',
+        outputs: { path: report.report_file, prose: `See ${cwd}` },
+        dynamic_env: {},
+        log_file: join(output, 'gather.log'),
+        resolved_run: `Read ${cwd}; do not rewrite this prompt`,
+        report_outputs: report,
+        agent_recovery: recovery,
+        agent_recovery_history: [
+          {
+            reason: {
+              id: recovery.reason_id,
+              kind: 'action_paused',
+              code: 'action_requested_pause',
+              detected_at: recovery.paused_at,
+              source: {
+                job_id: 'work',
+                step_id: 'gather',
+                attempt: 0,
+                iteration: 1,
+              },
+            },
+            strategy: 'continue_session',
+            recovery_number: 1,
+            started_at: recovery.paused_at,
+            completed_at: recovery.paused_at,
+            status: 'success',
+            log_file: join(output, 'recovery.log'),
+          },
+        ],
+      };
+      const result = {
+        status: 'paused',
+        outputs: { path: cwd },
+        report_outputs: report,
+        steps: {
+          gather: step,
+          next: { status: 'pending', outputs: {}, dynamic_env: {} },
+        },
+        retry_history: [
+          {
+            attempt: 0,
+            status: 'failure',
+            steps: { gather: step },
+            iteration_history: [
+              { iteration: 1, status: 'failure', steps: { gather: step } },
+            ],
+          },
+        ],
+        iteration_history: [
+          { iteration: 1, status: 'success', steps: { gather: step } },
+        ],
+      };
+      const state = {
+        version,
+        id,
+        pipeline_id: 'retained-workflow',
+        pipeline_snapshot:
+          version === 7
+            ? {
+                ...pipeline,
+                jobs: { work: { ...pipeline.jobs.work, foreach: ['repo'] } },
+              }
+            : pipeline,
+        status: 'paused',
+        started_at: '2026-11-01T00:00:00.000Z',
+        cwd,
+        repo_path: cwd,
+        execution_checkout_root: checkout,
+        pipeline_file_dir: cwd,
+        global_workspace_dir: checkout,
+        scope: 'directory',
+        target: { scope: 'directory', path: cwd },
+        env: { CANOPY_OUTPUT_DIR: output, UNRELATED: cwd },
+        inputs: {
+          path: cwd,
+          nested: { files: [report.report_file] },
+          prose: `At ${cwd}`,
+          sibling: `${identity.source}-other/file`,
+        },
+        report_outputs: report,
+        pipeline_package_snapshot: packageSnapshot,
+        event_data: {
+          task_ready: {
+            task_path: join(output, 'task.md'),
+            plan_path: join(cwd, 'plan.md'),
+          },
+        },
+        jobs: {
+          work:
+            version === 7
+              ? {
+                  ...result,
+                  steps: {},
+                  children: [
+                    {
+                      ...result,
+                      id: 'child-000000',
+                      index: 0,
+                      item: 'repo',
+                      name: 'work (repo)',
+                    },
+                  ],
+                }
+              : result,
+        },
+        job_definitions: {
+          work: {
+            ...pipeline.jobs.work,
+            physical_job_id: 'work',
+            logical_job_id: 'work',
+          },
+        },
+        job_groups: {
+          work: {
+            job_id: 'work',
+            kind: 'single',
+            expansion: 'expanded',
+            variant_job_ids: ['work'],
+            status: 'paused',
+          },
+        },
+        pending_pauses: [],
+        status_reasons: [],
+      };
+      const file = join(executions, `${id}.json`);
+      const raw = JSON.stringify(state, null, 2);
+      await writeFile(file, raw, { mode: 0o600 });
+      for (const [name, contents] of [
+        ['report.md', 'retained report'],
+        ['report.json', '{"ok":true}'],
+        ['transcript.jsonl', '{"session":"retained"}'],
+        ['gather.log', 'old log'],
+        ['task.md', 'retained task'],
+      ] as const)
+        await writeFile(join(output, name), contents, { mode: 0o600 });
+      await writeFile(join(cwd, 'plan.md'), 'retained plan', { mode: 0o600 });
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      repairs = {
+        ...live,
+        repair: async (context): ReturnType<InternalRootRepairs['repair']> => {
+          const result = await live.repair(context);
+          if (legacySealed) {
+            // Preserve a fixture of the pre-CAN-6551 tree before it is sealed.
+            await writeFile(
+              join(context.workingRoot, 'pipeline-executions', `${id}.json`),
+              raw,
+            );
+            await rename(
+              join(
+                context.workingRoot,
+                `.pipeline-record-relocation-${context.transactionId}.json`,
+              ),
+              join(home, 'new-step-evidence.fixture'),
+            );
+            return result;
+          }
+          throw new Error('interrupted after pipeline record repair');
+        },
+      };
+      if (legacySealed) {
+        jest
+          .spyOn(worker, 'publish')
+          .mockRejectedValueOnce(new Error('interrupted legacy publication'));
+        await expect(run()).rejects.toThrow('interrupted legacy publication');
+        expect((await worker.readJournal(identity))?.phase).toBe('publishing');
+      } else {
+        await expect(run()).rejects.toThrow(
+          'interrupted after pipeline record repair',
+        );
+      }
+      repairs = live;
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      const destinationExecutions = join(
+        identity.destination,
+        'pipeline-executions',
+      );
+      const destinationFile = join(destinationExecutions, `${id}.json`);
+      if (legacySealed) {
+        expect(await readFile(destinationFile, 'utf8')).toBe(raw);
+        await expect(
+          repairCompletedInternalRootPipelineRecords({
+            identity,
+            worker,
+            host,
+          }),
+        ).resolves.toEqual({ inspected: 1, updated: 1 });
+      }
+      function isRecord(value: unknown): value is Record<string, unknown> {
+        return (
+          typeof value === 'object' && value !== null && !Array.isArray(value)
+        );
+      }
+      function record(value: unknown): Record<string, unknown> {
+        if (!isRecord(value)) throw new Error('Expected a record');
+        return value;
+      }
+      function array(value: unknown): unknown[] {
+        if (!Array.isArray(value)) throw new Error('Expected an array');
+        return value;
+      }
+      const parsed: unknown = JSON.parse(
+        await readFile(destinationFile, 'utf8'),
+      );
+      const projected = record(parsed);
+      const mapped = (path: string): string =>
+        join(identity.destination, relative(identity.source, path));
+      const projectedWork = record(record(projected.jobs).work);
+      const projectedResult =
+        version === 7
+          ? record(array(projectedWork.children)[0])
+          : projectedWork;
+      for (const value of [
+        projectedResult,
+        ...array(projectedResult.retry_history),
+        ...array(projectedResult.iteration_history),
+        ...array(
+          record(array(projectedResult.retry_history)[0]).iteration_history,
+        ),
+      ]) {
+        const image = record(value);
+        const gather = record(record(image.steps).gather);
+        expect(gather.log_file).toBe(mapped(step.log_file));
+        expect(record(gather.agent_recovery).transcript_file).toBe(
+          mapped(recovery.transcript_file),
+        );
+        expect(record(array(gather.agent_recovery_history)[0]).log_file).toBe(
+          mapped(step.agent_recovery_history[0].log_file),
+        );
+        expect(gather.report_outputs).toEqual({
+          report_file: mapped(report.report_file),
+          report_json_file: mapped(report.report_json_file),
+        });
+        expect(gather.resolved_run).toBe(step.resolved_run);
+        expect(gather.outputs).toEqual({
+          path: mapped(report.report_file),
+          prose: `See ${cwd}`,
+        });
+      }
+      expect(projected.inputs).toEqual({
+        path: mapped(cwd),
+        nested: { files: [mapped(report.report_file)] },
+        prose: `At ${cwd}`,
+        sibling: `${identity.source}-other/file`,
+      });
+      expect(projected.env).toEqual({
+        CANOPY_OUTPUT_DIR: mapped(output),
+        UNRELATED: cwd,
+      });
+      expect(projected.event_data).toEqual({
+        task_ready: {
+          task_path: mapped(join(output, 'task.md')),
+          plan_path: mapped(join(cwd, 'plan.md')),
+        },
+      });
+      if (packageSnapshot)
+        expect(projected.pipeline_package_snapshot).toEqual({
+          ...packageSnapshot,
+          cachedPackagePath: mapped(packageSnapshot.cachedPackagePath),
+        });
+      const previousRoot = process.env.CANOPY_DATA_DIR;
+      process.env.CANOPY_DATA_DIR = identity.destination;
+      try {
+        const loaded = await loadExecutionState(id, destinationExecutions);
+        if (!loaded) throw new Error('Missing migrated execution');
+        const jobId = version === 7 ? '__matrix__work__0' : 'work';
+        expect(loaded).toMatchObject({
+          cwd: mapped(cwd),
+          repo_path: mapped(cwd),
+          execution_checkout_root: mapped(checkout),
+          target: { scope: 'directory', path: mapped(cwd) },
+        });
+        expect(
+          loaded.jobs[jobId].steps.gather.agent_recovery?.transcript_file,
+        ).toBe(mapped(recovery.transcript_file));
+        expect(await listExecutionSummaries(destinationExecutions)).toEqual([
+          expect.objectContaining({ id }),
+        ]);
+        expect(
+          await readExecutionArtifact(loaded, {
+            kind: 'report',
+            format: 'text',
+          }),
+        ).toEqual({
+          filePath: mapped(report.report_file),
+          content: 'retained report',
+        });
+        expect(
+          await readExecutionArtifact(loaded, {
+            kind: 'report',
+            format: 'json',
+          }),
+        ).toEqual({
+          filePath: mapped(report.report_json_file),
+          content: '{"ok":true}',
+        });
+        expect(await readExecutionArtifact(loaded, { kind: 'plan' })).toEqual({
+          filePath: mapped(join(cwd, 'plan.md')),
+          content: 'retained plan',
+        });
+        const taskPath = loaded.event_data?.task_ready?.task_path;
+        expect(taskPath).toBe(mapped(join(output, 'task.md')));
+        if (!taskPath) throw new Error('Migrated task path is missing');
+        expect(await readFile(taskPath, 'utf8')).toBe('retained task');
+        const bytes = await readFile(destinationFile);
+        const before = await lstat(destinationFile);
+        await expect(
+          relocateInternalRootPipelineRecords(
+            identity,
+            identity.destination,
+            host,
+          ),
+        ).resolves.toEqual({ inspected: 1, updated: 0 });
+        expect(await readFile(destinationFile)).toEqual(bytes);
+        expect((await lstat(destinationFile)).mtimeMs).toBe(before.mtimeMs);
+        // Finished installations recover in place without rebuild or deletes.
+        await writeFile(destinationFile, raw);
+        await expect(
+          repairCompletedInternalRootPipelineRecords({
+            identity,
+            worker,
+            host,
+          }),
+        ).resolves.toEqual({ inspected: 1, updated: 1 });
+        expect(
+          await readFile(`${destinationFile}.before-root-rebase`, 'utf8'),
+        ).toBe(raw);
+        const recoveredBytes = await readFile(destinationFile);
+        await expect(
+          repairCompletedInternalRootPipelineRecords({
+            identity,
+            worker,
+            host,
+          }),
+        ).resolves.toEqual({ inspected: 1, updated: 0 });
+        expect(await readFile(destinationFile)).toEqual(recoveredBytes);
+        expect(await listExecutionSummaries(destinationExecutions)).toEqual([
+          expect.objectContaining({ id }),
+        ]);
+        const handle = await resumePipeline(id, {
+          cwd: mapped(cwd),
+          runtime: {
+            executionsDir: destinationExecutions,
+            tempRootDir: join(home, 'tmp'),
+            bundledActionsDir: resolve(
+              'packages/desktop-shared/resources/actions',
+            ),
+            getProjectActionsDir: (repo) => join(repo, '.canopy/actions'),
+            getProjectPipelinesDir: (repo) => join(repo, '.canopy/pipelines'),
+            isModelBlockedByOrgPolicy: () => Promise.resolve(false),
+            isOrgModelPolicyActive: () => Promise.resolve(false),
+          },
+        });
+        const resumed = await handle.waitForCompletion();
+        expect(resumed.status).toBe('success');
+        expect(resumed.cwd).toBe(mapped(cwd));
+        expect(resumed.repo_path).toBe(mapped(cwd));
+        expect(resumed.execution_checkout_root).toBe(mapped(checkout));
+        expect(resumed.event_data?.task_ready?.task_path).toBe(taskPath);
+        if (packageSnapshot)
+          expect(resumed.pipeline_package_snapshot).toEqual({
+            ...packageSnapshot,
+            cachedPackagePath: mapped(packageSnapshot.cachedPackagePath),
+          });
+        expect(resumed.target).toEqual({
+          scope: 'directory',
+          path: mapped(cwd),
+        });
+        const log = resumed.jobs[jobId].steps.next.log_file;
+        if (!log) throw new Error('Resumed step did not write a log');
+        expect(await readFile(log, 'utf8')).toContain(mapped(cwd));
+        expect(await readFile(file, 'utf8')).toBe(raw);
+        // A genuinely foreign log is not made acceptable by migration.
+        record(record(projectedResult.steps).gather).log_file = join(
+          home,
+          'foreign.log',
+        );
+        await writeFile(destinationFile, JSON.stringify(projected));
+        await relocateInternalRootPipelineRecords(
+          identity,
+          identity.destination,
+          host,
+        );
+        await expect(
+          loadExecutionState(id, destinationExecutions),
+        ).rejects.toThrow('escapes the execution output directory');
+      } finally {
+        if (previousRoot === undefined) delete process.env.CANOPY_DATA_DIR;
+        else process.env.CANOPY_DATA_DIR = previousRoot;
+      }
+    },
+  );
+
   async function lifecycleFixture(
     state: DestructiveRecoveryRecord['state'],
     operation: DestructiveRecoveryRecord['operation'] = 'worktree-archive',
@@ -1802,7 +3231,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
           ? await strandedArchiveFixture(identity.source, 'P0')
           : await lifecycleFixture(state);
       worker.diagnose = diagnoseInternalRootW5;
-      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
       worker.recoverW5 = async (journal): Promise<void> => {
         await fixtureW5(identity.source, entry, {
           identity,
@@ -1829,6 +3258,865 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
             join(identity.destination, relative(identity.source, path)),
           ),
         );
+      }
+    },
+  );
+
+  (windows ? test.skip : test)(
+    'Linux apply-peak census refuses inventory and first apply before any journal, including external Git roots',
+    async () => {
+      await source();
+      const externalRoot = '/external/.git';
+      const externalFile = `${externalRoot}/worktrees/installed/gitdir`;
+      const coldExternalFiles = jest.fn(() => Promise.resolve([externalFile]));
+      const save = jest.spyOn(worker, 'saveJournal');
+      const build = jest.spyOn(worker, 'build');
+      const io: authorityHost.LinuxColdIO = {
+        text: (file) => {
+          if (file === '/proc/self/mountinfo')
+            return Promise.resolve('10 0 8:1 / / rw - ext4 /dev/sda1 rw\n');
+          return Promise.reject(new Error(`Unexpected proc read ${file}`));
+        },
+        entry: (file) =>
+          Promise.resolve({
+            dev: 2049n,
+            ino:
+              file === identity.source ? 1n : file === externalRoot ? 2n : 3n,
+            mode:
+              file === identity.source || file === externalRoot
+                ? 0o040700n
+                : 0o100600n,
+            ctimeNs: 0n,
+            mtimeNs: 0n,
+          }),
+        list: (file) =>
+          Promise.resolve(
+            file === identity.source ? ['preferences.json'] : ['one', 'two'],
+          ),
+        pin: () => Promise.reject(new Error('Unexpected pin')),
+        identity: () => Promise.reject(new Error('Unexpected identity')),
+        link: () => Promise.reject(new Error('Unexpected link')),
+      };
+      const linuxWorker: InternalRootMigrationWorker = {
+        ...worker,
+        os: 'linux',
+        proveCold: async (_identity, externalFiles) => {
+          expect(externalFiles).toEqual([externalFile]);
+          try {
+            await authorityHost.observeLinuxColdProcesses({
+              io,
+              uid: 1000,
+              roots: [identity.source, externalRoot],
+              census: { predictApplyPeak: true, entryCap: 4104 },
+            });
+          } catch (error) {
+            throw new InternalRootMigrationRefused(
+              'cold-proof-unavailable',
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        },
+      };
+      const scopedRepairs = { ...repairs, coldExternalFiles };
+      const result = await migrateInternalRoot(
+        linuxWorker,
+        identity,
+        { apply: false, declareInternal: true },
+        scopedRepairs,
+      );
+      const recovery: unknown = expect.stringContaining('cap=4104');
+      expect(result).toMatchObject({
+        kind: 'inventory',
+        journal: null,
+        coldProof: {
+          kind: 'refused',
+          reason: 'cold-proof-unavailable',
+          recovery,
+        },
+      });
+      await expect(
+        migrateInternalRoot(linuxWorker, identity, apply, scopedRepairs),
+      ).rejects.toMatchObject({ reason: 'cold-proof-unavailable' });
+      expect(coldExternalFiles).toHaveBeenCalledTimes(2);
+      expect(save).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      expect(recover).not.toHaveBeenCalled();
+      expect(await worker.readJournal(identity)).toBeNull();
+      expect(existsSync(identity.destination)).toBe(false);
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    {
+      resume: true,
+      discover: true,
+      settleSourceFirst: true,
+      splitScope: false,
+    },
+    {
+      resume: true,
+      discover: false,
+      settleSourceFirst: true,
+      splitScope: false,
+    },
+    {
+      resume: false,
+      discover: false,
+      settleSourceFirst: true,
+      splitScope: false,
+    },
+    {
+      resume: false,
+      discover: false,
+      settleSourceFirst: false,
+      splitScope: false,
+    },
+    { resume: true, discover: true, settleSourceFirst: true, splitScope: true },
+  ])(
+    'Linux renews apply-peak admission before staging when external scope expands (resume=$resume, discover=$discover, settleSourceFirst=$settleSourceFirst, splitScope=$splitScope)',
+    async ({ resume, discover, settleSourceFirst, splitScope }) => {
+      await source();
+      const externalRoot = join(home, 'repository', '.git');
+      const externalFile = join(externalRoot, 'gitdir');
+      await mkdir(externalRoot, { recursive: true });
+      await writeFile(externalFile, 'retained external evidence');
+      const priorRoot = join(home, 'prior-repository', '.git');
+      const priorFile = join(priorRoot, 'gitdir');
+      const priorFiles = splitScope ? [priorFile] : [];
+      if (splitScope) {
+        await mkdir(priorRoot, { recursive: true });
+        await writeFile(priorFile, 'retained journaled evidence');
+      }
+      const inventory = await worker.inventory(identity);
+      if (resume) {
+        const release = await worker.coordinate(identity);
+        try {
+          await worker.saveJournal({
+            version: 7,
+            transactionId: worker.transactionId(),
+            identity,
+            internalDeclaration: true,
+            phase: 'prepared',
+            inventory,
+            externalFiles: priorFiles,
+            stagingRoot: worker.stagingRoot(identity),
+            secureRelocation: 'pending',
+          });
+        } finally {
+          await release();
+        }
+      }
+      const journalPath = join(identity.coordination, 'journal.json');
+      const before = resume ? await readFile(journalPath, 'utf8') : null;
+      const roots = new Set([
+        identity.source,
+        identity.destination,
+        identity.historicalSecure,
+        identity.coordination,
+        worker.stagingRoot(identity),
+        externalRoot,
+        ...(splitScope ? [priorRoot] : []),
+      ]);
+      const inodes = new Map<string, bigint>();
+      const mounts =
+        '10 0 8:1 / / rw - ext4 /dev/sda1 rw\n11 10 0:1 / /proc rw - proc proc rw\n';
+      const io: authorityHost.LinuxColdIO = {
+        text: (file) =>
+          Promise.resolve().then(() => {
+            if (file.endsWith('/mountinfo')) return mounts;
+            if (file === '/proc/sys/kernel/random/boot_id')
+              return '01234567-0123-0123-0123-0123456789ab\n';
+            if (file.endsWith('/status'))
+              return 'Uid:\t1000\t1000\t1000\t1000\n';
+            if (file.endsWith('/stat'))
+              return `${process.pid} (node) S 1 ${Array(17).fill('0').join(' ')} 42 0\n`;
+            throw new Error(`Unexpected proc read ${file}`);
+          }),
+        entry: (file) =>
+          Promise.resolve().then(() => {
+            const ino = inodes.get(file) ?? BigInt(inodes.size + 1);
+            inodes.set(file, ino);
+            return {
+              dev: 2049n,
+              ino,
+              mode: roots.has(file) ? 0o040700n : 0o100600n,
+              ctimeNs: 0n,
+              mtimeNs: 0n,
+            };
+          }),
+        list: (file) =>
+          Promise.resolve().then(() => {
+            if (file === '/proc' || file.endsWith('/task'))
+              return [String(process.pid)];
+            if (file === externalRoot || (splitScope && file === priorRoot))
+              return Array.from(
+                { length: splitScope ? 600 : 1000 },
+                (_, index) => `entry-${index}`,
+              );
+            return ['entry'];
+          }),
+        pin: () => Promise.resolve({ dev: 2049n, ino: 999999n, mountId: '10' }),
+        identity: () => Promise.resolve({ dev: 2049n, ino: 999999n }),
+        link: (file) =>
+          Promise.resolve().then(() => {
+            const namespace = /\/ns\/(mnt|user|pid)$/.exec(file)?.[1];
+            if (namespace) return `${namespace}:[123]`;
+            if (file.endsWith('/exe')) return process.execPath;
+            if (file.endsWith('/cwd') || file.endsWith('/root')) return '/';
+            throw new Error(`Unexpected proc link ${file}`);
+          }),
+      };
+      const observe = authorityHost.observeLinuxColdProcesses;
+      const observation = jest
+        .spyOn(authorityHost, 'observeLinuxColdProcesses')
+        .mockImplementation((options) =>
+          observe({
+            ...options,
+            io,
+            uid: 1000,
+            census: { ...options?.census, entryCap: 6000 },
+          }),
+        );
+      const platform = jest
+        .spyOn(hostPlatform, 'hostOperatingSystem')
+        .mockReturnValue('linux');
+      try {
+        const nativeWorker = createInternalRootMigrationWorker({
+          filesystemHost: host,
+          ...filesystemOptions,
+          recoverW5: recover,
+          nativeColdHost: { kind: 'repository', root: home },
+          executableBrands: [canopy],
+        });
+        // Exercise native admission, not the host-dependent Linux copy preflight.
+        nativeWorker.inventory = (): ReturnType<
+          InternalRootMigrationWorker['inventory']
+        > => Promise.resolve(inventory);
+        nativeWorker.space = (): ReturnType<
+          InternalRootMigrationWorker['space']
+        > => Promise.resolve({ requiredBytes: 0, availableBytes: 1 });
+        if (splitScope) {
+          // Each root fits alone; only the combined scope exceeds admission.
+          await expect(
+            nativeWorker.proveCold(identity, priorFiles),
+          ).resolves.toBeUndefined();
+          await expect(
+            nativeWorker.proveCold(identity, [externalFile]),
+          ).resolves.toBeUndefined();
+        }
+        const build = jest
+          .spyOn(nativeWorker, 'build')
+          .mockImplementation(() =>
+            Promise.reject(
+              new Error('Construction began before peak-capacity refusal'),
+            ),
+          );
+        const expose = jest.spyOn(nativeWorker, 'exposeStaging');
+        const save = jest.spyOn(nativeWorker, 'saveJournal');
+        const scopedRepairs: InternalRootRepairs = {
+          ...repairs,
+          settleSourceFirst,
+          coldExternalFiles: () =>
+            Promise.resolve(discover ? [externalFile] : []),
+          prepare: () =>
+            Promise.resolve({ kind: 'ready', externalFiles: [externalFile] }),
+        };
+        const recovery: unknown = expect.stringContaining('cap=6000');
+        await expect(
+          migrateInternalRoot(nativeWorker, identity, apply, scopedRepairs),
+        ).rejects.toMatchObject({
+          reason: 'cold-proof-unavailable',
+          recovery,
+        });
+        expect(build).not.toHaveBeenCalled();
+        expect(expose).not.toHaveBeenCalled();
+        expect(existsSync(nativeWorker.stagingRoot(identity))).toBe(false);
+        expect(existsSync(join(identity.coordination, 'staging'))).toBe(false);
+        expect(existsSync(identity.destination)).toBe(false);
+        const journal = await worker.readJournal(identity);
+        if (resume || settleSourceFirst)
+          expect(journal?.phase).toBe('prepared');
+        else expect(journal).toBeNull();
+        if (before !== null)
+          expect(await readFile(journalPath, 'utf8')).toBe(before);
+        if (discover || !settleSourceFirst) {
+          expect(save).not.toHaveBeenCalled();
+          expect(recover).not.toHaveBeenCalled();
+        } else expect(recover).toHaveBeenCalledTimes(1);
+        expect(await readFile(externalFile, 'utf8')).toBe(
+          'retained external evidence',
+        );
+        if (splitScope)
+          expect(await readFile(priorFile, 'utf8')).toBe(
+            'retained journaled evidence',
+          );
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('{"theme":"dark"}');
+      } finally {
+        platform.mockRestore();
+        observation.mockRestore();
+      }
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    { withSibling: false, relativeLinks: false, internalCommon: false },
+    { withSibling: true, relativeLinks: false, internalCommon: false },
+    { withSibling: true, relativeLinks: true, internalCommon: false },
+    { withSibling: true, relativeLinks: true, internalCommon: true },
+  ])(
+    'Linux pre-journal Git census matches journaled backlink roots ($withSibling sibling, $relativeLinks relative, $internalCommon internal)',
+    async ({ withSibling, relativeLinks, internalCommon }) => {
+      await source();
+      const repository = join(
+        internalCommon ? identity.source : home,
+        'repository',
+      );
+      const standalone = join(home, 'standalone');
+      const installed = join(identity.source, 'checkout');
+      const sibling = join(home, 'sibling');
+      const git = async (
+        cwd: string,
+        args: readonly string[],
+      ): Promise<string> =>
+        (
+          await promisify(execFile)('git', ['--no-optional-locks', ...args], {
+            cwd,
+          })
+        ).stdout;
+      for (const root of [repository, standalone]) {
+        await mkdir(root);
+        await git(root, ['init']);
+        await git(root, [
+          '-c',
+          'user.name=Fixture',
+          '-c',
+          'user.email=fixture@example.test',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'fixture',
+        ]);
+      }
+      await git(repository, ['worktree', 'add', '-b', 'installed', installed]);
+      if (withSibling)
+        await git(repository, ['worktree', 'add', '-b', 'sibling', sibling]);
+      const prunable = join(home, 'prunable');
+      await git(repository, ['worktree', 'add', '-b', 'prunable', prunable]);
+      await rm(prunable, { recursive: true });
+      if (relativeLinks)
+        for (const checkout of [installed, ...(withSibling ? [sibling] : [])]) {
+          const admin = join(
+            repository,
+            '.git',
+            'worktrees',
+            basename(checkout),
+          );
+          const dotGit = join(checkout, '.git');
+          await writeFile(dotGit, `gitdir: ${relative(checkout, admin)}\n`);
+          await writeFile(
+            join(admin, 'gitdir'),
+            `${relative(admin, dotGit)}\n`,
+          );
+        }
+      const metadata = join(identity.source, 'workspaces', 'fixture');
+      await mkdir(metadata, { recursive: true });
+      await writeFile(
+        join(metadata, 'workspace.json'),
+        JSON.stringify({ sourceRepoPath: standalone }),
+      );
+      const plan = await prepareRelocationGit(
+        git,
+        [repository, standalone, installed, ...(withSibling ? [sibling] : [])],
+        { portableFilesystem: true },
+      );
+      const journaledFiles = plan.backlinks
+        .map(({ path }) => path)
+        .filter((file) => !isWithin(identity.source, file));
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      if (!live.coldExternalFiles) throw new Error('Missing cold Git scope');
+      const files = await live.coldExternalFiles({
+        identity,
+        transactionId: 'fixture',
+        inventory: await worker.inventory(identity),
+        workingRoot: identity.source,
+        externalFiles: [],
+      });
+      expect(new Set(files)).toEqual(new Set(journaledFiles));
+      const observed: (readonly string[])[] = [];
+      const observation = jest
+        .spyOn(authorityHost, 'observeLinuxColdProcesses')
+        .mockImplementation((options) => {
+          observed.push(options?.roots ?? []);
+          return Promise.reject(
+            new InternalRootMigrationRefused(
+              'cold-proof-unavailable',
+              'fixture stopped after census root mapping',
+            ),
+          );
+        });
+      const platform = jest
+        .spyOn(hostPlatform, 'hostOperatingSystem')
+        .mockReturnValue('linux');
+      try {
+        const nativeWorker = createInternalRootMigrationWorker({
+          filesystemHost: host,
+          recoverW5: recover,
+          nativeColdHost: { kind: 'repository', root: home },
+        });
+        for (const externalFiles of [files, journaledFiles])
+          await expect(
+            nativeWorker.proveCold(identity, externalFiles),
+          ).rejects.toThrow('fixture stopped after census root mapping');
+        const [before, after] = observed;
+        expect(new Set(before)).toEqual(new Set(after));
+        if (internalCommon)
+          expect(before).not.toContain(join(repository, '.git'));
+        else expect(before).toContain(join(repository, '.git'));
+        expect(before).not.toContain(repository);
+        expect(before).not.toContain(standalone);
+        expect(before).not.toContain(join(standalone, '.git'));
+        expect(before).not.toContain(prunable);
+        if (withSibling) expect(before).toContain(sibling);
+        else expect(before).not.toContain(sibling);
+      } finally {
+        platform.mockRestore();
+        observation.mockRestore();
+      }
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    'unindexed',
+    'indexed',
+    'unreadable index',
+    'pending owner',
+    'malformed link',
+    'linked admin directory',
+    'mismatched backlink',
+  ])(
+    'Linux Git hint respects canonical workspace membership in peak prediction: %s',
+    async (scenario) => {
+      await source();
+      const checkout = join(home, 'unrelated-checkout');
+      const common = join(home, 'repository/.git');
+      const admin = join(common, 'worktrees/external');
+      await mkdir(checkout);
+      await mkdir(admin, { recursive: true });
+      if (scenario === 'linked admin directory') {
+        await mkdir(join(checkout, '.git'));
+        await writeFile(join(checkout, '.git/commondir'), `${common}\n`);
+      } else
+        await writeFile(
+          join(checkout, '.git'),
+          scenario === 'malformed link' ? 'opaque\0' : `gitdir: ${admin}\n`,
+        );
+      await writeFile(join(admin, 'commondir'), '../..\n');
+      await writeFile(
+        join(admin, 'gitdir'),
+        `${join(checkout, scenario === 'mismatched backlink' ? 'other' : '.git')}\n`,
+      );
+      const metadata = join(identity.source, 'workspaces/fixture');
+      await mkdir(metadata, { recursive: true });
+      const manifest = JSON.stringify({ version: 1, repoPath: checkout });
+      await writeFile(join(metadata, 'workspace.json'), manifest);
+      if (scenario === 'unindexed') {
+        await mkdir(join(metadata, 'checkout'));
+        await writeFile(join(metadata, 'checkout/.git'), `gitdir: ${admin}\n`);
+      }
+      await writeFile(
+        join(identity.source, 'workspaces/index.json'),
+        scenario === 'unreadable index'
+          ? '{partial W5 image'
+          : JSON.stringify({
+              version: 1,
+              workspaces:
+                scenario === 'unindexed'
+                  ? []
+                  : [
+                      {
+                        id: 'fixture',
+                        name: 'Fixture',
+                        type: 'single-repo',
+                        color: 'blue',
+                      },
+                    ],
+            }),
+      );
+      if (scenario === 'pending owner') {
+        await mkdir(join(identity.source, 'w5'));
+        const log = W5CommitLog.open(
+          join(identity.source, 'w5/commit-log.sqlite'),
+        );
+        try {
+          log.commit({
+            operation: 'fixture.pending-owner',
+            advance: [{ kind: 'workspace', workspaceId: 'fixture' }],
+            files: [
+              {
+                path: join(metadata, 'workspace.json'),
+                previousFingerprint: null,
+                contents: manifest,
+              },
+            ],
+            outcome: {},
+          });
+        } finally {
+          log.close();
+        }
+      }
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      const proof = jest.fn((): Promise<void> => Promise.resolve());
+      const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        const result = await migrateInternalRoot(
+          { ...worker, os: 'linux', proveCold: proof },
+          identity,
+          { apply: false, declareInternal: true },
+          {
+            ...repairs,
+            coldExternalFiles: (context) => {
+              if (!live.coldExternalFiles) throw new Error('Missing Git scope');
+              return live.coldExternalFiles(context);
+            },
+          },
+        );
+        expect(result).toMatchObject({ kind: 'inventory', journal: null });
+        expect(proof).toHaveBeenCalledTimes(1);
+        if (scenario === 'indexed') {
+          expect(proof).toHaveBeenCalledWith(
+            identity,
+            expect.arrayContaining([
+              join(checkout, '.git'),
+              join(admin, 'gitdir'),
+              join(admin, 'commondir'),
+            ]),
+          );
+        } else {
+          expect(proof).toHaveBeenCalledWith(identity, []);
+        }
+        if (scenario === 'indexed' || scenario === 'unindexed')
+          expect(warning).not.toHaveBeenCalled();
+        else
+          expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+        expect(await readFile(join(metadata, 'workspace.json'), 'utf8')).toBe(
+          manifest,
+        );
+        expect(await worker.readJournal(identity)).toBeNull();
+        expect(existsSync(worker.stagingRoot(identity))).toBe(false);
+        expect(recover).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
+
+  (windows ? test.skip : test)(
+    'Linux scope skips unsettled current/pending owner hints without freezing owners or writing source evidence',
+    async () => {
+      await source();
+      const physicalRepo = join(home, 'physical');
+      const currentRepo = join(home, 'current');
+      const pendingRepo = join(home, 'pending');
+      const repositories = [physicalRepo, currentRepo, pendingRepo];
+      const physical = join(identity.source, 'checkout');
+      const expectedFiles: string[] = [];
+      for (const repository of repositories) {
+        const admin = join(repository, '.git', 'worktrees', 'installed');
+        const checkout =
+          repository === physicalRepo
+            ? physical
+            : join(home, `${basename(repository)}-linked`);
+        await mkdir(admin, { recursive: true });
+        await mkdir(checkout);
+        const dotGit = join(checkout, '.git');
+        await writeFile(dotGit, `gitdir: ${admin}\n`);
+        await writeFile(join(admin, 'gitdir'), `${dotGit}\n`);
+        await writeFile(join(admin, 'commondir'), '../..\n');
+        if (repository === physicalRepo)
+          expectedFiles.push(join(admin, 'gitdir'), join(admin, 'commondir'));
+      }
+      const metadata = join(identity.source, 'workspaces', 'fixture');
+      await mkdir(metadata, { recursive: true });
+      await writeFile(
+        join(identity.source, 'workspaces', 'index.json'),
+        '{partial W5 image',
+      );
+      await writeFile(
+        join(metadata, 'workspace.json'),
+        JSON.stringify({ sourceRepoPath: currentRepo }),
+      );
+      await mkdir(join(identity.source, 'w5'));
+      const log = W5CommitLog.open(
+        join(identity.source, 'w5', 'commit-log.sqlite'),
+      );
+      try {
+        log.commit({
+          operation: 'fixture.pending-owner',
+          advance: [{ kind: 'workspaces' }],
+          files: [
+            {
+              path: join(metadata, 'workspace.json'),
+              previousFingerprint: null,
+              contents: JSON.stringify({ repos: [{ repoPath: pendingRepo }] }),
+            },
+          ],
+          outcome: {},
+        });
+      } finally {
+        log.close();
+      }
+      const live = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+      });
+      const before = await worker.inventory(identity);
+      const logBefore = await readFile(
+        join(identity.source, 'w5', 'commit-log.sqlite'),
+      );
+      const prepare = jest.fn(() => {
+        expect(recover).toHaveBeenCalledTimes(1);
+        return Promise.reject(
+          new Error('reached preparation after W5 recovery'),
+        );
+      });
+      const proof = jest.fn(
+        (_identity: InternalRootIdentity, files?: readonly string[]) => {
+          if (!recover.mock.calls.length)
+            expect(new Set(files)).toEqual(new Set(expectedFiles));
+          return Promise.resolve();
+        },
+      );
+      const linux = { ...worker, os: 'linux' as const, proveCold: proof };
+      const selected = { ...live, prepare };
+      const result = await migrateInternalRoot(
+        linux,
+        identity,
+        { apply: false, declareInternal: true },
+        selected,
+      );
+      expect(result).toMatchObject({
+        kind: 'inventory',
+        journal: null,
+        coldProof: { kind: 'ready' },
+      });
+      expect(await worker.inventory(identity)).toEqual(before);
+      expect(
+        await readFile(join(identity.source, 'w5', 'commit-log.sqlite')),
+      ).toEqual(logBefore);
+      expect(recover).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      await expect(
+        migrateInternalRoot(linux, identity, apply, selected),
+      ).rejects.toThrow('reached preparation after W5 recovery');
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect((await worker.readJournal(identity))?.phase).toBe('prepared');
+    },
+  );
+
+  (windows ? test.skip : test).each([
+    'opaque W5',
+    'abandoned retained checkout',
+    'abandoned quarantine',
+    'malformed external link',
+  ])(
+    'Linux Git scope is a lower-bound hint without excluding census entries: %s',
+    async (scenario) => {
+      await source();
+      const abandoned = scenario.startsWith('abandoned');
+      if (abandoned)
+        await strandedArchiveFixture(identity.source, 'P0', 'crow');
+      const malformed =
+        scenario === 'opaque W5'
+          ? join(identity.source, 'w5/.git')
+          : abandoned
+            ? join(
+                identity.source,
+                'workspaces/fixture/worktrees',
+                scenario === 'abandoned quarantine'
+                  ? '.crow.archive-quarantine'
+                  : 'crow',
+                '.git',
+              )
+            : join(home, 'external/.git');
+      await mkdir(dirname(malformed), { recursive: true });
+      const bytes = Buffer.from('Opaque history\u0000');
+      await writeFile(malformed, bytes);
+      if (scenario === 'malformed external link') {
+        const metadata = join(identity.source, 'workspaces/fixture');
+        await mkdir(metadata, { recursive: true });
+        await writeFile(
+          join(identity.source, 'workspaces/index.json'),
+          JSON.stringify({
+            version: 1,
+            workspaces: [
+              {
+                id: 'fixture',
+                name: 'Fixture',
+                type: 'single-repo',
+                color: 'blue',
+              },
+            ],
+          }),
+        );
+        await writeFile(
+          join(metadata, 'workspace.json'),
+          JSON.stringify({ version: 1, repoPath: dirname(malformed) }),
+        );
+      }
+      // A broken hint must not discard other discoverable external roots.
+      const checkout = join(identity.source, 'valid-checkout');
+      const admin = join(home, 'valid/.git/worktrees/installed');
+      await mkdir(checkout);
+      await mkdir(admin, { recursive: true });
+      await writeFile(join(checkout, '.git'), `gitdir: ${admin}\n`);
+      await writeFile(join(admin, 'commondir'), '../..\n');
+      await writeFile(join(admin, 'gitdir'), `${join(checkout, '.git')}\n`);
+      const tree = new Map<string, { ino: bigint; names: string[] | null }>();
+      async function snapshot(file: string): Promise<void> {
+        const state = await lstat(file);
+        const names = state.isDirectory() ? await readdir(file) : null;
+        tree.set(file, { ino: BigInt(tree.size + 1), names });
+        for (const name of names ?? []) await snapshot(join(file, name));
+      }
+      await snapshot(identity.source);
+      const counted = new Map<string, number>();
+      const mounts =
+        '10 0 8:1 / / rw - ext4 /dev/sda1 rw\n11 10 0:1 / /proc rw - proc proc rw\n';
+      const io: authorityHost.LinuxColdIO = {
+        text: (file) => {
+          if (file.endsWith('/mountinfo')) return Promise.resolve(mounts);
+          if (file === '/proc/sys/kernel/random/boot_id')
+            return Promise.resolve('01234567-0123-0123-0123-0123456789ab\n');
+          if (file.endsWith('/status'))
+            return Promise.resolve('Uid:\t1000\t1000\t1000\t1000\n');
+          if (file.endsWith('/stat'))
+            return Promise.resolve(
+              `${process.pid} (node) S 1 ${Array(17).fill('0').join(' ')} 42 0\n`,
+            );
+          return Promise.reject(new Error(`Unexpected proc read ${file}`));
+        },
+        entry: (file) => {
+          const entry = tree.get(file);
+          if (!entry) return Promise.reject(new Error(`Missing entry ${file}`));
+          counted.set(file, (counted.get(file) ?? 0) + 1);
+          return Promise.resolve({
+            dev: 2049n,
+            ino: entry.ino,
+            mode: entry.names === null ? 0o100600n : 0o040700n,
+            ctimeNs: 0n,
+            mtimeNs: 0n,
+          });
+        },
+        list: (file) =>
+          Promise.resolve(
+            tree.get(file)?.names ??
+              (file === '/proc' || file.endsWith('/task')
+                ? [String(process.pid)]
+                : ['entry']),
+          ),
+        pin: () => Promise.resolve({ dev: 2049n, ino: 999999n, mountId: '10' }),
+        identity: () => Promise.resolve({ dev: 2049n, ino: 999999n }),
+        link: (file) => {
+          const namespace = /\/ns\/(mnt|user|pid)$/.exec(file)?.[1];
+          if (namespace) return Promise.resolve(`${namespace}:[123]`);
+          if (file.endsWith('/exe')) return Promise.resolve(process.execPath);
+          if (file.endsWith('/cwd') || file.endsWith('/root'))
+            return Promise.resolve('/');
+          return Promise.reject(new Error(`Unexpected proc link ${file}`));
+        },
+      };
+      const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        for (const selected of abandoned ? [false, true] : [false]) {
+          counted.clear();
+          const live = createInternalRootRelocationRepairs({
+            ...nativeRepairOptions(),
+            durability: desktopW5Durability,
+            abandonArchives: selected ? ['fixture/crow'] : [],
+          });
+          const proof = jest.fn(async (): Promise<void> => {
+            await authorityHost.observeLinuxColdProcesses({
+              io,
+              uid: 1000,
+              roots: [identity.source],
+              census: { predictApplyPeak: true },
+            });
+          });
+          const result = await migrateInternalRoot(
+            { ...worker, os: 'linux', proveCold: proof },
+            identity,
+            { apply: false, declareInternal: true },
+            {
+              ...repairs,
+              coldExternalFiles: (context) => {
+                if (!live.coldExternalFiles)
+                  throw new Error('Missing Git scope');
+                return live.coldExternalFiles(context);
+              },
+            },
+          );
+          expect(result).toMatchObject({
+            kind: 'inventory',
+            journal: null,
+            coldProof: { kind: 'ready' },
+          });
+          expect(proof).toHaveBeenCalledWith(
+            identity,
+            expect.arrayContaining([
+              join(admin, 'gitdir'),
+              join(admin, 'commondir'),
+            ]),
+          );
+          for (const file of tree.keys())
+            expect(counted.get(file)).toBeGreaterThanOrEqual(2);
+        }
+        if (scenario === 'malformed external link')
+          expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+        else expect(warning).not.toHaveBeenCalled();
+        expect(await readFile(malformed)).toEqual(bytes);
+        expect(await worker.readJournal(identity)).toBeNull();
+        expect(existsSync(worker.stagingRoot(identity))).toBe(false);
+        if (scenario === 'malformed external link') {
+          const externalAdmin = join(
+            home,
+            'external-admin/.git/worktrees/linked',
+          );
+          await mkdir(externalAdmin, { recursive: true });
+          await writeFile(malformed, `gitdir: ${externalAdmin}\n`);
+          await writeFile(join(externalAdmin, 'commondir'), '../..\n');
+          await writeFile(join(externalAdmin, 'gitdir'), `${malformed}\n`);
+          warning.mockClear();
+          const live = createInternalRootRelocationRepairs({
+            ...nativeRepairOptions(),
+            durability: desktopW5Durability,
+          });
+          if (!live.coldExternalFiles) throw new Error('Missing Git scope');
+          const files = await live.coldExternalFiles({
+            identity,
+            transactionId: 'fixture',
+            inventory: await worker.inventory(identity),
+            workingRoot: identity.source,
+            externalFiles: [],
+          });
+          expect(files).toEqual(
+            expect.arrayContaining([
+              malformed,
+              join(externalAdmin, 'gitdir'),
+              join(externalAdmin, 'commondir'),
+            ]),
+          );
+          expect(warning).not.toHaveBeenCalled();
+        }
+      } finally {
+        warning.mockRestore();
       }
     },
   );
@@ -2113,7 +4401,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     async (version) => {
       await schemaFixture(version);
       await lifecycleFixture('completed');
-      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
       worker.recoverW5 = async (journal): Promise<void> => {
         await fixtureW5(identity.source, entry, {
           identity,
@@ -2155,7 +4443,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       expect(await diagnoseInternalRootW5(identity.source)).toContain(
         `W5 log: ${version === 'corrupt' ? 'unavailable' : 'incompatible-schema'}`,
       );
-      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
       const started = startedWorkers.length;
       await expect(
         fixtureW5(identity.source, entry, {
@@ -4359,7 +6647,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
             settlements++;
             await fixtureW5(
               root,
-              join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+              join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
               qualification,
             );
           },
@@ -5164,7 +7452,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
           expect(await statIfPresent(identity.destination)).toBeNull();
           await fixtureW5(
             root,
-            join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+            join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
             qualification,
           );
           expect(await readFile(index, 'utf8')).toBe(after);
@@ -6168,7 +8456,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
         abandonCheckouts: checkouts,
       });
       const build = worker.build.bind(worker);
-      worker.build = (): Promise<string> =>
+      worker.build = (): ReturnType<InternalRootMigrationWorker['build']> =>
         Promise.reject(new Error('interrupted before copy'));
       await expect(run()).rejects.toThrow('interrupted before copy');
       worker.build = build;
@@ -6717,6 +9005,338 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     ).toBe('{"recovered":true}');
   });
 
+  function countWalks(): {
+    inventory: jest.SpyInstance<
+      ReturnType<InternalRootMigrationWorker['inventory']>,
+      Parameters<InternalRootMigrationWorker['inventory']>
+    >;
+    publication: jest.SpyInstance<
+      ReturnType<InternalRootMigrationWorker['publicationRoot']>,
+      Parameters<InternalRootMigrationWorker['publicationRoot']>
+    >;
+    inspections: jest.SpyInstance<
+      ReturnType<typeof migrationProgress.internalRootMigrationProgress>,
+      Parameters<typeof migrationProgress.internalRootMigrationProgress>
+    >;
+    walks: () => number;
+    restore: () => void;
+  } {
+    const inventory = jest.spyOn(worker, 'inventory');
+    const publication = jest.spyOn(worker, 'publicationRoot');
+    const inspections = jest.spyOn(
+      migrationProgress,
+      'internalRootMigrationProgress',
+    );
+    return {
+      inventory,
+      publication,
+      inspections,
+      // This fixture has only its root and preferences.json in each tree.
+      walks: () =>
+        inspections.mock.calls.filter(
+          ([detail]) => detail === 'inspected manifest entry',
+        ).length / 2,
+      restore: () => {
+        inventory.mockRestore();
+        publication.mockRestore();
+        inspections.mockRestore();
+      },
+    };
+  }
+
+  test('fresh apply uses nine tree walks instead of sixteen', async () => {
+    await source();
+    const counts = countWalks();
+    try {
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      expect(counts.inventory).toHaveBeenCalledTimes(5);
+      expect(counts.publication).toHaveBeenCalledTimes(2);
+      expect(
+        counts.publication.mock.calls.every(
+          ([, fingerprint]) => typeof fingerprint === 'string',
+        ),
+      ).toBe(true);
+      expect(counts.walks()).toBe(9);
+    } finally {
+      counts.restore();
+    }
+  });
+
+  test.each([
+    { phase: 'prepared', inventories: 5, publications: 2, walks: 9 },
+    { phase: 'source-settled', inventories: 4, publications: 2, walks: 8 },
+    { phase: 'building', inventories: 4, publications: 2, walks: 8 },
+    { phase: 'publishing', inventories: 3, publications: 2, walks: 5 },
+    { phase: 'published', inventories: 2, publications: 2, walks: 3 },
+    { phase: 'complete', inventories: 0, publications: 0, walks: 0 },
+    { phase: 'complete-rebuild', inventories: 6, publications: 2, walks: 10 },
+    { phase: 'restoring-external', inventories: 6, publications: 2, walks: 10 },
+    { phase: 'rebuilding', inventories: 5, publications: 2, walks: 9 },
+  ])(
+    're-walks in a new invocation resuming $phase',
+    async ({ phase, inventories, publications, walks }) => {
+      await source();
+      const rebuilding = [
+        'complete-rebuild',
+        'restoring-external',
+        'rebuilding',
+      ].includes(phase);
+      if (rebuilding) await run();
+      const save = worker.saveJournal.bind(worker);
+      const publish = worker.publish.bind(worker);
+      const resumeOptions = { ...apply, rebuild: rebuilding };
+      if (phase !== 'complete-rebuild') {
+        worker.saveJournal = async (value): Promise<void> => {
+          await save(value);
+          if (value.phase === phase) throw new Error('walk-count interruption');
+        };
+        if (phase === 'published') {
+          worker.publish = async (...args): Promise<void> => {
+            await publish(...args);
+            throw new Error('walk-count interruption');
+          };
+        }
+        await expect(
+          migrateInternalRoot(worker, identity, resumeOptions, repairs),
+        ).rejects.toThrow('walk-count interruption');
+        worker.saveJournal = save;
+        worker.publish = publish;
+      }
+      const counts = countWalks();
+      const coordinate = jest.spyOn(worker, 'coordinate');
+      const secure = jest.spyOn(worker, 'validateSecureResume');
+      const qualify = jest.spyOn(repairs, 'qualifyPublished');
+      const relocate = jest.spyOn(worker, 'relocateSecure');
+      const build = jest.spyOn(worker, 'build');
+      const publishResume = jest.spyOn(worker, 'publish');
+      const restore = jest.spyOn(worker, 'restoreExternal');
+      const discard = jest.spyOn(worker, 'discardDestination');
+      const recoverResume = jest.spyOn(worker, 'recoverW5');
+      try {
+        await expect(
+          migrateInternalRoot(worker, identity, resumeOptions, repairs),
+        ).resolves.toMatchObject({ kind: 'complete' });
+        expect(counts.inventory).toHaveBeenCalledTimes(inventories);
+        expect(counts.publication).toHaveBeenCalledTimes(publications);
+        const discardScan = rebuilding && process.platform !== 'darwin' ? 1 : 0;
+        expect(counts.walks()).toBe(walks + discardScan);
+        if (inventories) {
+          const postLock = counts.inventory.mock.invocationCallOrder[1];
+          expect(postLock).toBeGreaterThan(
+            coordinate.mock.invocationCallOrder[0],
+          );
+          for (const step of [
+            build,
+            publishResume,
+            restore,
+            discard,
+            recoverResume,
+          ])
+            for (const call of step.mock.invocationCallOrder)
+              expect(call).toBeGreaterThan(postLock);
+        } else {
+          expect(secure).toHaveBeenCalledTimes(1);
+          expect(qualify).toHaveBeenCalledTimes(1);
+          expect(secure.mock.invocationCallOrder[0]).toBeLessThan(
+            qualify.mock.invocationCallOrder[0],
+          );
+          expect(qualify.mock.invocationCallOrder[0]).toBeLessThan(
+            relocate.mock.invocationCallOrder[0],
+          );
+        }
+        if (phase === 'publishing' || phase === 'published')
+          expect(counts.publication.mock.calls[0][1]).toBeUndefined();
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('{"theme":"dark"}');
+      } finally {
+        for (const spy of [
+          coordinate,
+          secure,
+          qualify,
+          relocate,
+          build,
+          publishResume,
+          restore,
+          discard,
+          recoverResume,
+        ])
+          spy.mockRestore();
+        counts.restore();
+      }
+    },
+  );
+
+  test.each(['repair', 'verify-before-seal', 'verify-before-publish'])(
+    'source changes during retained %s window are refused',
+    async (window) => {
+      await source();
+      let verifications = 0;
+      const changeSource = async (): Promise<void> => {
+        await writeFile(
+          join(identity.source, 'preferences.json'),
+          '{"changed":true,"retain":true}',
+        );
+      };
+      repairs.repair = async (): ReturnType<InternalRootRepairs['repair']> => {
+        if (window === 'repair') await changeSource();
+        return { kind: 'ok' };
+      };
+      repairs.verify = async (): ReturnType<InternalRootRepairs['verify']> => {
+        verifications += 1;
+        if (
+          window ===
+          (verifications === 1 ? 'verify-before-seal' : 'verify-before-publish')
+        )
+          await changeSource();
+        return { kind: 'ok' };
+      };
+      const publish = jest.spyOn(worker, 'publish');
+      try {
+        await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+        expect(publish).not.toHaveBeenCalled();
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('{"changed":true,"retain":true}');
+        expect(await statIfPresent(identity.destination)).toBeNull();
+      } finally {
+        publish.mockRestore();
+      }
+    },
+  );
+
+  test('a cached post-lock inventory still refuses stable ownership', async () => {
+    await source();
+    const inventory = worker.inventory.bind(worker);
+    let calls = 0;
+    worker.inventory = async (
+      ...args
+    ): ReturnType<InternalRootMigrationWorker['inventory']> => {
+      const current = await inventory(...args);
+      calls += 1;
+      return { ...current, stableOwned: calls === 2 };
+    };
+    await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+    expect(recover).not.toHaveBeenCalled();
+    expect(calls).toBe(2);
+  });
+
+  test.each(['identity', 'stable-owner', 'fingerprint'])(
+    'reused build inventory still compares %s',
+    async (field) => {
+      await source();
+      const build = worker.build.bind(worker);
+      worker.build = async (
+        value,
+      ): ReturnType<InternalRootMigrationWorker['build']> => {
+        const result = await build(value);
+        return {
+          ...result,
+          sourceInventory: {
+            ...result.sourceInventory,
+            ...(field === 'identity' ? { sourceIdentity: '1:999999' } : {}),
+            ...(field === 'stable-owner' ? { stableOwned: true } : {}),
+            ...(field === 'fingerprint' ? { fingerprint: 'changed' } : {}),
+          },
+        };
+      };
+      const repair = jest.spyOn(repairs, 'repair');
+      try {
+        await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+        expect(repair).not.toHaveBeenCalled();
+        expect(await statIfPresent(identity.source)).not.toBeNull();
+      } finally {
+        repair.mockRestore();
+      }
+    },
+  );
+
+  test.each(['restoreExternal', 'discardDestination'] as const)(
+    'invalidates source inventory after %s during rebuild',
+    async (step) => {
+      await source();
+      await run();
+      const original = worker[step].bind(worker);
+      worker[step] = async (value): Promise<void> => {
+        await original(value);
+        await writeFile(
+          join(identity.source, 'preferences.json'),
+          'source changed during rebuild',
+        );
+      };
+      const build = jest.spyOn(worker, 'build');
+      try {
+        await expect(
+          migrateInternalRoot(
+            worker,
+            identity,
+            { ...apply, rebuild: true },
+            repairs,
+          ),
+        ).rejects.toMatchObject({ reason: 'source-changed' });
+        expect(build).not.toHaveBeenCalled();
+        expect(
+          await readFile(join(identity.source, 'preferences.json'), 'utf8'),
+        ).toBe('source changed during rebuild');
+      } finally {
+        build.mockRestore();
+      }
+    },
+  );
+
+  test('repairs.verify invalidates the sealed staging walk before publish', async () => {
+    await source();
+    let verifications = 0;
+    repairs.verify = async (
+      context,
+    ): ReturnType<InternalRootRepairs['verify']> => {
+      verifications += 1;
+      if (verifications === 2)
+        await writeFile(
+          join(context.workingRoot, 'preferences.json'),
+          'staging changed after seal',
+        );
+      return { kind: 'ok' };
+    };
+    await expect(run()).rejects.toMatchObject({ reason: 'source-changed' });
+    expect(verifications).toBe(2);
+    expect(await statIfPresent(identity.destination)).toBeNull();
+    expect(await statIfPresent(identity.source)).not.toBeNull();
+  });
+
+  test.each(['before-rename', 'after-rename'])(
+    'cached publication fingerprint still checks inode %s',
+    async (window) => {
+      await source();
+      const publish = worker.publish.bind(worker);
+      worker.publish = async (...args): Promise<void> => {
+        const path =
+          window === 'before-rename'
+            ? worker.stagingRoot(identity)
+            : identity.destination;
+        if (window === 'after-rename') await publish(...args);
+        await rename(path, join(home, 'retained-publication'));
+        await createPrivateMigrationDirectory(path, host);
+        await writeFile(join(path, 'independent'), 'never adopt');
+        if (window === 'before-rename') await publish(...args);
+      };
+      await expect(run()).rejects.toMatchObject({
+        reason: 'destination-exists',
+      });
+      const path =
+        window === 'before-rename'
+          ? worker.stagingRoot(identity)
+          : identity.destination;
+      expect(await readFile(join(path, 'independent'), 'utf8')).toBe(
+        'never adopt',
+      );
+      expect(
+        await statIfPresent(join(home, 'retained-publication')),
+      ).not.toBeNull();
+      expect(await statIfPresent(identity.source)).not.toBeNull();
+    },
+  );
+
   test('unresolved W5 state leaves the source intact without creating a destination', async () => {
     await source();
     recover.mockRejectedValue(new Error('unresolved reservation'));
@@ -7166,7 +9786,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
         recoverW5: async (root, qualification): Promise<void> => {
           await settleInternalRootW5(
             root,
-            join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+            join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
             {
               ...qualification,
               assertCold: async (): Promise<void> => {
@@ -7238,7 +9858,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       await source();
       await mkdir(join(identity.source, 'workspaces'));
       await writeFile(join(identity.source, 'workspaces', name), 'preserve');
-      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
       worker = createInternalRootMigrationWorker({
         filesystemHost: host,
         ...filesystemOptions,
@@ -8697,7 +11317,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     await mkdir(join(identity.source, 'w5'), { mode: 0o700 });
     for (const [path, bytes] of files)
       await writeFile(join(identity.source, path), bytes);
-    const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+    const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
     worker = createInternalRootMigrationWorker({
       filesystemHost: host,
       ...filesystemOptions,
@@ -8849,7 +11469,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
         await lifecycleFixture('completed', 'worktree-delete'),
         await strandedArchiveFixture(identity.source, 'P0'),
       ];
-      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
       repairs = createInternalRootRelocationRepairs({
         ...nativeRepairOptions(),
         durability: desktopW5Durability,
@@ -9190,7 +11810,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
         return image;
       };
       const sourceBefore = await workspaceImage();
-      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
       let names: readonly string[] = [];
       worker = createInternalRootMigrationWorker({
         filesystemHost: host,
@@ -9741,7 +12361,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
         recoverW5: (root, qualification) =>
           settleInternalRootW5(
             root,
-            join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+            join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
             windows
               ? { ...qualification, assertCold: qualification.assertHeld }
               : qualification,
@@ -10196,7 +12816,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     }
     const conflict = '{"version":1,"workspaces":[],"manual-change":true}';
     if (state === 'commit-conflict') await writeFile(index, conflict);
-    const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+    const entry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
     worker = createInternalRootMigrationWorker({
       filesystemHost: host,
       ...filesystemOptions,
@@ -10421,7 +13041,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
         recoverW5: async (root, qualification): Promise<void> => {
           await fixtureW5(
             root,
-            join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+            join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
             qualification,
           );
         },
@@ -11057,7 +13677,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     });
     if (windows) {
       const build = worker.build.bind(worker);
-      worker.build = async (journal): Promise<string> => {
+      worker.build = async (
+        journal,
+      ): ReturnType<InternalRootMigrationWorker['build']> => {
         const inode = await build(journal);
         await chmod(join(identity.source, 'preferences.json'), 0o400);
         return inode;
@@ -11091,7 +13713,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     });
     if (windows) {
       const build = worker.build.bind(worker);
-      worker.build = async (journal): Promise<string> => {
+      worker.build = async (
+        journal,
+      ): ReturnType<InternalRootMigrationWorker['build']> => {
         const inode = await build(journal);
         attempts++;
         if (attempts === 1) {
@@ -11149,7 +13773,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       let failed = false;
       worker = {
         ...worker,
-        build: async (journal): Promise<string> => {
+        build: async (
+          journal,
+        ): ReturnType<InternalRootMigrationWorker['build']> => {
           if (
             point === 'returned-to-private' &&
             !failed &&
@@ -11672,4 +14298,1263 @@ test('orphaned crash reporter refusal names the reporter and exact manual stop c
   ).toThrow(
     String.raw`Crash reporter remains (PIDs 55). After quitting the app, run: pkill -f '/Applications/Canopy \(Internal\)\.app/Contents/Frameworks/Electron Framework\.framework/Helpers/[c]hrome_crashpad_handler'`,
   );
+});
+
+describe('Claude transcript recovery options', () => {
+  test.each([
+    ['--copy-claude-transcripts', '--repair-pipeline-records'],
+    ['--copy-claude-transcripts', '--repair-file-tabs'],
+    ['--copy-claude-transcripts', '--apply'],
+    ['--copy-claude-transcripts', '--inventory'],
+    ['--copy-claude-transcripts', '--skip-migration'],
+    ['--copy-claude-transcripts', '--abandon-commit=1'],
+    ['--copy-claude-transcripts', '--claude-config-dir=relative'],
+    ['--copy-claude-transcripts', '--claude-config-dir='],
+  ])('refuses conflicting recovery options %j', (...args) => {
+    expect(() =>
+      parseInternalRootMigrationOptions(['--brand=canopy', ...args]),
+    ).toThrow('Usage:');
+  });
+
+  test('pipeline recovery stays separate from Claude copying and config selections', () => {
+    expect(
+      parseInternalRootMigrationOptions([
+        '--brand=canopy',
+        '--repair-pipeline-records',
+      ]),
+    ).toMatchObject({
+      repairPipelineRecords: true,
+      copyClaudeTranscripts: false,
+    });
+    expect(() =>
+      parseInternalRootMigrationOptions([
+        '--brand=canopy',
+        '--repair-pipeline-records',
+        `--claude-config-dir=${join(tmpdir(), 'chat-config')}`,
+      ]),
+    ).toThrow('Usage:');
+  });
+
+  test('accepts a copy-only mode and explicit chat config roots', () => {
+    expect(
+      parseInternalRootMigrationOptions([
+        '--brand=canopy',
+        '--copy-claude-transcripts',
+        `--claude-config-dir=${join(tmpdir(), 'chat-config')}`,
+        `--claude-config-dir=${join(tmpdir(), 'terminal-config')}`,
+      ]),
+    ).toMatchObject({
+      copyClaudeTranscripts: true,
+      claudeConfigDirs: [
+        join(tmpdir(), 'chat-config'),
+        join(tmpdir(), 'terminal-config'),
+      ],
+      apply: false,
+    });
+  });
+});
+
+describe('offline Claude transcript relocation', () => {
+  test('delivery history follows the migrated current-slug copy while retaining the original', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-delivery-'));
+    try {
+      const source = join(root, 'A');
+      const destination = join(root, 'B');
+      const oldCwd = join(source, 'under_score');
+      const cwd = join(destination, 'under_score');
+      await mkdir(oldCwd, { recursive: true });
+      await mkdir(cwd, { recursive: true });
+      for (const folder of ['default-claude', 'workspace-claude']) {
+        const configDir = join(root, folder);
+        const [oldSlug] = await claudeProjectDirCandidates(oldCwd);
+        const [newSlug] = await claudeProjectDirCandidates(cwd);
+        if (!oldSlug || !newSlug) throw new Error('Missing cwd slug');
+        const oldProject = join(configDir, 'projects', oldSlug);
+        const newProject = join(configDir, 'projects', newSlug);
+        const original = join(oldProject, 'session.jsonl');
+        const copied = join(newProject, 'session.jsonl');
+        const body = `${JSON.stringify({ cwd: oldCwd, sessionId: 'session', type: 'user', uuid: 'before-migration' })}\n`;
+        await mkdir(oldProject, { recursive: true });
+        await writeFile(original, body);
+        expect(
+          await copyInternalRootClaudeTranscripts({
+            source,
+            destination,
+            configDirs: [configDir],
+          }),
+        ).toMatchObject({ copied: 1, errors: [] });
+        const query = {
+          sessionId: 'session',
+          cwd,
+          configDir,
+          attemptId: 'before-migration',
+          rowId: 'row',
+          rowAttemptCount: 1,
+          previousRun: true,
+        };
+        expect(await readClaudeDeliveryHistory(query)).toBe('found');
+        expect(
+          await readClaudeDeliveryHistory({ ...query, attemptId: 'absent' }),
+        ).toBe('not-found');
+        expect(await readFile(original, 'utf8')).toBe(body);
+        expect(await readFile(copied, 'utf8')).toBe(body);
+        await appendFile(
+          copied,
+          `${JSON.stringify({ sessionId: 'session', type: 'user', uuid: 'new-only' })}\n`,
+        );
+        expect(
+          await readClaudeDeliveryHistory({ ...query, attemptId: 'new-only' }),
+        ).toBe('found');
+        expect(await readFile(original, 'utf8')).toBe(body);
+        await appendFile(
+          original,
+          `${JSON.stringify({ sessionId: 'session', type: 'user', uuid: 'old-only' })}\n`,
+        );
+        expect(
+          await readClaudeDeliveryHistory({ ...query, attemptId: 'old-only' }),
+        ).toBe('not-found');
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('healthy transcript copying and skipped config scans survive the phase stall window', async () => {
+    const root = await fs.realpath(
+      await fs.mkdtemp(join(tmpdir(), 'claude-progress-')),
+    );
+    try {
+      const source = join(root, 'A');
+      const destination = join(root, 'B');
+      const config = join(root, 'config');
+      const missingConfigs = [0, 1, 2].map((index) =>
+        join(root, `missing-config-${index}`),
+      );
+      const project = join(
+        config,
+        'projects',
+        source.replace(/[^a-zA-Z0-9]/g, '-'),
+      );
+      await fs.mkdir(source);
+      await fs.mkdir(destination);
+      await fs.mkdir(join(project, 'session'), { recursive: true });
+      await fs.writeFile(
+        join(project, 'session.jsonl'),
+        JSON.stringify({ cwd: source }),
+      );
+      for (let index = 0; index < 4; index++)
+        await fs.writeFile(
+          join(project, 'session', `file-${index}`),
+          'sidecar',
+        );
+
+      let now = 0;
+      let heartbeat = (): void => {
+        throw new Error('Missing phase heartbeat');
+      };
+      const schedule = global.setInterval;
+      const copyFile = fs.copyFile;
+      const lstat = fs.lstat;
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('Watchdog expired');
+      });
+      jest.spyOn(performance, 'now').mockImplementation(() => now);
+      jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      jest
+        .spyOn(global, 'setInterval')
+        .mockImplementation((callback, delay, ...args) => {
+          heartbeat = (): void => callback(...args);
+          return schedule(callback, delay, ...args);
+        });
+      jest.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
+        try {
+          return await lstat(...args);
+        } finally {
+          if (missingConfigs.includes(String(args[0]))) {
+            now += 6 * 60_000;
+            heartbeat();
+          }
+        }
+      });
+      jest.spyOn(fs, 'copyFile').mockImplementation(async (...args) => {
+        await copyFile(...args);
+        now += 6 * 60_000;
+        heartbeat();
+      });
+      try {
+        const report = await migrationProgress.runInternalRootMigrationPhase(
+          'Copying Claude transcripts',
+          () =>
+            copyInternalRootClaudeTranscripts({
+              source,
+              destination,
+              configDirs: [config, ...missingConfigs],
+            }),
+        );
+        expect(report).toMatchObject({ copied: 1, errors: [] });
+        expect(now).toBe(48 * 60_000);
+        expect(exit).not.toHaveBeenCalled();
+      } finally {
+        jest.restoreAllMocks();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each<NodeJS.Platform>(['darwin', 'linux', 'win32'])(
+    'normalizes NFD slugs only on darwin, before sanitizing and hashing (%s)',
+    async (platform) => {
+      for (const prefix of ['/tmp/', `/tmp/${'long/'.repeat(45)}`]) {
+        const cwd = `${prefix}cafe\u0301`;
+        const providerCwd = platform === 'darwin' ? cwd.normalize('NFC') : cwd;
+        expect(currentClaudeProjectSlug(cwd, platform)).toBe(
+          expectedClaudeSlug(providerCwd),
+        );
+      }
+      const root = await mkdtemp(join(tmpdir(), 'claude-nfd-candidates-'));
+      try {
+        const cwd = join(root, 'cafe\u0301');
+        const alias = join(root, 'alias');
+        await mkdir(cwd);
+        await symlink(cwd, alias, 'dir');
+        const canonical = await realpath(alias);
+        const primary = platform === 'linux' ? resolve(alias) : canonical;
+        const providerCwd =
+          platform === 'darwin' ? primary.normalize('NFC') : primary;
+        expect((await claudeProjectDirCandidates(alias, platform))[0]).toBe(
+          expectedClaudeSlug(providerCwd),
+        );
+        const candidates = await claudeProjectDirCandidates(alias, platform);
+        expect(candidates).toContain(expectedClaudeSlug(canonical));
+        const longNfd = join(cwd, 'long'.repeat(55));
+        expect(await claudeProjectDirCandidates(longNfd, platform)).toContain(
+          expectedClaudeSlug(longNfd),
+        );
+        const missing = join(root, 'missing-cafe\u0301');
+        expect((await claudeProjectDirCandidates(missing, platform))[0]).toBe(
+          expectedClaudeSlug(
+            platform === 'darwin' ? missing.normalize('NFC') : missing,
+          ),
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each([
+    { padding: 0, sourceName: 'A', recordedName: 'A' },
+    { padding: 220, sourceName: 'A', recordedName: 'A' },
+    ...(process.platform === 'darwin'
+      ? [
+          { padding: 0, sourceName: 'cafe\u0301', recordedName: 'caf\u00e9' },
+          { padding: 220, sourceName: 'caf\u00e9', recordedName: 'cafe\u0301' },
+        ]
+      : []),
+  ])(
+    'copies an NFD cwd and sidecar to the provider slug (padding $padding, root $sourceName, recorded $recordedName)',
+    async ({ padding, sourceName, recordedName }) => {
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'claude-nfd-copy-')),
+      );
+      try {
+        const source = join(root, sourceName);
+        const destination = join(root, 'B');
+        const suffix = join('x'.repeat(padding) || 'short', 'cafe\u0301');
+        const oldCwd = join(root, recordedName, suffix);
+        const newCwd = join(destination, suffix);
+        const config = join(root, 'config');
+        const projects = join(config, 'projects');
+        await mkdir(source);
+        await mkdir(newCwd, { recursive: true });
+        const canonical = await realpath(newCwd);
+        const providerCwd =
+          process.platform === 'darwin'
+            ? canonical.normalize('NFC')
+            : canonical;
+        const newProject = join(projects, expectedClaudeSlug(providerCwd));
+        const oldProject = join(projects, expectedClaudeSlug(oldCwd));
+        await mkdir(join(oldProject, 'session', 'subagents'), {
+          recursive: true,
+        });
+        const body = JSON.stringify({ cwd: oldCwd });
+        await writeFile(join(oldProject, 'session.jsonl'), body);
+        await writeFile(
+          join(oldProject, 'session', 'subagents', 'agent-cafe\u0301.jsonl'),
+          'sidecar',
+        );
+        await writeFile(join(oldProject, 'shadowed.jsonl'), body);
+        await mkdir(newProject, { recursive: true });
+        await writeFile(join(newProject, 'shadowed.jsonl'), 'existing');
+        const rawShadowProject = join(projects, expectedClaudeSlug(canonical));
+        const hasRawShadow = rawShadowProject !== newProject;
+        if (hasRawShadow) {
+          await mkdir(rawShadowProject, { recursive: true });
+          await writeFile(join(rawShadowProject, 'shadowed.jsonl'), 'legacy');
+          await writeFile(join(rawShadowProject, 'raw-shadow.jsonl'), '');
+          await writeFile(join(oldProject, 'raw-shadow.jsonl'), body);
+          await mkdir(join(oldProject, 'raw-shadow'));
+          await writeFile(join(oldProject, 'raw-shadow', 'old'), 'retained');
+        }
+        const options = { source, destination, configDirs: [config] };
+        expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+          copied: 1,
+          skippedExisting: hasRawShadow ? 2 : 1,
+          errors: [],
+        });
+        expect(await readFile(join(newProject, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+        expect(
+          await readFile(
+            join(newProject, 'session', 'subagents', 'agent-cafe\u0301.jsonl'),
+            'utf8',
+          ),
+        ).toBe('sidecar');
+        expect(await readFile(join(oldProject, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+        expect(
+          await readFile(
+            join(oldProject, 'session', 'subagents', 'agent-cafe\u0301.jsonl'),
+            'utf8',
+          ),
+        ).toBe('sidecar');
+        const before = await lstat(join(newProject, 'session.jsonl'));
+        const membership = await readdir(projects);
+        expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+          copied: 0,
+          errors: [],
+        });
+        const after = await lstat(join(newProject, 'session.jsonl'));
+        expect(after.ino).toBe(before.ino);
+        expect(after.mtimeMs).toBe(before.mtimeMs);
+        expect(await readdir(projects)).toEqual(membership);
+        expect(await readFile(join(newProject, 'shadowed.jsonl'), 'utf8')).toBe(
+          'existing',
+        );
+        if (hasRawShadow) {
+          expect(
+            await findClaudeCodeSessionTranscriptInProjectsDir(
+              projects,
+              'shadowed.jsonl',
+              newCwd,
+            ),
+          ).toBe(join(newProject, 'shadowed.jsonl'));
+          expect(
+            await readFile(join(rawShadowProject, 'raw-shadow.jsonl'), 'utf8'),
+          ).toBe('');
+          expect(existsSync(join(newProject, 'raw-shadow.jsonl'))).toBe(false);
+          expect(existsSync(join(rawShadowProject, 'raw-shadow'))).toBe(false);
+          expect(
+            await findClaudeCodeSessionTranscriptInProjectsDir(
+              projects,
+              'raw-shadow.jsonl',
+              newCwd,
+            ),
+          ).toBe(join(rawShadowProject, 'raw-shadow.jsonl'));
+          expect(
+            await readFile(join(oldProject, 'raw-shadow.jsonl'), 'utf8'),
+          ).toBe(body);
+          expect(
+            await readFile(join(oldProject, 'raw-shadow', 'old'), 'utf8'),
+          ).toBe('retained');
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each(['external', 'internal', 'dangling'])(
+    'relocates a cwd through an %s alias with a missing historical child',
+    async (kind) => {
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'claude-alias-')),
+      );
+      try {
+        const source = join(root, 'source');
+        const destination = join(root, 'destination');
+        const config = join(root, 'config');
+        await mkdir(source);
+        const alias =
+          kind === 'internal' ? join(source, 'alias') : join(root, 'alias');
+        await symlink(
+          kind === 'dangling' ? join(root, 'absent') : source,
+          alias,
+          'dir',
+        );
+        const suffix = kind === 'internal' ? join('alias', 'work') : 'work';
+        const newCwd = join(destination, suffix);
+        await mkdir(newCwd, { recursive: true });
+        const oldProject = join(config, 'projects', 'old');
+        await mkdir(oldProject, { recursive: true });
+        const body = JSON.stringify({ cwd: join(alias, 'work') });
+        await writeFile(join(oldProject, 'session.jsonl'), body);
+        const report = await copyInternalRootClaudeTranscripts({
+          source,
+          destination,
+          configDirs: [config],
+        });
+        if (kind === 'dangling') {
+          expect(report.copied).toBe(0);
+          expect(report.errors).toHaveLength(1);
+          expect(report.errors[0]?.message).toContain('ENOENT');
+        } else {
+          expect(report).toMatchObject({ copied: 1, errors: [] });
+          const primary =
+            process.platform === 'linux' ? newCwd : await realpath(newCwd);
+          const slug = expectedClaudeSlug(
+            process.platform === 'darwin' ? primary.normalize('NFC') : primary,
+          );
+          expect(
+            await readFile(
+              join(config, 'projects', slug, 'session.jsonl'),
+              'utf8',
+            ),
+          ).toBe(body);
+        }
+        expect(await readFile(join(oldProject, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  (process.platform === 'darwin' ? test : test.skip)(
+    'relocates a case-aliased macOS root only when the volume considers it equivalent',
+    async () => {
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'claude-case-')),
+      );
+      try {
+        const source = join(root, 'Source');
+        const alias = join(root, 'source');
+        const destination = join(root, 'destination');
+        const config = join(root, 'config');
+        const oldProject = join(config, 'projects', 'old');
+        await mkdir(source);
+        await mkdir(join(destination, 'work'), { recursive: true });
+        await mkdir(oldProject, { recursive: true });
+        const body = JSON.stringify({ cwd: join(alias, 'work') });
+        await writeFile(join(oldProject, 'session.jsonl'), body);
+        const equivalent = existsSync(alias);
+        const report = await copyInternalRootClaudeTranscripts({
+          source,
+          destination,
+          configDirs: [config],
+        });
+        expect(report).toMatchObject({
+          copied: equivalent ? 1 : 0,
+          skippedOutsideSource: equivalent ? 0 : 1,
+          errors: [],
+        });
+        if (equivalent) {
+          const slug = expectedClaudeSlug(
+            (await realpath(join(destination, 'work'))).normalize('NFC'),
+          );
+          expect(
+            await readFile(
+              join(config, 'projects', slug, 'session.jsonl'),
+              'utf8',
+            ),
+          ).toBe(body);
+        }
+        expect(await readFile(join(oldProject, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('Linux-policy recovery publishes to the resolved destination slug and keeps it authoritative over a realpath copy', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'claude-linux-copy-')),
+    );
+    const platform = jest
+      .spyOn(hostPlatform, 'hostOperatingSystem')
+      .mockReturnValue('linux');
+    try {
+      const source = join(root, 'source');
+      const destination = join(root, 'destination');
+      const newCwd = join(destination, 'work');
+      const physicalCwd = join(destination, 'physical');
+      const config = join(root, 'config');
+      const projects = join(config, 'projects');
+      const oldProject = join(projects, 'old');
+      const newProject = join(projects, expectedClaudeSlug(newCwd));
+      await mkdir(source);
+      await mkdir(physicalCwd, { recursive: true });
+      await symlink(physicalCwd, newCwd, 'dir');
+      await mkdir(join(oldProject, 'session'), { recursive: true });
+      const body = JSON.stringify({
+        cwd: join(source, 'work'),
+        sessionId: 'session',
+        type: 'user',
+        uuid: 'resolved-only',
+      });
+      await writeFile(join(oldProject, 'session.jsonl'), body);
+      await writeFile(join(oldProject, 'session', 'agent.jsonl'), 'sidecar');
+      const options = { source, destination, configDirs: [config] };
+      expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+        copied: 1,
+        errors: [],
+      });
+      expect(await readFile(join(newProject, 'session.jsonl'), 'utf8')).toBe(
+        body,
+      );
+      expect(
+        await readFile(join(newProject, 'session', 'agent.jsonl'), 'utf8'),
+      ).toBe('sidecar');
+      const realProject = join(projects, expectedClaudeSlug(physicalCwd));
+      await mkdir(realProject);
+      const shadow = JSON.stringify({
+        sessionId: 'session',
+        type: 'user',
+        uuid: 'realpath-only',
+      });
+      await writeFile(join(realProject, 'session.jsonl'), shadow);
+      expect(
+        await findClaudeCodeSessionTranscriptInProjectsDir(
+          projects,
+          'session.jsonl',
+          newCwd,
+        ),
+      ).toBe(join(newProject, 'session.jsonl'));
+      const query = {
+        sessionId: 'session',
+        cwd: newCwd,
+        configDir: config,
+        attemptId: 'resolved-only',
+        rowId: 'row',
+        rowAttemptCount: 1,
+        previousRun: true,
+      };
+      expect(await readClaudeDeliveryHistory(query)).toBe('found');
+      expect(
+        await readClaudeDeliveryHistory({
+          ...query,
+          attemptId: 'realpath-only',
+        }),
+      ).toBe('not-found');
+      expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+        copied: 0,
+        errors: [],
+      });
+      expect(await readFile(join(realProject, 'session.jsonl'), 'utf8')).toBe(
+        shadow,
+      );
+      expect(await readFile(join(oldProject, 'session.jsonl'), 'utf8')).toBe(
+        body,
+      );
+    } finally {
+      platform.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([200, 201, 230, 280])(
+    'copies a %i-character cwd into the provider-computed slug, preserving shadows and originals',
+    async (length) => {
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'claude-long-')),
+      );
+      try {
+        const source = join(root, 'A');
+        const destination = join(root, 'B');
+        const base = join(destination, 'under_score', 'x'.repeat(30));
+        const newCwd = join(base, 'y'.repeat(length - base.length - 1));
+        const oldCwd = join(source, newCwd.slice(destination.length + 1));
+        const projects = join(root, 'config', 'projects');
+        const oldProject = join(projects, expectedClaudeSlug(oldCwd));
+        const newProject = join(projects, expectedClaudeSlug(newCwd));
+        await mkdir(oldCwd, { recursive: true });
+        await mkdir(newCwd, { recursive: true });
+        await mkdir(join(oldProject, 'session', 'subagents'), {
+          recursive: true,
+        });
+        await mkdir(newProject, { recursive: true });
+        const body = JSON.stringify({
+          cwd: oldCwd,
+          text: 'original',
+          sessionId: 'session',
+          type: 'user',
+          uuid: 'original',
+        });
+        await writeFile(join(oldProject, 'session.jsonl'), body);
+        await writeFile(
+          join(oldProject, 'session', 'subagents', 'agent.jsonl'),
+          'sidecar bytes',
+        );
+        await writeFile(join(oldProject, 'shadowed.jsonl'), body);
+        await writeFile(join(newProject, 'shadowed.jsonl'), 'existing shadow');
+        const legacySlugs =
+          length > 200 && length <= 255
+            ? [
+                newCwd.replace(/[^a-zA-Z0-9]/g, '-'),
+                newCwd.replace(/[^a-zA-Z0-9_-]/g, '-'),
+              ]
+            : [];
+        for (const [index, legacySlug] of legacySlugs.entries()) {
+          await mkdir(join(projects, legacySlug), { recursive: true });
+          await writeFile(join(oldProject, `legacy-${index}.jsonl`), body);
+          await writeFile(
+            join(projects, legacySlug, `legacy-${index}.jsonl`),
+            'existing legacy shadow',
+          );
+        }
+        const options = {
+          source,
+          destination,
+          configDirs: [join(root, 'config')],
+        };
+        expect(newCwd.length).toBe(length);
+        expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+          copied: 1,
+          skippedExisting: 1 + legacySlugs.length,
+          errors: [],
+        });
+        expect(await readFile(join(newProject, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+        expect(
+          await readClaudeDeliveryHistory({
+            sessionId: 'session',
+            cwd: newCwd,
+            configDir: join(root, 'config'),
+            attemptId: 'original',
+            rowId: 'row',
+            rowAttemptCount: 1,
+            previousRun: true,
+          }),
+        ).toBe('found');
+        expect(
+          await readFile(
+            join(newProject, 'session', 'subagents', 'agent.jsonl'),
+            'utf8',
+          ),
+        ).toBe('sidecar bytes');
+        expect(await readFile(join(newProject, 'shadowed.jsonl'), 'utf8')).toBe(
+          'existing shadow',
+        );
+        const membership = await readdir(projects);
+        expect(membership.sort()).toEqual(
+          [
+            expectedClaudeSlug(oldCwd),
+            expectedClaudeSlug(newCwd),
+            ...legacySlugs,
+          ].sort(),
+        );
+        const copiedMetadata = await lstat(join(newProject, 'session.jsonl'));
+        expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+          copied: 0,
+          errors: [],
+        });
+        expect((await readdir(projects)).sort()).toEqual(membership);
+        const retriedMetadata = await lstat(join(newProject, 'session.jsonl'));
+        expect(retriedMetadata.ino).toBe(copiedMetadata.ino);
+        expect(retriedMetadata.mtimeMs).toBe(copiedMetadata.mtimeMs);
+        for (const [index, legacySlug] of legacySlugs.entries()) {
+          expect(
+            await readFile(
+              join(projects, legacySlug, `legacy-${index}.jsonl`),
+              'utf8',
+            ),
+          ).toBe('existing legacy shadow');
+          expect(
+            await readFile(join(oldProject, `legacy-${index}.jsonl`), 'utf8'),
+          ).toBe(body);
+        }
+        expect(await readFile(join(oldProject, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+        expect(
+          await readFile(
+            join(oldProject, 'session', 'subagents', 'agent.jsonl'),
+            'utf8',
+          ),
+        ).toBe('sidecar bytes');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('copies transcripts and nested sidecars without changing originals or existing shadows; retry is inert', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-relocation-'));
+    try {
+      const source = join(root, 'A');
+      const destination = join(root, 'B');
+      const configDirs = [
+        join(root, 'default-claude'),
+        join(root, 'workspace-claude'),
+      ];
+      const oldCwd = join(source, 'workspaces', 'under_score');
+      const newCwd = join(destination, 'workspaces', 'under_score');
+      await mkdir(oldCwd, { recursive: true });
+      await mkdir(newCwd, { recursive: true });
+      for (const configDir of configDirs) {
+        const oldProject = join(
+          configDir,
+          'projects',
+          await firstClaudeSlug(oldCwd),
+        );
+        const newProject = join(
+          configDir,
+          'projects',
+          await firstClaudeSlug(newCwd),
+        );
+        await mkdir(join(oldProject, 'session', 'subagents'), {
+          recursive: true,
+        });
+        await mkdir(newProject, { recursive: true });
+        const body = `not-json\n{}\n${JSON.stringify({ cwd: oldCwd, text: 'original' })}\n`;
+        await writeFile(join(oldProject, 'session.jsonl'), body);
+        await writeFile(
+          join(oldProject, 'session', 'subagents', 'agent.jsonl'),
+          'sidecar bytes',
+        );
+        await writeFile(
+          join(oldProject, 'shadowed.jsonl'),
+          JSON.stringify({ cwd: oldCwd }),
+        );
+        await writeFile(
+          join(newProject, 'shadowed.jsonl'),
+          'existing live copy',
+        );
+        await mkdir(join(oldProject, 'shadowed'), { recursive: true });
+        await writeFile(join(oldProject, 'shadowed', 'do-not-copy'), 'old');
+        await writeFile(
+          join(oldProject, 'missing.jsonl'),
+          JSON.stringify({ cwd: join(source, 'missing') }),
+        );
+        await writeFile(
+          join(oldProject, 'outside.jsonl'),
+          JSON.stringify({ cwd: join(root, 'A-sibling') }),
+        );
+        await writeFile(join(oldProject, 'empty.jsonl'), '');
+      }
+      const options = { source, destination, configDirs };
+      // Both the empty originals and the non-JSON destination shadows have no cwd.
+      expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+        copied: 2,
+        skippedExisting: 2,
+        skippedMissingDestination: 2,
+        skippedOutsideSource: 2,
+        skippedNoCwd: 4,
+        errors: [],
+      });
+      const snapshots: {
+        path: string;
+        ino: number;
+        mtimeMs: number;
+        body: Buffer;
+      }[] = [];
+      for (const configDir of configDirs) {
+        const oldProject = join(
+          configDir,
+          'projects',
+          await firstClaudeSlug(oldCwd),
+        );
+        const newProject = join(
+          configDir,
+          'projects',
+          await firstClaudeSlug(newCwd),
+        );
+        expect(await readFile(join(newProject, 'session.jsonl'))).toEqual(
+          await readFile(join(oldProject, 'session.jsonl')),
+        );
+        expect(
+          await readFile(
+            join(newProject, 'session', 'subagents', 'agent.jsonl'),
+            'utf8',
+          ),
+        ).toBe('sidecar bytes');
+        expect(
+          await readFile(
+            join(oldProject, 'session', 'subagents', 'agent.jsonl'),
+            'utf8',
+          ),
+        ).toBe('sidecar bytes');
+        expect(await readFile(join(newProject, 'shadowed.jsonl'), 'utf8')).toBe(
+          'existing live copy',
+        );
+        expect(existsSync(join(newProject, 'shadowed'))).toBe(false);
+        expect(existsSync(join(newProject, 'missing.jsonl'))).toBe(false);
+        const before = await lstat(join(newProject, 'session.jsonl'));
+        snapshots.push({
+          path: join(newProject, 'session.jsonl'),
+          ino: before.ino,
+          mtimeMs: before.mtimeMs,
+          body: await readFile(join(newProject, 'session.jsonl')),
+        });
+        expect(
+          (await readFile(join(oldProject, 'session.jsonl'), 'utf8')).includes(
+            'original',
+          ),
+        ).toBe(true);
+      }
+      expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+        copied: 0,
+        errors: [],
+      });
+      for (const snapshot of snapshots) {
+        expect((await lstat(snapshot.path)).ino).toBe(snapshot.ino);
+        expect((await lstat(snapshot.path)).mtimeMs).toBe(snapshot.mtimeMs);
+        expect(await readFile(snapshot.path)).toEqual(snapshot.body);
+        await writeFile(snapshot.path, 'new activity');
+      }
+      for (const configDir of configDirs) {
+        const original = join(
+          configDir,
+          'projects',
+          await firstClaudeSlug(oldCwd),
+          'session.jsonl',
+        );
+        expect(await readFile(original, 'utf8')).toBe(
+          `not-json\n{}\n${JSON.stringify({ cwd: oldCwd, text: 'original' })}\n`,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports malformed/unsafe sidecars and retries without publishing a partial transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-copy-error-'));
+    try {
+      const source = join(root, 'A');
+      const destination = join(root, 'B');
+      const configDir = join(root, 'custom-config');
+      await mkdir(source, { recursive: true });
+      await mkdir(destination, { recursive: true });
+      const oldProject = join(configDir, 'projects', 'old-slug');
+      const newProject = join(
+        configDir,
+        'projects',
+        await firstClaudeSlug(destination),
+      );
+      await mkdir(join(oldProject, 'session'), { recursive: true });
+      await writeFile(
+        join(oldProject, 'session.jsonl'),
+        JSON.stringify({ cwd: source }),
+      );
+      await symlink(join(root, 'missing'), join(oldProject, 'session', 'link'));
+      const options = {
+        source,
+        destination,
+        configDirs: [configDir, join(root, 'absent')],
+      };
+      const failed = await copyInternalRootClaudeTranscripts(options);
+      expect(failed.errors).toHaveLength(1);
+      expect(existsSync(join(newProject, 'session.jsonl'))).toBe(false);
+      expect(existsSync(join(oldProject, 'session.jsonl'))).toBe(true);
+      await rm(join(oldProject, 'session', 'link'));
+      await writeFile(join(oldProject, 'session', 'file'), 'repaired fixture');
+      expect(await copyInternalRootClaudeTranscripts(options)).toMatchObject({
+        copied: 1,
+        errors: [],
+      });
+      expect(await readFile(join(newProject, 'session', 'file'), 'utf8')).toBe(
+        'repaired fixture',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    { suffix: '', alias: false, sourceName: 'A', selectedName: 'A' },
+    {
+      suffix: 'custom-config',
+      alias: false,
+      sourceName: 'A',
+      selectedName: 'A',
+    },
+    {
+      suffix: 'custom-config',
+      alias: true,
+      sourceName: 'A',
+      selectedName: 'A',
+    },
+    ...(process.platform === 'darwin'
+      ? [
+          {
+            suffix: 'custom-config',
+            alias: false,
+            sourceName: 'cafe\u0301',
+            selectedName: 'caf\u00e9',
+          },
+        ]
+      : []),
+  ])(
+    'refuses retained-source config folder $suffix (alias: $alias, root $sourceName, selected $selectedName) until overrides select the destination copy',
+    async ({ suffix, alias, sourceName, selectedName }) => {
+      const root = await mkdtemp(join(tmpdir(), 'claude-config-override-'));
+      try {
+        const source = join(root, sourceName);
+        const destination = join(root, 'B');
+        const configDir = join(source, suffix);
+        const relocatedConfigDir = join(destination, suffix);
+        const externalConfigDir = join(root, 'A-sibling');
+        await mkdir(destination, { recursive: true });
+        const oldSlug = await firstClaudeSlug(source);
+        const newSlug = await firstClaudeSlug(destination);
+        const body = JSON.stringify({ cwd: source });
+        for (const config of [configDir, externalConfigDir]) {
+          const project = join(config, 'projects', oldSlug);
+          await mkdir(join(project, 'session'), { recursive: true });
+          await writeFile(join(project, 'session.jsonl'), body);
+          await writeFile(join(project, 'session', 'file'), 'sidecar');
+        }
+        const selectedConfigDir = alias
+          ? join(root, 'config-alias')
+          : join(root, selectedName, suffix);
+        if (alias) await symlink(configDir, selectedConfigDir);
+        const options = {
+          source,
+          destination,
+          configDirs: [selectedConfigDir, externalConfigDir],
+        };
+        const failed = await copyInternalRootClaudeTranscripts(options);
+        expect(failed.copied).toBe(1);
+        expect(failed.errors).toHaveLength(1);
+        expect(failed.errors[0]?.path).toBe(
+          join(selectedConfigDir, 'projects'),
+        );
+        expect(failed.errors[0]?.message).toContain(
+          `--claude-config-dir=${JSON.stringify(relocatedConfigDir)}`,
+        );
+        expect(await readdir(destination)).toEqual([]);
+        expect(await readdir(join(configDir, 'projects'))).toEqual([oldSlug]);
+        // The root migration already copies this folder; the operator retargets overrides.
+        await cp(configDir, relocatedConfigDir, { recursive: true });
+        const recovery = {
+          source,
+          destination,
+          configDirs: [relocatedConfigDir],
+        };
+        expect(await copyInternalRootClaudeTranscripts(recovery)).toMatchObject(
+          {
+            copied: 1,
+            errors: [],
+          },
+        );
+        const copied = join(relocatedConfigDir, 'projects', newSlug);
+        expect(await readFile(join(copied, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+        expect(await readFile(join(copied, 'session', 'file'), 'utf8')).toBe(
+          'sidecar',
+        );
+        expect(await copyInternalRootClaudeTranscripts(recovery)).toMatchObject(
+          {
+            copied: 0,
+            errors: [],
+          },
+        );
+        const original = join(configDir, 'projects', oldSlug);
+        expect(await readFile(join(original, 'session.jsonl'), 'utf8')).toBe(
+          body,
+        );
+        expect(await readFile(join(original, 'session', 'file'), 'utf8')).toBe(
+          'sidecar',
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+async function firstClaudeSlug(cwd: string): Promise<string> {
+  const slug = (await claudeProjectDirCandidates(cwd))[0];
+  if (!slug) throw new Error('Missing fixture slug');
+  return slug;
+}
+
+function expectedClaudeSlug(cwd: string): string {
+  const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const hash = cwd
+    .split('')
+    .reduce(
+      (hash, character) => (Math.imul(hash, 31) + character.charCodeAt(0)) | 0,
+      0,
+    );
+  return sanitized.length <= 200
+    ? sanitized
+    : `${sanitized.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
+
+describe('Claude transcript lookup authority', () => {
+  const body = (uuid: string): string =>
+    JSON.stringify({ sessionId: 'session', type: 'user', uuid });
+  const query = {
+    sessionId: 'session',
+    attemptId: 'attempt',
+    rowId: 'row',
+    rowAttemptCount: 1,
+    previousRun: true,
+  };
+
+  test.each(['absolute whitespace', 'relative', 'empty'])(
+    'ambient config lookup honors the child cwd and literal %s value',
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), 'claude-env-'));
+      const home = jest.spyOn(os, 'homedir').mockReturnValue(root);
+      const originalConfig = process.env.CLAUDE_CONFIG_DIR;
+      try {
+        const cwd = await realpath(root);
+        const value =
+          kind === 'absolute whitespace'
+            ? join(cwd, 'config ')
+            : kind === 'relative'
+              ? 'relative config '
+              : '';
+        process.env.CLAUDE_CONFIG_DIR = value;
+        const [slug] = await claudeProjectDirCandidates(cwd);
+        if (!slug) throw new Error('Missing cwd slug');
+        const project = join(resolve(cwd, value), 'projects', slug);
+        await mkdir(project, { recursive: true });
+        const transcript = join(project, 'session.jsonl');
+        await writeFile(transcript, body('attempt'));
+        expect(
+          await resolveClaudeCodeSessionTranscriptPath('session', cwd),
+        ).toBe(transcript);
+        expect(
+          await findClaudeCodeSessionTranscriptCandidates('session', cwd),
+        ).toEqual({ paths: [transcript], scanExhausted: false });
+        expect(await readClaudeDeliveryHistory({ ...query, cwd })).toBe(
+          'found',
+        );
+        expect(
+          await readClaudeDeliveryHistory({
+            ...query,
+            cwd,
+            attemptId: 'absent',
+          }),
+        ).toBe('not-found');
+      } finally {
+        home.mockRestore();
+        if (originalConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = originalConfig;
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('authoritative slug bypasses exhausted scan and selects the current copy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-authority-'));
+    try {
+      const cwd = join(root, 'new_cwd');
+      const configDir = join(root, 'config');
+      const projects = join(configDir, 'projects');
+      const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+      const current = join(projects, slug, 'session.jsonl');
+      await mkdir(join(projects, slug), { recursive: true });
+      await writeFile(current, body('attempt'));
+      for (let start = 0; start < 10_001; start += 100) {
+        await Promise.all(
+          Array.from({ length: Math.min(100, 10_001 - start) }, (_, i) =>
+            writeFile(join(projects, `padding-${start + i}`), ''),
+          ),
+        );
+      }
+      expect(
+        await findClaudeCodeSessionTranscriptCandidates(
+          'session',
+          cwd,
+          configDir,
+        ),
+      ).toEqual({ paths: [current], scanExhausted: false });
+      expect(
+        await findClaudeCodeSessionTranscriptInProjectsDir(
+          projects,
+          'session.jsonl',
+          cwd,
+        ),
+      ).toBe(current);
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('found');
+      expect(
+        await readClaudeDeliveryHistory({
+          ...query,
+          cwd,
+          configDir,
+          attemptId: 'absent',
+        }),
+      ).toBe('not-found');
+      await rm(current);
+      expect(
+        await findClaudeCodeSessionTranscriptCandidates(
+          'session',
+          cwd,
+          configDir,
+        ),
+      ).toMatchObject({ scanExhausted: true });
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('unreadable');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('long hashed canonical slug wins over legacy and old copies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-hash-'));
+    try {
+      const cwd = join(
+        root,
+        'under_score',
+        'x'.repeat(220 - join(root, 'under_score').length - 1),
+      );
+      const configDir = join(root, 'config');
+      const projects = join(configDir, 'projects');
+      let hash = 0;
+      for (let i = 0; i < cwd.length; i++)
+        hash = ((hash << 5) - hash + cwd.charCodeAt(i)) | 0;
+      const currentSlug = `${cwd.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+      for (const [slug, uuid] of [
+        [currentSlug, 'attempt'],
+        [cwd.replace(/[^A-Za-z0-9_-]/g, '-'), 'legacy-only'],
+        ['old-cwd', 'old-only'],
+      ]) {
+        await mkdir(join(projects, slug), { recursive: true });
+        await writeFile(join(projects, slug, 'session.jsonl'), body(uuid));
+      }
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('found');
+      expect(
+        await findClaudeCodeSessionTranscriptInProjectsDir(
+          projects,
+          'session.jsonl',
+          cwd,
+        ),
+      ).toBe(join(projects, currentSlug, 'session.jsonl'));
+      expect(
+        await readClaudeDeliveryHistory({
+          ...query,
+          cwd,
+          configDir,
+          attemptId: 'legacy-only',
+        }),
+      ).toBe('not-found');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([undefined, 'claude-code', 'auto'] as const)(
+    'delivery reconciliation reads the chat config folder for %s chats',
+    async (interfaceMode) => {
+      const root = await mkdtemp(join(tmpdir(), 'claude-chat-config-'));
+      const originalConfig = process.env.CLAUDE_CONFIG_DIR;
+      const resolver = jest.spyOn(chatClaudeConfig, 'chatClaudeConfigDir');
+      try {
+        const cwd = join(root, 'cwd');
+        const configDir = join(root, 'chat-config ');
+        process.env.CLAUDE_CONFIG_DIR = join(root, 'default-config');
+        const [slug] = await claudeProjectDirCandidates(cwd);
+        if (!slug) throw new Error('Missing cwd slug');
+        const project = join(configDir, 'projects', slug);
+        const defaultProject = join(
+          process.env.CLAUDE_CONFIG_DIR,
+          'projects',
+          slug,
+        );
+        await mkdir(project, { recursive: true });
+        await mkdir(defaultProject, { recursive: true });
+        await writeFile(join(project, 'session.jsonl'), body('attempt'));
+        await writeFile(
+          join(defaultProject, 'session.jsonl'),
+          body('default-only'),
+        );
+        const tab: PersistedChatTab = {
+          id: 'chat',
+          title: 'Chat',
+          messages: [],
+          createdAt: '',
+          interfaceMode,
+        };
+        resolver.mockResolvedValue(configDir);
+        const serviceQuery = {
+          ...query,
+          cwd,
+          provider: 'claude' as const,
+          target: { sessionId: 'session' },
+          projectId: 'workspace',
+          worktreeId: 'worktree',
+          tab,
+        };
+        expect(await readDeliveryHistory(serviceQuery)).toBe('found');
+        expect(
+          await readDeliveryHistory({
+            ...serviceQuery,
+            attemptId: 'default-only',
+          }),
+        ).toBe('not-found');
+        expect(resolver).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: 'workspace',
+            worktreeId: 'worktree',
+            cwd,
+            tab,
+          }),
+        );
+      } finally {
+        resolver.mockRestore();
+        if (originalConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = originalConfig;
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('fallback history stays conservative without a current copy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-fallback-'));
+    try {
+      const cwd = join(root, 'missing-cwd');
+      const configDir = join(root, 'config');
+      const oldProject = join(configDir, 'projects', 'old');
+      await mkdir(oldProject, { recursive: true });
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('unreadable');
+      await writeFile(join(oldProject, 'session.jsonl'), body('attempt'));
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('found');
+      expect(
+        await readClaudeDeliveryHistory({
+          ...query,
+          cwd,
+          configDir,
+          attemptId: 'absent',
+        }),
+      ).toBe('not-found');
+      const otherProject = join(configDir, 'projects', 'other');
+      await mkdir(otherProject);
+      await writeFile(join(otherProject, 'session.jsonl'), body('attempt'));
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('unreadable');
+      const [slug] = await claudeProjectDirCandidates(cwd);
+      if (!slug) throw new Error('Missing cwd slug');
+      const currentProject = join(configDir, 'projects', slug);
+      await mkdir(currentProject);
+      await writeFile(join(currentProject, 'session.jsonl'), 'invalid-json');
+      expect(
+        await readClaudeDeliveryHistory({ ...query, cwd, configDir }),
+      ).toBe('unreadable');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

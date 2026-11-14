@@ -233,6 +233,7 @@ function InstallUpdateEmailsContent({
       data-testid="install-update-emails-setting"
     >
       <ErrorBanner
+        errorSource="install-update-emails-error"
         className=""
         error={error?.copy}
         {...(error?.details === undefined ? {} : { details: error.details })}

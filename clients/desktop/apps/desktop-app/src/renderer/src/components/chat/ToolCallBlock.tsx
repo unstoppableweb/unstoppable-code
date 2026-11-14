@@ -13,12 +13,10 @@ import {
   ToolCallResultSection,
   interruptedToolCallResult,
   toolCallResultFrom,
-  useCleanChatLook,
   type ToolCallStatus,
 } from '@canopy/ui-shared/components';
 import { BrandLogo } from '@/components/BrandLogo';
 import { brand } from '@/lib/brand';
-import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import type { ToolResult } from './types';
 import {
   getToolDisplayInfo,
@@ -102,7 +100,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 }): JSX.Element {
   const forceExpanded = useContext(TranscriptSearchRevealContext);
   // Clean rows stay colorless, including their opened output.
-  const clean = useCleanChatLook();
+
   const toolDisplayScope = {
     isCodeReview: isCodeReviewChat,
     trustedMcpNamespace: brand.tools.namespace,
@@ -209,11 +207,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
                   />
                 ) : (
                   <pre
-                    className={`max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
-                      toolResult.kind === 'error' && !clean
-                        ? 'fg-destructive/80'
-                        : 'fg-secondary'
-                    }`}
+                    className={`max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary`}
                   >
                     {toolResult.content}
                   </pre>
@@ -239,7 +233,6 @@ export const ToolCallBlock = memo(function ToolCallBlock({
         label={displayLabel}
         status={status}
         result={toolResult}
-        pendingSpinner={<ThinkingSpinner />}
       />
     );
   }
@@ -262,7 +255,6 @@ export const ToolCallBlock = memo(function ToolCallBlock({
         label={displayLabel}
         status={status}
         result={toolResult}
-        pendingSpinner={<ThinkingSpinner />}
         expandedSlot={
           <>
             <div className="px-2.5 py-1 text-3xs font-medium fg-secondary">
@@ -295,7 +287,6 @@ export const ToolCallBlock = memo(function ToolCallBlock({
         label={displayLabel}
         status={status}
         result={toolResult}
-        pendingSpinner={<ThinkingSpinner />}
         expandedSlot={
           <>
             <div className="px-2.5 py-1 text-3xs font-medium fg-secondary">
@@ -325,7 +316,6 @@ export const ToolCallBlock = memo(function ToolCallBlock({
         status={status}
         input={displayInput}
         result={toolResult}
-        pendingSpinner={<ThinkingSpinner />}
         // A visual row offers its source in place of the raw input.
         expandedAction={
           visualOwner ? (

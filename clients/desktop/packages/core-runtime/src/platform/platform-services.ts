@@ -284,6 +284,57 @@ export type PlatformProcessInspection =
   | { readonly state: 'absent' }
   | { readonly state: 'unverifiable'; readonly reason: string };
 
+/**
+ * A process's identity for a proven reap (CAN-6482): its start identity, its
+ * process group and its executable path, read together. `unverifiable` when
+ * any part cannot be read; a reap needs every part to match a record.
+ */
+export type PlatformProcessIdentity =
+  | {
+      readonly state: 'running';
+      readonly startIdentity: string;
+      readonly processGroupId: number;
+      readonly executablePath: string;
+    }
+  | { readonly state: 'absent' }
+  | { readonly state: 'unverifiable'; readonly reason: string };
+
+/**
+ * One live member of a process group (CAN-6601), proven by the same reads as
+ * `identifyProcess`: still in the group, with its start identity and when it
+ * started.
+ */
+export interface PlatformProcessGroupMember {
+  readonly pid: number;
+  readonly startIdentity: string;
+  /** Epoch milliseconds, to the second the platform reports. */
+  readonly startedAtMs: number;
+  /** The executable's base name, never its arguments. */
+  readonly command: string;
+  /**
+   * Whether the member's environment carries the requested run marker as a
+   * whole entry (CAN-6601); present only when one was requested. `absent`:
+   * read, and not there; `unreadable`: another user's process, or the read
+   * failed. Nothing else from the environment is kept or reported.
+   */
+  readonly runMarker?: 'match' | 'absent' | 'unreadable';
+}
+
+export interface PlatformProcessGroupRequest {
+  readonly processGroupId: number;
+  /** An environment entry, `name=value`, to look for in each member's own environment. */
+  readonly runMarker?: { readonly name: string; readonly value: string };
+  readonly signal?: AbortSignal;
+}
+
+/** `unverifiable` when any member, or the table itself, can't be read. */
+export type PlatformProcessGroup =
+  | {
+      readonly state: 'listed';
+      readonly members: readonly PlatformProcessGroupMember[];
+    }
+  | { readonly state: 'unverifiable'; readonly reason: string };
+
 /** One host process, for resource accounting only; never authority to signal. */
 export interface PlatformProcessTableRow {
   readonly pid: number;
@@ -323,6 +374,22 @@ export interface PlatformSupervisionServices {
   inspectProcess(
     request: PlatformProcessInspectionRequest,
   ): Promise<PlatformProcessInspection>;
+  /**
+   * The start identity, process group and executable path of one process,
+   * for a reap that must prove the process is the one it recorded (CAN-6482).
+   * Absent on hosts that cannot read them; callers then never reap.
+   */
+  identifyProcess?(
+    request: PlatformProcessInspectionRequest,
+  ): Promise<PlatformProcessIdentity>;
+  /**
+   * The live members of one process group, each proven as `identifyProcess`
+   * proves a process, for a user's confirmed group Force stop (CAN-6601).
+   * Absent where there are no process groups (Windows).
+   */
+  listProcessGroup?(
+    request: PlatformProcessGroupRequest,
+  ): Promise<PlatformProcessGroup>;
   /**
    * Every host process the user can see, for resource accounting. CPU is
    * measured between this services instance's consecutive reads where the

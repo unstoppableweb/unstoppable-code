@@ -327,6 +327,7 @@ export function mapAuditEntryToTurnPayload(
   if (
     entry.provider === 'cursor' ||
     entry.provider === 'copilot' ||
+    entry.provider === 'antigravity' ||
     entry.provider === 'opencode'
   )
     return null;

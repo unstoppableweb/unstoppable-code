@@ -78,7 +78,11 @@ export function BillingTogglePanel({
           />
         </div>
 
-        <ErrorBanner className="mt-2" error={error} />
+        <ErrorBanner
+          errorSource="billing-toggle-panel"
+          className="mt-2"
+          error={error}
+        />
 
         {children}
       </div>

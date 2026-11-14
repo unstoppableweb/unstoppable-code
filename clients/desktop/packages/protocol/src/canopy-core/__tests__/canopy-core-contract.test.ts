@@ -80,6 +80,7 @@ import {
   WorkerFilesystemDirectoryListResultSchema,
   WorkerFilesystemRootsListParamsSchema,
   WorkerFilesystemRootsListResultSchema,
+  WorkerScriptExecutionGroupMembersResultSchema,
 } from '../worker';
 
 type Equal<Left, Right> =
@@ -104,6 +105,7 @@ type _QueryNamesAreExact = Expect<
     | 'worker.git.worktree.health.get'
     | 'worker.git.diff.get'
     | 'worker.script.execution.get'
+    | 'worker.script.execution.groupMembers'
     | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
     | 'worker.pipeline.execution.get'
@@ -135,6 +137,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.workspace.repoRules.scan'
     | 'core.workspace.repoRules.preview'
     | 'core.workspace.repoRules.status'
+    | 'core.workspace.repoRules.check'
     | 'core.worktree.list'
     | 'core.worktree.get'
     | 'core.ledger.entries.search'
@@ -190,6 +193,7 @@ type _WorkerNamesAreExact = Expect<
     | 'worker.git.worktree.health.get'
     | 'worker.git.diff.get'
     | 'worker.script.execution.get'
+    | 'worker.script.execution.groupMembers'
     | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
     | 'worker.pipeline.execution.get'
@@ -263,6 +267,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.workspace.repoRules.scan'
     | 'core.workspace.repoRules.preview'
     | 'core.workspace.repoRules.status'
+    | 'core.workspace.repoRules.check'
     | 'core.worktree.list'
     | 'core.worktree.get'
   >
@@ -1336,6 +1341,30 @@ function runtimeQueryRegistry(
   });
 }
 
+describe("an orphaned run's group members stay with the user (CAN-6601)", () => {
+  it('lists each member by PID, start and executable name only, never its arguments', () => {
+    const member =
+      WorkerScriptExecutionGroupMembersResultSchema.shape.members.element;
+    expect(Object.keys(member.shape).sort()).toEqual([
+      'carriesRunId',
+      'command',
+      'pid',
+      'startIdentity',
+      'startedAt',
+    ]);
+    expect(() =>
+      member.parse({
+        pid: 2,
+        startIdentity: 'darwin:v1:2:1',
+        startedAt: '2026-11-13T00:00:00.000Z',
+        command: 'sleep',
+        carriesRunId: true,
+        args: ['--token', 'x'],
+      }),
+    ).toThrow();
+  });
+});
+
 describe('universal Canopy query registry', () => {
   it('accepts only portable pending approval and TODO projections', () => {
     const result = {
@@ -1397,6 +1426,7 @@ describe('universal Canopy query registry', () => {
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.status',
+      'core.workspace.repoRules.check',
       'core.script.definition.list',
       'core.script.definition.get',
       'core.worktree.list',
@@ -1473,6 +1503,8 @@ describe('universal Canopy query registry', () => {
       'worker.git.worktree.health.get',
       'worker.git.diff.get',
       'worker.script.execution.get',
+      // CAN-6601: an orphaned run's group members, for a group Force stop.
+      'worker.script.execution.groupMembers',
       'worker.script.execution.list',
       'worker.pipeline.execution.get',
       'worker.pipeline.execution.list',
@@ -1556,6 +1588,7 @@ describe('universal Canopy query registry', () => {
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.status',
+      'core.workspace.repoRules.check',
     ] as const) {
       expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
         kind: 'query',
@@ -1941,6 +1974,37 @@ describe('universal Canopy query registry', () => {
     );
   });
 
+  it('keeps a root mountPath only when it is workspace-relative', () => {
+    const root = { fileRootId: 'repo-1', name: 'repo', kind: 'git-repo' };
+    for (const mountPath of ['', 'repos/repo-1', 'sibling']) {
+      expect(
+        WorkerFilesystemRootsListResultSchema.parse({
+          roots: [{ ...root, mountPath }],
+        }).roots[0],
+      ).toEqual({ ...root, mountPath });
+    }
+    // Missing means no translation: the root's paths are the workspace's.
+    expect(
+      WorkerFilesystemRootsListResultSchema.parse({ roots: [root] }).roots[0],
+    ).not.toHaveProperty('mountPath');
+    for (const mountPath of [
+      '/vercel/sandbox/repos/repo-1',
+      '../outside',
+      'repos/../..',
+      'repos/./repo-1',
+      'repos//repo-1',
+      'repos/repo-1/',
+      'C:\\repo',
+      7,
+    ]) {
+      expect(
+        WorkerFilesystemRootsListResultSchema.safeParse({
+          roots: [{ ...root, mountPath }],
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('retains additive fields at the result and row levels', () => {
     expect(
       WorkerFilesystemRootsListResultSchema.parse({
@@ -2231,6 +2295,7 @@ describe('common request and error contracts', () => {
       'core.workspace.item.get',
       'core.workspace.item.list',
       'core.workspace.list',
+      'core.workspace.repoRules.check',
       'core.workspace.repoRules.preview',
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.status',
@@ -2329,6 +2394,8 @@ describe('common request and error contracts', () => {
       // CAN-4143.
       'worker.script.execute',
       'worker.script.execution.cancel',
+      'worker.script.execution.clear',
+      'worker.script.execution.stop',
     ]);
     expect(Object.keys(CANOPY_STREAM_DEFINITIONS)).toEqual([
       'core.chat.events',

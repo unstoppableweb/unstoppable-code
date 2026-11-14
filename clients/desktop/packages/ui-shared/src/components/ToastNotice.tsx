@@ -122,6 +122,7 @@ export function ToastNotice({
       {...(icon === undefined ? {} : { icon })}
       surface="none"
       shape="toast"
+      errorRecordingDisabled
       titleLayout="stacked"
       // The stack's region announces additions; a per-notice alert would
       // nest a second live region inside it.

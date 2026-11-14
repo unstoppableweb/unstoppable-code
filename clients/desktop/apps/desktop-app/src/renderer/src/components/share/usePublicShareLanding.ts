@@ -2014,9 +2014,12 @@ export function usePublicShareLanding(
         window.dispatchEvent(new Event(SKILLS_CHANGED_EVENT));
       } else if (installed.entity === 'automation') {
         // Explicit branch: without it the `else` below falls through to
-        // `window.pipelines.delete` with an activity id.
+        // `window.pipelines.delete` with an activity id. Uninstall removes
+        // the whole workflow, every schedule included (CAN-6065); on a record
+        // that isn't a workflow schedule it removes just that record.
         const result = await window.api.automations.delete({
           id: installed.activityId,
+          workflow: true,
         });
         if (!result.ok) {
           setInstallError(result.error || 'Failed to remove the automation.');

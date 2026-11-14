@@ -27,6 +27,7 @@ import {
   HelloResultSchema,
   PairRequestParamsSchema,
   REMOTE_PROTOCOL_VERSION,
+  WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
 } from '../session';
 
 const key = Buffer.alloc(32).toString('base64url');
@@ -64,6 +65,25 @@ it('preserves legacy session and relay messages without granting new features', 
       kind: 'admin',
     }).success,
   ).toBe(false);
+});
+
+it('holds web controllers to their own host floor, not the current protocol', () => {
+  // Protocol 19 (CAN-6187) is the first host that honors `targetId` on
+  // `pipelines:execute`, a browser channel; an older one would run a cloud
+  // run locally. The floor never passes this build's protocol, and a hello
+  // naming it is well formed.
+  expect(WEB_CONTROLLER_MIN_PROTOCOL_VERSION).toBeGreaterThanOrEqual(19);
+  expect(WEB_CONTROLLER_MIN_PROTOCOL_VERSION).toBeLessThanOrEqual(
+    REMOTE_PROTOCOL_VERSION,
+  );
+  for (const kind of ['browser', 'hosted'] as const) {
+    expect(
+      HelloParamsSchema.parse({
+        version,
+        controller: { kind, minVersion: WEB_CONTROLLER_MIN_PROTOCOL_VERSION },
+      }).controller,
+    ).toEqual({ kind, minVersion: WEB_CONTROLLER_MIN_PROTOCOL_VERSION });
+  }
 });
 
 it('allows only channels that the host explicitly tunnels', () => {

@@ -88,6 +88,7 @@ export function ClaudeModAdmissionControl({
               ) : null}
               {error ? (
                 <Notice
+                  errorSource="claude-mod-admission-error"
                   intent="destructive"
                   data-testid="claude-mod-admission-error"
                 >

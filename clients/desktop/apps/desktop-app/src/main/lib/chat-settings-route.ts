@@ -12,6 +12,7 @@ const CORE_CHAT_MODEL_PROVIDERS = new Set<string>([
   'ollama',
   'cursor',
   'opencode',
+  'antigravity',
 ]);
 
 /** A model, thinking, plan or speed change a client asks for. */

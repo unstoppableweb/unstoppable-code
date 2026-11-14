@@ -25,7 +25,7 @@ const PIPELINE_RUN_FIELDS: readonly AgentActionField[] = [
     type: "'local' | 'cloud'",
     required: false,
     description:
-      'Set "cloud" to start the run in the cloud, for a shared or curated pipeline. With scope "global" it runs with no project; without it, the cloud runs it in this chat\'s project or task only where it can, and otherwise refuses it with its reason. A cloud run is a dispatch with no plan or task file and no watchers yet. A pipeline whose agent steps need cloud models runs in the cloud only once the person has chosen them in the Run dialog. Omit it to run on this computer.',
+      'Set "cloud" to start the run in the cloud, for a shared or curated pipeline. With scope "global" it runs with no project; without it, the cloud runs it in this chat\'s project or task only where it can, and otherwise refuses it with its reason. A cloud run is a dispatch with no plan or task file and no inline watchers; to be told when it pauses or ends, arm a worktree_pipeline_completion watcher with SetupWatchers on the executionId it returns, with target.runOn "cloud". A pipeline whose agent steps need cloud models runs in the cloud only once the person has chosen them in the Run dialog. Omit it to run on this computer.',
   },
   {
     name: 'inputs',

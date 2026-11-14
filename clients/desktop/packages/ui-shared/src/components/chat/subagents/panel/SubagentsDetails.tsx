@@ -198,6 +198,7 @@ function SubagentsTaskDetailsBody({
 
       {stopError ? (
         <ErrorBanner
+          errorSource="subagents-task-details-body"
           className=""
           error={`${SUBAGENTS_STOP_FAILED_LABEL} ${stopError}`}
         />
@@ -353,6 +354,7 @@ function SubagentsWorkflowRunDetailsBody({
 
       {stopWorkflowError ? (
         <ErrorBanner
+          errorSource="subagents-workflow-run-details-body"
           className=""
           error={`${SUBAGENT_STOP_WORKFLOW_FAILED_LABEL} ${stopWorkflowError}`}
         />

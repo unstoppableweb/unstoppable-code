@@ -33,14 +33,17 @@ export function readTryItDraft(chatId: string): StagedDraft | null {
   }
 }
 
-/** Content and insertion receipts are accepted in a single storage write. */
+/**
+ * Content and insertion receipts are accepted in a single storage write.
+ * Returns false, writing nothing, when the chat has no staged Try-it draft.
+ */
 export function saveTryItDraft(
   chatId: string,
   content: Descendant[],
   stagingId?: string,
-): void {
+): boolean {
   const prior = readTryItDraft(chatId);
-  if (!prior && !stagingId) return;
+  if (!prior && !stagingId) return false;
   localStorage.setItem(
     PREFIX + chatId,
     JSON.stringify({
@@ -55,6 +58,7 @@ export function saveTryItDraft(
         : [],
     }),
   );
+  return true;
 }
 
 export function clearTryItDraft(chatId: string): void {

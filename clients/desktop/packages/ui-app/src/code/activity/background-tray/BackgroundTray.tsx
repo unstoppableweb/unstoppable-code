@@ -37,6 +37,10 @@ import {
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
 import type { BackgroundTaskHostActions } from '../background-tasks-section';
+import {
+  setComposerWorkDrawerOpenKind,
+  useComposerWorkDrawerOpenKind,
+} from '../../composer-work-drawer-open';
 import { BackgroundTaskDetailModal } from '../BackgroundTaskDetailModal';
 import { StopAllBackgroundWorkControl } from '../../agent-activity/StopAllBackgroundWorkControl';
 import { StopAllDelegatesControl } from '../../agent-activity/StopAllDelegatesControl';
@@ -251,7 +255,19 @@ export function BackgroundTray({
 }: BackgroundTrayProps): JSX.Element | null {
   const grouped = presentation === 'grouped';
   const tab = presentation === 'tab' || grouped;
-  const [expandedState, setExpanded] = useState(false);
+  // A tab or the work pills report their card's state here; the drawer's
+  // own list shares the composer drawer's open state, so it stays as the
+  // user left it across sends, chats, tabs and worktrees.
+  const [cardExpanded, setCardExpanded] = useState(false);
+  const sharedOpenKind = useComposerWorkDrawerOpenKind();
+  const expandedState = tab ? cardExpanded : sharedOpenKind !== null;
+  const setExpanded = (next: boolean): void => {
+    if (tab) setCardExpanded(next);
+    else
+      setComposerWorkDrawerOpenKind(
+        next ? (sharedOpenKind ?? 'running') : null,
+      );
+  };
   // In a tab the list is the whole surface, so it is always open.
   const expanded = grouped ? expandedState : tab || expandedState;
   // One inspector at a time, by row key: opening a row closes the open one.
@@ -512,7 +528,7 @@ export function BackgroundTray({
     { group: 'watching' as const, rows: watcherRows },
     { group: 'finished' as const, rows: finishedRuns.map(runRow) },
   ].filter(({ rows }) => rows.length > 0);
-  const toggle = (): void => setExpanded((open) => !open);
+  const toggle = (): void => setExpanded(!expandedState);
   // Esc closes the open list and goes no further. Caught in the capture
   // phase, because row actions stop their keydowns from bubbling; focus
   // returns to the toggle, since the focused row goes away. An open detail
@@ -575,7 +591,7 @@ export function BackgroundTray({
   );
   const groupedSections: ComposerWorkDrawerSections = {
     viewportRef: setListRef,
-    onExpandedChange: setExpanded,
+    onExpandedChange: setCardExpanded,
     needsYou:
       needsInputRuns.length + pausedRuns.length + approvalAgents.length > 0 ? (
         <ul className={DRAWER_ROW_LIST_CLASS}>
@@ -636,7 +652,7 @@ export function BackgroundTray({
           pullRequests: counts.pullRequests,
           sections: groupedSections,
           viewportRef: setListRef,
-          onExpandedChange: setExpanded,
+          onExpandedChange: setCardExpanded,
         }}
       />,
     );

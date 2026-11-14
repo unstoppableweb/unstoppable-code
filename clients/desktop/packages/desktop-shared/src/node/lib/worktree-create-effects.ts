@@ -10,6 +10,7 @@ import {
 import {
   copyFile,
   link,
+  lstat,
   mkdir,
   readFile,
   rm,
@@ -370,6 +371,70 @@ export async function createWorktreeGit(
       options.baseBranch,
       signal,
     );
+  }
+}
+
+/** A closed child alone is insufficient: every planned creation effect must be absent. */
+export async function proveFailedWorktreeCreationAbsent(
+  error: unknown,
+  workspace: GitWorktreeWorkspace,
+  worktree: WorktreeData,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (
+    !(error instanceof Error) ||
+    typeof Reflect.get(error, 'code') !== 'number' ||
+    Reflect.get(error, 'killed') === true ||
+    Reflect.get(error, 'signal') != null ||
+    signal.aborted
+  )
+    return false;
+  const checkouts = worktree.creation?.checkouts;
+  if (!checkouts?.length) return false;
+  try {
+    if (workspace.type === 'multi-repo' && !workspace.sourceRepoPath) {
+      try {
+        await lstat(getMultiRepoWorktreeDir(workspace.id, worktree.id));
+        return false;
+      } catch (failure) {
+        if (
+          typeof failure !== 'object' ||
+          failure === null ||
+          Reflect.get(failure, 'code') !== 'ENOENT'
+        )
+          return false;
+      }
+    }
+    for (const checkout of checkouts) {
+      try {
+        await lstat(checkout.checkoutPath);
+        return false;
+      } catch (failure) {
+        if (
+          typeof failure !== 'object' ||
+          failure === null ||
+          Reflect.get(failure, 'code') !== 'ENOENT'
+        )
+          return false;
+      }
+      const branch = `refs/heads/${worktree.branchName}`;
+      const refs = await runGit(
+        ['for-each-ref', '--format=%(refname)', branch],
+        checkout.repositoryPath,
+        signal,
+      );
+      if (refs.split('\n').includes(branch)) return false;
+      const registered = await runGit(
+        ['worktree', 'list', '--porcelain', '-z'],
+        checkout.repositoryPath,
+        signal,
+      );
+      if (registered.split('\0').includes(`worktree ${checkout.checkoutPath}`))
+        return false;
+    }
+    return !signal.aborted;
+  } catch {
+    return false;
   }
 }
 

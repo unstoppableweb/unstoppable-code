@@ -35,7 +35,10 @@ import {
   type WorkerGitRemoteGetResult,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '@canopy/core-runtime';
-import type { GitChangeSetSample } from '@canopy/core-runtime/node/git';
+import {
+  GitCheckoutCreationError,
+  type GitChangeSetSample,
+} from '@canopy/core-runtime/node/git';
 import {
   checkoutBranch,
   createBranchAndCheckout,
@@ -138,6 +141,7 @@ export async function listWorktreeBranches(
   caller: CanopyCallerDescriptor,
   request: ListBranchesRequest,
   routing?: GitBranchListRouteRequest,
+  exactWorktreeBaseBranch = true,
 ): Promise<ListBranchesResponse> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
@@ -162,6 +166,7 @@ export async function listWorktreeBranches(
         // records, so the viewer keeps the direct listing.
         return listBranches(resolveWorktreeRepoPath({ ...target, repoId }), {
           resolveDefaultBranch: resolveFreshDefaultBranch,
+          exactWorktreeBaseBranch,
         });
       }
       try {
@@ -175,6 +180,9 @@ export async function listWorktreeBranches(
               ...(repoId === undefined ? {} : { repoId }),
             },
             repository: { kind: 'checkout' },
+            ...(exactWorktreeBaseBranch
+              ? { exactWorktreeBaseBranch: true }
+              : {}),
           },
           routing,
           {
@@ -184,6 +192,9 @@ export async function listWorktreeBranches(
               ...(repoId === undefined ? {} : { repoId }),
             },
             repository: { kind: 'checkout' },
+            ...(exactWorktreeBaseBranch
+              ? { exactWorktreeBaseBranch: true }
+              : {}),
           },
         );
         return {
@@ -202,6 +213,7 @@ export async function listHomeBranchTargets(
   caller: CanopyCallerDescriptor,
   request: HomeBranchTargetsRequest,
   routing?: GitBranchListRouteRequest,
+  exactWorktreeBaseBranch = true,
 ): Promise<HomeBranchTargetsResponse> {
   validateId(request.workspaceId, 'workspaceId');
   try {
@@ -212,6 +224,7 @@ export async function listHomeBranchTargets(
         scope: { workspaceId: request.workspaceId },
         repository: { kind: 'reference' },
         includeHeadState: true,
+        ...(exactWorktreeBaseBranch ? { exactWorktreeBaseBranch: true } : {}),
       },
       routing,
     );
@@ -546,19 +559,29 @@ export async function switchWorktreeBranch(
   dispatcher: WorkerGitWriteDispatcher,
   resolveCaller: () => CanopyCallerDescriptor,
   request: SwitchBranchRequest,
+  exactCatalogue = false,
 ): Promise<SwitchBranchResponse> {
   validateId(request.projectId, 'projectId');
   assertWritableScope(request.projectId);
   validateId(request.worktreeId, 'worktreeId');
   validateOptionalRepoId(request.repoId, 'repoId');
   const scope = branchChangeScope(request, [request.branchName]);
+  const remote = exactCatalogue ? request.isRemote : undefined;
   if (scope === null) {
-    await checkoutBranch(resolveWorktreeRepoPath(request), request.branchName);
+    await checkoutBranch(
+      resolveWorktreeRepoPath(request),
+      request.branchName,
+      remote,
+    );
   } else {
     try {
       await dispatcher.instruction(
         'worker.git.checkout',
-        { scope, branch: request.branchName },
+        {
+          scope,
+          branch: request.branchName,
+          ...(remote !== undefined && { remote }),
+        },
         { caller: gitWriteCaller(resolveCaller()) },
       );
     } catch (error) {
@@ -583,41 +606,55 @@ export async function createWorktreeBranch(
   validateId(request.worktreeId, 'worktreeId');
   validateOptionalRepoId(request.repoId, 'repoId');
 
-  const newBranchName = request.newBranchName.trim();
+  const newBranchName = request.newBranchName;
   if (!newBranchName || newBranchName.startsWith('-')) {
     throw new Error('Invalid new branch name');
   }
 
-  const baseBranch = (request.baseBranch ?? '').trim();
+  const baseBranch = request.baseBranch ?? '';
   if (!baseBranch || baseBranch.startsWith('-')) {
     throw new Error('Invalid base branch');
   }
 
   const remote = Boolean(request.baseBranchIsRemote);
   const scope = branchChangeScope(request, []);
-  if (scope === null) {
-    return {
-      success: true,
-      branchName: await createBranchAndCheckout(
-        resolveWorktreeRepoPath(request),
-        newBranchName,
-        remote ? `origin/${baseBranch}` : baseBranch,
-      ),
-    };
-  }
   try {
-    const { branch } = await dispatcher.instruction(
-      'worker.git.branch.create',
-      {
-        scope,
-        name: newBranchName,
-        startPoint: { branch: baseBranch, remote },
-      },
-      { caller: gitWriteCaller(resolveCaller()) },
-    );
-    return { success: true, branchName: branch };
+    const { branch, warning } =
+      scope === null
+        ? await createBranchAndCheckout(
+            resolveWorktreeRepoPath(request),
+            newBranchName,
+            remote ? `refs/remotes/origin/${baseBranch}` : baseBranch,
+          )
+        : await dispatcher.instruction(
+            'worker.git.branch.create',
+            {
+              scope,
+              name: newBranchName,
+              startPoint: {
+                branch: baseBranch,
+                remote,
+                ...(request.baseBranchSource === 'catalog' && {
+                  source: 'catalog',
+                }),
+              },
+            },
+            { caller: gitWriteCaller(resolveCaller()) },
+          );
+    return { success: true, branchName: branch, ...(warning && { warning }) };
   } catch (error) {
-    throw hostError(error);
+    const failure = hostError(error);
+    // Only our state summary crosses this boundary, never Git's raw output.
+    if (failure instanceof GitCheckoutCreationError)
+      return {
+        success: false,
+        branchName: failure.branch,
+        ...(failure.branchExists !== undefined && {
+          branchExists: failure.branchExists,
+        }),
+        failureMessage: failure.message,
+      };
+    throw failure;
   }
 }
 

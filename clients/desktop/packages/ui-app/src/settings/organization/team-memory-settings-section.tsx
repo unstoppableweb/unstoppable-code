@@ -167,12 +167,14 @@ function MemorySettingsCard({
         </p>
 
         <ErrorBanner
+          errorSource="memory-settings-card-load"
           className="mt-3"
           error={loadError?.copy}
           details={loadError?.details}
           onRetry={retryLoad}
         />
         <ErrorBanner
+          errorSource="memory-settings-card"
           className="mt-3"
           error={error?.copy}
           details={error?.details}

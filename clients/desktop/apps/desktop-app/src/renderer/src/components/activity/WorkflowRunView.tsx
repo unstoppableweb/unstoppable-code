@@ -14,7 +14,6 @@ import type {
 import { formatTokenCount, formatDuration } from '@/lib/format';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
-import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import { TranscriptViewer } from '../chat/TranscriptViewer';
 
 /**
@@ -134,7 +133,6 @@ function WorkflowAgentBlock({
       description={agent.label}
       isRunning={isRunning}
       isError={isError}
-      pendingSpinner={<ThinkingSpinner />}
       usage={hasUsage ? {} : undefined}
       usageOverride={usageOverride}
       {...(agent.resultPreview ? { result: agent.resultPreview } : {})}

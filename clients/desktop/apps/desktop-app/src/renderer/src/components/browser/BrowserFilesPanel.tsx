@@ -52,6 +52,7 @@ export function BrowserFilesPanel({
       {failed && transfers.length > 0 && (
         <div className="shrink-0 p-2">
           <ErrorBanner
+            errorSource="browser-files-panel"
             className=""
             error="Couldn't load downloads."
             onRetry={load}

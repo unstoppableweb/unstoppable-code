@@ -76,10 +76,12 @@ function agentPrompt(model?: string): Step {
 
 describe('classifyDaemonPipeline with model steps', () => {
   beforeAll(() => {
-    // `haiku` is git-commit-push's runner default (CAN-6012).
+    // `haiku` is git-commit-push's runner default (CAN-6012), `sonnet`
+    // github-create-pr's (CAN-6739).
     initClaudeModels([
       { id: DEFAULT_CLAUDE_MODEL, label: 'Opus' },
       { id: resolveModelAlias('haiku'), label: 'Haiku' },
+      { id: resolveModelAlias('sonnet'), label: 'Sonnet' },
     ]);
     initCodexModels([{ id: DEFAULT_CODEX_MODEL, label: 'Codex default' }]);
     const managed = { supportsVision: false, supportedThinkingLevels: [] };
@@ -320,9 +322,9 @@ describe('classifyDaemonPipeline with model steps', () => {
   });
 
   it('refuses git-commit-push for a host whose owner does not run its hook', () => {
-    // CAN-6012 D3: the cloud runner (model and host steps, CAN-6169) and the
-    // CLI route classify without `commitHooks`, so the step stays
-    // `model_action` there until CP-30 brokers its credentials.
+    // CAN-6012 D3: a host classified without `commitHooks` (the CLI route, or
+    // a cloud runner whose launch isn't brokered) keeps the step
+    // `model_action`.
     const commit = oneStep({
       uses: 'builtin/git-commit-push',
       with: { commit_model: DEFAULT_CLAUDE_MODEL },
@@ -337,6 +339,57 @@ describe('classifyDaemonPipeline with model steps', () => {
         reason: 'model_action',
       });
     expect(DAEMON_PORTABLE_MODEL_ACTIONS.has('git-commit-push')).toBe(false);
+  });
+
+  it('admits the repository actions on a brokered host, on Claude only (CAN-6739)', () => {
+    const BROKERED = {
+      modelSteps: 'claude_codex',
+      hostSteps: 'owner',
+      repositoryActions: 'brokered',
+    } as const;
+    const commit = oneStep({
+      uses: 'builtin/git-commit-push',
+      with: { commit_model: DEFAULT_CLAUDE_MODEL },
+    });
+    const pr = oneStep({ uses: 'builtin/github-create-pr' });
+    const claude = {
+      eligible: true,
+      modelSteps: 1,
+      modelHarnesses: ['claude'],
+      hostSteps: 0,
+    };
+    expect(classifyDaemonPipeline(commit, context, BROKERED)).toEqual(claude);
+    // Its PR text model defaults to the runner's, a Claude model.
+    expect(classifyDaemonPipeline(pr, context, BROKERED)).toEqual(claude);
+    expect(
+      classifyDaemonPipeline(
+        oneStep({
+          uses: 'builtin/github-create-pr',
+          with: { pr_model: DEFAULT_CODEX_MODEL },
+        }),
+        context,
+        BROKERED,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'model_provider' });
+    expect(
+      classifyDaemonPipeline(
+        oneStep({
+          uses: 'builtin/github-create-pr',
+          with: { pr_model: '${{ inputs.model }}' },
+        }),
+        { ...context, inputs: { model: DEFAULT_CLAUDE_MODEL } },
+        BROKERED,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'dynamic_model' });
+    // Unbrokered, a pull request stays in process on every host.
+    for (const options of [
+      { modelSteps: 'claude_codex', hostSteps: 'owner' },
+      { ...ADMIT, commitHooks: 'owner' },
+    ] as const)
+      expect(classifyDaemonPipeline(pr, context, options)).toMatchObject({
+        eligible: false,
+        reason: 'model_action',
+      });
   });
 
   it('admits parallel-agents on the Claude harness only', () => {
@@ -630,6 +683,75 @@ describe('classifyDaemonPipeline with model steps', () => {
         eligible: false,
         reason: 'plugin_collections',
       });
+  });
+
+  it('admits Codex plugins only where the daemon serves every MCP server they bring', () => {
+    // CAN-6168: the core marks the collections and aliases whose MCP servers
+    // are all plugin servers the daemon serves (stdio without env, HTTP
+    // without static headers); any other Codex step stays in process.
+    const plugin_collections = [
+      { id: 'servable', name: 'Servable', defaults: [] },
+      { id: 'standalone', name: 'Standalone', defaults: [] },
+    ];
+    const codexContext: DaemonPipelineClassifierContext = {
+      ...context,
+      pluginCollections: new Set(['servable', 'standalone']),
+      codexPluginCollections: new Set(['servable']),
+      modelAliases: {
+        marked: {
+          base: DEFAULT_CODEX_MODEL,
+          plugins: true,
+          codexPlugins: true,
+        },
+        unmarked: { base: DEFAULT_CODEX_MODEL, plugins: true },
+      },
+    };
+    const collectionStep = (collection: string): Step => ({
+      uses: 'builtin/agent-prompt',
+      with: {
+        prompt: 'x',
+        model: DEFAULT_CODEX_MODEL,
+        plugin_collection_id: collection,
+      },
+    });
+    const model_aliases = [
+      {
+        id: 'marked',
+        name: 'Marked',
+        defaults: { base: DEFAULT_CODEX_MODEL, plugin_collection_id: 'x' },
+      },
+      {
+        id: 'unmarked',
+        name: 'Unmarked',
+        defaults: { base: DEFAULT_CODEX_MODEL, plugin_collection_id: 'x' },
+      },
+    ];
+    const admitted = {
+      eligible: true,
+      modelSteps: 1,
+      modelHarnesses: ['codex'],
+    };
+    expect(
+      classifyDaemonPipeline(
+        oneStep(collectionStep('servable'), { plugin_collections }),
+        codexContext,
+        ADMIT,
+      ),
+    ).toEqual(admitted);
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('marked'), { model_aliases }),
+        codexContext,
+        ADMIT,
+      ),
+    ).toEqual(admitted);
+    for (const candidate of [
+      oneStep(collectionStep('standalone'), { plugin_collections }),
+      oneStep(agentPrompt('unmarked'), { model_aliases }),
+    ])
+      expect(
+        classifyDaemonPipeline(candidate, codexContext, ADMIT),
+      ).toMatchObject({ eligible: false, reason: 'plugin_collections' });
   });
 
   it('refuses expression models and plugin collections', () => {

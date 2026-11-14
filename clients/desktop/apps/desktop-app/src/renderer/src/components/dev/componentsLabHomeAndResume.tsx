@@ -173,7 +173,11 @@ export function HomeAndResumeSpecimen(): JSX.Element {
               trailing={<Badge tone="warning">Waiting</Badge>}
               data-testid="lab-resume-queue"
             >
-              <Notice intent="destructive" role="none">
+              <Notice
+                errorSource="preview-home-and-resume-specimen"
+                intent="destructive"
+                role="none"
+              >
                 Could not resume: the worktree is missing.
               </Notice>
             </InterruptedSessionRow>

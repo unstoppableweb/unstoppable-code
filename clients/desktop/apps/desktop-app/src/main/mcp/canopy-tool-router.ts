@@ -58,6 +58,8 @@ import {
   loadGitPreferences,
   saveLocalMemory,
   searchLocalMemory,
+  searchChats,
+  readChatExcerpt,
   readLocalMemory,
   getFileCommentsInSession,
   respondToFileCommentInSession,
@@ -851,6 +853,20 @@ export class CanopyToolRouter {
           sessionId: route.sdkSessionId,
           provider: route.providerType ?? 'claude',
           ...request,
+        }),
+      searchChats: (request) =>
+        searchChats({
+          ...request,
+          projectId: route.projectId,
+          worktreeId: route.worktreeId,
+          chatId: route.chatId,
+        }),
+      readChatExcerpt: (request) =>
+        readChatExcerpt({
+          ...request,
+          projectId: route.projectId,
+          worktreeId: route.worktreeId,
+          chatId: route.chatId,
         }),
       searchLocalMemory: (request) =>
         searchLocalMemory({

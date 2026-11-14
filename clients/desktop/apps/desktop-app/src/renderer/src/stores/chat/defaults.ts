@@ -38,7 +38,9 @@ import {
   type DefaultModelLaneResolution,
   type EnforcedOrgGatewayLane,
   type LaneModelDefaults,
+  type PersonalGatewayLane,
 } from '@canopy/desktop-shared/lib/default-model-lane';
+import { listPersonalGatewayDefaultModels } from '@canopy/desktop-shared/lib/org-model-gateway';
 import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   DEFAULT_CODEX_SPEED,
@@ -51,6 +53,7 @@ import { useFeatureFlagsStore } from '../featureFlagsStore';
 import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
 import {
   getRendererModelGatewayEnforced,
+  getRendererModelGatewayIndex,
   getRendererModelPolicy,
   isRendererModelExcludedByGateway,
   isRendererModelPolicyHydrated,
@@ -157,7 +160,10 @@ function laneWalkOrder(
     if (lane === 'claude-native')
       return availability.claudeNativeAuth !== false;
     if (lane === 'codex-native') return availability.codexNativeAuth !== false;
-    return availability.creditsEligible !== false;
+    return (
+      availability.creditsEligible !== false ||
+      personalGatewayCreditsLane() !== undefined
+    );
   });
 }
 
@@ -181,6 +187,52 @@ function orgGatewayLane(): EnforcedOrgGatewayLane | undefined {
     enforced: true,
     models: listRendererEnforcedGatewayModels(laneCatalog('ai-credits')),
   };
+}
+
+/**
+ * The Personal gateway standing in for AI Credits (CAN-6444), or `undefined`
+ * when credits are confirmed eligible or no usable Personal gateway is saved.
+ * Mirrors the shared resolver's own rule so the fallback walk below agrees
+ * with it; see `PersonalGatewayLane`.
+ */
+function personalGatewayCreditsLane(): PersonalGatewayLane | undefined {
+  // Only once AI Credits are confirmed unavailable, as in the shared resolver.
+  if (getRendererBillingLaneAvailability().creditsEligible !== false) {
+    return undefined;
+  }
+  // Organization work can't use Personal models; the owner-scoped exclusion
+  // removes them there, exactly as main's resolver does.
+  const models = listPersonalGatewayDefaultModels(
+    getRendererModelGatewayIndex(),
+    laneCatalog('ai-credits'),
+  ).filter((model) => !isOrgGatewayExcluded(model));
+  return models.length > 0 ? { models } : undefined;
+}
+
+/**
+ * The Personal gateway model a new chat would default to while it stands in
+ * for AI Credits, for the composer's one-click switch away from a model this
+ * account can't bill (CAN-6444).
+ */
+export function firstPersonalGatewayDefaultModel(): ChatModel | undefined {
+  // The same filters the fallback walk applies, so the switch never offers a
+  // model the next send would refuse.
+  const policy = getRendererModelPolicy();
+  return personalGatewayCreditsLane()?.models.find(
+    (model) =>
+      !isModelBlocked(model, policy) &&
+      isModelRunnableForAccountOnLane('ai-credits', model),
+  );
+}
+
+/**
+ * The catalog the fallback walk uses for a lane. While a Personal gateway
+ * stands in for credits, the credits lane walks only its models: a hosted
+ * credits model would bill credits the account doesn't have.
+ */
+function walkCatalog(lane: BillingLane): readonly ChatModel[] {
+  if (lane !== 'ai-credits') return laneCatalog(lane);
+  return personalGatewayCreditsLane()?.models ?? laneCatalog(lane);
 }
 
 function laneCatalog(lane: BillingLane): readonly ChatModel[] {
@@ -208,7 +260,7 @@ function firstDispatchableModel(
 ): ChatModel | undefined {
   const policy = getRendererModelPolicy();
   for (const lane of laneWalkOrder(resolvedLane, ollamaPinned)) {
-    for (const candidate of laneCatalog(lane)) {
+    for (const candidate of walkCatalog(lane)) {
       if (isModelBlocked(candidate, policy)) continue;
       if (isOrgGatewayExcluded(candidate)) continue;
       if (!isModelRunnableForAccountOnLane(lane, candidate)) continue;
@@ -388,6 +440,7 @@ export function resolveLaneForTarget(
     return undefined;
   }
   const orgGateway = orgGatewayLane();
+  const personalGateway = personalGatewayCreditsLane();
   return resolveDefaultModelLane({
     availability: getRendererBillingLaneAvailability(),
     defaults: laneDefaultsFor(byProvider),
@@ -402,6 +455,7 @@ export function resolveLaneForTarget(
     ollamaPinned: preferredProvider === 'ollama',
     codexAccountModels: getRendererCodexAccountModels(),
     ...(orgGateway ? { orgGateway } : {}),
+    ...(personalGateway ? { personalGateway } : {}),
     guestPrincipal: getRendererGuestPrincipal(),
     // Synthesized credits candidates carry a nominal `'high'`; clamp it against
     // the model exactly as the lane-default repair above does, so a gateway

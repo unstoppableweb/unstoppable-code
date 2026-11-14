@@ -370,6 +370,7 @@ function FoldedPluginStatus({
   if (pluginInstall.status === 'error' && pluginInstall.message)
     return (
       <ErrorBanner
+        errorSource="mcp-browse-detail-skills-error"
         className=""
         error={pluginInstall.message}
         testId="mcp-browse-detail-skills-error"
@@ -1409,6 +1410,7 @@ function AppMcpConnectionDetail({
                 )}
                 {showAccountActionError ? (
                   <ErrorBanner
+                    errorSource="app-mcp-connection-detail-account-action"
                     error={accountActionError}
                     blockMessageFromReplay
                   />

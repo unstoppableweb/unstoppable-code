@@ -17,6 +17,7 @@ import {
   type CostTokenTotals,
 } from '@canopy/protocol/cost-view';
 import type { CostTurnRecord } from './types';
+import { observedModelIdentity } from '@canopy/core-runtime/observability';
 
 const HELPER_KIND_BY_EVENT: Readonly<
   Partial<Record<AgentAuditEventType, CostHelperKind>>
@@ -917,10 +918,17 @@ function sourceForEvent(
  * Work Entry identities (plus App Advisor Work Entries) are admitted.
  */
 export function classifyAuditEntry(
-  entry: AgentAuditEntry,
+  auditEntry: AgentAuditEntry,
 ): CostTurnRecord | null {
-  const entryId = safeAuditEntryId(entry.id);
-  if (!hasRealScope(entry) || !entryId) return null;
+  const entryId = safeAuditEntryId(auditEntry.id);
+  if (!hasRealScope(auditEntry) || !entryId) return null;
+
+  const identity = observedModelIdentity(auditEntry);
+  const entry =
+    identity.model === auditEntry.model
+      ? auditEntry
+      : { ...auditEntry, model: identity.model };
+  const agentId = safeOpaqueId(identity.agentId);
 
   const startedAt = normalizedTimestamp(entry.startedAt);
   if (!startedAt) return null;
@@ -987,6 +995,7 @@ export function classifyAuditEntry(
     ...(helperKind ? { helperKind } : {}),
     ...(pipeline ? { pipeline } : {}),
     provider: entry.provider,
+    ...(agentId ? { agentId } : {}),
     ...(safeModel(entry.model) ? { model: safeModel(entry.model) } : {}),
     ...(entry.executionHarness ? { harness: entry.executionHarness } : {}),
     billingBasis: basis,

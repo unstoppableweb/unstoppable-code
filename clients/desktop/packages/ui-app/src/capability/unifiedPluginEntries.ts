@@ -33,6 +33,7 @@ import {
   type PluginInfo,
   type PluginSkillInfo,
   type SharedPluginSummary,
+  officialMarketplaceRelativePackageUrl,
 } from '@canopy/protocol/plugins';
 import type { SharedAgentSummary } from '@canopy/protocol/agents';
 import {
@@ -85,7 +86,16 @@ import {
   ownShareAudienceText,
 } from '@canopy/ui-shared';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
-import { sourceLabelProvider } from '@canopy/ui-shared/lib/unified-plugin-entry';
+import {
+  CLAUDE_PLUGIN_MARKETPLACE_ID,
+  marketplacePublisherDisplayName,
+} from '@canopy/ui-shared/lib/official-marketplace-products';
+import {
+  describeMarketplaceVariant,
+  marketplacePackageGroup,
+  officialMarketplaceProvider,
+  sourceLabelProvider,
+} from '@canopy/ui-shared/lib/unified-plugin-entry';
 export { marketplaceTitleCase } from '@canopy/ui-shared';
 import { MCP_BRAND_LOGOS } from '@canopy/ui-shared/lib/mcp-brand-logos';
 import {
@@ -145,6 +155,8 @@ export interface UnifiedMarketplacePluginInput extends Pick<
   | 'parked'
 > {
   marketplaceId: string;
+  /** Local inventory only. Never used as a cross-provider key on its own. */
+  sourcePath?: string;
   curated?: boolean;
   recommended?: boolean;
   details?: Pick<
@@ -153,12 +165,15 @@ export interface UnifiedMarketplacePluginInput extends Pick<
   > | null;
   /** Browser summaries collapse provider-specific install state to one bit. */
   installed?: boolean;
+  /** Whether this listing can use the host's existing Browse install action. */
+  browseInstallAvailable?: boolean;
   /**
    * The plugin package's own source URL, for hosts whose rows carry no
    * `externalSource` (the Portal's sanitized projection). Distinct from the
    * marketplace's repository URL.
    */
   externalSourceUrl?: string;
+  marketplacePackageSourceUrl?: string;
   /** Bundled MCP servers, for hosts whose rows carry no `details`. */
   bundledMcpServers?: readonly UnifiedBundledMcpServerInput[];
   /** Bundled skills, for hosts whose rows carry no `details` (CAN-4844). */
@@ -175,7 +190,12 @@ export interface UnifiedBundledMcpServerInput {
 export interface UnifiedMarketplaceInput
   extends
     Pick<MarketplaceInfo, 'id' | 'name' | 'curated'>,
-    Partial<Pick<MarketplaceInfo, 'sourceType' | 'sourceUrl' | 'builtIn'>> {
+    Partial<
+      Pick<
+        MarketplaceInfo,
+        'sourceType' | 'sourceUrl' | 'builtIn' | 'installLocation'
+      >
+    > {
   plugins: UnifiedMarketplacePluginInput[];
 }
 
@@ -267,6 +287,8 @@ export interface UnifiedEntryInputs {
   viewerId?: string | null;
   personalOrganizationId?: string | null;
   curatedPlugins: CuratedPluginEntry[];
+  /** Customize keeps each provider listing addressable from the grouped row. */
+  retainProviderListings?: boolean;
   marketplaces: UnifiedMarketplaceInput[];
   installedSkills: UnifiedInstalledSkillInput[];
   mcpServers: McpServerIndexEntry[];
@@ -351,7 +373,7 @@ export interface RankedResults {
  * `description`, `category`, `author`) plus the per-user `recommended` flag
  * that the curated scan copies out of the managed marketplace manifest.
  *
- * Fields the row genuinely cannot carry (`logoUrl`, `contentHash`,
+ * Fields the row genuinely cannot carry (`contentHash`,
  * `sortOrder`, `updatedAt`, `popular`) are filled with inert defaults — the
  * projection never reads them. `key` is the plugin `name`, which is exactly the
  * join key `buildUnifiedPluginEntries` uses to merge a catalog entry with its
@@ -374,6 +396,7 @@ export function curatedCatalogFromMarketplaces(
       shortDescription: plugin.description ?? '',
       version: plugin.version,
       authorName: plugin.author,
+      logoUrl: plugin.logoUrl,
       categories: plugin.category ? [plugin.category] : [],
       popular: false,
       recommended: plugin.recommended === true,
@@ -1297,6 +1320,11 @@ function marketplacePluginState(
   plugin: UnifiedMarketplacePluginInput,
 ): UnifiedEntryState {
   if (plugin.parked || plugin.installed === true) return 'installed';
+  if (
+    plugin.installed === false &&
+    officialMarketplaceProvider(plugin.marketplaceId)
+  )
+    return 'available';
   if (!plugin.globalInstallStatus) return 'available';
   return builtInAnyProviderInstalled(plugin.globalInstallStatus)
     ? 'installed'
@@ -1411,14 +1439,14 @@ export function pluginOwnerAvatarUrl(
 /** The fields a marketplace listing's mark is resolved from. */
 export type MarketplacePluginLogoInput = Pick<
   UnifiedMarketplacePluginInput,
-  'name' | 'logoUrl' | 'homepage' | 'externalSource' | 'builtIn'
+  'name' | 'author' | 'logoUrl' | 'homepage' | 'externalSource' | 'builtIn'
 >;
 
 /**
  * The mark a non-curated marketplace listing wears, resolved exactly as its
  * card resolves it. Curated listings' cards resolve through
  * `buildCuratedPluginEntries` instead; on the portal the two agree today only
- * because the wire row carries no `logoUrl`, `homepage` or `authorUrl`.
+ * through the explicit installed-record logo, without inferring publisher art.
  *
  * Exported because a detail page can load a listing on its own — the web
  * portal's does, by route, and never sees the entry its card was built from.
@@ -1430,6 +1458,17 @@ export function marketplacePluginLogo(
   marketplaceId: string,
   plugin: MarketplacePluginLogoInput,
 ): Pick<UnifiedPluginEntry, 'logoUrl' | 'bundledLogo' | 'brandMark'> {
+  if (marketplaceId === CURATED_PLUGIN_MARKETPLACE_ID) {
+    return { logoUrl: plugin.logoUrl };
+  }
+  if (marketplaceId === CLAUDE_PLUGIN_MARKETPLACE_ID) {
+    // Claude listing homepages can point into Anthropic's marketplace repo,
+    // including for third-party plugins. A catalog URL is not product artwork.
+    const logoUrl = plugin.logoUrl?.trim();
+    return logoUrl
+      ? { logoUrl }
+      : { bundledLogo: bundledPluginLogo(marketplaceId, plugin) };
+  }
   const bundledLogo = bundledPluginLogo(marketplaceId, plugin);
   return {
     logoUrl:
@@ -1472,18 +1511,40 @@ function installedPluginFacts(
   };
 }
 
+function marketplacePluginPackageSource(
+  marketplace: UnifiedMarketplaceInput,
+  plugin: UnifiedMarketplacePluginInput,
+): string | undefined {
+  return (
+    plugin.externalSourceUrl ??
+    plugin.externalSource?.url ??
+    plugin.marketplacePackageSourceUrl ??
+    officialMarketplaceRelativePackageUrl(marketplace, plugin.sourcePath)
+  );
+}
+
 function buildMarketplacePluginEntries(
   marketplaces: readonly UnifiedMarketplaceInput[],
 ): UnifiedPluginEntry[] {
   const entries: UnifiedPluginEntry[] = [];
   for (const marketplace of marketplaces) {
     if (isCuratedMarketplace(marketplace)) continue;
+    const marketplaceProvider = officialMarketplaceProvider(marketplace.id);
     for (const plugin of marketplace.plugins) {
       const logo = marketplacePluginLogo(marketplace.id, plugin);
       // Product over publisher, the same rule the mark above follows.
       const author = pluginDisplayAuthor(marketplace.id, plugin);
       entries.push({
         id: `mkt:${marketplace.id}/${plugin.name}`,
+        ...(marketplaceProvider
+          ? {
+              marketplaceGroup: marketplacePackageGroup(
+                plugin.name,
+                marketplacePluginPackageSource(marketplace, plugin),
+              ),
+              marketplaceProvider,
+            }
+          : {}),
         kind: 'plugin',
         origin: 'marketplace',
         name: pluginDisplayName(plugin),
@@ -1497,7 +1558,17 @@ function buildMarketplacePluginEntries(
         sourceLabel: pluginSourceLabel(marketplace, plugin),
         ownershipLabel: author,
         availabilityLabel: availabilityLabel(marketplacePluginState(plugin)),
-        components: pluginDetailsComponents(plugin.details),
+        components: {
+          ...pluginDetailsComponents(plugin.details),
+          ...(plugin.bundledSkills
+            ? { skills: plugin.bundledSkills.length }
+            : {}),
+          ...(plugin.bundledMcpServers
+            ? { mcpServers: plugin.bundledMcpServers.length }
+            : {}),
+        },
+        marketplaceVersion: plugin.version || undefined,
+        browseInstallAvailable: plugin.browseInstallAvailable,
         providerSupport: pluginProviderSupport(plugin),
         state: marketplacePluginState(plugin),
         ...installedPluginFacts(plugin),
@@ -1657,6 +1728,7 @@ function projectInstalledSkill(
   skill: UnifiedInstalledSkillInput,
 ): UnifiedPluginEntry {
   const receipt = sharedInstallReceipt(skill);
+  const [source, githubOwner, githubRepo] = skill.sourceId.split(':');
   return {
     id: installedSkillEntryId(skill),
     kind: 'skill',
@@ -1675,9 +1747,10 @@ function projectInstalledSkill(
       : skill.sourceId.startsWith('github:')
         ? 'GitHub'
         : 'Local',
-    ownershipLabel: skill.sourceId.startsWith('github:')
-      ? skill.sourceId.split(':')[1]
-      : undefined,
+    ownershipLabel:
+      source === 'github' && githubOwner && githubRepo
+        ? marketplacePublisherDisplayName(githubOwner)
+        : undefined,
     availabilityLabel: 'Installed',
     components: { ...emptyComponents(), skills: 1 },
     providerSupport: NEUTRAL_PROVIDER_SUPPORT,
@@ -2941,18 +3014,24 @@ export function collapseByCoverage<T>(
  * provider. Copies that cover each other collapse; copies that merely tie do
  * not.
  *
+ * Customize retains cross-provider copies here, then groups its display rows.
  * The copies not shown remain listed in the per-marketplace plugins modal,
  * which reads `marketplace.plugins` directly rather than this projection.
  */
 function collapseDuplicateCapabilities(
   entries: UnifiedPluginEntry[],
   packageKeys: ReadonlyMap<string, string | undefined>,
+  retainProviderListings = false,
 ): UnifiedPluginEntry[] {
   return collapseByCoverage(entries, {
     groupKey: (entry) =>
       entry.ref.type === 'marketplace-plugin' &&
       OVERLAPPING_MARKETPLACE_IDS.has(entry.ref.marketplaceId)
-        ? `${entry.name.toLowerCase()}|${packageKeys.get(entry.id) ?? ''}`
+        ? JSON.stringify([
+            retainProviderListings ? entry.marketplaceProvider : null,
+            entry.name.toLowerCase(),
+            packageKeys.get(entry.id) ?? null,
+          ])
         : null,
     reach: (entry) => entry.providerSupport,
     // Two installs are two things the user can uninstall; hiding either leaves
@@ -3002,6 +3081,24 @@ function alternativeLabel(entry: UnifiedPluginEntry): string {
   return entry.sourceLabel ?? entry.name;
 }
 
+function marketplaceVariant(
+  entry: UnifiedPluginEntry,
+  other: UnifiedPluginEntry,
+): UnifiedEntryAlternative['marketplaceVariant'] {
+  if (
+    !entry.marketplaceGroup ||
+    entry.marketplaceGroup !== other.marketplaceGroup ||
+    !other.marketplaceProvider ||
+    entry.marketplaceProvider === other.marketplaceProvider
+  )
+    return undefined;
+  return describeMarketplaceVariant(
+    other.marketplaceProvider,
+    entry.marketplaceVersion,
+    other.marketplaceVersion,
+  );
+}
+
 /**
  * Link each catalog plugin to the same app's plugins from other catalogs, so
  * a plugin page can say where else the app is published. Runs after the
@@ -3014,24 +3111,38 @@ function linkSameAppPlugins(
     entry.kind === 'plugin' &&
     (entry.origin === 'marketplace' || entry.origin === 'curated');
   const byName = new Map<string, UnifiedPluginEntry[]>();
+  const byPackage = new Map<string, UnifiedPluginEntry[]>();
   for (const entry of entries) {
     if (!linkable(entry)) continue;
     const key = marketplaceBrowseNameKey(entry.name);
     const group = byName.get(key);
     if (group) group.push(entry);
     else byName.set(key, [entry]);
+    if (entry.marketplaceGroup) {
+      const copies = byPackage.get(entry.marketplaceGroup);
+      if (copies) copies.push(entry);
+      else byPackage.set(entry.marketplaceGroup, [entry]);
+    }
   }
   return entries.map((entry) => {
     if (!linkable(entry)) return entry;
-    const others = (byName.get(marketplaceBrowseNameKey(entry.name)) ?? [])
+    const candidates = new Set([
+      ...(byName.get(marketplaceBrowseNameKey(entry.name)) ?? []),
+      ...(entry.marketplaceGroup
+        ? (byPackage.get(entry.marketplaceGroup) ?? [])
+        : []),
+    ]);
+    const others = [...candidates]
       .filter((other) => other.id !== entry.id)
-      .map(
-        (other): UnifiedEntryAlternative => ({
+      .map((other): UnifiedEntryAlternative => {
+        const variant = marketplaceVariant(entry, other);
+        return {
           entryId: other.id,
           label: alternativeLabel(other),
           ref: other.ref,
-        }),
-      );
+          ...(variant ? { marketplaceVariant: variant } : {}),
+        };
+      });
     return others.length > 0 ? { ...entry, alsoAvailableFrom: others } : entry;
   });
 }
@@ -3329,6 +3440,7 @@ export function marketplacePluginBundledServerRows(
       ...collapseDuplicateCapabilities(
         buildMarketplacePluginEntries(marketplaces),
         marketplacePackageKeys(marketplaces),
+        true,
       ),
       ...buildMcpAppEntries(
         mcpServers,
@@ -3360,17 +3472,24 @@ export function marketplacePluginBundledServerRows(
 export function marketplacePluginAlternatives(
   marketplaces: readonly UnifiedMarketplaceInput[],
   ref: { marketplaceId: string; pluginName: string },
-): UnifiedEntryAlternative[] {
+):
+  | Pick<UnifiedPluginEntry, 'marketplaceGroup' | 'alsoAvailableFrom'>
+  | undefined {
   const linked = linkSameAppPlugins(
     collapseDuplicateCapabilities(
       buildMarketplacePluginEntries(marketplaces),
       marketplacePackageKeys(marketplaces),
+      true,
     ),
   );
   const id = `mkt:${ref.marketplaceId}/${ref.pluginName}`;
-  return [
-    ...(linked.find((entry) => entry.id === id)?.alsoAvailableFrom ?? []),
-  ];
+  const listing = linked.find((entry) => entry.id === id);
+  return (
+    listing && {
+      marketplaceGroup: listing.marketplaceGroup,
+      alsoAvailableFrom: listing.alsoAvailableFrom,
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -3467,6 +3586,7 @@ export function buildUnifiedPluginEntries(
   const marketplacePlugins = collapseDuplicateCapabilities(
     buildMarketplacePluginEntries(inputs.marketplaces).filter(notOwned),
     marketplacePackageKeys(inputs.marketplaces),
+    inputs.retainProviderListings,
   );
   const assembled = [
     ...providerEntries,
@@ -3748,6 +3868,7 @@ function matchScore(
       entry.sharedWith?.name,
       entry.availabilityLabel,
       entry.authorName,
+      entry.marketplaceProvider,
       // A bundled skill or server is found by its plugin's name (CAN-4844).
       entry.bundledBy?.name,
       entry.installedVia?.name,
@@ -3763,6 +3884,18 @@ function matchScore(
     score += 1;
   }
   return score;
+}
+
+function groupedMatchScore(entry: UnifiedPluginEntry, query: string): number {
+  const score = matchScore(entry, query);
+  return entry.marketplaceListings
+    ? Math.max(
+        score,
+        ...entry.marketplaceListings.map((listing) =>
+          matchScore(listing, query),
+        ),
+      )
+    : score;
 }
 
 type RankedResultsKey = keyof RankedResults;
@@ -3883,7 +4016,7 @@ export function searchUnifiedEntries(
       continue;
     }
     const score =
-      normalizedQuery === '' ? 0 : matchScore(entry, normalizedQuery);
+      normalizedQuery === '' ? 0 : groupedMatchScore(entry, normalizedQuery);
     if (normalizedQuery !== '' && score === 0) continue;
     banded[bandFor(entry)].push({ entry, score });
   }

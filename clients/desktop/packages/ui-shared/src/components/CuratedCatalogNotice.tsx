@@ -19,6 +19,7 @@ export function CuratedCatalogNotice({
   if (error)
     return (
       <Notice
+        errorSource="plugins-curated-pipelines-error"
         intent="destructive"
         role="none"
         title="Couldn't load curated workflows."

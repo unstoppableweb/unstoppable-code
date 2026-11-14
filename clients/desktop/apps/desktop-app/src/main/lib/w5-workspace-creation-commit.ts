@@ -1,8 +1,4 @@
-import {
-  getWorkspaceIndexFilePath,
-  getWorkspaceConfigPath,
-  getWorkspaceWorktreesFilePath,
-} from './paths';
+import { w5RecordReadPaths } from './paths';
 import type { W5RepositoryLock } from './w5-repository-locks';
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import { randomUUID } from 'node:crypto';
@@ -118,17 +114,17 @@ export async function commitWorkspaceCreation<T extends SidebarItem>(
   const scope = context.getStore();
   if (!scope?.active) return work();
   const locks: W5RepositoryLock[] = [
-    { kind: 'index', path: getWorkspaceIndexFilePath() },
+    { kind: 'index', path: w5RecordReadPaths.index() },
     ...workspaceIds.map(
       (id): W5RepositoryLock => ({
         kind: 'manifest',
-        path: getWorkspaceConfigPath(id),
+        path: w5RecordReadPaths.manifest(id),
       }),
     ),
     ...workspaceIds.map(
       (id): W5RepositoryLock => ({
         kind: 'list',
-        path: getWorkspaceWorktreesFilePath(id),
+        path: w5RecordReadPaths.worktrees(id),
       }),
     ),
   ];
@@ -195,7 +191,7 @@ export async function reserveWorkspaceCreation(
     phase: 'before-canonical-commit',
   };
   await store.reserve({
-    // Legacy desktop IDs have a wider vocabulary than daemon capture selectors.
+    // Filesystem-impossible historical IDs still cannot be claimed as targets.
     ...(isW5CaptureWorkspaceId(workspaceId) && {
       workspaceIdentity: workspaceId,
       expectedWorkspaceRecords: options?.expectedWorkspaceRecords,

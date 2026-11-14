@@ -1,6 +1,9 @@
 import type { JSX } from 'react';
 import { ChevronDownMediumIcon } from '../icons/AppIcons';
-import { WorkspaceSectionHeader } from './WorkspaceSectionHeader';
+import {
+  WorkspaceSectionHeader,
+  type WorkspaceSectionHeaderContextAction,
+} from './WorkspaceSectionHeader';
 
 export interface HiddenItemsRowProps {
   readonly label: string;
@@ -9,6 +12,9 @@ export interface HiddenItemsRowProps {
   readonly onToggle: () => void;
   readonly dataTestId?: string;
   readonly touchTarget?: boolean;
+  /** Right-click actions over every hidden item, such as Archive all. */
+  readonly contextMenuActions?: readonly WorkspaceSectionHeaderContextAction[];
+  readonly contextMenuLabel?: string;
 }
 
 /**
@@ -23,10 +29,22 @@ export function HiddenItemsRow({
   onToggle,
   dataTestId,
   touchTarget = false,
+  contextMenuActions,
+  contextMenuLabel,
 }: HiddenItemsRowProps): JSX.Element {
+  const hasActions =
+    contextMenuActions !== undefined && contextMenuActions.length > 0;
   return (
     <WorkspaceSectionHeader
       name={label}
+      // A quiet disclosure row, in the grey of the sidebar's other
+      // secondary rows rather than a project's name ink.
+      nameTone="secondary"
+      contextMenuActions={hasActions ? contextMenuActions : undefined}
+      contextMenuLabel={hasActions ? contextMenuLabel : undefined}
+      // Touch has no right-click: a More actions button opens the same menu.
+      optionsOpensContextMenu={hasActions}
+      hideOptionsForFinePointer
       workspaceType="single-repo"
       worktreeCount={count}
       textScale="sidebar"

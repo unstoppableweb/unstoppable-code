@@ -6,6 +6,7 @@ import type {
 import { chatScopeKey } from './revisioned-sync';
 import { chatStoreApi } from './store-ref';
 import { chatBackendFor } from './backend';
+import { runtimeRunsTurn } from './runtime-runs-turn';
 
 export type CanonicalTurnState = 'active' | 'inactive' | 'unknown';
 
@@ -17,21 +18,11 @@ export interface CanonicalTurnConfirmation {
   revision?: number;
 }
 
-const ACTIVE_RUNTIME_STATUSES: ReadonlySet<ChatRuntimeState['status']> =
-  new Set<ChatRuntimeState['status']>([
-    'starting',
-    'streaming',
-    'completing',
-    'awaiting_input',
-  ]);
-
 /** Whether one chat's canonical runtime holds a running turn. */
 export function canonicalTurnStateFor(
   runtime: ChatRuntimeState | undefined,
 ): Exclude<CanonicalTurnState, 'unknown'> {
-  return runtime && ACTIVE_RUNTIME_STATUSES.has(runtime.status)
-    ? 'active'
-    : 'inactive';
+  return runtimeRunsTurn(runtime) ? 'active' : 'inactive';
 }
 
 export interface ConfirmCanonicalTurnDeps {

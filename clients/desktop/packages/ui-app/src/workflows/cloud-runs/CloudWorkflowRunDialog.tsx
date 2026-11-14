@@ -284,6 +284,7 @@ export function CloudWorkflowRunDialog({
             ) : null}
             {error !== null ? (
               <Notice
+                errorSource="cloud-workflow-run-error"
                 intent="destructive"
                 data-testid="cloud-workflow-run-error"
               >

@@ -1,3 +1,5 @@
+import type { AutoDeleteAttention } from '../portal/auto-delete-attention';
+
 /**
  * Portable contract for agent-armed work entry auto-delete: an agent arms its
  * own worktree, Cowork work entry or Orchestrator work entry, and the item is
@@ -65,6 +67,8 @@ export interface WorkEntryAutoDeleteRowState {
 export interface WorkEntryAutoDeleteWorkspaceSnapshot {
   readonly workspaceId: string;
   readonly targets: Readonly<Record<string, WorkEntryAutoDeleteRowState>>;
+  /** Unresolved background removal incidents, including unarmed worktrees. */
+  readonly attention?: readonly AutoDeleteAttention[];
 }
 
 export interface WorkEntryAutoDeleteDisarmRequest {

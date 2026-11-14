@@ -1,4 +1,7 @@
+import { assertAntigravityHarnessEnabled } from '../antigravity/feature-flag';
+import { prepareRootMigrationChatNotice } from './root-migration-chat-notice';
 import { assertCoworkChatRootPresent } from './cowork-folder-guard';
+import { loadProviderSwitchSeed } from './provider-switch-seed';
 import { detectAiCreditsNoBillingSource } from '../agents/ai-credits-quota-state';
 import {
   recordPresentationTurn,
@@ -1150,7 +1153,13 @@ async function buildWorktreeSystemPromptAppend(options: {
   projectId: string;
   worktreeId: string;
   selectedRepoId?: string;
-  providerPromptKind: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  providerPromptKind:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   planMode: boolean;
   codeGraphToolsAdvertised: boolean;
   localMemoryEnabled: boolean;
@@ -1163,17 +1172,18 @@ async function buildWorktreeSystemPromptAppend(options: {
   const codeGraphEnabled =
     options.providerPromptKind !== 'cursor' &&
     options.providerPromptKind !== 'copilot' &&
+    options.providerPromptKind !== 'antigravity' &&
     options.providerPromptKind !== 'opencode' &&
     options.codeGraphToolsAdvertised &&
     isCodeGraphAvailableForWorkspace(options.projectId);
-  // The Cursor session appends its own injected-tool and local-memory
-  // steering once it knows the app's MCP servers reached the CLI; emitting it
-  // here would advertise tools that may not exist for that turn.
-  const isCursor =
+  // MCP-backed sessions add steering only after connecting their app tools.
+  // Antigravity supplies guidance for its qualified subset from its app bridge.
+  const omitAppToolGuidance =
     options.providerPromptKind === 'cursor' ||
     options.providerPromptKind === 'copilot' ||
+    options.providerPromptKind === 'antigravity' ||
     options.providerPromptKind === 'opencode';
-  const promptParts = isCursor
+  const promptParts = omitAppToolGuidance
     ? []
     : [
         buildWorktreeInjectedToolPrompt(
@@ -1203,7 +1213,7 @@ async function buildWorktreeSystemPromptAppend(options: {
   }
   const memoryPolicy = await resolveLocalMemoryPolicy(options);
   const localMemoryPrompt = buildLocalMemoryPromptNudge(
-    !isCursor && options.localMemoryEnabled,
+    !omitAppToolGuidance && options.localMemoryEnabled,
     memoryPolicy.kind === 'scoped' && memoryPolicy.privateMemory,
   );
   if (localMemoryPrompt) {
@@ -1608,6 +1618,8 @@ export async function prepareWorktreeTurnSession<
       selectedModel ?? persistedDispatchMetadata.model,
     );
   }
+  if (effectiveExecutionHarness === 'antigravity')
+    assertAntigravityHarnessEnabled();
   await preparationOptions.beforeSessionConfiguration?.();
   const normalizedModelConfig = normalizeAgentModelConfig(options.modelConfig);
   let repoRulesBlockPromise: Promise<string> | undefined;
@@ -1655,6 +1667,7 @@ export async function prepareWorktreeTurnSession<
           systemPromptAppend,
           pluginSelections: options.pluginSelections,
           providerType: effectiveProviderType,
+          executionHarness: effectiveExecutionHarness,
         })
       : undefined;
     const runtimeProviderType = runtime?.providerType ?? effectiveProviderType;
@@ -1709,6 +1722,11 @@ export async function prepareWorktreeTurnSession<
         );
         return repoRulesBlockPromise;
       },
+      onComposeError: (error) =>
+        logMainProcessError(
+          '[repo-rules] Repository rules were not composed for the session',
+          error,
+        ),
     });
     const composedSystemPromptAppend =
       appendUserOverallPreferencesBlock(
@@ -3581,6 +3599,20 @@ async function dispatchHeldWorktreeChatTurn<
     if (preparation.cancelled) return;
     // A hidden continuation never carries one-shot instructions; they belonged
     // to the turn it continues.
+    const migrationNotice = await prepareRootMigrationChatNotice({
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      chatId: options.chatId,
+      provider: runtimeProviderType,
+      userText: options.text,
+      createdAt: async () => {
+        const tabs = await getChatStateService().getCompatibilityTabs({
+          projectId: options.projectId,
+          worktreeId: options.worktreeId,
+        });
+        return tabs.tabs.find((tab) => tab.id === options.chatId)?.createdAt;
+      },
+    });
     const instructedSubmittedText = options.hiddenDeferredContinuation
       ? visibleSubmittedText
       : prependPendingSystemInstructions(
@@ -3590,9 +3622,28 @@ async function dispatchHeldWorktreeChatTurn<
             activePlanInstruction,
           ),
         );
+    // The first turn on a provider the chat switched to starts a fresh
+    // session; it carries the conversation so far, ahead of everything else
+    // the turn adds (CAN-6445), including on a hidden continuation.
+    const providerSwitchSeed = await loadProviderSwitchSeed({
+      pending:
+        preparedSession.persistedDispatchMetadata.providerSwitchSeedPending ===
+        true,
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      chatId: options.chatId,
+      userMessageId: options.userMessageId,
+      continuation: options.hiddenDeferredContinuation === true,
+      model: options.model,
+    });
+    if (preparation.cancelled) return;
     const submittedText = composeSubmittedText(
       instructedSubmittedText,
-      options.hiddenContext?.text,
+      joinHiddenBlocks(
+        providerSwitchSeed?.text,
+        migrationNotice?.text,
+        options.hiddenContext?.text,
+      ),
       joinHiddenBlocks(memory?.renderedBlock, localMemory.value?.renderedBlock),
     );
     // The pre-send verdict under this dispatch's owner (contracts §3): a wake
@@ -3823,7 +3874,8 @@ async function dispatchHeldWorktreeChatTurn<
         turnRun.executeSync(() =>
           session.sendMessage(submittedText, {
             userMessageId: options.userMessageId,
-            ...(effectiveExecutionHarness === 'opencode' &&
+            ...((effectiveExecutionHarness === 'opencode' ||
+              effectiveExecutionHarness === 'antigravity') &&
             !options.hiddenDeferredContinuation &&
             options.attachmentPaths?.length
               ? {
@@ -3882,6 +3934,10 @@ async function dispatchHeldWorktreeChatTurn<
     }
     turnRun.accepted();
     activeTurnAccepted = true;
+    if (session.isDisposed?.() !== true) {
+      await migrationNotice?.delivered();
+      await providerSwitchSeed?.delivered();
+    }
     options.onTurnAccepted?.();
     // `sendMessage` enqueues without inspecting session state, so a session
     // destroyed between dispatch and send still accepts the composed turn into

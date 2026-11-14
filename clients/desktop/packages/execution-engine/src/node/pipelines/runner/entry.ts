@@ -42,6 +42,7 @@ import {
   pipelineRunnerRelayExitCode,
   servePipelineRunnerRelay,
 } from './relay';
+import { pipelineRunnerOwnerRoutes } from './owner-routes';
 
 /*
  * The cloud runner's process (CAN-6200, cloud pipelines CP-10), bundled as
@@ -120,8 +121,18 @@ async function runnerProcess(
   ].join(':');
   // The host and steps keep the runner's own home and locale; nothing here
   // overrides them (a Codex home is the host's to set up, not the runner's).
+  // A folder run's GitHub window (CAN-6672) reaches them too: gh's
+  // configuration folder, which holds its placeholder token, and the
+  // switches that keep gh and git from prompting. None is a credential.
   const inherited = Object.fromEntries(
-    ['HOME', 'LANG', 'TZ'].flatMap((name) => {
+    [
+      'HOME',
+      'LANG',
+      'TZ',
+      'GH_CONFIG_DIR',
+      'GH_PROMPT_DISABLED',
+      'GIT_TERMINAL_PROMPT',
+    ].flatMap((name) => {
       const value = process.env[name];
       return value === undefined ? [] : [[name, value]];
     }),
@@ -288,6 +299,30 @@ async function serveRelay(
   const source = flag(args, 'activation');
   if (!source) throw new UsageError('relay needs --activation <file|->.');
   const activation = await readActivation(source);
+  // The run sandbox's memory its steps may take together (CAN-6325); without
+  // it steps start without waiting for memory.
+  const memoryBudget = flag(args, 'memory-budget');
+  const budgetBytes = memoryBudget === undefined ? null : Number(memoryBudget);
+  if (
+    budgetBytes !== null &&
+    (!Number.isSafeInteger(budgetBytes) || budgetBytes <= 0)
+  )
+    throw new UsageError('--memory-budget needs a positive number of bytes.');
+  // Of what the machine has available, what its steps leave free for chats
+  // sharing the sandbox (a worktree's or a Cowork project's, CAN-6672).
+  const chatReserve = flag(args, 'chat-reserve');
+  const chatReserveBytes =
+    chatReserve === undefined ? undefined : Number(chatReserve);
+  if (
+    chatReserveBytes !== undefined &&
+    (budgetBytes === null ||
+      !Number.isSafeInteger(chatReserveBytes) ||
+      chatReserveBytes <= 0 ||
+      chatReserveBytes >= budgetBytes)
+  )
+    throw new UsageError(
+      '--chat-reserve needs --memory-budget and a positive number of bytes below it.',
+    );
   const { layout, launchHost, stopHosts } = await runnerProcess(
     bundleRoot,
     bundle,
@@ -301,10 +336,27 @@ async function serveRelay(
     stopHosts,
     secrets,
     // Its TTL comes with the first portable start; one incarnation serves
-    // one delegation.
-    remoteOwner: { lease: pipelineRunnerLeaseOf(activation) },
+    // one delegation. Model routes resolve with its AI Credits session (CP-68).
+    remoteOwner: {
+      lease: pipelineRunnerLeaseOf(activation),
+      resolveOwnerValues: pipelineRunnerOwnerRoutes(activation.aiCredits),
+    },
+    // A run's MCP servers reach the web origin's MCP proxy with the same
+    // session (CAN-6439).
+    ...(activation.aiCredits && {
+      mcpProxy: {
+        origin: activation.aiCredits.proxyOrigin,
+        token: activation.aiCredits.token,
+      },
+    }),
     targetId:
       flag(args, 'target-id') ?? `pipeline-runner:${activation.delegationId}`,
+    ...(budgetBytes !== null && {
+      memory: {
+        budgetBytes,
+        ...(chatReserveBytes !== undefined && { chatReserveBytes }),
+      },
+    }),
   });
   print({
     event: 'pipeline-runner.relay',

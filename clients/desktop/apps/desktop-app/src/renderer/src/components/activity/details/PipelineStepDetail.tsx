@@ -404,7 +404,11 @@ export function PipelineStepDetail({
       )}
 
       {stepResult?.error && (
-        <Notice intent="destructive" title="Step failed">
+        <Notice
+          errorSource="pipeline-step-detail"
+          intent="destructive"
+          title="Step failed"
+        >
           {/* Step error text is command output: blocked from session replay. */}
           <span
             className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words font-mono`}

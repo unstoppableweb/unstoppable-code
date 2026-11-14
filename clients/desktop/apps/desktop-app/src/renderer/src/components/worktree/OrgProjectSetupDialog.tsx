@@ -256,6 +256,7 @@ export function OrgProjectSetupDialog({
           </p>
         )}
         <DesktopErrorBanner
+          errorSource="org-project-setup-dialog"
           className=""
           error={error?.error}
           {...(error?.details === undefined ? {} : { details: error.details })}

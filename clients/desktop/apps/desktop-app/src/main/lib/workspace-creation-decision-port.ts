@@ -1,3 +1,4 @@
+import type { SidebarItemsFile } from '@canopy/desktop-shared/types';
 import { writeAllSidebarItems } from './sidebar-items';
 import {
   workspaceAdditionWriteFor,
@@ -18,9 +19,9 @@ import type {
  */
 export async function applyWorkspaceAdditionDecision(
   decision: WorkspaceAdditionDecision,
-): Promise<void> {
+): Promise<SidebarItemsFile> {
   const write = workspaceAdditionWriteFor(decision);
-  await writeAllSidebarItems(write.items, write.options);
+  return writeAllSidebarItems(write.items, write.options);
 }
 
 /**

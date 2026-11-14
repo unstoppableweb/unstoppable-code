@@ -14,8 +14,12 @@ export function cloudSidebarRowCapabilities(
   base: CanopyCapabilities,
   kind: CloudSidebarRowKind,
 ): CanopyCapabilities {
+  // A cloud task only archives here: the host's Archive-or-Delete would offer
+  // a Delete that the cloud path refuses, in a selection's menu too (CAN-6511).
+  const { worktreeRetention: _removed, ...host } = base;
+  void _removed;
   return {
-    ...base,
+    ...host,
     localExecution: false,
     terminalPty: false,
     fileSystemAccess: 'none',
@@ -33,7 +37,8 @@ export function cloudSidebarRowCapabilities(
     itemGrouping: false,
     worktreeReordering: false,
     worktreePinning: false,
-    worktreeRemoval: false,
+    // A task archives through the web core (CAN-6511); it stays restorable.
+    worktreeRemoval: kind === 'task' ? 'archive' : false,
     // The local core's discard flows; a refused cloud delete never offers them.
     projectDeletionDiscard: false,
     worktreeDiscard: false,

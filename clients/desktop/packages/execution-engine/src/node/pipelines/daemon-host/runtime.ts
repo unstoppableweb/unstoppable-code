@@ -19,6 +19,7 @@ import type { CodexRuntimeService } from '../../codex-runtime';
 import { runCodexPipelinePromptWith } from '../codex-pipeline-prompt';
 import type { DaemonPipelineOwnerPorts } from './owner-ports';
 import { launchPluginCollectionResolver } from './plugin-collections';
+import { PIPELINE_HOST_RUN_TEMP_DIR } from './run-temp';
 import type { ResolvedPipelinePluginCollectionSnapshot } from '@canopy/execution-engine/types/pipeline';
 
 /** The worktree a launch runs in, as the daemon verified it (CAN-5086 D17). */
@@ -51,6 +52,13 @@ export interface DaemonPipelineRuntimeOptions {
     Record<string, ResolvedPipelinePluginCollectionSnapshot>
   >;
   /** Hands a step's desktop notifications to Electron main (CAN-5868). */
+  /**
+   * Reports a brokered launch's `git-commit-push` pre-commit failures to its
+   * owner after the step settles (CAN-6739).
+   */
+  readonly reportPrecommitFailures?: NonNullable<
+    ExecutionRuntime['onStepPostProcess']
+  >;
   readonly onStepNotifications?: (
     stepId: string,
     notifications: readonly PipelineStepNotification[],
@@ -107,7 +115,7 @@ export function createDaemonPipelineRuntime(
   return {
     bundledActionsDir: options.bundledActionsDir,
     executionsDir: options.executionsDir,
-    tempRootDir: path.join(os.tmpdir(), 'canopy-exec'),
+    tempRootDir: path.join(os.tmpdir(), PIPELINE_HOST_RUN_TEMP_DIR),
     getProjectActionsDir,
     getProjectActionsDirCandidates,
     getProjectPipelinesDir,
@@ -122,8 +130,11 @@ export function createDaemonPipelineRuntime(
       pipelineHostActions: options.pipelineHostActions,
     }),
     ...(options.plans && { runPlanPersistence: options.plans }),
-    ...(options.onStepNotifications && {
-      onStepPostProcess: notificationForwarder(options.onStepNotifications),
+    ...((options.onStepNotifications || options.reportPrecommitFailures) && {
+      onStepPostProcess: stepPostProcess(
+        options.onStepNotifications,
+        options.reportPrecommitFailures,
+      ),
     }),
     resolvePipelineTarget: (request) =>
       resolveVerifiedWorktree(options.worktree, request),
@@ -139,11 +150,14 @@ export function createDaemonPipelineRuntime(
   };
 }
 
-function notificationForwarder(
-  forward: NonNullable<DaemonPipelineRuntimeOptions['onStepNotifications']>,
+function stepPostProcess(
+  forward: DaemonPipelineRuntimeOptions['onStepNotifications'],
+  reportPrecommitFailures: DaemonPipelineRuntimeOptions['reportPrecommitFailures'],
 ): NonNullable<ExecutionRuntime['onStepPostProcess']> {
-  return (ctx) => {
-    if (ctx.notifications?.length) forward(ctx.step.id, ctx.notifications);
+  return async (ctx) => {
+    if (forward && ctx.notifications?.length)
+      forward(ctx.step.id, ctx.notifications);
+    await reportPrecommitFailures?.(ctx);
   };
 }
 

@@ -6,8 +6,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { W5CommitLogError } from './errors';
 import { workspaceCreationDiagnosticsSchema } from './reservation-diagnostics';
 
-/** The schema this build writes; a newer database is never opened. */
-export const W5_COMMIT_LOG_SCHEMA_VERSION = 4;
+import { W5_COMMIT_LOG_SCHEMA_VERSION } from './schema-version';
+export { W5_COMMIT_LOG_SCHEMA_VERSION } from './schema-version';
 
 const SCHEMA_V2 = [
   `CREATE TABLE w5_meta (

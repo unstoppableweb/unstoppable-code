@@ -162,6 +162,7 @@ export function ProfileDigestsSection({
     return (
       <div data-testid="profile-digests-error">
         <ErrorBanner
+          errorSource="profile-digests-section-current"
           error={current.error.copy}
           details={current.error.details}
           onRetry={() => {

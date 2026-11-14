@@ -122,6 +122,7 @@ export function ProfilePipelinesSection({
       <div className="flex flex-col gap-3">
         {error ? (
           <ErrorBanner
+            errorSource="profile-pipelines-section"
             error={error?.copy}
             details={error?.details}
             onRetry={retry}
@@ -149,6 +150,7 @@ export function ProfilePipelinesSection({
 
       {error && (
         <ErrorBanner
+          errorSource="profile-pipelines-section"
           error={error?.copy}
           details={error?.details}
           onRetry={retry}

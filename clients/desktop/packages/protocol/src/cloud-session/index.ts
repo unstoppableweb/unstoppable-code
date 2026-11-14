@@ -199,7 +199,18 @@ export type CloudFileRootClassification = {
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId: string;
   readonly chatId: string | null;
+  /**
+   * A repository worktree's root listed over the web core (CAN-6093): the
+   * web core's root id and its workspace-relative mount path ('' is the
+   * workspace). Absent on every other root, which is the whole workspace.
+   */
+  readonly fileRoot?: CloudSandboxFileRoot;
 };
+
+export interface CloudSandboxFileRoot {
+  readonly fileRootId: string;
+  readonly mountPath: string;
+}
 
 const SANDBOX_ROOT_PREFIX = 'sandbox-';
 const ARTIFACTS_ROOT_PREFIX = 'artifacts-';
@@ -217,8 +228,55 @@ function cloudFileRootId(
 export function cloudSandboxFileRootId(
   worktreeLocalId: string,
   chatId: string,
+  fileRoot?: CloudSandboxFileRoot,
 ): string {
-  return cloudFileRootId(SANDBOX_ROOT_PREFIX, worktreeLocalId, chatId);
+  const id = cloudFileRootId(SANDBOX_ROOT_PREFIX, worktreeLocalId, chatId);
+  return fileRoot === undefined
+    ? id
+    : `${id}${ROOT_SCOPE_SEPARATOR}${encodeURIComponent(fileRoot.fileRootId)}${ROOT_SCOPE_SEPARATOR}${encodeURIComponent(fileRoot.mountPath)}`;
+}
+
+/**
+ * The workspace path a sandbox root's `relativePath` names: the REST file
+ * routes (index, search, download, resolve) address the workspace, so this
+ * is the one place a repository root's mount path is added.
+ */
+export function cloudSandboxWorkspacePath(
+  rootId: string,
+  relativePath: string,
+): string {
+  const mountPath = classifyCloudFileRootId(rootId)?.fileRoot?.mountPath ?? '';
+  if (mountPath === '') return relativePath;
+  return relativePath === '' ? mountPath : `${mountPath}/${relativePath}`;
+}
+
+/** The inverse: `workspacePath` relative to the root, or null outside it. */
+export function cloudSandboxRootRelativePath(
+  rootId: string,
+  workspacePath: string,
+): string | null {
+  const mountPath = classifyCloudFileRootId(rootId)?.fileRoot?.mountPath ?? '';
+  if (mountPath === '') return workspacePath;
+  if (workspacePath === mountPath) return '';
+  return workspacePath.startsWith(`${mountPath}/`)
+    ? workspacePath.slice(mountPath.length + 1)
+    : null;
+}
+
+/** The root holding `workspacePath` most closely: a repository child over the workspace root. */
+export function innermostCloudSandboxRoot(
+  rootIds: readonly string[],
+  workspacePath: string,
+): string | undefined {
+  return rootIds
+    .filter(
+      (rootId) => cloudSandboxRootRelativePath(rootId, workspacePath) !== null,
+    )
+    .sort(
+      (left, right) =>
+        (classifyCloudFileRootId(right)?.fileRoot?.mountPath.length ?? 0) -
+        (classifyCloudFileRootId(left)?.fileRoot?.mountPath.length ?? 0),
+    )[0];
 }
 
 export function cloudArtifactsFileRootId(
@@ -274,11 +332,19 @@ function classifyPrefixedCloudFileRootId(
       ? { kind, worktreeLocalId: suffix, chatId: null }
       : null;
   }
+  // Each segment is URI-encoded, so `|` only ever separates them.
+  const segments = suffix.split(ROOT_SCOPE_SEPARATOR);
+  if (segments.length !== 2 && !(kind === 'sandbox' && segments.length === 4))
+    return null;
   try {
-    const worktreeLocalId = decodeURIComponent(suffix.slice(0, separatorIndex));
-    const chatId = decodeURIComponent(suffix.slice(separatorIndex + 1));
-    return worktreeLocalId.length > 0 && chatId.length > 0
-      ? { kind, worktreeLocalId, chatId }
+    const [worktreeLocalId, chatId, fileRootId, mountPath] = segments.map(
+      (segment) => decodeURIComponent(segment),
+    );
+    if (worktreeLocalId.length === 0 || chatId.length === 0) return null;
+    if (fileRootId === undefined || mountPath === undefined)
+      return { kind, worktreeLocalId, chatId };
+    return fileRootId.length > 0
+      ? { kind, worktreeLocalId, chatId, fileRoot: { fileRootId, mountPath } }
       : null;
   } catch {
     return null;
@@ -417,23 +483,6 @@ export interface CloudSessionTerminalKeepaliveResult {
 export const CLOUD_SESSION_TERMINAL_KEEPALIVE_MAX_IDLE_MS = 86_400_000;
 export const CLOUD_SESSION_TERMINAL_KEEPALIVE_INTERVAL_MS = 60_000;
 
-/** 409 codes under which the sandbox cannot serve files or a terminal right now. */
-export const CLOUD_SANDBOX_NOT_AWAKE_CODES = [
-  'SANDBOX_NOT_READY',
-  'SANDBOX_STOPPING',
-  'SANDBOX_MATERIALIZATION_FAILED',
-  'SANDBOX_SESSION_EXPIRED',
-] as const;
-export type CloudSandboxNotAwakeCode =
-  (typeof CLOUD_SANDBOX_NOT_AWAKE_CODES)[number];
-export function isCloudSandboxNotAwakeCode(
-  code: unknown,
-): code is CloudSandboxNotAwakeCode {
-  return (
-    typeof code === 'string' &&
-    CLOUD_SANDBOX_NOT_AWAKE_CODES.some((candidate) => candidate === code)
-  );
-}
-
 export * from './agent-task';
 export * from './agent-task-row';
+export * from './sandbox-status';

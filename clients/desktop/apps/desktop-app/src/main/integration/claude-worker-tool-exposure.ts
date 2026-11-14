@@ -69,7 +69,12 @@ export function isClaudeWorkerToolExposed(
   if (key === 'save_memory') {
     return exposure === 'read-write';
   }
-  if (key === 'search_memory' || key === 'read_memory') {
+  if (
+    key === 'search_memory' ||
+    key === 'read_memory' ||
+    key === 'search_chats' ||
+    key === 'read_chat_excerpt'
+  ) {
     return exposure !== 'none';
   }
   return true;

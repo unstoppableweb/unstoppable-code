@@ -40,6 +40,7 @@ export interface CostTurnRecord {
   };
   readonly provider: AgentProviderType;
   readonly model?: string;
+  readonly agentId?: string;
   readonly harness?: string;
   readonly billingBasis: CostBillingBasis;
   readonly tokens: CostTokenTotals;

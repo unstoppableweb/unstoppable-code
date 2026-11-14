@@ -93,3 +93,50 @@ export function resolveClaudeDesktopCoworkSessionsDir(
 ): string {
   return path.join(desktopDataDir, 'local-agent-mode-sessions');
 }
+
+/**
+ * T3 Code keeps its state under `T3CODE_HOME`, else `~/.t3`. Dev builds use a
+ * sibling `dev` directory that the import deliberately ignores.
+ */
+export function resolveT3CodeHome(env: EnvLike = process.env): string {
+  const configured = env.T3CODE_HOME?.trim();
+  return configured || path.join(env.HOME ?? homedir(), '.t3');
+}
+
+/** `<home>/userdata`: the database, `settings.json`, and attachments live here. */
+export function resolveT3CodeStateDir(env: EnvLike = process.env): string {
+  return path.join(resolveT3CodeHome(env), 'userdata');
+}
+
+/** The SQLite store the T3 Code import reads, always through a read-only copy. */
+export function resolveT3CodeDatabasePath(env: EnvLike = process.env): string {
+  return path.join(resolveT3CodeStateDir(env), 'statev2.sqlite');
+}
+
+/**
+ * OpenCode keeps its data under `<XDG_DATA_HOME or ~/.local/share>/opencode`
+ * on every platform: it does no platform branching, so on Windows this is
+ * `%USERPROFILE%\.local\share\opencode`. Its config directory is not read.
+ */
+export function resolveOpenCodeDataDir(env: EnvLike = process.env): string {
+  const configured = env.XDG_DATA_HOME?.trim();
+  return path.join(
+    configured || path.join(env.HOME ?? homedir(), '.local', 'share'),
+    'opencode',
+  );
+}
+
+/**
+ * The SQLite store the OpenCode import reads, always through a read-only
+ * copy. `OPENCODE_DB` relocates it, absolute or relative to the data dir.
+ */
+export function resolveOpenCodeDatabasePath(
+  env: EnvLike = process.env,
+): string {
+  const dataDir = resolveOpenCodeDataDir(env);
+  const configured = env.OPENCODE_DB?.trim();
+  if (!configured) return path.join(dataDir, 'opencode.db');
+  return path.isAbsolute(configured)
+    ? configured
+    : path.resolve(dataDir, configured);
+}

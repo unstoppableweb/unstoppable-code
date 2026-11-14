@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 19,
+  "protocolVersion": 20,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",
@@ -775,6 +775,7 @@
     "shared-containers:claim-link",
     "shared-containers:close",
     "shared-containers:dismiss",
+    "shared-containers:dismiss-owner-departure",
     "shared-containers:eligibility",
     "shared-containers:fork",
     "shared-containers:get-link",
@@ -787,6 +788,7 @@
     "shared-containers:list-dismissed",
     "shared-containers:list-notes",
     "shared-containers:list-owned-targets",
+    "shared-containers:list-owner-departures",
     "shared-containers:list-plans",
     "shared-containers:list-prompts",
     "shared-containers:list-recipients",
@@ -901,6 +903,7 @@
     "tracked-plans:get",
     "tracked-plans:import",
     "tracked-plans:list",
+    "tracked-plans:list-with-skipped",
     "tracked-plans:refresh-comments",
     "tracked-plans:save-comments",
     "tracked-plans:share",

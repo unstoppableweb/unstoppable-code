@@ -1,3 +1,8 @@
+import { parseSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
+import type { PipelineAgentModelConfig } from '@canopy/execution-engine/types/pipeline';
+import { resolvePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
+import { isSelectableAgentOverrideModel } from '@canopy/execution-engine/model-catalog';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import {
@@ -110,11 +115,7 @@ import {
   resolvePipelineModelAlias,
 } from '@canopy/execution-engine/node/pipelines/executor/normalize-pipeline';
 import {
-  AI_GATEWAY_MODELS,
-  CLAUDE_MODELS,
-  CODEX_MODELS,
   DEFAULT_CLAUDE_MODEL,
-  OLLAMA_MODELS,
   getConfiguredSupportedThinkingLevelsMap,
   getExecutionHarnessForModel,
   getModelSource,
@@ -125,7 +126,10 @@ import {
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
-import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
+import {
+  readCodexSpeedRecord,
+  mergeAgentModelConfig,
+} from '@canopy/execution-engine/lib/codex-speed';
 import type {
   AgentModelConfig,
   ChatTabPluginSelections,
@@ -741,6 +745,11 @@ export interface RunStepOptions {
   modelAliasPreferences?: Record<string, PipelineModelAliasPreference>;
   onStepPostProcess?: (ctx: StepPostProcessContext) => void | Promise<void>;
   onLogMetadataResolved?: (metadata: StepLogMetadata) => Promise<void>;
+  /**
+   * Called just before the step spawns each process, so the memory admission
+   * gate times its settle window from the process start (CAN-6325).
+   */
+  onProcessStart?: () => void;
   onRunningStepPatch?: (
     stepId: string,
     patch: Partial<StepResult>,
@@ -763,10 +772,16 @@ interface FinalizeProcessOptions {
 export interface StepLogMetadata {
   log_format_hint?: LogFormatHint;
   agent_provider?: AgentProviderType;
-  agent_harness?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  agent_harness?:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   agent_model?: string;
   agent_runtime_model?: string;
-  agent_model_config?: AgentModelConfig;
+  agent_model_config?: PipelineAgentModelConfig;
   model_alias?: string;
   model_alias_name?: string;
   model_alias_plugin_collection_ids?: string[];
@@ -2447,6 +2462,11 @@ async function postProcessSpawnedResult(
       notifications: notificationResult?.notifications,
       projectId: options.projectId,
       worktreeId: options.worktreeId,
+      executionId: options.executionId,
+      jobId: options.jobId,
+      attempt: options.attempt ?? 0,
+      iteration: options.iteration ?? 0,
+      depth: options.depth ?? 0,
     }),
   ).catch(() => {});
 
@@ -2472,13 +2492,15 @@ function isAgentFailureMetadata(
       metadata.provider === 'ollama' ||
       metadata.provider === 'cursor' ||
       metadata.provider === 'copilot' ||
-      metadata.provider === 'opencode') &&
+      metadata.provider === 'opencode' ||
+      metadata.provider === 'antigravity') &&
     (metadata.agent_harness === undefined ||
       metadata.agent_harness === 'claude' ||
       metadata.agent_harness === 'codex' ||
       metadata.agent_harness === 'cursor' ||
       metadata.agent_harness === 'copilot' ||
-      metadata.agent_harness === 'opencode') &&
+      metadata.agent_harness === 'opencode' ||
+      metadata.agent_harness === 'antigravity') &&
     typeof metadata.had_agent_activity === 'boolean' &&
     typeof metadata.message === 'string' &&
     (metadata.session_id === undefined ||
@@ -2856,18 +2878,13 @@ interface ResolvedPipelineModelInputs {
   aliasId?: string;
   aliasName?: string;
   agentId?: string;
+  agentModelOverride?: boolean;
   aliasPluginCollectionIds: string[];
   syntheticSelectionsByCollectionId?: Record<string, ChatTabPluginSelections>;
 }
 
 function isRuntimeBaseModelAvailable(model: string): boolean {
-  const resolved = resolveModelAlias(model);
-  return (
-    CLAUDE_MODELS.includes(resolved) ||
-    CODEX_MODELS.includes(resolved) ||
-    AI_GATEWAY_MODELS.includes(resolved) ||
-    OLLAMA_MODELS.includes(resolved)
-  );
+  return isSelectableAgentOverrideModel(model);
 }
 
 function preferenceToDefaults(
@@ -2877,7 +2894,10 @@ function preferenceToDefaults(
     return undefined;
   }
   if (preference.mode === 'agent') {
-    return { agent_id: preference.agent_id };
+    return {
+      agent_id: preference.agent_id,
+      ...(preference.base !== undefined ? { base: preference.base } : {}),
+    };
   }
   return {
     base: preference.base,
@@ -2931,7 +2951,7 @@ async function resolveAgentAliasInputs(options: {
     inputValues.system_prompt,
     resolution.instructions ?? '',
   );
-  const syntheticId = `${AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX}${agentId}`;
+  const syntheticId = `${AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX}${resolution.agentId}`;
   return {
     inputValues: {
       ...inputValues,
@@ -2942,7 +2962,8 @@ async function resolveAgentAliasInputs(options: {
     runtimeModel: resolution.base,
     aliasId,
     aliasName,
-    agentId,
+    agentId: resolution.agentId,
+    agentModelOverride: parseAgentRouteModelId(agentId) !== null,
     aliasPluginCollectionIds: resolution.pluginSelections ? [syntheticId] : [],
     syntheticSelectionsByCollectionId: resolution.pluginSelections
       ? { [syntheticId]: resolution.pluginSelections }
@@ -2984,7 +3005,7 @@ export async function resolvePipelineModelInputs(options: {
       return resolveAgentAliasInputs({
         aliasId: alias.id,
         aliasName: alias.name,
-        agentId: defaults.agent_id,
+        agentId: resolvePipelineAgentAliasRoute(defaults),
         inputValues,
         runtime: options.runtime,
         ...(options.scope ? { scope: options.scope } : {}),
@@ -3057,6 +3078,14 @@ export interface PipelineModelAliasTarget {
   readonly plugins: boolean;
   /** It names an Agent, whose base model each step resolves again. */
   readonly agent: boolean;
+  /**
+   * Where those plugins come from (CAN-6168): the Agent's selections, or the
+   * alias's inline collection id. An Agent's selections are here even when
+   * they add no plugin, so the launch sees the MCP auth overrides they carry.
+   */
+  readonly pluginSource?:
+    | { readonly kind: 'agent'; readonly selections: ChatTabPluginSelections }
+    | { readonly kind: 'collection'; readonly collectionId: string };
 }
 
 /**
@@ -3075,13 +3104,24 @@ export async function resolvePipelineModelAliasTarget(
   const defaults = preferenceToDefaults(preference) ?? alias.defaults;
   if (!defaults) return null;
   if ('agent_id' in defaults) {
-    const resolution = await resolveAgent(defaults.agent_id);
+    const resolution = await resolveAgent(
+      resolvePipelineAgentAliasRoute(defaults),
+    );
     if (!resolution || !isRuntimeBaseModelAvailable(resolution.base))
       return null;
+    const plugins = pipelinePluginSelectionsAddPlugins(
+      resolution.pluginSelections,
+    );
     return {
       base: resolution.base,
-      plugins: pipelinePluginSelectionsAddPlugins(resolution.pluginSelections),
+      plugins,
       agent: true,
+      ...(resolution.pluginSelections && {
+        pluginSource: {
+          kind: 'agent' as const,
+          selections: resolution.pluginSelections,
+        },
+      }),
     };
   }
   if (resolveModelAlias(defaults.base).startsWith(AGENT_MODEL_PREFIX))
@@ -3090,6 +3130,12 @@ export async function resolvePipelineModelAliasTarget(
     base: defaults.base,
     plugins: Boolean(defaults.plugin_collection_id),
     agent: false,
+    ...(defaults.plugin_collection_id && {
+      pluginSource: {
+        kind: 'collection' as const,
+        collectionId: defaults.plugin_collection_id.trim(),
+      },
+    }),
   };
 }
 
@@ -3122,7 +3168,7 @@ export function resolveHostStepModel(options: {
       );
     }
     if ('agent_id' in defaults) {
-      return defaults.agent_id;
+      return resolvePipelineAgentAliasRoute(defaults);
     }
     if (defaults.instructions?.trim() || defaults.plugin_collection_id) {
       throw new Error(
@@ -3249,7 +3295,7 @@ async function resolvePipelineAliasProbeModel(options: {
   }
   if ('agent_id' in defaults) {
     const resolution = await options.runtime.resolvePipelineAgentModelAlias?.(
-      defaults.agent_id,
+      resolvePipelineAgentAliasRoute(defaults),
       options.scope,
     );
     return resolution?.base ?? options.value;
@@ -3599,7 +3645,8 @@ async function materializePluginCollectionRuntime(
     options.agentProvider !== 'codex' &&
     options.agentProvider !== 'cursor' &&
     options.agentProvider !== 'copilot' &&
-    options.agentProvider !== 'opencode';
+    options.agentProvider !== 'opencode' &&
+    options.agentProvider !== 'antigravity';
   const claudeModAdmissionContext: ClaudeModAdmissionContext | undefined =
     shouldResolveClaudeRuntime
       ? await options.runtime.resolveClaudeModAdmissionContext?.({
@@ -4472,6 +4519,8 @@ async function maybeRunAccountProviderPrompt(options: {
   attempt: number;
   iteration: number;
   logMetadata: StepLogMetadata;
+  /** The step's Ledger attempt; only the OpenCode host serves its tools. */
+  ledgerAttempt?: PipelineLedgerAttempt | null;
 }): Promise<StepResult | null> {
   const {
     runStepOptions,
@@ -4485,6 +4534,7 @@ async function maybeRunAccountProviderPrompt(options: {
     attempt,
     iteration,
     logMetadata,
+    ledgerAttempt,
   } = options;
   const isResume = runStepOptions.step.uses === 'builtin/agent-resume';
   if (runStepOptions.step.uses !== 'builtin/agent-prompt' && !isResume) {
@@ -4499,36 +4549,48 @@ async function maybeRunAccountProviderPrompt(options: {
     if (
       checkpointHarness === 'cursor' ||
       checkpointHarness === 'copilot' ||
-      checkpointHarness === 'opencode'
+      checkpointHarness === 'opencode' ||
+      checkpointHarness === 'antigravity'
     )
       throw new Error(
         checkpointHarness === 'cursor'
           ? CURSOR_RECOVERY_MODEL_MISSING
-          : checkpointHarness === 'opencode'
-            ? 'This step paused on OpenCode. Select its OpenCode model before resuming.'
-            : 'This step paused on Copilot. Select its Copilot model before resuming.',
+          : checkpointHarness === 'antigravity'
+            ? 'This step paused on Google. Select its Google subscription model before resuming.'
+            : checkpointHarness === 'opencode'
+              ? 'This step paused on OpenCode. Select its OpenCode model before resuming.'
+              : 'This step paused on Copilot. Select its Copilot model before resuming.',
       );
     return null;
   }
   const harness =
     checkpointHarness ?? getExecutionHarnessForModel(resolvedModel);
-  if (harness !== 'cursor' && harness !== 'copilot' && harness !== 'opencode')
+  if (
+    harness !== 'cursor' &&
+    harness !== 'copilot' &&
+    harness !== 'opencode' &&
+    harness !== 'antigravity'
+  )
     return null;
   const runPrompt =
-    harness === 'opencode'
-      ? runStepOptions.runtime.opencodePromptRunner?.runOpenCodePrompt.bind(
-          runStepOptions.runtime.opencodePromptRunner,
+    harness === 'antigravity'
+      ? runStepOptions.runtime.antigravityPromptRunner?.runAntigravityPrompt.bind(
+          runStepOptions.runtime.antigravityPromptRunner,
         )
-      : harness === 'copilot'
-        ? runStepOptions.runtime.copilotPromptRunner?.runCopilotPrompt.bind(
-            runStepOptions.runtime.copilotPromptRunner,
+      : harness === 'opencode'
+        ? runStepOptions.runtime.opencodePromptRunner?.runOpenCodePrompt.bind(
+            runStepOptions.runtime.opencodePromptRunner,
           )
-        : runStepOptions.runtime.cursorPromptRunner?.runCursorPrompt.bind(
-            runStepOptions.runtime.cursorPromptRunner,
-          );
+        : harness === 'copilot'
+          ? runStepOptions.runtime.copilotPromptRunner?.runCopilotPrompt.bind(
+              runStepOptions.runtime.copilotPromptRunner,
+            )
+          : runStepOptions.runtime.cursorPromptRunner?.runCursorPrompt.bind(
+              runStepOptions.runtime.cursorPromptRunner,
+            );
   if (!runPrompt) {
     throw new Error(
-      `${harness === 'opencode' ? 'OpenCode' : harness === 'copilot' ? 'Copilot' : 'Cursor'} pipeline actions require a host ${harness === 'opencode' ? 'OpenCode' : harness === 'copilot' ? 'Copilot' : 'Cursor'} runtime; no runner was configured.`,
+      `${harness === 'antigravity' ? 'Google' : harness === 'opencode' ? 'OpenCode' : harness === 'copilot' ? 'Copilot' : 'Cursor'} pipeline actions require a host ${harness === 'antigravity' ? 'Google' : harness === 'opencode' ? 'OpenCode' : harness === 'copilot' ? 'Copilot' : 'Cursor'} runtime; no runner was configured.`,
     );
   }
   const rawSessionId = isResume ? inputValues.session_id?.trim() : undefined;
@@ -4576,7 +4638,9 @@ async function maybeRunAccountProviderPrompt(options: {
     schema,
     resumeSessionId,
     model: resolvedModel,
-    ...(harness === 'opencode' || harness === 'copilot'
+    ...(harness === 'antigravity' ||
+    harness === 'opencode' ||
+    harness === 'copilot'
       ? { thinkingLevel: parseThinkingEffort(inputValues.thinking_effort) }
       : {}),
     totalTimeoutMs: runStepOptions.step.timeout_minutes * 60_000,
@@ -4588,6 +4652,9 @@ async function maybeRunAccountProviderPrompt(options: {
       ? {
           worktreeId: runStepOptions.worktreeId,
           executionContext: runStepOptions.executionContext,
+          ...(ledgerAttempt
+            ? { ledgerAttemptKey: ledgerAttempt.attemptKey }
+            : {}),
         }
       : {}),
     executionsDir: runStepOptions.runtime.executionsDir,
@@ -5107,7 +5174,8 @@ function resolveStepLogMetadata(
       metadata.agent_harness =
         executionHarness === 'cursor' ||
         executionHarness === 'copilot' ||
-        executionHarness === 'opencode'
+        executionHarness === 'opencode' ||
+        executionHarness === 'antigravity'
           ? executionHarness
           : requireHeadlessHarness(executionHarness);
       if (selectedModelOverride && modelAliasName) {
@@ -5320,16 +5388,19 @@ export async function resolveActionAiCreditsEnv(
     (modelHarness === 'codex' ||
       modelHarness === 'cursor' ||
       modelHarness === 'copilot' ||
-      modelHarness === 'opencode')
+      modelHarness === 'opencode' ||
+      modelHarness === 'antigravity')
   ) {
     const harnessLabel =
       modelHarness === 'codex'
         ? 'Codex'
-        : modelHarness === 'opencode'
-          ? 'OpenCode'
-          : modelHarness === 'copilot'
-            ? 'Copilot'
-            : 'Cursor';
+        : modelHarness === 'antigravity'
+          ? 'Google'
+          : modelHarness === 'opencode'
+            ? 'OpenCode'
+            : modelHarness === 'copilot'
+              ? 'Copilot'
+              : 'Cursor';
     throw new Error(
       `Action "${step.uses}" runs directly on the Claude harness and cannot use the ${harnessLabel}-harness model "${agentModel}". Choose a Claude-harness model for this action.`,
     );
@@ -5359,6 +5430,7 @@ export async function resolveActionAiCreditsEnv(
   if (
     provider === 'cursor' ||
     provider === 'copilot' ||
+    provider === 'antigravity' ||
     provider === 'opencode'
   ) {
     return empty;
@@ -5957,6 +6029,7 @@ async function runStepBody(
       if (onOutput) {
         spawnedLogPositions = await openAppendingStepLogCursor(logFile);
       }
+      options.onProcessStart?.();
       const result = await runSpawnedProcess(processSpec, {
         cwd: effectiveCwd,
         env: {
@@ -6138,11 +6211,22 @@ async function runStepBody(
       resolvedAgentInputs.aliasName,
       resolvedAgentInputs.aliasPluginCollectionIds,
     );
+    if (resolvedAgentInputs.agentId) {
+      logMetadata.agent_model_config = {
+        ...mergeAgentModelConfig(
+          options.modelConfig,
+          logMetadata.agent_model_config ?? {},
+        ),
+        agentId: resolvedAgentInputs.agentId,
+        baseModel: resolvedAgentInputs.runtimeModel,
+      };
+    }
     if (recoveryCheckpoint?.harness && logMetadata.agent_model) {
       logMetadata.agent_harness =
         recoveryCheckpoint.harness === 'cursor' ||
         recoveryCheckpoint.harness === 'copilot' ||
-        recoveryCheckpoint.harness === 'opencode'
+        recoveryCheckpoint.harness === 'opencode' ||
+        recoveryCheckpoint.harness === 'antigravity'
           ? recoveryCheckpoint.harness
           : requireHeadlessHarness(recoveryCheckpoint.harness);
     }
@@ -6210,14 +6294,47 @@ async function runStepBody(
         agentOrigin: options.agentOrigin,
         initiator: options.initiator,
         cwd: effectiveCwd,
-        resolveModel: (value) =>
-          Promise.resolve().then(() =>
-            resolveHostStepModel({
-              value,
-              modelAliases: options.modelAliases,
-              modelAliasPreferences: options.modelAliasPreferences,
-            }),
-          ),
+        resolveModel: async (value) => {
+          const route = resolveHostStepModel({
+            value,
+            modelAliases: options.modelAliases,
+            modelAliasPreferences: options.modelAliasPreferences,
+          });
+          const alias = options.modelAliases?.find(
+            (candidate) => candidate.id === value,
+          );
+          const defaults = alias
+            ? (preferenceToDefaults(
+                options.modelAliasPreferences?.[alias.id],
+              ) ?? alias.defaults)
+            : undefined;
+          if (alias && defaults && 'agent_id' in defaults) {
+            const parsed = parseAgentRouteModelId(route);
+            logMetadata.model_alias = alias.id;
+            logMetadata.model_alias_name = alias.name;
+            const parsedSend = parseSendAgentMessageInputs(rawInputValues);
+            const settings = parsedSend.ok ? parsedSend.value.settings : {};
+            logMetadata.agent_model_config = {
+              ...mergeAgentModelConfig(options.modelConfig, {
+                ...logMetadata.agent_model_config,
+                ...(settings.thinkingEffort !== undefined
+                  ? { thinkingLevel: settings.thinkingEffort }
+                  : {}),
+                ...(settings.fastMode !== undefined
+                  ? { fastMode: settings.fastMode }
+                  : {}),
+                ...(settings.speed !== undefined
+                  ? { speed: settings.speed }
+                  : {}),
+              }),
+              agentId: parsed?.agentId ?? route,
+              requestedModel: route,
+              ...(parsed ? { baseModel: parsed.baseModel } : {}),
+            };
+            await options.onLogMetadataResolved?.(logMetadata);
+          }
+          return route;
+        },
         pluginCollectionSelections: (id) => {
           const snapshot = options.resolvedPluginCollections?.[id];
           return snapshot?.chatSelections ?? snapshot?.selections;
@@ -6241,6 +6358,26 @@ async function runStepBody(
     const settingSources =
       parseSettingSources(resolvedAgentInputs.inputValues.setting_sources) ??
       DEFAULT_AGENT_SETTING_SOURCES;
+    const usesTerminalWorker =
+      options.agentTerminalMode &&
+      options.runtime.agentPromptWorker &&
+      (options.step.uses === 'builtin/agent-prompt' ||
+        (options.step.uses === 'builtin/agent-resume' &&
+          resolvedAgentInputs.inputValues.session_id?.trim()));
+    if (
+      resolvedAgentInputs.agentModelOverride &&
+      !usesTerminalWorker &&
+      (recoveryCheckpoint?.harness ??
+        getExecutionHarnessForModel(resolvedAgentInputs.runtimeModel ?? '')) ===
+        'claude' &&
+      Object.values(
+        resolvedAgentInputs.syntheticSelectionsByCollectionId ?? {},
+      ).some((selections) => (selections.mcpServerRefs?.length ?? 0) > 0)
+    ) {
+      throw new Error(
+        "This workflow cannot load the Agent's selected MCP servers. Choose another model or run it with a terminal worker.",
+      );
+    }
     const pluginCollectionRuntime = await materializePluginCollectionRuntime({
       ...options,
       effectiveCwd,
@@ -6293,6 +6430,7 @@ async function runStepBody(
     }
     const cursorResult = await maybeRunAccountProviderPrompt({
       runStepOptions: { ...options, recoveryCheckpoint },
+      ledgerAttempt: ledger.attempt,
       inputValues: resolvedAgentInputs.inputValues,
       pluginCollectionRuntime,
       effectiveCwd,
@@ -6325,6 +6463,7 @@ async function runStepBody(
         // the other cursor-aware call sites do.
         recoveryCheckpoint?.harness === 'cursor' ||
           recoveryCheckpoint?.harness === 'copilot' ||
+          recoveryCheckpoint?.harness === 'antigravity' ||
           recoveryCheckpoint?.harness === 'opencode'
           ? undefined
           : requireHeadlessHarness(recoveryCheckpoint?.harness),
@@ -6552,6 +6691,7 @@ async function runStepBody(
       if (onOutput) {
         spawnedLogPositions = await openAppendingStepLogCursor(logFile);
       }
+      options.onProcessStart?.();
       const result = await runSpawnedProcess(processSpec, {
         cwd: effectiveCwd,
         env: runtimeEnv,

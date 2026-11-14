@@ -1,6 +1,8 @@
+import { isPersistedChatMessage } from '@canopy/agent-transcript/lib/transcript-search';
+import type { CoreChatQueueEntry } from '@canopy/protocol/canopy-core';
 import {
   CANOPY_STREAM_DEFINITIONS,
-  CoreChatLifecycleResultSchema,
+  CORE_INSTRUCTION_DEFINITIONS,
   CoreChatListResultSchema,
   CoreChatSnapshotGetResultSchema,
   CoreChatTranscriptPageResultSchema,
@@ -11,6 +13,7 @@ import type {
   ChatCommand,
   ChatCommandEnvelope,
   ChatCommandResult,
+  ChatQueueUpdatedEvent,
   ChatRuntimeState,
   ChatRuntimeStatus,
   ChatStateChange,
@@ -77,23 +80,8 @@ export function bareScope(scope: {
   };
 }
 
-const ROLES: ReadonlySet<unknown> = new Set(['user', 'assistant', 'system']);
-
 /** The persisted message shape both cores serve; anything else is dropped. */
-export function isPersistedChatMessage(
-  value: unknown,
-): value is PersistedChatMessage {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    ROLES.has(value.role) &&
-    typeof value.timestamp === 'number' &&
-    Array.isArray(value.blocks) &&
-    value.blocks.every(
-      (block) => isRecord(block) && typeof block.type === 'string',
-    )
-  );
-}
+export { isPersistedChatMessage };
 
 /**
  * How a chat or message id reads on each side. A chat the web core holds
@@ -119,8 +107,46 @@ function messages(
 ): PersistedChatMessage[] {
   return values.filter(isPersistedChatMessage).map((message) => {
     const id = ids.messageToStore(message.id);
-    return id === message.id ? message : { ...message, id };
+    // A timer names its turn's prompt, which the store may hold under the
+    // id it sent it with.
+    let mapped = false;
+    const blocks = message.blocks.map((block) => {
+      if (block.type !== 'turn_timer' || block.userMessageId === undefined)
+        return block;
+      const userMessageId = ids.messageToStore(block.userMessageId);
+      if (userMessageId === block.userMessageId) return block;
+      mapped = true;
+      return { ...block, userMessageId };
+    });
+    if (id === message.id && !mapped) return message;
+    return { ...message, id, ...(mapped ? { blocks } : {}) };
   });
+}
+
+type TurnEnds = NonNullable<PersistedChatTab['turnEnds']>;
+
+/**
+ * The turn ends the rows' timers name, by prompt id (CAN-6560). The web core
+ * records no turn ends on its tabs: a turn's timer row is where it says how
+ * the turn ended, so the store records that end, as main does for a local
+ * chat, and a stopped turn reads as stopped.
+ */
+export function timerTurnEnds(
+  rows: readonly PersistedChatMessage[],
+): TurnEnds | undefined {
+  let ends: TurnEnds | undefined;
+  for (const row of rows)
+    for (const block of row.blocks)
+      if (
+        block.type === 'turn_timer' &&
+        block.userMessageId !== undefined &&
+        block.outcome !== undefined
+      )
+        (ends ??= {})[block.userMessageId] = {
+          outcome: block.outcome,
+          endedAt: block.completedAt ?? row.timestamp,
+        };
+  return ends;
 }
 
 const RUNTIME_STATUSES: ReadonlySet<string> = new Set<ChatRuntimeStatus>([
@@ -198,19 +224,30 @@ function unloadedTab(input: {
 
 /**
  * The runtime as the store shows it. The web core also parks an idle session
- * as awaiting input: only a reported turn makes it one that runs.
+ * as awaiting input: only a reported turn, or a prompt it holds queued, makes
+ * it one that runs.
  */
 function runtime(value: unknown): ChatRuntimeState | null {
   if (!isRecord(value) || !isRuntimeStatus(value.status)) return null;
-  const parked =
-    value.status === 'awaiting_input' && typeof value.activeTurnId !== 'string';
   const queued = Array.isArray(value.queuedMessageIds)
     ? value.queuedMessageIds.filter(
         (id): id is string => typeof id === 'string',
       )
     : [];
+  // Core parks a session between turns awaiting input, and just after a turn
+  // ends its status still reads `streaming`, with no turn and none queued
+  // (staging, 11 Nov 2026): nothing runs (CAN-6396).
+  const ended =
+    typeof value.activeTurnId !== 'string' &&
+    queued.length === 0 &&
+    (value.status === 'awaiting_input' || value.status === 'streaming');
+  // A sent prompt Core holds queued, with no turn yet, still starts, as a
+  // runtime.patched reports it (turnRuntimeStatus): Stop cancels it by its
+  // receipt (CAN-6592).
+  const startsQueued =
+    typeof value.activeTurnId !== 'string' && queued.length > 0;
   return {
-    status: parked ? 'idle' : value.status,
+    status: ended ? 'idle' : startsQueued ? 'queued' : value.status,
     queuedMessageIds: queued,
     ...(typeof value.lastActivityAt === 'number'
       ? { lastActivityAt: value.lastActivityAt }
@@ -369,6 +406,42 @@ const LISTED_STATUSES: Readonly<Record<ListItem['state'], ChatRuntimeStatus>> =
  * the events cursor and the opened chat's runtime; `core.chat.list` names
  * every chat of the task, which the snapshot does not.
  */
+/**
+ * The queued prompts the web core serves on a snapshot (CAN-6509), as the
+ * store's queued rows (CAN-6644): each chat's entries in Core's order, under
+ * the store's chat id, with their text, the revision Remove sends back, and
+ * the prompt each stands for under the id the store sent it with.
+ */
+export function translateQueue(
+  summaries: readonly {
+    readonly chatId: string;
+    readonly entries: readonly CoreChatQueueEntry[];
+  }[],
+  scope: { readonly projectId: string; readonly worktreeId: string },
+  ids: WebCoreIds,
+): ChatQueueUpdatedEvent[] {
+  return summaries.map((summary) => ({
+    projectId: scope.projectId,
+    worktreeId: scope.worktreeId,
+    chatId: ids.chatToStore(summary.chatId),
+    queue: summary.entries.map((entry) => ({
+      id: entry.id,
+      text: entry.text ?? '',
+      origin: entry.origin,
+      enqueuedAtMs: entry.enqueuedAtMs,
+      ...(entry.revision === undefined ? {} : { revision: entry.revision }),
+      // The prompt as this window sent it, which the queued row stands for
+      // until its turn starts (CAN-6689).
+      ...(entry.messageId === undefined
+        ? {}
+        : { supersedesUserMessageId: ids.messageToStore(entry.messageId) }),
+      ...(entry.promptSource === undefined
+        ? {}
+        : { promptSource: entry.promptSource }),
+    })),
+  }));
+}
+
 export function translateSnapshot(
   value: unknown,
   listed: readonly ListItem[],
@@ -395,7 +468,7 @@ export function translateSnapshot(
     const state = runtime(summary);
     if (state === null) continue;
     runtimeByChatId[ids.chatToStore(chatId)] = state;
-    statuses.set(chatId, summary.status);
+    statuses.set(chatId, state.status);
     if (summary.activeTurnId !== undefined)
       activeTurns.set(chatId, summary.activeTurnId);
   }
@@ -452,8 +525,7 @@ export function translateSnapshot(
       },
       archives,
       runtimeByChatId,
-      // Queued text is not served yet (CAN-6106): the queue shows nothing.
-      queue: [],
+      queue: translateQueue(data.queue, scope, ids),
     },
     activeTurns,
     statuses,
@@ -474,6 +546,11 @@ export interface TabChoices {
   readonly read?: ReadonlyMap<string, TabReadChoice>;
   /** Each tab's thinking level as this window last set it. */
   readonly settings?: ReadonlyMap<string, TabSettingsChoice>;
+  /**
+   * The scope's file tabs: viewers this window keeps, as the web keeps its
+   * own, since the web core holds no file tabs (CAN-6587).
+   */
+  readonly fileTabs?: readonly PersistedChatTab[];
 }
 
 /**
@@ -544,7 +621,12 @@ export function withTabChoices(
   choices: TabChoices | undefined,
 ): ChatStateSnapshot {
   if (choices === undefined) return snapshot;
-  const { tabs } = snapshot.tabsFile;
+  const tabs = [
+    ...snapshot.tabsFile.tabs,
+    ...(choices.fileTabs ?? []).filter(
+      (file) => !snapshot.tabsFile.tabs.some((tab) => tab.id === file.id),
+    ),
+  ];
   const order = choices.order ?? [];
   const rank = (id: string): number => {
     const index = order.indexOf(id);
@@ -596,12 +678,15 @@ export function withTranscriptPages(
       tabs: snapshot.tabsFile.tabs.map((tab) => {
         const page = pages.get(tab.id);
         if (page === undefined) return tab;
-        const { messages: rows, ...window } = page;
+        const { messages: rows, turnEnds, ...window } = page;
         return {
           ...tab,
           messages: rows,
           transcriptLoaded: true,
           transcriptWindow: window,
+          ...(turnEnds === undefined
+            ? {}
+            : { turnEnds: { ...tab.turnEnds, ...turnEnds } }),
         };
       }),
     },
@@ -616,8 +701,11 @@ export function translateTranscriptPage(
   const parsed = CoreChatTranscriptPageResultSchema.safeParse(value);
   if (!parsed.success) throw new WebCoreTranslationError('transcript page');
   const page = parsed.data;
+  const rows = messages(page.messages, ids);
+  const turnEnds = timerTurnEnds(rows);
   return {
-    messages: messages(page.messages, ids),
+    messages: rows,
+    ...(turnEnds === undefined ? {} : { turnEnds }),
     totalMessages: page.totalMessages,
     transcriptRevision: page.transcriptRevision,
     ...(page.before === undefined ? {} : { before: page.before }),
@@ -675,8 +763,9 @@ function metadataPatch(patch: JsonRecord): ChatTabMetadataPatch {
 
 /**
  * One protocol change as the store's change, or null for one the store has
- * no use for yet: agent tasks (CAN-6107) and delegation cards, which other
- * rows bring.
+ * no use for: agent tasks, which the backend publishes as the chat's
+ * background work (its stop, task transcripts, extend and wakes are
+ * CAN-6107's), and delegation cards, which other rows bring.
  */
 export function translateChange(
   change: EventChange,
@@ -757,7 +846,14 @@ export function translateChange(
         : {
             type: 'runtime.patched',
             chatId: ids.chatToStore(change.chatId),
-            runtime: state,
+            runtime: {
+              ...state,
+              status: turnRuntimeStatus({
+                status: state.status,
+                activeTurnId: change.runtime.activeTurnId,
+                queuedMessageIds: state.queuedMessageIds,
+              }),
+            },
           };
     }
     case 'archive.upserted': {
@@ -837,6 +933,33 @@ export function isTurnRunningStatus(status: string | undefined): boolean {
   return status !== undefined && TURN_RUNNING_STATUSES.has(status);
 }
 
+/**
+ * A `runtime.patched` status as its turns say it. The web core reports
+ * Core's session status beside the chat's turns (`runtimeOf` in
+ * apps/web/src/lib/web-core/chat.ts), and that status lags them: it still
+ * reads `streaming` in the change that commits a finished turn's reply,
+ * with no later change, and `awaiting_input` while a sent turn waits queued
+ * (CAN-6396). A turn runs only while the runtime names it, and one is about
+ * to while it waits queued; with neither, nothing runs.
+ */
+export function turnRuntimeStatus<Status extends string>(runtime: {
+  readonly status: Status;
+  readonly activeTurnId?: unknown;
+  readonly queuedMessageIds: readonly unknown[];
+}): Status | 'streaming' | 'awaiting_input' | 'queued' | 'idle' {
+  if (typeof runtime.activeTurnId === 'string')
+    return isTurnRunningStatus(runtime.status) && runtime.status !== 'queued'
+      ? runtime.status
+      : runtime.status === 'awaiting_input'
+        ? 'awaiting_input'
+        : 'streaming';
+  if (runtime.queuedMessageIds.length > 0) return 'queued';
+  return isTurnRunningStatus(runtime.status) ||
+    runtime.status === 'awaiting_input'
+    ? 'idle'
+    : runtime.status;
+}
+
 /** The running turn each `runtime.patched` in an item reports, by bare chat id. */
 export function activeTurnChanges(
   item: EventItem,
@@ -846,9 +969,9 @@ export function activeTurnChanges(
     if (change.type !== 'runtime.patched') continue;
     const turnId = change.runtime.activeTurnId;
     if (typeof turnId === 'string') turns.set(change.chatId, turnId);
-    // A starting or running turn may not name its id yet: the receipt's
-    // turn stays the one Stop cancels. Only a turn that ended clears it.
-    else if (!isTurnRunningStatus(change.runtime.status))
+    // A queued turn names no id yet: the receipt's turn stays the one Stop
+    // cancels. With none queued, the turn ended (turnRuntimeStatus).
+    else if (change.runtime.queuedMessageIds.length === 0)
       turns.set(change.chatId, null);
   }
   return turns;
@@ -880,12 +1003,44 @@ const LOCAL_COMMANDS: ReadonlySet<string> = new Set([
   'chat.dismiss_attention',
 ]);
 
+/** Whether a command only changes this window's state, never the web core's. */
+export function isWindowLocalCommand(type: string): boolean {
+  return LOCAL_COMMANDS.has(type);
+}
+
 /** The tab settings `core.chat.update` changes, one per request. */
-const SERVED_SETTINGS: ReadonlySet<string> = new Set([
+export const SERVED_TAB_SETTINGS: readonly string[] = [
   'customTitle',
   'modelSelectionMode',
   'pluginSelections',
-]);
+];
+const SERVED_SETTINGS: ReadonlySet<string> = new Set(SERVED_TAB_SETTINGS);
+
+/**
+ * Tab settings a cloud chat carries another way, or that mean nothing for
+ * one, so a patch keeps them in the window instead of refusing (CAN-6646):
+ * the model and its provider go by `chat.set_model`; the thinking level and
+ * fast mode are the window's choices that ride each send; the rest belong to
+ * this computer's runtime (its model config, billing routing, Claude
+ * terminal view, local session and instructions, checkout repo). Pinned in
+ * the golden, so a new setting is placed on purpose, never dropped silently.
+ */
+export const WINDOW_TAB_SETTINGS: readonly string[] = [
+  'model',
+  'providerType',
+  'modelExplicitlyChosen',
+  'thinkingLevel',
+  'codexFastModeEnabled',
+  'modelConfig',
+  'billingExplicitlyChosen',
+  'aiCreditsRouting',
+  'subscriptionBillingOverride',
+  'interfaceMode',
+  'sdkSessionId',
+  'globalInstructionsSnapshot',
+  'selectedRepoId',
+];
+const WINDOW_SETTINGS: ReadonlySet<string> = new Set(WINDOW_TAB_SETTINGS);
 
 type CloseTarget = {
   readonly tabId: string;
@@ -1006,9 +1161,10 @@ function commandActions(
         },
       ];
     case 'chat.patch_tab_settings': {
-      const keys = Object.keys(command.patch);
-      if (keys.some((key) => !SERVED_SETTINGS.has(key)))
-        return 'These chat settings';
+      const keys = Object.keys(command.patch).filter(
+        (key) => !WINDOW_SETTINGS.has(key),
+      );
+      if (keys.some((key) => !SERVED_SETTINGS.has(key))) return 'This setting';
       const patch: Record<string, unknown> = { ...command.patch };
       return keys.map((key) => ({
         method: 'core.chat.update',
@@ -1104,6 +1260,8 @@ export function planCommand(
   );
   if (typeof actions === 'string')
     return { kind: 'unavailable', what: actions };
+  // Nothing the web core keeps: the window keeps it (CAN-6646).
+  if (actions.length === 0) return { kind: 'local' };
   const scope = {
     projectId: bareId(envelope.projectId),
     worktreeId: bareId(envelope.worktreeId),
@@ -1131,7 +1289,11 @@ export function translateCommandResult(
   value: unknown,
   ids: WebCoreIds,
 ): ChatCommandResult {
-  const parsed = CoreChatLifecycleResultSchema.safeParse(value);
+  // Update's result is every lifecycle receipt plus a plugin-selection save's
+  // capability state, which may exceed the lifecycle catchall's 32 KiB JSON
+  // bound (CAN-6092).
+  const parsed =
+    CORE_INSTRUCTION_DEFINITIONS['core.chat.update'].result.safeParse(value);
   if (!parsed.success) throw new WebCoreTranslationError('command receipt');
   const receipt = parsed.data;
   return {

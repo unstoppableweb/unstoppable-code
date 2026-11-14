@@ -26,12 +26,12 @@ import {
   ThinkingSpinner,
   TurnWorkHeader,
   TurnFooterRow,
-  useCleanChatLook,
   isAskUserQuestionToolName,
   portalAskUserQuestionRecordState,
   parseAskUserQuestionTexts,
   readToolCallResult,
   resolveTurnStartingStatus,
+  StreamingTranscript,
   ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
@@ -435,7 +435,7 @@ export function ChatTranscript({
   // last user message; the useMemo only skips recomputes for renders that keep
   // the same messages array (e.g. status/error changes).
   const liveTurnTimer = useMemo(() => hasLiveTurnTimer(messages), [messages]);
-  const cleanChatLook = useCleanChatLook();
+
   const workingStatus = useTurnWorkingStatus();
   const delivering = deliveringMessages ?? EMPTY_DELIVERING_MESSAGES;
   // Fallback feedback for the send→timer gap and for hosts that never emit turn
@@ -466,33 +466,32 @@ export function ChatTranscript({
     transcriptStatus == null &&
     (status === 'streaming' || delivering.length > 0) &&
     !liveTurnTimer;
-  const workingRow =
-    working && cleanChatLook ? (
-      // The same row, line and height as the turn's live timer row that
-      // takes over from it, so nothing moves when the timer arrives.
-      <TurnFooterRow
-        hostTurnGap
-        {...(workingStatus === null ? {} : { role: 'status' })}
-        data-testid="chat-transcript-streaming"
-      >
-        <ChatToolStepGroup
-          summary=""
-          live={{
-            label: workingStatus ?? 'Thinking',
-            icon: null,
-          }}
-        />
-      </TurnFooterRow>
-    ) : working ? (
-      <div
-        {...(workingStatus === null ? {} : { role: 'status' })}
-        className="flex items-center gap-2 px-3 py-1 text-xs fg-secondary"
-        data-testid="chat-transcript-streaming"
-      >
-        <ThinkingSpinner />
-        {workingStatus !== null && <span>{workingStatus}</span>}
-      </div>
-    ) : null;
+  const workingRow = working ? (
+    // The same row, line and height as the turn's live timer row that
+    // takes over from it, so nothing moves when the timer arrives.
+    <TurnFooterRow
+      hostTurnGap
+      {...(workingStatus === null ? {} : { role: 'status' })}
+      data-testid="chat-transcript-streaming"
+    >
+      <ChatToolStepGroup
+        summary=""
+        live={{
+          label: workingStatus ?? 'Thinking',
+          icon: null,
+        }}
+      />
+    </TurnFooterRow>
+  ) : working ? (
+    <div
+      {...(workingStatus === null ? {} : { role: 'status' })}
+      className="flex items-center gap-2 px-3 py-1 text-xs fg-secondary"
+      data-testid="chat-transcript-streaming"
+    >
+      <ThinkingSpinner />
+      {workingStatus !== null && <span>{workingStatus}</span>}
+    </div>
+  ) : null;
   const turnWorkingRow = delivering.length === 0 ? workingRow : null;
 
   const leaveBottom = (): void => {
@@ -768,7 +767,7 @@ export function ChatTranscript({
     );
   }
 
-  return (
+  const transcript = (
     <div
       // `overscroll-contain` keeps a momentum scroll that reaches the top or
       // bottom of the transcript from chaining to the page/body behind it on
@@ -954,9 +953,7 @@ export function ChatTranscript({
             working row (a first send's own status). */}
         {delivering.length > 0 && (
           <div
-            className={
-              cleanChatLook ? 'flex flex-col gap-2' : 'flex flex-col gap-1'
-            }
+            className="flex flex-col gap-2"
             data-testid="chat-transcript-delivering"
           >
             {delivering.map((message) => (
@@ -966,9 +963,7 @@ export function ChatTranscript({
                 appIcon={appIcon}
               />
             ))}
-            {cleanChatLook ? (
-              <div aria-hidden="true" className="h-2.5" />
-            ) : null}
+            <div aria-hidden="true" className="h-2.5" />
             {transcriptStatus == null ? workingRow : null}
           </div>
         )}
@@ -979,6 +974,7 @@ export function ChatTranscript({
             // An agent or server error can quote the conversation.
             <div className={REPLAY_BLOCK_CLASS}>
               <ErrorBanner
+                errorSource="chat-transcript-error"
                 className=""
                 error={error}
                 testId="chat-transcript-error"
@@ -993,5 +989,10 @@ export function ChatTranscript({
         <div />
       </div>
     </div>
+  );
+  return (
+    <StreamingTranscript id={chatId ?? ''} hasContent>
+      {transcript}
+    </StreamingTranscript>
   );
 }

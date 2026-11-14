@@ -235,7 +235,7 @@ export function McpToolSelection({
               </Notice>
             ) : tools.status === 'failed' ? (
               <div className="flex w-full flex-col items-start gap-2">
-                <Notice intent="destructive">
+                <Notice errorSource="mcp-tool-selection" intent="destructive">
                   Couldn’t load this server’s tools.
                 </Notice>
                 <Button

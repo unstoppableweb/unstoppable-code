@@ -21,6 +21,7 @@ export const WORKER_AGENT_PROVIDER_IDS = [
   'ollama',
   'cursor',
   'copilot',
+  'antigravity',
   'opencode',
 ] as const;
 export type WorkerAgentProviderId = (typeof WORKER_AGENT_PROVIDER_IDS)[number];
@@ -32,6 +33,7 @@ export const WORKER_AGENT_PROVIDER_NAMES: Readonly<
   ollama: 'Ollama',
   cursor: 'Cursor',
   copilot: 'Copilot',
+  antigravity: 'Google',
   opencode: 'OpenCode',
 };
 /** `expired` is part of the catalog contract; the desktop host never reports it. `error` means not determined. */

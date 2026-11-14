@@ -29,6 +29,8 @@ import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { Button, FloatingMenu } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { useChatStore } from '@/stores/chatStore';
+import { sandboxStatusOf } from '@canopy/protocol/cloud-session';
+import { cloudSandboxStatusCopy } from '@canopy/ui-app/cloud-sandbox-status';
 import {
   getDirectoryCacheKey,
   getWorktreeCacheKey,
@@ -89,6 +91,9 @@ function BreadcrumbDirectory({
   );
   const entry = useFileListStore((s) => s.directoryCache[cacheKey]);
   const error = useFileListStore((s) => s.directoryErrors[cacheKey]);
+  const notAwake = useFileListStore(
+    (s) => s.sandboxNotAwake[getWorktreeCacheKey(projectId, worktreeId)],
+  );
   const loading = useFileListStore((s) => s.directoryLoading.has(cacheKey));
   const fetchFileTreeDirectory = useFileListStore(
     (s) => s.fetchFileTreeDirectory,
@@ -119,7 +124,16 @@ function BreadcrumbDirectory({
         className="flex items-center gap-2 px-2 py-1.5 text-xs fg-secondary"
         style={{ paddingLeft: `${8 + depth * 14}px` }}
       >
-        {error !== undefined ? 'Unable to load folder.' : <LoadingSpinner />}
+        {error === undefined ? (
+          <LoadingSpinner />
+        ) : error.reason === 'sandbox_sleeping' && notAwake !== undefined ? (
+          cloudSandboxStatusCopy(sandboxStatusOf(notAwake, false).kind, null, {
+            wake: false,
+            tryAgain: false,
+          }).copy
+        ) : (
+          "Couldn't load this folder."
+        )}
       </div>
     );
   }

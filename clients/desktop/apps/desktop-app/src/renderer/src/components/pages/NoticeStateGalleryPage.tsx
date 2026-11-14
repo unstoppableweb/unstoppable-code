@@ -43,6 +43,7 @@ function GalleryNotice({ entry }: { entry: NoticeGalleryEntry }): JSX.Element {
   );
   return (
     <Notice
+      errorSource="state-gallery-page-entry"
       intent={entry.intent}
       {...(entry.icon !== undefined ? { icon: entry.icon } : {})}
       {...(entry.heading !== undefined ? { title: entry.heading } : {})}
@@ -134,6 +135,7 @@ function NoticeStateGalleryContent(): JSX.Element {
           <div className="flex max-w-3xl flex-col gap-2">
             {INTENTS.map((intent) => (
               <Notice
+                errorSource="state-gallery-page"
                 key={intent}
                 intent={intent}
                 onDismiss={(): void => undefined}

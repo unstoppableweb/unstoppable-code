@@ -1,3 +1,5 @@
+import type { AutoDeleteAttention } from './auto-delete-attention';
+import type { WorktreeRecoveryRequest } from './worktree-recovery';
 import type { CoworkFolderMissing } from '../canopy-core/core/workspace/cowork-folder';
 export * from './w5-recovery';
 import type { W5RecoveryStatus } from './w5-recovery';
@@ -37,6 +39,11 @@ export type {
   ChatPlanReviewApproval,
 } from '../canopy-core/chat-plan-review';
 import type { OpenCodeReportedUsage } from './opencode-usage';
+import type { ReportedTurnUsage } from './reported-turn-usage';
+export {
+  parseReportedTurnUsage,
+  type ReportedTurnUsage,
+} from './reported-turn-usage';
 export {
   parseOpenCodeReportedUsage,
   type OpenCodeReportedUsage,
@@ -295,6 +302,8 @@ export type PortalCommandType =
   | 'portal.chat.answer_question'
   | 'portal.chat.dismiss_question'
   | 'portal.standalone_chat.send'
+  | 'portal.standalone_chat.archive'
+  | 'portal.workspace.archived_work_entries.list'
   | 'portal.standalone_chat.create'
   | 'portal.standalone_chat.cancel'
   | 'portal.standalone_chat.set_model'
@@ -380,6 +389,7 @@ export type PortalCommandType =
   | 'portal.session.set_view_mode'
   | 'portal.workspace.set_section_order'
   | 'portal.workspace.reorder'
+  | 'portal.worktree.branches.list'
   | 'portal.worktree.create'
   | 'portal.worktree.archive'
   | 'portal.worktree.discard.describe'
@@ -480,6 +490,8 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.chat.answer_question',
   'portal.chat.dismiss_question',
   'portal.standalone_chat.send',
+  'portal.standalone_chat.archive',
+  'portal.workspace.archived_work_entries.list',
   'portal.standalone_chat.create',
   'portal.standalone_chat.cancel',
   'portal.standalone_chat.set_model',
@@ -565,6 +577,7 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.session.set_view_mode',
   'portal.workspace.set_section_order',
   'portal.workspace.reorder',
+  'portal.worktree.branches.list',
   'portal.worktree.create',
   'portal.worktree.archive',
   'portal.worktree.discard.describe',
@@ -657,7 +670,7 @@ export type PortalCommandEnumParityGuards = [
 ];
 
 /**
- * Portal command types that perform an IRREVERSIBLE destructive operation on
+ * Portal command types that remove active work or perform destructive operations on
  * the paired desktop and remain gated by the `canopy-portal-destructive-actions`
  * kill-switch flag, enforced server-side at command acceptance (not just in the
  * browser UI). Keep this in lockstep with any new flag-gated destructive command
@@ -671,6 +684,7 @@ export type PortalCommandEnumParityGuards = [
 export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
   new Set<PortalCommandType>([
     'portal.worktree.archive',
+    'portal.standalone_chat.archive',
     'portal.worktree.discard',
     'portal.installed_items.uninstall',
     'portal.work_entry.delete',
@@ -692,11 +706,13 @@ export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
  */
 export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
   new Set<PortalCommandType>([
+    'portal.worktree.branches.list',
     'portal.watcher.delete',
     'portal.lifecycle_journal.inspect',
     'portal.lifecycle_journal.quarantine',
     'portal.chat.create_tab',
     'portal.standalone_chat.create',
+    'portal.workspace.archived_work_entries.list',
     'portal.work_entry.update',
     'portal.work_entry.delete',
     'portal.sidebar.item_groups.assign_named',
@@ -1384,6 +1400,8 @@ export interface PortalHeartbeatRequest {
 
 export interface PortalHeartbeatResponse {
   ok: true;
+  /** Server time at response, for command start deadlines. */
+  serverNow?: string;
   status: PortalSessionStatus;
   /** Host code agents use for this device install; older servers omit it. */
   hostCode?: string;
@@ -1497,6 +1515,8 @@ export interface BrowserPortalCommandStatusResponse {
   /** Delivered work may outlive expiry; only undelivered expiry is retryable. */
   delivered?: boolean;
   commandId: string;
+  /** Remaining time until a standalone archive's server-assigned start deadline. */
+  archiveDeadlineRemainingMs?: number;
   status: BrowserPortalCommandStatus;
   /** Present once `status` is `COMPLETED` and the desktop returned a payload. */
   result?: Record<string, unknown>;
@@ -1506,6 +1526,8 @@ export interface BrowserPortalCommandStatusResponse {
 
 export interface SubmitBrowserPortalCommandResponse {
   commandId: string;
+  /** Remaining time until a standalone archive's server-assigned start deadline. */
+  archiveDeadlineRemainingMs?: number;
   /**
    * `true` when the session is `reconnecting` at insert time. The command is
    * queued and will be delivered when local Canopy resumes long-polling.
@@ -1773,6 +1795,10 @@ export const PORTAL_CAPABILITY_COLLECTION_MUTATIONS =
 /** Revision-guarded shared updates, independent of local collection editing. */
 export const PORTAL_CAPABILITY_COLLECTION_UPDATES =
   'collection_updates_v1' as const;
+/** Incarnation-bound, settled recovery actions (CAN-6389), not just display data. */
+export const PORTAL_CAPABILITY_WORKTREE_RECOVERY =
+  'worktree_recovery_v1' as const;
+
 /** Desktop serves `portal.worktree.discard.describe` and `.discard` (CAN-5334). */
 export const PORTAL_CAPABILITY_WORKTREE_DISCARD =
   'worktree_discard_v1' as const;
@@ -1821,6 +1847,13 @@ export const PORTAL_CAPABILITY_CHAT_ASSETS = 'chat_assets_v1' as const;
  */
 export const PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE =
   'standalone_chat_create' as const;
+
+/** Archive the containing Work Entry locked; restore remains on desktop. */
+export const PORTAL_CAPABILITY_ARCHIVED_WORK_ENTRIES =
+  'archived_work_entries_v1' as const;
+
+export const PORTAL_CAPABILITY_STANDALONE_CHAT_ARCHIVE =
+  'standalone_chat_archive' as const;
 
 /**
  * `portal.worktree.create` accepts `existingBranch`, `baseBranch`,
@@ -2533,13 +2566,27 @@ export type PortalChatModel = string;
 /**
  * Wire-side mirror of canopy's `AgentProviderType` (transport plan §1.7).
  */
+const PORTAL_CHAT_AGENT_PROVIDER_TYPES = [
+  'claude',
+  'codex',
+  'ollama',
+  'cursor',
+  'opencode',
+  'copilot',
+  'antigravity',
+] as const;
+
 export type PortalChatAgentProviderType =
-  | 'claude'
-  | 'codex'
-  | 'ollama'
-  | 'cursor'
-  | 'opencode'
-  | 'copilot';
+  (typeof PORTAL_CHAT_AGENT_PROVIDER_TYPES)[number];
+
+/** Validate provider admission against the same list that defines the wire type. */
+export function isPortalChatAgentProviderType(
+  value: unknown,
+): value is PortalChatAgentProviderType {
+  return PORTAL_CHAT_AGENT_PROVIDER_TYPES.some(
+    (provider) => provider === value,
+  );
+}
 
 export interface PortalAgentModelConfig {
   thinkingLevel?: PortalChatThinkingLevel;
@@ -3275,6 +3322,28 @@ export interface PortalPluginCatalogMcpServer extends PortalMcpConnectionMetadat
   transport: 'command' | 'http';
   /** A curated server's selectable endpoints, from its catalog entry. */
   urlOptions?: CuratedMcpUrlOption[];
+  /**
+   * A server one of the account's desktops serves (CAN-6659): which desktop,
+   * and whether it can serve it now. Separate from `connectionState`.
+   */
+  servedBy?: PortalMcpServedByDesktop;
+}
+
+/** Which desktop serves a reach-back server, and whether it can now. */
+export interface PortalMcpServedByDesktop {
+  kind: 'desktop';
+  hostId: string;
+  label: string;
+  serving: 'ready' | 'unreachable' | 'unknown';
+  cause?:
+    | 'start_failed'
+    | 'proxy_unavailable'
+    | 'upstream_unreachable'
+    | 'timed_out'
+    | 'refused'
+    | 'unknown';
+  /** The desktop's own short, redacted explanation, when unreachable. */
+  message?: string;
 }
 
 export interface PortalPluginCatalogSkillMember {
@@ -3787,6 +3856,7 @@ export interface PortalMarketplacePluginRow extends Pick<
   | 'version'
   | 'author'
   | 'category'
+  | 'logoUrl'
   | 'marketplaceId'
   | 'builtIn'
   | 'curated'
@@ -3819,6 +3889,8 @@ export interface PortalMarketplacePluginRow extends Pick<
    * predates it.
    */
   externalSourceUrl?: string;
+  /** Public package URL resolved from an official marketplace manifest path. */
+  marketplacePackageSourceUrl?: string;
   /**
    * MCP servers the plugin bundles, so the browser can join an installed
    * server to its plugin (CAN-3653). Absent when the plugin details were not
@@ -4384,6 +4456,45 @@ export interface PortalStandaloneChatSendPayload extends SidebarItemGroupCreatio
   providerType?: PortalChatAgentProviderType;
   /** @deprecated Use modelConfig.thinkingLevel. */
   thinkingLevel?: PortalChatThinkingLevel;
+}
+
+/** Archives the whole containing Work Entry, including all its chats. */
+export interface PortalStandaloneChatArchivePayload {
+  chatId: string;
+  /** Identity displayed by the row; refuse a restored/rebound entry. */
+  workEntryId: string;
+  /** The row's project, used to scope the archive and duplicate requests. */
+  projectLocalId: string;
+}
+
+/** Terminal durable success, never mere queue acceptance. */
+export interface PortalStandaloneChatArchiveResult {
+  ok: true;
+  chatId: string;
+  projectLocalId: string;
+  workEntryId: string;
+  alreadyArchived?: true;
+}
+
+export interface PortalArchivedWorkEntriesListPayload {
+  projectLocalId: string;
+  /** Only zero is accepted; the complete archive returns in one bounded response. */
+  offset?: number;
+}
+
+/** Path-free metadata for the paired project's read-only archive overview. */
+export interface PortalArchivedWorkEntry {
+  id: string;
+  title: string;
+  state: 'archived' | 'deleted';
+  archivedAt: string;
+  expiresAt?: string;
+  legacyChat?: true;
+}
+
+export interface PortalArchivedWorkEntriesListResult {
+  items: PortalArchivedWorkEntry[];
+  nextOffset: null;
 }
 
 /** Canonical payload for `portal.standalone_chat.cancel`. */
@@ -5452,6 +5563,88 @@ export interface PortalSetSectionOrderPayload {
   order: string[];
 }
 
+export const PORTAL_CAPABILITY_WORKTREE_BASE_BRANCH =
+  'worktree_base_branch_catalog_v1';
+/** Canonical catalogue identities and explicit local/remote base encoding. */
+export const PORTAL_CAPABILITY_WORKTREE_BASE_BRANCH_V2 =
+  'worktree_base_branch_v2';
+export const PORTAL_WORKTREE_BASE_BRANCH_ENCODING = 'explicit-v2';
+
+export function supportsPortalWorktreeBaseBranch(
+  capabilities: Readonly<Record<string, unknown>> | null | undefined,
+): boolean {
+  return capabilities?.[PORTAL_CAPABILITY_WORKTREE_BASE_BRANCH_V2] === true;
+}
+
+export interface WorktreeBaseBranchTarget {
+  branchName: string;
+  isRemote: boolean;
+}
+
+export function isExplicitWorktreeBaseBranch(value: string): boolean {
+  return value.startsWith('local:') || value.startsWith('remote:');
+}
+
+/** `:` cannot occur in a Git branch name, so old hosts refuse these values. */
+export function encodeWorktreeBaseBranch(
+  target: WorktreeBaseBranchTarget,
+): string {
+  return `${target.isRemote ? 'remote' : 'local'}:${target.branchName}`;
+}
+
+/** Decode explicit targets and saved values from older pickers. */
+export function decodeWorktreeBaseBranch(
+  value: string,
+): WorktreeBaseBranchTarget | null {
+  const exactLocal = value.startsWith('local:');
+  const exactRemote = value.startsWith('remote:');
+  const branch = value;
+  const isRemote = exactRemote || branch.startsWith('origin/');
+  const branchName = exactLocal
+    ? branch.slice('local:'.length)
+    : exactRemote
+      ? branch.slice('remote:'.length)
+      : branch.startsWith('origin/')
+        ? branch.slice('origin/'.length)
+        : branch;
+  if (
+    !branchName ||
+    branchName === 'HEAD' ||
+    branchName.startsWith('-') ||
+    /[~^:?*[\\]/.test(branchName) ||
+    Array.from(branchName).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x20 || code === 0x7f;
+    })
+  )
+    return null;
+  return { branchName, isRemote };
+}
+
+/** Names relative to refs/heads/ or refs/remotes/origin/, never Git display aliases. */
+export interface PortalBranchEntry {
+  name: string;
+  isRemote: boolean;
+  isCurrent: boolean;
+  isUsedByWorktree: boolean;
+  hasLocalRef: boolean;
+  hasRemoteRef: boolean;
+}
+
+export interface PortalWorktreeBranchesListPayload {
+  workspaceId: string;
+  /** Required on the wire; rejects stale v1 clients before returning canonical names. */
+  baseBranchEncoding?: typeof PORTAL_WORKTREE_BASE_BRANCH_ENCODING;
+}
+
+export interface PortalWorktreeBranchesListResult {
+  supported: boolean;
+  branches: PortalBranchEntry[];
+  defaultBranch: string | null;
+  /** The byte-bounded prefix is incomplete; absence does not imply deletion. */
+  truncated?: boolean;
+}
+
 /**
  * Payload for `portal.worktree.create` — asks the desktop to create a new
  * worktree ("task") in the given workspace, mirroring the desktop sidebar's
@@ -5478,6 +5671,15 @@ export interface PortalWorktreeCreatePayload extends SidebarItemGroupCreationOpt
   /** Optional existing worktree to branch the new one from. */
   baseWorktreeId?: string;
   /**
+   * Generic Git base with worktree_create_from_v1; exclusive with baseWorktreeId.
+   * Catalogue selections require worktree_base_branch_v2 and the encoding marker.
+   * V2 encodes local:<name> / remote:<name>; marked saved bare/origin values keep
+   * their exact local/origin meaning. Unmarked v1 bases retain legacy resolution.
+   */
+  baseBranch?: string;
+  /** Required for v2 branch selections, including legacy saved browser submissions. */
+  baseBranchEncoding?: typeof PORTAL_WORKTREE_BASE_BRANCH_ENCODING;
+  /**
    * Marks a create dispatched for a submitted New Task composer so a cloud
    * host can attach a typed credit refusal to that recovery surface. Omitted
    * for workspace-header creates, which have no recoverable submission.
@@ -5501,8 +5703,6 @@ export interface PortalWorktreeCreatePayload extends SidebarItemGroupCreationOpt
   chatId?: string;
   /** Check out this existing branch instead of creating one (`worktree_create_from_v1`). */
   existingBranch?: string;
-  /** Start the new branch from this base branch (`worktree_create_from_v1`). */
-  baseBranch?: string;
   /**
    * A pull request on the project's repository: check out its head branch, or
    * start a new branch from it (`worktree_create_from_v1`).
@@ -5656,10 +5856,17 @@ export interface PortalTaskRefsListResult {
  * the portal localIds (1:1 with the desktop ids).
  */
 export interface PortalWorktreeArchivePayload {
+  /** Only recovery-aware callers send this; binds retries to the refused incarnation. */
+  recovery?: WorktreeRecoveryRequest;
+  expectedBranchName?: string;
+  deleteBranch?: boolean;
+  deleteWithoutRetentionIfMissing?: boolean;
   /** Absent means archive; delete requires host retention support. */
   mode?: 'archive' | 'delete';
   workspaceId: string;
   worktreeId: string;
+  /** Pin a reviewed incarnation; older desktops ignore this optional guard. */
+  expectedCreatedAt?: string;
   /**
    * CAN-5334: complete an ordinary refusal with `{ success: false, refusal }`
    * and its discard description instead of failing. Older desktops ignore it.
@@ -5874,6 +6081,8 @@ export interface PortalCommandPayloadMap {
   'portal.chat.answer_question': PortalChatAnswerQuestionPayload;
   'portal.chat.dismiss_question': PortalChatDismissQuestionPayload;
   'portal.standalone_chat.send': PortalStandaloneChatSendPayload;
+  'portal.standalone_chat.archive': PortalStandaloneChatArchivePayload;
+  'portal.workspace.archived_work_entries.list': PortalArchivedWorkEntriesListPayload;
   'portal.standalone_chat.create': PortalStandaloneChatCreatePayload;
   'portal.standalone_chat.cancel': PortalStandaloneChatCancelPayload;
   'portal.standalone_chat.set_model': PortalStandaloneChatSetModelPayload;
@@ -5959,6 +6168,7 @@ export interface PortalCommandPayloadMap {
   'portal.session.set_view_mode': PortalSetViewModePayload;
   'portal.workspace.set_section_order': PortalSetSectionOrderPayload;
   'portal.workspace.reorder': PortalWorkspaceReorderPayload;
+  'portal.worktree.branches.list': PortalWorktreeBranchesListPayload;
   'portal.worktree.create': PortalWorktreeCreatePayload;
   'portal.worktree.archive': PortalWorktreeArchivePayload;
   'portal.worktree.discard.describe': PortalWorktreeDiscardDescribePayload;
@@ -7887,6 +8097,10 @@ export interface PortalStandaloneChatSummary extends PortalStandaloneWorkEntryFi
   steeringCapabilities?: ChatSteeringCapabilities;
   /** True while a turn runs in this chat; absent on older hosts. */
   turnActive?: boolean;
+  /** See {@link PortalChatSummaryEntity.settingApplication}. */
+  settingApplication?: PortalChatSettingApplication;
+  /** See {@link PortalChatSummaryEntity.turnSettings}. */
+  turnSettings?: PortalChatTurnSettings;
   /** See {@link PortalChatSummaryEntity.lastTurnEnd}. */
   lastTurnEnd?: PortalChatTurnEnd;
   /**
@@ -8313,6 +8527,23 @@ export interface PortalChatTurnEnd {
   outcome: 'completed' | 'failed' | 'cancelled';
   /** ISO-8601 time the turn ended. */
   endedAt: string;
+}
+
+/**
+ * When a chat's live session applies a model or thinking-level change: at
+ * once (`live`), or only from the next turn it starts (`next_turn`), so a
+ * running turn keeps the settings it started with. Mirrors the desktop's
+ * `ChatSessionSettingApplication`.
+ */
+export interface PortalChatSettingApplication {
+  model: 'live' | 'next_turn';
+  thinkingLevel: 'live' | 'next_turn';
+}
+
+/** The model and thinking level a running turn applied. */
+export interface PortalChatTurnSettings {
+  model?: string;
+  thinkingLevel?: PortalChatThinkingLevel;
 }
 
 /**
@@ -9190,6 +9421,7 @@ export interface PortalChatProviderAvailability {
   cursor?: boolean;
   /** Connected Copilot account with a verified, enabled managed runtime. */
   copilot?: boolean;
+  antigravity?: boolean;
   opencode?: boolean;
 }
 
@@ -9408,6 +9640,7 @@ export interface PortalProviderUsageRefreshResult {
  * hides the rows it cannot fill rather than showing zeros.
  */
 export interface PortalChatUsage {
+  reportedTurnUsage?: ReportedTurnUsage | null;
   /** Latest native turn/context report; null explicitly clears a previous report. */
   opencodeReportedUsage?: OpenCodeReportedUsage | null;
   contextTokens?: number;
@@ -9601,6 +9834,20 @@ export interface PortalChatSummaryEntity {
    * Omitted when the turn is idle or the desktop predates this field.
    */
   turnElapsedMs?: number;
+  /**
+   * How the chat's live session applies a model or thinking-level change:
+   * at once, or only from its next turn. Sent with `turnActive` for sessions
+   * that declare it; omitted for sessions that apply changes live and by
+   * desktops that predate this field.
+   */
+  settingApplication?: PortalChatSettingApplication;
+  /**
+   * The model and thinking level the running turn applied, while a turn runs
+   * on a session with a `settingApplication`. A composer whose selection
+   * differs shows that change as pending until the next turn. Omitted when
+   * idle or by desktops that predate this field.
+   */
+  turnSettings?: PortalChatTurnSettings;
   /**
    * The chat's canonical turn phase (turn-state phase 41a). `background`
    * means only background work runs: no turn, so the composer is open and
@@ -9927,6 +10174,7 @@ export function readPortalWorkspaceAvatarUrl(
 export interface PortalSessionShellState {
   /** Read-only recovery presentation from the paired computer. */
   w5Recovery?: W5RecoveryStatus;
+  autoDeleteAttention?: AutoDeleteAttention[];
   /** Current provider account quotas, when the selected host publishes them. */
   providerUsage?: PortalProviderUsageProjection;
   workspaces: Array<{
@@ -10038,6 +10286,8 @@ export interface PortalSessionShellState {
      * means the desktop did not supply it.
      */
     archiveRetentionDays?: number;
+    /** Committed retained containers in this paired cowork project. */
+    archivedContainerCount?: number;
     /**
      * Multi-repo only: child repos that participate in this workspace.
      * Single-repo workspaces emit an empty array or omit the field.

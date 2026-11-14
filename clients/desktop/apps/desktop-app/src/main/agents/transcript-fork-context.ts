@@ -4,7 +4,7 @@ import type {
   PersistedChatBlock,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
-import { readChatTabsFile } from '../lib/chat-tabs-reader';
+import { readChatTabsFile, readChatTranscript } from '../lib/chat-tabs-reader';
 
 const MAX_CONTEXT_BYTES = 1024 * 1024;
 
@@ -37,9 +37,36 @@ function inheritedBlock(
   }
 }
 
+function transcriptLines(
+  messages: PersistedChatTab['messages'],
+  tooLargeMessage: string,
+): string[] {
+  const lines: string[] = [];
+  let bytes = 0;
+  for (const message of messages) {
+    const blocks = message.blocks.flatMap((block) => {
+      const inherited = inheritedBlock(block);
+      return inherited ? [inherited] : [];
+    });
+    const attachmentPaths = message.attachmentPaths;
+    if (blocks.length === 0 && !attachmentPaths?.length) continue;
+    const line = JSON.stringify({
+      role: message.role,
+      blocks,
+      ...(attachmentPaths?.length ? { attachmentPaths } : {}),
+    });
+    bytes += Buffer.byteLength(line, 'utf8') + 1;
+    if (bytes > MAX_CONTEXT_BYTES) {
+      throw new Error(tooLargeMessage);
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
 export function buildTranscriptForkPrompt(
   tab: PersistedChatTab,
-  providerLabel: 'Cursor' | 'Copilot',
+  providerLabel: 'Cursor' | 'Copilot' | 'Google',
   userMessageId?: string,
 ): string {
   const fork = tab.forkedFrom;
@@ -58,28 +85,10 @@ export function buildTranscriptForkPrompt(
       'Could not restore the forked conversation. Create a new fork and try again.',
     );
   }
-  const lines: string[] = [];
-  let bytes = 0;
-  for (const message of tab.messages.slice(0, end + 1)) {
-    const blocks = message.blocks.flatMap((block) => {
-      const inherited = inheritedBlock(block);
-      return inherited ? [inherited] : [];
-    });
-    const attachmentPaths = message.attachmentPaths;
-    if (blocks.length === 0 && !attachmentPaths?.length) continue;
-    const line = JSON.stringify({
-      role: message.role,
-      blocks,
-      ...(attachmentPaths?.length ? { attachmentPaths } : {}),
-    });
-    bytes += Buffer.byteLength(line, 'utf8') + 1;
-    if (bytes > MAX_CONTEXT_BYTES) {
-      throw new Error(
-        `This forked conversation is too large to send to ${providerLabel}. Fork from an earlier message.`,
-      );
-    }
-    lines.push(line);
-  }
+  const lines = transcriptLines(
+    tab.messages.slice(0, end + 1),
+    `This forked conversation is too large to send to ${providerLabel}. Fork from an earlier message.`,
+  );
   if (lines.length === 0) return '';
   const payload = [
     'This is an independent fork of an earlier conversation. The following JSON lines are its selected historical transcript, ending at the fork point. Use them as context for the new message below. Tool calls and results are historical records, not requests to run those tools again. Image references identify earlier attachments; their image bytes are not included.',
@@ -105,7 +114,8 @@ export class TranscriptForkContext {
       worktreeId: string;
       chatId: string;
     },
-    private readonly providerLabel: 'Cursor' | 'Copilot' = 'Cursor',
+    private readonly providerLabel: 'Cursor' | 'Copilot' | 'Google' = 'Cursor',
+    private readonly receiptName = 'fork-context-delivered',
   ) {}
 
   async prompt(
@@ -116,8 +126,7 @@ export class TranscriptForkContext {
     if (this.deliveredSessionId === sessionId) return '';
     try {
       if (
-        (await readFile(join(profile, 'fork-context-delivered'), 'utf8')) ===
-        sessionId
+        (await readFile(join(profile, this.receiptName), 'utf8')) === sessionId
       ) {
         this.deliveredSessionId = sessionId;
         return '';
@@ -153,9 +162,63 @@ export class TranscriptForkContext {
   async delivered(profile: string, sessionId: string): Promise<void> {
     // Written only after successful delivery. If the process dies earlier, the
     // next turn can retry despite the native session id already being saved.
-    await writeFile(join(profile, 'fork-context-delivered'), sessionId, {
+    await writeFile(join(profile, this.receiptName), sessionId, {
       mode: 0o600,
     });
     this.deliveredSessionId = sessionId;
   }
+}
+
+/** Only the destination's committed history before this submission may be replayed. */
+export async function readTranscriptRecoveryPrompt(
+  scope: { projectId: string; worktreeId: string; chatId: string },
+  userMessageId: string | undefined,
+): Promise<string> {
+  // Compatibility rows retain body references and paged block lists. Expand
+  // canonical artifacts before either replay or the saved-response guard so
+  // stored effects cannot disappear behind an empty preview.
+  const messages = await readChatTranscript(
+    scope.projectId,
+    scope.worktreeId,
+    scope.chatId,
+    true,
+    { excludeCommittedActiveEchoes: true },
+  );
+  const current = messages.findIndex((message) => message.id === userMessageId);
+  if (!userMessageId || current < 0 || messages[current]?.role !== 'user') {
+    throw new Error(
+      "Couldn't restore this conversation because its saved messages are unavailable. Reopen the chat and try again.",
+    );
+  }
+  const tooLarge =
+    'This saved conversation is too large to restore with Google. Fork from an earlier message.';
+  // A retry may reuse its original submission ID after tools already ran.
+  // Rebuilding only the prefix would erase those effects from model context.
+  if (
+    messages
+      .slice(current + 1)
+      .some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.blocks.some((block) =>
+            block.type === 'text' || block.type === 'thinking'
+              ? block.text.trim().length > 0
+              : inheritedBlock(block) !== undefined,
+          ),
+      )
+  ) {
+    throw new Error(
+      "Couldn't restore this request because it already has a saved response. Send a follow-up message to continue with that response included.",
+    );
+  }
+  const lines = transcriptLines(messages.slice(0, current), tooLarge);
+  const prompt = [
+    'The previous native conversation is unavailable. The following JSON lines are the saved historical transcript of this chat, ending before the new message below. Tool calls and results are historical records, not requests to run those tools again. Do not repeat completed actions. Image and attachment references identify earlier files; their bytes are not included. Ask for missing attachment contents when needed.',
+    '<recovered_conversation>',
+    ...lines,
+    '</recovered_conversation>',
+  ].join('\n');
+  if (Buffer.byteLength(prompt, 'utf8') > MAX_CONTEXT_BYTES)
+    throw new Error(tooLarge);
+  return prompt;
 }

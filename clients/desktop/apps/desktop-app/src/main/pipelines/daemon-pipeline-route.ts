@@ -35,7 +35,18 @@ import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/exec
 import {
   getSecretValues,
   resolvePipelineModelAliasTarget,
+  type PipelineModelAliasTarget,
 } from '@canopy/execution-engine/node/pipelines/executor/step-runner';
+import { codexPluginSourceFacts } from '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-mcp';
+import {
+  admitCodexPluginSteps,
+  type CodexPluginAdmissionAlias,
+  type CodexPluginSourceFacts,
+} from '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-admission';
+import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import { PIPELINE_OWNER_MCP_ROUTES_MAX } from './pipeline-owner-mcp';
+import { readPreferencesFile } from '../lib/preferences-store';
 import {
   DAEMON_PIPELINE_PLATFORMS,
   daemonPipelineProcessEnvironment,
@@ -245,8 +256,102 @@ interface LaunchModelAliases {
   readonly preferences?: Record<string, PipelineModelAliasPreference>;
   /** Each alias a step could resolve; an alias that would fail is absent. */
   readonly resolutions: Record<string, DaemonModelAliasResolution>;
+  /** Where each alias's plugins come from, for a Codex step (CAN-6168). */
+  readonly pluginSources?: Record<
+    string,
+    PipelineModelAliasTarget['pluginSource']
+  >;
   /** Some alias names an Agent, which its steps resolve again. */
   readonly agents: boolean;
+}
+
+/**
+ * The launch's Codex plugin admission (CAN-6168): the facts of every plugin
+ * source the run could merge, decided by one pure rule
+ * (admitCodexPluginSteps) for each combination of a step's collection and
+ * alias. The classifier asks it per step; the per-source sets it also
+ * derives are what the daemon re-reads on its own.
+ */
+async function codexPluginServing(
+  snapshots:
+    | Readonly<Record<string, ResolvedPipelinePluginCollectionSnapshot>>
+    | undefined,
+  aliases: LaunchModelAliases | undefined,
+): Promise<{
+  readonly collections: ReadonlySet<string> | undefined;
+  readonly aliasResolutions:
+    | Record<string, DaemonModelAliasResolution>
+    | undefined;
+  readonly admits: (
+    collectionId: string | undefined,
+    aliasId: string | undefined,
+  ) => boolean;
+}> {
+  const preferences = await readPreferencesFile().catch(() => null);
+  const collections: Record<string, CodexPluginSourceFacts> = {};
+  for (const [id, snapshot] of Object.entries(snapshots ?? {}))
+    collections[id] = codexPluginSourceFacts(
+      snapshot.selections,
+      snapshot.mcpServers,
+    );
+  const aliasInputs: Record<string, CodexPluginAdmissionAlias> = {};
+  for (const [id, resolution] of Object.entries(aliases?.resolutions ?? {})) {
+    const source = aliases?.pluginSources?.[id];
+    aliasInputs[id] = {
+      plugins: resolution.plugins,
+      ...(source?.kind === 'agent' && {
+        source: {
+          kind: 'agent' as const,
+          facts: codexPluginSourceFacts(source.selections),
+        },
+      }),
+      ...(source?.kind === 'collection' && {
+        source: {
+          kind: 'collection' as const,
+          collectionId: source.collectionId,
+        },
+      }),
+    };
+  }
+  const admission = admitCodexPluginSteps({
+    collections,
+    aliases: aliasInputs,
+    defaultHandler: preferences
+      ? (preferences.mcpHttpAuthDefaultHandler ?? DEFAULT_MCP_HTTP_AUTH_HANDLER)
+      : null,
+    routesMax: PIPELINE_OWNER_MCP_ROUTES_MAX,
+  });
+  if (admission.routeCapExceeded)
+    logMainProcessWarn(
+      `Workflow run keeps its Codex plugin steps in this app: they bring ${admission.routes} plugin MCP servers, more than the ${PIPELINE_OWNER_MCP_ROUTES_MAX} a daemon run can bind.`,
+    );
+  // A source refused on its own is refused in every merge, so these sets
+  // never admit what the per-step rule refuses.
+  const servedCollections = snapshots
+    ? new Set(
+        Object.keys(collections).filter(
+          (id) => admission.decide(id, undefined) === 'daemon',
+        ),
+      )
+    : undefined;
+  const aliasResolutions = aliases
+    ? Object.fromEntries(
+        Object.entries(aliases.resolutions).map(([id, resolution]) => [
+          id,
+          resolution.plugins &&
+          aliasInputs[id]?.source !== undefined &&
+          admission.decide(undefined, id) === 'daemon'
+            ? { ...resolution, codexPlugins: true as const }
+            : resolution,
+        ]),
+      )
+    : undefined;
+  return {
+    collections: servedCollections,
+    aliasResolutions,
+    admits: (collectionId, aliasId) =>
+      admission.decide(collectionId, aliasId) === 'daemon',
+  };
 }
 
 async function resolveLaunchModelAliases(
@@ -272,6 +377,10 @@ async function resolveLaunchModelAliases(
     }),
   };
   const resolutions: Record<string, DaemonModelAliasResolution> = {};
+  const pluginSources: Record<
+    string,
+    PipelineModelAliasTarget['pluginSource']
+  > = {};
   let agents = false;
   for (const alias of pipeline.model_aliases) {
     const target = await resolvePipelineModelAliasTarget(
@@ -282,9 +391,15 @@ async function resolveLaunchModelAliases(
     ).catch(() => null);
     if (!target) continue;
     resolutions[alias.id] = { base: target.base, plugins: target.plugins };
+    if (target.pluginSource) pluginSources[alias.id] = target.pluginSource;
     agents ||= target.agent;
   }
-  return { ...(preferences && { preferences }), resolutions, agents };
+  return {
+    ...(preferences && { preferences }),
+    resolutions,
+    pluginSources,
+    agents,
+  };
 }
 
 /** A run's plugin collections as its executor will resolve them at start (CAN-5832). */
@@ -363,15 +478,24 @@ export async function buildDaemonPipelineLaunch(
   const collections = ownerPossible
     ? await resolveLaunchPluginCollections(pipeline, options)
     : undefined;
+  // Codex steps' plugins go to the daemon only where it serves every MCP
+  // server they bring (CAN-6168).
+  const codexServing = ownerPossible
+    ? await codexPluginServing(collections?.snapshots, aliases)
+    : undefined;
+  const codexCollections = codexServing?.collections;
+  const aliasResolutions = codexServing?.aliasResolutions;
   const classification = classifyDaemonPipeline(
     pipeline,
     {
       runtime: options.runtime,
       repoPath: options.repoPath ?? options.cwd,
-      ...(aliases && { modelAliases: aliases.resolutions }),
+      ...(aliasResolutions && { modelAliases: aliasResolutions }),
       ...(collections && {
         pluginCollections: new Set(Object.keys(collections.snapshots)),
       }),
+      ...(codexCollections && { codexPluginCollections: codexCollections }),
+      ...(codexServing && { codexPluginAdmission: codexServing.admits }),
       // A step's model may name a run input (CAN-6012).
       ...(ownerPossible && {
         inputs: resolveDaemonPipelineInputs(pipeline, options.inputs),
@@ -439,7 +563,7 @@ export async function buildDaemonPipelineLaunch(
         ...(aliases.preferences && {
           modelAliasPreferences: aliases.preferences,
         }),
-        modelAliasResolutions: aliases.resolutions,
+        modelAliasResolutions: aliasResolutions ?? aliases.resolutions,
       }),
     ...(hasModelSteps &&
       collections && {

@@ -187,12 +187,14 @@ export function PublishedArtifactsManager(): JSX.Element {
       </div>
 
       <ErrorBanner
+        errorSource="published-artifacts-manager-load"
         className=""
         error={loadError ? SETTINGS_LOAD_ERROR_COPY : null}
         onRetry={() => void refresh()}
       />
 
       <ErrorBanner
+        errorSource="published-artifacts-manager-editor"
         className=""
         error={editor.error?.copy}
         details={editor.error?.details}

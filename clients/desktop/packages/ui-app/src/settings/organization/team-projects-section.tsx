@@ -1108,6 +1108,7 @@ function ProjectList({
   return (
     <div ref={containerRef} tabIndex={-1} className="flex flex-col gap-6">
       <ErrorBanner
+        errorSource="project-list"
         error={(error ?? (managed.selected ? null : managed.error))?.copy}
         details={(error ?? (managed.selected ? null : managed.error))?.details}
         // Only a failed first load offers Retry; "Load more" retries a later
@@ -1708,7 +1709,11 @@ function ProjectEditor({
         initialFocusRef={initialSection === 'grants' ? grantsRef : nameRef}
       >
         <div className="flex flex-col gap-6">
-          <ErrorBanner error={error?.copy} details={error?.details} />
+          <ErrorBanner
+            errorSource="project-editor"
+            error={error?.copy}
+            details={error?.details}
+          />
           {stale && (
             <LoadingButton
               variant="secondary"

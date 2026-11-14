@@ -87,6 +87,11 @@ export interface WorkspaceSectionHeaderContextAction {
 export interface WorkspaceSectionHeaderProps {
   /** Workspace display name. */
   name: string;
+  /**
+   * `secondary` sets the name in the sidebar's quiet grey, brightening on
+   * hover, for a disclosure row such as Hidden worktrees.
+   */
+  nameTone?: 'primary' | 'secondary';
   /** Hex color used to tint the leading badge. Mirrors desktop palette. */
   colorHex?: string;
   /** Workspace kind rendered by the leading badge. */
@@ -314,6 +319,7 @@ const DEFERRED_ACTION_PADDING: readonly string[] = [
 
 export function WorkspaceSectionHeader({
   name,
+  nameTone = 'primary',
   colorHex,
   workspaceType,
   avatarUrl,
@@ -708,7 +714,7 @@ export function WorkspaceSectionHeader({
 
   const nameLabel = (
     <span
-      className={`${REPLAY_MASK_CLASS} min-w-0 truncate ${textScale === 'sidebar' ? 'text-s font-normal' : 'text-m font-semibold'} leading-snug ${isMultiRepo && textScale !== 'sidebar' ? 'fg-info' : 'fg-primary'}`}
+      className={`${REPLAY_MASK_CLASS} min-w-0 truncate ${textScale === 'sidebar' ? 'text-s font-normal' : 'text-m font-semibold'} leading-snug ${isMultiRepo && textScale !== 'sidebar' ? 'fg-info' : nameTone === 'secondary' ? 'fg-secondary transition-colors group-hover/sidebar-item:fg-primary' : 'fg-primary'}`}
       title={displayName}
     >
       {displayName}
@@ -846,15 +852,17 @@ export function WorkspaceSectionHeader({
           ref={actionSlotRef}
           data-testid={`workspace-section-actions${testIdSuffix}`}
           data-workspace-header-actions="true"
+          // 2px from the row's edge on every side: the header's 4px end
+          // padding holds its resting count, so only the controls move out.
           className={`${
             hasPersistentControls
-              ? 'flex shrink-0 items-center gap-0.5'
+              ? 'flex shrink-0 items-center gap-0.5 -mr-0.5'
               : defersPointerHoverActions
                 ? // Once revealed this overlay sits above the primary button
                   // and swallows presses that land between the controls, so
                   // the trailing region cannot reach the collapse toggle.
-                  'flex shrink-0 items-center gap-0.5 pointer-fine:invisible pointer-fine:absolute pointer-fine:inset-y-0 pointer-fine:right-0 pointer-fine:group-hover/sidebar-item:visible pointer-fine:group-focus-within/sidebar-item:visible pointer-fine:focus-within:visible'
-                : 'hidden shrink-0 items-center gap-0.5 group-hover/sidebar-item:flex group-focus-within/sidebar-item:flex focus-within:flex pointer-coarse:flex'
+                  'flex shrink-0 items-center gap-0.5 pointer-fine:invisible pointer-fine:absolute pointer-fine:inset-y-0 pointer-fine:-right-0.5 pointer-fine:group-hover/sidebar-item:visible pointer-fine:group-focus-within/sidebar-item:visible pointer-fine:focus-within:visible'
+                : 'hidden shrink-0 items-center gap-0.5 -mr-0.5 group-hover/sidebar-item:flex group-focus-within/sidebar-item:flex focus-within:flex pointer-coarse:flex'
           } pointer-coarse:gap-0`}
           onPointerDownCapture={handleActionPointerDownCapture}
           onPointerCancelCapture={handleActionPointerCancelCapture}

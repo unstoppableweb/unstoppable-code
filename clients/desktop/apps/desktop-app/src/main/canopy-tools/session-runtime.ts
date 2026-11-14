@@ -1,3 +1,7 @@
+import type {
+  MemoryChatSearchResult,
+  MemoryChatExcerptResult,
+} from '@canopy/protocol/canopy-core';
 import { describeReviewCommentContext } from '@canopy/desktop-shared/types/code-review';
 import { randomUUID } from 'node:crypto';
 import {
@@ -53,6 +57,7 @@ import { getCodeReviewTarget } from '../lib/code-review-registry';
 import {
   appendReviewCommentReply,
   readReviewCommentThread,
+  skippedCommentThreadsField,
 } from '../lib/code-review-persistence';
 import {
   readFileCommentThreads,
@@ -694,6 +699,7 @@ export async function respondToFileCommentInSession(options: {
         await listReviewRepos(scope.projectId, scope.worktreeId),
       ),
       review: reply.review,
+      ...skippedCommentThreadsField(scope.projectId, scope.worktreeId),
     };
     sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
     return { ok: true, resolved: options.resolve, store: 'review' };
@@ -843,6 +849,7 @@ export async function respondToReviewCommentInSession(options: {
     worktreeId: ref.worktreeId,
     fingerprint: await computeReviewFingerprint(repos),
     review: result.review,
+    ...skippedCommentThreadsField(ref.projectId, ref.worktreeId),
   };
   sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
 
@@ -978,4 +985,64 @@ export async function loadWorktreePipelineYaml(
   }
 
   return readWorktreePipelineYaml(options);
+}
+
+export interface ChatHistoryToolScope {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}
+
+export async function queryChatHistory(
+  options: ChatHistoryToolScope & { query: string; limit: number },
+): Promise<MemoryChatSearchResult> {
+  const result = await activeAgentCoreOperations('memory').query(
+    'core.memory.chats.search',
+    {
+      scope: {
+        workspaceId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+      },
+      query: options.query,
+      limit: options.limit,
+    },
+    { caller: AGENT_MEMORY_CALLER },
+  );
+  return result;
+}
+
+export async function queryChatExcerpt(
+  options: ChatHistoryToolScope & { matchId: string },
+): Promise<MemoryChatExcerptResult> {
+  const result = await activeAgentCoreOperations('memory').query(
+    'core.memory.chats.excerpt',
+    {
+      scope: {
+        workspaceId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+      },
+      matchId: options.matchId,
+    },
+    { caller: AGENT_MEMORY_CALLER },
+  );
+  return result;
+}
+
+export async function searchChats(
+  options: ChatHistoryToolScope & { query: string; limit: number },
+): Promise<string> {
+  return JSON.stringify({
+    ...(await queryChatHistory(options)),
+    contentTrust: 'untrusted_reference_data',
+  });
+}
+export async function readChatExcerpt(
+  options: ChatHistoryToolScope & { matchId: string },
+): Promise<string> {
+  return JSON.stringify({
+    ...(await queryChatExcerpt(options)),
+    contentTrust: 'untrusted_reference_data',
+  });
 }

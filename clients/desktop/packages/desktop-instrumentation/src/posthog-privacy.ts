@@ -1,4 +1,8 @@
 import { SECRET_ASSIGNMENT_KEYS_SOURCE } from '@canopy/execution-engine/lib/redaction';
+import {
+  RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX,
+  type DesktopInstrumentationConfig,
+} from './config';
 import { redactText, redactUrl } from './privacy';
 import { normalizePostHogEmailDomain } from './posthog-account';
 import { POSTHOG_CLICK_EVENTS } from './client/posthog-autocapture-options';
@@ -274,22 +278,40 @@ function truncateExceptionText(value: string): string {
     : value;
 }
 
-function sanitizeExceptionPath(value: unknown): string | undefined {
-  return typeof value === 'string' ? redactUrl(value) : undefined;
+const RENDERER_ASSET_PREFIX = `${RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX}/`;
+
+function sanitizeExceptionPath(
+  value: unknown,
+  handled: boolean,
+  chunkId?: unknown,
+): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = redactUrl(value);
+  if (!handled) return normalized;
+  if (
+    typeof chunkId === 'string' &&
+    chunkId.length > 0 &&
+    normalized.startsWith(RENDERER_ASSET_PREFIX) &&
+    /^[a-zA-Z0-9_.-]+\.js$/.test(normalized.slice(RENDERER_ASSET_PREFIX.length))
+  )
+    return normalized;
+  // The SDK can turn private absolute paths into cwd-relative filenames.
+  return 'file:///<redacted>';
 }
 
 function sanitizeExceptionFrame(
   frame: unknown,
+  handled: boolean,
 ): Record<string, unknown> | undefined {
   if (!isRecord(frame)) return undefined;
-  const result: Record<string, unknown> = {};
+  // PostHog requires a function string even when privacy hides its name.
+  const result: Record<string, unknown> = handled ? { function: '?' } : {};
   for (const key of EXCEPTION_TEXT_FRAME_KEYS) {
+    // V8's cached stack text can embed private header labels that look like
+    // function names. Handled events keep coordinates and SDK chunk identity.
+    if (handled) continue;
     const value = frame[key];
     if (typeof value === 'string') result[key] = redactText(value);
-  }
-  for (const key of EXCEPTION_PATH_FRAME_KEYS) {
-    const value = sanitizeExceptionPath(frame[key]);
-    if (value !== undefined) result[key] = value;
   }
   for (const key of EXCEPTION_VERBATIM_FRAME_KEYS) {
     const value = frame[key];
@@ -300,14 +322,25 @@ function sanitizeExceptionFrame(
     )
       result[key] = value;
   }
+  for (const key of EXCEPTION_PATH_FRAME_KEYS) {
+    if (handled && key === 'abs_path') continue;
+    const path = frame[key];
+    if (typeof path !== 'string') continue;
+    result[key] = sanitizeExceptionPath(path, handled, frame.chunk_id);
+  }
   return result;
+}
+
+interface SanitizedExceptionEntry extends Record<string, unknown> {
+  stacktrace?: { type?: string; frames: Record<string, unknown>[] };
 }
 
 function sanitizeExceptionEntry(
   entry: unknown,
-): Record<string, unknown> | undefined {
+  handled: boolean,
+): SanitizedExceptionEntry | undefined {
   if (!isRecord(entry)) return undefined;
-  const result: Record<string, unknown> = {};
+  const result: SanitizedExceptionEntry = {};
   if (typeof entry.type === 'string') result.type = redactText(entry.type);
   if (typeof entry.value === 'string')
     result.value = truncateExceptionText(redactText(entry.value));
@@ -331,9 +364,11 @@ function sanitizeExceptionEntry(
       // Keep the innermost frames; the SDK orders frames outermost first.
       frames: frames
         .slice(-MAX_EXCEPTION_FRAMES)
-        .map(sanitizeExceptionFrame)
+        .map((frame) => sanitizeExceptionFrame(frame, handled))
         .filter((frame) => frame !== undefined),
     };
+  } else if (handled) {
+    result.stacktrace = { type: 'raw', frames: [] };
   }
   return result;
 }
@@ -346,12 +381,21 @@ function sanitizePostHogExceptionProperties(
   properties: Record<string, unknown>,
 ): Record<string, unknown> {
   const exceptionProperties: Record<string, unknown> = {};
+  const handled = typeof properties.error_reference_id === 'string';
   const list = properties.$exception_list;
   if (Array.isArray(list)) {
-    exceptionProperties.$exception_list = list
+    const entries = list
       .slice(0, MAX_EXCEPTION_LIST_ENTRIES)
-      .map(sanitizeExceptionEntry)
+      .map((entry) => sanitizeExceptionEntry(entry, handled))
       .filter((entry) => entry !== undefined);
+    exceptionProperties.$exception_list = entries;
+    if (
+      handled &&
+      entries.length &&
+      entries.every((entry) => !entry.stacktrace?.frames.length)
+    ) {
+      exceptionProperties.frames_unavailable = true;
+    }
   }
   const message = properties.$exception_message;
   if (typeof message === 'string') {
@@ -365,7 +409,7 @@ function sanitizePostHogExceptionProperties(
   if (typeof fingerprint === 'string') {
     exceptionProperties.$exception_fingerprint = redactText(fingerprint);
   }
-  const source = sanitizeExceptionPath(properties.$exception_source);
+  const source = sanitizeExceptionPath(properties.$exception_source, handled);
   if (source !== undefined) exceptionProperties.$exception_source = source;
   for (const key of ['$exception_lineno', '$exception_colno'] as const) {
     const value = properties[key];
@@ -383,6 +427,10 @@ function withoutExceptionProperties(
 }
 
 interface SanitizePostHogEventOptions {
+  exceptionBuild?: Pick<
+    DesktopInstrumentationConfig,
+    'appVersion' | 'appBrand' | 'releaseChannel'
+  >;
   preserveBrowserProjectToken?: boolean;
   /** Recorder payloads are already masked and may contain gzip latin1 bytes. */
   passthroughProperties?: readonly string[];
@@ -448,6 +496,14 @@ export function sanitizePostHogEvent<
       }
     }
     Object.assign(sanitizedProperties, exceptionProperties);
+    if (exceptionProperties && options.exceptionBuild) {
+      sanitizedProperties.app_version =
+        options.exceptionBuild.appVersion ?? 'unknown';
+      sanitizedProperties.app_brand =
+        options.exceptionBuild.appBrand ?? 'unknown';
+      sanitizedProperties.release_channel =
+        options.exceptionBuild.releaseChannel ?? 'unknown';
+    }
   }
   const sanitizedEvent = {
     ...event,

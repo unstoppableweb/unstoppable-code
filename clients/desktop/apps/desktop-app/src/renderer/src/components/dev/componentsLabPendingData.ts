@@ -42,7 +42,6 @@ export interface RatchetBacklog {
 }
 
 const DESKTOP = 'apps/desktop-app/src/renderer/src/components';
-const UI_SHARED = 'packages/ui-shared/src/components';
 const UI_APP = 'packages/ui-app/src';
 
 export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
@@ -79,57 +78,6 @@ export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
     planned:
       'ListRow with sizes, a link form, disabled and trailing actions, then a ratchet',
     note: 'ListRow only renders as a button today; that gap is why most local rows exist.',
-  },
-  {
-    id: 'toggles',
-    status: 'waiting',
-    name: 'Switches, checkboxes and radios',
-    count:
-      '28 local *Toggle, *Switch or *Checkbox components · hand-made role="switch", "checkbox" or "radio" in about 15 files',
-    shared: ['ToggleSwitch (70 files)', 'Checkbox', 'Radio'],
-    copies: [
-      `${UI_APP}/settings/billing/billing-toggle-panel.tsx`,
-      `${UI_APP}/settings/digests/digest-share-controls.tsx`,
-      `${UI_APP}/capability/McpServerReadDetail.tsx`,
-      `${UI_APP}/feedback/FeedbackDialog.tsx`,
-    ],
-    planned:
-      'ToggleSwitch with a public lg size and busy and disabled tests, then extend the fields ratchet to switch, checkbox and radio roles',
-  },
-  {
-    id: 'slider',
-    status: 'waiting',
-    name: 'Sliders',
-    count: 'two hand-made effort controls, no shared Slider',
-    shared: [],
-    copies: [
-      `${UI_SHARED}/ThinkingLevelControl.tsx`,
-      `${DESKTOP}/settings/ModelThinkingPreferenceRow.tsx`,
-      `${DESKTOP}/chat/ThinkingLevelButton.tsx`,
-    ],
-    planned: 'A shared Slider with keyboard, disabled and value states',
-  },
-  {
-    id: 'code-blocks',
-    status: 'waiting',
-    name: 'Code blocks',
-    count: '<pre> in about 59 files',
-    shared: ['MarkdownCodeBlock', 'AnsiOutput'],
-    copies: [],
-    planned: 'One exported CodeBlock for Markdown, ANSI and plain output',
-  },
-  {
-    id: 'charts',
-    status: 'waiting',
-    name: 'Charts',
-    count: 'two chart kits, desktop and ui-app',
-    shared: [],
-    copies: [
-      `${DESKTOP}/pages/usage/chart-primitives.tsx`,
-      `${UI_APP}/settings/organization/statistics/charts.tsx`,
-    ],
-    planned:
-      'One chart kit, which also gives the last 4 progress bars their segments bar',
   },
 ];
 
@@ -175,8 +123,8 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
   },
   {
     family: 'Progress',
-    remaining: 4,
-    breakdown: '4 stacked chart bars waiting for a shared segments bar',
+    remaining: 0,
+    breakdown: 'Done',
     baseline: 'docs/design/legacy-progress.baseline.json',
   },
   {
@@ -191,6 +139,13 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     breakdown:
       '1026 radius, 987 background, 876 edge, 73 shadow on raw elements, across 596 files',
     baseline: 'docs/design/legacy-surfaces.baseline.json',
+  },
+  {
+    family: 'Code blocks',
+    remaining: 66,
+    breakdown:
+      '66 raw <pre> elements across 54 files, including the two CodeBlock and MarkdownCodeBlock render',
+    baseline: 'docs/design/legacy-code-blocks.baseline.json',
   },
   {
     family: 'Tables',
@@ -213,8 +168,8 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
   },
   {
     family: 'Overlays',
-    remaining: 9,
-    breakdown: '1 backdrop, 3 body portals, 5 absolute menus',
+    remaining: 0,
+    breakdown: 'Done',
     baseline: 'docs/design/legacy-overlays.baseline.json',
   },
   {
@@ -235,6 +190,12 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     remaining: 33,
     breakdown: '33 raw <h1>…<h6>, across 27 files',
     baseline: 'docs/design/legacy-headings.baseline.json',
+  },
+  {
+    family: 'Links',
+    remaining: 76,
+    breakdown: '76 raw <a>, across 56 files',
+    baseline: 'docs/design/legacy-links.baseline.json',
   },
   {
     family: 'Tooltips',

@@ -498,7 +498,12 @@ export function InstalledItemStatusRow({
           })}
         </ul>
       )}
-      <ErrorBanner className="" error={error} testId={`${testId}-error`} />
+      <ErrorBanner
+        errorSource="installed-item-status-row"
+        className=""
+        error={error}
+        testId={`${testId}-error`}
+      />
       {ready && (
         <NoticeLines
           notices={[

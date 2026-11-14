@@ -5,6 +5,8 @@ import {
   type PlatformOperatingSystem,
 } from '@canopy/core-runtime';
 import {
+  GIT_BRANCH_TRACKING_CONFIG_PATTERN,
+  GIT_EXACT_CATALOGUE_REF_ARGS,
   GitRepositoryWriteError,
   type GitChildEnvironment,
   type GitRepositoryWrite,
@@ -139,6 +141,23 @@ export function gitWriteCommandFor(
         `refs/remotes/origin/${refValue(field('branch'))}`,
       ];
       break;
+    case 'catalog-branch-tip':
+      args = [
+        'show-ref',
+        '--verify',
+        '--hash',
+        `${field('remote') === true ? 'refs/remotes/origin/' : 'refs/heads/'}${refValue(field('branch'))}`,
+      ];
+      break;
+    case 'branch-tracking-config':
+      args = [
+        'config',
+        '--local',
+        '--null',
+        '--get-regexp',
+        GIT_BRANCH_TRACKING_CONFIG_PATTERN,
+      ];
+      break;
     case 'fetch-origin-branch': {
       const branch = refValue(field('branch'));
       args = [
@@ -163,17 +182,33 @@ export function gitWriteCommandFor(
     case 'current-branch':
       args = ['rev-parse', '--abbrev-ref', 'HEAD'];
       break;
+    case 'symbolic-head':
+      args = ['symbolic-ref', '--quiet', 'HEAD'];
+      break;
     case 'checkout':
-      args = ['checkout', refValue(field('branch'))];
+      args = ['switch', '--no-guess', '--', refValue(field('branch'))];
       break;
     case 'checkout-new-branch':
+    case 'prepare-new-branch': {
+      const startPoint = refValue(field('startPoint'));
       args = [
-        'checkout',
-        '-b',
+        ...(kind === 'checkout-new-branch'
+          ? [
+              ...(startPoint.startsWith('refs/')
+                ? GIT_EXACT_CATALOGUE_REF_ARGS
+                : []),
+              'checkout',
+              '-b',
+            ]
+          : [...GIT_EXACT_CATALOGUE_REF_ARGS, 'branch']),
         refValue(field('name')),
-        refValue(field('startPoint')),
+        startPoint,
+        ...(kind === 'checkout-new-branch' && startPoint.startsWith('refs/')
+          ? ['--']
+          : []),
       ];
       break;
+    }
     case 'rename-current-branch':
       args = ['branch', '-m', refValue(field('name'))];
       break;
@@ -231,6 +266,9 @@ export function gitWriteCommandFor(
       args = [
         '-c',
         'core.hooksPath=/dev/null',
+        ...(typeof startPoint === 'string' && startPoint.startsWith('refs/')
+          ? GIT_EXACT_CATALOGUE_REF_ARGS
+          : []),
         'worktree',
         'add',
         ...(create

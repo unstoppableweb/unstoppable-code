@@ -128,6 +128,7 @@ function PipelineRunLoadFailed({
   return (
     <div className="flex min-h-0 flex-1 flex-col p-3">
       <Notice
+        errorSource="pipeline-execution-panel-load-error"
         intent="destructive"
         title="Couldn't load this run"
         data-testid="pipeline-execution-panel-load-error"

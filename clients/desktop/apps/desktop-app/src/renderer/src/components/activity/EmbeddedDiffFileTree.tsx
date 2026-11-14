@@ -181,7 +181,11 @@ export function EmbeddedDiffFileTree({
       )}
       {error && (
         <div className="shrink-0 p-2">
-          <Notice intent="destructive" className="">
+          <Notice
+            errorSource="embedded-diff-file-tree"
+            intent="destructive"
+            className=""
+          >
             {error}
           </Notice>
         </div>

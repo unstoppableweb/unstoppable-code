@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { navigateToRestoredContainerDestination } from '@/lib/archivedContainerNavigation';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -22,34 +22,61 @@ export interface ArchivedContainerActions {
   deletePermanently: () => Promise<void>;
 }
 
+/** The lifecycle change in flight for a container. */
+export type ArchivedContainerChange = 'state' | 'restore' | 'delete';
+
+export interface ArchivedContainerBatchActions {
+  /** Containers with a change in flight, and which change. */
+  readonly busy: ReadonlyMap<string, ArchivedContainerChange>;
+  readonly setArchived: (
+    containerId: string,
+    archived: boolean,
+  ) => Promise<void>;
+  readonly restore: (containerId: string) => Promise<void>;
+  readonly deletePermanently: (containerId: string) => Promise<void>;
+}
+
 /**
- * One behavior source for archive actions used by the full viewer, the
- * overview page rows, and every archived-container menu.
+ * One behavior source for archive actions, keyed by container: the More page
+ * lists every container of a workspace and acts on each. One change at a time
+ * per container.
  */
-export function useArchivedContainerActions(
+export function useArchivedContainerBatchActions(
   workspaceId: string,
-  containerId: string,
-  archived: boolean,
-): ArchivedContainerActions {
+): ArchivedContainerBatchActions {
   const setLocked = useArchivedContainersStore((state) => state.setLocked);
   const restoreContainer = useArchivedContainersStore((state) => state.restore);
   const deleteContainer = useArchivedContainersStore(
     (state) => state.deletePermanently,
   );
   const addToast = useGitHubStore((state) => state.addToast);
-  const [changingState, setChangingState] = useState(false);
-  const [restoring, setRestoring] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const changingStateRef = useRef(false);
-  const restoringRef = useRef(false);
-  const deletingRef = useRef(false);
+  const inFlight = useRef(new Map<string, ArchivedContainerChange>());
+  const [busy, setBusy] = useState<
+    ReadonlyMap<string, ArchivedContainerChange>
+  >(() => new Map());
+
+  const track = useCallback(
+    async (
+      containerId: string,
+      change: ArchivedContainerChange,
+      run: () => Promise<void>,
+    ): Promise<void> => {
+      if (inFlight.current.has(containerId)) return;
+      inFlight.current.set(containerId, change);
+      setBusy(new Map(inFlight.current));
+      try {
+        await run();
+      } finally {
+        inFlight.current.delete(containerId);
+        setBusy(new Map(inFlight.current));
+      }
+    },
+    [],
+  );
 
   const setArchived = useCallback(
-    async (nextArchived: boolean): Promise<void> => {
-      if (changingStateRef.current || nextArchived === archived) return;
-      changingStateRef.current = true;
-      setChangingState(true);
-      try {
+    (containerId: string, nextArchived: boolean): Promise<void> =>
+      track(containerId, 'state', async () => {
         const result = await setLocked(workspaceId, containerId, nextArchived);
         if (result === null) {
           addToast(
@@ -59,76 +86,92 @@ export function useArchivedContainerActions(
             'error',
           );
         }
-      } finally {
-        changingStateRef.current = false;
-        setChangingState(false);
-      }
-    },
-    [addToast, archived, containerId, setLocked, workspaceId],
+      }),
+    [addToast, setLocked, track, workspaceId],
   );
 
-  const restore = useCallback(async (): Promise<void> => {
-    if (restoringRef.current) return;
-    restoringRef.current = true;
-    setRestoring(true);
-    try {
-      const result = await restoreContainer(workspaceId, containerId);
-      if (result === null) {
-        addToast("Couldn't restore this item", 'error');
-        return;
-      }
-      if (result.warnings.length > 0) {
-        addToast(result.warnings.join(' — '), 'warning', undefined, {
-          category: result.kind === 'worktree' ? 'Worktree' : 'Chat',
-        });
-      }
-      const stillPresent =
-        useArchivedContainersStore
-          .getState()
-          .byWorkspace[
-            workspaceId
-          ]?.some((entry) => entry.id === containerId) ?? false;
-      if (!stillPresent) {
-        await navigateToRestoredContainerDestination(workspaceId, result);
-      }
-    } finally {
-      restoringRef.current = false;
-      setRestoring(false);
-    }
-  }, [addToast, containerId, restoreContainer, workspaceId]);
-
-  const deletePermanently = useCallback(async (): Promise<void> => {
-    const run = async (): Promise<void> => {
-      if (deletingRef.current) return;
-      deletingRef.current = true;
-      setDeleting(true);
-      try {
-        const ok = await deleteContainer(workspaceId, containerId);
-        // CAN-5338: a retained worktree whose deletion can't finish offers
-        // its discard, whose Retry runs this again; anything else keeps the
-        // toast.
-        if (
-          !ok &&
-          !(await offerRetainedArchiveDiscard(workspaceId, containerId, () => {
-            void run();
-          }))
-        ) {
-          addToast(ARCHIVED_ITEM_DELETE_FAILED, 'error');
+  const restore = useCallback(
+    (containerId: string): Promise<void> =>
+      track(containerId, 'restore', async () => {
+        const result = await restoreContainer(workspaceId, containerId);
+        if (result === null) {
+          addToast("Couldn't restore this item", 'error');
+          return;
         }
-      } finally {
-        deletingRef.current = false;
-        setDeleting(false);
-      }
-    };
-    await run();
-  }, [addToast, containerId, deleteContainer, workspaceId]);
+        if (result.warnings.length > 0) {
+          addToast(result.warnings.join(' — '), 'warning', undefined, {
+            category: result.kind === 'worktree' ? 'Worktree' : 'Chat',
+          });
+        }
+        const stillPresent =
+          useArchivedContainersStore
+            .getState()
+            .byWorkspace[
+              workspaceId
+            ]?.some((entry) => entry.id === containerId) ?? false;
+        if (!stillPresent) {
+          await navigateToRestoredContainerDestination(workspaceId, result);
+        }
+      }),
+    [addToast, restoreContainer, track, workspaceId],
+  );
 
-  return {
-    changingState,
-    restoring,
-    deleting,
-    setArchived,
-    restore,
-    deletePermanently,
-  };
+  const deletePermanently = useCallback(
+    (containerId: string): Promise<void> => {
+      const run = (): Promise<void> =>
+        track(containerId, 'delete', async () => {
+          const ok = await deleteContainer(workspaceId, containerId);
+          // CAN-5338: a retained worktree whose deletion can't finish offers
+          // its discard, whose Retry runs this again; anything else keeps the
+          // toast.
+          if (
+            !ok &&
+            !(await offerRetainedArchiveDiscard(
+              workspaceId,
+              containerId,
+              () => {
+                void run();
+              },
+            ))
+          ) {
+            addToast(ARCHIVED_ITEM_DELETE_FAILED, 'error');
+          }
+        });
+      return run();
+    },
+    [addToast, deleteContainer, track, workspaceId],
+  );
+
+  return useMemo(
+    () => ({ busy, setArchived, restore, deletePermanently }),
+    [busy, setArchived, restore, deletePermanently],
+  );
+}
+
+/**
+ * One behavior source for archive actions used by the full viewer, the
+ * overview page rows, and every archived-container menu.
+ */
+export function useArchivedContainerActions(
+  workspaceId: string,
+  containerId: string,
+  archived: boolean,
+): ArchivedContainerActions {
+  const batch = useArchivedContainerBatchActions(workspaceId);
+  const change = batch.busy.get(containerId);
+  return useMemo(
+    () => ({
+      changingState: change === 'state',
+      restoring: change === 'restore',
+      deleting: change === 'delete',
+      setArchived: (nextArchived: boolean): Promise<void> =>
+        nextArchived === archived
+          ? Promise.resolve()
+          : batch.setArchived(containerId, nextArchived),
+      restore: (): Promise<void> => batch.restore(containerId),
+      deletePermanently: (): Promise<void> =>
+        batch.deletePermanently(containerId),
+    }),
+    [archived, batch, change, containerId],
+  );
 }

@@ -10,7 +10,8 @@ import {
   CostObservedTotal,
   CostSplitBar,
   costSourceSegments,
-  formatCostTotal,
+  formatCostTotalIn,
+  useCostCurrency,
 } from '@canopy/ui-shared/components/cost';
 import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useCostInsightsEnabled } from './CostInsightsGate';
@@ -66,11 +67,12 @@ function PipelineCostPreviewWithStore(
     readonly store: PipelineRunCostStore;
   },
 ): JSX.Element | null {
+  const currency = useCostCurrency();
   const state = useStore(props.store, (current) => current);
   const view = state.value;
   if (view === null || view.run.agentStepCount === 0) return null;
 
-  const amount = formatCostTotal(view.run.totals);
+  const amount = formatCostTotalIn(view.run.totals, currency);
   const sourceSegments = costSourceSegments(
     view.run.totals.bySource,
     RUN_SOURCES,

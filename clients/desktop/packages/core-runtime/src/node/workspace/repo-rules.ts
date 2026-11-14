@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type {
   RepoRuleProposal,
   RepoRuleSkipped,
+  RepoRulesBlocked,
+  RepoRulesCheckResponse,
   RepoRulesApplyRequest,
   RepoRulesApplyResponse,
   RepoRulesPreviewRequest,
@@ -73,6 +75,8 @@ export interface RepoRulesCheckoutReader {
     repos: RepoRuleCheckout[],
     nestedDirectories: Record<string, string[]>,
   ): Promise<RepoRulesRead>;
+  /** The repository IDs whose checkout root no longer exists. */
+  missingCheckouts(repos: RepoRuleCheckout[]): Promise<string[]>;
 }
 
 export type RepoRulesCheckoutResolver = (
@@ -183,6 +187,36 @@ export class RepoRulesPolicy {
   }
   async status(workspaceId: string): Promise<RepoRulesStatus> {
     return policyStatus(await this.store.read(workspaceId));
+  }
+  /**
+   * What a session read of the workspace's source checkouts can't use right
+   * now (CAN-6368): the same bounded read new chats run, without Git and
+   * without a scan. A checkout that is gone, or can't be resolved, is
+   * reported as missing-checkout rather than failing the call.
+   */
+  async check(workspaceId: string): Promise<RepoRulesCheckResponse> {
+    const state = await this.store.read(workspaceId);
+    let checkouts: RepoRuleCheckout[];
+    try {
+      checkouts = await this.resolve({ workspaceId });
+    } catch {
+      return { blocked: [{ repoId: '', reason: 'missing-checkout' }] };
+    }
+    const missing = new Set(await this.worker.missingCheckouts(checkouts));
+    const read = await this.worker.readSession(
+      checkouts.filter((checkout) => !missing.has(checkout.repoId)),
+      state.nestedDirectories,
+    );
+    const blocked: RepoRulesBlocked[] = [
+      ...Array.from(
+        missing,
+        (repoId): RepoRulesBlocked => ({ repoId, reason: 'missing-checkout' }),
+      ),
+      ...read.skipped
+        .filter((skip) => skip.path === '')
+        .map(({ repoId, reason }) => ({ repoId, reason })),
+    ];
+    return { blocked };
   }
   private prune(): void {
     for (const [key, review] of Array.from(this.reviews))
@@ -377,29 +411,28 @@ export class RepoRulesPolicy {
     if (request.scanId) this.reviews.delete(request.scanId);
     return policyStatus(result);
   }
-  /** The session prompt block for enabled policy; any failure composes nothing. */
+  /**
+   * The session prompt block for enabled policy. A failure rejects; the
+   * session's caller decides that a chat still starts without the block.
+   */
   async compose(
     workspaceId: string,
     repos?: RepoRuleCheckout[],
   ): Promise<string> {
-    try {
-      const state = await this.store.read(workspaceId);
-      if (!state.enabled) return '';
-      const checkouts = repos ?? (await this.resolve({ workspaceId }));
-      const read = await this.worker.readSession(
-        checkouts,
-        state.nestedDirectories,
-      );
-      for (const rule of read.rules) {
-        rule.selected =
-          !state.disabledRuleIds.includes(rule.id) &&
-          (!rule.flags.includes('malformed-frontmatter') ||
-            state.reviewed[rule.id] !== undefined);
-      }
-      return renderRepoRules(read.rules, checkouts, read.skipped.length);
-    } catch {
-      return '';
+    const state = await this.store.read(workspaceId);
+    if (!state.enabled) return '';
+    const checkouts = repos ?? (await this.resolve({ workspaceId }));
+    const read = await this.worker.readSession(
+      checkouts,
+      state.nestedDirectories,
+    );
+    for (const rule of read.rules) {
+      rule.selected =
+        !state.disabledRuleIds.includes(rule.id) &&
+        (!rule.flags.includes('malformed-frontmatter') ||
+          state.reviewed[rule.id] !== undefined);
     }
+    return renderRepoRules(read.rules, checkouts, read.skipped.length);
   }
 }
 
@@ -489,6 +522,8 @@ export async function selectSessionInstructions(options: {
   activeProvider?: string;
   currentGlobal: string;
   compose: () => Promise<string>;
+  /** Records why the repository rules couldn't be composed. */
+  onComposeError: (error: unknown) => void;
 }): Promise<string> {
   if (options.resumed) return options.saved ?? options.active ?? '';
   if (options.provider === 'cursor') return options.currentGlobal;
@@ -501,6 +536,10 @@ export async function selectSessionInstructions(options: {
   )
     return options.active;
   if (!options.isInteractiveCode) return options.currentGlobal;
-  const rules = await options.compose().catch(() => '');
+  // Optional rules never stop a chat from starting, but a failure is recorded.
+  const rules = await options.compose().catch((error: unknown) => {
+    options.onComposeError(error);
+    return '';
+  });
   return [options.currentGlobal, rules].filter(Boolean).join('\n\n');
 }

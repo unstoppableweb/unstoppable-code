@@ -70,6 +70,11 @@ export interface CanopyEffectiveManifest {
   readonly operations: ReadonlySet<string>;
   readonly events: ReadonlySet<string>;
   readonly streams: ReadonlySet<string>;
+  /**
+   * Minor schema revisions the runtime serves above an operation's version
+   * (protocol rule 5); a client asks for one only when it is listed here.
+   */
+  readonly schemaRevisions?: ReadonlyMap<string, number>;
   has(kind: CanopyManifestKind, name: string): boolean;
 }
 
@@ -82,16 +87,28 @@ export interface CanopyClientQueryOptions {
    * from params, renderer, Portal or remote input. Never log it.
    */
   readonly execution?: CanopyHostExecution;
+  /**
+   * Request headers for this call alone, on bindings whose messages are
+   * requests (HTTP): the web's same-origin wake proof of a waking read
+   * (CAN-6093).
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 export interface CanopyClientInstructionOptions {
   readonly metadata?: CanopyRequestMetadata;
   readonly signal?: AbortSignal;
   /** As {@link CanopyClientQueryOptions.execution}. */
   readonly execution?: CanopyHostExecution;
+  /**
+   * Request headers for this call alone, on bindings whose messages are
+   * requests (HTTP): the web's same-origin wake proof (CAN-6110).
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
-export interface CanopyClientStreamOptions<
-  Frame = unknown,
-> extends CanopyClientQueryOptions {
+export interface CanopyClientStreamOptions<Frame = unknown> extends Omit<
+  CanopyClientQueryOptions,
+  'headers'
+> {
   /** Attached before the next receive is processed, so no frame is missed. */
   readonly onFrame?: (frame: Frame) => void;
 }

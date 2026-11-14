@@ -97,6 +97,8 @@ export function signInCommandFor(
   paths: { claude: () => string; gh: () => string },
   verifiedOpenCodeExecutable?: string,
 ): { executable: string; args: string[] } {
+  if (provider === 'antigravity')
+    throw new Error('Google sign-in uses the native ACP authentication flow.');
   if (provider === 'claude')
     return { executable: paths.claude(), args: ['auth', 'login'] };
   if (provider === 'github')

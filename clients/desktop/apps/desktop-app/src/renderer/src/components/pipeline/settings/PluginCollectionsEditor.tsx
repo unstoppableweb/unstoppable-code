@@ -255,7 +255,7 @@ function CollectionItem({
       </div>
 
       {expanded && (
-        <div className="flex flex-col border-t p-3 gap-3">
+        <Surface variant="section" boundary="top" padding="compact" gap="item">
           <FormField
             label="ID"
             error={idError}
@@ -368,7 +368,7 @@ function CollectionItem({
               </ul>
             )}
           </Stack>
-        </div>
+        </Surface>
       )}
 
       {pickerOpen && (

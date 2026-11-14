@@ -124,14 +124,14 @@ function InlineStepDetail({
   return (
     <Surface variant="group" size="small" className="overflow-hidden">
       {resolved.stepResult?.agentTerminalMode && (
-        <div className="border-b px-3 py-2">
+        <Surface variant="section" boundary="bottom" padding="section-compact">
           <TerminalModeBanner
             agentTerminalMode={resolved.stepResult.agentTerminalMode}
             workerId={archived ? undefined : resolved.stepResult.workerId}
             workerQueued={resolved.stepResult.workerQueued}
             onViewWorker={onViewWorker}
           />
-        </div>
+        </Surface>
       )}
 
       {resolved.stepResult?.error && (
@@ -146,13 +146,18 @@ function InlineStepDetail({
       )}
 
       {hasConfig && (
-        <div className="flex flex-col border-b px-3 py-2 gap-1">
+        <Surface
+          variant="section"
+          boundary="bottom"
+          padding="section-compact"
+          gap="tight"
+        >
           <div className="text-2xs font-medium fg-secondary">Configuration</div>
           <div className="flex flex-col gap-0">
             <KeyValueTable values={resolved.stepDef.with} />
             <KeyValueTable values={resolved.stepDef.env} />
           </div>
-        </div>
+        </Surface>
       )}
 
       <div className="flex flex-col px-3 py-2 gap-1">
@@ -403,7 +408,11 @@ export function PipelineExecutionInlineDetail({
   return (
     <div className="flex flex-col gap-2 border-l-2 border-line-accent pl-3">
       {state?.error && (
-        <Notice intent="destructive" title="Execution error">
+        <Notice
+          errorSource="pipeline-execution-inline-detail"
+          intent="destructive"
+          title="Execution error"
+        >
           <span className="whitespace-pre-wrap break-words font-mono">
             {state.error}
           </span>

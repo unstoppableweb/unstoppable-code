@@ -1,3 +1,7 @@
+import {
+  isValidSharedAgentModelId,
+  parseAgentRouteModelId,
+} from '@canopy/protocol/agents';
 import type {
   AgentAuditEntry,
   AgentAuditToolCounts,
@@ -93,3 +97,33 @@ export const AGENT_AUDIT_TOOL_COUNT_KEYS: Array<keyof AgentAuditToolCounts> = [
   'mcp',
   'other',
 ];
+
+/** Project recorded routes without looking up a mutable Agent preference. */
+export function observedModelIdentity(value: {
+  model?: string;
+  requestedModel?: string;
+  agentId?: string;
+}): { model?: string; agentId?: string } {
+  const route = value.model ? parseAgentRouteModelId(value.model) : null;
+  const requestedRoute = value.requestedModel
+    ? parseAgentRouteModelId(value.requestedModel)
+    : null;
+  const selectedAgent = requestedRoute?.agentId ?? value.requestedModel;
+  const modelAgent = route?.agentId ?? value.model;
+  const agentId =
+    selectedAgent && isValidSharedAgentModelId(selectedAgent)
+      ? selectedAgent
+      : modelAgent && isValidSharedAgentModelId(modelAgent)
+        ? modelAgent
+        : value.agentId && isValidSharedAgentModelId(value.agentId)
+          ? value.agentId
+          : undefined;
+  return {
+    model:
+      route?.baseModel ??
+      (value.model && !isValidSharedAgentModelId(value.model)
+        ? value.model
+        : requestedRoute?.baseModel),
+    ...(agentId ? { agentId } : {}),
+  };
+}

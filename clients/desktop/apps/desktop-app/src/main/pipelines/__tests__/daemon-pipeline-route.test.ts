@@ -88,6 +88,70 @@ jest.mock('@canopy/execution-engine/node/pipelines/executor', () => ({
     mockExecutePipeline(...args),
 }));
 
+// CAN-6168: the launch checks a Codex step's plugin HTTP servers: the
+// effective auth handler, and an OAuth requirement they don't declare.
+const mockCodexHttpServers: {
+  current: {
+    url: string;
+    marketplaceId: string;
+    pluginName: string;
+    serverName: string;
+  }[];
+} = { current: [] };
+/** The launch never probes a server: this app binds its credential for the run. */
+const mockOAuthProbe = { calls: 0 };
+const mockWarnings: string[] = [];
+const mockPreferences: { current: Record<string, unknown> } = { current: {} };
+jest.mock(
+  '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-mcp',
+  () => {
+    const actual = jest.requireActual<typeof CodexPluginMcpModule>(
+      '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-mcp',
+    );
+    return {
+      ...actual,
+      // The plugins on disk bring no HTTP server; the test supplies them.
+      codexPluginSourceFacts: (
+        ...args: Parameters<typeof actual.codexPluginSourceFacts>
+      ): ReturnType<typeof actual.codexPluginSourceFacts> => ({
+        ...actual.codexPluginSourceFacts(...args),
+        httpServers: mockCodexHttpServers.current.map((server) => ({
+          target: JSON.stringify([
+            'plugin',
+            server.marketplaceId,
+            server.pluginName,
+            server.serverName,
+          ]),
+          identity: JSON.stringify([
+            server.marketplaceId,
+            server.pluginName,
+            server.serverName,
+            server.url,
+          ]),
+        })),
+      }),
+    };
+  },
+);
+jest.mock('../../lib/preferences-store', () => ({
+  ...jest.requireActual<object>('../../lib/preferences-store'),
+  readPreferencesFile: (): Promise<unknown> =>
+    Promise.resolve(mockPreferences.current),
+}));
+jest.mock('../../mcp/oauth-probe', () => ({
+  probeMcpHttpOAuthRequirement: (): Promise<unknown> => {
+    mockOAuthProbe.calls += 1;
+    return Promise.resolve({ requirement: 'oauth', requiresOAuth: true });
+  },
+}));
+jest.mock('../../lib/main-process-logging', () => ({
+  ...jest.requireActual<object>('../../lib/main-process-logging'),
+  logMainProcessWarn: (message: string): void => {
+    mockWarnings.push(message);
+  },
+}));
+
+import type * as CodexPluginMcpModule from '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-mcp';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -1359,14 +1423,51 @@ describe('daemon pipeline route (CAN-5086)', () => {
   it('plugin collection steps on Claude go to the daemon with the snapshots the executor would resolve (CAN-5832)', async () => {
     initClaudeModels([{ id: DEFAULT_CLAUDE_MODEL, label: 'Claude' }]);
     initCodexModels([{ id: DEFAULT_CODEX_MODEL, label: 'Codex' }]);
+    type Handler = 'account' | 'canopy' | 'provider';
+    let override: Handler | null = null;
+    // Electron main builds a Codex step's standalone skills its own way, so a
+    // collection with one keeps a Codex step in process (CAN-6168).
+    let skills = true;
     const selections = (mcp: boolean): ChatTabPluginSelections => ({
       collectionIds: [],
-      skillRefs: [{ sourceId: 'local', skillName: 'review' }],
+      skillRefs: skills ? [{ sourceId: 'local', skillName: 'review' }] : [],
       pluginRefs: [],
       ...(mcp && { mcpServerRefs: [{ serverId: 'github', configId: 'd' }] }),
+      ...(override !== null && {
+        mcpHttpAuthPreferences: [
+          {
+            target: {
+              kind: 'plugin',
+              marketplaceId: 'market',
+              pluginName: 'tools',
+              serverName: 'docs',
+            },
+            handler: override,
+          },
+        ],
+      }),
     });
     let mcp = false;
     let required = false;
+    // A second collection of the run that adds only an account override for
+    // the docs server, and no plugin.
+    let authCollection = false;
+    const authOnly: ChatTabPluginSelections = {
+      collectionIds: [],
+      skillRefs: [],
+      pluginRefs: [],
+      mcpHttpAuthPreferences: [
+        {
+          target: {
+            kind: 'plugin',
+            marketplaceId: 'market',
+            pluginName: 'tools',
+            serverName: 'docs',
+          },
+          handler: 'account',
+        },
+      ],
+    };
     const resolverPreferences: unknown[] = [];
     executionRuntime.resolvePipelinePluginCollections = (
       collections,
@@ -1378,7 +1479,7 @@ describe('daemon pipeline route (CAN-5086)', () => {
           (collections ?? []).map(({ id }) => [
             id,
             {
-              selections: selections(mcp),
+              selections: id === 'auth' ? authOnly : selections(mcp),
               missingOptionalDefaults: [],
               unresolvedRequiredDefaults: required
                 ? [{ defaultKey: 'plugin:x', error: 'X is required.' }]
@@ -1391,7 +1492,22 @@ describe('daemon pipeline route (CAN-5086)', () => {
     const collectionPipeline = (model?: string): Pipeline => ({
       name: 'Route',
       on: 'dispatch',
-      plugin_collections: [{ id: 'review', name: 'Review', defaults: [] }],
+      plugin_collections: [
+        { id: 'review', name: 'Review', defaults: [] },
+        ...(authCollection ? [{ id: 'auth', name: 'Auth', defaults: [] }] : []),
+      ],
+      ...(authCollection && {
+        model_aliases: [
+          {
+            id: 'authed',
+            name: 'Authed',
+            defaults: {
+              base: DEFAULT_CODEX_MODEL,
+              plugin_collection_id: 'auth',
+            },
+          },
+        ],
+      }),
       jobs: {
         j: {
           steps: [
@@ -1445,14 +1561,100 @@ describe('daemon pipeline route (CAN-5086)', () => {
     ).toMatchObject({
       pluginCollectionSnapshots: { review: { selections: selections(true) } },
     });
-    mcp = false;
-    // A Codex step with a collection, and a snapshot that misses a required
-    // default, run in process.
+    // CAN-6168: a Codex step with a collection whose MCP servers the daemon
+    // serves goes there too; one naming a standalone MCP server or a skill,
+    // and a snapshot that misses a required default, run in process.
     await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
+    mcp = false;
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
+    skills = false;
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(daemon.instructions).toHaveLength(3);
+    // An HTTP server that needs OAuth goes to the daemon too: this app
+    // binds its credential for the run (owner.mcp.bind), so the launch
+    // never probes it (CAN-6168 part 4).
+    const httpServer = (
+      index: number,
+    ): (typeof mockCodexHttpServers.current)[number] => ({
+      url: `https://mcp${index}.example.test/mcp`,
+      marketplaceId: 'market',
+      pluginName: 'tools',
+      serverName: index === 0 ? 'docs' : `docs-${index}`,
+    });
+    mockCodexHttpServers.current = [httpServer(0)];
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(daemon.instructions).toHaveLength(4);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
+    expect(mockOAuthProbe.calls).toBe(0);
+    // The daemon reproduces only the canopy handler under a canopy default,
+    // which is what this app's bind serves. Anything else stays in process:
+    // an account or provider default (with or without a canopy override for
+    // the server), and an account or provider override under the canopy
+    // default.
+    const elsewhere: [Handler | undefined, Handler | null][] = [
+      ['account', null],
+      ['provider', null],
+      ['account', 'canopy'],
+      ['provider', 'canopy'],
+      [undefined, 'account'],
+      [undefined, 'provider'],
+    ];
+    for (const [defaultHandler, serverOverride] of elsewhere) {
+      mockPreferences.current =
+        defaultHandler === undefined
+          ? {}
+          : { mcpHttpAuthDefaultHandler: defaultHandler };
+      override = serverOverride;
+      await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    }
+    mockPreferences.current = {};
+    override = null;
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(8);
+    expect(daemon.instructions).toHaveLength(4);
+    // A canopy override under the canopy default goes to the daemon.
+    override = 'canopy';
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    override = null;
+    expect(daemon.instructions).toHaveLength(5);
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(daemon.instructions).toHaveLength(6);
+    // A step merges its own collection's selections with its alias's when
+    // it runs. An account override the step's alias brings for the server
+    // keeps the step in process; one in a collection the step doesn't use
+    // doesn't.
+    authCollection = true;
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(daemon.instructions).toHaveLength(7);
+    await routed(collectionPipeline('authed'), 'user', draft);
+    authCollection = false;
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(9);
+    expect(daemon.instructions).toHaveLength(7);
+    // A run binds one route per distinct HTTP server, and this app holds
+    // at most 64 per run: with more, every Codex plugin step stays here,
+    // and the log says why. At the cap it still goes to the daemon.
+    mockCodexHttpServers.current = Array.from({ length: 65 }, (_, index) =>
+      httpServer(index),
+    );
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(10);
+    expect(mockWarnings).toEqual([
+      expect.stringContaining('65 plugin MCP servers, more than the 64'),
+    ]);
+    mockCodexHttpServers.current = Array.from({ length: 64 }, (_, index) =>
+      httpServer(index),
+    );
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    expect(daemon.instructions).toHaveLength(8);
+    expect(mockWarnings).toHaveLength(1);
+    expect(mockOAuthProbe.calls).toBe(0);
+    mockCodexHttpServers.current = [];
+    skills = true;
     required = true;
     await routed(collectionPipeline(), 'user', draft);
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
-    expect(daemon.instructions).toHaveLength(2);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(11);
+    expect(daemon.instructions).toHaveLength(8);
     // A collection id with spaces around it, named through an alias, is
     // snapshotted under the trimmed id the executor looks it up by.
     required = false;
@@ -1486,11 +1688,11 @@ describe('daemon pipeline route (CAN-5086)', () => {
       'user',
       draft,
     );
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
-    expect(daemon.instructions).toHaveLength(3);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(11);
+    expect(daemon.instructions).toHaveLength(9);
     expect(
       readField(
-        readField(daemon.instructions[2]?.options, 'execution'),
+        readField(daemon.instructions[8]?.options, 'execution'),
         'pipelineLaunch',
       ),
     ).toMatchObject({
@@ -1609,6 +1811,26 @@ describe('daemon pipeline route (CAN-5086)', () => {
     await routed(aliasPipeline('agent_model_missing'), 'user', preferences);
     expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
     expect(daemon.instructions).toHaveLength(2);
+    const resolveAgent = jest.spyOn(
+      executionRuntime,
+      'resolvePipelineAgentModelAlias',
+    );
+    await routed(aliasPipeline('agent_model_reviewer'), 'user', {
+      modelAliasPreferences: {
+        fast: { mode: 'inline', base: DEFAULT_CLAUDE_MODEL },
+        reviewer: {
+          mode: 'agent',
+          agent_id: 'agent_model_reviewer',
+          base: DEFAULT_CLAUDE_MODEL,
+        },
+      },
+    });
+    expect(resolveAgent).toHaveBeenCalledWith(
+      `agent_model_reviewer@${DEFAULT_CLAUDE_MODEL}`,
+      expect.any(Object),
+    );
+    expect(daemon.instructions).toHaveLength(3);
+    resolveAgent.mockRestore();
   });
 
   it("a Codex step's launch carries the run's Codex environment (CAN-5095)", async () => {

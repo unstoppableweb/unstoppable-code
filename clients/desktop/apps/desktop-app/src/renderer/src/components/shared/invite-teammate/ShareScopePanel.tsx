@@ -103,6 +103,7 @@ export function ShareScopePanel({
       */}
       {share.undisclosedRepositoryCount > 0 && (
         <ErrorBanner
+          errorSource="shared-container-invite-modal-undisclosed-repositories"
           className=""
           testId="shared-container-invite-modal-undisclosed-repositories"
           error={`${brandText.appName} could not resolve a pushed GitHub remote and commit for ${share.undisclosedRepositoryCount === 1 ? '1 repository' : `${share.undisclosedRepositoryCount} repositories`} in this project, so nothing publishes until that is fixed. Push ${share.undisclosedRepositoryCount === 1 ? 'it' : 'them'} to GitHub, or remove ${share.undisclosedRepositoryCount === 1 ? 'it' : 'them'} from this project.`}
@@ -116,6 +117,7 @@ export function ShareScopePanel({
       {share.artifactBudgetExceeded && (
         <Stack gap="inline">
           <ErrorBanner
+            errorSource="shared-container-invite-modal-artifact-budget"
             className=""
             testId="shared-container-invite-modal-artifact-budget"
             error={artifactBudgetExceededLabel(

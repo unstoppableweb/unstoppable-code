@@ -146,7 +146,11 @@ export function RemotePathPicker({
           ) : null}
         </div>
         {error ? (
-          <Notice intent="destructive" data-testid="remote-path-picker-error">
+          <Notice
+            errorSource="remote-path-picker-error"
+            intent="destructive"
+            data-testid="remote-path-picker-error"
+          >
             {error}
           </Notice>
         ) : null}

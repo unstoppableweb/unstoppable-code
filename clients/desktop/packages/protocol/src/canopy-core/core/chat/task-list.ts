@@ -23,7 +23,7 @@ export const CoreChatTaskStateSchema = z.enum([
   'archived',
 ]);
 
-/** A cowork workspace's tasks; a task is its root chat, the `worktreeId` chat scopes take. */
+/** A cloud project's tasks; a task is a root chat (a git worktree's, CAN-6106), the `worktreeId` chat scopes take. */
 export const CoreChatTaskListParamsSchema = z.strictObject({
   scope: z.strictObject({ workspaceId: id }),
   pageSize: z.number().int().min(1).max(500).default(100).optional(),
@@ -87,10 +87,10 @@ export const CoreChatTaskEventsEndSchema = CanopyStreamEndSchema.extend({
   error: CoreChatTaskEventsErrorSchema.nullable(),
 });
 
-// Served by the web core only (CAN-4185): cowork tasks are cloud chats. Kept
+// Served by the web core only (CAN-4185): cloud tasks are cloud chats. Kept
 // out of CORE_QUERY_DEFINITIONS and CORE_STREAM_DEFINITIONS because the
 // desktop dispatcher requires a handler for every definition it is given, and
-// desktop cowork chats list through its own chat state.
+// desktop chats list through its own chat state.
 export const CORE_CHAT_TASK_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
   'core',
   {

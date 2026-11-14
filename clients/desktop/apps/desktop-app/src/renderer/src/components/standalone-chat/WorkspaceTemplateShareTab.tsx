@@ -172,7 +172,11 @@ export function WorkspaceTemplateShareTab({
       ) : null}
 
       {omitted ? <p className="text-xs fg-secondary">{omitted}</p> : null}
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="workspace-template-share-tab"
+        className=""
+        error={error}
+      />
 
       {dialogOpen && built ? (
         <ShareProjectTemplateModal

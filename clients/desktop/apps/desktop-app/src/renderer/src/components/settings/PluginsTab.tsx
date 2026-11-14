@@ -164,6 +164,7 @@ export function PluginsTab(): JSX.Element {
 
       {/* Last, so a failed save never shifts the switch the user just used. */}
       <DesktopErrorBanner
+        errorSource="settings-plugins-save-error"
         className=""
         error={saveError?.error}
         {...(saveError?.details === undefined

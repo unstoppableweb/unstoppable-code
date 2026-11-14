@@ -70,7 +70,7 @@ function tailMaxHeight(maxRenderLines: number): string {
   return `calc(${String(maxRenderLines)} * ${String(TAIL_LINE_HEIGHT_REM)}rem + ${String(TAIL_VERTICAL_PADDING_REM)}rem)`;
 }
 
-interface AnsiOutputProps {
+export interface AnsiOutputProps {
   lines: readonly string[];
   /** What the panel is for (default: `panel`). */
   variant?: AnsiOutputVariant;

@@ -12,10 +12,7 @@ import type {
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
-import {
-  admitStorageWrite,
-  routeStorageAdmissionToAuthority,
-} from '@canopy/execution-engine/node/lib/storage-admission';
+import { admitStorageWrite } from '@canopy/execution-engine/node/lib/storage-admission';
 import { logMainProcessWarn } from './main-process-logging';
 import { getWorkspacesRootDir } from './paths';
 import { __setDesktopW5FileStoreForTests } from './w5-commit-log-file-store';
@@ -205,22 +202,15 @@ export function createW5DaemonRecordStore(options: {
 }
 
 /**
- * Installs `store` as desktop main's W5 store, routes the three W5
- * namespaces to the authority and enables the bounded retry. Returns the
- * restore of routing and retry; the caller resets the store.
+ * Explicit test injection plus bounded retry. Admission remains callback-scoped;
+ * the caller resets the store when restoring its test fixture.
  */
 export function installW5DaemonRecordStoreForTests(
   store: W5CommitLogFileStore,
 ): () => void {
   __setDesktopW5FileStoreForTests(store);
-  const unroute = routeStorageAdmissionToAuthority([
-    'workspace_index',
-    'workspace_manifest',
-    'worktree_list',
-  ]);
   const unretry = setW5PreEffectAttempts(W5_DAEMON_PRE_EFFECT_ATTEMPTS);
   return (): void => {
     unretry();
-    unroute();
   };
 }

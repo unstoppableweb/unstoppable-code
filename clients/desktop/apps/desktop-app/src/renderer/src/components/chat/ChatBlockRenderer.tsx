@@ -30,9 +30,7 @@ import {
   type AnsweredQuestionDisplay,
   AnsweredQuestionsBlock,
   ApprovalSafetyDeniedNotice,
-  askUserQuestionCount,
   type AskUserQuestionResultEvidence,
-  askUserQuestionRowLabel,
   ChatAppNote,
   compactionHeadline,
   CompactionInfoBlock,
@@ -47,11 +45,11 @@ import {
   markdownOptions,
   type MarkdownOverrides,
   markdownTableCellProps,
+  AskUserQuestionPreparingRow,
   Notice,
   resolveAskUserQuestionPresentation,
   Surface,
   TRANSCRIPT_PROSE_CLASS,
-  useCleanChatLook,
   useSmoothStreaming,
   withSoftLineBreaks,
 } from '@canopy/ui-shared/components';
@@ -1206,7 +1204,6 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
    */
   turnSettled?: boolean;
 }): JSX.Element | null {
-  const cleanChatLook = useCleanChatLook();
   // Smooth streaming (Labs): a text block that mounts streaming with it on
   // renders through one component for its lifetime, so settling (a later
   // block arriving) never re-mounts it and restarts or cuts its reveal.
@@ -1292,6 +1289,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         return (
           <div data-chat-notice>
             <ErrorBanner
+              errorSource="chat-provider-error-block"
               error={block.text}
               details={block.providerErrorDetails}
               testId="chat-provider-error"
@@ -1315,23 +1313,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
           <>
             {/* Clean chat look: the answers card says it all; the question
                 step itself folds into the work line before it. */}
-            {!cleanChatLook && (
-              <ToolCallBlock
-                originChatTabId={originChatTabId}
-                originMessageId={originMessageId}
-                toolName="AskUserQuestion"
-                input={JSON.stringify({
-                  questions: answers.map((answer) => ({
-                    question: answer.question,
-                  })),
-                })}
-                result={{ output: block.text, isError: false }}
-                label={askUserQuestionRowLabel({
-                  count: answers.length,
-                  answers: displayAnswers,
-                })}
-              />
-            )}
+
             <AnsweredQuestionsBlock answers={displayAnswers} />
           </>
         );
@@ -1428,7 +1410,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       }
       // Clean chat look: the app's own messages read as a quiet note, not as
       // the agent talking.
-      if (cleanChatLook && isSystemMessage) {
+      if (isSystemMessage) {
         return <ChatAppNote text={text} />;
       }
       const proseProps: TranscriptProseProps = {
@@ -1575,39 +1557,17 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
             block.toolUseId,
             block.input,
           ),
+          turnSettled ? false : undefined,
         );
         switch (presentation.kind) {
           case 'awaiting':
             // The composer owns the unanswered prompt.
             return null;
           case 'preparing':
-            return (
-              <div
-                className="flex items-center gap-1.5 py-1 text-xs fg-secondary"
-                data-testid="ask-user-question-preparing"
-              >
-                <ThinkingSpinner tone="accent" />
-                <span>Preparing question…</span>
-              </div>
-            );
+            return <AskUserQuestionPreparingRow />;
           case 'answered':
             return (
               <>
-                {!cleanChatLook && (
-                  <ToolCallBlock
-                    originChatTabId={originChatTabId}
-                    originMessageId={originMessageId}
-                    toolName={block.toolName}
-                    toolUseId={block.toolUseId}
-                    input={block.input}
-                    result={block.result}
-                    label={askUserQuestionRowLabel({
-                      count: askUserQuestionCount(block.input),
-                      answers: presentation.answers,
-                    })}
-                    status={presentation.status}
-                  />
-                )}
                 <AnsweredQuestionsBlock answers={presentation.answers} />
               </>
             );
@@ -1726,7 +1686,6 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
           // Inline timer blocks (subagent transcripts, standalone messages)
           // are not a turn's footer and have no `group/turn` scope to reveal
           // them, so they stay visible at rest (CAN-4278).
-          alwaysVisible
         />
       );
 

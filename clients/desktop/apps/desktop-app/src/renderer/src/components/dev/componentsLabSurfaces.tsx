@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   Button,
   Divider,
@@ -33,6 +33,12 @@ const PADDINGS: readonly { padding: SurfacePadding; px: number }[] = [
   { padding: 'default', px: 16 },
   { padding: 'roomy', px: 24 },
 ];
+
+const ATTACHED_PADDINGS = [
+  { padding: 'section-compact', boundary: 'bottom', label: 'Compact section' },
+  { padding: 'section-default', boundary: 'bottom', label: 'Default section' },
+  { padding: 'dialog-footer', boundary: 'top', label: 'Dialog footer' },
+] as const;
 
 const BOUNDARIES: readonly SurfaceBoundary[] = [
   'none',
@@ -76,10 +82,20 @@ export function SurfacesSpecimen(): JSX.Element {
         <VariantGrid />
       </SpecimenPanel>
       <SpecimenPanel title="Variants, on the page background">
-        <Surface variant="inset" padding="default">
+        <Surface variant="pane" padding="default">
           <VariantGrid />
         </Surface>
       </SpecimenPanel>
+      <SpecimenPanel title="Page surface">
+        <SpecimenCell label="A full-height page column">
+          <div className="h-32 overflow-auto">
+            <Surface variant="page" padding="default">
+              Page content
+            </Surface>
+          </div>
+        </SpecimenCell>
+      </SpecimenPanel>
+
       <SpecimenPanel title="Selected (a picked plan, project or template)">
         <SpecimenGrid min={180}>
           {VARIANTS.map(({ variant }) => (
@@ -157,6 +173,17 @@ export function SurfacesSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
+      <SpecimenPanel title="Attached section padding">
+        <SpecimenGrid min={200}>
+          {ATTACHED_PADDINGS.map(({ padding, boundary, label }) => (
+            <SpecimenCell key={padding} label={label}>
+              <Surface variant="section" boundary={boundary} padding={padding}>
+                <Sample title={label} />
+              </Surface>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
       <SpecimenPanel title="Empty and long content">
         <SpecimenGrid min={260}>
           <SpecimenCell label="card, padding=default, no children">
@@ -185,7 +212,7 @@ export function SurfacesSpecimen(): JSX.Element {
               <Sample title="Pull request" />
               <Surface variant="inset" padding="tight">
                 <span
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-xs fg-secondary`}
+                  className={`${REPLAY_BLOCK_CLASS} font-mono text-xs fg-secondary`}
                 >
                   git push origin feat/surfaces
                 </span>

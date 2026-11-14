@@ -1,3 +1,8 @@
+import {
+  serializeSharedAgentForHash,
+  type SharedAgentDetail,
+} from '@canopy/protocol/agents';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
@@ -169,4 +174,20 @@ export function deriveShareablePluginsLenient(
   }
 
   return { plugins, dropped };
+}
+
+/** Compare portable selections; local fingerprints alone cannot verify hosted resources. */
+export function automationAgentPluginsMatch(
+  local: AgentModelDefinition,
+  detail: SharedAgentDetail,
+  rows: readonly UnifiedTableRow[],
+): Promise<boolean> {
+  const portable = deriveShareableAgentPlugins(local.pluginSelections, rows);
+  return Promise.resolve(
+    portable.ok &&
+      serializeSharedAgentForHash({
+        ...detail.agent,
+        plugins: portable.plugins,
+      }) === serializeSharedAgentForHash(detail.agent),
+  );
 }

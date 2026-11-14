@@ -295,6 +295,7 @@ export function CopilotConnection({
         </p>
       )}
       <DesktopErrorBanner
+        errorSource="copilot-connection-error"
         className=""
         error={error?.error}
         testId="copilot-connection-error"

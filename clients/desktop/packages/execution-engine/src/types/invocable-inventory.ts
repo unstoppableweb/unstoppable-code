@@ -33,6 +33,7 @@ export type InvocableInventoryProvider =
   | 'ollama'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode';
 
 /** The kind of invocable an inventory row represents. */
@@ -82,8 +83,8 @@ export interface InvocableInventoryEntry {
 }
 
 export interface InvocableInventoryCache {
-  /** 5: inherited Cursor rows (`enableRef.kind === 'none'`). */
-  version: 5;
+  /** 6: selected Antigravity skill and command rows, without ambient inheritance. */
+  version: 6;
   builtAt: string;
   entries: InvocableInventoryEntry[];
   /**

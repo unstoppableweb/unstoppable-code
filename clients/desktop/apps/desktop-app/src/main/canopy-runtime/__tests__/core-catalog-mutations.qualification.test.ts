@@ -37,6 +37,7 @@ import {
   runSerializedPluginMutation,
 } from '../../plugins/plugin-mutation-queue';
 import { installBuiltInPlugin } from '../../plugins/plugin-service';
+import { publishPluginPackageToCloud } from '../../plugins/publish-plugin-to-cloud';
 import {
   installPortalBuiltInPluginWithOutcomes,
   installPortalExternalPlugin,
@@ -47,6 +48,15 @@ import {
 } from '../core-catalog-mutation-host';
 
 jest.mock('../../lib/git', () => ({ cloneRepo: jest.fn() }));
+jest.mock('../../plugins/publish-plugin-to-cloud', () => ({
+  publishPluginPackageToCloud: jest.fn(() =>
+    Promise.resolve({
+      publicationId: 'desktop-mkt',
+      remoteEntryId: 'plugin:marketplace:desktop-mkt/tool',
+      revision: 'c'.repeat(64),
+    }),
+  ),
+}));
 
 let cachedMarketplaces: MarketplaceInfo[] = [];
 jest.mock('../../plugins/plugin-service', () => ({
@@ -183,6 +193,13 @@ const keyed = (key: string): { idempotencyKey: string } => ({
 let root: string;
 let operations: OperationService;
 
+/** The one account context a publish resolves and sends every request under. */
+const CLOUD_CONTEXT = {
+  baseUrl: 'https://cloud.example',
+  apiKey: 'key-acct-1',
+  account: { id: 'acct-1' },
+};
+
 function fakeDeps(): DesktopCatalogMutationDeps & {
   installGate: { promise: Promise<void>; resolve(): void };
 } {
@@ -263,6 +280,9 @@ function fakeDeps(): DesktopCatalogMutationDeps & {
           revision: 'a'.repeat(40),
           pluginKeys: ['tool'],
         }),
+      ),
+      resolveCloudMarketplaceCredentials: jest.fn(() =>
+        Promise.resolve(CLOUD_CONTEXT),
       ),
     },
     runSerialized: runSerializedPluginMutation,
@@ -385,10 +405,12 @@ describe('desktop catalog mutations (CAN-4123)', () => {
     });
     expect(deps.cloud.addCloudPluginMarketplace).toHaveBeenCalledWith(
       'owner/gh',
+      CLOUD_CONTEXT,
     );
     expect(deps.cloud.confirmCloudPluginMarketplace).toHaveBeenCalledWith(
       'mkt-1',
       'a'.repeat(40),
+      CLOUD_CONTEXT,
     );
 
     // A source the account already applied is adopted without a second confirm.
@@ -445,6 +467,77 @@ describe('desktop catalog mutations (CAN-4123)', () => {
         pluginKeys: ['other'],
       });
     await expect(refusal(publish(target))).resolves.toBe('plugin-not-found');
+
+    // Signed in to another account than the person chose: nothing is sent.
+    jest.mocked(deps.cloud.addCloudPluginMarketplace).mockClear();
+    await expect(
+      refusal(publish(target, { expectedAccountId: 'acct-2' })),
+    ).resolves.toBe('publish-account-mismatch');
+    expect(deps.cloud.addCloudPluginMarketplace).not.toHaveBeenCalled();
+  });
+
+  it("uploads a local plugin's consented package, never a built-in or curated one (CAN-6176 D13)", async () => {
+    cachedMarketplaces = [
+      ...cachedMarketplaces,
+      marketplace('local', {
+        plugins: [plugin('tool', { marketplaceId: 'local' })],
+      }),
+      marketplace('curated-id', {
+        curated: true,
+        plugins: [plugin('c', { marketplaceId: 'curated-id' })],
+      }),
+    ];
+    const deps = fakeDeps();
+    const host = createDesktopCatalogMutationHost(baseHost(), deps);
+    if (host.publishPluginPackage === undefined)
+      throw new Error('no publishPluginPackage');
+    const publish = host.publishPluginPackage.bind(host);
+    const pkg = { analysisId: 'analysis-p', selectedOptionalResourceIds: [] };
+    const target = {
+      entryId: 'plugin:local/tool',
+      marketplaceId: 'local',
+      pluginName: 'tool',
+      install: 'managed' as const,
+    };
+    await expect(publish(target, pkg)).resolves.toMatchObject({
+      publicationId: 'desktop-mkt',
+    });
+    // With its local marketplace, so a same-named plugin from another is refused.
+    expect(publishPluginPackageToCloud).toHaveBeenCalledWith(
+      target,
+      pkg,
+      { id: 'local', label: 'local' },
+      undefined,
+      undefined,
+    );
+    // The upload never adds a public source.
+    expect(deps.cloud.addCloudPluginMarketplace).not.toHaveBeenCalled();
+
+    const refusal = async (promise: Promise<unknown>): Promise<string> => {
+      const error: unknown = await promise.catch((caught: unknown) => caught);
+      return error instanceof CatalogHostRefusedError ? error.refusal : 'none';
+    };
+    for (const [marketplaceId, pluginName] of [
+      ['builtin-id', 'p'],
+      ['curated-id', 'c'],
+    ] as const)
+      await expect(
+        refusal(
+          publish(
+            {
+              entryId: `plugin:${marketplaceId}/${pluginName}`,
+              marketplaceId,
+              pluginName,
+              install: 'managed',
+            },
+            pkg,
+          ),
+        ),
+      ).resolves.toBe('publish-source-unsupported');
+    await expect(
+      refusal(publish({ ...target, marketplaceId: 'gone' }, pkg)),
+    ).resolves.toBe('plugin-not-found');
+    expect(publishPluginPackageToCloud).toHaveBeenCalledTimes(1);
   });
 
   it('installs once for a repeated key and replays after a lost reply', async () => {

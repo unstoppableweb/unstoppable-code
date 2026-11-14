@@ -33,6 +33,7 @@ export function MarketplaceSourceStatusNotice({
   if (source.status.state !== 'invalid') return null;
   return (
     <Notice
+      errorSource="marketplace-source-status"
       intent="destructive"
       data-testid={legacy?.banner ?? 'marketplace-source-invalid'}
       title={

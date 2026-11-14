@@ -15,7 +15,8 @@ import {
   CostSplitBar,
   costBarScale,
   costTotalsSegments,
-  formatCostTotal,
+  formatCostTotalIn,
+  useCostCurrency,
 } from '@canopy/ui-shared/components/cost';
 import { useCostScopeStore } from './use-cost-view-store';
 import { useCostInsightsEnabled } from './CostInsightsGate';
@@ -27,6 +28,7 @@ import {
   sortCostChats,
   sortCostRuns,
 } from './cost-scope-model';
+import { withCostCoverage } from './cost-coverage';
 
 export interface CostActivityPreviewProps {
   readonly client: CostClient;
@@ -48,6 +50,7 @@ function CostActivityPreviewContent({
 }: Omit<CostActivityPreviewProps, 'client' | 'store'> & {
   readonly store: CostScopeStore;
 }): JSX.Element {
+  const currency = useCostCurrency();
   const { value, status, problem, load } = store(
     useShallow((state) => ({
       value: state.value,
@@ -125,7 +128,10 @@ function CostActivityPreviewContent({
                           maskName
                           archived={chat.state === 'archived'}
                           running={chat.running}
-                          amountLabel={formatCostTotal(chat.totals)}
+                          amountLabel={withCostCoverage(
+                            formatCostTotalIn(chat.totals, currency),
+                            chat.coverageStart,
+                          )}
                           segments={costTotalsSegments(chat.totals, 'source')}
                           scale={costBarScale(chat.totals.usd, scaleMax)}
                           density="card"
@@ -157,7 +163,7 @@ function CostActivityPreviewContent({
                           key={run.executionId}
                           name={run.pipelineName}
                           running={run.status === 'running'}
-                          amountLabel={formatCostTotal(run.totals)}
+                          amountLabel={formatCostTotalIn(run.totals, currency)}
                           segments={costTotalsSegments(run.totals, 'source')}
                           scale={costBarScale(run.totals.usd, scaleMax)}
                           density="card"
@@ -177,7 +183,10 @@ function CostActivityPreviewContent({
                       {unattachedVisible && view.unattached !== undefined ? (
                         <CostRow
                           name="Not tied to a chat"
-                          amountLabel={formatCostTotal(view.unattached)}
+                          amountLabel={formatCostTotalIn(
+                            view.unattached,
+                            currency,
+                          )}
                           segments={costTotalsSegments(
                             view.unattached,
                             'source',

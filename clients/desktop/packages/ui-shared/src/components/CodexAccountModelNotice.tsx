@@ -34,6 +34,7 @@ export function CodexAccountModelNotice({
   const actionable = onUseFallback !== undefined && fallbackLabel !== undefined;
   return (
     <Notice
+      errorSource="codex-account-model"
       intent="destructive"
       role="none"
       title={`Your ChatGPT account can't use ${failure.modelLabel}.`}

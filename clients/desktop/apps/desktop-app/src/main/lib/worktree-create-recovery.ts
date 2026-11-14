@@ -1,4 +1,3 @@
-import { isW5DaemonFlipCompiled } from './w5-flip-gate';
 import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { withArchivedWorkspaceOperationLock } from './archived-containers';
@@ -8,10 +7,10 @@ import {
   withSharedLifecycleJournalAccess,
 } from './w5-destructive-recovery';
 import { isWorkspaceTargetRemovalPending } from './workspace-target-exclusion';
-import {
-  getArchivedContainerManifestPath,
-  getWorkspaceWorktreesFilePath,
-} from './paths';
+import { getArchivedContainerManifestPath, w5RecordReadPaths } from './paths';
+import { withW5Commit } from './w5-commit-log-file-store';
+import { afterW5Apply } from './w5-commit-scope';
+import { WORKTREE_LIST_STORAGE, withStorageAdmission } from './w5-storage';
 import { getGitCommonDir } from './git';
 import {
   removeAbsentWorktreeRegistrations,
@@ -200,7 +199,6 @@ export async function repairOrphanedWorktreeRegistration(
   config: WorkspaceConfigFile,
   recovery: NonNullable<WorkspaceReadinessIssue['recovery']>,
 ): Promise<boolean> {
-  if (isW5DaemonFlipCompiled()) return false;
   if (
     recovery.phase !== 'orphan-checkout' ||
     recovery.workspaceId !== workspaceId
@@ -215,6 +213,18 @@ export async function repairOrphanedWorktreeRegistration(
   if (!worktreeId || child.startsWith('..') || isAbsolute(child)) return false;
   const common = await getGitCommonDir(recovery.repositoryPath);
   const identity = await lstat(common);
+  const sameRepository = async (
+    repositoryPath: string = recovery.repositoryPath,
+  ): Promise<boolean> => {
+    // The source may be rebound while its former common directory still exists.
+    if ((await getGitCommonDir(repositoryPath)) !== common) return false;
+    const fresh = await lstat(common);
+    return (
+      fresh.dev === identity.dev &&
+      fresh.ino === identity.ino &&
+      fresh.birthtimeMs === identity.birthtimeMs
+    );
+  };
   const absent = async (path: string): Promise<boolean> => {
     try {
       await lstat(path);
@@ -230,10 +240,13 @@ export async function repairOrphanedWorktreeRegistration(
       throw error;
     }
   };
-  return withArchivedWorkspaceOperationLock(workspaceId, () =>
-    withW5RepositoryLock(
-      { kind: 'list', path: getWorkspaceWorktreesFilePath(workspaceId) },
-      () =>
+  const listLock = {
+    kind: 'list',
+    path: w5RecordReadPaths.worktrees(workspaceId),
+  } as const;
+  return withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
+    withArchivedWorkspaceOperationLock(workspaceId, () =>
+      withW5RepositoryLock(listLock, () =>
         withSharedLifecycleJournalAccess(async () => {
           const canRemove = async (): Promise<boolean> => {
             if (
@@ -255,13 +268,7 @@ export async function repairOrphanedWorktreeRegistration(
               !(await absent(recovery.checkoutPath))
             )
               return false;
-            const fresh = await lstat(common);
-            if (
-              fresh.dev !== identity.dev ||
-              fresh.ino !== identity.ino ||
-              fresh.birthtimeMs !== identity.birthtimeMs
-            )
-              return false;
+            if (!(await sameRepository())) return false;
             const read = await readWorkspaceWorktreesUnlocked(workspaceId);
             if (read.authority !== 'ok' && read.authority !== 'absent')
               return false;
@@ -271,14 +278,21 @@ export async function repairOrphanedWorktreeRegistration(
               config,
               read.worktrees,
             );
-            const orphan = issues.some(
-              (issue) =>
-                issue.recovery?.phase === 'orphan-checkout' &&
-                issue.recovery.checkoutPath === recovery.checkoutPath &&
-                issue.recovery.branchName === recovery.branchName,
-            );
+            let orphan = false;
+            for (const { recovery: candidate } of issues) {
+              if (
+                candidate?.phase === 'orphan-checkout' &&
+                candidate.checkoutPath === recovery.checkoutPath &&
+                candidate.branchName === recovery.branchName &&
+                (await sameRepository(candidate.repositoryPath))
+              ) {
+                orphan = true;
+                break;
+              }
+            }
             return (
               orphan &&
+              (await sameRepository()) &&
               !isWorkspaceTargetRemovalPending(workspaceId, worktreeId) &&
               !(await hasDestructiveWorktreeOwner(
                 workspaceId,
@@ -289,15 +303,31 @@ export async function repairOrphanedWorktreeRegistration(
             );
           };
           if (!(await canRemove())) return false;
-          await removeAbsentWorktreeRegistrations(
-            common,
-            [recovery.checkoutPath],
-            { canRemove },
+          let repaired = false;
+          await withW5Commit(
+            {
+              operation: 'internal.worktree.recovery.repair-registration',
+              locks: [listLock],
+              fenceLockedFiles: true,
+            },
+            async () => {
+              // Refuse before Git effects if the authority cannot fence ownership.
+              await afterW5Apply(async () => {
+                if (!(await canRemove())) return;
+                await removeAbsentWorktreeRegistrations(
+                  common,
+                  [recovery.checkoutPath],
+                  { canRemove },
+                );
+                repaired = !(await hasWorktreeRegistration(common, [
+                  recovery.checkoutPath,
+                ]));
+              });
+            },
           );
-          return !(await hasWorktreeRegistration(common, [
-            recovery.checkoutPath,
-          ]));
+          return repaired;
         }),
+      ),
     ),
   );
 }

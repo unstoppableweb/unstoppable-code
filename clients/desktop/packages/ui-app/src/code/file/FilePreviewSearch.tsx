@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { SearchBar } from '@canopy/ui-shared/components/SearchBar';
@@ -56,6 +57,8 @@ interface FilePreviewSearchProps {
   controlled?: PreviewSearchControlled;
   /** Headless only: the HTML preview asked to open or close the search. */
   onSearchRequest?: (operation: 'open' | 'close') => void;
+  /** A key pressed anywhere inside the viewer (its Save shortcut). */
+  onViewerKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }
 
 export interface PreviewSearchState {
@@ -98,6 +101,7 @@ export function FilePreviewSearch({
   presentation = 'inline',
   controlled,
   onSearchRequest,
+  onViewerKeyDown,
 }: FilePreviewSearchProps): JSX.Element {
   const headless = presentation === 'headless';
   const rootRef = useRef<HTMLDivElement>(null);
@@ -282,6 +286,7 @@ export function FilePreviewSearch({
         tabIndex={-1}
         className="flex h-full min-h-0 flex-col outline-none"
         data-testid="file-viewer"
+        onKeyDown={onViewerKeyDown}
         onPointerDownCapture={(event): void => {
           if (
             enabled &&

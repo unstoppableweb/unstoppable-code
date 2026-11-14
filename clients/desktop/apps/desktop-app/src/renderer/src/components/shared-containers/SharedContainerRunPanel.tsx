@@ -393,6 +393,7 @@ export function SharedContainerRunPanel({
         )}
 
         <ErrorBanner
+          errorSource="shared-container-run-error"
           className=""
           error={run.error}
           testId="shared-container-run-error"

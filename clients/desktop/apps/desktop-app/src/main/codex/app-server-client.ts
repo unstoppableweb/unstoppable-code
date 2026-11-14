@@ -115,7 +115,8 @@ import {
   type CodexThreadSeedLoad,
   classifyCodexSteerError,
   CodexUnsafeRecoveryError,
-  createCodexCapabilitySnapshotId,
+  createCodexCapabilitySnapshotIds,
+  readResumeLease,
   extractApprovalThreadId,
   dropTrailingUserInput,
   enabledCodexMcpServerNames,
@@ -527,6 +528,12 @@ const DEFERRED_TOOLS_CODE_MODE_DRAIN_MS = 250;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_INTERVAL_MS = 100;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_CHARS = 16 * 1024;
 const CODEX_PROCESS_RECOVERY_MAX_ATTEMPTS = 3;
+/**
+ * The `thread/sample` prompt for a next prompt suggestion: the person's own
+ * likely next message, short, in their words, or nothing.
+ */
+const CODEX_PROMPT_SUGGESTION_PROMPT =
+  'Predict the next message the user will send in this conversation. Reply with only that message, written as the user would type it, in under 20 words. Do not use tools. If there is no clear next step, reply with nothing.';
 const CODEX_PROCESS_RECOVERY_RETRY_DELAYS_MS: readonly number[] = [0, 250, 750];
 
 function recoveryDelay(ms: number): Promise<void> {
@@ -2414,6 +2421,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private readonly selectedCapabilityRoots?: SelectedCapabilityRoot[];
   private readonly capabilityStore?: CodexCapabilityLeaseStore;
   private readonly capabilitySnapshotId: string;
+  /**
+   * Fingerprint v1's id for the same capabilities (CAN-6168), when this
+   * client computed the snapshot: a thread whose lease still names it is
+   * upgraded on resume rather than rebuilt.
+   */
+  private readonly legacyCapabilitySnapshotId: string | undefined;
   private readonly reasoningRouteFamily: string;
   private readonly fallbackSeedItems: readonly JsonValue[];
   private readonly fallbackSeedItemsLoader?: () => Promise<
@@ -2705,6 +2718,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     mcpServersConfig?: { [key in string]?: JsonValue };
     onMcpToolEvidence?: (evidence: readonly CodexMcpToolEvidence[]) => void;
     mcpAuthorityIds?: readonly string[];
+    /** Fingerprint v1's authority ids for the same servers (CAN-6168). */
+    legacyMcpAuthorityIds?: readonly string[];
     /** Thread-scoped provider and feature configuration. */
     threadConfig?: { [key in string]?: JsonValue };
     multiAgentEnabled?: boolean;
@@ -2906,15 +2921,22 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     this.forceMaterializeOnResume = opts.forceMaterializeOnResume === true;
     this.reasoningRouteFamily =
       opts.reasoningRouteFamily ?? CODEX_NATIVE_REASONING_ROUTE_FAMILY;
+    const snapshotIds =
+      opts.capabilitySnapshotId === undefined
+        ? createCodexCapabilitySnapshotIds({
+            roots: opts.selectedCapabilityRoots,
+            mcpServers: opts.mcpServersConfig,
+            mcpAuthorityIds: opts.mcpAuthorityIds,
+            ...(opts.legacyMcpAuthorityIds && {
+              legacyMcpAuthorityIds: opts.legacyMcpAuthorityIds,
+            }),
+            dynamicTools: opts.dynamicTools,
+            toolSchemaProfile: opts.toolSchemaProfile,
+          })
+        : undefined;
     this.capabilitySnapshotId =
-      opts.capabilitySnapshotId ??
-      createCodexCapabilitySnapshotId({
-        roots: opts.selectedCapabilityRoots,
-        mcpServers: opts.mcpServersConfig,
-        mcpAuthorityIds: opts.mcpAuthorityIds,
-        dynamicTools: opts.dynamicTools,
-        toolSchemaProfile: opts.toolSchemaProfile,
-      });
+      opts.capabilitySnapshotId ?? snapshotIds?.snapshotId ?? '';
+    this.legacyCapabilitySnapshotId = snapshotIds?.legacySnapshotId;
     this.dynamicToolCallHandler = opts.dynamicToolCallHandler;
     this.onDynamicToolResultAccepted = opts.onDynamicToolResultAccepted;
     this.approvalSession = opts.approvalSession;
@@ -3972,6 +3994,30 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     return this.threadId;
   }
 
+  /**
+   * Codex's prediction of the person's next message after a completed turn
+   * (the `prompt-suggestions` Labs experiment), from one `thread/sample` on
+   * the turn's cached context at low effort. Null when Codex has none. Rejects
+   * when Codex refuses the sample, as it does once a newer turn has started.
+   */
+  async samplePromptSuggestion(input: {
+    threadId: string;
+    turnId: string;
+  }): Promise<string | null> {
+    const response = await this.connection.request('thread/sample', {
+      threadId: input.threadId,
+      expectedTurnId: input.turnId,
+      prompt: CODEX_PROMPT_SUGGESTION_PROMPT,
+      effort: 'low',
+    });
+    // ThreadSampleResponse: `text` is null when Codex attempted a tool call
+    // or replied with nothing.
+    const text =
+      (isRecord(response) ? readString(response, 'text') : undefined)?.trim() ??
+      '';
+    return text.length > 0 ? text : null;
+  }
+
   getIngestionLag(): CodexIngestionLagSnapshot | undefined {
     return this.connection.ingestionLag();
   }
@@ -4627,8 +4673,14 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     // thread.
     let consumedForcedRebuild = false;
     if (resumeThreadId) {
+      // A lease from before fingerprint v2 that names exactly this host's v1
+      // id for the same capabilities moves to the v2 id (CAN-6168). Any
+      // other id stays as it is, and the thread is rebuilt as before.
       const existingCapabilityLease = this.capabilityStore
-        ? await this.capabilityStore.readLease(resumeThreadId)
+        ? await readResumeLease(this.capabilityStore, resumeThreadId, {
+            snapshotId: this.capabilitySnapshotId,
+            legacySnapshotId: this.legacyCapabilitySnapshotId,
+          })
         : null;
       const hasThreadScopedCapabilities =
         (this.selectedCapabilityRoots?.length ?? 0) > 0 ||
@@ -4740,6 +4792,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
               version: 1,
               threadId: resumeThreadId,
               snapshotId: this.capabilitySnapshotId,
+              fingerprint: 2,
               rootContentIds,
               kind: 'persisted-chat',
               createdAt: now,
@@ -5085,6 +5138,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         version: 1,
         threadId: provisionalThreadId,
         snapshotId: this.capabilitySnapshotId,
+        fingerprint: 2,
         rootContentIds,
         kind: 'persisted-chat',
         reasoningRouteFamily: this.reasoningRouteFamily,

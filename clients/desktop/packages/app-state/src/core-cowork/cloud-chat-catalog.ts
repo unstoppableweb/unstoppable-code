@@ -1,9 +1,11 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import {
+  CORE_INSTRUCTION_DEFINITIONS,
   CatalogSelectionGetResultSchema,
   CatalogSnapshotGetResultSchema,
   CoreChatLifecycleResultSchema,
   CoreChatSnapshotGetResultSchema,
+  CLOUD_CURATED_SKILL_SOURCE_ID,
   collectionEntryId,
   mcpServerEntryId,
   pluginEntryId,
@@ -39,6 +41,17 @@ export interface CloudChatCatalogState {
   status: CloudChatCatalogStatus;
   models: ModelCatalog;
   plugins: PortalPluginCatalog | null;
+  /**
+   * MCP servers the web core won't run now (signed out, not connected, off),
+   * which the picker leaves out; a surface showing a chat's servers with
+   * their state lists them from here (CAN-6608).
+   */
+  unavailableMcpServers: readonly PortalPluginCatalogMcpServer[];
+  /**
+   * The snapshot's entries as read, for a surface that matches this
+   * computer's items to the cloud's (CAN-6176).
+   */
+  entries: readonly CatalogEntry[];
   selections: PortalChatTabPluginSelections;
   /** The selection revision of the last read (`core.catalog.selection.get`). */
   selectionRevision: number | null;
@@ -70,6 +83,7 @@ const MODEL_PROVIDERS: readonly ModelCatalogProvider[] = [
   'cursor',
   'opencode',
   'copilot',
+  'antigravity',
 ];
 const SET_MODEL_PROVIDERS = [
   'claude',
@@ -79,6 +93,7 @@ const SET_MODEL_PROVIDERS = [
   'opencode',
 ] as const;
 
+/** A skill's Source when the web core sends no label for it. */
 const SKILL_SOURCE_LABELS: Readonly<Record<CatalogEntry['source'], string>> = {
   bundled: 'Built-in',
   user: 'Custom skills',
@@ -125,6 +140,8 @@ function modelOption(entry: CatalogEntry): ModelCatalogOption | null {
 interface MappedCatalog {
   readonly models: ModelCatalog;
   readonly plugins: PortalPluginCatalog;
+  /** MCP servers with a ref that the web core won't run now. */
+  readonly unavailableMcpServers: readonly PortalPluginCatalogMcpServer[];
   /** Selection refs by entry id, from the entries' own `selectionRef`. */
   readonly refs: ReadonlyMap<string, Partial<PortalChatTabPluginSelections>>;
   readonly withoutRef: number;
@@ -136,14 +153,22 @@ interface MappedCatalog {
  * the lists (the cloud composer has no unlock or sign-in flow), while its ref
  * is kept so saving a selection does not drop it. Entries without a ref are
  * left out entirely.
+ *
+ * Source reads the web core's label for each entry, never a raw id. A curated
+ * skill is a member of a curated plugin the catalog also lists, so it is
+ * offered through that plugin, as the web's picker does, and listed on its
+ * own only while `selectedEntryIds` names it (CAN-6397).
  */
 export function mapCloudChatCatalog(
   entries: readonly CatalogEntry[],
+  selectedEntryIds: readonly string[] = [],
 ): MappedCatalog {
+  const selected = new Set(selectedEntryIds);
   const models: ModelCatalogOption[] = [];
   const skills: PortalPluginCatalogSkill[] = [];
   const plugins: PortalPluginCatalogPlugin[] = [];
   const mcpServers: PortalPluginCatalogMcpServer[] = [];
+  const unavailableMcpServers: PortalPluginCatalogMcpServer[] = [];
   const refs = new Map<string, Partial<PortalChatTabPluginSelections>>();
   let withoutRef = 0;
   for (const entry of entries) {
@@ -161,14 +186,17 @@ export function mapCloudChatCatalog(
           withoutRef += 1;
           break;
         }
-        refs.set(skillEntryId(ref), { skillRefs: [ref] });
+        const id = skillEntryId(ref);
+        refs.set(id, { skillRefs: [ref] });
         if (entry.availability !== 'available') break;
+        if (ref.sourceId === CLOUD_CURATED_SKILL_SOURCE_ID && !selected.has(id))
+          break;
         skills.push({
           sourceId: ref.sourceId,
           skillName: ref.skillName,
           name: entry.name,
           description: entry.description,
-          source: SKILL_SOURCE_LABELS[entry.source],
+          source: entry.sourceLabel ?? SKILL_SOURCE_LABELS[entry.source],
           ...(entry.source === 'bundled' ? { builtIn: true } : {}),
         });
         break;
@@ -187,7 +215,9 @@ export function mapCloudChatCatalog(
           pluginName: ref.pluginName,
           name: entry.name,
           description: entry.description,
-          marketplaceName: ref.marketplaceId,
+          // The marketplace's name; its id is `marketplace:<uuid>` or
+          // `cloud-curated`, which no one should read.
+          marketplaceName: entry.sourceLabel ?? 'Marketplace',
           claudeSupported: support?.claude ?? true,
           codexSupported: support?.codex ?? true,
         });
@@ -200,17 +230,26 @@ export function mapCloudChatCatalog(
           break;
         }
         refs.set(mcpServerEntryId(ref), { mcpServerRefs: [ref] });
-        if (entry.availability !== 'available') break;
-        mcpServers.push({
+        // A server that needs signing in may carry no state of its own.
+        const connectionState =
+          content.connectionState ??
+          (entry.availability === 'auth_required'
+            ? 'reauth_required'
+            : undefined);
+        (entry.availability === 'available'
+          ? mcpServers
+          : unavailableMcpServers
+        ).push({
           serverId: ref.serverId,
           configId: ref.configId,
           serverName: entry.name,
           configName: entry.name,
           description: entry.description,
           transport: content.transport === 'stdio' ? 'command' : 'http',
-          ...(content.connectionState === undefined
-            ? {}
-            : { connectionState: content.connectionState }),
+          ...(connectionState === undefined ? {} : { connectionState }),
+          ...(entry.availability === 'disabled'
+            ? { connectionEnabled: false }
+            : {}),
           ...(content.authIntegrationId === null
             ? {}
             : { connectionId: content.authIntegrationId }),
@@ -227,6 +266,7 @@ export function mapCloudChatCatalog(
   return {
     models,
     plugins: { collections: [], skills, plugins, mcpServers },
+    unavailableMcpServers,
     refs,
     withoutRef,
   };
@@ -274,6 +314,8 @@ export function createCloudChatCatalog(
     status: 'loading',
     models: [],
     plugins: null,
+    unavailableMcpServers: [],
+    entries: [],
     selections: emptySelections(),
     selectionRevision: null,
     selectionConflict: false,
@@ -344,7 +386,7 @@ export function createCloudChatCatalog(
       const readModel =
         epochAtRead === modelEpoch && pendingModels === 0 ? model : undefined;
       if (readModel !== undefined) savedModel = readModel;
-      const mapped = mapCloudChatCatalog(entries);
+      const mapped = mapCloudChatCatalog(entries, selected.selectedItemIds);
       if (mapped.withoutRef > 0)
         options.logDev?.(
           `[cloud-chat-catalog] ${mapped.withoutRef} catalog entries carry no selection ref and are left out of the picker`,
@@ -354,6 +396,8 @@ export function createCloudChatCatalog(
         status: 'ready',
         models: mapped.models,
         plugins: mapped.plugins,
+        unavailableMcpServers: mapped.unavailableMcpServers,
+        entries,
         selections: selectionsOf(selected.selectedItemIds, mapped.refs),
         selectionRevision: selected.revision,
         selectionConflict: conflict,
@@ -431,7 +475,9 @@ export function createCloudChatCatalog(
       const choice = ++selectionChoice;
       const write = selectionWrites.then(async () => {
         if (choice !== selectionChoice) return;
-        CoreChatLifecycleResultSchema.parse(
+        // Update's own result: a save's capability state may exceed the
+        // lifecycle catchall's 32 KiB JSON bound (CAN-6092).
+        CORE_INSTRUCTION_DEFINITIONS['core.chat.update'].result.parse(
           unwrap(
             await invoker.request('core.chat.update', {
               ...envelope(),

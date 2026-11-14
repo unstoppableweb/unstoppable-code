@@ -47,6 +47,7 @@ function ChatsCard({
       <div className="flex flex-col gap-3">
         {error !== null && (
           <ErrorBanner
+            errorSource="chats-card"
             className=""
             error={error?.copy}
             details={error?.details}
@@ -158,6 +159,7 @@ export function AppearancePage(): JSX.Element {
     <div className="flex flex-col gap-6" data-testid="account-appearance-page">
       {loadError !== null ? (
         <ErrorBanner
+          errorSource="appearance-page-load"
           error={loadError?.copy}
           details={loadError?.details}
           onRetry={retryLoad}

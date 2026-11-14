@@ -48,6 +48,12 @@ export interface CoreCoworkTask {
    */
   creation?: 'pending' | 'failed';
   creationError?: string;
+  /**
+   * A task deleted on another device whose draft this window keeps
+   * (CAN-6614): its row stays, though the web core lists it no more, until
+   * the host forgets it.
+   */
+  deleted?: true;
 }
 
 /** A task opened at once, and its creation settling behind it (CAN-6098). */
@@ -81,6 +87,13 @@ export interface CoreCoworkState {
    * land, slowly, is replayed and never doubled.
    */
   retryTask(workspaceId: string, worktreeId: string): Promise<CoreCoworkTask>;
+  /**
+   * Keeps a task deleted on another device as a row marked `deleted`, with
+   * `title` when the row is gone already, until {@link forgetTask}.
+   */
+  keepDeletedTask(workspaceId: string, worktreeId: string, title: string): void;
+  /** Drops a task's row this window kept, such as a deleted one. */
+  forgetTask(workspaceId: string, worktreeId: string): void;
   /** The create in flight for a task this window started, if any. */
   taskCreation(
     workspaceId: string,
@@ -115,8 +128,42 @@ const projectKey = (workspaceId: string): string =>
 const taskKey = (workspaceId: string, worktreeId: string): string =>
   `${AUTHORITY}:${workspaceId}:${worktreeId}`;
 
+/** Tries of a failing reread, and the pause before each, growing. */
+const REREAD_RETRIES = 3;
+const REREAD_RETRY_MS = 1_000;
+
+/** The pause before each reconnect in a row; the last repeats. */
+export const RECONNECT_DELAYS_MS: readonly number[] = [
+  1_000, 2_000, 5_000, 10_000, 30_000,
+];
+
+export interface CoreCoworkStoreOptions {
+  /**
+   * A fresh invoker for a store whose connection was lost, or null when
+   * none can be had now (CAN-6442). With it, the store reconnects by itself
+   * after each pause in {@link RECONNECT_DELAYS_MS} until it is online again
+   * or disconnected; without it, only the host reconnects it.
+   */
+  readonly reconnect?: () => CoreCoworkInvoker | null;
+}
+
 /** A generation that moved on while a reply was in flight. */
 class StaleGenerationError extends Error {}
+
+/** A request the core refused only for now: the same read may land later. */
+function isRetryableRead(error: unknown): boolean {
+  return (
+    error instanceof CoreCoworkRequestError &&
+    error.payload.retry.kind !== 'never'
+  );
+}
+
+/** The delay the core asked a retried read to wait, such as a gateway's Retry-After. */
+function retryDelayMs(error: unknown): number {
+  if (!(error instanceof CoreCoworkRequestError)) return 0;
+  const { retry } = error.payload;
+  return retry.kind === 'never' ? 0 : (retry.delayMs ?? 0);
+}
 
 type Frame =
   | { kind: 'item'; cursor: CanopyStreamCursor; item: unknown }
@@ -186,7 +233,8 @@ function withoutCreation(task: CoreCoworkTask): CoreCoworkTask {
 
 /**
  * A project's listed tasks, with the ones this window is still creating, or
- * failed to create, kept at the top until the web core lists them.
+ * failed to create, kept at the top until the web core lists them, and the
+ * deleted ones it keeps, which no listing replaces.
  */
 function withLocalTasks(
   listed: readonly CoreCoworkTask[],
@@ -194,10 +242,14 @@ function withLocalTasks(
 ): CoreCoworkTask[] {
   const local = (previous ?? []).filter(
     (task) =>
-      task.creation !== undefined &&
-      !listed.some((each) => each.key === task.key),
+      task.deleted === true ||
+      (task.creation !== undefined &&
+        !listed.some((each) => each.key === task.key)),
   );
-  return [...local, ...listed];
+  return [
+    ...local,
+    ...listed.filter((task) => !local.some((each) => each.key === task.key)),
+  ];
 }
 
 const EMPTY = {
@@ -212,17 +264,24 @@ const EMPTY = {
  * passes a {@link CoreCoworkInvoker}. Leaving `online` drops everything, so
  * an offline core never shows a cached snapshot (D7).
  */
-export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
+export function createCoreCoworkStore(
+  options: CoreCoworkStoreOptions = {},
+): StoreApi<CoreCoworkState> {
   let invoker: CoreCoworkInvoker | null = null;
   let stream: CoreCoworkStream | null = null;
   let appliedCursor: CanopyStreamCursor | null = null;
   let rereadTimer: ReturnType<typeof setTimeout> | null = null;
   const pendingRereads = new Set<string>();
   let pendingResync = false;
+  /** Rereads failed in a row with a retryable answer. */
+  let failedRereads = 0;
   // Refreshes run one at a time, so an older read never lands after a newer one.
   let refreshQueue: Promise<void> = Promise.resolve();
   /** Each task's create in flight, by task key, for what waits on it. */
   const creations = new Map<string, Promise<CoreCoworkTask>>();
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Reconnects tried since the store was last online. */
+  let reconnects = 0;
 
   const store = createStore<CoreCoworkState>()((set, get) => {
     const assertCurrent = (generation: number): void => {
@@ -248,12 +307,15 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
     };
 
     const releaseConnection = (): void => {
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
       refreshQueue = Promise.resolve();
       creations.clear();
       if (rereadTimer !== null) clearTimeout(rereadTimer);
       rereadTimer = null;
       pendingRereads.clear();
       pendingResync = false;
+      failedRereads = 0;
       appliedCursor = null;
       const open = stream;
       stream = null;
@@ -459,7 +521,27 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
     };
 
     const goOffline = (generation: number): void => {
-      if (get().generation === generation) get().disconnect('offline');
+      if (get().generation !== generation) return;
+      get().disconnect('offline');
+      scheduleReconnect(get().generation);
+    };
+
+    /** Reconnects a store that went offline by itself, after a growing pause. */
+    const scheduleReconnect = (generation: number): void => {
+      const reconnect = options.reconnect;
+      if (reconnect === undefined) return;
+      const delayMs =
+        RECONNECT_DELAYS_MS[
+          Math.min(reconnects, RECONNECT_DELAYS_MS.length - 1)
+        ] ?? 30_000;
+      reconnects += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (get().generation !== generation) return;
+        const next = reconnect();
+        if (next === null) scheduleReconnect(generation);
+        else void get().connect(next);
+      }, delayMs);
     };
 
     const flushRereads = (generation: number): void => {
@@ -474,16 +556,40 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
           for (const workspaceId of workspaceIds)
             await rereadProject(generation, workspaceId);
       });
-      void work.catch((error: unknown) => {
-        if (!(error instanceof StaleGenerationError)) goOffline(generation);
-      });
+      void work.then(
+        () => {
+          failedRereads = 0;
+        },
+        (error: unknown) => {
+          if (error instanceof StaleGenerationError) return;
+          // A read the core answered as worth retrying (a gateway that lost
+          // the request, CAN-6394) is read again; the connection still
+          // stands, so the section stays. Only a lasting failure is offline.
+          if (
+            isRetryableRead(error) &&
+            failedRereads < REREAD_RETRIES &&
+            get().generation === generation
+          ) {
+            failedRereads += 1;
+            if (resync) pendingResync = true;
+            for (const workspaceId of workspaceIds)
+              pendingRereads.add(workspaceId);
+            scheduleReread(
+              generation,
+              Math.max(REREAD_RETRY_MS * failedRereads, retryDelayMs(error)),
+            );
+            return;
+          }
+          goOffline(generation);
+        },
+      );
     };
 
-    const scheduleReread = (generation: number): void => {
-      rereadTimer ??= setTimeout(
-        () => flushRereads(generation),
-        TASK_REREAD_COALESCE_MS,
-      );
+    const scheduleReread = (
+      generation: number,
+      delayMs = TASK_REREAD_COALESCE_MS,
+    ): void => {
+      rereadTimer ??= setTimeout(() => flushRereads(generation), delayMs);
     };
 
     const openTaskStream = async (generation: number): Promise<void> => {
@@ -592,6 +698,7 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
           await openTaskStream(generation);
           await relistAll(generation);
           assertCurrent(generation);
+          reconnects = 0;
           set({ status: 'online' });
         } catch (error) {
           if (error instanceof StaleGenerationError) return;
@@ -605,6 +712,7 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
 
       disconnect: (reason): void => {
         releaseConnection();
+        if (reason === 'disabled') reconnects = 0;
         set({ generation: get().generation + 1, status: reason, ...EMPTY });
       },
 
@@ -672,6 +780,53 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
         return settleCreation(task);
       },
 
+      keepDeletedTask: (workspaceId, worktreeId, title): void => {
+        const key = projectKey(workspaceId);
+        const tasks = get().tasksByProject[key] ?? [];
+        const shown = tasks.find(
+          (each) => each.key === taskKey(workspaceId, worktreeId),
+        );
+        const kept: CoreCoworkTask = {
+          ...(shown === undefined
+            ? {
+                key: taskKey(workspaceId, worktreeId),
+                workspaceId,
+                worktreeId,
+                title,
+                updatedAt: new Date().toISOString(),
+              }
+            : withoutCreation(shown)),
+          state: 'idle',
+          deleted: true,
+        };
+        set({
+          tasksByProject: {
+            ...get().tasksByProject,
+            [key]:
+              shown === undefined
+                ? [kept, ...tasks]
+                : tasks.map((each) => (each === shown ? kept : each)),
+          },
+        });
+      },
+
+      forgetTask: (workspaceId, worktreeId): void => {
+        const key = projectKey(workspaceId);
+        const tasks = get().tasksByProject[key];
+        if (
+          !tasks?.some((each) => each.key === taskKey(workspaceId, worktreeId))
+        )
+          return;
+        set({
+          tasksByProject: {
+            ...get().tasksByProject,
+            [key]: tasks.filter(
+              (each) => each.key !== taskKey(workspaceId, worktreeId),
+            ),
+          },
+        });
+      },
+
       taskCreation: (
         workspaceId,
         worktreeId,
@@ -697,7 +852,20 @@ export function createCoreCoworkStore(): StoreApi<CoreCoworkState> {
           result.outcome !== 'not_found'
         )
           throw new Error(result.reason ?? 'The cloud chat was not archived.');
-        await serialized(() => rereadProject(generation, workspaceId));
+        // The archive stands once the web core applied it: its row leaves
+        // now, and a re-read that fails only waits for the next one.
+        const key = projectKey(workspaceId);
+        const tasks = get().tasksByProject[key];
+        if (tasks !== undefined)
+          set({
+            tasksByProject: {
+              ...get().tasksByProject,
+              [key]: tasks.filter((task) => task.worktreeId !== worktreeId),
+            },
+          });
+        await serialized(() => rereadProject(generation, workspaceId)).catch(
+          () => undefined,
+        );
       },
 
       reorderProjects: async (

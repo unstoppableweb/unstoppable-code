@@ -1,7 +1,4 @@
-import {
-  evaluateStorageWrite,
-  STORAGE_OWNERSHIP,
-} from '@canopy/core-runtime/storage';
+import { isW5DaemonHostingRequired } from '@canopy/core-runtime/node/w5/storage-binding';
 
 /** The namespaces the W5 commit log decides; the flip moves them together. */
 export const W5_FLIP_NAMESPACES = [
@@ -18,8 +15,5 @@ export const W5_FLIP_NAMESPACES = [
  * legacy writers.
  */
 export function isW5DaemonFlipCompiled(): boolean {
-  return W5_FLIP_NAMESPACES.every(
-    (namespace) =>
-      evaluateStorageWrite(namespace, 'daemon', STORAGE_OWNERSHIP).allowed,
-  );
+  return isW5DaemonHostingRequired();
 }

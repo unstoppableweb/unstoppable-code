@@ -152,7 +152,11 @@ export function TeamBrandingSettingsSection({
       </div>
       {logoError ? (
         <div className="pb-3">
-          <ErrorBanner error={logoError.copy} details={logoError.details} />
+          <ErrorBanner
+            errorSource="team-branding-settings-section-logo"
+            error={logoError.copy}
+            details={logoError.details}
+          />
         </div>
       ) : null}
       <form className={SETTINGS_CARD_ROW_CLASS} onSubmit={handleNameSubmit}>
@@ -180,7 +184,11 @@ export function TeamBrandingSettingsSection({
       </form>
       {nameError ? (
         <div className="pb-3">
-          <ErrorBanner error={nameError?.copy} details={nameError?.details} />
+          <ErrorBanner
+            errorSource="team-branding-settings-section-name"
+            error={nameError?.copy}
+            details={nameError?.details}
+          />
         </div>
       ) : null}
     </SettingsCard>

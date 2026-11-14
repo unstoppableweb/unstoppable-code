@@ -96,7 +96,11 @@ export function TeamDangerZone({
       </div>
       {error ? (
         <div className="pb-3">
-          <ErrorBanner error={error?.copy} details={error?.details} />
+          <ErrorBanner
+            errorSource="team-danger-zone"
+            error={error?.copy}
+            details={error?.details}
+          />
         </div>
       ) : null}
 

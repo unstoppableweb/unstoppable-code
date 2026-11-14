@@ -13,6 +13,7 @@ import {
   type CachedDirectoryEntry,
   type CachedIndexEntry,
   type CachedRootsEntry,
+  type FileTreeLoadError,
 } from '@/stores/fileListStore';
 
 /**
@@ -129,8 +130,10 @@ export function shouldFetchFilesTreeDirectory(
   worktreeId: string | null,
   entry: CachedDirectoryEntry | undefined,
   isLoading: boolean,
-  error: string | undefined,
+  error: FileTreeLoadError | undefined,
 ): boolean {
+  // An error waits for Try again, a refresh, or (for a sleeping cloud
+  // sandbox) a turn, which clears it.
   if (projectId === null || worktreeId === null) return false;
   if (isLoading || error !== undefined) return false;
   return isFileTreeCacheStale(entry);

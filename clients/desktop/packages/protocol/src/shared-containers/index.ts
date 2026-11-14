@@ -10,6 +10,7 @@ import type { WorkspaceContext } from '../workspace-context';
 import type { PortalChatMessage } from '../portal';
 import type { WirePlanCommentThread } from '../plans';
 import { isSafePortableRelativePath } from '../safe-relative-path';
+import { isUuid } from '../uuid';
 
 // ---------------------------------------------------------------------------
 // Shared-container API contracts (CAN-2544).
@@ -32,6 +33,67 @@ export const SHARED_CONTAINER_TYPES = [
   'CLOUD_CHAT',
 ] as const;
 export type SharedContainerType = (typeof SHARED_CONTAINER_TYPES)[number];
+
+export type SharedContainerOwnerDepartureReason = 'LEFT' | 'REMOVED';
+
+/** Metadata only. This record grants no access to the departed owner's item. */
+export interface SharedContainerOwnerDepartureNotice {
+  id: string;
+  organizationId: string;
+  containerId: string;
+  containerType: SharedContainerType;
+  cloudChatId?: string;
+  title: string;
+  ownerName: string;
+  reason: SharedContainerOwnerDepartureReason;
+  createdAt: string;
+}
+
+export interface ListSharedContainerOwnerDeparturesResponse {
+  notices: SharedContainerOwnerDepartureNotice[];
+}
+
+export const SHARED_CONTAINER_OWNER_DEPARTURE_NOT_FOUND_ERROR_CODE =
+  'shared_container_owner_departure_not_found';
+
+export function isSharedContainerOwnerDepartureNotice(
+  value: unknown,
+): value is SharedContainerOwnerDepartureNotice {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    isUuid(value.id) &&
+    typeof value.organizationId === 'string' &&
+    isUuid(value.organizationId) &&
+    typeof value.containerId === 'string' &&
+    isUuid(value.containerId) &&
+    SHARED_CONTAINER_TYPES.some((type) => type === value.containerType) &&
+    (value.cloudChatId === undefined ||
+      (typeof value.cloudChatId === 'string' && isUuid(value.cloudChatId))) &&
+    typeof value.title === 'string' &&
+    [...value.title].length <= 256 &&
+    typeof value.ownerName === 'string' &&
+    [...value.ownerName].length <= 256 &&
+    (value.reason === 'LEFT' || value.reason === 'REMOVED') &&
+    typeof value.createdAt === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(
+      value.createdAt,
+    ) &&
+    Number.isFinite(Date.parse(value.createdAt)) &&
+    new Date(value.createdAt).toISOString().slice(0, 19) ===
+      value.createdAt.slice(0, 19)
+  );
+}
+
+export function isListSharedContainerOwnerDeparturesResponse(
+  value: unknown,
+): value is ListSharedContainerOwnerDeparturesResponse {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.notices) &&
+    value.notices.every(isSharedContainerOwnerDepartureNotice)
+  );
+}
 
 export const SHARED_CONTAINER_CAPABILITIES = ['VIEW', 'PROMPT'] as const;
 export type SharedContainerCapability =
@@ -636,6 +698,7 @@ export const SHARED_CONTAINER_PACKAGE_UPLOAD_EXPIRED_ERROR_CODE =
 export const SHARED_CONTAINER_PARENT_PACKAGE_UNAVAILABLE_ERROR_CODE =
   'shared_container_parent_package_unavailable' as const;
 export const SHARED_CONTAINER_ERROR_CODES = [
+  SHARED_CONTAINER_OWNER_DEPARTURE_NOT_FOUND_ERROR_CODE,
   SHARED_CONTAINER_INSUFFICIENT_ROLE_ERROR_CODE,
   SHARED_CONTAINER_BLOCKED_BY_ORG_BILLING_ERROR_CODE,
   SHARED_CONTAINER_EXTERNAL_SHARING_DISABLED_ERROR_CODE,

@@ -646,6 +646,7 @@ function isTurnLifecycleProvider(
     provider === 'codex' ||
     provider === 'cursor' ||
     provider === 'copilot' ||
+    provider === 'antigravity' ||
     provider === 'opencode'
   );
 }

@@ -10,7 +10,11 @@ import type {
  * folds several roots into one renderer-facing candidate.
  */
 
-export type DiscoveredSessionKind = 'claude-jsonl' | 'codex-rollout';
+export type DiscoveredSessionKind =
+  | 'claude-jsonl'
+  | 'codex-rollout'
+  | 't3-thread'
+  | 'opencode-session';
 
 export interface DiscoveredSession {
   id: string;
@@ -31,6 +35,34 @@ export interface DiscoveredSession {
    * a project.
    */
   native: boolean;
+  /**
+   * The transcript behind a session whose own record is only an index entry
+   * (a T3 Code thread pointing at a Claude or Codex file, for example).
+   */
+  backing?: {
+    provider: 'claude' | 'codex' | 'opencode';
+    kind: 'claude-jsonl' | 'codex-rollout' | 'opencode-session';
+    sourcePath: string;
+    id: string;
+    /** Size of the native record: the file, or an OpenCode session's message bytes. */
+    sizeBytes: number;
+  };
+  /** The source marks the session archived. */
+  archived?: boolean;
+  /**
+   * T3 `thread_id` or OpenCode `session_v2.id`, when `id` is a native id
+   * rather than the store's own.
+   */
+  storeId?: string;
+  /**
+   * Other ids the conversation is known by in the import ledger. A T3 thread
+   * names its agent's native session id here whether or not that record still
+   * resolves, so a chat imported earlier through the agent's own record is
+   * still found after the record is compressed or deleted.
+   */
+  aliasIds?: string[];
+  /** T3 Code's driver id for the agent that ran a T3 thread (`codex`, `cursor`, `grok`, …). */
+  driver?: string;
 }
 
 export interface DiscoveredRoot {

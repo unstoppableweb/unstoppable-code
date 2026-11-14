@@ -1,5 +1,6 @@
 import { lstat, readdir, unlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import type { MainCrashCapturePolicy } from '@canopy/desktop-instrumentation/electron/main';
 import { isMissingFileError } from '../lib/fs-utils';
 import { isPathInside } from '../lib/path-safety';
 
@@ -22,6 +23,7 @@ export interface CrashDumpSweepDirent {
 export interface CrashDumpSweepStats {
   readonly mtimeMs: number;
   isFile(): boolean;
+  isDirectory(): boolean;
 }
 
 /** The file system calls the sweep makes; injectable for tests. */
@@ -50,6 +52,7 @@ export interface CrashDumpSweepOptions {
    * dump and counts an error.
    */
   readonly classify?: (filePath: string) => Promise<CrashDumpSweepVerdict>;
+  readonly onKept?: (filePath: string, mtimeMs: number) => void;
   readonly fs?: CrashDumpSweepFs;
   readonly now?: () => number;
 }
@@ -66,6 +69,8 @@ export interface CrashDumpSweepResult {
   readonly kept: number;
   /** Files or directories that could not be read, classified, or deleted. */
   readonly errors: number;
+  /** False if an error or a disappearing entry could have hidden a dump. */
+  readonly complete: boolean;
 }
 
 interface ListedDump {
@@ -78,6 +83,7 @@ export interface CrashDumpFileListing {
   readonly filePaths: readonly string[];
   /** Directories or entries that could not be listed safely. */
   readonly errors: number;
+  readonly complete: boolean;
 }
 
 function isInsideCrashDumpsRoot(root: string, candidate: string): boolean {
@@ -97,6 +103,7 @@ export async function listCrashDumpFiles(
   const newDirectory = join(root, 'new');
   const filePaths: string[] = [];
   let errors = 0;
+  let complete = true;
 
   const walk = async (directory: string, depth: number): Promise<void> => {
     let entries: readonly CrashDumpSweepDirent[];
@@ -104,6 +111,7 @@ export async function listCrashDumpFiles(
       entries = await fs.readdir(directory, { withFileTypes: true });
     } catch (error) {
       if (!isMissingFileError(error)) errors += 1;
+      else if (directory !== root) complete = false;
       return;
     }
     for (const entry of entries) {
@@ -127,7 +135,27 @@ export async function listCrashDumpFiles(
   };
 
   await walk(root, 0);
-  return { filePaths, errors };
+  return { filePaths, errors, complete: complete && errors === 0 };
+}
+
+async function hasUnfinishedCrashpadDumps(
+  root: string,
+  fs: CrashDumpSweepFs,
+): Promise<boolean> {
+  const staging = join(root, 'new');
+  let stats: CrashDumpSweepStats;
+  try {
+    stats = await fs.lstat(staging);
+  } catch (error) {
+    return !isMissingFileError(error);
+  }
+  // Do not follow a symlink or advance past an unreadable staging directory.
+  if (!stats.isDirectory()) return true;
+  try {
+    return (await fs.readdir(staging, { withFileTypes: true })).length > 0;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -136,8 +164,8 @@ export async function listCrashDumpFiles(
  * newest {@link CRASH_DUMP_MAX_KEPT}. Crashpad's `new/` directory holds dumps
  * still being written and is never touched. Only paths inside
  * `crashDumpsDir` are deleted. A file that disappears mid-sweep (Crashpad
- * moves dumps between directories) is already gone, not an error, and is
- * counted only in `listed`. One bad file never stops the sweep.
+ * moves dumps between directories) does not count as an error, but prevents
+ * dropping receipts for missing dumps. One bad file never stops the sweep.
  */
 export async function sweepCrashDumps(
   options: CrashDumpSweepOptions,
@@ -145,11 +173,15 @@ export async function sweepCrashDumps(
   const fs = options.fs ?? nodeCrashDumpSweepFs;
   const now = options.now ?? Date.now;
   const root = resolve(options.crashDumpsDir);
+  // Read staging first. A dump that completes before this check will be
+  // visible to the following retained-file listing.
+  const unfinished = await hasUnfinishedCrashpadDumps(root, fs);
   const listing = await listCrashDumpFiles(root, fs);
   const listed = listing.filePaths.length;
   let discardedForeign = 0;
   let deletedByRetention = 0;
   let errors = listing.errors;
+  let complete = listing.complete && !unfinished;
 
   /** Deletes one dump inside the root; counts an error when it cannot. */
   const remove = async (
@@ -163,7 +195,10 @@ export async function sweepCrashDumps(
       await fs.unlink(filePath);
       return 'deleted';
     } catch (error) {
-      if (isMissingFileError(error)) return 'gone';
+      if (isMissingFileError(error)) {
+        complete = false;
+        return 'gone';
+      }
       errors += 1;
       return 'failed';
     }
@@ -176,9 +211,13 @@ export async function sweepCrashDumps(
       stats = await fs.lstat(filePath);
     } catch (error) {
       if (!isMissingFileError(error)) errors += 1;
+      complete = false;
       continue;
     }
-    if (!stats.isFile()) continue;
+    if (!stats.isFile()) {
+      complete = false;
+      continue;
+    }
 
     let verdict: CrashDumpSweepVerdict = 'process';
     if (options.classify !== undefined) {
@@ -215,10 +254,68 @@ export async function sweepCrashDumps(
   for (const [index, dump] of fresh.entries()) {
     if (index < CRASH_DUMP_MAX_KEPT) {
       kept += 1;
+      options.onKept?.(dump.filePath, dump.mtimeMs);
       continue;
     }
     if ((await remove(dump.filePath)) === 'deleted') deletedByRetention += 1;
   }
 
-  return { listed, discardedForeign, deletedByRetention, kept, errors };
+  return {
+    listed,
+    discardedForeign,
+    deletedByRetention,
+    kept,
+    errors,
+    complete: complete && errors === 0,
+  };
+}
+
+/** Apply local retention before reading anything that gates crash reporting. */
+export async function sweepStartupCrashDumps(options: {
+  readonly crashDumpsDir: string;
+  readonly classify?: CrashDumpSweepOptions['classify'];
+  readonly policy: () => MainCrashCapturePolicy;
+  readonly receipts: {
+    read(): Promise<ReadonlySet<string>>;
+    save(receipts: ReadonlySet<string>): void;
+  };
+  readonly report: (
+    dumpPaths: readonly string[],
+    onDelivered: (dumpName: string) => void,
+  ) => Promise<boolean>;
+}): Promise<Omit<CrashDumpSweepResult, 'complete'>> {
+  const retained: string[] = [];
+  const { complete, ...counts } = await sweepCrashDumps({
+    crashDumpsDir: options.crashDumpsDir,
+    classify: options.classify,
+    onKept: (filePath): void => {
+      retained.push(filePath);
+    },
+  });
+  if (counts.listed === 0 && counts.errors === 0) return counts;
+
+  try {
+    if (options.policy() !== 'allow') return counts;
+    const known = await options.receipts.read();
+    const retainedNames = new Set(
+      retained.map((filePath) => basename(filePath).toLowerCase()),
+    );
+    // In an incomplete listing a missing file may have moved, not been pruned.
+    const delivered = new Set(
+      complete ? [...known].filter((name) => retainedNames.has(name)) : known,
+    );
+    const pending = retained.filter(
+      (filePath) => !delivered.has(basename(filePath).toLowerCase()),
+    );
+    let needsPrune = delivered.size !== known.size;
+    await options.report(pending, (name): void => {
+      delivered.add(name);
+      options.receipts.save(delivered);
+      needsPrune = false;
+    });
+    if (needsPrune) options.receipts.save(delivered);
+  } catch {
+    // Crash reporting is best effort. Retention has already run.
+  }
+  return counts;
 }

@@ -4,7 +4,7 @@ import { HookIcon } from '@canopy/ui-shared/icons';
 import { formatTimingTimestamp } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { StatusLabel } from '@canopy/ui-shared/components';
-import { Surface } from '@canopy/ui-shared/components';
+import { Surface, Tooltip } from '@canopy/ui-shared/components';
 
 export interface PipelineHookTriggerSource {
   readonly kind: 'hook';
@@ -81,13 +81,14 @@ export function HookTriggerIndicator({
 
   const tooltip = getHookTriggerTooltip(triggerSource);
   return (
-    <span
-      title={tooltip}
-      aria-label={tooltip}
-      className="inline-flex items-center fg-secondary/70"
-    >
-      <HookIcon size="sm" />
-    </span>
+    <Tooltip label={tooltip} replayBlock>
+      <span
+        aria-label={tooltip}
+        className="inline-flex items-center fg-secondary/70"
+      >
+        <HookIcon size="sm" />
+      </span>
+    </Tooltip>
   );
 }
 
@@ -136,10 +137,10 @@ export function FailedQueuedHookPipelineCard({
           </span>
           <HookTriggerIndicator triggerSource={entry.trigger_source} />
         </div>
-        <div className="truncate">
-          <StatusLabel size="2xs" title={entry.error}>
-            Queue failed: {entry.error}
-          </StatusLabel>
+        <div
+          className={`whitespace-pre-wrap wrap-anywhere ${REPLAY_BLOCK_CLASS}`}
+        >
+          <StatusLabel size="2xs">Queue failed: {entry.error}</StatusLabel>
         </div>
       </div>
       <Button
@@ -198,10 +199,10 @@ export function FailedPendingExecutionCard({
         <div className="truncate text-s font-medium fg-primary">
           {entry.pipelineName}
         </div>
-        <div className="truncate">
-          <StatusLabel size="2xs" title={entry.error}>
-            Queue failed: {entry.error}
-          </StatusLabel>
+        <div
+          className={`whitespace-pre-wrap wrap-anywhere ${REPLAY_BLOCK_CLASS}`}
+        >
+          <StatusLabel size="2xs">Queue failed: {entry.error}</StatusLabel>
         </div>
       </div>
       <Button

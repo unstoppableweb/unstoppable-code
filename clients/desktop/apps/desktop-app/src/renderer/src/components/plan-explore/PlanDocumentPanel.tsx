@@ -1,4 +1,5 @@
 import { Stack } from '@canopy/ui-shared/components';
+import { DocumentProse } from '@canopy/ui-shared/components/Markdown';
 import {
   useCallback,
   useEffect,
@@ -783,11 +784,11 @@ function PlanDocumentPanelImpl({
         onClick={handleContainerClick}
         className="relative min-h-0 flex-1 overflow-auto"
       >
-        <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words p-5 prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary/80 prose-a:fg-accent prose-strong:fg-primary/80 prose-li:my-0.5">
+        <DocumentProse variant="editor">
           <SourcePositionMarkdown options={PLAN_MARKDOWN_OPTIONS}>
             {renderedSource}
           </SourcePositionMarkdown>
-        </div>
+        </DocumentProse>
       </div>
 
       {!readOnly && pendingSelection ? (

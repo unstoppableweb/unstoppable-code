@@ -9,15 +9,24 @@ import type { CanopyCapabilities, CanopyClient } from '@canopy/app-core';
 import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import { createIpcCanopyClient } from '@canopy/ipc-canopy-client';
-import { scopedFileQueriesFor } from '@/lib/files/workspace-file-source';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
-import { webCoreScopeCapabilities } from '@/lib/web-core-scope-capabilities';
+import {
+  cloudTerminalsEnabled,
+  webCoreScopeCapabilities,
+} from '@/lib/web-core-scope-capabilities';
+import {
+  loadWebCoreServedOperations,
+  webCoreServesCost,
+} from '@/lib/web-core-served-operations';
 import { recordTerminalOutputApplied } from '@/lib/renderer-diagnostics/recorder';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { createDesktopFeedbackReportClient } from './feedback-report-client';
@@ -93,6 +102,7 @@ export function createDesktopCapabilities(
     marketplaceSourcePluginInstall: true,
     marketplaceSourceAdd: true,
     cloudCapabilityLinks: true,
+    cloudReachBack: true,
     // Payment forms stay in the browser; hosted settings hand off to it.
     inlineCheckout: false,
     // Hosted account and organization settings run through main's settings
@@ -107,6 +117,9 @@ export function createDesktopCapabilities(
     routing: 'in-memory',
     overviewNotifications: true,
     sidebarActivityMode: true,
+    // The palette's commands, workflows and transcript search read renderer
+    // stores and main's chat-search index.
+    searchPalette: { actions: true, workflows: true, content: true },
     chatDrafts: true,
     // Local chats run in the local core, which serves each of these. A cloud
     // chat scope answers them from `webCoreScopeCapabilities` instead.
@@ -126,6 +139,7 @@ export function createDesktopCapabilities(
     chatTranscriptSearch: true,
     chatReadState: true,
     chatArchives: true,
+    taskSummary: true,
     chatVisuals: true,
     // Main grants sanitized writes only to trusted application documents.
     imageClipboard: true,
@@ -152,12 +166,15 @@ export function createDesktopCapabilities(
     },
     panelLayoutControls: false,
     itemGrouping: false,
+    // `work-entries:delete` archives a Work Entry locked (CAN-5461).
+    standaloneChatArchive: true,
     workspaceRemoval: 'delete',
     // `worktree.create` / `worktree.update` run over IPC. Row identity and
     // activity sections keep the shared defaults, so neither is set.
     worktreeCreation: true,
     // `worktree.create` carries `baseWorktreeId` and `forkOpenTabs` (Branch from).
     worktreeBranching: true,
+    worktreeBaseBranch: true,
     worktreeMetadata: true,
     turnFeedback: true,
     // Stars the brand's repository with the bundled GitHub CLI's account.
@@ -188,6 +205,7 @@ export function createDesktopCapabilities(
     lifecycleJournalQuarantine: true,
     // `worktree:discard-describe` / `worktree:discard` (CAN-5334).
     worktreeDiscard: true,
+    worktreeRecovery: true,
     // `workspace:delete-discard-describe` and the supersede field (CAN-5337).
     projectDeletionDiscard: true,
     // Observed cost reads over the `cost:*` IPC.
@@ -322,7 +340,7 @@ export function createDesktopCanopyClient(
       await forkOpenWorktreeState(request);
     },
     resolveLocalFileRoot: (rootId) => localFileRootOverrides.get(rootId),
-    scopedFiles: scopedFileQueriesFor,
+    scopedFiles: scopedFileOperationsFor,
     logError: (message, details) => {
       reportRendererConsoleError(message, details);
     },
@@ -342,10 +360,36 @@ export function createDesktopCanopyClient(
     ...(settings ? { settings } : {}),
   });
   return Object.assign(client, {
-    // A cloud chat scope answers from the web core's set (CAN-6175 D4).
+    autoDeleteAttentionReceipts: {
+      hasShown: (incidentId: string): boolean => {
+        try {
+          return (
+            localStorage.getItem(
+              `auto-delete-attention:desktop:${incidentId}`,
+            ) === 'shown'
+          );
+        } catch (error) {
+          reportClientAppError(error);
+          return false;
+        }
+      },
+      markShown: (incidentId: string): void => {
+        try {
+          localStorage.setItem(
+            `auto-delete-attention:desktop:${incidentId}`,
+            'shown',
+          );
+        } catch (error) {
+          // Session deduplication and the standing review remain available.
+          reportClientAppError(error);
+        }
+      },
+    },
+    // A cloud chat scope answers from the web core's set (CAN-6175 D4). The
+    // flags are read at call time; `useScopeCapabilities` re-renders on them.
     capabilitiesFor: (localId: string): CanopyCapabilities =>
       isWebCoreScope(localId)
-        ? webCoreScopeCapabilities(client.capabilities)
+        ? cloudScopeCapabilities(client.capabilities)
         : client.capabilities,
     // Older hosts have no bridge; blocked remote lists mean no arms.
     listWorkEntryAutoDelete: () =>
@@ -358,12 +402,27 @@ export function createDesktopCanopyClient(
       window.api.workEntryAutoDelete.resolveBranch(request),
   } satisfies Pick<
     CanopyClient,
+    | 'autoDeleteAttentionReceipts'
     | 'capabilitiesFor'
     | 'listWorkEntryAutoDelete'
     | 'subscribeWorkEntryAutoDelete'
     | 'disarmWorkEntryAutoDelete'
     | 'resolveWorkEntryAutoDeleteBranch'
   >);
+}
+
+/**
+ * A cloud scope's set (CAN-6175 D4). The flags and the web core's manifest
+ * are read at call time; `useScopeCapabilities` re-renders on both.
+ */
+function cloudScopeCapabilities(host: CanopyCapabilities): CanopyCapabilities {
+  loadWebCoreServedOperations();
+  return webCoreScopeCapabilities(host, {
+    durableTerminals: cloudTerminalsEnabled(
+      useFeatureFlagsStore.getState().isEnabled,
+    ),
+    costInsights: webCoreServesCost(),
+  });
 }
 
 /** Singleton desktop client injected into the renderer `CanopyClientProvider`. */

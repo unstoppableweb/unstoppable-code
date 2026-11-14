@@ -112,13 +112,16 @@ export async function ensureWorkspaceSource(
 export async function availableWorkspacePath(
   base: string,
   preferred: string,
+  available: (candidate: string) => Promise<boolean> = () =>
+    Promise.resolve(true),
 ): Promise<string> {
   for (let suffix = 1; suffix <= 10000; suffix += 1) {
     const candidate = join(
       base,
       suffix === 1 ? preferred : `${preferred}-${suffix}`,
     );
-    if (!(await workspacePathExists(candidate))) return candidate;
+    if (!(await workspacePathExists(candidate)) && (await available(candidate)))
+      return candidate;
   }
   throw new Error('No available project directory.');
 }
@@ -148,6 +151,7 @@ export async function initializeWorkspaceSource(
   multi: boolean,
   instructions: string,
   signal: AbortSignal,
+  profile?: 'cli',
 ): Promise<void> {
   signal.throwIfAborted();
   await workspaceGit(['init'], folder);
@@ -164,6 +168,8 @@ export async function initializeWorkspaceSource(
     await writeFile(join(folder, 'CLAUDE.md'), instructions, { flag: 'wx' });
     signal.throwIfAborted();
     await linkAgentsMdToClaudeMd(folder);
+  } else if (profile === 'cli') {
+    await ensureWorkspaceSource(folder, signal);
   } else {
     signal.throwIfAborted();
     await writeFile(join(folder, 'README.md'), `# ${name}\n`, { flag: 'wx' });
@@ -182,7 +188,9 @@ export async function initializeWorkspaceSource(
       'add',
       ...(multi
         ? ['-A']
-        : ['README.md', '.gitignore', basename(getCanopyJsonPath(folder))]),
+        : profile === 'cli'
+          ? [basename(getCanopyJsonPath(folder))]
+          : ['README.md', '.gitignore', basename(getCanopyJsonPath(folder))]),
     ],
     folder,
   );
@@ -195,7 +203,11 @@ export async function initializeWorkspaceSource(
       `user.email=${BRAND.internalName}@local.invalid`,
       'commit',
       '-m',
-      multi ? 'Initialize project source repo' : 'Initial commit',
+      multi
+        ? 'Initialize project source repo'
+        : profile === 'cli'
+          ? `Initialize ${BRAND.displayName} workspace`
+          : 'Initial commit',
     ],
     folder,
   );

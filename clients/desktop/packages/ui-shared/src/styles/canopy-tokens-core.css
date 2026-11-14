@@ -1104,13 +1104,13 @@ body {
   [data-native-scrollbar-hovered='true']::-webkit-scrollbar-thumb,
 :root[data-scrollbar-behavior='scroll']
   [data-native-scrollbar-scrolling='true']::-webkit-scrollbar-thumb {
-  background-color: var(--fg-quaternary);
+  background-color: color-mix(in srgb, var(--fg-quaternary) 50%, transparent);
 }
 
 /*
  * Overlay scrollbar motion, matching the desktop sidebar exactly: the rail
  * owns hover so the full 10px hit area grows the 6px thumb to 8px and deepens
- * it from `--fg-quaternary` to `--fg-secondary`, rather than only the visible
+ * it from half-strength `--fg-quaternary` to full, rather than only the visible
  * thumb pixels reacting. It grows by `scale` from its right edge rather than
  * by `width`, so the motion runs on the compositor; the hovered corner is
  * narrowed to 3px across first, so the scaled thumb lands on a true 4px round
@@ -1130,7 +1130,7 @@ body {
 [data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {
   scale: calc(8 / 6) 1;
   border-radius: 3px / 4px;
-  background-color: var(--fg-secondary);
+  background-color: var(--fg-quaternary);
 }
 
 /*
@@ -1182,8 +1182,8 @@ body {
 }
 
 /*
- * Native scrollbars borrow the sidebar's colours — the same 6px
- * `--fg-quaternary` pill, deepening to `--fg-secondary` on hover. System mode
+ * Native scrollbars borrow the sidebar's colours — the same 6px pill in
+ * `--fg-quaternary` at half strength, deepening to full on hover. System mode
  * leaves Chromium's OS-derived visibility intact; explicit policies above
  * control the resting thumb colour for native-scrollbar holdouts.
  */
@@ -1192,14 +1192,14 @@ body {
    below and painted the thumb across the full rail width. */
 :not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb {
   border: var(--canopy-scrollbar-thumb-inset) solid transparent;
-  background-color: var(--fg-quaternary);
+  background-color: color-mix(in srgb, var(--fg-quaternary) 50%, transparent);
   background-clip: padding-box;
   border-radius: var(--radius-full);
   transition: background-color 0.2s ease-out;
 }
 
 :not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb:hover {
-  background-color: var(--fg-secondary);
+  background-color: var(--fg-quaternary);
 }
 
 .scrollbar-hide {
@@ -1386,6 +1386,10 @@ body {
     --z-index-dropdown
   ); /* z-exception: CSS backing for the shared dropdown tier */
   max-width: calc(100vw - 16px);
+  /* Menus open over desktop titlebar strips, which are window-drag regions;
+     Electron's drag mask ignores z-order, so the menu must opt out or its
+     rows there drag the window instead of clicking. Ignored by browsers. */
+  -webkit-app-region: no-drag;
 }
 
 .canopy-floating-menu-content {
@@ -1787,10 +1791,11 @@ body {
   content: none !important;
 }
 
-/* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`
- * lays its resting and busy labels in one grid cell so the button keeps one
- * width, and draws the label that is not showing from `data-reserved-label`,
- * so it holds its width without adding text to the DOM. */
+/* A hidden label (`canopy-reserved-label`): `LoadingButton` (resting and
+ * busy labels) and a labeled `CopyButton` (resting and copied labels) lay
+ * both labels in one grid cell so the button keeps one width, and draw the
+ * label that is not showing from `data-reserved-label`, so it holds its
+ * width without adding text to the DOM. */
 .canopy-reserved-label::before {
   content: attr(data-reserved-label);
 }
@@ -1821,41 +1826,278 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
-/* A stronger shimmer for the clean chat look's live step: the words rest in
- * the quaternary ink and a soft primary band sweeps across them in one
- * continuous, linear pass. The gradient is a seamless 200%-wide tile
- * (repeat-x) and the animation moves exactly one tile per cycle, so the loop
- * never restarts visibly; eased intermediate stops keep the band's edges
- * soft. Rows set `--canopy-shimmer-delay` from the document clock so a row
- * that remounts picks up the sweep where it was instead of starting over. */
-.canopy-text-shimmer-strong {
-  color: var(--fg-quaternary);
-  background-image: linear-gradient(
+/* A stronger shimmer for the clean chat look's live step (`ShimmerCopies`):
+ * the words rest in the quaternary ink and a soft primary band sweeps across
+ * them in one continuous, linear pass, a seamless 2-width tile moving one
+ * tile every 2.4 s with eased edges. Rows set `--canopy-shimmer-delay` from
+ * the document clock so a row that remounts picks up the sweep where it was.
+ *
+ * The sweep runs on the compositor; nothing repaints while it runs. The
+ * element keeps its words (layout, selection, accessible text) with their
+ * glyphs unpainted, and two `aria-hidden` copies beneath its content draw
+ * them instead: one in the quaternary ink through the inverse of the band,
+ * one in primary ink through the band. Each copy's window is four widths
+ * wide and slides by `transform` while the copy inside slides back, so only
+ * the band mask moves. The copies add up (`plus-lighter`) inside the
+ * isolated layers, so each glyph pixel gets its coverage once in the blended
+ * ink. The masks hold the alpha that lands each point on the oklab mix the
+ * gradient this replaced painted (it repainted its text every frame), one
+ * pair for light themes (toward black) and one for dark (toward white), so
+ * the pixels match it within a few levels. The copies drop their own inks,
+ * backgrounds, borders and icons, as that gradient fill did, and sit beneath
+ * the element's content, where it painted, so a code badge's tint still
+ * falls on the glyphs. */
+:root {
+  --canopy-shimmer-strong-band: linear-gradient(
     90deg,
-    currentColor 0%,
-    currentColor 22%,
-    color-mix(in oklab, currentColor 75%, var(--fg-primary)) 32%,
-    color-mix(in oklab, currentColor 30%, var(--fg-primary)) 42%,
-    var(--fg-primary) 50%,
-    color-mix(in oklab, currentColor 30%, var(--fg-primary)) 58%,
-    color-mix(in oklab, currentColor 75%, var(--fg-primary)) 68%,
-    currentColor 78%,
-    currentColor 100%
+    transparent 0%,
+    rgb(0 0 0 / 0) 22%,
+    rgb(0 0 0 / 0.068) 24%,
+    rgb(0 0 0 / 0.134) 26%,
+    rgb(0 0 0 / 0.2) 28%,
+    rgb(0 0 0 / 0.265) 30%,
+    rgb(0 0 0 / 0.329) 32%,
+    rgb(0 0 0 / 0.441) 34%,
+    rgb(0 0 0 / 0.55) 36%,
+    rgb(0 0 0 / 0.654) 38%,
+    rgb(0 0 0 / 0.753) 40%,
+    rgb(0 0 0 / 0.847) 42%,
+    rgb(0 0 0 / 0.92) 44%,
+    rgb(0 0 0 / 0.976) 46%,
+    rgb(0 0 0 / 0.997) 48%,
+    rgb(0 0 0 / 1) 50%,
+    rgb(0 0 0 / 0.997) 52%,
+    rgb(0 0 0 / 0.976) 54%,
+    rgb(0 0 0 / 0.92) 56%,
+    rgb(0 0 0 / 0.847) 58%,
+    rgb(0 0 0 / 0.753) 60%,
+    rgb(0 0 0 / 0.654) 62%,
+    rgb(0 0 0 / 0.55) 64%,
+    rgb(0 0 0 / 0.441) 66%,
+    rgb(0 0 0 / 0.329) 68%,
+    rgb(0 0 0 / 0.265) 70%,
+    rgb(0 0 0 / 0.2) 72%,
+    rgb(0 0 0 / 0.134) 74%,
+    rgb(0 0 0 / 0.068) 76%,
+    rgb(0 0 0 / 0) 78%,
+    transparent 100%
   );
-  background-size: 200% 100%;
-  background-repeat: repeat-x;
-  background-position: 0% 0;
-  background-clip: text;
-  -webkit-background-clip: text;
+  --canopy-shimmer-strong-ink: linear-gradient(
+    90deg,
+    #000 0%,
+    rgb(0 0 0 / 1) 22%,
+    rgb(0 0 0 / 0.932) 24%,
+    rgb(0 0 0 / 0.866) 26%,
+    rgb(0 0 0 / 0.8) 28%,
+    rgb(0 0 0 / 0.735) 30%,
+    rgb(0 0 0 / 0.671) 32%,
+    rgb(0 0 0 / 0.559) 34%,
+    rgb(0 0 0 / 0.45) 36%,
+    rgb(0 0 0 / 0.346) 38%,
+    rgb(0 0 0 / 0.247) 40%,
+    rgb(0 0 0 / 0.153) 42%,
+    rgb(0 0 0 / 0.08) 44%,
+    rgb(0 0 0 / 0.024) 46%,
+    rgb(0 0 0 / 0.003) 48%,
+    rgb(0 0 0 / 0) 50%,
+    rgb(0 0 0 / 0.003) 52%,
+    rgb(0 0 0 / 0.024) 54%,
+    rgb(0 0 0 / 0.08) 56%,
+    rgb(0 0 0 / 0.153) 58%,
+    rgb(0 0 0 / 0.247) 60%,
+    rgb(0 0 0 / 0.346) 62%,
+    rgb(0 0 0 / 0.45) 64%,
+    rgb(0 0 0 / 0.559) 66%,
+    rgb(0 0 0 / 0.671) 68%,
+    rgb(0 0 0 / 0.735) 70%,
+    rgb(0 0 0 / 0.8) 72%,
+    rgb(0 0 0 / 0.866) 74%,
+    rgb(0 0 0 / 0.932) 76%,
+    rgb(0 0 0 / 1) 78%,
+    #000 100%
+  );
+}
+
+:root.dark {
+  --canopy-shimmer-strong-band: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(0 0 0 / 0) 22%,
+    rgb(0 0 0 / 0.046) 24%,
+    rgb(0 0 0 / 0.092) 26%,
+    rgb(0 0 0 / 0.138) 28%,
+    rgb(0 0 0 / 0.186) 30%,
+    rgb(0 0 0 / 0.233) 32%,
+    rgb(0 0 0 / 0.32) 34%,
+    rgb(0 0 0 / 0.409) 36%,
+    rgb(0 0 0 / 0.499) 38%,
+    rgb(0 0 0 / 0.59) 40%,
+    rgb(0 0 0 / 0.683) 42%,
+    rgb(0 0 0 / 0.761) 44%,
+    rgb(0 0 0 / 0.84) 46%,
+    rgb(0 0 0 / 0.919) 48%,
+    rgb(0 0 0 / 1) 50%,
+    rgb(0 0 0 / 0.919) 52%,
+    rgb(0 0 0 / 0.84) 54%,
+    rgb(0 0 0 / 0.761) 56%,
+    rgb(0 0 0 / 0.683) 58%,
+    rgb(0 0 0 / 0.59) 60%,
+    rgb(0 0 0 / 0.499) 62%,
+    rgb(0 0 0 / 0.409) 64%,
+    rgb(0 0 0 / 0.32) 66%,
+    rgb(0 0 0 / 0.233) 68%,
+    rgb(0 0 0 / 0.186) 70%,
+    rgb(0 0 0 / 0.138) 72%,
+    rgb(0 0 0 / 0.092) 74%,
+    rgb(0 0 0 / 0.046) 76%,
+    rgb(0 0 0 / 0) 78%,
+    transparent 100%
+  );
+  --canopy-shimmer-strong-ink: linear-gradient(
+    90deg,
+    #000 0%,
+    rgb(0 0 0 / 1) 22%,
+    rgb(0 0 0 / 0.954) 24%,
+    rgb(0 0 0 / 0.908) 26%,
+    rgb(0 0 0 / 0.862) 28%,
+    rgb(0 0 0 / 0.814) 30%,
+    rgb(0 0 0 / 0.767) 32%,
+    rgb(0 0 0 / 0.68) 34%,
+    rgb(0 0 0 / 0.591) 36%,
+    rgb(0 0 0 / 0.501) 38%,
+    rgb(0 0 0 / 0.41) 40%,
+    rgb(0 0 0 / 0.317) 42%,
+    rgb(0 0 0 / 0.239) 44%,
+    rgb(0 0 0 / 0.16) 46%,
+    rgb(0 0 0 / 0.081) 48%,
+    rgb(0 0 0 / 0) 50%,
+    rgb(0 0 0 / 0.081) 52%,
+    rgb(0 0 0 / 0.16) 54%,
+    rgb(0 0 0 / 0.239) 56%,
+    rgb(0 0 0 / 0.317) 58%,
+    rgb(0 0 0 / 0.41) 60%,
+    rgb(0 0 0 / 0.501) 62%,
+    rgb(0 0 0 / 0.591) 64%,
+    rgb(0 0 0 / 0.68) 66%,
+    rgb(0 0 0 / 0.767) 68%,
+    rgb(0 0 0 / 0.814) 70%,
+    rgb(0 0 0 / 0.862) 72%,
+    rgb(0 0 0 / 0.908) 74%,
+    rgb(0 0 0 / 0.954) 76%,
+    rgb(0 0 0 / 1) 78%,
+    #000 100%
+  );
+}
+
+.canopy-text-shimmer-strong {
+  position: relative;
+  isolation: isolate;
+  color: var(--fg-quaternary);
   -webkit-text-fill-color: transparent;
 }
 
-@keyframes canopy-text-shimmer-sweep {
+.canopy-shimmer-layers {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  isolation: isolate;
+  pointer-events: none;
+  user-select: none;
+}
+
+.canopy-shimmer-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* Four widths, so a 25% copy is exactly the element's width. At rest
+   * (no animation) the window and its copy sit on their first frame. */
+  width: 400%;
+  transform: translateX(-50%);
+  -webkit-mask-size: 50% 100%;
+  mask-size: 50% 100%;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+}
+
+.canopy-shimmer-window[data-shimmer-layer='ink'] {
+  -webkit-mask-image: var(--canopy-shimmer-strong-ink);
+  mask-image: var(--canopy-shimmer-strong-ink);
+}
+
+.canopy-shimmer-window[data-shimmer-layer='band'] {
+  mix-blend-mode: plus-lighter;
+  -webkit-mask-image: var(--canopy-shimmer-strong-band);
+  mask-image: var(--canopy-shimmer-strong-band);
+}
+
+.canopy-shimmer-copy {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 25%;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  transform: translateX(200%);
+}
+
+/* The copy lays its children out as the element does: each level passes
+ * the element's own layout down (an absolutely placed child ignores its
+ * container's padding and gap, so the layers and windows are unaffected). */
+.canopy-shimmer-layers,
+.canopy-shimmer-window,
+.canopy-shimmer-copy {
+  display: inherit;
+  flex-direction: inherit;
+  flex-wrap: inherit;
+  align-items: inherit;
+  justify-content: inherit;
+  gap: inherit;
+  grid-template-columns: inherit;
+  grid-template-rows: inherit;
+  padding: inherit;
+  overflow: inherit;
+  text-overflow: inherit;
+  white-space: inherit;
+  text-align: inherit;
+}
+
+.canopy-shimmer-copy,
+.canopy-shimmer-copy * {
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+  text-decoration-color: transparent;
+}
+
+.canopy-shimmer-copy :is(svg, img, canvas, video) {
+  visibility: hidden;
+}
+
+[data-shimmer-layer='band'] > .canopy-shimmer-copy {
+  color: var(--fg-primary);
+}
+
+@keyframes canopy-text-shimmer-sweep-window {
   from {
-    background-position: 200% 0;
+    transform: translateX(-50%);
   }
   to {
-    background-position: 0% 0;
+    transform: none;
+  }
+}
+
+@keyframes canopy-text-shimmer-sweep-copy {
+  from {
+    transform: translateX(200%);
+  }
+  to {
+    transform: none;
   }
 }
 
@@ -1873,8 +2115,13 @@ body {
     animation: canopy-text-shimmer 2s linear infinite;
   }
 
-  .canopy-text-shimmer-strong {
-    animation: canopy-text-shimmer-sweep 2.4s linear infinite;
+  .canopy-shimmer-window {
+    animation: canopy-text-shimmer-sweep-window 2.4s linear infinite;
+    animation-delay: var(--canopy-shimmer-delay, 0s);
+  }
+
+  .canopy-shimmer-copy {
+    animation: canopy-text-shimmer-sweep-copy 2.4s linear infinite;
     animation-delay: var(--canopy-shimmer-delay, 0s);
   }
 }
@@ -1884,8 +2131,11 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .canopy-text-shimmer-strong {
     color: var(--fg-secondary);
-    background-image: none;
     -webkit-text-fill-color: currentColor;
+  }
+
+  .canopy-text-shimmer-strong > .canopy-shimmer-layers {
+    display: none;
   }
 }
 
@@ -1962,8 +2212,11 @@ body {
 }
 .canopy-text-shimmer-strong[data-canopy-motion-active='false'] {
   color: var(--fg-secondary);
-  background-image: none;
   -webkit-text-fill-color: currentColor;
+}
+.canopy-text-shimmer-strong[data-canopy-motion-active='false']
+  > .canopy-shimmer-layers {
+  display: none;
 }
 
 /* Allow inactive transcript subtrees to skip rendering while interactive rows

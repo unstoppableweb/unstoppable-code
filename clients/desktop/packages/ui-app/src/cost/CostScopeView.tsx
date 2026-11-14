@@ -6,6 +6,7 @@ import type { CostClient, CostNavigator } from '@canopy/app-core';
 import { type CostScopeStore } from '@canopy/app-state/cost';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import {
+  Surface,
   FloatingPickerMenu,
   HeaderActionButton,
   Notice,
@@ -26,8 +27,9 @@ import {
   costBarScale,
   costTotalsSegments,
   formatCostRunStart,
-  formatCostTotal,
+  formatCostTotalIn,
   type CostDimension,
+  useCostCurrency,
 } from '@canopy/ui-shared/components/cost';
 import { ChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useCostScopeStore } from './use-cost-view-store';
@@ -47,6 +49,7 @@ import {
   sortCostRuns,
 } from './cost-scope-model';
 import { Divider } from '@canopy/ui-shared/components';
+import { withCostCoverage } from './cost-coverage';
 
 export interface CostScopeViewProps {
   readonly client: CostClient;
@@ -190,6 +193,7 @@ function CostScopeViewContent({
 }: Omit<CostScopeViewProps, 'client' | 'store'> & {
   readonly store: CostScopeStore;
 }): JSX.Element {
+  const currency = useCostCurrency();
   const { value, status, problem, updatedAt, refresh, load, requestRefresh } =
     store(
       useShallow((state) => ({
@@ -209,10 +213,12 @@ function CostScopeViewContent({
   const currentTime = now ?? Date.now();
 
   return (
-    <div
+    <Surface
+      variant="pane"
+      extent="parent"
       data-testid="cost-scope-view"
       data-dimension={dimension}
-      className="h-full min-h-0 bg-base"
+      className="min-h-0"
     >
       <CostViewFrame
         value={value}
@@ -241,12 +247,17 @@ function CostScopeViewContent({
             : undefined;
 
           return (
-            <div className="flex h-full min-h-0 flex-col gap-4 bg-base">
+            <Surface
+              variant="pane"
+              extent="parent"
+              gap="group"
+              className="min-h-0"
+            >
               <div className="flex flex-col gap-3 px-3 pt-3">
                 <div className="flex items-center gap-2">
                   <span className="min-w-0 flex-1">
                     <CostObservedTotal
-                      amountLabel={formatCostTotal(view.totals)}
+                      amountLabel={formatCostTotalIn(view.totals, currency)}
                       coverageStart={view.coverageStart}
                       testId="cost-total"
                     />
@@ -374,7 +385,10 @@ function CostScopeViewContent({
                           maskName
                           archived={chat.state === 'archived'}
                           running={chat.running && !sealed}
-                          amountLabel={formatCostTotal(chat.totals)}
+                          amountLabel={withCostCoverage(
+                            formatCostTotalIn(chat.totals, currency),
+                            chat.coverageStart,
+                          )}
                           segments={costTotalsSegments(chat.totals, dimension)}
                           scale={costBarScale(chat.totals.usd, scaleMax)}
                           density="panel"
@@ -420,7 +434,7 @@ function CostScopeViewContent({
                             run.startedAt,
                             currentTime,
                           )}
-                          amountLabel={formatCostTotal(run.totals)}
+                          amountLabel={formatCostTotalIn(run.totals, currency)}
                           segments={costTotalsSegments(run.totals, dimension)}
                           scale={costBarScale(run.totals.usd, scaleMax)}
                           density="panel"
@@ -435,7 +449,10 @@ function CostScopeViewContent({
                         <Divider className="mx-2 my-1" />
                         <CostRow
                           name="Not tied to a chat"
-                          amountLabel={formatCostTotal(view.unattached)}
+                          amountLabel={formatCostTotalIn(
+                            view.unattached,
+                            currency,
+                          )}
                           segments={costTotalsSegments(
                             view.unattached,
                             dimension,
@@ -450,11 +467,11 @@ function CostScopeViewContent({
                   </div>
                 </OverlayScrollArea>
               ) : null}
-            </div>
+            </Surface>
           );
         }}
       </CostViewFrame>
-    </div>
+    </Surface>
   );
 }
 

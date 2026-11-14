@@ -898,7 +898,9 @@ export function MemorySyncMergeReview({
       }
     >
       <div className="flex flex-col gap-4">
-        {error !== null && <ErrorBanner error={error} />}
+        {error !== null && (
+          <ErrorBanner errorSource="memory-sync-merge-review" error={error} />
+        )}
         {changedNotice && error === null && (
           <Notice
             intent="neutral"

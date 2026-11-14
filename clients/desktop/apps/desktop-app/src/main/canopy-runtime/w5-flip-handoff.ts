@@ -1,10 +1,6 @@
-import { routeStorageAdmissionToAuthority } from '@canopy/execution-engine/node/lib/storage-admission';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { installDesktopW5FileStore } from '../lib/w5-commit-log-file-store';
-import {
-  isW5DaemonFlipCompiled,
-  W5_FLIP_NAMESPACES,
-} from '../lib/w5-flip-gate';
+import { isW5DaemonFlipCompiled } from '../lib/w5-flip-gate';
 import {
   createW5HandoffStore,
   W5DaemonHandoffError,
@@ -94,7 +90,6 @@ export function startW5FlipHandoff(input: W5FlipHandoffInput): Promise<void> {
       },
     );
   installDesktopW5FileStore(createW5HandoffStore(outcome));
-  routeStorageAdmissionToAuthority(W5_FLIP_NAMESPACES);
   setW5PreEffectAttempts(W5_DAEMON_PRE_EFFECT_ATTEMPTS);
   settled = outcome.then(
     () => undefined,

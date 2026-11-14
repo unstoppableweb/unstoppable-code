@@ -789,6 +789,31 @@ export async function getArchivedContainerChatStorage(
   });
 }
 
+/**
+ * Read-only membership check for a replay: whether the archive's native
+ * storage holds the chat, as a tab or an archived transcript. It reads only
+ * the authority manifest and the committed indexes, through the storage's
+ * lease-free reader, never through the chat state backend, whose load can
+ * resume an interrupted migration and its cleanup. So it writes nothing. An
+ * archive without a v2 manifest (legacy storage, or a migration that never
+ * published) answers false, and callers fail safe.
+ */
+export async function archivedContainerHoldsChatReadOnly(
+  projectId: string,
+  containerId: string,
+  chatId: string,
+): Promise<boolean> {
+  validateId(projectId, 'projectId');
+  validateId(containerId, 'containerId');
+  const store = archivedChatStorage(projectId, containerId);
+  if ((await store.authority()) !== 'v2') return false;
+  const indexes = await store.indexes();
+  return (
+    indexes.live.tabs.some((tab) => tab.id === chatId) ||
+    indexes.archive.archived.some((entry) => entry.tab.id === chatId)
+  );
+}
+
 export async function readArchivedContainerChats(
   projectId: string,
   containerId: string,

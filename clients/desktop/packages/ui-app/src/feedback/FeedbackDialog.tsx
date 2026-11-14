@@ -8,6 +8,7 @@ import {
   type FeedbackReportResult,
 } from '@canopy/protocol/feedback-report';
 import {
+  Surface,
   Button,
   CopyButton,
   DialogFormField,
@@ -210,8 +211,11 @@ export function FeedbackDialog({
             )}
             {successDetail}
           </div>
-          <div
-            className="flex items-center justify-end border-t px-6 py-3"
+          <Surface
+            variant="section"
+            boundary="top"
+            padding="dialog-footer"
+            className="flex items-center justify-end"
             data-testid="feedback-modal-success-footer"
           >
             <Button
@@ -223,7 +227,7 @@ export function FeedbackDialog({
             >
               Done
             </Button>
-          </div>
+          </Surface>
         </>
       ) : (
         <form
@@ -298,6 +302,7 @@ export function FeedbackDialog({
 
             {error !== null && (
               <Notice
+                errorSource="feedback-modal-error"
                 intent="destructive"
                 data-testid="feedback-modal-error"
                 actions={errorActions}

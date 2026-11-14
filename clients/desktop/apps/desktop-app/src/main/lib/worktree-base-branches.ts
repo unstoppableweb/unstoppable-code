@@ -43,11 +43,10 @@ interface WorktreeBaseBranchState {
   localConfig: WorkspaceConfigFile;
 }
 
-function normalizeBranchName(
+function nonemptyBranchName(
   branchName: string | null | undefined,
 ): string | null {
-  const trimmed = branchName?.trim();
-  return trimmed ? trimmed : null;
+  return branchName || null;
 }
 
 function normalizeTrackedRepoBaseBranches(
@@ -58,7 +57,7 @@ function normalizeTrackedRepoBaseBranches(
   for (const [repoId, branchName] of Object.entries(
     trackedRepoBaseBranches ?? {},
   )) {
-    const normalizedBranchName = normalizeBranchName(branchName);
+    const normalizedBranchName = nonemptyBranchName(branchName);
     if (normalizedBranchName) {
       normalized[repoId] = normalizedBranchName;
     }
@@ -89,7 +88,7 @@ async function readTrackedBaseBranchState(
   return {
     localConfig: config,
     isMultiRepo: config.type === 'multi-repo',
-    trackedBaseBranch: normalizeBranchName(worktree?.trackedBaseBranch),
+    trackedBaseBranch: nonemptyBranchName(worktree?.trackedBaseBranch),
     trackedRepoBaseBranches: normalizeTrackedRepoBaseBranches(
       worktree?.trackedRepoBaseBranches,
     ),
@@ -119,7 +118,7 @@ async function resolveConfiguredBaseBranch(
       return state.trackedBaseBranch;
     }
 
-    const remoteDefaultBranch = normalizeBranchName(
+    const remoteDefaultBranch = nonemptyBranchName(
       await resolveFreshDefaultBranch(params.repoPath, {
         allowRemoteLookup: params.allowRemoteLookup,
       }).catch(() => null),
@@ -128,7 +127,7 @@ async function resolveConfiguredBaseBranch(
       return remoteDefaultBranch;
     }
 
-    const currentBranch = normalizeBranchName(
+    const currentBranch = nonemptyBranchName(
       await getCurrentBranch(params.repoPath).catch(() => null),
     );
     return getLocalDefaultBranch(
@@ -155,7 +154,7 @@ async function resolveConfiguredBaseBranch(
     }
   }
 
-  const remoteDefaultBranch = normalizeBranchName(
+  const remoteDefaultBranch = nonemptyBranchName(
     await resolveFreshDefaultBranch(params.repoPath, {
       allowRemoteLookup: params.allowRemoteLookup,
     }).catch(() => null),
@@ -164,7 +163,7 @@ async function resolveConfiguredBaseBranch(
     return remoteDefaultBranch;
   }
 
-  const currentBranch = normalizeBranchName(
+  const currentBranch = nonemptyBranchName(
     await getCurrentBranch(params.repoPath).catch(() => null),
   );
   return getLocalDefaultBranch(
@@ -183,14 +182,14 @@ export async function resolveRepoDefaultBranch(
   repoPath: string,
   options: { allowRemoteLookup?: boolean } = {},
 ): Promise<string | null> {
-  const remoteDefaultBranch = normalizeBranchName(
+  const remoteDefaultBranch = nonemptyBranchName(
     await resolveFreshDefaultBranch(repoPath, options).catch(() => null),
   );
   if (remoteDefaultBranch) {
     return remoteDefaultBranch;
   }
 
-  return normalizeBranchName(
+  return nonemptyBranchName(
     await getLocalDefaultBranch(repoPath).catch(() => null),
   );
 }

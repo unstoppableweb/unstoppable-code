@@ -12,11 +12,9 @@ import {
   AI_CREDITS_REOPEN_BILLING_LABEL,
   CreditsRecoveryNotice,
   DISPATCH_DEAD_END_COPY,
-  MESSAGE_QUEUED_TITLE,
   NoticeButton,
   POLICY_BILLING_DEAD_END_COPY,
   POLICY_ONLY_DEAD_END_COPY,
-  QUEUED_MESSAGE_RETAINED_COPY,
   connectProviderLabel,
   creditsOnlyDeadEndCopy,
   failedTurnCopy,
@@ -50,6 +48,7 @@ import {
   chatBannerKey,
   useNoBillingSourceSignal,
   type ChatBannerTarget,
+  type NoBillingSourceSignal,
 } from '@/stores/aiCreditsBannerStore';
 import {
   trackCreditsRecoveryClick,
@@ -99,6 +98,8 @@ export interface NoBillingSourceBannerProps {
    * which simply leaves the pre-flight (derived) path as the only trigger.
    */
   target?: ChatBannerTarget | null;
+  /** Committed refusal for canonical chats, including an explicit absence. */
+  persistedRefusal?: NoBillingSourceSignal | null;
   /**
    * True when the selected model can ONLY run through the gateway. A native
    * provider login cannot run that model, so the sign-in button would be a dead
@@ -201,6 +202,7 @@ export function NoBillingSourceBanner({
   availability,
   orgLapseVisible = false,
   target = null,
+  persistedRefusal,
   gatewayOnlyModel = false,
   effectiveBillingFramework = null,
   noDispatchableModel = null,
@@ -226,7 +228,11 @@ export function NoBillingSourceBanner({
     readonly state: GetAiCreditsHandoffState;
     readonly chatKey: string | null;
   } | null>(null);
-  const runtimeSignal = useNoBillingSourceSignal(target);
+  const liveRefusal = useNoBillingSourceSignal(
+    persistedRefusal === undefined ? target : null,
+  );
+  const runtimeSignal =
+    persistedRefusal === undefined ? liveRefusal : persistedRefusal;
   // Coverage is a question about THIS chat's owner (CAN-3463).
   const creditsScope = useChatTargetAiCreditsScope(target);
   // The browser checkout pending in this chat's purchase scope, from this
@@ -627,25 +633,6 @@ export function NoBillingSourceBanner({
 
   const actions = hasActions ? (
     <>
-      {showSignIn && (
-        <NoticeButton
-          // Connect leads; mid-purchase it steps back so Check again leads.
-          variant={visibleHandoff !== null ? 'secondary' : 'primary'}
-          onClick={(): void => {
-            trackCreditsRecoveryClick({
-              surface: 'chat_banner',
-              action: 'provider_sign_in',
-            });
-            setLoginOpen(true);
-          }}
-          data-testid="chat-input-no-billing-source-sign-in"
-        >
-          {/* Mid-purchase, connecting is the way out if credits are slow. */}
-          {visibleHandoff !== null
-            ? `${connectProviderLabel(providerLabel)} instead`
-            : connectProviderLabel(providerLabel)}
-        </NoticeButton>
-      )}
       {showReopenBilling && (
         <NoticeButton
           variant="secondary"
@@ -840,11 +827,27 @@ export function NoBillingSourceBanner({
           visibleHandoff.feedback !== 'check-failed'
             ? { icon: <TimeslotIcon size={16} aria-hidden="true" /> }
             : {})}
-          title={
-            queuedCreditHeld && !policyOnlyDeadEnd
-              ? MESSAGE_QUEUED_TITLE
-              : copy.title
-          }
+          {...(showSignIn
+            ? {
+                connectAction: {
+                  onConnect: (): void => {
+                    trackCreditsRecoveryClick({
+                      surface: 'chat_banner',
+                      action: 'provider_sign_in',
+                    });
+                    setLoginOpen(true);
+                  },
+                  label:
+                    visibleHandoff !== null
+                      ? `${connectProviderLabel(providerLabel)} instead`
+                      : connectProviderLabel(providerLabel),
+                  variant: visibleHandoff !== null ? 'secondary' : 'primary',
+                  testId: 'chat-input-no-billing-source-sign-in',
+                },
+              }
+            : {})}
+          queued={queuedCreditHeld && !policyOnlyDeadEnd}
+          title={copy.title}
           data-testid="chat-input-no-billing-source-banner"
           contactAdmin={showContactAdmin}
           contactAdminTestId="chat-input-no-billing-source-contact-admin"
@@ -858,9 +861,7 @@ export function NoBillingSourceBanner({
               }
             : {})}
         >
-          {queuedCreditHeld && !policyOnlyDeadEnd
-            ? QUEUED_MESSAGE_RETAINED_COPY
-            : copy.message}
+          {copy.message}
         </CreditsRecoveryNotice>
       ) : null}
       {/* Rendered as a SIBLING of the `role="status"` element, not inside it.

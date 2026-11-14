@@ -1,5 +1,4 @@
 import { useLayoutEffect, useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
 import {
   getModelDisplayName,
   type ArchivedChatSummary,
@@ -37,16 +36,6 @@ export interface ArchivedChatsPopoverProps {
    */
   align?: 'left' | 'right';
   /**
-   * When set, the card renders on the anchor's document body in fixed
-   * position below the anchor (above it when the window has more room
-   * there), instead of absolutely inside its parent. The
-   * tab-strip control (early access) uses it: its panel leaf clips overflow,
-   * so a short or collapsed group would cut an in-place card off. React
-   * still treats the portaled card as inside the control, so pointer-leave
-   * dismissal keeps working.
-   */
-  anchor?: HTMLElement | null;
-  /**
    * `card` draws the shared `ArchivedChatsCard` (the Archived chats card
    * Labs experiment); `classic` (default) keeps today's popover.
    */
@@ -82,15 +71,6 @@ function toCardItem(
   };
 }
 
-interface FixedPosition {
-  top: number;
-  left: number;
-  /** Opens above the anchor: too little room below, more above. */
-  above: boolean;
-  /** Caps the card to the window space on its side; it scrolls past it. */
-  maxHeight: number;
-}
-
 /**
  * Hover popover showing the 5 most recently archived chats for the worktree.
  * When more than 5 are archived, a trailing "N more…" row opens the full modal.
@@ -105,7 +85,6 @@ export function ArchivedChatsPopover({
   summarizingIds,
   restoringIds,
   align = 'right',
-  anchor = null,
   look = 'classic',
 }: ArchivedChatsPopoverProps): JSX.Element {
   const visible = summaries.slice(0, POPOVER_LIMIT);
@@ -113,9 +92,6 @@ export function ArchivedChatsPopover({
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [shiftX, setShiftX] = useState(0);
   const [maxWidth, setMaxWidth] = useState<number | null>(null);
-  const [fixedPosition, setFixedPosition] = useState<FixedPosition | null>(
-    null,
-  );
 
   // Measure after layout, then keep the card inside whatever would clip it.
   // The anchor sits wherever the header cluster lands, so a narrow content
@@ -130,44 +106,6 @@ export function ArchivedChatsPopover({
     if (view === null) return undefined;
 
     const apply = (): void => {
-      if (anchor !== null) {
-        // Fixed on the body: only the window clips the card.
-        const boundary = { left: 0, right: view.innerWidth };
-        const available =
-          boundary.right - boundary.left - ANCHORED_POPOVER_PADDING * 2;
-        setMaxWidth(available > 0 ? available : null);
-        const anchorRect = anchor.getBoundingClientRect();
-        const width = Math.min(
-          card.offsetWidth,
-          available > 0 ? available : card.offsetWidth,
-        );
-        const left =
-          align === 'left' ? anchorRect.left : anchorRect.right - width;
-        // `scrollHeight` is the natural height even while a previous
-        // `maxHeight` caps the card, so re-running stays idempotent.
-        const height = card.scrollHeight;
-        const spaceBelow =
-          view.innerHeight - anchorRect.bottom - ANCHORED_POPOVER_PADDING;
-        const spaceAbove = anchorRect.top - ANCHORED_POPOVER_PADDING;
-        const above = height > spaceBelow && spaceAbove > spaceBelow;
-        const maxHeight = Math.max(0, above ? spaceAbove : spaceBelow);
-        setFixedPosition({
-          top: above
-            ? anchorRect.top - Math.min(height, maxHeight)
-            : anchorRect.bottom,
-          left,
-          above,
-          maxHeight,
-        });
-        setShiftX(
-          computePopoverViewportShift({
-            left,
-            right: left + width,
-            boundary,
-          }),
-        );
-        return;
-      }
       const boundary = findPopoverBoundary(card);
       const available =
         boundary.right - boundary.left - ANCHORED_POPOVER_PADDING * 2;
@@ -188,22 +126,12 @@ export function ArchivedChatsPopover({
       view.removeEventListener('resize', apply);
     };
     // Re-measure when the row count changes the card's height/width.
-  }, [visible.length, overflow, anchor, align]);
+  }, [visible.length, overflow, align]);
 
-  // Both placements sit on the dropdown layer: the native Browser view only
-  // yields to the design system's floating layers, so a card on a plain
-  // z-index would be cut off where a Browser pane below the header starts.
-  const positionClassName =
-    anchor === null
-      ? `absolute top-full z-dropdown pt-1 ${align === 'left' ? 'left-0' : 'right-0'}`
-      : `fixed z-dropdown overflow-y-auto ${
-          fixedPosition?.above === true ? 'pb-1' : 'pt-1'
-        }`;
-
-  const card = (
-    // Outer element spans the full anchored region. The `pt-1` (`pb-1` when
-    // a fixed card opens above) is padding, not
-    // margin, so the 4px offset below the archive icon stays part of this
+  // The native Browser view yields to the design system's dropdown layer.
+  const positionClassName = `absolute top-full z-dropdown pt-1 ${align === 'left' ? 'left-0' : 'right-0'}`;
+  return (
+    // The 4px padding below the archive icon stays part of this
     // element's hover area — the cursor can cross the gap from the icon to the
     // card without leaving the wrapper's pointer region and dismissing the
     // popover.
@@ -216,15 +144,6 @@ export function ArchivedChatsPopover({
       // enough to fit; without it, no shift could reveal both edges.
       className={`electron-no-drag ${positionClassName} w-80`}
       style={{
-        ...(anchor === null
-          ? {}
-          : {
-              top: `${fixedPosition?.top ?? 0}px`,
-              left: `${fixedPosition?.left ?? 0}px`,
-              ...(fixedPosition === null
-                ? {}
-                : { maxHeight: `${fixedPosition.maxHeight}px` }),
-            }),
         ...(shiftX === 0 ? {} : { transform: `translateX(${shiftX}px)` }),
         ...(maxWidth === null ? {} : { maxWidth: `${maxWidth}px` }),
       }}
@@ -269,6 +188,4 @@ export function ArchivedChatsPopover({
       )}
     </div>
   );
-
-  return anchor === null ? card : createPortal(card, anchor.ownerDocument.body);
 }

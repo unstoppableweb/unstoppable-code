@@ -282,7 +282,11 @@ function LoadMoreFooter({
 }): JSX.Element {
   return (
     <div className="flex flex-col items-start gap-1 px-2 pb-2">
-      <ErrorBanner className="self-stretch" error={loadMoreError} />
+      <ErrorBanner
+        errorSource="load-more-footer"
+        className="self-stretch"
+        error={loadMoreError}
+      />
       {loadingMore ? (
         <span className="flex items-center gap-2 py-1.5 text-xs fg-secondary">
           <LoadingSpinner tone="secondary" decorative />

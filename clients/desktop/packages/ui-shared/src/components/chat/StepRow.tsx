@@ -12,12 +12,9 @@ import {
   type ReactNode,
 } from 'react';
 import { ChevronRightIcon } from '../../icons';
-import {
-  StepBadgeLine,
-  StepTenseProvider,
-  useStepBadgeRows,
-} from '../chat-look';
+import { StepBadgeLine, StepTenseProvider, useStepBadges } from '../chat-look';
 import { revealDisclosure } from './reveal-disclosure';
+import { ShimmerCopies } from './ShimmerCopies';
 
 /**
  * The clean chat look's one row for every agent step: tool calls, step
@@ -88,7 +85,7 @@ export const STEP_ROW_DETAIL_INK_CLASS = 'fg-tertiary';
 const STRETCHED_TOGGLE_CLASS =
   "focus-ring-stretched focus-ring-inset before:absolute before:inset-0 before:rounded-sm before:content-['']";
 
-/** One shimmer sweep, matching `canopy-text-shimmer-sweep` in the tokens CSS. */
+/** One shimmer sweep, matching `canopy-text-shimmer-strong` in the tokens CSS. */
 const SHIMMER_CYCLE_MS = 2400;
 
 export type ShimmerStyle = CSSProperties & {
@@ -194,22 +191,11 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
     const motionRef = useContinuousMotion<HTMLSpanElement>(running);
     // The row of a tool call card, its words and
     // code badges on one line where only a badge's text shrinks.
-    const badgeRow = useStepBadgeRows();
-    const badges = step && badgeRow;
+
+    const badges = useStepBadges() && step;
     const statusLine = badges && prioritizeDetail && detail != null;
-    const words = (
-      <span
-        className={`${
-          badges
-            ? statusLine
-              ? BADGE_STATUS_LINE_CLASS
-              : BADGE_LINE_CLASS
-            : 'min-w-0 truncate'
-        }${running ? ' canopy-text-shimmer-strong' : ''}`}
-        ref={motionRef}
-        style={shimmerStyle}
-        data-step-row-words=""
-      >
+    const wordsContent = (
+      <>
         {badges ? (
           <StepBadgeLine>
             {statusLine ? (
@@ -232,6 +218,23 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
             {detail}
           </span>
         )}
+      </>
+    );
+    const words = (
+      <span
+        className={`${
+          badges
+            ? statusLine
+              ? BADGE_STATUS_LINE_CLASS
+              : BADGE_LINE_CLASS
+            : 'min-w-0 truncate'
+        }${running ? ' canopy-text-shimmer-strong' : ''}`}
+        ref={motionRef}
+        style={shimmerStyle}
+        data-step-row-words=""
+      >
+        {wordsContent}
+        {running && <ShimmerCopies>{wordsContent}</ShimmerCopies>}
       </span>
     );
     const content = (

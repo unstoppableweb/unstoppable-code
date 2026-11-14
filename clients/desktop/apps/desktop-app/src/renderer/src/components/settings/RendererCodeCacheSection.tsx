@@ -111,7 +111,11 @@ export function RendererCodeCacheSection(): JSX.Element {
     >
       {saveError && (
         <div data-testid="renderer-code-cache-error">
-          <ErrorBanner className="" error={saveError} />
+          <ErrorBanner
+            errorSource="renderer-code-cache-section-save"
+            className=""
+            error={saveError}
+          />
         </div>
       )}
       {fellBack && !enabled && (

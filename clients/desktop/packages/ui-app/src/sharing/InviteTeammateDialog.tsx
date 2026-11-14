@@ -370,6 +370,7 @@ export function InviteTeammateDialog({
           )}
           {!membersLoading && membersError && (
             <Notice
+              errorSource="invite-teammate-dialog-members"
               intent="destructive"
               actions={
                 <NoticeButton
@@ -434,6 +435,7 @@ export function InviteTeammateDialog({
             )}
             {!recipientsLoading && recipientsError && (
               <Notice
+                errorSource="invite-teammate-dialog-recipients"
                 intent="destructive"
                 actions={
                   <NoticeButton
@@ -492,7 +494,11 @@ export function InviteTeammateDialog({
           </div>
         </div>
 
-        <ErrorBanner className="" error={mutationError} />
+        <ErrorBanner
+          errorSource="invite-teammate-dialog-mutation"
+          className=""
+          error={mutationError}
+        />
       </div>
 
       <div className="flex justify-end gap-2 border-t px-6 py-3">

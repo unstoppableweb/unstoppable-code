@@ -71,7 +71,11 @@ import {
 import { workspaceCreationIds } from './worktree-record-decision-apply';
 import type { WorkspaceCreationDecision } from './worktree-record-decisions';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
-import { slugify, uniqueId } from './string-utils';
+import { slugify } from './string-utils';
+import {
+  allocateSafeWorkspaceId,
+  safeWorkspaceIdBase,
+} from '@canopy/core-runtime/node/identifiers';
 import { pathExists } from './fs-utils';
 import { PROJECT_W5_STORAGE, withStorageAdmission } from './w5-storage';
 import { isPathInside } from './path-safety';
@@ -81,7 +85,10 @@ import {
   writeCanopyJson,
 } from './canopy-json';
 import { remoteUrlsMatch } from './repo-url-matcher';
-import { readWorkspaceConfig } from './workspace-persistence';
+import {
+  readWorkspaceConfig,
+  WorkspaceConfigUnreadableError,
+} from './workspace-persistence';
 import { prepareNewWorkspaceSourceRepo } from './workspace-source-control';
 import { refreshOrganizationOwner } from './workspace-ownership';
 import { ensureAgentsMdSymlink } from './instruction-files';
@@ -370,10 +377,7 @@ export function buildWorkspaceId(
   existingItems: ReadonlyArray<Pick<SidebarItem, 'id'>>,
 ): string {
   const existingIds = new Set(existingItems.map((item) => item.id));
-  const workspaceId = uniqueId(
-    slugify(workspaceName) || 'workspace',
-    existingIds,
-  );
+  const workspaceId = allocateSafeWorkspaceId(workspaceName, existingIds);
   validateId(workspaceId, 'project id');
   return workspaceId;
 }
@@ -494,14 +498,17 @@ async function stageAddedWorkspace(
   previousItems: SidebarItem[],
   preserveWorkspaceIds: string[],
   scoped: boolean,
-): Promise<void> {
-  await applyWorkspaceAdditionDecision({
+): Promise<SidebarItem> {
+  const written = await applyWorkspaceAdditionDecision({
     kind: 'workspace.add',
     item: persisted,
     scope: scoped
       ? { kind: 'workspace' }
       : { kind: 'sidebar', previousItems, preserveWorkspaceIds },
   });
+  const added = written.items.find((item) => item.id === persisted.id);
+  if (!added) throw new WorkspaceConfigUnreadableError();
+  return added;
 }
 
 async function persistAddedWorkspace(
@@ -511,7 +518,7 @@ async function persistAddedWorkspace(
   return serializeWorkspaceMutation(async () => {
     const sidebarItems = await readAllSidebarItems();
     const persisted = { ...item, order: sidebarItems.items.length };
-    await commitW5BoundaryStep(
+    return commitW5BoundaryStep(
       commit,
       commit
         ? w5CompositionLocks({
@@ -528,7 +535,6 @@ async function persistAddedWorkspace(
           !!commit,
         ),
     );
-    return persisted;
   });
 }
 
@@ -1589,7 +1595,7 @@ async function createAdmittedSingleRepoWorkspace(
         normalizedName,
         await ensureUniqueDestination(
           getDefaultReposDir(),
-          slugify(normalizedName) || 'workspace',
+          safeWorkspaceIdBase(normalizedName),
         ),
         items.length,
       ),

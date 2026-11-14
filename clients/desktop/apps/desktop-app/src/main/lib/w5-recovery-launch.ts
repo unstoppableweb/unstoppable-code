@@ -14,7 +14,7 @@ import {
   type W5MaintenanceDecisionResult,
   type W5MaintenanceRequest,
   type W5MaintenanceResult,
-} from './w5-maintenance';
+} from '@canopy/core-runtime/node/w5/maintenance-types';
 import {
   readW5MaintenanceDecisions,
   W5_RESOLVABLE_RESERVATION_OPERATIONS,

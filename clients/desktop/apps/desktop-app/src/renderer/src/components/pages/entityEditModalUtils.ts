@@ -1,8 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react';
+import { extractIpcErrorMessage } from '../../lib/errors';
 import type { EntityEditModalFooterProps } from './EntityEditModalFooter';
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return extractIpcErrorMessage(error);
 }
 
 interface CancellableLoadOptions {

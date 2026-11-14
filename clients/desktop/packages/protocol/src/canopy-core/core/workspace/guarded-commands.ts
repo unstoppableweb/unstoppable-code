@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isSafePortableRelativePath } from '../../../safe-relative-path';
 import { CanopyRequestMetadataSchema } from '../../common';
+import { CoreWorkspaceCloudSettingsSchema } from './reads';
 import {
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
@@ -183,7 +184,14 @@ export const CoreWorkspacePluginsUpdateParamsSchema = z.strictObject({
   change: z.union([
     z.strictObject({
       kind: z.literal('setDefaults'),
-      defaultPluginSelections: CoreWorkspacePluginSelectionsSchema,
+      // Null clears the defaults, and the defaults revision guards the write
+      // as REST's PATCH does (CAN-6114); desktop refuses both.
+      defaultPluginSelections: CoreWorkspacePluginSelectionsSchema.nullable(),
+      expectedDefaultPluginSelectionsRevision: z
+        .number()
+        .int()
+        .min(0)
+        .optional(),
     }),
     z.strictObject({
       kind: z.literal('selectRecommended'),
@@ -216,6 +224,8 @@ export const CoreWorkspacePluginsUpdateResultSchema = openResult({
   written: z.boolean(),
   defaultPluginSelections: CoreWorkspacePluginSelectionsSchema.optional(),
   recommendedPluginOptOutKeys: z.array(z.string()).optional(),
+  // A cloud save's retried host-port sync failed (CAN-6114); desktop never sets it.
+  warnings: z.array(z.string()).optional(),
 });
 export type CoreWorkspacePluginsUpdateResult = z.output<
   typeof CoreWorkspacePluginsUpdateResultSchema
@@ -307,14 +317,24 @@ const startPagePath = z
   )
   .refine(isSafePortableRelativePath, 'Not a safe relative path');
 
+/**
+ * `core.workspace.cowork.update`'s minor schema revision (CAN-6093): a caller
+ * that sends it may save a cloud project's Trash retention
+ * (`settings.deletionRetentionDays`) and gets the stored settings back as
+ * `cloudSettings`. Only the web core advertises it.
+ */
+export const CORE_WORKSPACE_COWORK_UPDATE_SCHEMA_REVISION = 2;
+
 export const CoreWorkspaceCoworkUpdateParamsSchema = z.strictObject({
   workspaceId: slug,
   expectedRevision: revision.optional(),
+  revision: z.literal(CORE_WORKSPACE_COWORK_UPDATE_SCHEMA_REVISION).optional(),
   // A28′(a): name, color and Always show are core.workspace.update fields;
   // explicit default plugins are core.workspace.plugins.update's.
   settings: z.strictObject({
     description: z.string().optional(),
-    defaultModel: z.string().optional(),
+    // Null clears the default (CAN-6114); desktop refuses it.
+    defaultModel: z.string().nullable().optional(),
     defaultPresetId: z.string().optional(),
     presets: z
       .array(
@@ -327,6 +347,17 @@ export const CoreWorkspaceCoworkUpdateParamsSchema = z.strictObject({
       .optional(),
     archiveRetentionDays: days(0).optional(),
     autoArchiveDays: days(1).optional(),
+    /**
+     * Revision 2, the web core: how long a cloud project's deleted (Trash)
+     * items are kept, REST's `deletionRetentionDays`. Not `archiveRetentionDays`,
+     * the desktop's archive expiry.
+     */
+    deletionRetentionDays: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_RETENTION_DAYS)
+      .optional(),
     starterPrompts: starterPrompts.optional(),
     startPage: z
       .union([
@@ -358,6 +389,14 @@ export type CoreWorkspaceCoworkUpdateParams = z.output<
 
 export const CoreWorkspaceCoworkUpdateResultSchema = openResult({
   workspaceId: slug,
+  // The save landed but a best-effort side effect did not, such as the
+  // web core retrying a failed host-port sync (CAN-6114). Absent otherwise.
+  warnings: z.array(z.string()).optional(),
+  /**
+   * Only on revision 2, from the web core: the stored settings, what the
+   * REST PATCH answers as its `workspace`.
+   */
+  cloudSettings: CoreWorkspaceCloudSettingsSchema.optional(),
 });
 export type CoreWorkspaceCoworkUpdateResult = z.output<
   typeof CoreWorkspaceCoworkUpdateResultSchema

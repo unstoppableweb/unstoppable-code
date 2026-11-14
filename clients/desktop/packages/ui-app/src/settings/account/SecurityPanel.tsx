@@ -203,6 +203,7 @@ export function SecurityPanel({
       )}
 
       <ErrorBanner
+        errorSource="security-panel"
         className=""
         error={status === 'error' ? error?.copy : null}
         details={error?.details}
@@ -370,7 +371,11 @@ export function AuthSourceRow({
 
           {error && (
             <div>
-              <ErrorBanner className="" error={error.copy} />
+              <ErrorBanner
+                errorSource="auth-source-row"
+                className=""
+                error={error.copy}
+              />
             </div>
           )}
         </div>
@@ -546,7 +551,12 @@ export function PasswordSection({
         )}
       </FormField>
 
-      <ErrorBanner className="" error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="password-section"
+        className=""
+        error={error?.copy}
+        details={error?.details}
+      />
 
       <div className="flex items-center gap-2">
         <Button

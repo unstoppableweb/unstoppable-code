@@ -32,6 +32,7 @@ import {
 } from './locate';
 import {
   CoreChatArchiveParamsSchema,
+  CoreChatCapabilityStateSchema,
   CoreChatCreateParamsSchema,
   CoreChatDeleteParamsSchema,
   CoreChatForkErrorSchema,
@@ -72,6 +73,18 @@ import {
   CoreChatSendReceiptErrorSchema,
 } from './send-receipt';
 import { CORE_CHAT_TRANSFER_QUERY_DEFINITIONS } from './transfer';
+import { z } from 'zod';
+
+/**
+ * `core.chat.update`'s result. A `pluginSelections` patch on the web core
+ * also answers the capability state it left and whether it staged, with the
+ * fields `PUT /cloud/chats/:id/capabilities` answers (CAN-6092).
+ */
+const CoreChatUpdateResultSchema = CoreChatLifecycleResultSchema.extend({
+  capabilities: CoreChatCapabilityStateSchema.extend({
+    outcome: z.enum(['staged', 'reverted', 'unchanged']),
+  }).optional(),
+});
 
 export const CORE_CHAT_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('core', {
@@ -92,7 +105,7 @@ export const CORE_CHAT_INSTRUCTION_DEFINITIONS =
       version: 1,
       placement: 'core-only',
       params: CoreChatUpdateParamsSchema,
-      result: CoreChatLifecycleResultSchema,
+      result: CoreChatUpdateResultSchema,
       error: CoreChatLifecycleErrorSchema,
       idempotency: 'keyed',
       requiredGrants: ['core.chat.write'],

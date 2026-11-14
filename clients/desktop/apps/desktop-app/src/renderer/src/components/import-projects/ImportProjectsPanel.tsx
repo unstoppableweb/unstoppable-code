@@ -1,3 +1,4 @@
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   useCallback,
   useEffect,
@@ -17,17 +18,23 @@ import type {
   ExternalProjectProvider,
 } from '@canopy/desktop-shared/types';
 import {
+  Badge,
   Stack,
   Button,
   Checkbox,
   ChoiceField,
+  Disclosure,
   ErrorBanner,
   ProgressBar,
   StatusPill,
   SourceBranchCommitHint,
   Surface,
+  Tooltip,
 } from '@canopy/ui-shared/components';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import {
+  POSTHOG_REPLAY_BLOCK_CLASS,
+  POSTHOG_REPLAY_MASK_CLASS,
+} from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { brandText } from '@/lib/brand';
 import { extractIpcErrorMessage } from '@/lib/errors';
@@ -46,10 +53,26 @@ import {
 } from '@/lib/projectImportTelemetry';
 import type { ImportProjectsSource } from '@/stores/importProjectsModalStore';
 import {
+  chatCountLabel,
+  chatTierCounts,
   CODE_PROJECT_LABEL,
   COWORK_PROJECT_LABEL,
+  detectedSources,
+  HISTORY_ONLY,
+  HISTORY_ONLY_EXPLANATION,
+  HISTORY_ONLY_TAG,
   IMPORT_SAFETY_NOTE,
+  IMPORT_SOURCE_ORDER,
+  importChatsLabel,
+  importSourcesLabel,
+  importSourcesList,
+  listedChats,
+  sourceData,
+  sourceProjects,
+  tierNote,
 } from './importProjectsCopy';
+import { ImportLocation } from './ImportLocation';
+import { ImportSourceLogos } from './ImportSourceLogos';
 import {
   bulkSelection,
   CAPPED_SCAN_NOTE,
@@ -67,9 +90,9 @@ import {
 } from './pickedFolders';
 
 /**
- * Shared body of the bulk Claude/Codex project import flow (CAN-2439). The
- * app-wide modal and the onboarding wizard step both render this panel; the
- * host only decides the chrome around it.
+ * Shared body of the bulk project import flow (CAN-2439): Claude, Codex,
+ * T3 Code, and OpenCode. The app-wide modal and the onboarding wizard step
+ * both render this panel; the host only decides the chrome around it.
  *
  * Phases: `scanning` → `choose` → `importing` → `results`, with `error` for a
  * failed scan. The flow never blocks the user: the choose, error, and results
@@ -101,10 +124,6 @@ interface SelectionState {
   selected: Set<string>;
   chats: Set<string>;
   explicitlySelected: Set<string>;
-}
-
-function providerName(provider: ExternalProjectProvider): string {
-  return provider === 'claude' ? 'Claude' : 'Codex';
 }
 
 function isEligible(candidate: ExternalProjectCandidate): boolean {
@@ -147,32 +166,6 @@ function formatRelative(iso: string | null): string | null {
   return months === 1 ? 'a month ago' : `${months} months ago`;
 }
 
-function chatCountLabel(count: number): string {
-  return count === 1 ? '1 chat' : `${count} chats`;
-}
-
-const MAX_LISTED_CHAT_TITLES = 3;
-
-/**
- * Newest chat titles for a row, so two folders with the same or a generic
- * name can be told apart by what was discussed in them (CAN-3076).
- */
-function recentChatTitles(candidate: ExternalProjectCandidate): string | null {
-  const seen = new Set<string>();
-  const titles: string[] = [];
-  for (const session of candidate.sessions) {
-    const title = session.title?.trim();
-    if (!title || seen.has(title)) continue;
-    seen.add(title);
-    titles.push(title);
-    if (titles.length === MAX_LISTED_CHAT_TITLES) break;
-  }
-  if (titles.length === 0) return null;
-  const more = candidate.sessionCount - titles.length;
-  const listed = titles.join(' · ');
-  return more > 0 ? `${listed} · ${more} more` : listed;
-}
-
 function statusPill(candidate: ExternalProjectCandidate): JSX.Element | null {
   if (candidate.status === 'available') return null;
   const label =
@@ -209,7 +202,7 @@ function resultDetail(result: ExternalProjectImportItemResult): string | null {
   if (chatsTotal > 0) {
     parts.push(
       result.chatsReadOnly > 0
-        ? `${chatCountLabel(chatsTotal)} imported, ${result.chatsReadOnly} read-only`
+        ? `${chatCountLabel(chatsTotal)} imported, ${result.chatsReadOnly} ${HISTORY_ONLY}`
         : `${chatCountLabel(chatsTotal)} imported`,
     );
   }
@@ -246,6 +239,11 @@ export function ImportProjectsPanel({
   const [pluginsAdded, setPluginsAdded] = useState(false);
   const [pluginsBusy, setPluginsBusy] = useState(false);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
+  // The tools found on this computer, named while the scan runs; null until
+  // the presence check answers (or when it can't).
+  const [present, setPresent] = useState<ExternalProjectProvider[] | null>(
+    null,
+  );
   const mountedRef = useRef(true);
   const scanRequestRef = useRef(0);
   const acceptedCandidatesRef = useRef<ExternalProjectCandidate[] | null>(null);
@@ -340,6 +338,21 @@ export function ImportProjectsPanel({
     void runScan([]);
     // Initial scan only; rescans are user-triggered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.api.externalProjects
+      .readProviderPresence()
+      .then((presence) => {
+        if (!cancelled) setPresent(detectedSources(presence.providers));
+      })
+      .catch((error: unknown): void => {
+        reportClientAppError(error);
+      });
+    return (): void => {
+      cancelled = true;
+    };
   }, []);
 
   // Subscribed for the panel's lifetime, not just the importing phase: the
@@ -582,6 +595,16 @@ export function ImportProjectsPanel({
 
   const nothingToImport = phase === 'choose' && eligible.length === 0;
   const detectedPlugins = scan?.detectedPlugins ?? [];
+  // What this opening searches: the host's provider filter, else every tool.
+  const searched = providers ?? IMPORT_SOURCE_ORDER;
+  const searchedPresent = (present ?? []).filter((provider) =>
+    searched.includes(provider),
+  );
+  const found = scan
+    ? detectedSources(scan.providersDetected).filter((provider) =>
+        searched.includes(provider),
+      )
+    : [];
   const wrapperClass = embedded ? 'flex flex-col gap-3' : 'flex flex-col gap-4';
 
   if (phase === 'scanning') {
@@ -591,8 +614,12 @@ export function ImportProjectsPanel({
         data-testid="import-projects-scanning"
       >
         <LoadingSpinner sizePx={20} className="mx-auto" />
-        <p className="text-s fg-secondary" role="status">
-          Looking for Claude and Codex projects…
+        <p
+          className="text-s fg-secondary"
+          role="status"
+          data-testid="import-projects-scanning-label"
+        >
+          Looking for {sourceProjects(importSourcesLabel(searchedPresent))}…
         </p>
       </div>
     );
@@ -602,6 +629,7 @@ export function ImportProjectsPanel({
     return (
       <div className={wrapperClass} data-testid="import-projects-error">
         <ErrorBanner
+          errorSource="import-projects-panel"
           className=""
           error={error ?? 'Projects could not be scanned.'}
         />
@@ -671,6 +699,7 @@ export function ImportProjectsPanel({
           {failed.length > 0 && ` ${failed.length} could not be added.`}
         </p>
         <ErrorBanner
+          errorSource="import-projects-follow-through-error"
           className=""
           error={error}
           testId="import-projects-follow-through-error"
@@ -692,7 +721,9 @@ export function ImportProjectsPanel({
               >
                 <div className="px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate text-s font-medium fg-primary">
+                    <span
+                      className={`min-w-0 truncate text-s font-medium fg-primary ${POSTHOG_REPLAY_MASK_CLASS}`}
+                    >
                       {result.displayName}
                     </span>
                     <span
@@ -735,8 +766,11 @@ export function ImportProjectsPanel({
             <div className="flex flex-col gap-2 px-3 py-2">
               <p className="text-s fg-primary">
                 {detectedPlugins.length === 1
-                  ? `1 plugin from ${detectedPlugins[0]?.providers.map(providerName).join(' and ')} is not on your plugin list yet.`
-                  : `${detectedPlugins.length} plugins installed in Claude or Codex are not on your plugin list yet.`}
+                  ? `1 plugin from ${importSourcesList(detectedPlugins[0]?.providers ?? [], 'and')} is not on your plugin list yet.`
+                  : `${detectedPlugins.length} plugins installed in ${importSourcesList(
+                      detectedPlugins.flatMap((plugin) => plugin.providers),
+                      'or',
+                    )} are not on your plugin list yet.`}
               </p>
               <p className="mt-0.5 text-xs fg-secondary">
                 Adding them keeps your preferred plugins in one place. Plugins
@@ -767,6 +801,7 @@ export function ImportProjectsPanel({
                 </Button>
               </div>
               <ErrorBanner
+                errorSource="import-projects-plugins-error"
                 className=""
                 error={pluginsError}
                 testId="import-projects-plugins-error"
@@ -817,16 +852,15 @@ export function ImportProjectsPanel({
         <Stack gap="inline" data-testid="import-projects-empty">
           <p className="text-s fg-primary">
             {candidates.length === 0
-              ? scan &&
-                !scan.providersDetected.claude &&
-                !scan.providersDetected.codex
-                ? 'No Claude or Codex data found on this computer.'
-                : 'No Claude or Codex projects found on this computer.'
+              ? found.length === 0
+                ? // Nothing found: names what was searched for.
+                  `No ${sourceData(importSourcesLabel(searched))} found on this computer.`
+                : `No ${sourceProjects(importSourcesLabel(found))} found on this computer.`
               : `Everything found is already in ${brandText.appName}.`}
           </p>
           <p className="text-xs fg-secondary">
-            Choose a folder to add it as a project, or come back after using
-            Claude or Codex.
+            Choose a folder to add it as a project, or come back after using{' '}
+            {importSourcesList(searched, 'or')}.
           </p>
         </Stack>
       ) : (
@@ -896,7 +930,10 @@ export function ImportProjectsPanel({
             const eligibleRow = isEligible(candidate);
             const checked = selection.selected.has(candidate.id);
             const relative = formatRelative(candidate.lastActivityAt);
-            const chatTitles = recentChatTitles(candidate);
+            const chats = listedChats(candidate);
+            const tierCounts = chatTierCounts(candidate);
+            const note = tierNote(tierCounts);
+            const explainsHistory = (tierCounts?.historyOnly ?? 0) > 0;
             const kindLabel =
               candidate.kind === 'git'
                 ? CODE_PROJECT_LABEL
@@ -904,6 +941,24 @@ export function ImportProjectsPanel({
             const pickedFolder =
               isDirectPick(candidate) && candidate.kind === 'folder';
             const contained = containedRepositoriesLabel(candidate);
+            const linked = candidate.linkedWorktreePaths.length;
+            // One line of plain facts; the checkbox for chats sits at its end.
+            const meta = [
+              kindLabel,
+              ...(pickedFolder ? [PLAIN_FOLDER_DETAIL] : []),
+              ...(pickedFolder && contained ? [contained] : []),
+              ...(candidate.sessionCount > 0
+                ? [chatCountLabel(candidate.sessionCount)]
+                : []),
+              ...(linked > 0
+                ? [
+                    linked === 1
+                      ? '1 linked worktree'
+                      : `${linked} linked worktrees`,
+                  ]
+                : []),
+              ...(relative ? [`last used ${relative}`] : []),
+            ].join(' · ');
             const scanNotes = pickedFolder
               ? [
                   ...(isUncertainPickedFolder(candidate)
@@ -935,97 +990,122 @@ export function ImportProjectsPanel({
                       aria-label={`Import ${candidate.displayName}`}
                       data-testid={`import-projects-row-checkbox-${candidate.id}`}
                     />
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="truncate text-s font-medium fg-primary"
-                            data-testid={`import-projects-row-name-${candidate.id}`}
-                          >
-                            {candidate.displayName}
-                          </span>
-                          {candidate.providers.map((provider) => (
-                            <StatusPill
-                              key={provider}
-                              tone="secondary"
-                              data-testid={`import-projects-provider-${provider}`}
-                            >
-                              {providerName(provider)}
-                            </StatusPill>
-                          ))}
-                          {candidate.providers.length === 0 && (
-                            <StatusPill tone="secondary">Folder</StatusPill>
-                          )}
-                          <span className="ml-auto shrink-0">
-                            {statusPill(candidate)}
-                          </span>
-                        </div>
-                        <p
-                          className="truncate text-xs fg-tertiary"
-                          title={candidate.rootPath}
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span
+                          className={`truncate text-s font-medium fg-primary ${POSTHOG_REPLAY_MASK_CLASS}`}
+                          data-testid={`import-projects-row-name-${candidate.id}`}
                         >
-                          {candidate.rootPath}
-                        </p>
-                        {chatTitles && (
-                          // Session titles fall back to the first prompt's text.
-                          <p
-                            className={`truncate text-xs fg-secondary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-                            title={chatTitles}
-                            data-testid={`import-projects-row-chat-titles-${candidate.id}`}
-                          >
-                            {chatTitles}
-                          </p>
-                        )}
+                          {candidate.displayName}
+                        </span>
+                        <ImportSourceLogos
+                          providers={candidate.providers}
+                          dataTestId={`import-projects-row-tools-${candidate.id}`}
+                        />
+                        <span className="ml-auto shrink-0">
+                          {statusPill(candidate)}
+                        </span>
                       </div>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary">
-                        <span>{kindLabel}</span>
-                        {pickedFolder && <span>{PLAIN_FOLDER_DETAIL}</span>}
-                        {pickedFolder && contained && (
-                          <span
-                            data-testid={`import-projects-row-contains-${candidate.id}`}
-                          >
-                            {contained}
-                          </span>
-                        )}
-                        {candidate.sessionCount > 0 && (
-                          <span>{chatCountLabel(candidate.sessionCount)}</span>
-                        )}
-                        {relative && <span>Last used {relative}</span>}
+                      <ImportLocation
+                        rootPath={candidate.rootPath}
+                        className="text-xs fg-tertiary"
+                        dataTestId={`import-projects-row-location-${candidate.id}`}
+                      />
+                      <div className="flex min-w-0 items-center gap-3 text-xs fg-tertiary">
+                        <span
+                          className="min-w-0 flex-1 truncate"
+                          title={meta}
+                          data-testid={`import-projects-row-meta-${candidate.id}`}
+                        >
+                          {meta}
+                        </span>
                         {candidate.kind === 'git' && (
                           <SourceBranchCommitHint
                             headUnborn={candidate.headUnborn}
+                            className="shrink-0"
                             testId={`import-projects-row-no-commits-${candidate.id}`}
                           />
                         )}
-                        {candidate.linkedWorktreePaths.length > 0 && (
-                          <span>
-                            {candidate.linkedWorktreePaths.length === 1
-                              ? '1 linked worktree'
-                              : `${candidate.linkedWorktreePaths.length} linked worktrees`}
-                          </span>
-                        )}
                         {candidate.importableSessionCount > 0 && (
-                          <ChoiceField
-                            label={`Import ${chatCountLabel(candidate.importableSessionCount)}`}
-                            checked={selection.chats.has(candidate.id)}
-                            disabled={!checked}
-                            onChange={(): void => toggleChats(candidate.id)}
-                            data-testid={`import-projects-row-chats-${candidate.id}`}
-                          />
-                        )}
-                        {candidate.statusReason && (
-                          <span
-                            className="fg-tertiary"
-                            data-testid="import-projects-row-reason"
-                          >
-                            {candidate.statusReason}
+                          <span className="shrink-0">
+                            <ChoiceField
+                              label={importChatsLabel(candidate)}
+                              checked={selection.chats.has(candidate.id)}
+                              disabled={!checked}
+                              onChange={(): void => toggleChats(candidate.id)}
+                              data-testid={`import-projects-row-chats-${candidate.id}`}
+                            />
                           </span>
                         )}
                       </div>
-                      {scanNotes.length > 0 && (
-                        <p className="mt-0.5 text-xs fg-tertiary">
-                          {scanNotes.map((note) => `${note}.`).join(' ')}
+                      {note && (
+                        <p className="text-2xs fg-tertiary">
+                          {explainsHistory ? (
+                            <Tooltip label={HISTORY_ONLY_EXPLANATION}>
+                              {/* Focusable so the explanation reaches the keyboard too. */}
+                              <span
+                                tabIndex={0}
+                                className="focus-ring"
+                                data-testid={`import-projects-row-chat-tiers-${candidate.id}`}
+                              >
+                                {note}
+                              </span>
+                            </Tooltip>
+                          ) : (
+                            <span
+                              data-testid={`import-projects-row-chat-tiers-${candidate.id}`}
+                            >
+                              {note}
+                            </span>
+                          )}
                         </p>
+                      )}
+                      {candidate.statusReason && (
+                        <p
+                          className="text-xs fg-tertiary"
+                          data-testid="import-projects-row-reason"
+                        >
+                          {candidate.statusReason}
+                        </p>
+                      )}
+                      {scanNotes.length > 0 && (
+                        <p className="text-xs fg-tertiary">
+                          {scanNotes
+                            .map((scanNote) => `${scanNote}.`)
+                            .join(' ')}
+                        </p>
+                      )}
+                      {chats && (
+                        <Disclosure
+                          label="Show chats"
+                          className="mt-0.5"
+                          dataTestId={`import-projects-row-chat-list-${candidate.id}`}
+                        >
+                          <ul className="flex flex-col gap-0.5 text-xs fg-secondary">
+                            {chats.chats.map((chat) => (
+                              <li
+                                key={chat.title}
+                                className="flex min-w-0 items-center gap-2"
+                                data-history-only={chat.historyOnly}
+                              >
+                                {/* Session titles fall back to the first prompt's text. */}
+                                <span
+                                  className={`min-w-0 flex-1 truncate ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                                >
+                                  {chat.title}
+                                </span>
+                                {chat.historyOnly && (
+                                  <Badge className="shrink-0">
+                                    {HISTORY_ONLY_TAG}
+                                  </Badge>
+                                )}
+                              </li>
+                            ))}
+                            {chats.more > 0 && (
+                              <li className="fg-tertiary">{chats.more} more</li>
+                            )}
+                          </ul>
+                        </Disclosure>
                       )}
                     </div>
                   </div>

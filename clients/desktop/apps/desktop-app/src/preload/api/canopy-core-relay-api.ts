@@ -7,6 +7,7 @@ import type {
   CanopyRetryDirective,
 } from '@canopy/protocol/canopy-core';
 import {
+  relayableErrorDetails,
   relayRetryFor,
   type CanopyCoreRelayApi,
   type CanopyCoreRelayReply,
@@ -63,17 +64,22 @@ function toRetry(value: unknown): CanopyRetryDirective {
   return { kind: 'never' };
 }
 
-/** Main sends validated, redacted payloads; this only re-shapes the untyped IPC result. */
+/**
+ * Main sends validated, redacted payloads; this only re-shapes the untyped IPC
+ * result, keeping the same allowlisted `details` main does.
+ */
 function toError(value: unknown): CanopyErrorPayload {
   if (!isRecord(value) || !isErrorKind(value.kind)) return INVALID_REPLY;
   if (typeof value.message !== 'string' || value.message.length === 0)
     return INVALID_REPLY;
-  const error: CanopyErrorPayload = {
+  const details = relayableErrorDetails(value.details);
+  return {
     kind: value.kind,
     message: value.message,
     retry: toRetry(value.retry),
+    ...(isOperationCode(value.code) ? { code: value.code } : {}),
+    ...(details === undefined ? {} : { details }),
   };
-  return isOperationCode(value.code) ? { ...error, code: value.code } : error;
 }
 
 function toReply(reply: unknown): CanopyCoreRelayReply {

@@ -1,3 +1,4 @@
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Stack } from '../Stack';
 import { TURN_OUTCOME_UNKNOWN_IMPACT } from './turn-outcome-label';
 import { useState, type JSX, type ReactNode } from 'react';
@@ -7,12 +8,11 @@ import {
   readToolInterruption,
   type ToolInterruption,
 } from '@canopy/protocol/portal';
-import { MinusIcon, PlusIcon, StopIcon } from '../../icons';
+import { StopIcon } from '../../icons';
 import { ShieldIcon } from '../../icons/AppIcons';
 import {
   StepTenseProvider,
   useChatAppName,
-  useCleanChatLook,
   type StepTense,
 } from '../chat-look';
 import { isAskUserQuestionToolName, readableToolInput } from './tool-display';
@@ -21,8 +21,6 @@ import {
   useToolApprovalWait,
 } from './tool-approval-wait';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
-import { StatusLabel } from '../StatusLabel';
-import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   classifyToolDenial,
   stripHookErrorPrefix,
@@ -149,7 +147,7 @@ export function toolCallResultHeading(result: ToolCallResult): string {
 }
 
 /**
- * A classic expanded panel's result section. Exported so host slots that
+ * An expanded panel's result section. Exported so host slots that
  * replace the panel (WebFetch, SendMessage) show the same heading and text.
  */
 export function ToolCallResultSection({
@@ -160,18 +158,14 @@ export function ToolCallResultSection({
   children?: ReactNode;
 }): JSX.Element {
   // Clean rows stay colorless, including a host slot opened under one.
-  const clean = useCleanChatLook();
+
   return (
     <>
       <div
         className="border-t px-2.5 py-1 text-3xs font-medium fg-secondary"
         data-testid="tool-call-result-heading"
       >
-        {result.kind === 'error' && !clean ? (
-          <StatusLabel>{toolCallResultHeading(result)}</StatusLabel>
-        ) : (
-          toolCallResultHeading(result)
-        )}
+        {toolCallResultHeading(result)}
       </div>
       {children ?? (
         <pre
@@ -286,7 +280,7 @@ export interface ToolCallCardProps {
   /** Resolved tool result. Renders below `input` inside the expanded panel. */
   result?: ToolCallResult | null;
   /**
-   * Tool execution status. Controls the pending spinner + error badge.
+   * Tool execution status. Controls the running words and error marker.
    * Defaults to `'success'` when `result` is set without `error`, `'error'`
    * when the result is an error, `'blocked'` when it is a recognized
    * approval denial, `'interrupted'` when it carries interruption metadata,
@@ -303,8 +297,6 @@ export interface ToolCallCardProps {
   defaultCollapsed?: boolean;
   /** Reveal a search target without changing the saved collapse state. */
   forceExpanded?: boolean;
-  /** Optional pending-spinner slot. Hosts pass their own animated dots. */
-  pendingSpinner?: ReactNode;
   /**
    * Whether this pending call is held for the person's approval. Overrides
    * the host's `ToolApprovalWaitProvider` either way; a settled status always
@@ -349,7 +341,6 @@ export function ToolCallCard({
   brandAppName,
   defaultCollapsed = true,
   forceExpanded = false,
-  pendingSpinner,
   awaitingApproval,
   expandedSlot,
   expandedAction,
@@ -403,197 +394,89 @@ export function ToolCallCard({
       renderedIcon
     );
   // Clean chat look: the shared step row, with readable details when opened.
-  const clean = useCleanChatLook();
-  if (clean) {
-    // The row can cut even a short command (a long description, a narrow
-    // column), so the opened body always keeps it whole.
-    const shownInput =
-      input != null ? readableToolInput(toolName, input) : undefined;
-    return (
-      <div
-        data-testid={dataTestId}
-        data-tool-use-id={toolUseId}
-        data-tool-name={toolName}
-        data-tool-status={resolvedStatus}
-        data-tool-interruption={interruption?.reason}
-        data-chat-disclosure=""
-        data-tool-approval={isWaiting ? 'waiting' : undefined}
-      >
-        <StepTenseProvider
-          value={isWaiting ? 'waiting' : STATUS_TENSE[resolvedStatus]}
-        >
-          <StepRow
-            prioritizeDetail
-            icon={statusIcon}
-            step
-            label={
-              <span className={REPLAY_BLOCK_CLASS}>{label ?? toolName}</span>
-            }
-            detail={
-              isWaiting ? (
-                // A label without a verb ("Fetch", an app tool) still says
-                // why it is not running.
-                <span data-testid="tool-call-waiting">
-                  {TOOL_APPROVAL_WAITING_LABEL}
-                </span>
-              ) : denial == null && interruption == null ? (
-                gatewayDetail
-              ) : undefined
-            }
-            // Blocked and interrupted say so at the row's end, in the
-            // detail's grey; Failed stays after the words.
-            className="w-full"
-            trailing={
-              denial != null ? (
-                <span
-                  className="ml-auto shrink-0 pl-2 fg-tertiary"
-                  data-testid="tool-call-blocked"
-                >
-                  {toolDenialDetail(denial)}
-                </span>
-              ) : interruptionDetail != null ? (
-                <span className="ml-auto shrink-0 pl-2 fg-tertiary">
-                  {interruptionDetail}
-                </span>
-              ) : undefined
-            }
-            running={isPending}
-            failed={isError}
-            expandable
-            isOpen={isOpen}
-            onToggle={(): void => setIsOpen((prev) => !prev)}
-          />
-        </StepTenseProvider>
-        {isOpen && (
-          <div
-            className={`${STEP_ROW_BODY_CLASS}${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
-            data-chat-reveal-body=""
-          >
-            {expandedAction ?? expandedSlot ?? (
-              <Stack gap="tight">
-                {shownInput != null && shownInput.length > 0 && (
-                  <pre className={CLEAN_OUTPUT_CLASS}>{shownInput}</pre>
-                )}
-                {result && result.content.length > 0 && (
-                  <pre className={CLEAN_OUTPUT_CLASS}>{result.content}</pre>
-                )}
-              </Stack>
-            )}
-            {isError && expandedAction == null && expandedSlot == null && (
-              <p
-                className="text-xs fg-secondary"
-                data-testid="tool-call-error-impact"
-              >
-                {TURN_OUTCOME_UNKNOWN_IMPACT}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
 
+  const shownInput =
+    input != null ? readableToolInput(toolName, input) : undefined;
   return (
-    <Stack
-      gap="tight"
+    <div
       data-testid={dataTestId}
       data-tool-use-id={toolUseId}
       data-tool-name={toolName}
       data-tool-status={resolvedStatus}
       data-tool-interruption={interruption?.reason}
+      data-chat-disclosure=""
       data-tool-approval={isWaiting ? 'waiting' : undefined}
     >
-      <button
-        type="button"
-        onClick={(): void => setIsOpen((prev) => !prev)}
-        className="group flex w-full items-center gap-2 py-1 text-xs fg-secondary transition-colors"
-        aria-expanded={isOpen}
-        data-tool-family={toolFamily ?? 'unknown'}
+      <StepTenseProvider
+        value={isWaiting ? 'waiting' : STATUS_TENSE[resolvedStatus]}
       >
-        {/*
-          Fixed 14px (h-3.5 w-3.5) slot that centers whichever icon is shown
-          and clamps every descendant SVG to the same size. The leading icon
-          swaps to a plus/minus glyph on hover; without a fixed slot a taller
-          icon (e.g. a brand logo) would shrink the row when the swap happens,
-          jittering the layout. Normalizing the SVG size keeps the canopy/brand
-          logo the correct size instead of overflowing the row.
-        */}
-        <span
-          className={`flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 ${
-            isError
-              ? 'fg-destructive'
-              : denial != null
-                ? 'fg-attention'
-                : interruption != null
-                  ? 'fg-tertiary'
-                  : ''
-          }`}
-        >
-          <span className="flex group-hover:hidden">{statusIcon}</span>
-          <span className="hidden group-hover:flex">
-            {isOpen ? <MinusIcon /> : <PlusIcon />}
-          </span>
-        </span>
-        <span className={`${REPLAY_BLOCK_CLASS} min-w-0 truncate`}>
-          {label ?? toolName}
-        </span>
-        {gatewayDetail ? (
-          <span className="fg-tertiary">{gatewayDetail}</span>
-        ) : null}
-        {denial != null && (
-          <span
-            className="flex-shrink-0 fg-tertiary"
-            data-testid="tool-call-blocked"
-          >
-            {toolDenialHeading(denial)}
-          </span>
-        )}
-        {isError && denial == null && (
-          // In words, and kept while hovered: the icon's error tint swaps to
-          // +/− on hover, so it can't be the row's only signal.
-          <StatusLabel className="flex-shrink-0" data-testid="tool-call-error">
-            error
-          </StatusLabel>
-        )}
-        {interruptionDetail != null && (
-          <span className="flex-shrink-0 fg-tertiary">
-            {interruptionDetail}
-          </span>
-        )}
-        {isWaiting && (
-          <span
-            className="flex-shrink-0 fg-tertiary"
-            data-testid="tool-call-waiting"
-          >
-            {TOOL_APPROVAL_WAITING_LABEL}
-          </span>
-        )}
-        {isPending && pendingSpinner != null && (
-          <span className="ml-1 inline-flex -translate-y-px flex-shrink-0 fg-accent">
-            {pendingSpinner}
-          </span>
-        )}
-      </button>
+        <StepRow
+          prioritizeDetail
+          icon={statusIcon}
+          step
+          label={
+            <span className={REPLAY_BLOCK_CLASS}>{label ?? toolName}</span>
+          }
+          detail={
+            isWaiting ? (
+              // A label without a verb ("Fetch", an app tool) still says
+              // why it is not running.
+              <span data-testid="tool-call-waiting">
+                {TOOL_APPROVAL_WAITING_LABEL}
+              </span>
+            ) : denial == null && interruption == null ? (
+              gatewayDetail
+            ) : undefined
+          }
+          // Blocked and interrupted say so at the row's end, in the
+          // detail's grey; Failed stays after the words.
+          className="w-full"
+          trailing={
+            denial != null ? (
+              <span
+                className="ml-auto shrink-0 pl-2 fg-tertiary"
+                data-testid="tool-call-blocked"
+              >
+                {toolDenialDetail(denial)}
+              </span>
+            ) : interruptionDetail != null ? (
+              <span className="ml-auto shrink-0 pl-2 fg-tertiary">
+                {interruptionDetail}
+              </span>
+            ) : undefined
+          }
+          running={isPending}
+          failed={isError}
+          expandable
+          isOpen={isOpen}
+          onToggle={(): void => setIsOpen((prev) => !prev)}
+        />
+      </StepTenseProvider>
       {isOpen && (
-        <div className="pl-5.5">
-          <div
-            className={`overflow-hidden rounded border bg-fg-primary/[0.02]${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
-          >
-            {expandedAction ?? expandedSlot ?? (
-              <>
-                {input != null && input.length > 0 && (
-                  <pre
-                    className={`${REPLAY_BLOCK_CLASS} max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary`}
-                  >
-                    {input}
-                  </pre>
-                )}
-                {result && <ToolCallResultSection result={result} />}
-              </>
-            )}
-          </div>
+        <div
+          className={`${STEP_ROW_BODY_CLASS}${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
+          data-chat-reveal-body=""
+        >
+          {expandedAction ?? expandedSlot ?? (
+            <Stack gap="tight">
+              {shownInput != null && shownInput.length > 0 && (
+                <pre className={CLEAN_OUTPUT_CLASS}>{shownInput}</pre>
+              )}
+              {result && result.content.length > 0 && (
+                <pre className={CLEAN_OUTPUT_CLASS}>{result.content}</pre>
+              )}
+            </Stack>
+          )}
+          {isError && expandedAction == null && expandedSlot == null && (
+            <p
+              className="text-xs fg-secondary"
+              data-testid="tool-call-error-impact"
+            >
+              {TURN_OUTCOME_UNKNOWN_IMPACT}
+            </p>
+          )}
         </div>
       )}
-    </Stack>
+    </div>
   );
 }

@@ -169,6 +169,7 @@ function ActionError({
 }): JSX.Element | null {
   return message === null ? null : (
     <ErrorBanner
+      errorSource="feed-needs-you-error"
       className=""
       error={message}
       testId="feed-needs-you-error"

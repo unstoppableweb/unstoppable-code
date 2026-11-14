@@ -364,7 +364,9 @@ export function TodayStatisticsPanel(): JSX.Element {
       </div>
 
       {error ? (
-        <Notice intent="destructive">{error}</Notice>
+        <Notice errorSource="today-statistics-panel" intent="destructive">
+          {error}
+        </Notice>
       ) : data === null ? (
         <Surface variant="card" padding="roomy">
           <DelayedLoadingPlaceholder slowNote="Still loading today…">

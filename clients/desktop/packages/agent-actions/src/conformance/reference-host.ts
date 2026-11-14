@@ -18,6 +18,11 @@ import type {
   CoreWorktree,
 } from '@canopy/protocol/canopy-core';
 import type { ModelCatalogOption } from '@canopy/protocol/models';
+import {
+  CHAT_HISTORY_ACTION_TYPES,
+  createChatHistoryActionFamily,
+  type AgentChatHistoryPort,
+} from '../families/chat-history';
 import { createTranscriptReadActionFamily } from '../families/transcript-read/dispatch';
 import { createConformanceTranscriptStore } from './transcript-store';
 import type { AgentTranscriptReadPort } from '../port/transcript-read-port';
@@ -44,14 +49,28 @@ import {
 import {
   createChatWatcherTools,
   type AgentArmedChatWatcher,
+  type AgentArmedScheduledWakeup,
   type AgentChatWatcherPort,
   type AgentChatWatcherRecord,
+  type AgentScheduledWakeupWatcherRecord,
   type AgentWatcherDeleteStatus,
 } from '../port/watcher-port';
+import {
+  AgentPullRequestStatusError,
+  type AgentPullRequestStatus,
+  type AgentPullRequestStatusPort,
+} from '../port/pull-request-status-port';
 import type { AgentActionHostCapabilities } from '../surface/capabilities';
 import { createAgentActionSurface } from '../surface/engine';
+import { createMemoryTools } from '../port/memory-port';
+import { createInMemoryAgentMemoryPort } from './memory';
 import type { AgentActionCall } from '../surface/family';
+import {
+  createConformanceFeedLedger,
+  createConformanceFeedPort,
+} from './feed-ledger';
 import { createWriteHolds } from './holds';
+import { createReferenceDelegationBackend } from './managed-delegation';
 import { createLimitCommitFailures } from './limit-failures';
 import type {
   AgentConformanceCallIdentity,
@@ -66,16 +85,22 @@ export const REFERENCE_HOST_CAPABILITIES: AgentActionHostCapabilities = {
   actionTypes: [
     ...ENVIRONMENT_ACTION_TYPES,
     ...TRANSCRIPT_READ_ACTION_TYPES,
+    ...CHAT_HISTORY_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES,
     ...CHAT_CONTROL_ACTION_TYPES,
   ],
   chatCreatePlacements: ['current', 'new_worktree'],
-  watcherTriggers: ['worktree_chat_completion'],
+  watcherTriggers: ['worktree_chat_completion', 'scheduled_wakeup'],
   watcherTargetScope: 'current_workspace',
   split: { forked: true, branched: false },
   hiddenInstructions: false,
   limits: true,
+  pullRequestStatus: true,
+  scheduleWakeup: true,
+  memory: 'synced_user',
+  feed: true,
+  managedDelegation: true,
 };
 
 type ReferenceCall = AgentActionCall<null>;
@@ -103,6 +128,13 @@ interface ReferenceWatcher extends AgentChatWatcherRecord {
   forWrite: string | null;
 }
 
+interface ReferenceWakeup extends AgentScheduledWakeupWatcherRecord {
+  ownerChatId: string;
+  followUpInstruction: string | null;
+  /** When it is due, by the host's clock. */
+  dueAt: number;
+}
+
 const CREATED_AT = '2026-01-01T00:00:00.000Z';
 
 /**
@@ -115,6 +147,55 @@ export function createReferenceHost(
 ): AgentConformanceHost<null> {
   const capabilities = options.capabilities ?? REFERENCE_HOST_CAPABILITIES;
   const workspaceId = world.workspace.workspaceId;
+  const historyReads = new Map<
+    string,
+    { chatId: string; title: string; date: string; excerpt: string }
+  >();
+  const history: AgentChatHistoryPort<null> = {
+    search: ({ query, limit }, call) => {
+      if (call.scope?.workspaceId !== workspaceId)
+        throw new AgentPortError('not_found', 'History scope not found.');
+      const callerChatId = call.scope.chatId;
+      const hits = world.chatHistory.flatMap((entry) => {
+        const chat = world.chats.find((row) => row.chatId === entry.chatId);
+        if (
+          !chat ||
+          chat.chatId === callerChatId ||
+          !entry.text.toLowerCase().includes(query.toLowerCase())
+        )
+          return [];
+        historyReads.set(entry.matchId, {
+          chatId: callerChatId,
+          title: chat.title,
+          date: entry.date,
+          excerpt: entry.text.slice(0, 6000),
+        });
+        return [
+          {
+            matchId: entry.matchId,
+            title: chat.title,
+            date: entry.date,
+            snippet: entry.text.slice(0, 1200),
+          },
+        ];
+      });
+      return Promise.resolve({ hits: hits.slice(0, limit) });
+    },
+    excerpt: ({ matchId }, call) => {
+      const match = historyReads.get(matchId);
+      if (
+        call.scope?.workspaceId !== workspaceId ||
+        !match ||
+        match.chatId !== call.scope.chatId
+      )
+        throw new AgentPortError('not_found', 'History match not found.');
+      return Promise.resolve({
+        title: match.title,
+        date: match.date,
+        excerpt: match.excerpt,
+      });
+    },
+  };
   const transcripts = createConformanceTranscriptStore(world);
   const transcriptRead: AgentTranscriptReadPort<null> = {
     authorizeOwner: (target, call) => {
@@ -178,6 +259,9 @@ export function createReferenceHost(
   // A fired watcher is still the one its key armed; a deleted one is not.
   const firedWatcherIds = new Set<string>();
   const firedLog: string[] = [];
+  // Pending wakeups, and what each ScheduleWakeup key armed.
+  const wakeups: ReferenceWakeup[] = [];
+  const wakeupKeys = new Map<string, AgentArmedScheduledWakeup>();
   const withdrawnModels = new Set<string>();
   const unmessageable = new Set<string>();
   let sequence = 0;
@@ -446,23 +530,77 @@ export function createReferenceHost(
       });
       return Promise.resolve(armed);
     },
+    armScheduledWakeup: (input, call) => {
+      const replay = wakeupKeys.get(input.idempotencyKey);
+      if (replay) return Promise.resolve(replay);
+      const ownerChatId = call.scope?.chatId ?? '';
+      const followUpInstruction = input.followUpInstruction ?? null;
+      const pending = wakeups.find(
+        (wakeup) =>
+          wakeup.ownerChatId === ownerChatId &&
+          wakeup.target.delaySeconds === input.delaySeconds &&
+          wakeup.followUpInstruction === followUpInstruction,
+      );
+      if (pending) {
+        const deduped: AgentArmedScheduledWakeup = {
+          watcherId: pending.watcherId,
+          created: false,
+          target: { ...pending.target },
+          label: pending.label ?? '',
+        };
+        wakeupKeys.set(input.idempotencyKey, deduped);
+        return Promise.resolve(deduped);
+      }
+      const dueAt = clock + input.delaySeconds * 1000;
+      const wakeup: ReferenceWakeup = {
+        watcherId: nextId('wakeup-'),
+        trigger: 'scheduled_wakeup',
+        target: {
+          delaySeconds: input.delaySeconds,
+          scheduledFor: new Date(dueAt).toISOString(),
+        },
+        label: `Wake up in ${String(input.delaySeconds)} seconds`,
+        ownerChatId,
+        followUpInstruction,
+        dueAt,
+      };
+      wakeups.push(wakeup);
+      const armed: AgentArmedScheduledWakeup = {
+        watcherId: wakeup.watcherId,
+        created: true,
+        target: { ...wakeup.target },
+        label: wakeup.label ?? '',
+      };
+      wakeupKeys.set(input.idempotencyKey, armed);
+      return Promise.resolve(armed);
+    },
     list: (call) =>
-      Promise.resolve(
-        watchers.filter(
+      Promise.resolve([
+        ...watchers.filter(
           (watcher) => watcher.ownerChatId === call.scope?.chatId,
         ),
-      ),
+        ...wakeups.filter(
+          (wakeup) => wakeup.ownerChatId === call.scope?.chatId,
+        ),
+      ]),
     delete: (ids, call) =>
       Promise.resolve(
         ids.map(
           (
             watcherId,
           ): { watcherId: string; status: AgentWatcherDeleteStatus } => {
-            const index = watchers.findIndex(
-              (watcher) =>
-                watcher.watcherId === watcherId &&
-                watcher.ownerChatId === call.scope?.chatId,
-            );
+            const owned = (entry: {
+              watcherId: string;
+              ownerChatId: string;
+            }): boolean =>
+              entry.watcherId === watcherId &&
+              entry.ownerChatId === call.scope?.chatId;
+            const wakeup = wakeups.findIndex(owned);
+            if (wakeup >= 0) {
+              wakeups.splice(wakeup, 1);
+              return { watcherId, status: 'deleted' };
+            }
+            const index = watchers.findIndex(owned);
             if (index < 0) return { watcherId, status: 'not_found' };
             watchers.splice(index, 1);
             return { watcherId, status: 'deleted' };
@@ -572,12 +710,63 @@ export function createReferenceHost(
       },
     },
   });
+  // GitHub as the owner sees it: one shared read per pull request, kept.
+  let gitHubConnected = true;
+  let pullRequestReads = 0;
+  const pullRequestCache = new Map<string, Promise<AgentPullRequestStatus>>();
+  const pullRequestStatus: AgentPullRequestStatusPort<null> = {
+    read: (ref) => {
+      if (!gitHubConnected)
+        return Promise.reject(
+          new AgentPullRequestStatusError(
+            'not_authenticated',
+            'GitHub is not connected.',
+          ),
+        );
+      const repository = `${ref.owner}/${ref.repo}`.toLowerCase();
+      const key = `${repository}#${ref.number}`;
+      const cached = pullRequestCache.get(key);
+      if (cached) return cached;
+      const read = Promise.resolve().then((): AgentPullRequestStatus => {
+        pullRequestReads += 1;
+        const row = world.pullRequests.readable.find(
+          (entry) =>
+            entry.repository.toLowerCase() === repository &&
+            entry.number === ref.number,
+        );
+        if (!row)
+          throw new AgentPullRequestStatusError(
+            'not_found',
+            `Pull request ${key} was not found.`,
+          );
+        return { ...row.status, fetchedAt: new Date(clock).toISOString() };
+      });
+      pullRequestCache.set(key, read);
+      read.catch(() => pullRequestCache.delete(key));
+      return read;
+    },
+  };
+  const memory = createInMemoryAgentMemoryPort<null>();
+  // One chat-scoped Ledger: each calling chat records as its own actor.
+  const feedLedger = createConformanceFeedLedger(() =>
+    new Date(clock).toISOString(),
+  );
   const surface = createAgentActionSurface<null, never>({
     brand: world.brand,
     capabilities,
+    pullRequestStatus,
+    memory: createMemoryTools({ port: memory, receipts }),
+    feed: createConformanceFeedPort(feedLedger),
+    // The world's chat may delegate, over the in-memory delegation backend.
+    managedDelegation: {
+      port: createReferenceDelegationBackend().port,
+      parentTools: true,
+      requestSteering: false,
+    },
     families: [
       family,
       createTranscriptReadActionFamily({ port: transcriptRead }),
+      createChatHistoryActionFamily(history),
       experiments,
       settings,
       chatControl,
@@ -588,6 +777,8 @@ export function createReferenceHost(
             capabilities,
             environment,
             watchers: chatWatchers,
+            receipts,
+            limits,
           }),
         }
       : {}),
@@ -642,6 +833,12 @@ export function createReferenceHost(
     },
     control: {
       transcriptReadCount: (): number => transcripts.readCount(),
+      feedWriteCount: (): number => feedLedger.writeCount(),
+      pullRequestReadCount: (): number => pullRequestReads,
+      disconnectGitHub: (): Promise<void> => {
+        gitHubConnected = false;
+        return Promise.resolve();
+      },
       archiveChat: (chatId): Promise<void> => {
         const chat = chats.find((entry) => entry.chatId === chatId);
         if (chat) chat.state = 'archived';
@@ -689,6 +886,16 @@ export function createReferenceHost(
       },
       firedWatchers: (): Promise<readonly string[]> =>
         Promise.resolve([...firedLog]),
+      fireDueWakeups: (): Promise<readonly string[]> => {
+        const due = wakeups
+          .filter((wakeup) => wakeup.dueAt <= clock)
+          .sort((a, b) => a.dueAt - b.dueAt);
+        for (const wakeup of due) {
+          wakeups.splice(wakeups.indexOf(wakeup), 1);
+          firedLog.push(wakeup.watcherId);
+        }
+        return Promise.resolve(due.map((wakeup) => wakeup.watcherId));
+      },
       openedSettings: (): Promise<readonly SettingsRoute[]> =>
         Promise.resolve([...openedSettings]),
     },

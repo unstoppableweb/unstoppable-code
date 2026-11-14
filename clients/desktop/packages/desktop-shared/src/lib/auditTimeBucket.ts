@@ -23,6 +23,7 @@ function createEmptyProviderTotals(): UsageTimeseriesBucket['providers'] {
     ollama: { in: 0, out: 0 },
     cursor: { in: 0, out: 0 },
     copilot: { in: 0, out: 0 },
+    antigravity: { in: 0, out: 0 },
     opencode: { in: 0, out: 0 },
   };
 }
@@ -68,6 +69,7 @@ function cloneBucket(bucket: UsageTimeseriesBucket): UsageTimeseriesBucket {
       ollama: { ...bucket.providers.ollama },
       cursor: { ...bucket.providers.cursor },
       copilot: { ...bucket.providers.copilot },
+      antigravity: { ...bucket.providers.antigravity },
       opencode: { ...bucket.providers.opencode },
     },
   };

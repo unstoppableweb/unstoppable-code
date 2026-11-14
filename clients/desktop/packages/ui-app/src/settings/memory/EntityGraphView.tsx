@@ -430,6 +430,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
           this alert only covers failures while a graph is on screen. */}
       {graph !== null && (
         <ErrorBanner
+          errorSource="entity-graph"
           className=""
           error={graphError?.copy}
           details={graphError?.details}
@@ -549,6 +550,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
                 </p>
               ) : selectedFactsError !== null && selectedFacts.length === 0 ? (
                 <ErrorBanner
+                  errorSource="entity-graph-selected-facts"
                   className="mt-4"
                   error={selectedFactsError?.copy}
                   details={selectedFactsError?.details}

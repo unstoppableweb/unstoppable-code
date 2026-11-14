@@ -10,6 +10,7 @@ import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { Button } from '@canopy/ui-shared/components/Button';
 import {
   CenteredLoadingSpinner,
+  ChartEmpty,
   DelayedLoadingPlaceholder,
   ErrorState,
   Heading,
@@ -28,7 +29,7 @@ import {
   resolveBucket,
   type GranularityChoice,
   type RangePreset,
-} from './chart-primitives';
+} from '@canopy/ui-app/charts/chart-controls';
 import { MetricsCountsChart, colorForSeries } from './MetricsCountsChart';
 import {
   MetricsDistributionChart,
@@ -371,14 +372,11 @@ export function MetricsChart({
           </DelayedLoadingPlaceholder>
         </div>
       ) : empty ? (
-        <Surface variant="dashed" size="small">
-          <div
-            className="flex items-center justify-center px-4 text-xs fg-secondary"
-            style={{ height: CHART_HEIGHT_PX }}
-          >
-            No activity recorded in this window.
-          </div>
-        </Surface>
+        <ChartEmpty
+          label="No activity recorded in this window."
+          heightPx={CHART_HEIGHT_PX}
+          size="small"
+        />
       ) : mode === 'counts' ? (
         <ChartErrorBoundary
           label={`${title} counts chart`}

@@ -1,3 +1,15 @@
+import { isArchivedGitSnapshotRef } from '@canopy/desktop-shared/lib/archived-container-contracts';
+import {
+  archiveRecoveryRepositoryIdentity,
+  isArchiveRecoveryRefHeld,
+  isArchiveRecoveryRefProtectionActive,
+  readArchiveRecoveryHolds,
+} from './archive-recovery-refs';
+import {
+  ArchiveRecoveryRefusedError,
+  type ArchiveRecoveryReceipt,
+  type ArchiveRecoveryRepository,
+} from '@canopy/desktop-shared/node/archive-recovery-store';
 import {
   assertNoDestructiveRecovery,
   hasDestructiveLifecycle,
@@ -8,7 +20,7 @@ import {
 import { execFile } from 'node:child_process';
 import { assertArchiveWorktreeRemoval } from './archive-worktree-postconditions';
 import { createHash, randomUUID } from 'node:crypto';
-import type { Stats } from 'node:fs';
+import type { Dirent, Stats } from 'node:fs';
 import {
   access,
   lstat,
@@ -670,11 +682,149 @@ export function buildArchivedContainerSnapshotRef(
   workspaceId: string,
   containerId: string,
   repoId: string,
+  generation?: string,
 ): string {
   validateId(workspaceId, 'workspaceId');
   validateId(containerId, 'containerId');
   validateRepoId(repoId);
-  return `${ARCHIVE_REF_NAMESPACE}/${workspaceId}/${containerId}/${repoId}`;
+  if (
+    generation !== undefined &&
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+      generation,
+    )
+  )
+    throw new Error('Invalid archive capture generation.');
+  // Underscores reserve this component outside the repository-ID charset.
+  return `${ARCHIVE_REF_NAMESPACE}/${workspaceId}/${containerId}/${generation === undefined ? '' : `__generations__/${generation}/`}${repoId}`;
+}
+
+export function isArchivedContainerSnapshotRef(
+  workspaceId: string,
+  containerId: string,
+  repoId: string,
+  ref: string,
+): boolean {
+  // Retain the host's ID validation before applying the portable disk contract.
+  buildArchivedContainerSnapshotRef(workspaceId, containerId, repoId);
+  return isArchivedGitSnapshotRef(workspaceId, containerId, repoId, ref);
+}
+
+/** Qualify the complete remaining deletion set before publishing its first intent. */
+export async function qualifyArchiveRecoveryRefDeletion(
+  receipt: ArchiveRecoveryReceipt,
+): Promise<void> {
+  try {
+    for (const repository of receipt.repositories) {
+      if (repository.refs.length === 0) continue;
+      const commonDir = await realpath(repository.commonDir);
+      if (
+        (await archiveRecoveryRepositoryIdentity(commonDir)) !==
+        repository.identity
+      )
+        throw new ArchiveRecoveryRefusedError(
+          'Retained repository changed before deletion.',
+        );
+      for (const ref of repository.refs) {
+        const current = await readRef(commonDir, ref.name);
+        if (
+          (current === null && receipt.retention !== 'deleting') ||
+          (current !== null && current !== ref.objectId)
+        )
+          throw new ArchiveRecoveryRefusedError(
+            'Retained snapshot ref was replaced or lost.',
+          );
+        await isArchiveRecoveryRefHeld(
+          commonDir,
+          ref.name,
+          receipt.operationId,
+        );
+      }
+    }
+  } catch (cause) {
+    throw new ArchiveRecoveryRefusedError(
+      'Retained Git evidence cannot be verified.',
+      cause,
+    );
+  }
+}
+
+/** Intent is durable; compare-and-delete remains authoritative even after qualification. */
+export async function deleteArchiveRecoveryRefs(
+  receipt: ArchiveRecoveryReceipt,
+): Promise<void> {
+  if (receipt.stage !== 'completed' || receipt.retention !== 'deleting')
+    throw new ArchiveRecoveryRefusedError(
+      'Recovery hold deletion intent is missing.',
+    );
+  await qualifyArchiveRecoveryRefDeletion(receipt);
+  try {
+    for (const repository of receipt.repositories) {
+      if (repository.refs.length === 0) continue;
+      const commonDir = await realpath(repository.commonDir);
+      for (const ref of repository.refs) {
+        if ((await readRef(commonDir, ref.name)) === null) continue;
+        if (
+          await isArchiveRecoveryRefHeld(
+            commonDir,
+            ref.name,
+            receipt.operationId,
+          )
+        )
+          continue;
+        await runGit(commonDir, ['update-ref', '-d', ref.name, ref.objectId]);
+        if ((await readRef(commonDir, ref.name)) !== null)
+          throw new Error('Retained snapshot deletion did not settle.');
+      }
+    }
+  } catch (error) {
+    await qualifyArchiveRecoveryRefDeletion(receipt);
+    throw error;
+  }
+}
+
+/** Inspect the full namespace, including refs pinned before descriptor publication. */
+export async function inspectArchiveRecoveryRepositories(args: {
+  workspaceId: string;
+  containerId: string;
+  workspaceType: 'single-repo' | 'multi-repo';
+}): Promise<ArchiveRecoveryRepository[]> {
+  const definitions = await resolveRepositoryDefinitions(args);
+  const prefix = `${ARCHIVE_REF_NAMESPACE}/${args.workspaceId}/${args.containerId}/`;
+  const repositories: ArchiveRecoveryRepository[] = [];
+  for (const definition of definitions) {
+    const commonDir = await realpath(
+      await getGitCommonDir(definition.referenceRepoPath),
+    );
+    const identity = await archiveRecoveryRepositoryIdentity(commonDir);
+    const lines = await runGit(definition.referenceRepoPath, [
+      'for-each-ref',
+      '--format=%(refname) %(objectname)',
+      prefix,
+    ]);
+    const refs: ArchiveRecoveryRepository['refs'] = [];
+    for (const line of lines.split('\n').filter(Boolean)) {
+      const [name, objectId, extra] = line.split(' ');
+      if (
+        !name?.startsWith(prefix) ||
+        !objectId ||
+        !GIT_OBJECT_ID_RE.test(objectId) ||
+        extra !== undefined
+      )
+        throw new Error('Unverifiable recovery snapshot namespace.');
+      await assertGitObject(definition.referenceRepoPath, objectId, 'commit');
+      refs.push({ name, objectId });
+    }
+    if (identity !== (await archiveRecoveryRepositoryIdentity(commonDir)))
+      throw new Error('Recovery repository changed during inspection.');
+    repositories.push({
+      repoId: definition.repoId,
+      referenceRepoPath: definition.referenceRepoPath,
+      commonDir,
+      identity,
+      refs,
+    });
+  }
+  return repositories;
 }
 
 async function assertValidRef(
@@ -755,6 +905,7 @@ export async function deleteArchivedContainerSnapshotRef(args: {
   refName: string;
   expectedCommit: string;
 }): Promise<void> {
+  if (await isArchiveRecoveryRefHeld(args.repoPath, args.refName)) return;
   await assertValidRef(args.repoPath, args.refName);
   const existing = await readRef(args.repoPath, args.refName);
   if (existing === null) return;
@@ -861,16 +1012,16 @@ function assertStateMatchesDefinitions(args: {
     }
     seen.add(repository.repoId);
     const definition = byId.get(repository.repoId);
-    const expectedRef = buildArchivedContainerSnapshotRef(
-      args.workspaceId,
-      args.containerId,
-      repository.repoId,
-    );
     if (
       !definition ||
       resolve(repository.referenceRepoPath) !== definition.referenceRepoPath ||
       repository.relativePath !== definition.relativePath ||
-      repository.snapshotRef !== expectedRef
+      !isArchivedContainerSnapshotRef(
+        args.workspaceId,
+        args.containerId,
+        repository.repoId,
+        repository.snapshotRef,
+      )
     ) {
       throw new Error(
         `Archived repository ${repository.repoId} failed integrity validation.`,
@@ -925,12 +1076,12 @@ export function assertArchivedGitStateManifestIdentity(args: {
         : `repos/${repository.repoId}`;
     if (
       repository.relativePath !== expectedRelativePath ||
-      repository.snapshotRef !==
-        buildArchivedContainerSnapshotRef(
-          args.workspaceId,
-          args.containerId,
-          repository.repoId,
-        )
+      !isArchivedContainerSnapshotRef(
+        args.workspaceId,
+        args.containerId,
+        repository.repoId,
+        repository.snapshotRef,
+      )
     ) {
       throw new Error('Invalid archived Git repository identity.');
     }
@@ -1074,6 +1225,13 @@ export async function releaseArchivedGitState(
   const deleteRef = operations.deleteRef ?? deleteArchivedContainerSnapshotRef;
   try {
     for (const repository of gitState.repositories) {
+      if (
+        await isArchiveRecoveryRefHeld(
+          repository.referenceRepoPath,
+          repository.snapshotRef,
+        )
+      )
+        continue;
       await deleteRef({
         repoPath: repository.referenceRepoPath,
         refName: repository.snapshotRef,
@@ -1110,6 +1268,7 @@ async function buildArchiveGitCaptureInputs(args: {
   workspaceId: string;
   containerId: string;
   definitions: readonly ArchivedRepositoryDefinition[];
+  generation: string;
 }): Promise<
   Extract<
     ArchiveIoOperationRequest,
@@ -1155,6 +1314,7 @@ async function buildArchiveGitCaptureInputs(args: {
           args.workspaceId,
           args.containerId,
           definition.repoId,
+          args.generation,
         ),
       };
     }),
@@ -1396,6 +1556,7 @@ export async function captureArchivedContainerGitState(args: {
           workspaceId: args.workspaceId,
           containerId: args.containerId,
           definitions,
+          generation: randomUUID(),
         }),
       },
     });
@@ -3221,12 +3382,12 @@ function assertPartialStateMatchesDefinitions(args: {
       !definition ||
       resolve(repository.referenceRepoPath) !== definition.referenceRepoPath ||
       repository.relativePath !== definition.relativePath ||
-      repository.snapshotRef !==
-        buildArchivedContainerSnapshotRef(
-          args.workspaceId,
-          args.containerId,
-          repository.repoId,
-        )
+      !isArchivedContainerSnapshotRef(
+        args.workspaceId,
+        args.containerId,
+        repository.repoId,
+        repository.snapshotRef,
+      )
     ) {
       throw new Error('Archived Git staged state failed integrity validation.');
     }
@@ -3365,7 +3526,7 @@ export async function recoverArchivedGitTeardownsForWorkspace(
     workspaceId,
     workspaceType: config.type,
   });
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(getArchivedContainersRootDir(workspaceId), {
       withFileTypes: true,
@@ -3553,14 +3714,14 @@ export async function reconcileArchivedGitRefsForWorkspace(
   const manifestsById = new Map(
     manifests.map((manifest) => [manifest.id, manifest]),
   );
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(getArchivedContainersRootDir(workspaceId), {
       withFileTypes: true,
     });
   } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return;
-    throw error;
+    if (isErrnoException(error) && error.code === 'ENOENT') entries = [];
+    else throw error;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -3648,8 +3809,29 @@ export async function reconcileArchivedGitRefsForWorkspace(
     }
   }
 
+  const heldRefsByCommonDir = new Map<string, Set<string>>();
+  for (const hold of await readArchiveRecoveryHolds(workspaceId)) {
+    if (!(await isArchiveRecoveryRefProtectionActive(hold))) continue;
+    for (const repository of hold.repositories) {
+      if (repository.refs.length === 0) continue;
+      const commonDir = await realpath(repository.commonDir);
+      if (
+        repository.identity !==
+        (await archiveRecoveryRepositoryIdentity(commonDir))
+      )
+        throw new Error('Retained recovery repository changed.');
+      const held = heldRefsByCommonDir.get(commonDir) ?? new Set<string>();
+      for (const ref of repository.refs) held.add(ref.name);
+      heldRefsByCommonDir.set(commonDir, held);
+    }
+  }
   const prefix = `${ARCHIVE_REF_NAMESPACE}/${workspaceId}/`;
   for (const [repoPath, keep] of Array.from(keepByRepoPath.entries())) {
+    // Linked checkouts share refs; a hold outlives its saved checkout path.
+    const held =
+      heldRefsByCommonDir.size > 0
+        ? heldRefsByCommonDir.get(await getGitCommonDir(repoPath))
+        : undefined;
     const refs = (
       await runGit(repoPath, [
         'for-each-ref',
@@ -3664,6 +3846,7 @@ export async function reconcileArchivedGitRefsForWorkspace(
       const protectedPrefixes = protectedPrefixesByRepoPath.get(repoPath);
       if (
         !keep.has(ref) &&
+        !held?.has(ref) &&
         !(
           protectedPrefixes !== undefined &&
           Array.from(protectedPrefixes).some((prefix) => ref.startsWith(prefix))

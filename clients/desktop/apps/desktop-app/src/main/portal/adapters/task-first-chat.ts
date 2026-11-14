@@ -4,7 +4,6 @@ import {
   normalizeAgentModelConfig,
   resolveKnownModel,
   type AgentModelConfig,
-  type AgentProviderType,
   type ChatCommandExecutionOptions,
   type ChatCommandRequest,
   type ChatCommandResult,
@@ -13,22 +12,14 @@ import {
   isChatTabPluginSelections,
   normalizePluginSelections,
 } from '@canopy/execution-engine/lib/plugin-selections-normalization';
-import type {
-  PortalTaskFirstChat,
-  PortalTaskFirstChatResult,
+import {
+  isPortalChatAgentProviderType,
+  type PortalTaskFirstChat,
+  type PortalTaskFirstChatResult,
 } from '@canopy/protocol/portal';
 import { validateId } from '../../lib/validation';
 import type { PortalAdapterContext } from './types';
 import { resolveRemoteCreateTabSeed } from './chat-adapter';
-
-const SUPPORTED_PROVIDERS: readonly AgentProviderType[] = [
-  'claude',
-  'codex',
-  'ollama',
-  'cursor',
-  'opencode',
-  'copilot',
-];
 
 const MODEL_CONFIG_KEYS = new Set(['thinkingLevel', 'speed', 'fastMode']);
 const FIRST_CHAT_KEYS = new Set([
@@ -44,10 +35,6 @@ const FIRST_CHAT_KEYS = new Set([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isProvider(value: unknown): value is AgentProviderType {
-  return SUPPORTED_PROVIDERS.some((provider) => provider === value);
 }
 
 function parseModelConfig(value: unknown): AgentModelConfig | undefined {
@@ -93,7 +80,10 @@ export function parseTaskFirstChat(value: unknown): PortalTaskFirstChat {
   ) {
     throw new Error('firstChat.model must be a model id.');
   }
-  if (value.providerType !== undefined && !isProvider(value.providerType)) {
+  if (
+    value.providerType !== undefined &&
+    !isPortalChatAgentProviderType(value.providerType)
+  ) {
     throw new Error('firstChat.providerType is not supported.');
   }
   if (value.providerType !== undefined && value.model === undefined) {

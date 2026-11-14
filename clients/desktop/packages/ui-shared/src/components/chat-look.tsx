@@ -13,8 +13,9 @@ import type { ChatDetail } from '@canopy/protocol/chat-detail';
 import { buttonClassName } from './Button';
 
 /**
- * How transcript parts draw. `clean` is the one chat look; it reads like the
- * Codex, ChatGPT and Claude Code transcripts:
+ * The contexts that shape how transcript parts draw. Every host draws the
+ * one chat look, which reads like the Codex, ChatGPT and Claude Code
+ * transcripts:
  * - a turn opens with "Working for 28s", then "Worked for 3m 24s", which
  *   folds the steps away once the turn is done;
  * - every step (tool call, group, thinking, helper agent, changed files) is
@@ -23,31 +24,10 @@ import { buttonClassName } from './Button';
  * - runs of steps read as words ("Ran commands, read files");
  * - work in progress shimmers its words instead of showing a spinner, and
  *   the only colors left are a diff's added and removed line counts.
- * `classic` is the retired look from before Clean chat graduated (it was a
- * Labs experiment until then). No host chooses it any more; its parts stay
- * until they are removed.
+ * Hosts provide the product name (`ChatAppNameProvider`) and chat detail
+ * (`ChatDetailProvider`) at their root; step rows set their tense
+ * (`StepTenseProvider`) and badge line (`StepBadgeLine`).
  */
-export type ChatLook = 'classic' | 'clean';
-
-const ChatLookContext = createContext<ChatLook>('clean');
-
-export function ChatLookProvider({
-  value,
-  children,
-}: {
-  readonly value: ChatLook;
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <ChatLookContext.Provider value={value}>
-      {children}
-    </ChatLookContext.Provider>
-  );
-}
-
-export function useChatLook(): ChatLook {
-  return useContext(ChatLookContext);
-}
 
 const ChatAppNameContext = createContext<string | undefined>(undefined);
 
@@ -108,17 +88,16 @@ export function useChatDetail(): ChatDetail {
  */
 export function useTurnCollapse(
   complete: boolean,
-  clean: boolean,
   detail: ChatDetail,
 ): readonly [boolean, Dispatch<SetStateAction<boolean>>] {
   const [collapsed, setCollapsed] = useState(complete);
   const wasComplete = useRef(complete);
   useEffect(() => {
-    if (!wasComplete.current && complete && (!clean || detail === 'detailed')) {
+    if (!wasComplete.current && complete && detail === 'detailed') {
       setCollapsed(true);
     }
     wasComplete.current = complete;
-  }, [complete, clean, detail]);
+  }, [complete, detail]);
   return [collapsed, setCollapsed];
 }
 
@@ -128,15 +107,6 @@ export function useTurnCollapse(
  */
 export function useGroupToolCalls(): boolean {
   return useContext(ChatDetailContext) !== 'detailed';
-}
-
-/**
- * Code badges in step rows are retired: a step reads what it did, then
- * its command or file as plain text in the row's lighter ink, no chip. Kept
- * as a switch so the badge components stay in one place.
- */
-export function useStepBadgeRows(): boolean {
-  return false;
 }
 
 /** Set by a step row around the words of its badge line. */
@@ -155,24 +125,13 @@ export function StepBadgeLine({
   );
 }
 
-/**
- * Whether a step's file, search target or command goes in a code badge:
- * inside a step row's badge line only. The same label in a tooltip or a
- * tray row stays plain text that truncates with its line.
- */
+/** Code badges in step rows are retired; labels keep plain inline details. */
 export function useStepBadges(): boolean {
-  const rows = useStepBadgeRows();
-  const inLine = useContext(StepBadgeLineContext);
-  return rows && inLine;
-}
-
-/** True under the `clean` chat look. */
-export function useCleanChatLook(): boolean {
-  return useContext(ChatLookContext) === 'clean';
+  return false;
 }
 
 /**
- * A turn's icon button under the clean look (copy, fork, "•••", thumbs,
+ * A turn's icon button (copy, fork, "•••", thumbs,
  * watch): the shared quiet ghost `Button`'s 28px capsule, its 14px icon in
  * tertiary ink at a 1.5px stroke, full ink on hover, focus, open and
  * pressed. Prefer `<Button variant={CLEAN_ICON_BUTTON_VARIANT} size="sm"

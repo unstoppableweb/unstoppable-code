@@ -1,3 +1,4 @@
+import { resolveReplayLocation } from './replay-location';
 import {
   APP_SHUTDOWN,
   pauseInterruptedExecution,
@@ -947,6 +948,11 @@ async function keepRunPlanFromExecution(
   });
 }
 
+/**
+ * The run's terminal plan write. Each terminal path awaits it before the
+ * run's status turns terminal: a run read serves the live state until then,
+ * so a reader that sees the run end also sees its plan kept (CAN-6392).
+ */
 async function upsertTrackedPlanFromExecution(
   state: ExecutionState,
   runtime: ExecutionRuntime,
@@ -1461,6 +1467,8 @@ function executeState(
     | undefined;
   /** Reasons that predate an owner-loss pause; the rest it relabels (CAN-6102). */
   let ownerLossPause: { existingReasons: Set<string> } | undefined;
+  /** Reasons that predate a core-loss pause; the rest it relabels (CAN-6481). */
+  let coreLossPause: { existingReasons: Set<string> } | undefined;
   /**
    * A graceful checkpoint for a host rollover (CAN-6199): the reasons that
    * predate it, which it leaves alone, and when its drain gives up waiting.
@@ -1596,8 +1604,10 @@ function executeState(
         ? {
             capacity: {
               gate: capacityGate,
-              // A worktree run shares its sandbox with the worktree's chats.
-              keepChatReserve: currentState.scope === 'worktree',
+              // A host whose budget names a chat reserve shares its sandbox
+              // with chats (a worktree's or a Cowork project's, CAN-6672),
+              // and every run on it leaves the reserve to them.
+              keepChatReserve: true,
             },
           }
         : {}),
@@ -1894,6 +1904,22 @@ function executeState(
         !rolloverPause
       )
         ownerLossPause ??= {
+          existingReasons: new Set(
+            currentState.status_reasons.map((reason) => reason.id),
+          ),
+        };
+      if (!handle.pauseForShutdown) throw new Error('Pipeline cannot pause.');
+      return handle.pauseForShutdown();
+    },
+    pauseForCoreLoss: async () => {
+      // A pause already under way keeps its own reason.
+      if (
+        acceptingLiveResumes &&
+        !abortController.signal.aborted &&
+        !rolloverPause &&
+        !ownerLossPause
+      )
+        coreLossPause ??= {
           existingReasons: new Set(
             currentState.status_reasons.map((reason) => reason.id),
           ),
@@ -2527,7 +2553,23 @@ function executeState(
               reason.code = 'owner_lost';
             }
         }
-        if (rolloverPause && !ownerLossPause && !authenticationPause) {
+        if (coreLossPause && !ownerLossPause && !authenticationPause) {
+          const { existingReasons } = coreLossPause;
+          for (const reason of currentState.status_reasons)
+            if (
+              !existingReasons.has(reason.id) &&
+              reason.kind === 'app_shutdown'
+            ) {
+              reason.kind = 'core_lost';
+              reason.code = 'core_lost';
+            }
+        }
+        if (
+          rolloverPause &&
+          !ownerLossPause &&
+          !coreLossPause &&
+          !authenticationPause
+        ) {
           const { existingReasons } = rolloverPause;
           for (const reason of currentState.status_reasons)
             if (
@@ -2574,16 +2616,16 @@ function executeState(
         currentState.pending_pauses = [];
         markRemainingJobsCancelled(currentState);
         refreshAllJobGroups(currentState);
+        await upsertTrackedPlanFromExecution(
+          currentState,
+          options.runtime,
+        ).catch(() => {});
         currentState.report_outputs = collectReportOutputs(currentState);
         currentState.status = 'cancelled';
         currentState.completed_at = new Date().toISOString();
         endExecutionPause(currentState, currentState.completed_at);
         currentState.pending_input = undefined;
         currentState.status_reasons = [];
-        await upsertTrackedPlanFromExecution(
-          currentState,
-          options.runtime,
-        ).catch(() => {});
         await persistState('execution.cancelled');
         await clearExecutionCancellation(
           currentState.id,
@@ -2621,16 +2663,16 @@ function executeState(
       if (failedJobs) {
         markPendingJobsSkipped(currentState);
         refreshAllJobGroups(currentState);
+        await upsertTrackedPlanFromExecution(
+          currentState,
+          options.runtime,
+        ).catch(() => {});
         currentState.report_outputs = collectReportOutputs(currentState);
         currentState.status = 'failure';
         currentState.completed_at = new Date().toISOString();
         endExecutionPause(currentState, currentState.completed_at);
         currentState.pending_input = undefined;
         currentState.status_reasons = [];
-        await upsertTrackedPlanFromExecution(
-          currentState,
-          options.runtime,
-        ).catch(() => {});
         await persistState('execution.completed');
         await clearExecutionCancellation(
           currentState.id,
@@ -2645,16 +2687,16 @@ function executeState(
       if (cancelledJobs) {
         markPendingJobsSkipped(currentState);
         refreshAllJobGroups(currentState);
+        await upsertTrackedPlanFromExecution(
+          currentState,
+          options.runtime,
+        ).catch(() => {});
         currentState.report_outputs = collectReportOutputs(currentState);
         currentState.status = 'cancelled';
         currentState.completed_at = new Date().toISOString();
         endExecutionPause(currentState, currentState.completed_at);
         currentState.pending_input = undefined;
         currentState.status_reasons = [];
-        await upsertTrackedPlanFromExecution(
-          currentState,
-          options.runtime,
-        ).catch(() => {});
         await persistState('execution.cancelled');
         await clearExecutionCancellation(
           currentState.id,
@@ -2664,15 +2706,15 @@ function executeState(
         return;
       }
 
+      await upsertTrackedPlanFromExecution(currentState, options.runtime).catch(
+        () => {},
+      );
       currentState.report_outputs = collectReportOutputs(currentState);
       currentState.status = 'success';
       currentState.completed_at = new Date().toISOString();
       endExecutionPause(currentState, currentState.completed_at);
       currentState.pending_input = undefined;
       currentState.status_reasons = [];
-      await upsertTrackedPlanFromExecution(currentState, options.runtime).catch(
-        () => {},
-      );
       await persistState('execution.completed');
       await clearExecutionCancellation(
         currentState.id,
@@ -2687,6 +2729,9 @@ function executeState(
       currentState.plan_hash_after = await hashPlanFile(currentState).catch(
         () => undefined,
       );
+      await upsertTrackedPlanFromExecution(currentState, options.runtime).catch(
+        () => {},
+      );
       currentState.report_outputs = collectReportOutputs(currentState);
       currentState.error =
         error instanceof Error ? error.message : String(error);
@@ -2695,9 +2740,6 @@ function executeState(
       endExecutionPause(currentState, currentState.completed_at);
       currentState.pending_input = undefined;
       currentState.status_reasons = [];
-      await upsertTrackedPlanFromExecution(currentState, options.runtime).catch(
-        () => {},
-      );
       await persistState('execution.failed').catch(() => {});
       await clearExecutionCancellation(
         currentState.id,
@@ -2853,10 +2895,13 @@ export async function resumePipeline(
     pipelineId?: string;
   },
 ): Promise<ExecutionHandle> {
-  const loadedState = await loadExecutionState(
+  const storedState = await loadExecutionState(
     executionId,
     options.runtime.executionsDir,
   );
+  const loadedState = storedState
+    ? await resolveReplayLocation(storedState, options.runtime)
+    : null;
   if (!loadedState) {
     throw new Error(`Execution "${executionId}" not found`);
   }
@@ -3101,10 +3146,13 @@ export async function retryPipelineExecution(
     | 'parentAttempt'
   >,
 ): Promise<ExecutionHandle> {
-  const loadedState = await loadExecutionState(
+  const storedState = await loadExecutionState(
     executionId,
     options.runtime.executionsDir,
   );
+  const loadedState = storedState
+    ? await resolveReplayLocation(storedState, options.runtime)
+    : null;
   if (!loadedState) {
     throw new Error(`Execution "${executionId}" not found`);
   }
@@ -3205,10 +3253,13 @@ export async function retryMatrixJobExecution(
     | 'parentAttempt'
   >,
 ): Promise<ExecutionHandle> {
-  const loadedState = await loadExecutionState(
+  const storedState = await loadExecutionState(
     request.executionId,
     options.runtime.executionsDir,
   );
+  const loadedState = storedState
+    ? await resolveReplayLocation(storedState, options.runtime)
+    : null;
   if (!loadedState) {
     throw new Error(`Execution "${request.executionId}" not found`);
   }
@@ -3354,10 +3405,13 @@ export async function rerunPipelineExecution(
     sharedPipelineSource?: ExecutionState['shared_pipeline_source'];
   },
 ): Promise<ExecutionHandle> {
-  const sourceState = await loadExecutionState(
+  const storedState = await loadExecutionState(
     sourceExecutionId,
     options.runtime.executionsDir,
   );
+  const sourceState = storedState
+    ? await resolveReplayLocation(storedState, options.runtime)
+    : null;
   if (!sourceState) {
     throw new Error(`Execution "${sourceExecutionId}" not found`);
   }
@@ -3451,6 +3505,12 @@ export async function rerunPipelineExecution(
       scope: replayTarget.scope,
       target: replayTarget.target,
       executionCheckoutRoot: replayExecutionCheckoutRoot(sourceState, options),
+      ...(sourceState.pipeline_file_dir !== storedState?.pipeline_file_dir
+        ? {
+            pipelineFileDir:
+              options.pipelineFileDir ?? sourceState.pipeline_file_dir,
+          }
+        : {}),
       // A rerun works in the source run's kept workspace (CAN-6317).
       ...(sourceState.global_workspace_dir === undefined
         ? {}

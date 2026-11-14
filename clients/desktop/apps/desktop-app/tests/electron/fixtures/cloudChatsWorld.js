@@ -23,7 +23,10 @@ import {
  * message and a seeded reply and pushes them as one `core.chat.events` batch.
  * `core.chat.create` adds a task, or a chat to a task, as the web core does
  * (CAN-6098): a spec can delay it with `state.createDelayMs` or have it
- * refused with `state.createRefusals`.
+ * refused with `state.createRefusals`. `state.sandboxAsleep` makes the task
+ * folder's sandbox refuse its reads and writes as the web core does for a
+ * sleeping sandbox, until a sent turn wakes it (CAN-6543); its roots still
+ * list. `worker.filesystem.entry.delete` removes from `state.files`.
  */
 
 /** Stable ids a spec, a capture or another seeder can rely on. */
@@ -49,6 +52,21 @@ export const SEEDED_CLOUD_CHATS = Object.freeze({
     otherChatUser: 'e2e-cloud-msg-5',
     otherChatReply: 'e2e-cloud-msg-6',
   }),
+  /** The second chat's attachments, as `core.artifact.list` lists them (CAN-6175 R8d). */
+  attachments: Object.freeze([
+    Object.freeze({
+      attachmentId: '7e2c1f4a-3b5d-4c8e-9a1f-0d2e4b6c8a50',
+      filename: 'launch-brief.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 48_213,
+    }),
+    Object.freeze({
+      attachmentId: '7e2c1f4a-3b5d-4c8e-9a1f-0d2e4b6c8a51',
+      filename: 'stage-photo.png',
+      mediaType: 'image/png',
+      sizeBytes: 182_044,
+    }),
+  ]),
   files: Object.freeze({
     'README.md': '# Launch plan\n\nShip the cloud chats beta on Friday.\n',
     'notes/checklist.md': '- [x] Write the announcement\n- [ ] Book the demo\n',
@@ -60,6 +78,8 @@ const AT = '2026-11-11T09:00:00.000Z';
 const AT_MS = Date.parse(AT);
 /** The task folder's one file root. */
 const FILE_ROOT_ID = 'e2e-cloud-root';
+/** Where the task folder sits in the sandbox, as a transcript link names it. */
+const SANDBOX_WORKSPACE = '/vercel/sandbox/workspace/';
 
 /** The pending question, as the agent asked it. */
 const ROOM_QUESTION = Object.freeze({
@@ -124,6 +144,119 @@ function seedTranscripts() {
   };
 }
 
+/**
+ * A Core agent task row as the web core serves it in a chat snapshot's
+ * `tasks` and in `agent_tasks.replaced` (CAN-5976).
+ */
+export function agentTaskRow(fields) {
+  return {
+    stateVersion: '1',
+    kind: 'subagent',
+    harness: 'CLAUDE_CODE',
+    status: 'running',
+    stopReason: null,
+    native: {},
+    parentTaskId: null,
+    spawnTurnId: null,
+    spawnToolCallId: null,
+    title: null,
+    description: null,
+    prompt: null,
+    subagentType: null,
+    thinkingEffort: null,
+    costUsd: null,
+    summary: null,
+    outputTail: null,
+    model: null,
+    usage: null,
+    error: null,
+    createdAtMs: Date.parse(AT),
+    startedAtMs: Date.parse(AT),
+    updatedAtMs: Date.parse(AT),
+    completedAtMs: null,
+    approvalPending: false,
+    background: false,
+    ...fields,
+  };
+}
+
+/** The spawn call of the background subagent `startBackgroundAgent` gives a chat. */
+export const BACKGROUND_AGENT = {
+  spawnToolCallId: 'toolu_e2e_survey',
+  description: 'Survey the repo',
+  shellDescription: 'Watch the build',
+};
+
+/**
+ * The capability rows of the workspace's catalog, as the web core's
+ * capabilityEntries projects them (CAN-6397): a curated skill stands alone
+ * beside the curated plugin of the same name it belongs to, and a
+ * marketplace plugin's id is `marketplace:<uuid>` while its label names the
+ * marketplace.
+ */
+export const SEEDED_CATALOG = Object.freeze({
+  curatedName: 'Release notes',
+  marketplaceId: 'marketplace:5f0c6c1e-6a2a-4d4f-9c55-3a8a2b7f0e11',
+  marketplaceLabel: 'Acme',
+  marketplacePluginName: 'Lint rules',
+});
+
+const catalogPlugin = (marketplaceId, pluginName, name, sourceLabel) => ({
+  entryId: `plugin:${marketplaceId}/${pluginName}`,
+  kind: 'plugin',
+  name,
+  description: '',
+  sourceLabel,
+  source: 'remote',
+  content: {
+    kind: 'plugin',
+    manifest: {
+      name: pluginName,
+      version: '',
+      capabilities: [],
+      dependencies: [],
+      providerSupport: { claude: true, codex: true },
+    },
+    selectionRef: { marketplaceId, pluginName },
+  },
+  availability: 'available',
+  revision: 0,
+  createdAt: AT,
+  updatedAt: AT,
+});
+
+const CATALOG_ENTRIES = Object.freeze([
+  {
+    entryId: 'skill:cloud-curated/release-notes',
+    kind: 'skill',
+    name: SEEDED_CATALOG.curatedName,
+    description: '',
+    sourceLabel: 'Curated',
+    source: 'remote',
+    content: {
+      kind: 'skill',
+      entrypoint: null,
+      selectionRef: { sourceId: 'cloud-curated', skillName: 'release-notes' },
+    },
+    availability: 'available',
+    revision: 0,
+    createdAt: AT,
+    updatedAt: AT,
+  },
+  catalogPlugin(
+    'cloud-curated',
+    'release-notes',
+    SEEDED_CATALOG.curatedName,
+    'Curated',
+  ),
+  catalogPlugin(
+    SEEDED_CATALOG.marketplaceId,
+    'lint-rules',
+    SEEDED_CATALOG.marketplacePluginName,
+    SEEDED_CATALOG.marketplaceLabel,
+  ),
+]);
+
 const ok = (result) => ({ result });
 const refuse = (kind, message, code) => ({
   error: {
@@ -174,6 +307,43 @@ const SCOPES = {
   'worker.filesystem.directory.list': { served: ['chatId'], needs: ['chatId'] },
   'worker.filesystem.search': { served: ['chatId'], needs: ['chatId'] },
   'worker.filesystem.file.read': { served: ['chatId'], needs: ['chatId'] },
+  'worker.artifact.delete': { served: ['chatId'], needs: ['chatId'] },
+  'worker.filesystem.link.resolve': { served: ['chatId'], needs: ['chatId'] },
+  'worker.filesystem.entry.move': { served: ['chatId'], needs: ['chatId'] },
+  'worker.filesystem.entry.delete': { served: ['chatId'], needs: ['chatId'] },
+};
+
+/** The error namespace of each sandbox operation, as the web core names it. */
+const SANDBOX_NAMESPACES = {
+  'worker.filesystem.directory.list': 'worker.filesystem.directory',
+  'worker.filesystem.search': 'worker.filesystem.search',
+  'worker.filesystem.file.read': 'worker.filesystem.file',
+  // A transcript link resolves against the sandbox too (CAN-6587).
+  'worker.filesystem.link.resolve': 'worker.filesystem.link',
+  'worker.filesystem.entry.delete': 'worker.filesystem.entry',
+};
+
+/**
+ * A sandbox call refused because the sandbox sleeps, as the web core's
+ * `sandboxSleeping` answers Core's not-awake code
+ * (apps/web/src/lib/web-core/operations.ts): by default `SANDBOX_NOT_READY`
+ * for a sandbox a wake may start; `asleepAs` names another, such as
+ * `SANDBOX_SESSION_EXPIRED` with no wake from a read (CAN-6654).
+ */
+const sandboxSleeping = (
+  method,
+  asleepAs = { cloudCode: 'SANDBOX_NOT_READY', wakeAllowed: true },
+) => {
+  const namespace = SANDBOX_NAMESPACES[method];
+  return refuseWith('failed_precondition', 'The sandbox is asleep.', {
+    code: `${namespace}.invalidState`,
+    details: {
+      reason: 'sandbox_sleeping',
+      wakeAllowed: asleepAs.wakeAllowed,
+      cloudCode: asleepAs.cloudCode,
+    },
+    retry: { kind: 'after_refresh', resource: namespace },
+  });
 };
 
 /** The catalog kinds a workspace scopes; an organization alone offers none. */
@@ -314,6 +484,18 @@ export function createCloudChatsWorld({ accountId }) {
     ],
     /** Every `core.chat.message.send` the desktop made, in order. */
     sends: [],
+    /** Tasks archived through `core.chat.archive` (CAN-6511); the list drops them. */
+    archived: new Set(),
+    /** The chats' saved deliverables (CAN-6587); `addDeliverable` adds one. */
+    deliverables: [],
+    /** Every `worker.artifact.download.read` made, main's and the renderer's. */
+    artifactReads: [],
+    /** The project's shared workspace files (CAN-6568); `addWorkspaceFile` adds one. */
+    workspaceFiles: [],
+    /** Tool approvals raised in a chat, as the web core lists them (CAN-6515). */
+    approvals: [],
+    /** Every `core.approval.request.respond` the desktop made, in order. */
+    approvalAnswers: [],
     /** Every `core.chat.question.respond` the desktop made, in order. */
     answers: [],
     /**
@@ -334,6 +516,8 @@ export function createCloudChatsWorld({ accountId }) {
         },
       ],
     ]),
+    /** Each chat's attachments, by chat id (CAN-6175 R8d). */
+    attachments: new Map([[seeded.secondChatId, [...seeded.attachments]]]),
     /** Every `core.chat.create` the desktop made, in order. */
     creates: [],
     /** How long each `core.chat.create` takes before it lands, in ms. */
@@ -342,7 +526,53 @@ export function createCloudChatsWorld({ accountId }) {
     createRefusals: [],
     /** Operations a spec adds or overrides: method → (params) => answer. */
     extraAnswers: new Map(),
+    /** Each chat's agent task rows, as its snapshot carries them. */
+    tasks: {},
+    /** Each chat's running turn, by chat id: its conversation turn id. */
+    activeTurns: {},
+    /** How long a sent turn runs before its reply commits, in ms. */
+    replyDelayMs: 100,
+    /**
+     * How long a `core.chat.message.send` takes to answer, in ms (CAN-6592).
+     * The web core takes the message, and its turn starts, only once the
+     * send answers, so a Stop meanwhile has no turn to name yet.
+     */
+    sendDelayMs: 0,
+    /**
+     * How long Core takes to start a sent turn after the send answers, in
+     * ms: the turn waits queued, with no id reported, meanwhile (CAN-6592).
+     */
+    startDelayMs: 0,
+    /** Every `core.chat.turn.cancel` the desktop made, in order. */
+    cancels: [],
+    /** How many `core.chat.snapshot.get` the desktop made. */
+    snapshotReads: 0,
+    /**
+     * A running turn's live reply, by chat id, which `core.chat.live.events`
+     * opens on: its turn item and its tool calls (live revision 2).
+     */
+    liveTurns: {},
+    /** The task folder's files, by path; a move renames one and a delete removes it. */
+    files: { ...seeded.files },
+    /**
+     * Whether the task folder's sandbox sleeps: its reads and writes are
+     * refused with the web core's sleeping reason until a sent turn runs.
+     */
+    sandboxAsleep: false,
+    /**
+     * Core's code and wake permission for the sleeping sandbox; unset reads
+     * `SANDBOX_NOT_READY`, wakeable (CAN-6654).
+     */
+    sandboxAsleepAs: undefined,
+    /** Every `worker.filesystem.entry.delete` the desktop made, in order. */
+    deletes: [],
   };
+  /** Each running turn's reply, committed when its timer fires or Stop lands. */
+  const finishers = new Map();
+  /** Turns a send named that haven't started yet: turn id → chat and prompt. */
+  const startingTurns = new Map();
+  /** Starting turns a cancel named: each ends as it starts, with nothing written. */
+  const cancelledStarting = new Set();
   /** @type {Map<string, { method: string, params: object }>} */
   const subscriptions = new Map();
   /** @type {Set<(notification: object) => void>} */
@@ -384,7 +614,10 @@ export function createCloudChatsWorld({ accountId }) {
   /** Every task, newest first: each is the chat whose task is itself. */
   const tasks = () =>
     [...state.chats.entries()]
-      .filter(([chatId, chat]) => chat.worktreeId === chatId)
+      .filter(
+        ([chatId, chat]) =>
+          chat.worktreeId === chatId && !state.archived.has(chatId),
+      )
       .map(([chatId, chat]) => ({ worktreeId: chatId, ...chat }))
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const isTask = (worktreeId) =>
@@ -393,8 +626,26 @@ export function createCloudChatsWorld({ accountId }) {
       worktreeId.toLowerCase();
   const filesOf = (chatId) =>
     chatId === seeded.rootChatId || chatId === seeded.secondChatId
-      ? seeded.files
+      ? state.files
       : {};
+
+  /**
+   * The runtime of the batch that commits a turn's reply: Core's session
+   * status still reads `streaming` though no turn runs (staging, 11 Nov
+   * 2026); a turn that still runs names itself.
+   */
+  const committedRuntime = (chatId) =>
+    activeTurnOf(chatId) === undefined
+      ? { status: 'streaming', queuedMessageIds: [] }
+      : runtimeOf(chatId);
+
+  /** The turn that asked a pending question runs until it is answered. */
+  const QUESTION_TURN = 'e2e-question-turn';
+  const activeTurnOf = (chatId) =>
+    state.activeTurns[chatId] ??
+    (state.questions.some((question) => question.chatId === chatId)
+      ? QUESTION_TURN
+      : undefined);
 
   const tab = (chat) => ({
     chatId: chat.chatId,
@@ -404,10 +655,42 @@ export function createCloudChatsWorld({ accountId }) {
     transcriptRevision: state.transcripts[chat.chatId].length,
   });
 
-  const runtimeOf = (chatId) => ({
-    status: state.runtime[chatId] ?? 'idle',
-    queuedMessageIds: [],
-  });
+  /**
+   * A chat's runtime as the web core's `runtimeOf` reads it from Core
+   * (apps/web/src/lib/web-core/chat.ts): the running turn's id beside Core's
+   * session status, which waits on a pending question as `awaiting_input`.
+   */
+  const runtimeOf = (chatId) => {
+    const turnId = activeTurnOf(chatId);
+    // A sent prompt Core hasn't started waits queued, as the web core's
+    // runtime reports it (CAN-6592).
+    const queuedMessageIds = [...startingTurns.values()]
+      .filter((starting) => starting.chatId === chatId)
+      .map((starting) => starting.messageId);
+    return {
+      status:
+        turnId === undefined
+          ? queuedMessageIds.length > 0
+            ? 'awaiting_input'
+            : (state.runtime[chatId] ?? 'idle')
+          : state.questions.some((question) => question.chatId === chatId)
+            ? 'awaiting_input'
+            : 'streaming',
+      queuedMessageIds,
+      ...(turnId === undefined ? {} : { activeTurnId: turnId }),
+    };
+  };
+
+  /**
+   * Tells each live stream following `chatId` that no turn runs, as the web
+   * core's live stream does once a turn's reply commits (chat-live.ts).
+   */
+  const liveIdle = (chatId) =>
+    emit(
+      'core.chat.live.events',
+      { kind: 'idle', chatId },
+      (each) => each.scope?.chatId?.toLowerCase() === chatId,
+    );
 
   const chatBatch = (worktreeId, changes) => {
     const baseRevision = state.revision;
@@ -426,6 +709,123 @@ export function createCloudChatsWorld({ accountId }) {
       },
       (params) => params.scope?.worktreeId?.toLowerCase() === worktreeId,
     );
+    // Every committed batch also names its task on the sidebar's stream
+    // (apps/web/src/lib/web-core/chat-task-events.ts), which re-reads it.
+    emit(
+      'core.chat.task.events',
+      {
+        kind: 'task',
+        workspaceId: seeded.workspaceId,
+        worktreeId,
+        batchId: String(state.revision),
+      },
+      (each) =>
+        each.scope === 'all' || each.scope?.workspaceId === seeded.workspaceId,
+    );
+  };
+
+  /**
+   * Core settles an answered question and its turn runs on to the reply.
+   * Core records no result for its question call (staging, 11 Nov 2026): the
+   * batch that commits the reply upserts the asking message as it was, the
+   * call with nothing after it, and reports Core's session still running
+   * with no turn, as the web core's `runtimeOf` reads them
+   * (apps/web/src/lib/web-core/chat.ts, chat-events.ts).
+   */
+  const finishAnsweredTurn = (question) => {
+    const messages = state.transcripts[question.chatId];
+    const asking = messages.find((message) =>
+      message.blocks.some(
+        (block) =>
+          block.type === 'tool_use' && block.toolUseId === question.toolUseId,
+      ),
+    );
+    const reply = text(
+      `${question.requestId}-reply`,
+      'assistant',
+      'Studio B it is.',
+      0,
+    );
+    reply.timestamp = Date.now();
+    messages.push(reply);
+    chatBatch(state.chats.get(question.chatId).worktreeId, [
+      ...(asking === undefined
+        ? []
+        : [
+            {
+              type: 'message.upserted',
+              chatId: question.chatId,
+              message: asking,
+            },
+          ]),
+      { type: 'message.upserted', chatId: question.chatId, message: reply },
+      {
+        type: 'runtime.patched',
+        chatId: question.chatId,
+        runtime: committedRuntime(question.chatId),
+      },
+    ]);
+    liveIdle(question.chatId);
+  };
+
+  /**
+   * A sent turn as the web core reports Core's: queued while Core's session
+   * still reads `awaiting_input`, then running under its conversation turn
+   * id, then its reply committed in a batch whose runtime names no turn
+   * while Core's session status still reads `streaming`. No runtime change
+   * follows (staging, 11 Nov 2026). Stop ends it early with what it wrote.
+   */
+  const runTurn = (chatId, user, turnId, replyText) => {
+    const worktreeId = state.chats.get(chatId).worktreeId;
+    const messages = state.transcripts[chatId];
+    startingTurns.set(turnId, { chatId, messageId: user.id });
+    setTimeout(() => {
+      chatBatch(worktreeId, [
+        {
+          type: 'runtime.patched',
+          chatId,
+          runtime: { status: 'awaiting_input', queuedMessageIds: [user.id] },
+        },
+      ]);
+      setTimeout(
+        () => {
+          startingTurns.delete(turnId);
+          messages.push(user);
+          state.activeTurns[chatId] = turnId;
+          // A turn runs in the sandbox, so it wakes it.
+          state.sandboxAsleep = false;
+          chatBatch(worktreeId, [
+            { type: 'message.upserted', chatId, message: user },
+            { type: 'runtime.patched', chatId, runtime: runtimeOf(chatId) },
+          ]);
+          const finish = (body) => {
+            clearTimeout(timer);
+            finishers.delete(turnId);
+            const reply = text(`${user.id}-reply`, 'assistant', body, 0);
+            reply.timestamp = Date.now();
+            messages.push(reply);
+            delete state.activeTurns[chatId];
+            chatBatch(worktreeId, [
+              { type: 'message.upserted', chatId, message: user },
+              { type: 'message.upserted', chatId, message: reply },
+              {
+                type: 'runtime.patched',
+                chatId,
+                runtime: committedRuntime(chatId),
+              },
+            ]);
+            liveIdle(chatId);
+          };
+          const stoppedFirst = cancelledStarting.delete(turnId);
+          const timer = setTimeout(
+            () => finish(stoppedFirst ? 'Stopped.' : replyText),
+            stoppedFirst ? 20 : state.replyDelayMs,
+          );
+          finishers.set(turnId, finish);
+        },
+        Math.max(20, state.startDelayMs),
+      );
+    }, 0);
   };
 
   /** The task folder's entries directly under `directory` ('' is the root). */
@@ -452,6 +852,8 @@ export function createCloudChatsWorld({ accountId }) {
   const answer = (method, params) => {
     const extra = state.extraAnswers.get(method);
     if (extra) return extra(params);
+    if (state.sandboxAsleep && SANDBOX_NAMESPACES[method] !== undefined)
+      return sandboxSleeping(method, state.sandboxAsleepAs);
     switch (method) {
       case 'core.workspace.list':
         return ok({
@@ -468,6 +870,134 @@ export function createCloudChatsWorld({ accountId }) {
           ],
           nextCursor: null,
         });
+      case 'core.chat.archive': {
+        // As the web core serves it: archiving a task's own chat archives
+        // the task with its tabs (CAN-6511).
+        const { action } = params;
+        const chatId = String(action.tabId).toLowerCase();
+        if (
+          action.type !== 'chat.archive_tab' ||
+          !same(params.projectId, seeded.workspaceId) ||
+          !isTask(chatId) ||
+          !same(params.worktreeId, chatId)
+        )
+          return refuse('not_found', 'The chat was not found.');
+        const already = state.archived.has(chatId);
+        state.archived.add(chatId);
+        if (!already) state.revision += 1;
+        return ok({
+          commandId: params.commandId,
+          revision: 0,
+          outcome: already ? 'already_applied' : 'applied',
+          entityId: chatId,
+        });
+      }
+      case 'core.artifact.list': {
+        // As the web core lists artifacts by owner: a project's shared files
+        // (CAN-6568), a chat's attachments (CAN-6175 R8d) and its saved
+        // deliverables (CAN-6587), every one
+        // available. Other owners hold none here.
+        const owner = params.owner;
+        if (owner?.kind === 'workspace' && !same(owner.id, seeded.workspaceId))
+          return refuse('not_found', 'The artifact was not found.');
+        const chatId = owner?.kind === 'chat' ? owner.id.toLowerCase() : null;
+        if (chatId !== null && !heldChat(chatId)) return chatNotFound();
+        const wants = (kind) =>
+          params.kinds.length === 0 || params.kinds.includes(kind);
+        const shared =
+          owner?.kind === 'workspace'
+            ? state.workspaceFiles.map((file) => ({
+                artifactId: `wsf:${seeded.workspaceId}:${file.id}`,
+                owner: { kind: 'workspace', id: seeded.workspaceId },
+                kind: 'file',
+                name: file.name,
+                mediaType: file.mediaType,
+                sizeBytes: file.sizeBytes,
+                sha256: 'a'.repeat(64),
+                createdAt: AT,
+                availability: 'available',
+                transfer: null,
+              }))
+            : [];
+        const attached =
+          chatId !== null && wants('attachment')
+            ? (state.attachments.get(chatId) ?? []).map((row) => ({
+                artifactId: `att:${chatId}:${row.attachmentId}`,
+                owner: { kind: 'chat', id: chatId },
+                kind: 'attachment',
+                name: row.filename,
+                mediaType: row.mediaType,
+                sizeBytes: row.sizeBytes,
+                sha256: 'a'.repeat(64),
+                createdAt: AT,
+                availability: 'available',
+                transfer: null,
+              }))
+            : [];
+        const saved = (wants('file') ? state.deliverables : [])
+          .filter((deliverable) => deliverable.chatId === chatId)
+          .map((deliverable) => ({
+            artifactId: `dlv:${deliverable.chatId}:${deliverable.id}`,
+            owner: { kind: 'chat', id: deliverable.chatId },
+            kind: 'file',
+            name: deliverable.name,
+            mediaType: 'text/csv',
+            sizeBytes: Buffer.byteLength(deliverable.content),
+            sha256: 'd'.repeat(64),
+            createdAt: AT,
+            availability: 'available',
+            transfer: null,
+          }));
+        return ok({
+          artifacts: [...shared, ...attached, ...saved],
+          nextCursor: null,
+        });
+      }
+      case 'core.approval.request.list': {
+        const chatId = String(params.scope?.chatId ?? '').toLowerCase();
+        if (!heldChat(chatId))
+          return refuse('not_found', 'The chat was not found.');
+        const revised = params.revision === APPROVAL_LIST_REVISION;
+        return ok({
+          requests: state.approvals
+            .filter(
+              (approval) =>
+                approval.chatId === chatId &&
+                params.states.includes(approval.state),
+            )
+            .map(({ presentation, ...request }) =>
+              revised ? { ...request, presentation } : request,
+            ),
+          nextCursor: null,
+          ...(revised
+            ? { viewer: { canAnswerQuestions: true, canApprove: true } }
+            : {}),
+        });
+      }
+      case 'core.approval.request.respond': {
+        // As the web core does (interactions.ts): one answer settles it.
+        const approval = state.approvals.find(
+          (each) => each.requestId === params.requestId,
+        );
+        if (approval === undefined)
+          return refuse('not_found', 'The approval was not found.');
+        if (approval.state !== 'pending')
+          return refuse('failed_precondition', 'The approval was settled.');
+        state.approvalAnswers.push(params);
+        approval.state = params.decision === 'allow' ? 'allowed' : 'denied';
+        emit(
+          'core.approval.request.events',
+          {
+            kind: 'resolved',
+            requestId: approval.requestId,
+            state: approval.state,
+            occurredAt: new Date().toISOString(),
+          },
+          (each) => same(each.scope?.chatId, approval.chatId),
+        );
+        const { presentation: _card, ...request } = approval;
+        return ok(request);
+      }
       case 'core.chat.task.list':
         if (params.scope?.workspaceId !== seeded.workspaceId)
           return ok({ items: [], nextCursor: null });
@@ -489,14 +1019,20 @@ export function createCloudChatsWorld({ accountId }) {
           nextCursor: null,
         });
       case 'core.chat.snapshot.get': {
+        state.snapshotReads += 1;
         const worktreeId = params.scope.worktreeId.toLowerCase();
         const chats = chatsOf(worktreeId);
+        // A task snapshot opens the task's own chat; a chat snapshot, its chat.
+        const opened = (params.chatId ?? worktreeId).toLowerCase();
         return ok({
           workspaceId: seeded.workspaceId,
           worktreeId,
           revision: state.revision,
           eventsCursor: cursor(),
-          tabs: { activeTabId: worktreeId, items: chats.map(tab) },
+          tabs: { activeTabId: opened, items: chats.map(tab) },
+          ...(state.tasks[opened] === undefined
+            ? {}
+            : { tasks: state.tasks[opened] }),
           archives: [],
           runtimeByChatId: Object.fromEntries(
             chats.map((chat) => [chat.chatId, runtimeOf(chat.chatId)]),
@@ -522,7 +1058,7 @@ export function createCloudChatsWorld({ accountId }) {
               worktreeId,
               title,
               state:
-                state.runtime[chatId] === 'streaming'
+                state.activeTurns[chatId] !== undefined
                   ? 'running'
                   : state.questions.some(
                         (question) => question.chatId === chatId,
@@ -552,28 +1088,47 @@ export function createCloudChatsWorld({ accountId }) {
         if (messages === undefined)
           return refuse('not_found', 'No such chat.', 'core.chat.notFound');
         state.sends.push(params);
-        const user = text(params.messageId, 'user', params.text, 0);
-        user.timestamp = Date.now();
-        const reply = text(
-          `${params.messageId}-reply`,
-          'assistant',
-          `Seeded reply: ${params.text}`,
-          0,
+        const take = () => {
+          const user = text(params.messageId, 'user', params.text, 0);
+          user.timestamp = Date.now();
+          const turnId = `turn-${params.commandId}`;
+          runTurn(chatId, user, turnId, `Seeded reply: ${params.text}`);
+          // The receipt names the conversation turn, the id Stop cancels.
+          return ok({
+            commandId: params.commandId,
+            revision: state.revision,
+            outcome: 'applied',
+            entityId: turnId,
+            messageId: params.messageId,
+          });
+        };
+        if (state.sendDelayMs <= 0) return take();
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(take()), state.sendDelayMs),
         );
-        reply.timestamp = Date.now() + 1;
-        messages.push(user, reply);
-        const turnId = `turn-${params.commandId}`;
-        chatBatch(state.chats.get(chatId).worktreeId, [
-          { type: 'message.upserted', chatId, message: user },
-          { type: 'message.upserted', chatId, message: reply },
-          { type: 'runtime.patched', chatId, runtime: runtimeOf(chatId) },
-        ]);
+      }
+      case 'core.chat.turn.cancel': {
+        state.cancels.push(params);
+        const chatId = params.chatId.toLowerCase();
+        const chat = state.chats.get(chatId);
+        if (chat === undefined) return chatNotFound();
+        const starting = startingTurns.has(params.turnId);
+        const running = starting || activeTurnOf(chatId) === params.turnId;
+        // The run winds down and its reply commits with what it wrote; a
+        // turn still starting ends as it starts; a turn already over is not
+        // an error (the catalog page, #8885).
+        if (starting) cancelledStarting.add(params.turnId);
+        else if (running)
+          setTimeout(() => finishers.get(params.turnId)?.('Stopped.'), 20);
         return ok({
-          commandId: params.commandId,
-          revision: state.revision,
-          outcome: 'applied',
-          entityId: turnId,
-          messageId: params.messageId,
+          chatId,
+          workspaceId: seeded.workspaceId,
+          worktreeId: chat.worktreeId,
+          title: chat.title,
+          state: running ? 'running' : 'idle',
+          revision: 0,
+          createdAt: chat.createdAt,
+          updatedAt: new Date().toISOString(),
         });
       }
       case 'core.chat.send.receipt': {
@@ -602,6 +1157,8 @@ export function createCloudChatsWorld({ accountId }) {
           );
         state.answers.push(params);
         state.questions = state.questions.filter((each) => each !== question);
+        // An answered interaction leaves Core's pending list, so the web core
+        // sends `pending_question.removed` (apps/web/src/lib/web-core/chat-events.ts).
         chatBatch(state.chats.get(question.chatId).worktreeId, [
           {
             type: 'pending_question.removed',
@@ -609,6 +1166,8 @@ export function createCloudChatsWorld({ accountId }) {
             requestId: question.requestId,
           },
         ]);
+        // Core then runs the turn on to its reply.
+        setTimeout(() => finishAnsweredTurn(question), 50);
         // The web core answers with the chat, as `core.chat.turn.cancel` does.
         return ok({
           chatId: question.chatId,
@@ -624,7 +1183,12 @@ export function createCloudChatsWorld({ accountId }) {
       case 'core.catalog.snapshot.get':
         return ok({
           revision: 1,
-          entries: [],
+          // An empty `kinds` asks for every kind, as on the web core.
+          entries: CATALOG_ENTRIES.filter(
+            (entry) =>
+              (params.kinds ?? []).length === 0 ||
+              params.kinds.includes(entry.kind),
+          ),
           generatedAt: AT,
         });
       case 'core.catalog.selection.get':
@@ -660,6 +1224,92 @@ export function createCloudChatsWorld({ accountId }) {
           nextCursor: null,
           truncated: false,
         });
+      case 'worker.filesystem.link.resolve': {
+        // As the sandbox resolves a transcript link (CAN-6587): a path under
+        // the workspace, absolute or relative to it, names a file there; any
+        // other absolute path is outside every root.
+        const href = String(params.href);
+        const relativePath = href.startsWith(SANDBOX_WORKSPACE)
+          ? href.slice(SANDBOX_WORKSPACE.length)
+          : href.startsWith('/')
+            ? null
+            : href.replace(/^\.\//, '');
+        if (relativePath === null)
+          return refuse(
+            'failed_precondition',
+            'The link points outside the task folder.',
+            'worker.filesystem.link.outsideRoots',
+          );
+        if (
+          filesOf(params.scope.chatId.toLowerCase())[relativePath] === undefined
+        )
+          return refuse(
+            'not_found',
+            'No such file.',
+            'worker.filesystem.link.notFound',
+          );
+        return ok({
+          fileRootId: FILE_ROOT_ID,
+          relativePath,
+          name: relativePath.split('/').pop(),
+          kind: 'file',
+        });
+      }
+      case 'worker.filesystem.entry.move': {
+        const files = filesOf(params.scope.chatId.toLowerCase());
+        const content = files[params.fromRelativePath];
+        if (content === undefined)
+          return refuse(
+            'not_found',
+            'No such file.',
+            'worker.filesystem.entry.notFound',
+          );
+        if (files[params.toRelativePath] !== undefined)
+          return refuse(
+            'already_exists',
+            'A file already exists there.',
+            'worker.filesystem.entry.exists',
+          );
+        delete files[params.fromRelativePath];
+        files[params.toRelativePath] = content;
+        return ok({
+          fromRelativePath: params.fromRelativePath,
+          toRelativePath: params.toRelativePath,
+          version: `v-${Buffer.byteLength(content)}`,
+          sourceFileRootId: FILE_ROOT_ID,
+          destinationFileRootId: FILE_ROOT_ID,
+          requestedToRelativePath: params.toRelativePath,
+          conflictPolicy: params.conflictPolicy,
+        });
+      }
+      case 'worker.artifact.download.read': {
+        // A chat's own deliverable only, as artifact-uploads.ts serves it:
+        // another chat's id reads as missing.
+        state.artifactReads.push(params);
+        const [kind, id] = params.artifactId.split(':');
+        const chatId = String(params.scope?.chatId ?? '').toLowerCase();
+        const found =
+          kind === 'deliverable'
+            ? state.deliverables.find(
+                (deliverable) =>
+                  deliverable.id === id && deliverable.chatId === chatId,
+              )
+            : undefined;
+        if (found === undefined)
+          return refuse(
+            'not_found',
+            'The artifact was not found.',
+            'worker.artifact.notFound',
+          );
+        const bytes = Buffer.from(found.content);
+        const end = Math.min(bytes.byteLength, params.offset + params.length);
+        return ok({
+          sizeBytes: bytes.byteLength,
+          offset: params.offset,
+          data: bytes.subarray(params.offset, end).toString('base64'),
+          nextOffset: end < bytes.byteLength ? end : null,
+        });
+      }
       case 'worker.filesystem.file.read': {
         const content = filesOf(params.scope.chatId.toLowerCase())[
           params.relativePath
@@ -685,6 +1335,28 @@ export function createCloudChatsWorld({ accountId }) {
           version: `v-${sizeBytes}`,
         });
       }
+      case 'worker.filesystem.entry.delete': {
+        const files = filesOf(params.scope.chatId.toLowerCase());
+        const below = `${params.relativePath}/`;
+        const removed = Object.keys(files).filter(
+          (path) =>
+            path === params.relativePath ||
+            (params.recursive && path.startsWith(below)),
+        );
+        if (removed.length === 0)
+          return refuse(
+            'not_found',
+            'No such file or folder.',
+            'worker.filesystem.entry.notFound',
+          );
+        state.deletes.push(params);
+        for (const path of removed) delete files[path];
+        return ok({
+          deleted: true,
+          deletedEntryCount: removed.length,
+          disposition: params.disposition,
+        });
+      }
       case 'core.client.lease.acquire':
       case 'core.client.lease.renew':
         return ok({
@@ -708,6 +1380,20 @@ export function createCloudChatsWorld({ accountId }) {
         });
       case 'core.chat.create':
         return createChat(params);
+      case 'worker.artifact.delete': {
+        const chatId = params.scope.chatId.toLowerCase();
+        const [kind, attachmentId] = params.artifactId.split(':');
+        const rows = state.attachments.get(chatId) ?? [];
+        const kept = rows.filter((row) => row.attachmentId !== attachmentId);
+        if (kind !== 'attachment' || kept.length === rows.length)
+          return refuse(
+            'not_found',
+            'The artifact was not found.',
+            'worker.artifact.notFound',
+          );
+        state.attachments.set(chatId, kept);
+        return ok({ artifactId: params.artifactId, storageState: 'deleted' });
+      }
       default:
         return undefined;
     }
@@ -787,26 +1473,43 @@ export function createCloudChatsWorld({ accountId }) {
     }
   };
 
+  /** The live stream's minor revision, which adds tool items (CAN-6116). */
+  const LIVE_EVENTS_REVISION = 2;
+  /** Revision 2 lists each approval with the card the web shows (CAN-6092). */
+  const APPROVAL_LIST_REVISION = 2;
+
   /** Streams the page opens; each answers `{ subscriptionId, acceptedCursor }`. */
   const STREAMS = new Set([
     'core.chat.task.events',
     'core.chat.events',
     'core.chat.live.events',
+    'core.approval.request.events',
   ]);
 
   const open = (method, params) => {
     if (!STREAMS.has(method)) return undefined;
     const subscriptionId = randomUUID();
     subscriptions.set(subscriptionId, { method, params });
-    if (method === 'core.chat.live.events')
-      // The live stream opens on its current state: no turn runs.
-      queueMicrotask(() =>
-        emit(
-          'core.chat.live.events',
-          { kind: 'idle', chatId: params.scope?.chatId ?? seeded.rootChatId },
-          (each) => each === params,
-        ),
-      );
+    if (method === 'core.chat.live.events') {
+      // The live stream opens on its current state: the running turn's reply
+      // and its tool calls, or idle when no turn runs. A turn that runs with
+      // no reply yet opens with nothing. Tool calls are revision 2 items: as
+      // the web core does (chat-live.ts), a stream opened without
+      // `revision: 2` gets none.
+      const chatId = params.scope?.chatId ?? seeded.rootChatId;
+      const revised = params.revision === LIVE_EVENTS_REVISION;
+      const live = (
+        state.liveTurns[chatId.toLowerCase()] ??
+        (activeTurnOf(chatId.toLowerCase()) === undefined
+          ? [{ kind: 'idle', chatId }]
+          : [])
+      ).filter((item) => revised || item.kind !== 'tool');
+      // After the open's reply, once the server has bound the subscription.
+      setTimeout(() => {
+        for (const item of live)
+          emit('core.chat.live.events', item, (each) => each === params);
+      }, 0);
+    }
     return ok({ subscriptionId, acceptedCursor: params.cursor ?? null });
   };
 
@@ -848,7 +1551,20 @@ export function createCloudChatsWorld({ accountId }) {
       case 'worker.filesystem.directory.list':
       case 'worker.filesystem.search':
       case 'worker.filesystem.file.read':
+      case 'worker.artifact.delete':
+      case 'worker.filesystem.link.resolve':
+      case 'worker.filesystem.entry.move':
         return heldChat(params.scope.chatId) ? null : chatNotFound();
+      case 'worker.filesystem.entry.delete':
+        return heldChat(params.scope.chatId) ? null : chatNotFound();
+      case 'core.artifact.list':
+        return params.owner?.kind !== 'chat' || heldChat(params.owner.id)
+          ? null
+          : refuse(
+              'not_found',
+              'The artifact or its owner was not found.',
+              'core.artifact.notFound',
+            );
       default:
         return null;
     }
@@ -890,34 +1606,273 @@ export function createCloudChatsWorld({ accountId }) {
     );
   };
 
-  /** The methods the fake serves, as `core.runtime.initialize` reports them. */
+  /**
+   * The methods the fake serves, as `core.runtime.initialize` reports them:
+   * each once, as the web core lists its handler map's keys, also when a spec
+   * overrides a served method.
+   */
   const servedMethods = () => [
-    'core.workspace.list',
-    'core.chat.task.list',
-    'core.chat.snapshot.get',
-    'core.chat.list',
-    'core.chat.transcript.page',
-    'core.chat.message.send',
-    'core.chat.send.receipt',
-    'core.chat.question.respond',
-    'core.chat.create',
-    'core.catalog.snapshot.get',
-    'core.catalog.selection.get',
-    'worker.filesystem.roots.list',
-    'worker.filesystem.directory.list',
-    'worker.filesystem.search',
-    'worker.filesystem.file.read',
-    'core.client.lease.acquire',
-    'core.client.lease.renew',
-    'core.client.lease.release',
-    'core.events.ack',
-    'core.events.unsubscribe',
-    ...state.extraAnswers.keys(),
+    ...new Set([
+      'core.workspace.list',
+      'core.chat.task.list',
+      'core.chat.snapshot.get',
+      'core.chat.list',
+      'core.chat.transcript.page',
+      'core.chat.message.send',
+      'core.chat.send.receipt',
+      'core.chat.question.respond',
+      'core.chat.turn.cancel',
+      'core.approval.request.list',
+      'core.approval.request.respond',
+      'core.chat.create',
+      'core.chat.archive',
+      'core.catalog.snapshot.get',
+      'core.catalog.selection.get',
+      'core.artifact.list',
+      'worker.filesystem.roots.list',
+      'worker.filesystem.directory.list',
+      'worker.filesystem.search',
+      'worker.filesystem.file.read',
+      'worker.artifact.delete',
+      'worker.filesystem.link.resolve',
+      'worker.filesystem.entry.move',
+      'worker.artifact.download.read',
+      'worker.filesystem.entry.delete',
+      'core.client.lease.acquire',
+      'core.client.lease.renew',
+      'core.client.lease.release',
+      'core.events.ack',
+      'core.events.unsubscribe',
+      ...state.extraAnswers.keys(),
+    ]),
   ];
+
+  /** Replaces a chat's task rows and sends them, as the web core does with each Core batch. */
+  const replaceAgentTasks = (chatId, tasks) => {
+    state.tasks[chatId] = tasks;
+    chatBatch(state.chats.get(chatId).worktreeId, [
+      { type: 'agent_tasks.replaced', chatId, tasks },
+    ]);
+  };
+
+  /**
+   * Gives `chatId` a background subagent and a background shell, as Core
+   * reports them: the spawn call and the subagent's own row (marked with the
+   * call's `parentToolUseId`) in the transcript, both tasks running.
+   */
+  const startBackgroundAgent = (chatId, { replyCommitted = true } = {}) => {
+    const { spawnToolCallId, description, shellDescription } = BACKGROUND_AGENT;
+    const at = Date.parse(AT) + 200_000;
+    const spawnInput = JSON.stringify({
+      description,
+      prompt: 'List the config files.',
+      subagent_type: 'Explore',
+      run_in_background: true,
+    });
+    const childRow = {
+      id: 'e2e-subagent-row',
+      role: 'assistant',
+      timestamp: at + 1_000,
+      parentToolUseId: spawnToolCallId,
+      blocks: [{ type: 'text', text: 'I see three config files.' }],
+    };
+    state.tasks[chatId] = [
+      agentTaskRow({
+        taskId: 'e2e-task-survey',
+        spawnToolCallId,
+        description,
+        background: true,
+      }),
+      agentTaskRow({
+        taskId: 'e2e-task-shell',
+        kind: 'background_shell',
+        description: shellDescription,
+        native: { toolName: 'Bash' },
+        background: true,
+      }),
+    ];
+    if (!replyCommitted) {
+      // The subagent writes before its parent's reply commits: its row is
+      // in the transcript while the spawn call is only in the running
+      // turn's live reply (55ea4e2123a).
+      const turnId = 'e2e-spawn-turn';
+      const prompt = state.transcripts[chatId].findLast(
+        (message) => message.role === 'user',
+      );
+      state.transcripts[chatId].push(childRow);
+      state.activeTurns[chatId] = turnId;
+      state.liveTurns[chatId] = [
+        {
+          kind: 'turn',
+          chatId,
+          turnId,
+          promptMessageId: prompt?.id ?? null,
+          text: 'Asking a subagent.',
+          reasoning: '',
+          state: 'streaming',
+        },
+        {
+          kind: 'tool',
+          chatId,
+          turnId,
+          toolUseId: spawnToolCallId,
+          toolName: 'Task',
+          input: spawnInput,
+          textOffset: 'Asking a subagent.'.length,
+        },
+      ];
+      return;
+    }
+    state.transcripts[chatId].push(
+      {
+        id: 'e2e-spawn-row',
+        role: 'assistant',
+        timestamp: at,
+        blocks: [
+          { type: 'text', text: 'Asking a subagent.' },
+          {
+            type: 'tool_use',
+            toolUseId: spawnToolCallId,
+            toolName: 'Task',
+            input: spawnInput,
+          },
+          {
+            type: 'tool_result',
+            toolUseId: spawnToolCallId,
+            toolName: 'Task',
+            output: 'Started in the background.',
+            isError: false,
+          },
+        ],
+      },
+      childRow,
+    );
+  };
+
+  /**
+   * Raises a tool approval in `chatId`, as Core asks the web core for one
+   * while a Claude turn runs a command (CAN-6515).
+   */
+  const raiseApproval = (chatId, { toolName, toolCallId, command }) => {
+    const id = chatId.toLowerCase();
+    const requestedAt = new Date();
+    const approval = {
+      requestId: `${id}/${randomUUID()}`,
+      sessionId: id,
+      chatId: id,
+      turnId: null,
+      target: { kind: 'tool', toolName, providerId: null },
+      explanation: command,
+      policyRevision: 0,
+      state: 'pending',
+      requestedAt: requestedAt.toISOString(),
+      expiresAt: new Date(requestedAt.getTime() + 10 * 60_000).toISOString(),
+      subagentId: null,
+      suggestedRule: null,
+      presentation: {
+        toolCallId,
+        details: { kind: 'command', command },
+        explainable: true,
+      },
+    };
+    state.approvals.push(approval);
+    const { presentation: _card, ...request } = approval;
+    emit(
+      'core.approval.request.events',
+      { kind: 'request', request, occurredAt: approval.requestedAt },
+      (each) => same(each.scope?.chatId, id),
+    );
+    return approval.requestId;
+  };
+
+  /** Ends every open subscription of `stream` that `matches`, with `error`. */
+  const endStreams = (stream, matches, error) => {
+    for (const [subscriptionId, subscription] of subscriptions) {
+      if (subscription.method !== stream || !matches(subscription.params))
+        continue;
+      subscriptions.delete(subscriptionId);
+      const notification = {
+        jsonrpc: '2.0',
+        method: `${stream}.end`,
+        params: { subscriptionId, cursor: cursor(), outcome: 'error', error },
+      };
+      for (const listener of listeners) listener(notification);
+    }
+  };
+
+  /**
+   * Deletes a chat on another device, as the web does (CAN-6614). The web
+   * core finds the chat no more, and its task's stream sends `tab.removed`
+   * for it (chat-feed.ts: a chat no longer live). A task's own chat takes
+   * the task and its other chats with it, each removed in the same batch
+   * (unless `removeTabs` is false, as when the web core only ends the
+   * stream), and with `endStream` the task's
+   * event streams then end `not_found`, as chat-events.ts ends a stream
+   * whose task is gone.
+   */
+  const deleteChat = (chatId, { endStream = true, removeTabs = true } = {}) => {
+    const id = chatId.toLowerCase();
+    const task = state.chats.get(id)?.worktreeId;
+    if (task === undefined) return;
+    const gone = id === task ? chatsOf(task).map((chat) => chat.chatId) : [id];
+    if (removeTabs)
+      chatBatch(
+        task,
+        gone.map((each) => ({ type: 'tab.removed', tabId: each })),
+      );
+    for (const each of gone) {
+      state.chats.delete(each);
+      delete state.transcripts[each];
+      delete state.runtime[each];
+      delete state.tasks[each];
+    }
+    state.questions = state.questions.filter(
+      (question) => !gone.includes(question.chatId),
+    );
+    if (id === task && endStream)
+      endStreams(
+        'core.chat.events',
+        (params) => same(params.scope?.worktreeId, task),
+        {
+          kind: 'not_found',
+          message: 'The task was not found.',
+          retry: { kind: 'never' },
+        },
+      );
+  };
 
   return {
     state,
     accountId,
+    deleteChat,
+    /**
+     * Ends every open subscription of a stream that `matches` with `error`,
+     * as a web core that restarts ends the sidebar's task stream.
+     */
+    endStreams,
+    /** Adds a shared workspace file to the project, as an upload on the web would. */
+    addWorkspaceFile: ({ name, mediaType = 'text/csv', sizeBytes = 2048 }) => {
+      state.workspaceFiles.push({
+        id: `file-${state.workspaceFiles.length + 1}`,
+        name,
+        mediaType,
+        sizeBytes,
+      });
+    },
+    raiseApproval,
+    replaceAgentTasks,
+    startBackgroundAgent,
+    /**
+     * Saves a deliverable of `chatId`'s session, as Core does when a turn
+     * writes one: in the task folder at deliverables/<session>/<name>, and as
+     * the chat's saved copy. Answers its id.
+     */
+    addDeliverable: (chatId, { session, name, content }) => {
+      const id = randomUUID();
+      state.deliverables.push({ id, chatId, name, content });
+      state.files[`deliverables/${session}/${name}`] = content;
+      return id;
+    },
     /** The operation's answer, `{ result }` or `{ error }`; undefined when not served. */
     call,
     /** Delivers every stream item notification to `listener`; returns the unsubscribe. */
@@ -928,5 +1883,10 @@ export function createCloudChatsWorld({ accountId }) {
     /** The methods the fake serves, as `core.runtime.initialize` reports them. */
     served: servedMethods,
     streams: () => [...STREAMS],
+    /** The minor revisions `core.runtime.initialize` advertises, as the web core's manifest does. */
+    schemaRevisions: () => ({
+      'core.chat.live.events': LIVE_EVENTS_REVISION,
+      'core.approval.request.list': APPROVAL_LIST_REVISION,
+    }),
   };
 }

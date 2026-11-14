@@ -15,7 +15,6 @@ import { Stack } from '@canopy/ui-shared/components';
  * All reads and mutations go through `useArchivedContainersStore`; this page
  * never touches archive files or re-implements retention rules.
  */
-import { Count } from '@canopy/ui-shared/components/Badge';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type {
@@ -25,20 +24,16 @@ import type {
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
   Surface,
-  ARCHIVED_LIST_CONTAINER_CLASS_NAME,
+  ArchivedOverviewPage,
   ArchivedOverviewRow as SharedArchivedOverviewRow,
   ArchivedStateIcon,
-  DelayedLoadingPlaceholder,
   EmptyTrashDialog as SharedEmptyTrashDialog,
   HeaderActionButton,
   ListRow,
-  SearchField,
-  Skeleton,
 } from '@canopy/ui-shared/components';
 import { formatCostAmount } from '@canopy/ui-shared/components/cost';
 import { formatByteSize, matchesArchivedQuery } from '@canopy/ui-shared/lib';
 import {
-  BackIcon,
   GitPullRequestIcon,
   TrashPermanentlyIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -76,7 +71,6 @@ import {
 } from '@/lib/archivedContainerDisplay';
 import { formatDateOrEmpty } from '@/lib/format';
 import { ArchivedContainerActionsMenu } from './ArchivedContainerActionsMenu';
-import { ArchivedStateFilterDropdown } from './ArchivedStateFilterDropdown';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
 export type ArchivedContainersOverviewSurface =
@@ -310,42 +304,7 @@ export function ArchivedContainersOverviewPage({
   // same label, spinner in the icon slot, hover ✕, click to cancel).
   const startEmptyTrash = (): void => {
     dismissEmptyTrashConfirmation();
-    void emptyTrash(workspaceId)
-      .then((result) => {
-        const itemWord = (count: number): string =>
-          count === 1 ? 'item' : 'items';
-        if (result.cancelled) {
-          addToast(
-            `Stopped emptying trash. ${result.deletedIds.length} ${itemWord(
-              result.deletedIds.length,
-            )} deleted, ${result.remainingIds.length} left.`,
-            'info',
-          );
-        }
-        if (result.failedIds.length > 0) {
-          addToast(
-            `Couldn't delete ${result.failedIds.length} ${itemWord(
-              result.failedIds.length,
-            )}. Try again.`,
-            'error',
-          );
-        }
-        if (!result.cancelled && result.remainingIds.length > 0) {
-          const keptVerb = result.remainingIds.length === 1 ? 'was' : 'were';
-          addToast(
-            `${result.remainingIds.length} ${itemWord(
-              result.remainingIds.length,
-            )} became Archived and ${keptVerb} kept.`,
-            'info',
-          );
-        }
-      })
-      .catch(() => {
-        addToast(
-          "Trash was emptied, but the latest archive state couldn't be loaded. Refresh and check the remaining items.",
-          'error',
-        );
-      });
+    startArchivedEmptyTrash(workspaceId, emptyTrash, addToast);
   };
   const emptyTrashRunning = emptyTrashRun !== null;
   const emptyTrashCancelRequested = emptyTrashRun?.cancelRequested === true;
@@ -356,45 +315,29 @@ export function ArchivedContainersOverviewPage({
       : null;
 
   return (
-    <Surface
-      data-testid="archived-overview-page"
-      data-workspace-id={workspaceId}
-      variant="pane"
-      extent="parent"
-      className="flex min-h-0 flex-col"
-    >
-      {/* Header: Back, title + workspace, count, Empty trash */}
-      <ArchivedOverviewHeaderShell surface={surface}>
-        <div className="flex flex-wrap items-center gap-3 px-4 py-2">
-          <HeaderActionButton
-            tone="neutral"
-            data-testid="archived-overview-back"
-            onClick={onClose}
-            title="Back to the project"
-          >
-            <BackIcon size="sm" aria-hidden="true" />
-            Back
-          </HeaderActionButton>
-          <div className="flex min-w-0 flex-col">
-            <span
-              className="text-s font-medium fg-primary"
-              data-testid="archived-overview-title"
-            >
-              Archived and deleted
-            </span>
-            <span
-              className={`${POSTHOG_REPLAY_MASK_CLASS} truncate text-2xs fg-secondary`}
-              data-testid="archived-overview-workspace-name"
-            >
-              {workspaceName}
-            </span>
-          </div>
-          <span
-            data-testid="archived-overview-count"
-            className="text-xs fg-secondary"
-          >
-            <Count value={totalCount} /> {totalCount === 1 ? 'item' : 'items'}
-          </span>
+    <>
+      <ArchivedOverviewPage
+        workspaceId={workspaceId}
+        workspaceName={workspaceName}
+        totalCount={totalCount}
+        loaded={loaded}
+        hasMatches={
+          visibleContainers.length +
+            visiblePendingContainers.length +
+            visibleLegacyChats.length >
+          0
+        }
+        query={query}
+        onQueryChange={setQuery}
+        hiddenStates={hiddenStates}
+        onHiddenStatesChange={setHiddenStates}
+        onClose={onClose}
+        renderHeader={(content) => (
+          <ArchivedOverviewHeaderShell surface={surface}>
+            {content}
+          </ArchivedOverviewHeaderShell>
+        )}
+        headerActions={
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {/* Mirrors the worktree top bar's git actions: while the run is
               active the button keeps its label, swaps its icon for a
@@ -471,112 +414,59 @@ export function ArchivedContainersOverviewPage({
               )}
             </div>
           </div>
-        </div>
-      </ArchivedOverviewHeaderShell>
-
-      {/* Search */}
-      <Surface variant="section" boundary="bottom" className="shrink-0">
-        <div className="flex shrink-0 items-center gap-2 px-4 py-2">
-          <SearchField
-            value={query}
-            onValueChange={setQuery}
-            placeholder="Search archived and deleted"
-            aria-label="Search archived and deleted"
-            data-testid="archived-overview-search"
-            className="min-w-0 flex-1"
-          />
-          <ArchivedStateFilterDropdown
-            hiddenStates={hiddenStates}
-            onChange={setHiddenStates}
-          />
-        </div>
-      </Surface>
-
-      {/* List: mirrors the former in-sidebar archived list, one row per
-          retained item with the state icon left-aligned. It is a container
-          query root so the row's ⋯ menu can stay visible when there is room
-          and fall back to hover-reveal on narrow layouts. */}
-      <div
-        className={`${ARCHIVED_LIST_CONTAINER_CLASS_NAME} min-h-0 flex-1 overflow-y-auto px-3 py-2`}
+        }
       >
-        {!loaded ? (
-          <DelayedLoadingPlaceholder slowNote="Still loading archived and deleted items…">
-            <ArchivedOverviewListSkeleton />
-          </DelayedLoadingPlaceholder>
-        ) : totalCount === 0 ? (
+        <Stack gap="item">
           <div
-            className="px-2 py-6 text-center text-xs fg-secondary"
-            data-testid="archived-overview-empty"
+            className="flex flex-col gap-0.5"
+            data-testid="archived-overview-list"
           >
-            Restore archived or deleted items from this project here.
+            {visiblePendingContainers.map((pending) => (
+              <PendingArchivedRow
+                key={pending.containerId}
+                pending={pending}
+                displayName={
+                  pendingDisplayNames.get(pending.containerId) ?? pending.name
+                }
+              />
+            ))}
+            {visibleContainers.map((container) => (
+              <ArchivedOverviewRow
+                key={container.id}
+                container={container}
+                displayName={displayNames.get(container.id) ?? container.name}
+                onOpen={() => openContainer(container.id)}
+              />
+            ))}
           </div>
-        ) : visibleContainers.length === 0 &&
-          visiblePendingContainers.length === 0 &&
-          visibleLegacyChats.length === 0 ? (
-          <div
-            className="px-2 py-6 text-center text-xs fg-secondary"
-            data-testid="archived-overview-no-matches"
-          >
-            {normalizedQuery.length > 0 ? (
-              <>No items match &ldquo;{query.trim()}&rdquo;</>
-            ) : (
-              'No items match the current filter'
-            )}
-          </div>
-        ) : (
-          <Stack gap="item">
-            <div
-              className="flex flex-col gap-0.5"
-              data-testid="archived-overview-list"
-            >
-              {visiblePendingContainers.map((pending) => (
-                <PendingArchivedRow
-                  key={pending.containerId}
-                  pending={pending}
-                  displayName={
-                    pendingDisplayNames.get(pending.containerId) ?? pending.name
-                  }
-                />
-              ))}
-              {visibleContainers.map((container) => (
-                <ArchivedOverviewRow
-                  key={container.id}
-                  container={container}
-                  displayName={displayNames.get(container.id) ?? container.name}
-                  onOpen={() => openContainer(container.id)}
-                />
-              ))}
-            </div>
-            {visibleLegacyChats.length > 0 && (
-              <div data-testid="archived-overview-legacy">
-                <div className="px-2 py-1 text-2xs font-medium fg-tertiary">
-                  Legacy archived chats
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  {visibleLegacyChats.map((chat) => (
-                    <ListRow
-                      key={chat.id}
-                      data-testid={`archived-overview-legacy-row-${chat.id}`}
-                      data-standalone-chat-id={chat.id}
-                      data-archived="true"
-                      onClick={() => openLegacyChat(chat.id)}
-                      icon={<ArchivedStateIcon state="archived" />}
-                      trailing={formatDateOrEmpty(
-                        chat.archivedAt ?? chat.lastMessageAt ?? chat.createdAt,
-                      )}
-                    >
-                      <span title={getStandaloneRowLabel(chat)}>
-                        {getStandaloneRowLabel(chat)}
-                      </span>
-                    </ListRow>
-                  ))}
-                </div>
+          {visibleLegacyChats.length > 0 && (
+            <div data-testid="archived-overview-legacy">
+              <div className="px-2 py-1 text-2xs font-medium fg-tertiary">
+                Legacy archived chats
               </div>
-            )}
-          </Stack>
-        )}
-      </div>
-
+              <div className="flex flex-col gap-0.5">
+                {visibleLegacyChats.map((chat) => (
+                  <ListRow
+                    key={chat.id}
+                    data-testid={`archived-overview-legacy-row-${chat.id}`}
+                    data-standalone-chat-id={chat.id}
+                    data-archived="true"
+                    onClick={() => openLegacyChat(chat.id)}
+                    icon={<ArchivedStateIcon state="archived" />}
+                    trailing={formatDateOrEmpty(
+                      chat.archivedAt ?? chat.lastMessageAt ?? chat.createdAt,
+                    )}
+                  >
+                    <span title={getStandaloneRowLabel(chat)}>
+                      {getStandaloneRowLabel(chat)}
+                    </span>
+                  </ListRow>
+                ))}
+              </div>
+            </div>
+          )}
+        </Stack>
+      </ArchivedOverviewPage>
       {confirmingEmptyTrash && (
         <DesktopEmptyTrashDialog
           items={deletedContainers}
@@ -585,8 +475,58 @@ export function ArchivedContainersOverviewPage({
           onConfirm={startEmptyTrash}
         />
       )}
-    </Surface>
+    </>
   );
+}
+
+/**
+ * Runs Empty trash for a workspace and reports how it went: stopped early,
+ * items that failed, or items that became Archived and were kept. Shared by
+ * the More page and the cowork overview.
+ */
+export function startArchivedEmptyTrash(
+  workspaceId: string,
+  emptyTrash: ReturnType<
+    typeof useArchivedContainersStore.getState
+  >['emptyTrash'],
+  addToast: ReturnType<typeof useGitHubStore.getState>['addToast'],
+): void {
+  void emptyTrash(workspaceId)
+    .then((result) => {
+      const itemWord = (count: number): string =>
+        count === 1 ? 'item' : 'items';
+      if (result.cancelled) {
+        addToast(
+          `Stopped emptying trash. ${result.deletedIds.length} ${itemWord(
+            result.deletedIds.length,
+          )} deleted, ${result.remainingIds.length} left.`,
+          'info',
+        );
+      }
+      if (result.failedIds.length > 0) {
+        addToast(
+          `Couldn't delete ${result.failedIds.length} ${itemWord(
+            result.failedIds.length,
+          )}. Try again.`,
+          'error',
+        );
+      }
+      if (!result.cancelled && result.remainingIds.length > 0) {
+        const keptVerb = result.remainingIds.length === 1 ? 'was' : 'were';
+        addToast(
+          `${result.remainingIds.length} ${itemWord(
+            result.remainingIds.length,
+          )} became Archived and ${keptVerb} kept.`,
+          'info',
+        );
+      }
+    })
+    .catch(() => {
+      addToast(
+        "Trash was emptied, but the latest archive state couldn't be loaded. Refresh and check the remaining items.",
+        'error',
+      );
+    });
 }
 
 interface ArchivedOverviewHeaderShellProps {
@@ -640,73 +580,6 @@ function ArchivedOverviewHeaderShell({
     >
       {children}
     </PageTitlebar>
-  );
-}
-
-/** Plain rows of the real shape: a name, a size, and a date each. */
-const SAMPLE_OVERVIEW_ROWS: ReadonlyArray<{
-  readonly id: string;
-  readonly state: ArchivedContainerState;
-  readonly title: string;
-  readonly size: string;
-  readonly date: string;
-}> = [
-  {
-    id: 'sample-1',
-    state: 'archived',
-    title: 'Fix the checkout retry',
-    size: '12 MB',
-    date: 'Jan 4',
-  },
-  {
-    id: 'sample-2',
-    state: 'deleted',
-    title: 'Update the docs sidebar',
-    size: '3 MB',
-    date: 'Jan 2',
-  },
-  {
-    id: 'sample-3',
-    state: 'archived',
-    title: 'Add release notes',
-    size: '8 MB',
-    date: 'Dec 30',
-  },
-];
-
-const noop = (): void => undefined;
-
-/**
- * The retained items that have not arrived: the shared overview row itself,
- * rendered from plain samples inside the measured `Skeleton`, so the bars sit
- * where the rows will.
- */
-function ArchivedOverviewListSkeleton(): JSX.Element {
-  return (
-    <Skeleton
-      loading
-      label="Loading archived and deleted items"
-      testId="archived-overview-loading"
-    >
-      <div className="flex flex-col gap-0.5">
-        {SAMPLE_OVERVIEW_ROWS.map((row) => (
-          <SharedArchivedOverviewRow
-            key={row.id}
-            state={row.state}
-            title={row.title}
-            stateTooltip={null}
-            trailing={
-              <span className="shrink-0 text-2xs tabular-nums fg-secondary">
-                {row.size}
-              </span>
-            }
-            date={row.date}
-            onOpen={noop}
-            actions={null}
-          />
-        ))}
-      </div>
-    </Skeleton>
   );
 }
 

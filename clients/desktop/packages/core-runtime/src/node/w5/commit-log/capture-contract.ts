@@ -1,4 +1,10 @@
 import { isRecord } from './is-record';
+import { isSafeWorkspaceId } from '../../identifiers';
+
+// Historical desktop slugs are ASCII; 255 bytes is the filesystem segment cap.
+export const W5_CAPTURE_WORKSPACE_ID_MAX = 255;
+export const W5_CAPTURE_KEY_MAX =
+  'worktree:/'.length + W5_CAPTURE_WORKSPACE_ID_MAX + 256;
 
 export const W5_CAPTURE_LIMITS = Object.freeze({
   files: 256,
@@ -124,9 +130,10 @@ export function w5CaptureFileComponents(
 
 export function isW5CaptureWorkspaceId(value: unknown): value is string {
   return (
-    typeof value === 'string' &&
-    /^[A-Za-z0-9_-]{1,128}$/.test(value) &&
-    !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(value)
+    isSafeWorkspaceId(value) ||
+    (typeof value === 'string' &&
+      value.length <= W5_CAPTURE_WORKSPACE_ID_MAX &&
+      /^[a-z0-9][a-z0-9-]*$/.test(value))
   );
 }
 
@@ -280,7 +287,8 @@ export function isW5CaptureResult(value: unknown): value is W5CaptureResult {
     isRecord(log.revisions) &&
     Object.keys(log.revisions).length <= W5_CAPTURE_LIMITS.evidenceRows &&
     Object.entries(log.revisions).every(
-      ([key, revision]) => key.length <= 512 && isRevision(revision),
+      ([key, revision]) =>
+        key.length <= W5_CAPTURE_KEY_MAX && isRevision(revision),
     ) &&
     Array.isArray(log.files) &&
     log.files.length + Object.keys(log.revisions).length <=

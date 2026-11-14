@@ -1,3 +1,5 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import {
@@ -668,7 +670,18 @@ export function registerChatPersistenceHandlers(
   registerIpcHandler<[ChatLoadArchivesRequest], ArchivedChatSummary[]>(
     IPC_CHANNELS.chatLoadArchives,
     async (_event, req) => {
-      validateWorktreeChatScope(req.projectId, req.worktreeId);
+      if (!req || typeof req !== 'object')
+        throw classifyError(
+          new Error('Expected an archive listing request.'),
+          'input.not_accepted',
+        );
+      try {
+        validateWorktreeChatScope(req.projectId, req.worktreeId);
+      } catch (error) {
+        if (error instanceof IdentifierValidationError)
+          throw classifyError(error, 'input.not_accepted');
+        throw error;
+      }
 
       const file = await getChatStateService().getCompatibilityArchives({
         projectId: req.projectId,

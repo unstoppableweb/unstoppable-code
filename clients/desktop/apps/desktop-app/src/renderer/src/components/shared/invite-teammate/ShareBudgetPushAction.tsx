@@ -39,6 +39,7 @@ export function ShareBudgetPushAction({
   return (
     <Stack gap="tight" aria-busy={pushing ? 'true' : undefined}>
       <ErrorBanner
+        errorSource="share-budget-push-action-label"
         className=""
         error={failureLabel}
         testId={`${dataTestId}-error`}

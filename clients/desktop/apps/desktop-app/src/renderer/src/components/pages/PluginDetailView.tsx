@@ -396,7 +396,9 @@ export function PluginDetailView({
         formatDate={formatDate}
       />
       {autoInstallError && (
-        <Notice intent="destructive">{autoInstallError}</Notice>
+        <Notice errorSource="plugin-detail-auto-install" intent="destructive">
+          {autoInstallError}
+        </Notice>
       )}
       {shareOpen && shareableRef && (
         <SharePluginModal

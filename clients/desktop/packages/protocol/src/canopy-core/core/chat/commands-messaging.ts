@@ -3,7 +3,11 @@ import {
   ChatPlanReviewApprovalSchema,
 } from '../../chat-plan-review';
 import { z } from 'zod';
-import { CoreChatModelConfigSchema } from './commands-lifecycle';
+import {
+  CORE_CHAT_MESSAGE_SEND_SCHEMA_REVISION,
+  CoreChatCapabilityStateSchema,
+  CoreChatModelConfigSchema,
+} from './commands-lifecycle';
 import {
   CanopyQueryRequestMetadataSchema,
   CanopyRequestMetadataSchema,
@@ -89,6 +93,8 @@ export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
       turnTimerMessageId: IdentifierSchema,
     })
     .optional(),
+  /** Revision 2 output, sent only when the runtime advertises it. */
+  revision: z.literal(CORE_CHAT_MESSAGE_SEND_SCHEMA_REVISION).optional(),
 })
   .refine(
     (params) =>
@@ -113,6 +119,32 @@ export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
     },
   );
 
+/**
+ * `core.chat.message.send`'s receipt. Revision 2 adds what the web core's
+ * send accepted the turn with, as `POST /cloud/chats/:id/conversation/turns`
+ * answers it (CAN-6092): each field is optional, and the desktop core never
+ * sets them.
+ */
+export const CoreChatMessageSendResultSchema =
+  CoreChatCommandReceiptSchema.extend({
+    /** The Core session that accepted the turn; another after a worktree rebuild. */
+    sessionId: IdentifierSchema.optional(),
+    /** The model definition the turn runs on; null on the chat's default. */
+    modelDefinitionId: IdentifierSchema.nullable().optional(),
+    modelSelectionMode: z.enum(['auto', 'manual']).optional(),
+    /** The model Auto picked for this turn, for its attribution chip. */
+    autoRouting: z
+      .strictObject({
+        autoRoutedModel: IdentifierSchema,
+        autoRoutedModelLabel: z.string().optional(),
+      })
+      .optional(),
+    /** Why routing ran the turn on another model than asked. */
+    modelRoutingNotice: z.string().optional(),
+    /** The capability state the turn was accepted with. */
+    capabilities: CoreChatCapabilityStateSchema.optional(),
+  });
+
 /** A queued entry's revision as the caller last read it (CAN-4112). */
 const EntryRevisionSchema = z
   .number()
@@ -135,6 +167,8 @@ export const CoreChatQueueEntryUpdateParamsSchema =
         kind: z.literal('edit'),
         text: z.string(),
         inputMode: z.enum(['typed', 'voice']).optional(),
+        /** The caller's hold on the entry, released with the edit (CAN-6106); a core without cloud holds refuses it. */
+        acquisitionId: IdentifierSchema.optional(),
       }),
       z.strictObject({ kind: z.literal('steer') }),
       z.strictObject({
@@ -158,12 +192,24 @@ export const CoreChatQueueEntryForceParamsSchema = ChatCommandBaseSchema.extend(
   },
 );
 
-export const CoreChatTurnCancelParamsSchema = z.strictObject({
-  chatId: IdentifierSchema,
-  turnId: IdentifierSchema,
-  reason: z.enum(['user', 'superseded', 'shutdown', 'policy', 'timeout']),
-  _meta: CanopyQueryRequestMetadataSchema.optional(),
-});
+export const CoreChatTurnCancelParamsSchema = z
+  .strictObject({
+    chatId: IdentifierSchema,
+    turnId: IdentifierSchema.optional(),
+    /**
+     * Stop (keep the text for Edit) or Dismiss a worktree's first message
+     * before it went in, instead of one turn (CAN-6106); a core that holds no
+     * first messages refuses it.
+     */
+    firstMessage: z.enum(['stop', 'dismiss']).optional(),
+    reason: z.enum(['user', 'superseded', 'shutdown', 'policy', 'timeout']),
+    _meta: CanopyQueryRequestMetadataSchema.optional(),
+  })
+  .refine(
+    (params) =>
+      (params.turnId === undefined) !== (params.firstMessage === undefined),
+    'Name exactly one of turnId and firstMessage.',
+  );
 
 export const CoreChatTurnCancelResultSchema = z
   .object({
@@ -230,7 +276,7 @@ export const CORE_CHAT_MESSAGE_INSTRUCTION_DEFINITIONS =
       idempotency: 'keyed',
       requiredGrants: ['core.chat.write'],
       params: CoreChatMessageSendParamsSchema,
-      result: CoreChatCommandReceiptSchema,
+      result: CoreChatMessageSendResultSchema,
       error: keyedErrorSchema([
         'core.chat.message.invalidState',
         'core.chat.message.revisionConflict',
@@ -274,7 +320,16 @@ export const CORE_CHAT_MESSAGE_INSTRUCTION_DEFINITIONS =
       idempotency: 'inherent',
       requiredGrants: ['core.chat.write'],
       params: CoreChatTurnCancelParamsSchema,
-      result: CoreChatTurnCancelResultSchema,
+      result: CoreChatTurnCancelResultSchema.extend({
+        /**
+         * A first-message cancel's outcome: whether the message was taken
+         * back, and Stop's text for Edit, uncapped as the message is
+         * (CAN-6106).
+         */
+        firstMessage: z
+          .strictObject({ withdrawn: z.boolean(), text: z.string().optional() })
+          .optional(),
+      }),
       error: CoreChatTurnCancelErrorSchema,
     }),
     'core.chat.queue.entry.force': defineCanopyInstruction({

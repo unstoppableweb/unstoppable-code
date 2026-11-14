@@ -5,12 +5,16 @@ import type {
   MenuItemConstructorOptions,
   WebContents,
 } from 'electron';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { lookUpMenuLabel } from '@canopy/ui-shared/lib/look-up-label';
 import { isE2eBuild } from './e2e-gate';
 
 /**
  * Right-click menu for text fields (CAN-3378): Cut, Copy, Paste and Select
  * All in every editable field of every app window (main window, App Advisor
- * popout, panel pull-outs). Non-editable areas keep showing nothing.
+ * popout, panel pull-outs). On macOS a selection adds Look up, the system
+ * dictionary row native text fields offer. Non-editable areas keep showing
+ * nothing.
  *
  * Attached from `browser-window-created`, which in-app browser tabs
  * (`WebContentsView`) never fire, so they keep their own behavior. A renderer
@@ -31,15 +35,25 @@ import { isE2eBuild } from './e2e-gate';
  * id, which runs it against the window that presented the last menu.
  */
 
-export type EditableContextMenuAction = 'cut' | 'copy' | 'paste' | 'selectAll';
+export type EditableContextMenuAction =
+  | 'cut'
+  | 'copy'
+  | 'paste'
+  | 'selectAll'
+  | 'lookUp';
 
 export interface EditableContextMenuItem {
   id: EditableContextMenuAction;
-  /** The labels of the app's own Edit menu (`role: 'editMenu'`). */
+  /**
+   * The labels of the app's own Edit menu (`role: 'editMenu'`), and Look up
+   * with the selection it reads.
+   */
   label: string;
   /** Windows only: a display hint, as Chromium's own menu shows. */
   accelerator?: string;
   enabled: boolean;
+  /** Starts a new group: a separator goes above the row. */
+  separatorBefore?: boolean;
 }
 
 export interface EditableContextMenuEnvironment {
@@ -64,7 +78,7 @@ export const E2E_EDITABLE_CONTEXT_MENU_CLICK_CHANNEL =
   'e2e:editable-context-menu-click';
 
 const MENU_ITEMS: ReadonlyArray<{
-  id: EditableContextMenuAction;
+  id: Exclude<EditableContextMenuAction, 'lookUp'>;
   label: string;
   accelerator: string;
 }> = [
@@ -80,12 +94,12 @@ const MENU_ITEMS: ReadonlyArray<{
  * content, as in Chrome's own menu.
  */
 export function buildEditableContextMenuItems(
-  params: Pick<ContextMenuParams, 'isEditable' | 'editFlags'>,
+  params: Pick<ContextMenuParams, 'isEditable' | 'editFlags' | 'selectionText'>,
   environment: EditableContextMenuEnvironment,
 ): EditableContextMenuItem[] | null {
   if (!params.isEditable) return null;
   const { editFlags } = params;
-  const enabled: Record<EditableContextMenuAction, boolean> = {
+  const enabled: Record<(typeof MENU_ITEMS)[number]['id'], boolean> = {
     cut: editFlags.canCut,
     copy: editFlags.canCopy,
     paste: editFlags.canPaste && environment.clipboardHasContent,
@@ -93,7 +107,7 @@ export function buildEditableContextMenuItems(
   };
   // macOS context menus show no shortcuts.
   const showAccelerators = environment.platform === 'win32';
-  return MENU_ITEMS.map(
+  const items = MENU_ITEMS.map(
     ({ id, label, accelerator }): EditableContextMenuItem => ({
       id,
       label,
@@ -101,12 +115,27 @@ export function buildEditableContextMenuItems(
       enabled: enabled[id],
     }),
   );
+  // Only macOS has a system dictionary lookup. It comes last, so the edit
+  // rows keep their places with or without a selection.
+  const lookUpLabel =
+    environment.platform === 'darwin'
+      ? lookUpMenuLabel(params.selectionText)
+      : null;
+  if (lookUpLabel !== null) {
+    items.push({
+      id: 'lookUp',
+      label: lookUpLabel,
+      enabled: true,
+      separatorBefore: true,
+    });
+  }
+  return items;
 }
 
 export function isEditableContextMenuAction(
   value: unknown,
 ): value is EditableContextMenuAction {
-  return MENU_ITEMS.some((item) => item.id === value);
+  return value === 'lookUp' || MENU_ITEMS.some((item) => item.id === value);
 }
 
 export function runEditableContextMenuAction(
@@ -126,6 +155,13 @@ export function runEditableContextMenuAction(
       return;
     case 'selectAll':
       contents.selectAll();
+      return;
+    case 'lookUp':
+      // The field's own contents holds the selection; no other platform has
+      // the lookup, and none builds this row.
+      if (hostPlatformOperatingSystem() === 'darwin') {
+        contents.showDefinitionForSelection();
+      }
       return;
   }
 }
@@ -148,6 +184,8 @@ function registerE2eClickListener(): void {
   );
 }
 
+const MENU_SEPARATOR: MenuItemConstructorOptions = { type: 'separator' };
+
 function presentEditableContextMenu(
   window: BrowserWindow,
   contents: WebContents,
@@ -162,8 +200,9 @@ function presentEditableContextMenu(
     };
     return;
   }
-  const template = items.map(
-    (item): MenuItemConstructorOptions => ({
+  const template = items.flatMap((item): MenuItemConstructorOptions[] => [
+    ...(item.separatorBefore ? [MENU_SEPARATOR] : []),
+    {
       label: item.label,
       enabled: item.enabled,
       ...(item.accelerator
@@ -172,8 +211,8 @@ function presentEditableContextMenu(
       click: (): void => {
         runEditableContextMenuAction(contents, item.id);
       },
-    }),
-  );
+    },
+  ]);
   // No x/y: the menu opens at the pointer, so renderer coordinates never need
   // converting under the app's page zoom.
   Menu.buildFromTemplate(template).popup({ window });

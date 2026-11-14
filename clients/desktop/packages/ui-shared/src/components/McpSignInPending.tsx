@@ -3,6 +3,7 @@ import { CloseIcon } from '../icons/AppIcons';
 import { MCP_ROW_ACTION_CLASS_NAME } from '../lib/mcp-card-display';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { SECONDARY_SURFACE_CLASS } from '../lib/row-chips';
+import { Dot } from './Badge';
 import { Button, buttonClassName } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Tooltip } from './Tooltip';
@@ -17,8 +18,8 @@ export const MCP_SIGN_IN_CANCEL_LABEL = 'Cancel sign-in';
 const WAITING_PILL_CLASS_NAME = `${OPERATIONAL_STATUS_COLORS.active.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.active.foreground}`;
 
 interface McpSignInPendingStatusProps {
-  /** `pill` is a server row's status pill; `inline` is a detail line or dialog field. */
-  variant?: 'inline' | 'pill';
+  /** `row` uses a neutral status dot in Customize. */
+  variant?: 'inline' | 'pill' | 'row';
   /** Named for assistive technology only: the row already shows the name. */
   serviceName?: string;
   dataTestId?: string;
@@ -52,7 +53,11 @@ export function McpSignInPendingStatus({
       aria-label={accessibleLabel}
       data-testid={dataTestId}
     >
-      <LoadingSpinner decorative tone="active" />
+      {variant === 'row' ? (
+        <Dot tone="filter" data-testid={dataTestId && `${dataTestId}-dot`} />
+      ) : (
+        <LoadingSpinner decorative tone="active" />
+      )}
       {MCP_SIGN_IN_WAITING_LABEL}
     </span>
   );

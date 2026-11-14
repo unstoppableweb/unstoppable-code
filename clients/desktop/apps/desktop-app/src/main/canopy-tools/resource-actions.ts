@@ -73,8 +73,14 @@ import {
 } from '../canopy-cloud/client';
 import { isPathInside } from '../lib/path-safety';
 import { projectOwnedChatAutomation } from '../automations/owned-chat-projection';
-import { ownsOrchestratorPromptPipeline } from '../automations/owned-pipeline';
-import { targetsAgentHiddenPipeline } from '../automations/workflow-schedules';
+import {
+  isOwnedPipelineHiddenFromAgent,
+  ownsOrchestratorPromptPipeline,
+} from '../automations/owned-pipeline';
+import {
+  scheduledUserPipelineId,
+  targetsAgentHiddenPipeline,
+} from '../automations/workflow-schedules';
 import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
 import {
   ADVISOR_ACCESS_DISABLED,
@@ -1795,6 +1801,17 @@ async function automationAction(
     );
     return policyError ? failure('validation_failed', policyError) : null;
   };
+  // CAN-6065: an Orchestrator workflow takes any number of schedules, so an
+  // agent that can't see its pipeline can't add one to it either.
+  const hiddenPipelineTargetFailure = async (
+    target: ScheduledActivity['action'],
+  ): Promise<AppAdvisorActionResponse | null> => {
+    const pipelineId = scheduledUserPipelineId({ action: target });
+    return pipelineId !== undefined &&
+      (await isOwnedPipelineHiddenFromAgent(pipelineId, caller))
+      ? failure('not_found', `Pipeline ${pipelineId} was not found.`)
+      : null;
+  };
   const patchTargetFailure = async (
     current: ScheduledActivity,
     patch: Extract<AgentResourceAction, { type: 'automation.update' }>['patch'],
@@ -1805,6 +1822,8 @@ async function automationAction(
       const advisorFailure = await view.advisorFailure();
       if (advisorFailure) return advisorFailure;
     }
+    const hiddenFailure = await hiddenPipelineTargetFailure(patch.action);
+    if (hiddenFailure) return hiddenFailure;
     return automationOwnerDecisionFailure(
       await decideOwnerForAction(patch.action, view, globalOwnerOf(current)),
     );
@@ -1938,6 +1957,10 @@ async function automationAction(
         return deniedAdvisorAccess;
       }
       if (callerOwner.kind === 'unknown') return automationOwnerUnavailable();
+      const hiddenFailure = await hiddenPipelineTargetFailure(
+        action.input.action,
+      );
+      if (hiddenFailure) return hiddenFailure;
       // A pipeline with no project is owned by the caller's project (the
       // selected context for App Advisor), never by a caller-supplied value.
       let owner: string | undefined;
@@ -1970,6 +1993,10 @@ async function automationAction(
           guardRefusal = automationOwnerUnavailable();
           return false;
         }
+        // Again in the queue: the pipeline may have been hidden meanwhile.
+        guardRefusal =
+          (await hiddenPipelineTargetFailure(action.input.action)) ?? undefined;
+        if (guardRefusal) return false;
         guardRefusal =
           automationOwnerDecisionFailure(
             await decideOwnerForAction(action.input.action, view, owner),

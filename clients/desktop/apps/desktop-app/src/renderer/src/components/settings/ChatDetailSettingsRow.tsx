@@ -53,7 +53,11 @@ export function ChatDetailSettingsRow(): JSX.Element {
         />
       }
     >
-      <ErrorBanner error={saveError} className="" />
+      <ErrorBanner
+        errorSource="chat-detail-settings-row-save"
+        error={saveError}
+        className=""
+      />
     </SettingsRow>
   );
 }

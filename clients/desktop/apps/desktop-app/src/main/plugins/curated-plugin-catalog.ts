@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -182,7 +183,13 @@ async function writeCache(
     fetchedAt,
     plugins: response.plugins,
   };
-  await writeFile(filePath, JSON.stringify(cache, null, 2), 'utf8');
+  const temporary = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(cache, null, 2), 'utf8');
+    await rename(temporary, filePath);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 function cacheResponse(

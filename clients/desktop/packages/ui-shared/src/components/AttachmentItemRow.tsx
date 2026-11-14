@@ -1,4 +1,5 @@
-import type { JSX, MouseEventHandler, ReactNode } from 'react';
+import { useId, type JSX, type MouseEventHandler, type ReactNode } from 'react';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Surface } from './Surface';
 import { Inline } from './Stack';
 
@@ -6,7 +7,12 @@ export interface AttachmentItemRowContentProps {
   readonly filename: string;
   readonly icon: ReactNode;
   readonly metadata?: ReactNode;
-  readonly actions?: ReactNode;
+  /**
+   * The row's controls. Session replay records attributes, so a control names
+   * the file through `aria-describedby` on the id passed here, never by
+   * putting the filename in its label.
+   */
+  readonly actions?: ReactNode | ((nameId: string) => ReactNode);
   readonly contentTestId?: string;
 }
 
@@ -18,6 +24,7 @@ function AttachmentItemRowContent({
   actions,
   contentTestId,
 }: AttachmentItemRowContentProps): JSX.Element {
+  const nameId = useId();
   return (
     <div className="contents pointer-coarse:flex pointer-coarse:min-h-11 pointer-coarse:flex-wrap pointer-coarse:items-center pointer-coarse:justify-end pointer-coarse:gap-2 pointer-coarse:px-2 pointer-coarse:py-2">
       <div
@@ -27,7 +34,10 @@ function AttachmentItemRowContent({
         <Inline gap="inline" align="center">
           {icon}
           <div className="flex min-w-0 flex-1 items-center">
-            <span className="truncate text-xs font-medium fg-primary">
+            <span
+              id={nameId}
+              className={`${REPLAY_BLOCK_CLASS} truncate text-xs font-medium fg-primary`}
+            >
               {filename}
             </span>
           </div>
@@ -38,7 +48,7 @@ function AttachmentItemRowContent({
           ) : null}
         </Inline>
       </div>
-      {actions}
+      {typeof actions === 'function' ? actions(nameId) : actions}
     </div>
   );
 }

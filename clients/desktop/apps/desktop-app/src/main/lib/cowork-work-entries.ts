@@ -196,6 +196,22 @@ function withRegistryLock<T>(
   return next;
 }
 
+/** Whether the project's Work Entry registry file exists. Reads treat a
+ * missing file as empty; callers that need proof a row was removed must not. */
+export async function workEntryRegistryExists(
+  projectId: string,
+): Promise<boolean> {
+  try {
+    await stat(
+      getWorkspaceWorkEntriesFilePath(resolveWorkEntryWorkspaceId(projectId)),
+    );
+    return true;
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /**
  * Strict reader for registry mutation paths and lock-free projections. A
  * missing registry represents a fresh workspace, but any other read or
@@ -205,15 +221,33 @@ function withRegistryLock<T>(
 export async function readWorkEntriesFileStrict(
   workspaceId: string,
 ): Promise<CoworkWorkEntriesFile> {
+  return (await readWorkEntriesFileIfPresent(workspaceId)) ?? EMPTY_FILE;
+}
+
+async function readWorkEntriesFileIfPresent(
+  workspaceId: string,
+): Promise<CoworkWorkEntriesFile | null> {
   const filePath = getWorkspaceWorkEntriesFilePath(workspaceId);
   try {
     return parseWorkEntriesFile(await readFile(filePath, 'utf8'));
   } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') {
-      return EMPTY_FILE;
-    }
+    if (isErrnoException(error) && error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+/** A missing registry cannot prove that a previously registered row was removed. */
+export async function readWorkEntryRegistryRowState(
+  projectId: string,
+  entryId: string,
+): Promise<'present' | 'absent' | 'missing-registry'> {
+  const registry = await readWorkEntriesFileIfPresent(
+    resolveWorkEntryWorkspaceId(projectId),
+  );
+  if (!registry) return 'missing-registry';
+  return registry.entries.some((entry) => entry.id === entryId)
+    ? 'present'
+    : 'absent';
 }
 
 async function writeWorkEntriesFile(
@@ -1697,6 +1731,23 @@ export async function resolveWorkEntryForChat(
     }
   }
   return { entryId: null, archivedInEntryId: null };
+}
+
+/**
+ * Whether one named live Work Entry holds the chat, as a tab or an archived
+ * transcript. Reads only that entry, so another entry's unreadable files can
+ * never fail the lookup.
+ */
+export async function workEntryHoldsChat(
+  projectId: string,
+  entryId: string,
+  chatId: string,
+): Promise<boolean> {
+  const workspaceId = resolveWorkEntryWorkspaceId(projectId);
+  const tabs = await readChatTabsFile(workspaceId, entryId);
+  if (tabs.tabs.some((tab) => tab.id === chatId)) return true;
+  const archives = await readChatArchivesFile(workspaceId, entryId);
+  return archives.archived.some((archived) => archived.tab.id === chatId);
 }
 
 /** Rollback only this incarnation, and only while no concurrent chat survives. */

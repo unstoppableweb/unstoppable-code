@@ -157,6 +157,10 @@ export function HostedSettingsErrorState({
         <SettingsPageColumn>
           <div data-testid="hosted-settings-failed">
             <ErrorBanner
+              errorSource="hosted-settings-load"
+              displayErrorCode={
+                code === 'offline' ? 'external.offline' : undefined
+              }
               className=""
               error={HOSTED_SETTINGS_COPY.offline}
               onRetry={onRetry}

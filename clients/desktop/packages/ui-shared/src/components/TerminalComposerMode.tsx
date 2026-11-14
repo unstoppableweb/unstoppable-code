@@ -36,6 +36,7 @@ export function TerminalModeLabel({
   if (error !== null) {
     return (
       <ErrorBanner
+        errorSource="chat-input-terminal-mode-error"
         className="mr-1"
         error={error}
         testId="chat-input-terminal-mode-error"

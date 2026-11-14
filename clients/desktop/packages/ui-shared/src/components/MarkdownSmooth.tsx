@@ -4,6 +4,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
@@ -29,10 +30,20 @@ export function SmoothMarkdown({
   options,
   streaming,
   tools,
-}: MarkdownProps & { readonly tools: SmoothMarkdownTools }): JSX.Element {
+  alreadyOnScreen,
+}: MarkdownProps & {
+  readonly tools: SmoothMarkdownTools;
+  /** It was there before the reader arrived: only what follows is paced. */
+  readonly alreadyOnScreen: boolean;
+}): JSX.Element {
   const { compiler, prepareMarkdownRender, textRule } = tools;
-  const children = useSmoothStreamingText(source, Boolean(streaming), true);
-  const [fade] = useState(() => new StreamingWordFade());
+  const children = useSmoothStreamingText(
+    source,
+    Boolean(streaming),
+    true,
+    alreadyOnScreen,
+  );
+  const [fade] = useState(() => new StreamingWordFade(alreadyOnScreen));
   // Bumped once the newest stretch has faded in, to turn its spans back into
   // plain text when no further beat would.
   const [settleRender, setSettleRender] = useState(0);
@@ -40,12 +51,15 @@ export function SmoothMarkdown({
   // stream. Hosts mark a whole turn as streaming, so a block that arrived
   // whole and finished its reveal must not keep hiding what follows an
   // unclosed mark until the turn ends.
-  const [growing, setGrowing] = useState(true);
+  const [growing, setGrowing] = useState(!alreadyOnScreen);
+  const settledSource = useRef(alreadyOnScreen ? source : null);
   useEffect(() => {
     if (!streaming) {
       setGrowing(false);
       return;
     }
+    if (source === settledSource.current) return;
+    settledSource.current = null;
     setGrowing(true);
     const timer = window.setTimeout(
       () => setGrowing(false),

@@ -685,11 +685,16 @@ export function AppAdvisorWindowApp(): JSX.Element {
       </MutedUserBubblesContext.Provider>
       <UsageLimitResumeModal />
       <SurfaceFindHost />
+      {/* No-drag like the main window's corner (CAN-5711): a drag region
+          under a notification would take its clicks. */}
       <div
-        className={getInAppNotificationContainerClasses(notificationPlacement, {
-          // The notification stack starts top corners below the header.
-          clearHeader: true,
-        })}
+        className={`electron-no-drag ${getInAppNotificationContainerClasses(
+          notificationPlacement,
+          {
+            // The notification stack starts top corners below the header.
+            clearHeader: true,
+          },
+        )}`}
         // The corner's own `z-toast` class must not freeze a Browser page
         // under it: the slot below decides for its toasts.
         data-canopy-browser-native-overlay="false"

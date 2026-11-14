@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CORE_PULL_REQUEST_ALIGN_BASE_INSTRUCTION_DEFINITIONS,
   CORE_PULL_REQUEST_REFRESH_INSTRUCTION_DEFINITIONS,
   type CanopyCallerDescriptor,
   type CorePullRequest,
@@ -206,6 +207,33 @@ it.each([
     expect(merge).not.toHaveBeenCalled();
   },
 );
+it('honours pinned base and head branches: merges when they match, refuses and merges nothing when not', async () => {
+  const pinned = (pins: object, key: string): Promise<CorePullRequest> =>
+    runtime.instruction(
+      'core.pullRequest.merge',
+      { ...params, ...pins },
+      { caller, metadata: { idempotencyKey: key } },
+    );
+  for (const [pins, key] of [
+    [{ expectedBaseBranch: 'main' }, 'base-key'],
+    [{ expectedHeadBranch: 'other' }, 'head-key'],
+  ] as const) {
+    await expect(pinned(pins, key)).rejects.toMatchObject({
+      payload: {
+        kind: 'conflict',
+        code: 'core.pullRequest.merge.headMismatch',
+      },
+    });
+    expect(merge).not.toHaveBeenCalled();
+  }
+  await expect(
+    pinned(
+      { expectedBaseBranch: 'develop', expectedHeadBranch: 'feature' },
+      'pinned-key',
+    ),
+  ).resolves.toMatchObject({ state: 'merged' });
+  expect(merge).toHaveBeenCalledTimes(1);
+});
 it('refuses a queue-required base without enqueueing (legacy enqueue is CAN-5886)', async () => {
   policy = { ...policy, queueRequired: true };
   await expect(run()).rejects.toMatchObject({
@@ -423,6 +451,32 @@ it('refuses the web-core-only refresh as capability_unavailable, reading nothing
     runtime.instruction('core.pullRequest.refresh' as never, request as never, {
       caller,
     }),
+  ).rejects.toMatchObject({
+    payload: { kind: 'capability_unavailable', retry: { kind: 'never' } },
+  });
+  expect(read).not.toHaveBeenCalled();
+  expect(resolveRepository).not.toHaveBeenCalled();
+});
+
+it('refuses the web-core-only align base as capability_unavailable, reading nothing', async () => {
+  const alignBase =
+    CORE_PULL_REQUEST_ALIGN_BASE_INSTRUCTION_DEFINITIONS[
+      'core.pullRequest.alignBase'
+    ];
+  const request = alignBase.params.parse({
+    repositoryId: 'merge-repository',
+    expectedPrNumber: 12,
+    baseBranch: 'main',
+  });
+  await expect(
+    // Not in the desktop registry, so its typed names do not include it.
+    runtime.instruction(
+      'core.pullRequest.alignBase' as never,
+      request as never,
+      {
+        caller,
+      },
+    ),
   ).rejects.toMatchObject({
     payload: { kind: 'capability_unavailable', retry: { kind: 'never' } },
   });

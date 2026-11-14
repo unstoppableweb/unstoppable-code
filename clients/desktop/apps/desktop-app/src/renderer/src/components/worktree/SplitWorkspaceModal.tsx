@@ -732,12 +732,15 @@ export function SplitWorkspaceModal({
 
         {projectGone ? (
           <DesktopErrorBanner
+            errorSource="split-workspace-modal-error"
+            displayErrorCode="external.state_changed"
             className=""
             error="This project is no longer available."
             testId="split-workspace-modal-error"
           />
         ) : previewError ? (
           <DesktopErrorBanner
+            errorSource="split-workspace-modal-error-preview"
             className=""
             error={previewError.error}
             details={previewError.details}
@@ -746,6 +749,7 @@ export function SplitWorkspaceModal({
           />
         ) : (
           <DesktopErrorBanner
+            errorSource="split-workspace-modal-error-confirm"
             className=""
             error={confirmError?.error}
             details={confirmError?.details}

@@ -172,7 +172,12 @@ export function ChatAssetImage({
         </span>
       )}
       {image.error && (
-        <ErrorBanner className="" error={image.error} onRetry={image.retry} />
+        <ErrorBanner
+          errorSource="chat-asset-image"
+          className=""
+          error={image.error}
+          onRetry={image.retry}
+        />
       )}
     </div>
   );
@@ -432,7 +437,11 @@ function ChatMessageMediaTile({
       )}
       {downloadError && (
         <div className="basis-full">
-          <ErrorBanner className="" error={downloadError} />
+          <ErrorBanner
+            errorSource="chat-message-media-tile-download"
+            className=""
+            error={downloadError}
+          />
         </div>
       )}
     </>

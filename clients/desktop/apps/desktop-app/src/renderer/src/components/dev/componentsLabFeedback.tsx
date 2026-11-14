@@ -67,7 +67,12 @@ export function NoticeSpecimen(): JSX.Element {
         {INTENTS.map(({ intent, title, body }) => (
           <SpecimenCell key={intent} label={intent} wide>
             <div className="w-full">
-              <Notice intent={intent} title={title} role="none">
+              <Notice
+                errorSource="preview-components-lab-feedback-title"
+                intent={intent}
+                title={title}
+                role="none"
+              >
                 {body}
               </Notice>
             </div>
@@ -96,6 +101,7 @@ export function NoticeSpecimen(): JSX.Element {
         <SpecimenCell label='actionsPlacement="below" (three or more)' wide>
           <div className="w-full">
             <Notice
+              errorSource="preview-components-lab-feedback"
               intent="destructive"
               title="Sign-in expired"
               role="none"
@@ -224,9 +230,21 @@ export function FailureSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="ErrorBanner (a failure inside a page or panel)">
-        <SpecimenCell label="With retry" wide>
+        <SpecimenCell label="Message only" wide>
           <div className="w-full">
             <ErrorBanner
+              errorSource="preview-failure-repository-read-only"
+              error="The repository is archived and read-only."
+            />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell
+          label="Try again switches to a spinner and keeps its width"
+          wide
+        >
+          <div className="w-full">
+            <ErrorBanner
+              errorSource="preview-failure-skills-load"
               error="Couldn’t load skills."
               onRetry={(): void => setRetrying(true)}
               retrying={retrying}
@@ -236,6 +254,7 @@ export function FailureSpecimen(): JSX.Element {
         <SpecimenCell label="With details to copy" wide>
           <div className="w-full">
             <ErrorBanner
+              errorSource="preview-failure-settings-save"
               error="Couldn’t save the settings."
               details="EACCES: permission denied, open settings.json"
             />

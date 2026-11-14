@@ -6,6 +6,7 @@ import {
 import {
   AppErrorSchema,
   AppErrorSurfaceSchema,
+  getAppErrorDefinition,
   type AppError,
   type AppErrorRecord,
 } from '@canopy/protocol/app-errors';
@@ -83,6 +84,20 @@ export function buildAppErrorPostHogProperties(
   record: AppErrorRecord,
 ): DesktopInstrumentationContext {
   return sanitizeInstrumentationContext(metadata(record)) ?? {};
+}
+
+/** Keep the catalog description and V8 stack frames. Raw detail can name private
+ * work entries or contain caller prose that pattern redaction cannot identify. */
+export function appErrorException(
+  record: AppErrorRecord,
+  frames: readonly string[],
+): Error {
+  const { code } = record.error;
+  const error = new Error(getAppErrorDefinition(code).summary);
+  error.name = code;
+  // A non-empty catalog header keeps the SDK from substituting a launch stack.
+  error.stack = [error.toString(), ...frames].join('\n');
+  return error;
 }
 
 export function buildAppErrorViewPostHogProperties(

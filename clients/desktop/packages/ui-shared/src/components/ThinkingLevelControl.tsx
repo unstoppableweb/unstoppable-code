@@ -30,6 +30,7 @@ import { COMPOSER_ROW_MENU_GAP, FloatingMenu } from './FloatingMenu';
 import { FoldReveal } from './FoldReveal';
 import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
 import { IconToggleButton } from './IconToggleButton';
+import { Slider } from './Slider';
 import { Tooltip } from './Tooltip';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
 
@@ -382,175 +383,6 @@ export function ThinkingLevelPicker({
   );
 }
 
-/**
- * The thumb stands proud of the track (no inset), and its stops run from
- * edge to edge.
- */
-const EFFORT_TRACK_INSET_PX = 0;
-
-/** Slider geometry: a 28px thumb over a 20px track. */
-const EFFORT_SLIDER_GEOMETRY = {
-  thumbPx: 28,
-  box: 'h-7',
-  track: 'h-5',
-  knob: 'h-7 w-7',
-} as const;
-
-/**
- * Where stop `index` of `count` puts the thumb's left edge. `span` is the
- * slider's width: `100%` for a `left`, or `100cqw` inside a `translate`, where
- * a percentage would measure the moving element instead.
- */
-function effortStopLeft(
-  index: number,
-  count: number,
-  thumbPx: number,
-  span: '100%' | '100cqw' = '100%',
-): string {
-  const fraction = count <= 1 ? 0 : index / (count - 1);
-  return `calc(${EFFORT_TRACK_INSET_PX}px + (${span} - ${
-    EFFORT_TRACK_INSET_PX * 2 + thumbPx
-  }px) * ${fraction})`;
-}
-
-/**
- * Faster-to-smarter slider over a model's effort levels: one stop per level,
- * a filled track up to the thumb, drag or click to pick, arrow keys to step.
- */
-function EffortSlider({
-  levels,
-  index,
-  label,
-  disabled,
-  onSelect,
-  testId,
-}: {
-  levels: readonly ThinkingLevel[];
-  index: number;
-  label: string;
-  disabled: boolean;
-  /**
-   * `commit` is false while a drag is still moving (a preview) and true once
-   * it lands: on release, or for a key press.
-   */
-  onSelect: (index: number, commit: boolean) => void;
-  testId?: string;
-}): JSX.Element {
-  const geometry = EFFORT_SLIDER_GEOMETRY;
-  const thumbPx = geometry.thumbPx;
-  const trackRef = useRef<HTMLDivElement>(null);
-  const dragIndexRef = useRef<number | null>(null);
-  const count = levels.length;
-  const clampIndex = (next: number): number =>
-    Math.min(count - 1, Math.max(0, next));
-  const indexAt = (clientX: number): number => {
-    const track = trackRef.current;
-    if (!track || count <= 1) return 0;
-    const rect = track.getBoundingClientRect();
-    const usable = rect.width - EFFORT_TRACK_INSET_PX * 2 - thumbPx;
-    const offset = clientX - rect.left - EFFORT_TRACK_INSET_PX - thumbPx / 2;
-    return clampIndex(Math.round((offset / usable) * (count - 1)));
-  };
-  // The thumb and fill move by `translate` on the compositor, not by `left`
-  // and `width`, measured against the slider as a size container.
-  const thumbLeft = effortStopLeft(
-    Math.max(0, index),
-    count,
-    thumbPx,
-    '100cqw',
-  );
-  return (
-    <div
-      ref={trackRef}
-      role="slider"
-      tabIndex={disabled ? -1 : 0}
-      aria-label="Effort"
-      aria-valuemin={0}
-      aria-valuemax={Math.max(0, count - 1)}
-      aria-valuenow={Math.max(0, index)}
-      aria-valuetext={label}
-      aria-disabled={disabled || undefined}
-      data-testid={testId}
-      className={`focus-ring @container relative ${geometry.box} w-full cursor-pointer touch-none rounded-full aria-disabled:cursor-not-allowed aria-disabled:opacity-40`}
-      onPointerDown={(event): void => {
-        if (disabled) return;
-        event.currentTarget.setPointerCapture(event.pointerId);
-        dragIndexRef.current = indexAt(event.clientX);
-        onSelect(dragIndexRef.current, false);
-      }}
-      onPointerMove={(event): void => {
-        if (disabled) return;
-        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-        dragIndexRef.current = indexAt(event.clientX);
-        onSelect(dragIndexRef.current, false);
-      }}
-      // The drag lands where the pointer lets go.
-      onPointerUp={(): void => {
-        const landed = dragIndexRef.current;
-        dragIndexRef.current = null;
-        if (landed !== null) onSelect(landed, true);
-      }}
-      onPointerCancel={(): void => {
-        const landed = dragIndexRef.current;
-        dragIndexRef.current = null;
-        if (landed !== null) onSelect(landed, true);
-      }}
-      onKeyDown={(event): void => {
-        if (disabled) return;
-        const step =
-          event.key === 'ArrowRight' || event.key === 'ArrowUp'
-            ? 1
-            : event.key === 'ArrowLeft' || event.key === 'ArrowDown'
-              ? -1
-              : 0;
-        if (step !== 0) {
-          event.preventDefault();
-          onSelect(clampIndex(index + step), true);
-        } else if (event.key === 'Home' || event.key === 'End') {
-          event.preventDefault();
-          onSelect(event.key === 'Home' ? 0 : count - 1, true);
-        }
-      }}
-    >
-      <span
-        aria-hidden="true"
-        className={`absolute inset-x-0 top-1/2 ${geometry.track} -translate-y-1/2 rounded-full bg-muted`}
-      />
-      {/* Filled up to the thumb's middle: a full-length fill slid along its
-          own clipped track, so its round end stays round as it moves. */}
-      <span
-        aria-hidden="true"
-        className={`absolute inset-x-0 top-1/2 ${geometry.track} -translate-y-1/2 overflow-hidden rounded-full`}
-      >
-        <span
-          className="block h-full w-full rounded-full bg-accent transition-[translate] duration-150 ease-out motion-reduce:transition-none"
-          style={{
-            translate: `calc(${thumbLeft} + ${thumbPx / 2}px - 100%)`,
-          }}
-        />
-      </span>
-      {levels.map((level, stop) => (
-        <span
-          key={level}
-          aria-hidden="true"
-          className={`absolute top-1/2 h-0.5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full ${
-            stop <= index ? 'bg-fg-emphasis/30' : 'bg-fg-tertiary/60'
-          }`}
-          style={{
-            left: `calc(${effortStopLeft(stop, count, thumbPx)} + ${thumbPx / 2}px)`,
-          }}
-        />
-      ))}
-      <span
-        aria-hidden="true"
-        // The accent's own ink: light on the blue fill in both themes.
-        className={`absolute left-0 top-0 ${geometry.knob} rounded-full bg-fg-emphasis shadow-lg transition-[translate] duration-150 ease-out motion-reduce:transition-none`}
-        style={{ translate: thumbLeft }}
-      />
-    </div>
-  );
-}
-
 export interface ThinkingLevelPanelPickerProps {
   value: ThinkingLevel | undefined;
   supportedLevels: readonly ThinkingLevel[];
@@ -666,23 +498,25 @@ export function ThinkingLevelPanelPicker({
   }, [selectionKey]);
 
   const slider = (
-    <EffortSlider
+    <Slider
       key={`${selectionKey ?? ''}:${levelsKey}`}
-      levels={levels}
-      index={index}
-      label={label}
+      value={index}
+      stops={levels.length}
+      label="Effort"
+      valueText={label}
       disabled={disabled}
-      onSelect={(next, commit): void => {
+      onPreview={(next): void => {
         const level = levels[next];
         if (disabled || level === undefined) return;
-        if (!commit) {
-          setDraft(level);
-          return;
-        }
+        setDraft(level);
+      }}
+      onChange={(next): void => {
+        const level = levels[next];
+        if (disabled || level === undefined) return;
         setDraft(null);
         if (workspaceDefaultSelected || level !== current) onChange(level);
       }}
-      {...(testId ? { testId: `${testId}-slider` } : {})}
+      {...(testId ? { dataTestId: `${testId}-slider` } : {})}
     />
   );
   // Ultra fast is fast mode at its top speed, set apart by the special hue.

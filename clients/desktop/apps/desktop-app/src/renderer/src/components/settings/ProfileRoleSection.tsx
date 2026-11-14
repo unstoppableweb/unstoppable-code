@@ -164,7 +164,11 @@ export function ProfileRoleSection(): JSX.Element {
       dataTestId="settings-profile-role"
       description={
         loadError ? (
-          <ErrorBanner className="" error="Could not load your roles." />
+          <ErrorBanner
+            errorSource="profile-roles-load"
+            className=""
+            error="Could not load your roles."
+          />
         ) : !loaded ? (
           <SettingsDescriptionLoading dataTestId="settings-profile-role-loading" />
         ) : roles.length > 0 ? (
@@ -280,6 +284,7 @@ export function ProfileRoleSection(): JSX.Element {
           {saveError ? (
             <div className="px-6 pb-6">
               <ErrorBanner
+                errorSource="profile-roles-save"
                 className=""
                 error="Could not save your roles. Please try again."
               />

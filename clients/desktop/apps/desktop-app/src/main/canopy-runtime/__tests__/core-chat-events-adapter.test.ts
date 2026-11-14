@@ -156,6 +156,39 @@ describe('core.chat.events desktop stream', () => {
     },
   );
 
+  it('refuses revision 2 before subscribing (CAN-6509)', async () => {
+    const { runtime, subscribe } = makeHarness();
+    try {
+      for (const scope of [
+        'all' as const,
+        { projectId: 'project-1', worktreeId: 'worktree-1' },
+      ]) {
+        const stream = await runtime.openStream(
+          'core.chat.events',
+          { scope, revision: 2 },
+          { caller },
+        );
+        try {
+          // The refusal ends the stream; nothing was read for it.
+          expect(
+            await nextFrame(stream.frames[Symbol.asyncIterator]()),
+          ).toMatchObject({
+            kind: 'end',
+            error: {
+              kind: 'capability_unavailable',
+              details: { unsupported: ['revision'], reason: 'unserved' },
+            },
+          });
+        } finally {
+          stream.close();
+        }
+      }
+      expect(subscribe).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it('carries custom title set and clear patches through the portable event stream', async () => {
     const { runtime, listeners } = makeHarness();
     const stream = await runtime.openStream(

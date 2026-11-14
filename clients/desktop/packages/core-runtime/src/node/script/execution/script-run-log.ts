@@ -1,3 +1,10 @@
+import {
+  isScriptRunChildIdentified,
+  type ScriptRunChildStop,
+  type ScriptRunChildStopMode,
+  type ScriptRunGroupListing,
+  type ScriptRunGroupStop,
+} from './script-run-stop';
 import { randomUUID } from 'node:crypto';
 import {
   access,
@@ -59,7 +66,38 @@ export interface PersistedScriptRunFile {
    * status reads `failed`, which earlier versions show without this field.
    */
   outcome?: 'lost';
+  /**
+   * The script's own process, identified as it started (CAN-6482). The run
+   * id is its marker: a reap after a restart must find this process
+   * unchanged. Earlier versions ignore it.
+   */
+  child?: ScriptRunChild;
+  /**
+   * A restart left the run's process running and its identity could not be
+   * proven, so nothing was killed (CAN-6482). The status stays `running`,
+   * which earlier versions show without this field.
+   */
+  orphaned?: true;
 }
+
+/**
+ * A script's own process as it started (CAN-6482): its PID, and what the OS
+ * reported for its process group, start identity and executable path. A part
+ * the OS could not report is absent, and such a record is never reaped.
+ */
+export interface ScriptRunChild {
+  readonly pid: number;
+  readonly processGroupId?: number;
+  readonly startIdentity?: string;
+  readonly executablePath?: string;
+}
+
+/**
+ * What a reap of a recorded child did: `reaped` ended a group whose every
+ * recorded part matched, `gone` found no process, and `unproven` killed
+ * nothing because a part was missing or differed (a reused PID included).
+ */
+export type ScriptRunChildReap = 'reaped' | 'gone' | 'unproven';
 
 /** The process that started a run: its PID and the start identity the host's process inspector reports. */
 export interface ScriptRunWriter {
@@ -79,6 +117,40 @@ export interface ScriptRunWriterFence {
   /** This process; `null` when its identity cannot be read. Called once per store. */
   self(): Promise<ScriptRunWriter | null>;
   inspect(writer: ScriptRunWriter): Promise<ScriptRunWriterState>;
+  /** A script process's identity as it starts; null when it cannot be read (CAN-6482). */
+  identifyChild?(pid: number): Promise<ScriptRunChild | null>;
+  /**
+   * Ends a recorded child's process group only when everything recorded
+   * matches what the OS reports now for that PID and group (CAN-6482).
+   */
+  reapChild?(child: ScriptRunChild): Promise<ScriptRunChildReap>;
+  /**
+   * Stops an orphaned run's recorded process on a user's request (CAN-6482
+   * part 2), as `stopScriptRunChild` does over the host's process services.
+   */
+  stopChild?(
+    child: ScriptRunChild,
+    mode: ScriptRunChildStopMode,
+  ): Promise<ScriptRunChildStop>;
+  /**
+   * An orphaned run's live group members once its leader has exited, as
+   * `listScriptRunGroup` reads them (CAN-6601). Absent without process groups.
+   */
+  listGroup?(
+    child: ScriptRunChild,
+    runStartedAtMs: number,
+    runId: string,
+  ): Promise<ScriptRunGroupListing>;
+  /** A user's confirmed group Force stop, as `forceStopScriptRunGroup` does it (CAN-6601). */
+  stopGroup?(
+    child: ScriptRunChild,
+    runStartedAtMs: number,
+    runId: string,
+    members: readonly {
+      readonly pid: number;
+      readonly startIdentity: string;
+    }[],
+  ): Promise<ScriptRunGroupStop>;
 }
 
 export interface ScriptRunLogRef {
@@ -143,6 +215,33 @@ function parseScriptRunWriter(value: unknown): ScriptRunWriter | null {
   )
     return null;
   return { pid: value.pid, startIdentity: value.startIdentity };
+}
+
+function boundedText(value: unknown, max: number): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= max
+    ? value
+    : undefined;
+}
+
+function parseScriptRunChild(value: unknown): ScriptRunChild | null {
+  if (
+    !isRecord(value) ||
+    typeof value.pid !== 'number' ||
+    !Number.isSafeInteger(value.pid) ||
+    value.pid <= 1
+  )
+    return null;
+  const group = value.processGroupId;
+  const startIdentity = boundedText(value.startIdentity, 512);
+  const executablePath = boundedText(value.executablePath, 4096);
+  return {
+    pid: value.pid,
+    ...(typeof group === 'number' && Number.isSafeInteger(group) && group > 1
+      ? { processGroupId: group }
+      : {}),
+    ...(startIdentity ? { startIdentity } : {}),
+    ...(executablePath ? { executablePath } : {}),
+  };
 }
 
 function isScriptInvocation(value: unknown): value is ScriptRunInvocation {
@@ -292,6 +391,7 @@ function parsePersistedScriptRunFile(
   )
     return null;
   const writer = parseScriptRunWriter(value.writer);
+  const child = parseScriptRunChild(value.child);
   return {
     version: 1,
     runId: value.runId,
@@ -311,6 +411,8 @@ function parsePersistedScriptRunFile(
       : {}),
     ...(writer ? { writer } : {}),
     ...(value.outcome === 'lost' ? { outcome: value.outcome } : {}),
+    ...(child ? { child } : {}),
+    ...(value.orphaned === true && child ? { orphaned: true as const } : {}),
   };
 }
 
@@ -351,7 +453,25 @@ export function toWorkerScriptExecution(
     executionId: meta.runId,
     script: meta.script,
     invocation: meta.invocation,
-    status: meta.outcome === 'lost' ? 'lost' : meta.status,
+    status:
+      meta.outcome === 'lost'
+        ? 'lost'
+        : meta.orphaned
+          ? 'orphaned'
+          : meta.status,
+    ...(meta.orphaned && meta.child && meta.outcome !== 'lost'
+      ? { pid: meta.child.pid }
+      : {}),
+    ...(meta.outcome === 'lost' && meta.child === undefined
+      ? { lostFrom: 'unrecorded' as const }
+      : {}),
+    ...(meta.orphaned && meta.child && meta.outcome !== 'lost'
+      ? {
+          orphanIdentity: isScriptRunChildIdentified(meta.child)
+            ? ('recorded' as const)
+            : ('unverifiable' as const),
+        }
+      : {}),
     startedAt: meta.startedAt,
     completedAt: meta.completedAt ?? null,
     exitCode: meta.exitCode,
@@ -476,6 +596,10 @@ export class ScriptRunLogStore {
   /**
    * A running run this instance did not start was interrupted by a restart:
    * record it as lost, on its key's write chain, unless a run took its place.
+   * A run whose process was recorded is first reaped (CAN-6482): it is lost
+   * once its process is proven gone or ended, and orphaned, still running
+   * with nothing killed, while its identity cannot be proven. Each read
+   * checks again, so an orphaned run reads lost once its process exits.
    */
   private async reconcile(
     projectId: string,
@@ -496,14 +620,30 @@ export class ScriptRunLogStore {
       meta.script.scriptKey,
     );
     const now = new Date(this.clock()).toISOString();
-    const lost: PersistedScriptRunFile = {
-      ...meta,
+    // A lost run is no longer orphaned, whatever it was before.
+    const interrupted: PersistedScriptRunFile = { ...meta };
+    delete interrupted.orphaned;
+    let next: PersistedScriptRunFile = {
+      ...interrupted,
       status: 'failed',
       outcome: 'lost',
       updatedAt: now,
       completedAt: now,
       exitCode: null,
     };
+    if (meta.child !== undefined) {
+      const { writerFence } = this.options;
+      const reaped = writerFence?.reapChild
+        ? await writerFence
+            .reapChild(meta.child)
+            .catch((): ScriptRunChildReap => 'unproven')
+        : 'unproven';
+      if (reaped === 'unproven') {
+        if (meta.orphaned) return meta;
+        next = { ...meta, orphaned: true, updatedAt: now };
+      }
+    }
+    const lost = next;
     if (this.runLogs.isDeletingWorktreeLogs(projectId, worktreeId)) return lost;
     return this.runLogs.withWriteChain(
       this.runLogs.getWriteKey(projectId, worktreeId, meta.script.scriptKey),
@@ -587,6 +727,56 @@ export class ScriptRunLogStore {
       script: args.script,
       runId,
     };
+  }
+
+  /**
+   * Records the run's own process (CAN-6482), with what the writer fence
+   * reads for it, so a later restart can prove it before a reap. A process
+   * the fence cannot fully identify is recorded by PID alone, so a restart
+   * reports it orphaned rather than lost while it runs. A later call
+   * refreshes the record, as when a shell execs its command, only for the
+   * same process: the same PID and the same start identity. A refresh needs
+   * a record with a start identity, since nothing else proves a later process
+   * with that PID is the one the run started.
+   */
+  async recordChild(args: {
+    ref: ScriptRunLogRef;
+    pid: number;
+    refresh?: boolean;
+  }): Promise<void> {
+    const child = await this.options.writerFence
+      ?.identifyChild?.(args.pid)
+      .catch(() => null);
+    if (!child) return;
+    const { projectId, worktreeId, script, runId } = args.ref;
+    if (this.runLogs.isDeletingWorktreeLogs(projectId, worktreeId)) return;
+    const { metaPath } = this.paths(projectId, worktreeId, script.scriptKey);
+    await this.runLogs.withWriteChain(
+      this.runLogs.getWriteKey(projectId, worktreeId, script.scriptKey),
+      async (): Promise<void> => {
+        const current = await this.readMeta(metaPath);
+        if (!current || current.runId !== runId || current.status !== 'running')
+          return;
+        const recorded = current.child;
+        if (args.refresh === true && !recorded) return;
+        if (
+          recorded &&
+          (recorded.pid !== child.pid ||
+            recorded.startIdentity === undefined ||
+            recorded.startIdentity !== child.startIdentity)
+        )
+          return;
+        await writeRunLogMeta(this.options.files, metaPath, {
+          ...current,
+          child,
+        }).catch((error: unknown) => {
+          this.options.warn?.(
+            '[script-run-log] Failed to record a script process',
+            { error: describeFileError(error) },
+          );
+        });
+      },
+    );
   }
 
   async append(args: { ref: ScriptRunLogRef; lines: string[] }): Promise<void> {
@@ -709,6 +899,221 @@ export class ScriptRunLogStore {
     );
 
     return runs.flatMap((run) => (run ? [run] : []));
+  }
+
+  /**
+   * Removes one finished run's metadata and log (CAN-6482 part 2), decided
+   * under the key's write chain from the record as written: `absent` when the
+   * key's latest run is not `runId`, `active` when it is recorded running
+   * (orphaned included). It never reconciles the run, so it never reaps or
+   * otherwise touches a process.
+   */
+  async clear(args: {
+    projectId: string;
+    worktreeId: string;
+    scriptKey: string;
+    runId: string;
+  }): Promise<'cleared' | 'absent' | 'active'> {
+    const { projectId, worktreeId, scriptKey, runId } = args;
+    if (this.runLogs.isDeletingWorktreeLogs(projectId, worktreeId))
+      return 'absent';
+    const { metaPath, logPath } = this.paths(projectId, worktreeId, scriptKey);
+    return this.runLogs.withWriteChain(
+      this.runLogs.getWriteKey(projectId, worktreeId, scriptKey),
+      async (): Promise<'cleared' | 'absent' | 'active'> => {
+        const current = await this.readMeta(metaPath);
+        if (!current || current.runId !== runId) return 'absent';
+        if (current.status === 'running') return 'active';
+        await rm(logPath, { force: true });
+        await rm(metaPath, { force: true });
+        return 'cleared';
+      },
+    );
+  }
+
+  /**
+   * Stops an orphaned run's recorded process on a user's request (CAN-6482
+   * part 2), admitted from the record as written, never reconciling it
+   * first; once its process is stopped or gone, it records the run as lost
+   * itself. `absent` when the key's latest run is not `runId`, `not_orphaned`
+   * when it is not orphaned now, `unconfirmed` when the record cannot be
+   * verified (PID only) or the stop is forced without the user's confirmation,
+   * `unsupported` when this host cannot stop it.
+   */
+  async stopOrphan(args: {
+    projectId: string;
+    worktreeId: string;
+    scriptKey: string;
+    runId: string;
+    mode: ScriptRunChildStopMode;
+    confirmed: boolean;
+  }): Promise<
+    | ScriptRunChildStop
+    | 'absent'
+    | 'not_orphaned'
+    | 'unconfirmed'
+    | 'unsupported'
+  > {
+    const { projectId, worktreeId, scriptKey, runId } = args;
+    const found = await this.orphanedChild(
+      projectId,
+      worktreeId,
+      scriptKey,
+      runId,
+    );
+    if (typeof found === 'string') return found;
+    const { child } = found;
+    const identified = isScriptRunChildIdentified(child);
+    if ((args.mode === 'force' || !identified) && !args.confirmed)
+      return 'unconfirmed';
+    const fence = this.options.writerFence;
+    if (!fence?.stopChild) return 'unsupported';
+    const outcome = await fence.stopChild(
+      child,
+      identified ? 'stop' : args.mode,
+    );
+    // A record that no longer matches named a process that has ended: the
+    // run is lost, and nothing was signalled (coordinator, 12 Nov 2026).
+    if (outcome === 'stopped' || outcome === 'gone' || outcome === 'not_same')
+      await this.recordStopped(projectId, worktreeId, scriptKey, runId);
+    return outcome;
+  }
+
+  /**
+   * The orphaned run's record as written, never reconciled first: reading it
+   * never reaps. `absent` when the key's latest run is not `runId`.
+   */
+  private async orphanedChild(
+    projectId: string,
+    worktreeId: string,
+    scriptKey: string,
+    runId: string,
+  ): Promise<
+    { child: ScriptRunChild; startedAtMs: number } | 'absent' | 'not_orphaned'
+  > {
+    await this.runLogs.awaitPendingWrite(projectId, worktreeId, scriptKey);
+    const meta = await this.readMeta(
+      this.paths(projectId, worktreeId, scriptKey).metaPath,
+    );
+    if (!meta || meta.runId !== runId) return 'absent';
+    const child = meta.child;
+    if (
+      meta.status !== 'running' ||
+      meta.orphaned !== true ||
+      child === undefined
+    )
+      return 'not_orphaned';
+    return { child, startedAtMs: Date.parse(meta.startedAt) };
+  }
+
+  /**
+   * The live members of an orphaned run's process group once its recorded
+   * leader has exited, for the user's confirmation (CAN-6601).
+   */
+  async groupMembers(args: {
+    projectId: string;
+    worktreeId: string;
+    scriptKey: string;
+    runId: string;
+  }): Promise<ScriptRunGroupListing | 'absent' | 'not_orphaned'> {
+    const found = await this.orphanedChild(
+      args.projectId,
+      args.worktreeId,
+      args.scriptKey,
+      args.runId,
+    );
+    if (typeof found === 'string') return found;
+    const fence = this.options.writerFence;
+    if (!fence?.listGroup) return { kind: 'unsupported' };
+    if (!Number.isFinite(found.startedAtMs)) return { kind: 'unverifiable' };
+    return fence.listGroup(found.child, found.startedAtMs, args.runId);
+  }
+
+  /**
+   * A user's confirmed group Force stop of an orphaned run (CAN-6601): the
+   * members are exactly those the user confirmed. The run is recorded lost
+   * only once its whole group is empty.
+   */
+  async stopOrphanGroup(args: {
+    projectId: string;
+    worktreeId: string;
+    scriptKey: string;
+    runId: string;
+    confirmed: boolean;
+    members: readonly {
+      readonly pid: number;
+      readonly startIdentity: string;
+    }[];
+  }): Promise<ScriptRunGroupStop | 'absent' | 'not_orphaned' | 'unconfirmed'> {
+    const { projectId, worktreeId, scriptKey, runId } = args;
+    if (!args.confirmed || args.members.length === 0) return 'unconfirmed';
+    const found = await this.orphanedChild(
+      projectId,
+      worktreeId,
+      scriptKey,
+      runId,
+    );
+    if (typeof found === 'string') return found;
+    const fence = this.options.writerFence;
+    if (!fence?.stopGroup) return { kind: 'unsupported' };
+    if (!Number.isFinite(found.startedAtMs)) return { kind: 'unverifiable' };
+    const outcome = await fence.stopGroup(
+      found.child,
+      found.startedAtMs,
+      runId,
+      args.members,
+    );
+    if (outcome.kind === 'done' && outcome.outcome === 'stopped')
+      await this.recordStopped(projectId, worktreeId, scriptKey, runId);
+    return outcome;
+  }
+
+  /**
+   * Records the Stop's own result: the run is lost, written under the key's
+   * write chain while the record is still this orphaned run. A later read
+   * cannot prove it once the PID is reused, so it is never left to one.
+   */
+  private async recordStopped(
+    projectId: string,
+    worktreeId: string,
+    scriptKey: string,
+    runId: string,
+  ): Promise<void> {
+    if (this.runLogs.isDeletingWorktreeLogs(projectId, worktreeId)) return;
+    const { metaPath } = this.paths(projectId, worktreeId, scriptKey);
+    await this.runLogs.withWriteChain(
+      this.runLogs.getWriteKey(projectId, worktreeId, scriptKey),
+      async (): Promise<void> => {
+        const current = await this.readMeta(metaPath);
+        if (
+          !current ||
+          current.runId !== runId ||
+          current.status !== 'running' ||
+          current.orphaned !== true
+        )
+          return;
+        const now = new Date(this.clock()).toISOString();
+        const lost: PersistedScriptRunFile = {
+          ...current,
+          status: 'failed',
+          outcome: 'lost',
+          updatedAt: now,
+          completedAt: now,
+          exitCode: null,
+        };
+        delete lost.orphaned;
+        // The process is already stopped: a failed write keeps the run
+        // orphaned, for a later Stop or read, and is not the Stop's failure.
+        await writeRunLogMeta(this.options.files, metaPath, lost).catch(
+          (error: unknown) => {
+            this.options.warn?.(
+              '[script-run-log] Failed to record a stopped script run',
+              { error: describeFileError(error) },
+            );
+          },
+        );
+      },
+    );
   }
 
   async deleteWorktree(projectId: string, worktreeId: string): Promise<void> {

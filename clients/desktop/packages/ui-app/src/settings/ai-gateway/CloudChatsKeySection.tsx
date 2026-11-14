@@ -224,6 +224,7 @@ export function CloudChatsKeySection({
         </p>
       </div>
       <ErrorBanner
+        errorSource="cloud-chats-key-section"
         error={(loadError ?? error)?.copy}
         details={(loadError ?? error)?.details}
         onRetry={

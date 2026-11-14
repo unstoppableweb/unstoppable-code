@@ -184,6 +184,7 @@ function ChatVisualBlockContent({
       ) : null}
       {error ? (
         <ErrorBanner
+          errorSource="chat-visual-block"
           className=""
           testId={CHAT_VISUAL_TEST_IDS.errorState}
           error="Couldn't load this visual. Try again later."

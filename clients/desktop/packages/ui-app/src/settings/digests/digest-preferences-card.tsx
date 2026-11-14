@@ -249,6 +249,7 @@ export function DigestPreferencesCard({
       testId={`${testIdPrefix}-digest-preferences`}
     >
       <ErrorBanner
+        errorSource="digest-preferences-card"
         error={error?.copy}
         details={error?.details}
         onRetry={error?.retryLoad === true ? retryLoad : undefined}

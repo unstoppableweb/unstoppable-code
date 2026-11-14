@@ -1,3 +1,4 @@
+import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import type { BrowserWindow } from 'electron';
 import { z } from 'zod';
 import { isThinkingLevel } from '@canopy/protocol/thinking';
@@ -830,6 +831,11 @@ async function prepareHookChatLaunch(args: {
       `No execution harness is available for hook chat model "${model}"`,
     );
   }
+  await assertAgentModelAdmission(model, {
+    projectId: args.projectId,
+    worktreeId: args.worktreeId,
+    executionHarness,
+  });
   const modelConfig = resolveProviderModelConfig(
     executionHarness,
     {

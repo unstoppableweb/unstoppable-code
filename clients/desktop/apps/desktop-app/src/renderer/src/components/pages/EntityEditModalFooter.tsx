@@ -52,7 +52,7 @@ export function EntityEditModalContent({
 
         {!loading && children}
 
-        <ErrorBanner error={error} />
+        <ErrorBanner errorSource="entity-edit-modal" error={error} />
       </div>
 
       {!loading && <EntityEditModalFooter {...footerProps} />}

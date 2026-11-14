@@ -1,7 +1,9 @@
-import { app } from 'electron';
+import { join } from 'node:path';
+import { app, BrowserWindow, dialog, type IpcMainInvokeEvent } from 'electron';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   IPC_CHANNELS,
+  type CloudChatFileDownloadResult,
   type CloudChatAttachmentUploadResult,
   type CloudChatsReconnectResult,
 } from '@canopy/desktop-shared/types';
@@ -20,13 +22,17 @@ import {
   createCloudChatAttachmentUpload,
   createWebCoreAttachmentSender,
 } from '../canopy-cloud/cloud-chat-attachments';
+import {
+  createCloudChatFileDownload,
+  createWebCoreFileReader,
+} from '../canopy-cloud/cloud-chat-file-download';
 import type {
   RendererRelayEvent,
   RendererRelaySurfaceResolution,
 } from '../canopy-runtime/renderer-relay/relay';
 import { registerIpcHandler } from './register';
 
-function cloudChatsEnabled(): boolean {
+export function cloudChatsEnabled(): boolean {
   return getFeatureFlagService().isEnabled(
     CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key,
   );
@@ -113,4 +119,33 @@ export function registerCloudChatsHandlers(
       return upload(target, file);
     },
   );
+  // The renderer names a cloud chat and one of its files; main asks where
+  // to save it and writes only there (CAN-6587).
+  const reader = createWebCoreFileReader(binding, app.getVersion());
+  registerIpcHandler<[unknown, unknown], CloudChatFileDownloadResult>(
+    IPC_CHANNELS.cloudChatsDownloadFile,
+    (event, target, file) => {
+      requireMainWindow(event);
+      return createCloudChatFileDownload({
+        isEnabled: binding.isEnabled,
+        choosePath: (filename) => chooseSavePath(event, filename),
+        withReader: reader,
+      })(target, file);
+    },
+  );
+}
+
+/** The save dialog over the window that asked, in the user's Downloads folder. */
+async function chooseSavePath(
+  event: IpcMainInvokeEvent,
+  filename: string,
+): Promise<string | null> {
+  const options = { defaultPath: join(app.getPath('downloads'), filename) };
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const result = window
+    ? await dialog.showSaveDialog(window, options)
+    : await dialog.showSaveDialog(options);
+  return result.canceled || result.filePath === undefined
+    ? null
+    : result.filePath;
 }

@@ -6,28 +6,21 @@ import {
   Button,
   ChatAppNameProvider,
   ChatComposerToolbarChip,
-  ChatCopyAction,
   ChatDetailProvider,
-  ChatLookProvider,
+  ShimmerCopies,
   StepBadgeLine,
   StepRow,
   StepTenseProvider,
-  TurnTimer,
   buildPlanModeChip,
   buildQuestionReadyChip,
   useChatAppName,
   useChatDetail,
-  useChatLook,
-  useCleanChatLook,
   useGroupToolCalls,
-  useStepBadgeRows,
   useStepBadges,
   useStepTense,
   useTurnCollapse,
-  type ChatLook,
   type StepTense,
 } from '@canopy/ui-shared/components';
-import { PlanModeIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SpecimenCell,
   SpecimenGrid,
@@ -35,7 +28,7 @@ import {
 } from './componentsLabParts';
 
 /**
- * Sheets for `chat-look` (the chat look, detail, app name and step tense
+ * Sheets for `chat-look` (the detail, app name and step tense
  * providers with the hooks that read them) and for `composer-plan-chip`.
  * The providers have no markup of their own, so each one wraps the real
  * transcript parts that read it, next to a live readout of what the hooks
@@ -43,13 +36,8 @@ import {
  */
 
 const noop = (): void => undefined;
-
-// Fixed so the markers and timers read the same on every render.
-const TURN_START = Date.UTC(2026, 9, 25, 16, 38, 0);
-const TURN_END = TURN_START + 204_000;
 const RESUMED_AT = Date.UTC(2026, 9, 25, 16, 41, 0);
 
-const LOOKS: readonly ChatLook[] = ['clean', 'classic'];
 const TENSES: readonly StepTense[] = [
   'done',
   'running',
@@ -68,55 +56,8 @@ function Readout({ children }: { readonly children: ReactNode }): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
-// ChatLookProvider
+// Chat presentation contexts
 // ---------------------------------------------------------------------------
-
-function LookReadout(): JSX.Element {
-  const look = useChatLook();
-  const clean = useCleanChatLook();
-  const badgeRows = useStepBadgeRows();
-  return (
-    <Readout>
-      {`useChatLook: ${look} · useCleanChatLook: ${String(clean)} · useStepBadgeRows: ${String(badgeRows)}`}
-    </Readout>
-  );
-}
-
-function LookColumn({ look }: { readonly look: ChatLook }): JSX.Element {
-  return (
-    <ChatLookProvider value={look}>
-      <div className="flex w-full min-w-0 flex-col gap-3">
-        <LookReadout />
-        <StepRow
-          step
-          label="Ran git status"
-          detail="in the project root"
-          icon={<PlanModeIcon size="sm" />}
-        />
-        <StepRow
-          step
-          running
-          label="Reading file.ts"
-          icon={<PlanModeIcon size="sm" />}
-        />
-        <TurnTimer
-          startedAt={TURN_START}
-          finishedAt={TURN_END}
-          copyText="The change is ready for review."
-          alwaysVisible
-        />
-        <div className="flex items-center gap-1">
-          <ChatCopyAction text="The change is ready for review." />
-          <span className="text-2xs fg-tertiary">
-            {look === 'clean'
-              ? 'Copy action: the shared ghost-quiet Button'
-              : 'Copy action: the classic quiet button class'}
-          </span>
-        </div>
-      </div>
-    </ChatLookProvider>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // ChatDetailProvider
@@ -134,17 +75,15 @@ function DetailReadout(): JSX.Element {
 
 function CollapseDemo({
   detail,
-  clean,
 }: {
   readonly detail: ChatDetail;
-  readonly clean: boolean;
 }): JSX.Element {
   const [complete, setComplete] = useState(false);
-  const [collapsed, setCollapsed] = useTurnCollapse(complete, clean, detail);
+  const [collapsed, setCollapsed] = useTurnCollapse(complete, detail);
   return (
     <div className="flex flex-col gap-2">
       <Readout>
-        {`${clean ? 'clean' : 'classic'} · turn ${complete ? 'complete' : 'running'} · ${collapsed ? 'folded' : 'open'}`}
+        {`turn ${complete ? 'complete' : 'running'} · ${collapsed ? 'folded' : 'open'}`}
       </Readout>
       <div className="flex gap-2">
         <Button
@@ -184,8 +123,7 @@ function DetailColumn({
           isOpen={false}
           onToggle={noop}
         />
-        <CollapseDemo detail={detail} clean />
-        <CollapseDemo detail={detail} clean={false} />
+        <CollapseDemo detail={detail} />
       </div>
     </ChatDetailProvider>
   );
@@ -265,22 +203,6 @@ function tenseLabel(tense: StepTense): string {
 export function ChatLookSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="ChatLookProvider: the same parts under each look">
-        <SpecimenGrid min={320}>
-          {LOOKS.map((look) => (
-            <SpecimenCell
-              key={look}
-              label={
-                look === 'clean'
-                  ? 'clean: the one chat look'
-                  : 'classic: retired, its parts stay until they are removed'
-              }
-            >
-              <LookColumn look={look} />
-            </SpecimenCell>
-          ))}
-        </SpecimenGrid>
-      </SpecimenPanel>
       <SpecimenPanel title="ChatDetailProvider: how much of the work shows">
         <SpecimenGrid min={280}>
           {CHAT_DETAILS.map((detail) => (
@@ -340,28 +262,29 @@ export function ChatLookSpecimen(): JSX.Element {
                     running={tense === 'running'}
                     failed={tense === 'failed'}
                   />
+                  {tense === 'running' && (
+                    <span className="min-w-0 truncate canopy-text-shimmer-strong">
+                      Waiting for the build to finish
+                      <ShimmerCopies>
+                        Waiting for the build to finish
+                      </ShimmerCopies>
+                    </span>
+                  )}
                 </div>
               </StepTenseProvider>
             </SpecimenCell>
           ))}
-          <SpecimenCell label="Inside a step row's badge line (clean look)">
-            <ChatLookProvider value="clean">
+          <SpecimenCell label="Inside a step row's badge line">
+            <>
               <StepBadgeLine>
                 <BadgeReadout />
               </StepBadgeLine>
-            </ChatLookProvider>
+            </>
           </SpecimenCell>
           <SpecimenCell label="Outside a badge line: plain text, no badges">
-            <ChatLookProvider value="clean">
+            <>
               <BadgeReadout />
-            </ChatLookProvider>
-          </SpecimenCell>
-          <SpecimenCell label="Classic look: never badges, even inside a line">
-            <ChatLookProvider value="classic">
-              <StepBadgeLine>
-                <BadgeReadout />
-              </StepBadgeLine>
-            </ChatLookProvider>
+            </>
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

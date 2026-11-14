@@ -2,14 +2,19 @@ import {
   APP_ADVISOR_PROJECT_ID,
   type CoworkWorkEntryMeta,
 } from '@canopy/desktop-shared/types';
+import type { PortalCommandEnvelope } from '@canopy/protocol/portal';
+import { handlePortalStandaloneChatArchive } from '../../portal/adapters/standalone-chat-adapter';
 import { destroyWorktreeSessions } from '../../agents/session-manager';
 import { assertWorktreeCanBeRemoved } from '../../agents/background-work';
 import {
   listWorkEntries,
   listWorkEntryChatSummaries,
+  readWorkEntryRegistryRowState,
+  workEntryRegistryExists,
   removeWorkEntryRow,
   updateWorkEntry,
 } from '../../lib/cowork-work-entries';
+import * as mainProcessLogging from '../../lib/main-process-logging';
 import { cleanupPersistedWorktreeData } from '../../lib/worktree-data-cleanup';
 import { captureWorkEntryArchivedContainer } from '../../lib/archived-container-capture';
 import { resolveContainerRetentionDays } from '../../lib/archived-container-retention';
@@ -31,6 +36,8 @@ jest.mock('../../agents/background-work', () => ({
 jest.mock('../../lib/cowork-work-entries', () => ({
   listWorkEntries: jest.fn(),
   listWorkEntryChatSummaries: jest.fn(),
+  readWorkEntryRegistryRowState: jest.fn(),
+  workEntryRegistryExists: jest.fn(),
   removeWorkEntryRow: jest.fn(),
   updateWorkEntry: jest.fn(),
 }));
@@ -50,11 +57,22 @@ jest.mock('../../lib/cowork-migration-map', () => ({
 jest.mock('../../lib/workspace-registry', () => ({
   isCoworkWorkspace: jest.fn(() => true),
 }));
+jest.mock('../../lib/main-process-logging', () => ({
+  ...jest.requireActual<typeof mainProcessLogging>(
+    '../../lib/main-process-logging',
+  ),
+  logMainProcessError: jest.fn(),
+  logMainProcessWarn: jest.fn(),
+}));
 jest.mock('../../lib/worktree-data-cleanup', () => ({
   cleanupPersistedWorktreeData: jest.fn(),
 }));
 jest.mock('../../lib/archived-containers', () => ({
   broadcastArchivedContainersChanged: jest.fn(),
+  isArchivedWorkspaceOperationLockHeld: jest.fn(() => false),
+  withArchivedWorkspaceOperationLock: jest.fn(
+    (_workspaceId: string, operation: () => Promise<unknown>) => operation(),
+  ),
 }));
 jest.mock('../../lib/archived-container-retention', () => ({
   resolveContainerRetentionDays: jest.fn(),
@@ -117,9 +135,22 @@ jest.mock('../../app-advisor/watchers', () => {
   };
 });
 jest.mock('../../services/standalone-chat-service', () => ({
+  resolveStandaloneChatTarget: jest.fn(),
   emitStandaloneWorkEntrySummary: jest.fn(),
   emitStandaloneChatRemovals: jest.fn(),
 }));
+jest.mock('../../portal/adapters/chat-adapter', () => ({}));
+jest.mock('../../portal/adapters/chat-plugin-selections', () => ({}));
+jest.mock('../../portal/portal-chat-attachments', () => ({}));
+jest.mock('../../agents/work-owner', () => ({}));
+jest.mock('../../agents/delegation/activity', () => ({
+  LiveDelegationsError: class extends Error {},
+}));
+jest.mock('../../lib/model-policy-state', () => ({}));
+jest.mock('../../cursor/runtime-availability', () => ({}));
+jest.mock('../../copilot/runtime-availability', () => ({}));
+jest.mock('../../opencode/runtime-availability', () => ({}));
+
 jest.mock('../../services/chat-service', () => ({
   projectAppAdvisorChatSummaries: jest.fn(),
 }));
@@ -162,6 +193,7 @@ const watcher = jest.requireMock<{
 const standalone = jest.requireMock<{
   emitStandaloneWorkEntrySummary: jest.Mock;
   emitStandaloneChatRemovals: jest.Mock;
+  resolveStandaloneChatTarget: jest.Mock;
 }>('../../services/standalone-chat-service');
 const appAdvisor = jest.requireMock<{
   projectAppAdvisorChatSummaries: jest.Mock;
@@ -178,6 +210,70 @@ beforeEach(() => {
 });
 
 describe('Work Entry mutation lifecycle', () => {
+  it('reports reconciliation failure and runs a fresh Portal Retry through deletion preflight', async () => {
+    const project = 'project-a';
+    const chat = 'chat-a';
+    const reconciliationError = new Error('sidebar reconciliation failed');
+    jest.mocked(workEntryRegistryExists).mockResolvedValue(true);
+    jest.mocked(readWorkEntryRegistryRowState).mockResolvedValue('absent');
+    standalone.resolveStandaloneChatTarget.mockResolvedValue({
+      workspaceId: project,
+      entryId: entry.id,
+      archivedInEntryId: null,
+      isArchived: false,
+    });
+    jest.mocked(removeWorkEntryRow).mockImplementationOnce(() => {
+      // The registry installs the removal before reconciliation rejects.
+      jest.mocked(listWorkEntries).mockResolvedValue([]);
+      standalone.resolveStandaloneChatTarget.mockResolvedValue({
+        workspaceId: project,
+        entryId: null,
+        archivedInEntryId: entry.id,
+        isArchived: true,
+      });
+      return Promise.reject(reconciliationError);
+    });
+    const command: PortalCommandEnvelope = {
+      id: 'archive-a',
+      sequence: 1,
+      createdAt: entry.createdAt,
+      expiresAt: null,
+      type: 'portal.standalone_chat.archive',
+      target: { standaloneChatLocalId: chat },
+      payload: { chatId: chat, workEntryId: entry.id, projectLocalId: project },
+    };
+    const context = {
+      complete: jest.fn(),
+      fail: jest.fn(),
+      enqueueEvent: jest.fn(),
+      getWindow: (): null => null,
+      canArchiveStandaloneChats: (): boolean => true,
+      confirmArchivePairing: (): Promise<boolean> => Promise.resolve(true),
+    };
+    await handlePortalStandaloneChatArchive(command, context);
+    expect(context.fail).toHaveBeenCalledWith(
+      command,
+      'execution_failed',
+      "Couldn't archive the chat.",
+      false,
+    );
+    expect(context.complete).not.toHaveBeenCalled();
+    jest.mocked(listWorkEntries).mockClear();
+
+    const retry = { ...command, id: 'archive-retry', sequence: 2 };
+    await handlePortalStandaloneChatArchive(retry, context);
+    expect(context.complete).not.toHaveBeenCalled();
+    expect(context.fail).toHaveBeenCalledWith(
+      retry,
+      'execution_failed',
+      "Couldn't archive the chat.",
+      false,
+    );
+    expect(listWorkEntries).toHaveBeenCalledWith(project, { strictRead: true });
+    expect(captureWorkEntryArchivedContainer).toHaveBeenCalledTimes(1);
+    expect(removeWorkEntryRow).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps cowork and App Advisor update projections and telemetry', async () => {
     await updateWorkEntryMutation({
       projectId: 'project-a',
@@ -235,6 +331,7 @@ describe('Work Entry mutation lifecycle', () => {
       expect(browser.prepareTaskBrowserRetirement).toHaveBeenCalledWith(
         'project-a',
         'entry-a',
+        entry.createdAt,
       );
       expect(chatState.runWithScopeDeletionLifecycle).toHaveBeenCalledWith(
         { projectId: 'project-a', worktreeId: 'entry-a' },
@@ -275,6 +372,8 @@ describe('Work Entry mutation lifecycle', () => {
       expect(browser.commitTaskBrowserRetirement).toHaveBeenCalledWith(
         'project-a',
         'entry-a',
+        'owner_removed',
+        'retirement-a',
       );
       expect(watcher.commitLocalScopeCancellation).toHaveBeenCalledWith(
         'project-a',
@@ -305,10 +404,44 @@ describe('Work Entry mutation lifecycle', () => {
       expect(sessionDestroyOrder).toBeLessThan(captureOrder);
       expect(captureOrder).toBeLessThan(cleanupOrder);
       expect(cleanupOrder).toBeLessThan(removeOrder);
-      expect(removeOrder).toBeLessThan(watcherCommitOrder);
-      expect(watcherCommitOrder).toBeLessThan(queueCommitOrder);
+      expect(removeOrder).toBeLessThan(queueCommitOrder);
+      expect(queueCommitOrder).toBeLessThan(watcherCommitOrder);
     },
   );
+
+  it('settles a committed archive when browser and watcher cleanup fail', async () => {
+    const browserError = new Error('browser retirement failed');
+    const watcherError = new Error('watcher cancellation failed');
+    browser.commitTaskBrowserRetirement.mockRejectedValueOnce(browserError);
+    watcher.commitLocalScopeCancellation.mockRejectedValueOnce(watcherError);
+
+    await expect(
+      deleteWorkEntryMutation({
+        projectId: 'project-a',
+        entryId: 'entry-a',
+        lockAfterArchive: true,
+      }),
+    ).resolves.toEqual({ browserCleanupPending: true });
+
+    expect(queue.deletion.commit).toHaveBeenCalledTimes(1);
+    expect(queue.deletion.rollback).not.toHaveBeenCalled();
+    expect(watcher.commitLocalScopeCancellation).toHaveBeenCalledTimes(1);
+    expect(mainProcessLogging.logMainProcessError).toHaveBeenCalledWith(
+      expect.any(String),
+      browserError,
+    );
+    expect(mainProcessLogging.logMainProcessError).toHaveBeenCalledWith(
+      expect.any(String),
+      watcherError,
+    );
+    expect(standalone.emitStandaloneChatRemovals).toHaveBeenCalledWith(
+      'project-a',
+      [],
+    );
+    expect(broadcastArchivedContainersChanged).toHaveBeenCalledWith(
+      'project-a',
+    );
+  });
 
   it('retains the E2E late-provider checkpoint hook during deletion', async () => {
     const previousE2eDescriptor = Object.getOwnPropertyDescriptor(

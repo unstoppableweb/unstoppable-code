@@ -140,6 +140,7 @@ export function WorktreeInfoDialog({
               {saveError && (
                 <div>
                   <ErrorBanner
+                    errorSource="worktree-info-dialog"
                     className=""
                     error="Failed to save the label. Try again."
                   />

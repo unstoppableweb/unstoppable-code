@@ -157,6 +157,7 @@ export {
   SESSION_HELLO_TIMEOUT_MS,
   assertHostSupportsController,
   helloHost,
+  webControllerProfile,
   type ControllerConnectionOptions,
   type ControllerConnectionStatus,
   type ControllerProfile,

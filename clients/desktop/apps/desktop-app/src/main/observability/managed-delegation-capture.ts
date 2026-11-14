@@ -1,3 +1,4 @@
+import { observedModelIdentity } from '@canopy/core-runtime/observability';
 import type {
   AgentDelegationTranscript,
   PersistedAgentRouteSnapshot,
@@ -326,10 +327,15 @@ function auditEntryFor(
     billingBasis !== 'org_gateway' &&
     billingBasis !== 'local';
   let totalCostUsd = usageCost ?? previous?.totalCostUsd;
-  const model =
-    route === undefined
-      ? previous?.model
-      : route.runtimeModelId || route.selectedModelId;
+  const identity = observedModelIdentity({
+    model:
+      route === undefined
+        ? previous?.model
+        : route.runtimeModelId || route.selectedModelId,
+    requestedModel: route?.selectedModelId,
+    agentId: previous?.agentId,
+  });
+  const model = identity.model;
   const tokens = tokenTotalsFor(
     transcript.snapshot.usage,
     previous?.tokens,
@@ -375,7 +381,7 @@ function auditEntryFor(
     ...(executionHarness === undefined ? {} : { executionHarness }),
     label: 'Managed delegation',
     startedAt,
-    ...(model === undefined ? {} : { model }),
+    ...identity,
     ...(totalCostUsd === undefined ? {} : { totalCostUsd }),
     ...(observedCost === undefined ? {} : { observedCost }),
     ...(serviceTier === undefined ? {} : { serviceTier }),

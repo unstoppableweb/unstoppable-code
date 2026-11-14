@@ -143,6 +143,45 @@ export function retireRemovedPendingTurn(
   };
 }
 
+/**
+ * A prompt this window showed as sent that its host queued behind another
+ * turn instead: a queued row names it by the id it was sent under
+ * (CAN-6689). It leaves the transcript, with its pending turn and sending
+ * state, so the running turn's reply stays under that turn's own prompt, as a
+ * reload shows it; the prompt comes back when its own turn starts. The head
+ * of the queue while no turn runs is the turn starting now, which Core also
+ * lists as queued: it stays, with its timer and Stop (CAN-6592). A prompt the
+ * transcript already holds for good is never taken out.
+ */
+export function withdrawQueuedSends(
+  tab: ChatTab,
+  rows: readonly QueuedChatMessage[],
+): ChatTab {
+  const turnRuns = tab.status === 'streaming';
+  for (const [index, row] of rows.entries()) {
+    if (index === 0 && !turnRuns) continue;
+    const id = row.supersedesUserMessageId;
+    if (
+      id === undefined ||
+      !tab.pendingUserMessages?.some((message) => message.id === id)
+    )
+      continue;
+    const retired = retireRemovedPendingTurn(tab, id);
+    const users = retired.pendingUserMessages?.filter(
+      (message) => message.id !== id,
+    );
+    tab = {
+      ...retired,
+      messages: retired.messages.filter((message) => message.id !== id),
+      pendingUserMessages: users?.length ? users : undefined,
+      ...(retired.sendingLease?.userMessageId === id
+        ? { sendingLease: undefined }
+        : {}),
+    };
+  }
+  return tab;
+}
+
 const projectedMessages = new WeakMap<ChatTab, ChatMessage[]>();
 function firstSendTimestamps(tab: ChatTab): ChatMessage[] {
   const firstSend = tab.provisionalFirstSend;

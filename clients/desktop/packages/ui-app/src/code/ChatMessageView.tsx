@@ -41,12 +41,12 @@ import {
   readMessageAutoResume,
   SharedChatAuthorHeader,
   UserBubble,
+  UserBubbleCancelledNote,
   hasSteeringChatPart,
   MARKDOWN_ROOT_PROPS,
   splitSubagentReference,
   SubagentReferenceAttachment,
   useChatMessageContextMenu,
-  useCleanChatLook,
   useSmoothStreaming,
   withSoftLineBreaks,
   type MarkdownOptions,
@@ -228,8 +228,6 @@ export interface ChatMessageViewProps {
   readonly turnTimerPlanCopy?: PlanCopyState;
   /** Clean chat look: the running turn's live line, in the timer row's slot. */
   readonly turnTimerLiveLine?: ReactNode;
-  /** Keeps this message's timer row visible at rest (the newest turn). */
-  readonly turnTimerAlwaysVisible?: boolean;
   /**
    * How the owning turn ended, resolved once by its turn group so the timer
    * row agrees with the summary. A failed or cancelled row still wins.
@@ -391,7 +389,6 @@ const StreamingProse = memo(function StreamingProse({
 }: {
   text: string;
 }): JSX.Element {
-  const clean = useCleanChatLook();
   const [cached, setCached] = useState(() =>
     appendStreamingProse(EMPTY_PROSE, text),
   );
@@ -406,7 +403,7 @@ const StreamingProse = memo(function StreamingProse({
       <SettledProse blocks={state.blocks} count={state.blocks.length} />
       {/* Clean chat look: the tail streams in the paragraph it settles
           into, with its margins, so finishing the reply moves nothing. */}
-      {clean && tail !== '' ? (
+      {tail !== '' ? (
         <p className="whitespace-pre-wrap">{tail}</p>
       ) : (
         <span className="whitespace-pre-wrap">{tail}</span>
@@ -460,7 +457,6 @@ function ChatMessageViewImpl({
   turnTimerTrailing,
   turnTimerCopyText,
   turnTimerPlanCopy,
-  turnTimerAlwaysVisible,
   turnTimerLiveLine,
   turnTimerCompletionStatus,
 }: ChatMessageViewProps): JSX.Element | null {
@@ -468,7 +464,7 @@ function ChatMessageViewImpl({
   const author = useChatMessageAuthor(message);
   // Clean chat look: prose and step rows sit 8px apart, as on desktop, where
   // they are separate transcript rows; step rows in a run stay together.
-  const clean = useCleanChatLook();
+
   const smoothStreaming = useSmoothStreaming();
   const parts = message.parts ?? EMPTY_PARTS;
   const normalizedParts = useMemo(
@@ -610,11 +606,7 @@ function ChatMessageViewImpl({
           <div className={`${REPLAY_BLOCK_CLASS} ${PROSE_CLASSES}`}>
             <Prose text={body} options={USER_MARKDOWN_OPTIONS} />
           </div>
-          {message.status === 'cancelled' && (
-            <div className="mt-1 text-xs fg-secondary">
-              <span>Cancelled</span>
-            </div>
-          )}
+          {message.status === 'cancelled' && <UserBubbleCancelledNote />}
         </UserBubble>
         {contextMenu}
       </>
@@ -670,15 +662,14 @@ function ChatMessageViewImpl({
             // Clean steps sit 4px apart and 12px from text, as on desktop.
             <div
               data-testid="chat-message-parts"
-              className={clean ? 'flex flex-col gap-1' : undefined}
+              className="flex flex-col gap-1"
             >
               {normalizedParts.map((part, i) => (
                 // Stable occurrence keys survive same-message result folding.
                 <Fragment
                   key={`${part.kind}-${portalToolPartOccurrence(part)?.id ?? i}`}
                 >
-                  {clean &&
-                    i > 0 &&
+                  {i > 0 &&
                     (part.kind === 'text') !==
                       (normalizedParts[i - 1]?.kind === 'text') && (
                       <div aria-hidden="true" className="h-1" />
@@ -696,9 +687,6 @@ function ChatMessageViewImpl({
                       : {})}
                     {...(turnTimerPlanCopy !== undefined
                       ? { turnTimerPlanCopy }
-                      : {})}
-                    {...(turnTimerAlwaysVisible === true
-                      ? { turnTimerAlwaysVisible }
                       : {})}
                     live={isStreaming}
                     settled={i < normalizedParts.length - 1}

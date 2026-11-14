@@ -45,6 +45,7 @@ export function PullRequestActionError({
   return (
     <div className="shrink-0 px-3 pt-2">
       <ErrorBanner
+        errorSource="pr-action-error"
         className=""
         error={error}
         blockMessageFromReplay

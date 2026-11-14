@@ -62,6 +62,10 @@ import {
 } from '../lib/paths';
 import { isPathInside } from '../lib/path-safety';
 import {
+  curatedPluginDisplay,
+  CURATED_DISPLAY_FILE,
+} from './curated-plugin-display';
+import {
   resolveCuratedMcpCatalogForSync,
   type CuratedMcpCatalogResolution,
 } from '../mcp/curated-catalog';
@@ -542,6 +546,15 @@ async function materializedPluginMatches(
   if (Object.keys(lockEntry.files).length !== expectedFiles.size) return false;
 
   const pluginDir = join(getCuratedPluginsMarketplaceDir(), entry.key);
+  const display = renderJson(curatedPluginDisplay(entry));
+  for (const provider of ['claude', 'codex']) {
+    if (
+      (await readTextFile(
+        join(pluginDir, `.${provider}-plugin`, CURATED_DISPLAY_FILE),
+      )) !== display
+    )
+      return false;
+  }
   for (const [relativePath, expectedSha256] of Array.from(
     expectedFiles.entries(),
   )) {
@@ -724,6 +737,13 @@ async function writeStagedManifests(
     join(dir, '.codex-plugin', 'plugin.json'),
     renderJson(buildCodexPluginManifest(entry, mcpJson !== null)),
   );
+  const display = renderJson(curatedPluginDisplay(entry));
+  for (const provider of ['claude', 'codex']) {
+    await writeTextFile(
+      join(dir, `.${provider}-plugin`, CURATED_DISPLAY_FILE),
+      display,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

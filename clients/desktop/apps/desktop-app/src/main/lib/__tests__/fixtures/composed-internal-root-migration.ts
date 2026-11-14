@@ -224,10 +224,7 @@ export function defineComposedMigrationCases({
       const windowsProcessPath = resolve(
         '.cache/bin/win32-x64/canopy-process-identity.exe',
       );
-      const entry = join(
-        __dirname,
-        '../../../w5-commit-log/commit-log-worker.ts',
-      );
+      const entry = join(__dirname, 'w5-commit-log-source-worker.ts');
       const apply = { apply: true, declareInternal: true };
       const noRepairs: InternalRootRepairs = {
         prepare: () => Promise.resolve({ kind: 'ready', externalFiles: [] }),

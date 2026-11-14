@@ -64,6 +64,8 @@ import {
 } from './pending-tab-creation';
 import type { ChatCommandDisposition } from './revisioned-commands';
 import { chatBackendFor } from './backend';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { isCloudTaskDeleted } from './web-core/task-deletions';
 
 export function shouldEmitNewChatStartedWatcher(
   tab: ChatTab | undefined,
@@ -235,14 +237,18 @@ export function appendNewTab(
   get: () => ChatState,
   id?: string,
 ): void {
+  // A cloud task deleted on another device takes no new chat (CAN-6614).
+  if (isCloudTaskDeleted(sel)) return;
   const key = worktreeKey(sel);
   const pluginDefaults = getDefaultPlugins(
     sel.projectId,
     sel.worktreeId,
     get().worktreeDefaultPlugins,
   );
+  // A cloud chat starts on the web core's own default model until one is
+  // picked; this computer's defaults never stand in for it (CAN-6365).
   const resolvedDefaults =
-    sel.model && sel.thinkingLevel
+    (sel.model && sel.thinkingLevel) || isWebCoreScope(sel.projectId)
       ? {}
       : resolveTabDefaults(sel.projectId, get().modelDefaults);
   const defaultModel = resolvedDefaults.model;

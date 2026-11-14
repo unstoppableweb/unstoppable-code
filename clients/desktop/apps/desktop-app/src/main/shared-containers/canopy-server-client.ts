@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import type {
   CreateSharedContainerGrantResponse,
   ListDismissedSharedContainersResponse,
@@ -20,6 +21,7 @@ import type {
   CreateSharedContainerLinkRequest,
   CreateSharedContainerLinkResult,
 } from '@canopy/protocol/shared-containers';
+import { isListSharedContainerOwnerDeparturesResponse } from '@canopy/protocol/shared-containers';
 import { ciphertextLengthFor } from '@canopy/artifact-crypto';
 import { createHash } from 'node:crypto';
 import {
@@ -31,6 +33,7 @@ import {
 import { computePipelinePackageDigestSync } from '@canopy/desktop-shared/node';
 import type {
   ListDismissedSharedContainersRequest,
+  ListSharedContainerOwnerDeparturesResult,
   ListSharedContainerRecipientsRequest,
   ListSharedContainersByMeRequest,
   ListSharedContainersWithMeRequest,
@@ -43,6 +46,7 @@ import {
   requestCanopyCloudBinary,
   requestCanopyCloudNoContent,
   resolveCanopyCloudCredentialContext,
+  resolveCanopyCloudCredentialContextWithCapability,
   type CanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
 import {
@@ -61,6 +65,8 @@ const SHARED_CONTAINERS_CAPABILITY = 'shared-containers-v1';
 // Separate from the base capability: a server that advertises only
 // `shared-containers-v1` hard-deletes on dismiss and has neither route below.
 const SHARED_CONTAINER_DISMISSALS_CAPABILITY = 'shared-container-dismissals-v1';
+const SHARED_CONTAINER_OWNER_DEPARTURES_CAPABILITY =
+  'shared-container-owner-departures-v1';
 
 async function assertSupported(
   signal?: AbortSignal,
@@ -244,12 +250,30 @@ export function listSharedContainersByMe(
   return listSharedContainers('shared-by-me', request);
 }
 
+async function resolveListingCredentials(
+  capability: string,
+): Promise<CanopyCloudCredentialContext> {
+  try {
+    return await resolveCanopyCloudCredentialContextWithCapability(capability);
+  } catch (error) {
+    if (error instanceof CanopyCloudClientError) {
+      if (error.code === 'missing-api-key')
+        throw classifyError(error, 'external.sign_in_required');
+      if (error.code === 'unsupported-capability')
+        throw classifyError(error, 'external.state_changed');
+    }
+    throw error;
+  }
+}
+
 export type { ListSharedContainersWithMeRequest };
 
 export async function listSharedContainersWithMe(
   request: ListSharedContainersWithMeRequest,
 ): Promise<ListSharedContainersResponse> {
-  await assertSupported();
+  const credentialContext = await resolveListingCredentials(
+    SHARED_CONTAINERS_CAPABILITY,
+  );
   // No organization lists direct shares: containers shared with the caller by
   // email or from outside their organizations.
   const query = organizationQuery(request.organizationId);
@@ -257,7 +281,7 @@ export async function listSharedContainersWithMe(
   return withPackageVersionNegotiation((headers) =>
     requestCanopyCloudJson<ListSharedContainersResponse>(
       withQuery(`${API_PREFIX}/shared-with-me`, query),
-      { headers },
+      { headers, credentialContext },
     ),
   );
 }
@@ -291,11 +315,63 @@ export async function dismissSharedContainer(
 export async function listDismissedSharedContainers(
   request: ListDismissedSharedContainersRequest,
 ): Promise<ListDismissedSharedContainersResponse> {
-  await assertCanopyCloudCapability(SHARED_CONTAINER_DISMISSALS_CAPABILITY);
+  const credentialContext = await resolveListingCredentials(
+    SHARED_CONTAINER_DISMISSALS_CAPABILITY,
+  );
   const query = organizationQuery(request.organizationId);
   appendPagination(query, request);
   return requestCanopyCloudJson<ListDismissedSharedContainersResponse>(
     withQuery(`${API_PREFIX}/dismissed`, query),
+    { credentialContext },
+  );
+}
+
+/**
+ * Every notice addressed to the caller. Deliberately not scoped to an
+ * organization: a recipient who left the organization keeps theirs.
+ */
+export async function listSharedContainerOwnerDepartures(): Promise<ListSharedContainerOwnerDeparturesResult> {
+  const credentialContext = await resolveCanopyCloudCredentialContext({
+    preserveAccountReadErrors: true,
+  });
+  await assertCanopyCloudCapability(
+    SHARED_CONTAINER_OWNER_DEPARTURES_CAPABILITY,
+    credentialContext,
+  );
+  const response = await requestCanopyCloudJson<unknown>(
+    `${API_PREFIX}/owner-departures`,
+    { credentialContext, cache: 'no-store' },
+  );
+  if (!isListSharedContainerOwnerDeparturesResponse(response)) {
+    throw new CanopyCloudClientError(
+      'invalid-response',
+      'The server returned an invalid owner departure listing.',
+    );
+  }
+  // The credential can change before the renderer receives its reset event.
+  // Never return a listing from a credential that is no longer selected.
+  const current = await resolveCanopyCloudCredentialContext({
+    preserveAccountReadErrors: true,
+  });
+  return current.apiKey === credentialContext.apiKey &&
+    current.baseUrl === credentialContext.baseUrl
+    ? response
+    : { unsupported: true };
+}
+
+export async function dismissSharedContainerOwnerDeparture(
+  noticeId: string,
+): Promise<void> {
+  const credentialContext = await resolveCanopyCloudCredentialContext({
+    preserveAccountReadErrors: true,
+  });
+  await assertCanopyCloudCapability(
+    SHARED_CONTAINER_OWNER_DEPARTURES_CAPABILITY,
+    credentialContext,
+  );
+  await requestCanopyCloudNoContent(
+    `${API_PREFIX}/owner-departures/${encodeURIComponent(noticeId)}`,
+    { method: 'DELETE', credentialContext },
   );
 }
 

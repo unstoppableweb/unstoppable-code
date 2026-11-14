@@ -5,13 +5,19 @@ import type {
 import type { CodexConfig } from '../lib/codex-model-config';
 
 /** Execution harness selected for a model. Source and harness are independent. */
-export type ModelHarness = AiGatewayHarness | 'cursor' | 'copilot' | 'opencode';
+export type ModelHarness =
+  | AiGatewayHarness
+  | 'cursor'
+  | 'copilot'
+  | 'opencode'
+  | 'antigravity';
 
 export type ModelHarnessSource =
   | 'claude-managed'
   | 'codex-managed'
   | 'cursor-managed'
   | 'copilot-managed'
+  | 'antigravity-managed'
   | 'opencode-managed'
   | 'ai-gateway'
   | 'ollama';
@@ -48,6 +54,7 @@ export interface ModelHarnessCatalog {
   codexModels: readonly string[];
   cursorModels?: readonly string[];
   copilotModels?: readonly string[];
+  antigravityModels?: readonly string[];
   opencodeModels?: readonly string[];
   /** Exact eligible gateway IDs projected only by a connected desktop host. */
   openCodeGatewayModels?: readonly string[];

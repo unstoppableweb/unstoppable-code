@@ -520,7 +520,8 @@ function upsertMessage(
   return ordered;
 }
 
-function messageRevision(message: PortalChatMessage): number {
+/** A row's revision as the store compares it: a timer's completion counts. */
+export function messageRevision(message: PortalChatMessage): number {
   const frameRevision = message.updatedAtMs ?? message.createdAtMs;
   // Persisted timer messages retain their start timestamp; completion advances
   // only the embedded timer block.
@@ -1690,7 +1691,18 @@ export function createChatStore(
                   ...deriveStatus(hydratedState, message),
                 };
               }
-              const status = options?.status ?? hydratedState.status;
+              // Host activity starts and settles a turn independently of rows:
+              // the final assistant revision may arrive after the host settles.
+              // Transcript-only hydration leaves the live status unchanged.
+              // Explicit host status and existing failures still take priority.
+              let hostActivityStatus = hydratedState.status;
+              if (
+                options?.turnActive !== undefined &&
+                hydratedState.status !== 'error'
+              ) {
+                hostActivityStatus = options.turnActive ? 'streaming' : 'idle';
+              }
+              const status = options?.status ?? hostActivityStatus;
               const error =
                 options?.status !== undefined
                   ? (options.error ?? null)

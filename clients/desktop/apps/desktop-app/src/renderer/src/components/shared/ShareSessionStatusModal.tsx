@@ -83,6 +83,7 @@ export function ShareSessionStatusModal(): JSX.Element | null {
 
         {status.phase === 'error' && (
           <ErrorBanner
+            errorSource="share-session-status-error"
             className=""
             testId="share-session-status-error"
             error={`Couldn’t export this session. ${status.message}`}

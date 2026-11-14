@@ -131,6 +131,7 @@ export function AutomationPipelineTaskField({
       )}
       {tasks.status === 'error' && (
         <Notice
+          errorSource="automation-pipeline-task-field-on-retry-tasks"
           intent="destructive"
           data-testid={`${testIdPrefix}-task-error`}
           actions={

@@ -14,6 +14,8 @@ import {
   DelegatedAgentCapabilities,
   FactList,
   ForkContextNotice,
+  UserBubble,
+  UserBubbleCancelledNote,
 } from '@canopy/ui-shared/components';
 import {
   SpecimenCell,
@@ -344,6 +346,29 @@ export function DelegatedAgentCapabilitiesSheet(): JSX.Element {
           </div>
         </SpecimenCell>
       ))}
+    </SpecimenPanel>
+  );
+}
+
+export function UserBubbleCancelledNoteSheet(): JSX.Element {
+  return (
+    <SpecimenPanel title="A prompt cancelled before it ran">
+      <SpecimenCell label="Under a one-line prompt" wide>
+        <div className="w-full">
+          <UserBubble copyText="Summarize the release notes.">
+            <p>Summarize the release notes.</p>
+            <UserBubbleCancelledNote />
+          </UserBubble>
+        </div>
+      </SpecimenCell>
+      <SpecimenCell label="Under a long prompt" wide>
+        <div className="w-full">
+          <UserBubble copyText={LONG_NAME}>
+            <p className="break-words">{`Check every link in the changelog. ${LONG_NAME}`}</p>
+            <UserBubbleCancelledNote />
+          </UserBubble>
+        </div>
+      </SpecimenCell>
     </SpecimenPanel>
   );
 }

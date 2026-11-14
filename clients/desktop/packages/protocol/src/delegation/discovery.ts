@@ -13,8 +13,20 @@ export interface DelegationModelChoice {
   readonly disabledReason?: string;
 }
 
+export interface DelegationAgentChoice {
+  readonly agentId: string;
+  readonly label: string;
+  /** Runnable base model IDs referencing `models`; spawn with `${agentId}@${modelId}`.
+   * Availability, auth and thinking levels come from the referenced model.
+   * Unknown availability still needs launch-time validation.
+   */
+  readonly models: readonly string[];
+}
+
 export interface DelegationModelDiscovery {
   readonly models: readonly DelegationModelChoice[];
+  /** Omitted by hosts that do not support configured Agents. */
+  readonly agents?: readonly DelegationAgentChoice[];
   readonly recommendedModelId?: string;
   readonly truncated: boolean;
 }
@@ -25,6 +37,19 @@ export function normalizeManagedDelegationMode(
   value: unknown,
 ): ManagedDelegationMode {
   return value === 'explicit-only' || value === 'proactive' ? value : 'off';
+}
+
+/**
+ * The delegation policy an agent with the delegation tools follows, for the
+ * Delegate Task description and per-turn guidance on every host. `off`
+ * offers no tools, so it has no guidance.
+ */
+export function managedDelegationPolicyGuidance(
+  mode: Exclude<ManagedDelegationMode, 'off'>,
+): string {
+  return mode === 'proactive'
+    ? 'You may proactively consult another model for a concrete, independent task when useful; avoid redundant fan-out.'
+    : 'Only delegate when the user explicitly asks for delegation, another model, a subagent, or a second opinion. Do not delegate proactively.';
 }
 
 export const DEFAULT_MANAGED_DELEGATION_MAX_CONCURRENT = 5;

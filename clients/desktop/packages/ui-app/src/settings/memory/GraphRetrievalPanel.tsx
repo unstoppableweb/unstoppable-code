@@ -105,6 +105,7 @@ export function GraphRetrievalPanel({
       </p>
 
       <ErrorBanner
+        errorSource="graph-retrieval-panel"
         className="mt-3"
         error={error?.copy}
         details={error?.details}

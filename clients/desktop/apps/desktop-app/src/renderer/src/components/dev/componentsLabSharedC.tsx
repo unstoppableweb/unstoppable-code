@@ -912,6 +912,7 @@ function CopyDetailsButtonSheet(): JSX.Element {
         <SpecimenCell label="In a failure notice: Copy details, then Copied">
           <div className="w-full">
             <Notice
+              errorSource="preview-copy-details-button-sheet"
               intent="destructive"
               title="Couldn't load usage."
               actions={
@@ -929,6 +930,7 @@ function CopyDetailsButtonSheet(): JSX.Element {
         <SpecimenCell label="Clipboard refuses: the label stays and the failure is announced">
           <div className="w-full">
             <Notice
+              errorSource="preview-copy-details-button-sheet"
               intent="destructive"
               title="Couldn't load usage."
               actions={
@@ -946,6 +948,7 @@ function CopyDetailsButtonSheet(): JSX.Element {
         <SpecimenCell label="Write rejects: counts as a refusal">
           <div className="w-full">
             <Notice
+              errorSource="preview-copy-details-button-sheet"
               intent="destructive"
               title="Couldn't load usage."
               actions={
@@ -965,6 +968,7 @@ function CopyDetailsButtonSheet(): JSX.Element {
         <SpecimenCell label="Long reason: still never rendered, so the notice does not grow">
           <div className="w-full">
             <Notice
+              errorSource="preview-copy-details-button-sheet"
               intent="destructive"
               title="Couldn't load usage."
               actions={

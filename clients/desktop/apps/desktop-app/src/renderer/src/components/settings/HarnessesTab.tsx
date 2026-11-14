@@ -391,6 +391,7 @@ export function HarnessesTab(): JSX.Element {
       */}
       <SettingsSection description="You can change the harness when starting a new chat. Active chats keep the harness they started with.">
         <DesktopErrorBanner
+          errorSource="harness-save-error"
           className=""
           error={
             saveFailed

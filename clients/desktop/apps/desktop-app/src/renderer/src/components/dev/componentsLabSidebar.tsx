@@ -5,6 +5,9 @@ import {
   SidebarBatchCleanupFailureNotice,
   SidebarBatchRemovalDialog,
   SidebarBatchRemovalNotice,
+  SidebarDragPreview,
+  SidebarDropLine,
+  SidebarNestingRail,
   SidebarNavMarker,
   SidebarNavRow,
   SidebarStylePicker,
@@ -548,6 +551,60 @@ function SidebarGroupMenuSection(): JSX.Element {
   );
 }
 
+function SidebarDragSurfacesSection(): JSX.Element {
+  return (
+    <SpecimenPanel title="Sidebar drag surfaces">
+      <SpecimenGrid min={220}>
+        <SpecimenCell label="Row preview">
+          <SidebarDragPreview>
+            <div className="px-3 py-2">Worktree</div>
+          </SidebarDragPreview>
+        </SpecimenCell>
+        <SpecimenCell label="Group preview">
+          <SidebarDragPreview variant="group">
+            <div className="px-3 py-2">Related worktrees</div>
+          </SidebarDragPreview>
+        </SpecimenCell>
+        <SpecimenCell label="Workspace preview">
+          <SidebarDragPreview variant="workspace">
+            <div className="px-3 py-2">Workspace</div>
+          </SidebarDragPreview>
+        </SpecimenCell>
+        <SpecimenCell label="Worktree insertion before">
+          <div className="relative px-3 py-2">
+            <SidebarDropLine variant="worktree" position="before" />
+            Worktree
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Workspace insertion after">
+          <div className="relative px-3 py-2">
+            Workspace
+            <SidebarDropLine variant="workspace" position="after" />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Group insertion before">
+          <div className="relative px-3 py-2">
+            <SidebarDropLine variant="group" position="before" />
+            Related worktrees
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Nested worktree rail">
+          <div className="flex flex-col gap-px">
+            <div className="relative py-2 pl-10">
+              <SidebarNestingRail first last={false} />
+              First worktree
+            </div>
+            <div className="relative py-2 pl-10">
+              <SidebarNestingRail first={false} last bridgeGap />
+              Last worktree
+            </div>
+          </div>
+        </SpecimenCell>
+      </SpecimenGrid>
+    </SpecimenPanel>
+  );
+}
+
 export function SidebarPartsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
@@ -558,6 +615,7 @@ export function SidebarPartsSpecimen(): JSX.Element {
       <SidebarBatchRemovalDialogSection />
       <SettingsSaveStatusSection />
       <SidebarGroupMenuSection />
+      <SidebarDragSurfacesSection />
     </div>
   );
 }

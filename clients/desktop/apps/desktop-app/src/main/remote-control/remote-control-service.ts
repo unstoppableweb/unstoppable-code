@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import type {
   PairingTelemetryAttempt,
   PairingTelemetryRecorder,
@@ -188,6 +189,7 @@ export interface RemoteControlServiceDeps {
   createBridge: (
     controllerDeviceId: string,
     surface: RemoteSurface,
+    exactWorktreeBaseBranch: boolean,
   ) => Promise<HostBridge>;
   /**
    * The App Advisor window a controller shows for this computer, made per
@@ -1613,8 +1615,12 @@ export class RemoteControlService {
     let appAdvisor: RemoteAppAdvisorSurface | null = null;
     const hostSession = new RemoteHostSession({
       session,
-      createBridge: (surface: RemoteSurface): Promise<HostBridge> =>
-        this.deps.createBridge(session.peerDeviceId, surface),
+      createBridge: (surface, exactWorktreeBaseBranch): Promise<HostBridge> =>
+        this.deps.createBridge(
+          session.peerDeviceId,
+          surface,
+          exactWorktreeBaseBranch,
+        ),
       onAppAdvisorWindowState: (state): void => appAdvisor?.applyState(state),
       mainWindowPushes: this.deps.mainWindowPushes,
       uploads: this.deps.uploads,
@@ -2265,7 +2271,12 @@ export class RemoteControlService {
       connect: (): Promise<SecureSession> => {
         const sessions = this.sessions;
         if (!sessions) {
-          return Promise.reject(new Error('Remote control is turned off.'));
+          return Promise.reject(
+            classifyError(
+              new Error('Remote control is turned off.'),
+              'external.state_changed',
+            ),
+          );
         }
         return sessions.connect({
           peerDeviceId: host.deviceId,
@@ -2306,7 +2317,10 @@ export class RemoteControlService {
   private connectionForDevice(deviceId: string): RemoteHostConnection {
     const connection = this.connections.get(deviceId);
     if (!connection) {
-      throw new Error('This window is not connected to another computer.');
+      throw classifyError(
+        new Error('This window is not connected to another computer.'),
+        'external.state_changed',
+      );
     }
     return connection;
   }
@@ -2330,7 +2344,12 @@ export class RemoteControlService {
       return this.openFileLocally(deviceId, args);
     }
     if (getRemoteChannelDisposition(channel) !== 'tunnel') {
-      return Promise.reject(new RemoteChannelUnavailableError(channel));
+      return Promise.reject(
+        classifyError(
+          new RemoteChannelUnavailableError(channel),
+          'external.state_changed',
+        ),
+      );
     }
     return this.connectionForDevice(deviceId).invoke(channel, args, surface);
   }

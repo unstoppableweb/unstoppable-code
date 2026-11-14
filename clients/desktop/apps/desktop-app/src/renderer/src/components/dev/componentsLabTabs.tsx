@@ -93,13 +93,17 @@ function LiveSegmented({
   width,
   disabled,
   unavailable,
+  optionDisabled,
   loading,
+  semantics,
 }: {
   readonly shape?: SegmentedControlShape;
   readonly width?: 'control' | 'fill' | 'content';
   readonly disabled?: boolean;
   readonly unavailable?: boolean;
+  readonly optionDisabled?: boolean;
   readonly loading?: boolean;
+  readonly semantics?: 'toggle' | 'radio';
 }): JSX.Element {
   const [value, setValue] = useState<Mode>('dark');
   return (
@@ -107,18 +111,22 @@ function LiveSegmented({
       label="Appearance"
       value={loading ? null : value}
       onChange={setValue}
+      semantics={semantics}
       shape={shape}
       width={width}
       disabled={disabled}
-      options={MODE_OPTIONS.map((option) =>
-        unavailable && option.value === 'system'
-          ? {
-              ...option,
-              unavailable: true,
-              tooltip: 'Your organization sets this',
-            }
-          : option,
-      )}
+      options={MODE_OPTIONS.map((option) => {
+        if (option.value !== 'system') return option;
+        if (unavailable) {
+          return {
+            ...option,
+            unavailable: true,
+            tooltip: 'Your organization sets this',
+            tooltipLink: { text: 'See the policy', onClick: () => undefined },
+          };
+        }
+        return optionDisabled ? { ...option, disabled: true } : option;
+      })}
     />
   );
 }
@@ -142,8 +150,22 @@ export function SegmentedControlSpecimen(): JSX.Element {
         <SpecimenCell label="One option unavailable">
           <LiveSegmented unavailable />
         </SpecimenCell>
+        <SpecimenCell label="One option disabled">
+          <LiveSegmented optionDisabled />
+        </SpecimenCell>
         <SpecimenCell label="Disabled">
           <LiveSegmented disabled />
+        </SpecimenCell>
+        <SpecimenCell label="Radio semantics, arrow keys">
+          <LiveSegmented semantics="radio" shape="capsule" width="content" />
+        </SpecimenCell>
+        <SpecimenCell label="Radio, one option unavailable">
+          <LiveSegmented
+            semantics="radio"
+            shape="capsule"
+            width="content"
+            unavailable
+          />
         </SpecimenCell>
         <SpecimenCell label="Loading (value null)">
           <LiveSegmented loading />

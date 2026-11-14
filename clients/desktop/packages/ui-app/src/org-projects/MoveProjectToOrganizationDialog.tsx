@@ -180,6 +180,7 @@ export function MoveProjectToOrganizationDialog({
         </DialogFormField>
         {visibleError && selected ? (
           <ErrorBanner
+            errorSource="move-project-to-organization-error"
             className=""
             // The sentence names the user-authored project.
             blockMessageFromReplay

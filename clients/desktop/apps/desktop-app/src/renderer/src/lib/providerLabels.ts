@@ -25,6 +25,7 @@ export function getPlanSourceLabel(source: UiTrackedPlanSource): string {
     case 'claude':
     case 'codex':
     case 'cursor':
+    case 'antigravity':
     case 'copilot':
     case 'opencode':
     case 'ollama':

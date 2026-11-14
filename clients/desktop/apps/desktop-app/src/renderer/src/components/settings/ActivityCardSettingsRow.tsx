@@ -46,7 +46,11 @@ export function ActivityCardSettingsRow(): JSX.Element | null {
         />
       }
     >
-      <ErrorBanner error={error} className="" />
+      <ErrorBanner
+        errorSource="activity-card-settings-row"
+        error={error}
+        className=""
+      />
     </SettingsRow>
   );
 }

@@ -3,6 +3,7 @@ import type { IconSize } from '../icons/AppIcons';
 import { CheckIcon } from '../icons/CheckIcon';
 import { CopyIcon } from '../icons/CopyIcon';
 import { Button, type ButtonSize, type ButtonVariant } from './Button';
+import { ReservedLabel } from './LoadingButton';
 import { Tooltip } from './Tooltip';
 import { CopyStatusRegion, useAnnouncedCopy } from './copy-feedback';
 
@@ -36,6 +37,11 @@ export interface CopyButtonProps {
   variant?: ButtonVariant;
   /** Button size; the glyph follows it. Defaults to the small button. */
   size?: ButtonSize;
+  /**
+   * The glyph's step on the icon scale, when it should be smaller than the
+   * size's own (an inline copy beside a short value, such as a reference ID).
+   */
+  glyphSize?: IconSize;
   /** Optional label. With one, this is a labeled button; without, icon-only. */
   label?: string;
   /** Label and accessible name while the copied confirmation shows. */
@@ -68,6 +74,7 @@ function CopyButtonControl({
   title,
   variant = 'ghost',
   size = 'sm',
+  glyphSize: glyphSizeOverride,
   label,
   copiedLabel = 'Copied',
   className,
@@ -92,7 +99,7 @@ function CopyButtonControl({
     [copy, value],
   );
 
-  const glyphSize = GLYPH_SIZE[size];
+  const glyphSize = glyphSizeOverride ?? GLYPH_SIZE[size];
   const glyph = copied ? (
     <CheckIcon size={glyphSize} aria-hidden="true" />
   ) : (
@@ -137,7 +144,25 @@ function CopyButtonControl({
           aria-labelledby={copied ? undefined : ariaLabelledBy}
         >
           {glyph}
-          <span>{copied ? copiedLabel : label}</span>
+          {/* Both labels share one grid cell, so the button is as wide as the
+              wider label in both states and never resizes when it confirms.
+              The label not showing is drawn from an attribute, so the DOM
+              text and accessible name are only the showing one; start
+              alignment keeps the shorter label beside the glyph. */}
+          <span className="inline-grid">
+            <span
+              aria-hidden={copied ? true : undefined}
+              className={`col-start-1 row-start-1 text-start ${copied ? 'invisible' : ''}`}
+            >
+              {copied ? <ReservedLabel label={label} /> : label}
+            </span>
+            <span
+              aria-hidden={copied ? undefined : true}
+              className={`col-start-1 row-start-1 text-start ${copied ? '' : 'invisible'}`}
+            >
+              {copied ? copiedLabel : <ReservedLabel label={copiedLabel} />}
+            </span>
+          </span>
         </Button>
       )}
       {(copied || failed) && <CopyStatusRegion announcement={announcement} />}

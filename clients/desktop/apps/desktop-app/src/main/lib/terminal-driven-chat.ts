@@ -20,6 +20,7 @@ export function persistedTabProvider(
   | 'ollama'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | undefined {
   if (!tab || tab.kind === 'file') return undefined;

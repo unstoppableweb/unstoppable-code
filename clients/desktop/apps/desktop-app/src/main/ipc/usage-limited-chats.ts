@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -255,7 +256,10 @@ export async function handleListUsageLimitedIdleChats(
 
 function validateIncludeResumePreview(value: unknown): void {
   if (value !== undefined && typeof value !== 'boolean')
-    throw new Error('includeResumePreview must be a boolean');
+    throw classifyError(
+      new Error('includeResumePreview must be a boolean'),
+      'input.not_accepted',
+    );
 }
 
 /**
@@ -405,6 +409,11 @@ async function listUsageLimitedIdleChats(
 export async function handleListUsageLimitedIdleSessions(
   req: ListUsageLimitedIdleSessionsRequest,
 ): Promise<ListUsageLimitedIdleSessionsResponse> {
+  if (!req || typeof req !== 'object')
+    throw classifyError(
+      new Error('Expected a usage-limited sessions request.'),
+      'input.not_accepted',
+    );
   return (await listUsageLimitedIdleSessionsWithProviders(req)).groups;
 }
 
@@ -425,7 +434,10 @@ async function listUsageLimitedIdleSessionsWithProviders(
     req.provider !== 'ollama' &&
     req.provider !== 'cursor'
   ) {
-    throw new Error('Provider must be claude, codex, ollama, or cursor');
+    throw classifyError(
+      new Error('Provider must be claude, codex, ollama, or cursor'),
+      'input.not_accepted',
+    );
   }
   validateIncludeResumePreview(req.includeResumePreview);
   const lookupWorkspace = createResumeWorkspaceLookup();
@@ -497,7 +509,10 @@ async function listUsageLimitedIdleSessionsWithProviders(
         ? state.authentication_pause?.attempt_id ===
             req.authenticationAttemptId &&
           state.authentication_pause.reason_ids.includes(reason.id)
-        : reason.kind === 'app_shutdown' || reason.kind === 'provider_sign_in'
+        : // A lost daemon core's pause resumes as a shutdown's does (CAN-6481).
+          reason.kind === 'app_shutdown' ||
+            reason.kind === 'core_lost' ||
+            reason.kind === 'provider_sign_in'
           ? !req.provider || reason.provider === req.provider
           : !req.resumeReason &&
             (reason.kind === 'provider_usage_limit' ||
@@ -544,7 +559,7 @@ async function listUsageLimitedIdleSessionsWithProviders(
           ...matching.map((reason) =>
             reason.kind === 'provider_sign_in'
               ? ('provider_sign_in' as const)
-              : reason.kind === 'app_shutdown'
+              : reason.kind === 'app_shutdown' || reason.kind === 'core_lost'
                 ? ('app_shutdown' as const)
                 : reason.kind === 'provider_authentication_required'
                   ? ('authentication' as const)

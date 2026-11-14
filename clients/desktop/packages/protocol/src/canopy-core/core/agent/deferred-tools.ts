@@ -76,7 +76,15 @@ export type DeferredToolsRecipient = z.output<
  */
 export const DeferredToolsSessionSchema = z.strictObject({
   providerType: z
-    .enum(['claude', 'codex', 'ollama', 'cursor', 'opencode', 'copilot'])
+    .enum([
+      'claude',
+      'codex',
+      'ollama',
+      'cursor',
+      'opencode',
+      'copilot',
+      'antigravity',
+    ])
     .optional(),
   interfaceMode: z.enum(['canopy', 'claude-code', 'auto']).optional(),
   assistantMode: z

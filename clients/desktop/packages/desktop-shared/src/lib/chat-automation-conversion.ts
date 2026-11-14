@@ -14,6 +14,8 @@
  * single context, which desktop main checks before it drops it (CAN-5479).
  */
 import { APP_ADVISOR_BOT_ID } from '@canopy/agent-actions/families/bots/actions';
+import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type {
   AgentModelConfig,
   ApprovalMode,
@@ -39,7 +41,6 @@ import type {
   Step,
 } from '@canopy/execution-engine/types/pipeline';
 import { getPipelinePluginDefaultKey } from '@canopy/execution-engine/pipelines/plugin-collections';
-import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
 import type {
   ChatAttachmentPromptContext,
@@ -138,13 +139,10 @@ export type ChatAutomationConversionRefusal =
    * scheduled task or a legacy standalone chat.
    */
   | 'native_send'
+  /** An explicit Agent model route the pipeline alias cannot preserve. */
+  | 'agent_route'
   /** Settings D11 refuses for a run an agent's automation starts. */
-  | 'agent_settings'
-  /**
-   * A pinned Agent route, which only the automation's own native send may
-   * start a chat on (CAN-5379).
-   */
-  | 'agent_route';
+  | 'agent_settings';
 
 export type ChatAutomationConvertibility =
   | { convertible: true }
@@ -247,7 +245,11 @@ export function convertibleChatAutomation(
   }
   if (action.type === 'worktree_prompt' && action.purpose === 'scheduled_task')
     return refuse('native_send');
-  if (action.model !== undefined && parseAgentRouteModelId(action.model))
+  if (
+    action.model !== undefined &&
+    isAgentModel(action.model) &&
+    !parsePipelineAgentAliasRoute({ agent_id: action.model }).ok
+  )
     return refuse('agent_route');
   // D11: a send into an existing chat changes no authority (local plugin
   // selections included), and an agent's run takes no plugins through a
@@ -278,7 +280,9 @@ export function convertibleChatAutomation(
  */
 function mayKeepInterfaceMode(model: string | undefined): boolean {
   if (model === undefined) return true;
-  const known = resolveKnownModel(model);
+  const known = resolveKnownModel(
+    parseAgentRouteModelId(model)?.baseModel ?? model,
+  );
   const provider = known === undefined ? undefined : getProviderForModel(known);
   return provider === undefined ? isAgentModel(model) : provider === 'claude';
 }
@@ -812,7 +816,30 @@ function aliasAgent(
   if (typeof preference !== 'object' || preference === null) return undefined;
   const mode: unknown = Reflect.get(preference, 'mode');
   const agentId: unknown = Reflect.get(preference, 'agent_id');
-  return mode === 'agent' && typeof agentId === 'string' ? agentId : undefined;
+  if (mode !== 'agent' || typeof agentId !== 'string') return undefined;
+  const parsed = parsePipelineAgentAliasRoute({
+    agent_id: agentId,
+    base: Reflect.get(preference, 'base'),
+  });
+  return parsed.ok ? parsed.route : undefined;
+}
+
+/** Compare the effective route, not its embedded versus structured spelling. */
+function canonicalChatModelPreferences(
+  pipeline: Pipeline,
+  preferences: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> {
+  const route = aliasAgent(pipeline, preferences);
+  const preference = preferences?.[CHAT_AUTOMATION_MODEL_ALIAS];
+  if (!route || typeof preference !== 'object' || preference === null)
+    return preferences ?? {};
+  const fields: Record<string, unknown> = Object.fromEntries(
+    Object.entries(preference).filter(([key]) => key !== 'base'),
+  );
+  return {
+    ...preferences,
+    [CHAT_AUTOMATION_MODEL_ALIAS]: { ...fields, agent_id: route },
+  };
 }
 
 /** What converting back reads of a pipeline's plugin collection. */
@@ -1293,8 +1320,11 @@ export function ownedPipelineToChatAction(
   }) &&
     sameJson(regenerated.inputs, inputs) &&
     sameJson(
-      regenerated.modelAliasPreferences ?? {},
-      modelAliasPreferences ?? {},
+      canonicalChatModelPreferences(
+        pipeline,
+        regenerated.modelAliasPreferences,
+      ),
+      canonicalChatModelPreferences(pipeline, modelAliasPreferences),
     ) &&
     sameJson(
       regenerated.pluginCollectionPreferences ?? {},

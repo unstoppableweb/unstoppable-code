@@ -183,7 +183,7 @@ export async function authorizeCursorMcpTool(
     planMode?: boolean;
     /** Which app tool set this session carries. */
     mode?: CursorCanopyServerMode;
-    providerLabel?: 'Cursor' | 'Copilot' | 'OpenCode';
+    providerLabel?: 'Cursor' | 'Copilot' | 'OpenCode' | 'Antigravity';
     /**
      * Which app tool set the default-mode main server advertises. Cowork
      * routes carry `cursor-acp-standalone`; a tool outside it is denied here

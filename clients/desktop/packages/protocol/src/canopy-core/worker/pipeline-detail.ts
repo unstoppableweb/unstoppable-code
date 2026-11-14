@@ -75,13 +75,16 @@ export const WORKER_PIPELINE_STEP_CONCLUSIONS = [
  * that stayed away past its lease or stopped answering (CAN-6102);
  * `host_rollover` marks a run checkpointed on request, after its running
  * steps had until a deadline to finish, so its host can roll over
- * (CAN-6199); `app_shutdown` marks a checkpoint or a local owner's loss.
+ * (CAN-6199); `core_lost` marks a run whose daemon core was lost, after
+ * its host ended the steps (CAN-6481); `app_shutdown` marks a checkpoint or
+ * a local owner's loss.
  */
 export const WORKER_PIPELINE_STATUS_REASON_KINDS = [
   'provider_sign_in',
   'app_shutdown',
   'owner_lost',
   'host_rollover',
+  'core_lost',
   'input_required',
   'action_paused',
   'provider_authentication_required',
@@ -95,6 +98,7 @@ export const WORKER_PIPELINE_STATUS_REASON_CODES = [
   'app_shutdown',
   'owner_lost',
   'host_rollover',
+  'core_lost',
   'input_requested',
   'action_requested_pause',
   'authentication_failed',
@@ -115,6 +119,7 @@ export const WORKER_PIPELINE_STATUS_REASON_CODES = [
 ] as const;
 
 export const WORKER_PIPELINE_AGENT_PROVIDERS = [
+  'antigravity',
   'claude',
   'codex',
   'ollama',
@@ -124,6 +129,7 @@ export const WORKER_PIPELINE_AGENT_PROVIDERS = [
 ] as const;
 
 export const WORKER_PIPELINE_AGENT_HARNESSES = [
+  'antigravity',
   'claude',
   'codex',
   'cursor',

@@ -153,6 +153,8 @@ export interface PersistedChatDispatchMetadata {
   modelConfig?: AgentModelConfig;
   deferredToolsAllowed?: boolean;
   approvalMode?: ApprovalMode;
+  /** The next turn owes the conversation after a provider switch (CAN-6445). */
+  providerSwitchSeedPending?: true;
 }
 
 /**
@@ -207,6 +209,9 @@ export async function readPersistedChatDispatchMetadata(
       ? { deferredToolsAllowed: tab.deferredToolsAllowed }
       : {}),
     ...(tab.approvalMode ? { approvalMode: tab.approvalMode } : {}),
+    ...(tab.providerSwitchSeedPending === true
+      ? { providerSwitchSeedPending: true }
+      : {}),
   };
 }
 
@@ -264,6 +269,7 @@ export function isPersistedChatTab(value: unknown): value is PersistedChatTab {
     (value.executionHarness === undefined ||
       value.executionHarness === 'cursor' ||
       value.executionHarness === 'copilot' ||
+      value.executionHarness === 'antigravity' ||
       value.executionHarness === 'opencode' ||
       value.executionHarness === 'claude' ||
       value.executionHarness === 'codex')

@@ -1,4 +1,6 @@
+import { automationAgentPluginsMatch } from '@/lib/agentSharing';
 import { Fieldset } from '@canopy/ui-shared/components';
+import { findInstalledAutomationAgent } from '@canopy/desktop-shared/lib/automation-agent';
 import {
   type JSX,
   type ReactNode,
@@ -42,6 +44,10 @@ import {
   type InstallSharedAutomationBindings,
 } from '@canopy/desktop-shared/lib/automation-install';
 import { automationActionUsesIfCommandOutput } from '@canopy/desktop-shared/lib/automation-sharing';
+import {
+  sharedPipelineInputKinds,
+  type SharedWorkflowProjectKind,
+} from '@canopy/desktop-shared/lib/shared-workflow-inputs';
 import {
   MAX_AUTOMATION_IF_COMMAND_CHARS,
   validateAutomationIfCommand,
@@ -122,6 +128,11 @@ const WORKSPACE_PLACEHOLDER = 'Choose a project…';
 const COWORK_WORKSPACE_LABEL = `${CHAT_LABEL} project`;
 const COWORK_WORKSPACE_PLACEHOLDER = `Choose a ${CHAT_LABEL} project…`;
 const COWORK_WORKSPACE_NOTE = `The author's ${CHAT_LABEL} project stays on their machine. Pick one of yours for this automation to post into.`;
+const NO_CODE_PROJECTS_NOTE =
+  'You have no code projects yet. Add one, then install this automation.';
+const NO_COWORK_PROJECTS_NOTE = `You have no ${CHAT_LABEL} projects yet. Add one, then install this automation.`;
+const NO_PROJECTS_NOTE =
+  'You have no projects yet. Add one, then install this automation.';
 const PIPELINE_LABEL = 'Workflow';
 const PIPELINE_PLACEHOLDER = 'Choose a workflow…';
 const PIPELINE_NOTE =
@@ -396,9 +407,17 @@ export function InstallSharedAutomationModal({
   const [targetActivityId, setTargetActivityId] = useState<string | undefined>(
     initialDraft?.targetActivityId ?? staleList[0]?.id,
   );
-  const existingActivity = staleList.find(
+  const targetActivity = staleList.find(
     (activity) => activity.id === targetActivityId,
   );
+  // CAN-6065: a converted install whose workflow other schedules share shows
+  // its stored action; the update compares with, seeds from and rolls back
+  // to the chat action it stands for, as when it has one schedule.
+  const shownChatAction = targetActivity?.ownedPipeline?.chatAction;
+  const existingActivity =
+    targetActivity !== undefined && shownChatAction !== undefined
+      ? { ...targetActivity, action: shownChatAction }
+      : targetActivity;
   const workspaceNameById = new Map(
     workspaces.map((workspace) => [workspace.id, workspace.name]),
   );
@@ -508,6 +527,24 @@ function InstallSharedAutomationForm({
   const pipelineRef: SharedAutomationPipelineRef | null =
     action.type === 'worktree_pipeline' ? action.pipeline : null;
   const inputKeys = action.type === 'worktree_pipeline' ? action.inputKeys : [];
+  // CAN-6548: a workflow input its steps use as a project takes a project
+  // picker, and an Orchestrator input is filled in and not shown.
+  const inputKinds = useMemo(
+    () =>
+      action.type === 'worktree_pipeline'
+        ? sharedPipelineInputKinds(action)
+        : {},
+    [action],
+  );
+  const projectInputs = inputKeys.flatMap((key) => {
+    const kind = inputKinds[key];
+    return kind?.kind === 'project'
+      ? [{ key, projectKind: kind.projectKind }]
+      : [];
+  });
+  const textInputKeys = inputKeys.filter(
+    (key) => (inputKinds[key]?.kind ?? 'text') === 'text',
+  );
   const documentPlugins = useMemo(
     () => (action.type === 'worktree_pipeline' ? [] : action.plugins),
     [action],
@@ -550,15 +587,32 @@ function InstallSharedAutomationForm({
           : ''),
   );
   const [inputs, setInputs] = useState<Record<string, string>>(() => {
+    // CAN-6548: a converted chat automation shows as its chat action, so a
+    // workflow update seeds from the workflow action main stores, and a
+    // project input falls back to the project the chat action runs in.
+    const storedExistingAction =
+      existingActivity?.ownedPipeline?.storedAction ?? existingAction;
     const existingInputs =
       initialDraft?.inputs ??
-      (existingAction?.type === 'worktree_pipeline'
-        ? (existingAction.inputs ?? {})
+      (storedExistingAction?.type === 'worktree_pipeline'
+        ? (storedExistingAction.inputs ?? {})
         : {});
+    const chatProjectId =
+      existingAction?.type === 'standalone_prompt'
+        ? existingAction.chatProjectId
+        : existingAction?.type === 'worktree_prompt' ||
+            existingAction?.type === 'worktree_session_prompt'
+          ? existingAction.workspaceId
+          : undefined;
     const seeded: Record<string, string> = {};
     for (const key of inputKeys) {
       // Bindings survive an update only where the key still exists.
-      if (existingInputs[key] !== undefined) seeded[key] = existingInputs[key];
+      const value =
+        existingInputs[key] ??
+        (initialDraft === undefined && inputKinds[key]?.kind === 'project'
+          ? chatProjectId
+          : undefined);
+      if (value !== undefined) seeded[key] = value;
     }
     return seeded;
   });
@@ -1200,6 +1254,48 @@ function InstallSharedAutomationForm({
     needsWorkspace,
   ]);
 
+  // CAN-6548: the projects a workflow's project input can name: code
+  // projects for a worktree, Cowork projects for a Cowork entry.
+  const projectInputOptions = (
+    projectKind: SharedWorkflowProjectKind,
+  ): InstallWorkspaceOption[] =>
+    workspaces.filter((workspace) =>
+      projectKind === 'any'
+        ? true
+        : projectKind === 'cowork'
+          ? workspace.type === 'cowork'
+          : workspace.type !== 'cowork',
+    );
+  const invalidProjectInput = projectInputs.find(
+    ({ key, projectKind }) =>
+      !projectInputOptions(projectKind).some(
+        (workspace) => workspace.id === inputs[key],
+      ),
+  );
+  // As with the project picker, a fresh install preselects the only choice.
+  // One `key\tid` line per input, so the effect runs only when they change.
+  const onlyProjectInputChoices = (
+    existingActivity === undefined
+      ? projectInputs.flatMap(({ key, projectKind }) => {
+          const [only, ...rest] = projectInputOptions(projectKind);
+          return only !== undefined && rest.length === 0
+            ? [`${key}\t${only.id}`]
+            : [];
+        })
+      : []
+  ).join('\n');
+  useEffect(() => {
+    if (onlyProjectInputChoices === '') return;
+    setInputs((prev) => {
+      const next = { ...prev };
+      for (const line of onlyProjectInputChoices.split('\n')) {
+        const [key, id] = line.split('\t');
+        if (key !== undefined && id !== undefined && !next[key]) next[key] = id;
+      }
+      return next;
+    });
+  }, [onlyProjectInputChoices]);
+
   const selectedTargetId = needsCoworkWorkspace
     ? coworkWorkspaceId
     : needsWorkspace
@@ -1396,6 +1492,7 @@ function InstallSharedAutomationForm({
     !coworkBindingValid ||
     !taskBindingValid ||
     !pipelineBindingValid ||
+    invalidProjectInput !== undefined ||
     runConditionReason !== null;
 
   // One quiet line naming the first missing input, in the same order the
@@ -1428,6 +1525,10 @@ function InstallSharedAutomationForm({
     if (awaitingPipelineChoice) return SUBMIT_REASON_PIPELINE;
     if (!workspaceBindingValid) return SUBMIT_REASON_PROJECT;
     if (!coworkBindingValid) return SUBMIT_REASON_COWORK_PROJECT;
+    if (invalidProjectInput !== undefined)
+      return invalidProjectInput.projectKind === 'cowork'
+        ? SUBMIT_REASON_COWORK_PROJECT
+        : SUBMIT_REASON_PROJECT;
     if (!taskBindingValid && taskId === '') return SUBMIT_REASON_TASK;
     if (pipelineRef?.source === 'unresolved' && chosenPipelineId === '') {
       // The empty-catalog note already says there is nothing to choose.
@@ -1507,14 +1608,36 @@ function InstallSharedAutomationForm({
     let overwrittenPipeline: PipelineData | null = null;
     let updatedExistingActivity = false;
     try {
+      const inventory =
+        selectedTargetId || projectInputs.length > 0
+          ? await window.api.loadProjects()
+          : null;
       if (selectedTargetId) {
-        const inventory = await window.api.loadProjects();
-        const current = inventory.items.find(
+        const current = inventory?.items.find(
           (project) => project.id === selectedTargetId,
         );
         if (!current || current.type !== selectedTargetKind) {
           setWorkspaceId('');
           setCoworkWorkspaceId('');
+          throw new Error(
+            'The selected project changed or is no longer accessible. Choose a compatible project again.',
+          );
+        }
+      }
+      for (const { key, projectKind } of projectInputs) {
+        const current = inventory?.items.find(
+          (project) => project.id === inputs[key],
+        );
+        const chosen = workspaces.find(
+          (workspace) => workspace.id === inputs[key],
+        );
+        if (
+          !current ||
+          !chosen ||
+          current.type !== chosen.type ||
+          !projectInputOptions(projectKind).includes(chosen)
+        ) {
+          setInputs((prev) => ({ ...prev, [key]: '' }));
           throw new Error(
             'The selected project changed or is no longer accessible. Choose a compatible project again.',
           );
@@ -1676,6 +1799,20 @@ function InstallSharedAutomationForm({
       // key here, each a different namespace from a team-share id, so without
       // `sourceKind` neither surface can recognize its own install.
       const origin = source === 'shared' ? undefined : { sourceKind: source };
+      const config =
+        'modelConfig' in detail.automation.action
+          ? detail.automation.action.modelConfig
+          : undefined;
+      if (config?.agent && config.model) {
+        const agent = await window.agents.getShared(config.agent.remoteId);
+        bindings.agent = await findInstalledAutomationAgent(
+          config.model,
+          config.agent,
+          agent,
+          (await window.agents.list()).agents,
+          (local, detail) => automationAgentPluginsMatch(local, detail, rows),
+        );
+      }
       let response: Awaited<ReturnType<typeof window.api.automations.create>>;
       if (existingActivity) {
         const built = buildApplyUpdateRequest(
@@ -2198,13 +2335,62 @@ function InstallSharedAutomationForm({
         </FormField>
       )}
 
-      {inputKeys.length > 0 && (
+      {projectInputs.map(({ key, projectKind }) => {
+        const options = projectInputOptions(projectKind);
+        const cowork = projectKind === 'cowork';
+        const label = cowork ? COWORK_WORKSPACE_LABEL : WORKSPACE_LABEL;
+        const value = inputs[key] ?? '';
+        return (
+          <FormField
+            key={key}
+            // Two project inputs are told apart by their names.
+            label={projectInputs.length > 1 ? `${label} (${key})` : label}
+            {...(options.length === 0
+              ? {
+                  description:
+                    projectKind === 'code'
+                      ? NO_CODE_PROJECTS_NOTE
+                      : cowork
+                        ? NO_COWORK_PROJECTS_NOTE
+                        : NO_PROJECTS_NOTE,
+                }
+              : {})}
+          >
+            {(control) => (
+              <Select
+                {...control}
+                value={
+                  options.some((workspace) => workspace.id === value)
+                    ? value
+                    : null
+                }
+                onValueChange={(next) =>
+                  setInputs((prev) => ({ ...prev, [key]: next }))
+                }
+                placeholder={
+                  cowork ? COWORK_WORKSPACE_PLACEHOLDER : WORKSPACE_PLACEHOLDER
+                }
+                disabled={submitting || options.length === 0}
+                data-testid={`install-automation-input-${key}`}
+                // Project names are user-authored, so session replay masks them.
+                options={options.map((workspace) => ({
+                  value: workspace.id,
+                  label: workspace.name,
+                  maskInReplay: true,
+                }))}
+              />
+            )}
+          </FormField>
+        );
+      })}
+
+      {textInputKeys.length > 0 && (
         <Fieldset
           gap="inline"
           legend={<span className="text-s fg-secondary">Workflow inputs</span>}
           data-testid="install-automation-inputs"
         >
-          {inputKeys.map((key) => (
+          {textInputKeys.map((key) => (
             <FormField key={key} label={key}>
               {(control) => (
                 <TextInput
@@ -2320,7 +2506,8 @@ function InstallSharedAutomationForm({
     (needsCoworkWorkspace && !noCompatibleProjects) ||
     pipelineRef?.source === 'unresolved' ||
     action.type === 'worktree_prompt' ||
-    inputKeys.length > 0 ||
+    projectInputs.length > 0 ||
+    textInputKeys.length > 0 ||
     sharedRunCondition !== null ||
     runConditionRemoved ||
     submitReason !== null;

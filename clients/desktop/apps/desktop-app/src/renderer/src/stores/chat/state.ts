@@ -20,6 +20,7 @@ import type {
   ChatQueueUpdatedEvent,
   ChatInterfaceMode,
   ChatModel,
+  ChatModelChangeNotice,
   ModelHarness,
   ChatSessionImportedEvent,
   ChatTabPluginSelections,
@@ -87,7 +88,12 @@ import type { ProvisionalFirstSendInput } from './provisional-first-send';
  * on dismissal or when the scope refreshes.
  */
 export interface ChatStateNotice {
-  kind: 'conflict' | 'command_failed';
+  /**
+   * `unavailable`: the scope's backend does not serve the change, as a cloud
+   * chat's web core refuses some (CAN-6646). Nothing failed, so it clears by
+   * itself and offers no retry.
+   */
+  kind: 'conflict' | 'command_failed' | 'unavailable';
   message: string;
 }
 
@@ -145,6 +151,16 @@ export interface ChatRevisionedSlice {
       onResult?: (result: ChatCommandResult) => void;
       /** Treat an idempotent command's not-found result as success. */
       acceptNotFound?: boolean;
+      /**
+       * The caller shows its own failure, as the question card does, so a
+       * rejected or failed command raises no chat-wide notice.
+       */
+      callerReportsFailure?: boolean;
+      /**
+       * A background sync rather than the user's change: one the backend
+       * does not serve rolls back with no notice (CAN-6646).
+       */
+      quietIfUnavailable?: boolean;
     },
   ) => Promise<ChatCommandDisposition>;
 }
@@ -253,12 +269,23 @@ export interface ChatModelsSlice {
     mode: 'auto' | 'manual',
     target?: { projectId: string; worktreeId: string; chatId: string },
   ) => Promise<void>;
-  /** True when accepted and still the latest selection for the captured chat. */
+  /**
+   * True when accepted and still the latest selection for the captured chat.
+   * `switchesProvider` moves a started chat to another provider in place
+   * (CAN-6445): it drops the renderer's harness lock, which would refuse it,
+   * and main still checks the pair. `notice` is the line main adds to the
+   * transcript with the change.
+   */
   setModelAndWait: (
     model: ChatModel,
     target?: { projectId: string; worktreeId: string; chatId: string },
     executionHarness?: ModelHarness,
     billingFramework?: ChatBillingFramework,
+    options?: {
+      switchesProvider?: boolean;
+      notice?: ChatModelChangeNotice;
+      isStillWanted?: (pendingRequestId?: string) => boolean;
+    },
   ) => Promise<boolean>;
   /**
    * `ownerScope` names the active owner and which tabs it covers. `modelPolicy`
@@ -505,6 +532,7 @@ export interface ChatTabsSlice {
     targetModel: ChatModel,
     target?: ChatActionTarget,
     billingFramework?: ChatBillingFramework,
+    isStillWanted?: () => boolean,
   ) => Promise<ContinueTabOnProviderResult>;
   /**
    * Like `forkTab`, but also creates a brand-new worktree branched from the
@@ -1369,11 +1397,15 @@ export interface ChatAttentionSlice {
 }
 
 export interface ChatComposerSlice {
-  /** Per-tab unsent editor content (session-only, not persisted). Keyed by tab ID. */
+  /**
+   * Per-tab unsent editor content, keyed by tab ID. Saved drafts are also
+   * kept in renderer storage (`lib/chatDraftStorage`) and restored when the
+   * chat's scope loads.
+   */
   tabDrafts: Record<string, Descendant[]>;
   /**
    * Live "composer has typed content" signal keyed by tab ID (session-only).
-   * Unlike {@link tabDrafts}, which persists only on tab switches, this is
+   * Unlike {@link tabDrafts}, which updates only on tab switches, this is
    * updated by the composer as the user types so empty-state affordances
    * (CAN-1809 suggested prompts) can hide while a draft is in progress.
    * Entries are removed (not set false) when a composer empties or unmounts.
@@ -1381,8 +1413,16 @@ export interface ChatComposerSlice {
   composerTextPresent: Record<string, boolean>;
   setComposerTextPresent: (tabId: string, present: boolean) => void;
   saveTabDraft: (tabId: string, content: Descendant[]) => void;
+  /** Stores the composer's draft after typing pauses, without a state update. */
+  scheduleTabDraftWrite: (tabId: string, content: Descendant[]) => void;
   getTabDraft: (tabId: string) => Descendant[] | undefined;
   clearTabDraft: (tabId: string) => void;
+  /** Tabs whose stored draft couldn't be read when their scope loaded. */
+  tabDraftRestoreFailures: Record<string, true>;
+  dismissTabDraftRestoreFailure: (tabId: string) => void;
+  /** The tab whose draft first failed to save this session, until dismissed. */
+  tabDraftSaveFailure: string | null;
+  dismissTabDraftSaveFailure: () => void;
   /**
    * Transient flag: the composer's scheduled-send modal is open. Lifted to the
    * store (not the tab) so the App Advisor current-UI snapshot can report it via

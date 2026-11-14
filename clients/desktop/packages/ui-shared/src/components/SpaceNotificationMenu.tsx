@@ -266,7 +266,14 @@ export function SpaceNotificationMenuStatusLine({
   readonly testId?: string;
 }): JSX.Element {
   if (status.tone === 'failure' && !status.loading) {
-    return <ErrorBanner className="m-1" error={status.text} testId={testId} />;
+    return (
+      <ErrorBanner
+        errorSource="space-notification-menu-status-line"
+        className="m-1"
+        error={status.text}
+        testId={testId}
+      />
+    );
   }
   // A plain row, not `DropdownMenuLabel`: the label truncates to one line and
   // owns its ink, and this line must wrap.

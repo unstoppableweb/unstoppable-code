@@ -25,6 +25,7 @@ const allSupported = {
   ollama: true,
   cursor: true,
   copilot: true,
+  antigravity: true,
   opencode: true,
 };
 
@@ -297,4 +298,37 @@ it('a failed probe that kept the last confirmed sign-in reads error, as the peek
       true,
     ),
   ).toBe('ready');
+});
+
+it('Google account models are native and never expose a gateway billing route', () => {
+  const result = projectProviderInventory(
+    inputs({
+      registry: registry({
+        antigravity: [
+          {
+            id: 'antigravity:gemini-test',
+            rawModelId: 'gemini-test',
+            label: 'Gemini test',
+            supportedThinkingLevels: ['high'],
+          },
+        ],
+      }),
+      authStates: { antigravity: 'ready' },
+    }),
+  );
+  const google = result.providers.find(
+    (provider) => provider.providerId === 'antigravity',
+  );
+  expect(google).toMatchObject({
+    providerId: 'antigravity',
+    authState: 'ready',
+    models: [
+      {
+        modelId: 'antigravity:gemini-test',
+        billingSources: ['provider_account'],
+        gatewayOrigin: null,
+      },
+    ],
+  });
+  expect(JSON.stringify(google)).not.toContain('ai-gateway');
 });

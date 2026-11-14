@@ -114,6 +114,7 @@ export function AppAdvisorQuickPromptModal({
       {error && (
         <div className="shrink-0 px-6 pb-3">
           <DesktopErrorBanner
+            errorSource="app-advisor-quick-prompt-modal"
             error={error?.error}
             {...(error?.details === undefined
               ? {}

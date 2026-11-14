@@ -5,79 +5,26 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from 'react';
-import type { AppError } from '@canopy/protocol/app-errors';
+import type { AppError, AppErrorCode } from '@canopy/protocol/app-errors';
 import { recordSurfacedError } from '../lib/surfaced-error-port';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 /** Which shared surface a destructive notice reports as. */
 export type NoticeErrorChokePoint = 'notice' | 'banner';
 
-/**
- * Audited `data-testid` values that may name a surfaced error's source: each
- * is a literal on a destructive notice or banner, never built from a template
- * or user data. Anything else records the bare choke point; do not grow this
- * list just to improve coverage.
- */
-const TRUSTED_NOTICE_IDENTIFIERS: ReadonlySet<string> = new Set([
-  'add-workspace-error',
-  'automations-mutation-error',
-  'automations-panel-load-error',
-  'chat-add-workspace-error',
-  'chat-state-refresh-error',
-  'chat-transcript-error',
-  'cloud-chat-history-error',
-  'feedback-modal-error',
-  'file-viewer-download-error',
-  'files-tree-mutation-error',
-  'harness-save-error',
-  'home-composer-error',
-  'legal-consent-error',
-  'mcp-management-error',
-  'mcp-servers-card-error',
-  'pipeline-editor-save-error',
-  'pipeline-execution-panel-load-error',
-  'pipeline-run-detail-error',
-  'plugins-load-error',
-  'portal-chat-send-error',
-  'portal-new-task-create-error',
-  'pr-action-error',
-  'project-settings-error',
-  'remote-access-pair-error',
-  'settings-claude-save-error',
-  'settings-data-dir-error',
-  'settings-mcp-error',
-  'workflows-runs-error',
-  'worktree-error-notice',
-]);
-
-/** Whether a `data-testid` is one of the audited surfaced-error sources. */
-export function isTrustedNoticeIdentifier(
-  identifier: string | undefined,
-): identifier is string {
-  return identifier !== undefined && TRUSTED_NOTICE_IDENTIFIERS.has(identifier);
-}
-
 const REPLAY_HIDDEN_SELECTOR = `.${REPLAY_BLOCK_CLASS}, .${REPLAY_MASK_CLASS}`;
-
-/** The nearest audited test ID, from the notice root through its ancestors. */
-function trustedIdentifier(root: Element): string | undefined {
-  for (let node: Element | null = root; node; node = node.parentElement) {
-    const id = node.getAttribute('data-testid');
-    if (id !== null && isTrustedNoticeIdentifier(id)) return id;
-  }
-  return undefined;
-}
 
 function recordSighting(
   copy: Element,
   chokePoint: NoticeErrorChokePoint,
+  identifier: string,
+  displayErrorCode: AppErrorCode | undefined,
 ): void {
-  const root = copy.closest('[data-notice-intent]') ?? copy;
-  const identifier = trustedIdentifier(root);
   recordSurfacedError({
     chokePoint,
+    identifier,
     surface: chokePoint === 'banner' ? 'banner' : 'inline',
-    ...(identifier === undefined ? {} : { identifier }),
+    ...(displayErrorCode === undefined ? {} : { displayErrorCode }),
     // Committed text, so a component child counts as what the user read.
     text: copy.textContent ?? '',
     // Text hidden from replay is not cleared for export by being on screen.
@@ -92,25 +39,33 @@ function recordSighting(
  * its copy element. `textKey` is what re-sights it: an update inside a child
  * component that the parent's text cannot see is not a new sighting.
  */
-export function useNoticeErrorRecording(
-  enabled: boolean,
-  chokePoint: NoticeErrorChokePoint,
-  textKey: string,
-): RefObject<HTMLDivElement | null> {
+export function useNoticeErrorRecording({
+  enabled,
+  chokePoint,
+  identifier,
+  textKey,
+  displayErrorCode,
+}: {
+  enabled: boolean;
+  chokePoint: NoticeErrorChokePoint;
+  identifier: string | undefined;
+  textKey: string;
+  displayErrorCode: AppErrorCode | undefined;
+}): RefObject<HTMLDivElement | null> {
   const copyRef = useRef<HTMLDivElement>(null);
   const lastSighting = useRef<string | null>(null);
   useEffect(() => {
     const copy = copyRef.current;
-    if (!enabled || !copy) {
+    if (!enabled || !copy || !identifier) {
       lastSighting.current = null;
       return;
     }
     // StrictMode replays this effect with the same values and the same ref.
-    const sighting = `${chokePoint}\u0000${textKey}`;
+    const sighting = `${chokePoint}\u0000${identifier}\u0000${displayErrorCode ?? ''}\u0000${textKey}`;
     if (lastSighting.current === sighting) return;
     lastSighting.current = sighting;
-    recordSighting(copy, chokePoint);
-  }, [enabled, chokePoint, textKey]);
+    recordSighting(copy, chokePoint, identifier, displayErrorCode);
+  }, [enabled, chokePoint, identifier, textKey, displayErrorCode]);
   return copyRef;
 }
 
@@ -159,13 +114,10 @@ export function useAppErrorRecording(
   }: {
     enabled: boolean;
     chokePoint: NoticeErrorChokePoint;
-    /** A caller's `data-testid`; only an audited one is reported. */
-    identifier?: string;
+    /** Stable source supplied by the caller. */
+    identifier: string;
   },
 ): string | null {
-  const trusted = isTrustedNoticeIdentifier(identifier)
-    ? identifier
-    : undefined;
   const own = error?.referenceId ?? null;
   // Every banner for this error, recording or not, re-renders when one learns
   // the canonical reference.
@@ -188,7 +140,7 @@ export function useAppErrorRecording(
     );
   }, [own, mapped]);
   useEffect(() => {
-    if (!enabled || !error) return;
+    if (!enabled || !error || !identifier) return;
     if (error.kind === 'input' || error.recordedBy !== undefined) return;
     // A remount, a StrictMode replay or another banner already recorded it.
     if (RECORDED_REFERENCES.has(error.referenceId)) return;
@@ -201,7 +153,7 @@ export function useAppErrorRecording(
     const report = recordSurfacedError({
       chokePoint,
       surface: chokePoint === 'banner' ? 'banner' : 'inline',
-      ...(trusted === undefined ? {} : { identifier: trusted }),
+      identifier,
       error,
     });
     const canonical = report?.error.referenceId;
@@ -209,7 +161,7 @@ export function useAppErrorRecording(
       RECORDED_REFERENCES.set(error.referenceId, canonical);
       for (const listener of CANONICAL_LISTENERS) listener();
     }
-  }, [enabled, error, chokePoint, trusted]);
+  }, [enabled, error, chokePoint, identifier]);
   if (own === null) return null;
   // The map wins while it has the entry; `learned` covers its eviction, and
   // `own` keeps a previous error's canonical reference off a new one.

@@ -250,6 +250,17 @@ export interface FileViewerState {
   /** Drop a file session. */
   closeFile: (key: string) => void;
   /**
+   * After a file or folder was renamed on disk (`from.relativePath` to
+   * `toRelativePath`, in the same root), moves every open session at or under
+   * it to its new path, keeping unsaved edits, their baseline and any
+   * conflict. A session busy reading or saving stays where it is. Answers the
+   * old keys of the sessions it moved.
+   */
+  renamePath: (
+    from: PortalFileReadPayload,
+    toRelativePath: string,
+  ) => ReadonlySet<string>;
+  /**
    * Check an open session against disk without activating it. A clean
    * session takes the disk version; a dirty one keeps its buffer and baseline
    * and gains {@link FileViewerSession.externalChange} when disk differs.
@@ -2034,6 +2045,102 @@ export function createFileViewerStore(
               state.activeFileKey === key ? null : state.activeFileKey,
           };
         });
+      },
+
+      renamePath(from, toRelativePath): ReadonlySet<string> {
+        const root = fileViewerKey({ ...from, relativePath: '' });
+        const prefix = `${from.relativePath}/`;
+        const files = { ...get().files };
+        const moved = new Map<string, string>();
+        // Each per-key record follows its session, so a moved draft keeps the
+        // baseline it was edited from and any conflict or overlap it showed.
+        const move = <V>(map: Map<string, V>, at: string, to: string): void => {
+          const value = map.get(at);
+          if (value === undefined) return;
+          map.delete(at);
+          map.set(to, value);
+        };
+        for (const session of Object.values(get().files)) {
+          const path = session.request.relativePath;
+          if (
+            fileViewerKey({ ...session.request, relativePath: '' }) !== root ||
+            (path !== from.relativePath && !path.startsWith(prefix)) ||
+            // A read or write in flight still targets the old path.
+            session.status === 'loading' ||
+            session.status === 'saving' ||
+            readsInFlight.has(session.key) ||
+            inFlightSaves.has(session.key) ||
+            latestReads.has(session.key) ||
+            // So is a save-conflict recovery's read.
+            (session.saveConflict?.resolving ?? null) !== null
+          )
+            continue;
+          const relativePath =
+            toRelativePath + path.slice(from.relativePath.length);
+          const request = { ...session.request, relativePath };
+          const key = fileViewerKey(request);
+          // Never overwrite a session already open at the new path.
+          if (files[key] !== undefined) continue;
+          move(generations, session.key, key);
+          move(latestReadTokens, session.key, key);
+          move(saveEpochs, session.key, key);
+          move(pendingSources, session.key, key);
+          move(bufferRevisions, session.key, key);
+          move(staleBaselines, session.key, key);
+          move(latestVersions, session.key, key);
+          move(attributions, session.key, key);
+          move(liveOverlapTokens, session.key, key);
+          move(deferredOverlaps, session.key, key);
+          move(rejectedOverlaps, session.key, key);
+          if (pendingInvalidations.delete(session.key))
+            pendingInvalidations.add(key);
+          const old = session.preview;
+          const preview =
+            old?.path.endsWith(path) === true
+              ? {
+                  ...old,
+                  path:
+                    old.path.slice(0, old.path.length - path.length) +
+                    relativePath,
+                }
+              : old;
+          // Baselines match by identity, so every record holding the old
+          // preview must hold the new one, or the moved draft's stale,
+          // overlap and combinable checks would stop matching.
+          const rebase = <V extends { readonly base: PortalFilePreview }>(
+            value: V,
+          ): V =>
+            preview !== null && value.base === old
+              ? { ...value, base: preview }
+              : value;
+          if (preview !== null && staleBaselines.get(key) === old)
+            staleBaselines.set(key, preview);
+          const latest = latestVersions.get(key);
+          if (latest !== undefined) latestVersions.set(key, rebase(latest));
+          const rejected = rejectedOverlaps.get(key);
+          if (rejected !== undefined)
+            rejectedOverlaps.set(key, rebase(rejected));
+          delete files[session.key];
+          files[key] = {
+            ...session,
+            key,
+            request,
+            preview,
+            overlap: session.overlap
+              ? rebase(session.overlap)
+              : session.overlap,
+          };
+          moved.set(session.key, key);
+        }
+        if (moved.size === 0) return new Set();
+        set((state) => ({
+          files,
+          activeFileKey:
+            state.activeFileKey === null
+              ? null
+              : (moved.get(state.activeFileKey) ?? state.activeFileKey),
+        }));
+        return new Set(moved.keys());
       },
 
       async refreshFile(key): Promise<void> {

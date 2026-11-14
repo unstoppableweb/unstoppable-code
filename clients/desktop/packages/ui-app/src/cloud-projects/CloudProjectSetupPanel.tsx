@@ -366,6 +366,7 @@ export function CloudProjectSetupPanel({
       ) : null}
       {notice !== null ? (
         <Notice
+          errorSource="cloud-project-setup-error"
           // What to choose next, not a failure: a hint carries no alert and
           // records no surfaced error.
           intent={

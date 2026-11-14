@@ -1,3 +1,4 @@
+import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { isOpenCodeHarnessEnabled } from '../opencode/feature-flag';
 import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
 // ---------------------------------------------------------------------------
@@ -24,6 +25,7 @@ import type { ModelCatalog, ModelCatalogOption } from '@canopy/protocol/models';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { buildModelCatalogOption } from '@canopy/desktop-shared/lib/model-catalog-projection';
 import {
+  ANTIGRAVITY_MODELS,
   AGENT_MODELS,
   CLAUDE_MODELS,
   CODEX_ACCOUNT_MODELS,
@@ -57,6 +59,7 @@ import { isModelExcludedByCurrentGatewayRequirement } from '../lib/model-gateway
 export function buildProjectedModelCatalog(
   defaultModel: string | undefined,
   options: {
+    antigravity?: boolean;
     cursor?: boolean;
     copilot?: boolean;
     opencode?: boolean;
@@ -73,20 +76,32 @@ export function buildProjectedModelCatalog(
   const catalog: ModelCatalogOption[] = [];
   const openCodeEnabled =
     options.opencode === true && isOpenCodeHarnessEnabled();
+  const antigravityEnabled =
+    options.antigravity === true && isAntigravityHarnessEnabled();
   const projectChoice = (option: ModelCatalogOption): void => {
-    if (openCodeEnabled) {
+    if (
+      !antigravityEnabled &&
+      (option.provider === 'antigravity' ||
+        option.harness === 'antigravity' ||
+        option.source === 'antigravity')
+    )
+      return;
+    if (openCodeEnabled && antigravityEnabled) {
       catalog.push(option);
       return;
     }
     if (
-      option.provider === 'opencode' ||
-      option.harness === 'opencode' ||
-      option.source === 'opencode'
+      !openCodeEnabled &&
+      (option.provider === 'opencode' ||
+        option.harness === 'opencode' ||
+        option.source === 'opencode')
     )
       return;
     const { harnessChoices, ...legacy } = option;
     const choices = harnessChoices?.filter(
-      (choice) => choice.harness !== 'opencode',
+      (choice) =>
+        (openCodeEnabled || choice.harness !== 'opencode') &&
+        (antigravityEnabled || choice.harness !== 'antigravity'),
     );
     catalog.push(
       choices?.length ? { ...legacy, harnessChoices: choices } : legacy,
@@ -94,7 +109,14 @@ export function buildProjectedModelCatalog(
   };
   const push = (
     id: string,
-    provider: 'claude' | 'codex' | 'ollama' | 'cursor' | 'copilot' | 'opencode',
+    provider:
+      | 'claude'
+      | 'codex'
+      | 'ollama'
+      | 'cursor'
+      | 'copilot'
+      | 'antigravity'
+      | 'opencode',
   ): void => {
     const option = buildModelCatalogOption(id, { provider, defaultModel });
     if (option) projectChoice(option);
@@ -115,6 +137,10 @@ export function buildProjectedModelCatalog(
   }
   for (const id of OLLAMA_MODELS) {
     if (!excluded(id)) push(id, 'ollama');
+  }
+  if (antigravityEnabled) {
+    for (const id of ANTIGRAVITY_MODELS)
+      if (!excluded(id)) push(id, 'antigravity');
   }
   if (options.cursor === true && isCursorHarnessEnabled()) {
     for (const id of CURSOR_MODELS) {

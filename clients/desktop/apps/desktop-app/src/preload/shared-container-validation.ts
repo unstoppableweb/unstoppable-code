@@ -1,5 +1,7 @@
 import type {
+  DismissSharedContainerOwnerDepartureResult,
   ListDismissedSharedContainersResult,
+  ListSharedContainerOwnerDeparturesResult,
   RestoreSharedContainerResult,
   SharedContainerAccessBlockReason,
   SharedContainerInboxChangedEvent,
@@ -15,6 +17,7 @@ import { SHARED_CONTAINER_SYNC_PHASES } from '@canopy/desktop-shared/types';
 import {
   SHARED_CONTAINER_TYPES,
   isListDismissedSharedContainersResponse,
+  isListSharedContainerOwnerDeparturesResponse,
   isSharedContainerRevisionPackage,
   isSharedContainerSummary,
 } from '@canopy/protocol/shared-containers';
@@ -277,6 +280,35 @@ export function isListDismissedSharedContainersResult(
     return hasOnlyKeys(value, ['unsupported']) && value.unsupported === true;
   }
   return isListDismissedSharedContainersResponse(value);
+}
+
+/** The caller's notices, or the marker that the server keeps none. */
+export function isListSharedContainerOwnerDeparturesResult(
+  value: unknown,
+): value is ListSharedContainerOwnerDeparturesResult {
+  if (!isRecord(value)) return false;
+  if ('unsupported' in value) {
+    return (
+      hasOnlyKeys(value, ['unsupported', 'retryAfterMs']) &&
+      value.unsupported === true &&
+      (value.retryAfterMs === undefined ||
+        (typeof value.retryAfterMs === 'number' &&
+          Number.isSafeInteger(value.retryAfterMs) &&
+          value.retryAfterMs > 0 &&
+          value.retryAfterMs <= 5 * 60_000))
+    );
+  }
+  return isListSharedContainerOwnerDeparturesResponse(value);
+}
+
+export function isDismissSharedContainerOwnerDepartureResult(
+  value: unknown,
+): value is DismissSharedContainerOwnerDepartureResult {
+  if (!isRecord(value)) return false;
+  return (
+    (hasOnlyKeys(value, ['dismissed']) && value.dismissed === true) ||
+    (hasOnlyKeys(value, ['unsupported']) && value.unsupported === true)
+  );
 }
 
 const RESTORE_FAILURE_REASONS: readonly string[] = [

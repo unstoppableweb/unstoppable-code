@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // core.workspace.sourceChanges.apply CAN-4063 admission table: recreated for the CAN-5940 source-change slice.
 import { execFileSync } from 'node:child_process';
 import type * as W5Storage from '../lib/w5-storage';
@@ -48,15 +49,19 @@ function json(path: string, value: unknown): void {
 function command(path: string, args: string[]): void {
   execFileSync('git', ['-C', path, ...args], { stdio: 'pipe' });
 }
-beforeEach(() => {
+let closeW5Store: (() => Promise<void>) | undefined;
+
+beforeEach(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'source-w5-')));
   saved = { ...process.env };
   process.env.CANOPY_DATA_DIR = join(root, 'data');
   process.env.GIT_CONFIG_GLOBAL = '/dev/null';
   mockOrder.length = 0;
   mockAllowed = true;
+  closeW5Store = await installRoutedW5GoldenStore();
 });
 afterEach(async () => {
+  await closeW5Store?.();
   await settleDetachedWork();
   Object.assign(process.env, saved);
   for (const key of Object.keys(process.env))

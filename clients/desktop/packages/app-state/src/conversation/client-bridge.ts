@@ -20,7 +20,12 @@ export interface ConversationHostBridgeTarget {
     startedAtMs?: number,
     hostOwnsTimer?: boolean,
   ): void;
-  settleTurn(chatId: string, status: 'complete' | 'failed'): void;
+  /** `turnId` is Core's id for the turn that stopped running. */
+  settleTurn(
+    chatId: string,
+    status: 'complete' | 'failed',
+    turnId?: string,
+  ): void;
   resetStream(chatId: string): void;
 }
 
@@ -114,8 +119,9 @@ export function createConversationHostClientBridge(
 
   const settle = (status: 'complete' | 'failed' = 'complete'): void => {
     if (activeTurnId === null || chatId === null) return;
+    const turnId = activeTurnId;
     activeTurnId = null;
-    target.settleTurn(chatId, status);
+    target.settleTurn(chatId, status, turnId);
   };
 
   const reset = (): void => {

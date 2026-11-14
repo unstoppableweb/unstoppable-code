@@ -1,3 +1,5 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import {
   type AcceptSharedContainerResponse,
   type DismissSharedContainerResponse,
@@ -55,6 +57,9 @@ import {
   type SharedContainerRunStatusRequest,
   type ListDismissedSharedContainersRequest,
   type ListDismissedSharedContainersResult,
+  type ListSharedContainerOwnerDeparturesResult,
+  type DismissSharedContainerOwnerDepartureRequest,
+  type DismissSharedContainerOwnerDepartureResult,
   type RestoreSharedContainerResult,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   isStoredSecretValue,
@@ -66,6 +71,7 @@ import {
   MAX_SHARED_CONTAINER_RUN_COMMANDS,
   SHARED_CONTAINER_BLOCKED_BY_ORG_BILLING_ERROR_CODE,
   SHARED_CONTAINER_DISMISSAL_NOT_FOUND_ERROR_CODE,
+  SHARED_CONTAINER_OWNER_DEPARTURE_NOT_FOUND_ERROR_CODE,
   SHARED_CONTAINER_EXTERNAL_SHARING_DISABLED_ERROR_CODE,
   SHARED_CONTAINER_GRANT_NOT_FOUND_ERROR_CODE,
   SHARED_CONTAINER_INSUFFICIENT_ROLE_ERROR_CODE,
@@ -82,12 +88,15 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { getFeatureFlagService } from '../feature-flags';
 import { validateId } from '../lib/validation';
+import { isUuid } from '@canopy/protocol/uuid';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { addTrackedPlansWriteListener } from '../lib/plan-persistence';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
   createSharedContainerGrant,
+  dismissSharedContainerOwnerDeparture,
   listDismissedSharedContainers,
+  listSharedContainerOwnerDepartures,
   listSharedContainerRecipients,
   listSharedContainersByMe,
   restoreSharedContainer,
@@ -391,6 +400,30 @@ function assertSharedContainersEnabled(): void {
   }
 }
 
+function validateSharedContainerListingRequest(
+  request:
+    | ListSharedContainersWithMeRequest
+    | ListDismissedSharedContainersRequest,
+): void {
+  if (!isSharedContainersEnabled())
+    throw classifyError(
+      new Error('Shared containers are disabled.'),
+      'external.state_changed',
+    );
+  if (!request || typeof request !== 'object')
+    throw classifyError(
+      new Error('Expected a shared-container listing request.'),
+      'input.not_accepted',
+    );
+  try {
+    validateOptionalOrganizationId(request.organizationId);
+  } catch (error) {
+    if (error instanceof IdentifierValidationError)
+      throw classifyError(error, 'input.not_accepted');
+    throw error;
+  }
+}
+
 function assertSharedContainerRunEnabled(): void {
   assertSharedContainersEnabled();
   if (process.platform !== 'darwin') {
@@ -431,6 +464,21 @@ function isDismissalsUnsupported(error: unknown): boolean {
     error.code === 'unsupported-capability'
   );
 }
+
+// IPC failures expose only messages. Return the empty-state marker for a
+// definitive loss of authorization, so the renderer can forget its cache.
+function areOwnerDeparturesUnavailable(error: unknown): boolean {
+  return (
+    error instanceof CanopyCloudClientError &&
+    (error.code === 'unsupported-capability' ||
+      error.code === 'missing-api-key' ||
+      error.code === 'cloud-not-configured' ||
+      (error.code === 'http-error' &&
+        (error.status === 401 || error.status === 403)))
+  );
+}
+
+const OWNER_DEPARTURES_LIST_UNAVAILABLE_RETRY_MS = 5 * 60_000;
 
 function isDefinitiveGrantCreationRejection(error: unknown): boolean {
   if (!(error instanceof CanopyCloudClientError)) return false;
@@ -1244,11 +1292,10 @@ export function registerSharedContainerHandlers(runtime: {
     [ListSharedContainersWithMeRequest],
     ListSharedContainersWithMeResponse
   >(IPC_CHANNELS.sharedContainersListWithMe, async (_event, request) => {
-    assertSharedContainersEnabled();
     // Absent is the direct listing (email and outside-organization shares).
     // Its purge-on-refusal path lives in the reconciliation service, keyed on
     // the direct scope rather than an organization.
-    validateOptionalOrganizationId(request.organizationId);
+    validateSharedContainerListingRequest(request);
     try {
       // `return await`, not a bare `return`: a bare return hands the promise
       // out of the try block and this catch never runs.
@@ -1659,8 +1706,7 @@ export function registerSharedContainerHandlers(runtime: {
     [ListDismissedSharedContainersRequest],
     ListDismissedSharedContainersResult
   >(IPC_CHANNELS.sharedContainersListDismissed, async (_event, request) => {
-    assertSharedContainersEnabled();
-    validateOptionalOrganizationId(request.organizationId);
+    validateSharedContainerListingRequest(request);
     try {
       return await listDismissedSharedContainers({
         ...(request.organizationId !== undefined
@@ -1685,6 +1731,70 @@ export function registerSharedContainerHandlers(runtime: {
       throw error;
     }
   });
+
+  registerIpcHandler<
+    [acceptsRetryAfterMs?: true],
+    ListSharedContainerOwnerDeparturesResult
+  >(
+    IPC_CHANNELS.sharedContainersListOwnerDepartures,
+    async (_event, acceptsRetryAfterMs) => {
+      assertSharedContainersEnabled();
+      try {
+        return await listSharedContainerOwnerDepartures();
+      } catch (error) {
+        // A rollback can remove the collection route before the cached
+        // capability updates. A DELETE 404 has different semantics.
+        if (
+          error instanceof CanopyCloudClientError &&
+          error.code === 'http-error' &&
+          error.status === 404
+        ) {
+          // Older controller preloads accept only the one-key marker.
+          if (acceptsRetryAfterMs !== true) return { unsupported: true };
+          return {
+            unsupported: true,
+            retryAfterMs: OWNER_DEPARTURES_LIST_UNAVAILABLE_RETRY_MS,
+          };
+        }
+        if (areOwnerDeparturesUnavailable(error)) return { unsupported: true };
+        throw error;
+      }
+    },
+  );
+
+  registerIpcHandler<
+    [DismissSharedContainerOwnerDepartureRequest],
+    DismissSharedContainerOwnerDepartureResult
+  >(
+    IPC_CHANNELS.sharedContainersDismissOwnerDeparture,
+    async (_event, request) => {
+      assertSharedContainersEnabled();
+      validateId(request.noticeId, 'noticeId');
+      if (!isUuid(request.noticeId)) {
+        throw new Error('noticeId must be a UUID');
+      }
+      try {
+        await dismissSharedContainerOwnerDeparture(request.noticeId);
+      } catch (error) {
+        if (areOwnerDeparturesUnavailable(error)) return { unsupported: true };
+        // Only the typed answer means "gone": an older route's bare 404 says
+        // nothing about this notice.
+        if (
+          !(
+            error instanceof CanopyCloudClientError &&
+            error.status === 404 &&
+            error.serverCode ===
+              SHARED_CONTAINER_OWNER_DEPARTURE_NOT_FOUND_ERROR_CODE
+          )
+        ) {
+          throw error;
+        }
+      }
+      // Every window re-lists its notices, not just the one that asked.
+      getSharedContainerInboxWatcher().signalLocalChange();
+      return { dismissed: true };
+    },
+  );
 
   registerIpcHandler<
     [SharedContainerRecipientRequest],

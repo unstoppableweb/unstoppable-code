@@ -100,6 +100,7 @@ export function PluginConnectionNotice({
         : 'Sign-in didn’t finish. Try connecting again.');
   return (
     <Notice
+      errorSource="plugin-connection-title"
       intent="destructive"
       title={title}
       detailGap="inline"

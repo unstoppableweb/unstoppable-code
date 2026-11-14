@@ -56,7 +56,20 @@ export interface ResolvedPluginRuntime {
   sdkPlugins: SdkPluginConfig[];
   selectedCapabilityRoots: CodexSelectedCapabilityRoot[];
   mcpServers: Record<string, unknown>;
+  /**
+   * For a Codex session, where each plugin server in `mcpServers` came from
+   * (CAN-6168): its plugin, its name there, and the declaration as read,
+   * which `owner.mcp.bind` names by its content hash.
+   */
+  codexPluginMcpSources?: Record<string, CodexPluginMcpSource>;
   claudeModAdmission?: ClaudeModAdmissionLaunch;
+}
+
+export interface CodexPluginMcpSource {
+  readonly marketplaceId: string;
+  readonly pluginName: string;
+  readonly serverName: string;
+  readonly declaration: Readonly<Record<string, unknown>>;
 }
 
 export interface ResolvePluginsOptions {
@@ -412,15 +425,21 @@ function resolveNativeCodexPluginMcpServers(
   warnings: string[],
 ): {
   servers: Record<string, unknown>;
+  sources: Record<string, CodexPluginMcpSource>;
   hasMcpServers: boolean;
+  /** The plugin declares a server it turns off (`enabled: false`). */
+  hasDisabledMcpServers: boolean;
 } {
   const rawServers = readPluginMcpConfigObjects(plugin);
   const servers: Record<string, unknown> = {};
+  const sources: Record<string, CodexPluginMcpSource> = {};
   const replacePluginRoot = (value: string): string =>
     value.split('${CLAUDE_PLUGIN_ROOT}').join(plugin.pluginPath);
 
+  let hasDisabledMcpServers = false;
   for (const [serverName, rawServer] of Object.entries(rawServers)) {
     if (rawServer.enabled === false) {
+      hasDisabledMcpServers = true;
       continue;
     }
     const resolvedName = buildManagedMcpServerName({
@@ -428,15 +447,30 @@ function resolveNativeCodexPluginMcpServers(
       friendlyParts: [plugin.pluginName, serverName],
       identityParts: [plugin.marketplaceId, plugin.pluginName, serverName],
     });
+    sources[resolvedName] = {
+      marketplaceId: plugin.marketplaceId,
+      pluginName: plugin.pluginName,
+      serverName,
+      declaration: rawServer,
+    };
     if (typeof rawServer.command === 'string') {
       const rawEnv = isStringRecord(rawServer.env) ? rawServer.env : undefined;
-      // This resolver only hands native Codex plugins to Codex sessions, and
-      // Codex starts the server in `cwd`, so args stay as written here.
+      // As Electron main builds it (CAN-6168): a script path written relative
+      // to a declared cwd is made absolute, naming the same file Codex would
+      // resolve, so the server's capability id is the same on every host.
+      const declaredCwd =
+        typeof rawServer.cwd === 'string'
+          ? resolvePluginServerCwd(rawServer.cwd, plugin.pluginPath)
+          : undefined;
       servers[resolvedName] = {
         type: 'stdio',
         command: replacePluginRoot(rawServer.command),
-        args: readStringArray(rawServer.args)?.map(replacePluginRoot),
-        cwd: resolvePluginServerCwd(rawServer.cwd, plugin.pluginPath),
+        args: readStringArray(rawServer.args)?.map((arg) =>
+          declaredCwd === undefined
+            ? replacePluginRoot(arg)
+            : resolveCwdRelativePathArg(replacePluginRoot(arg), declaredCwd),
+        ),
+        cwd: declaredCwd ?? plugin.pluginPath,
         ...(rawEnv
           ? {
               env: sanitizeEnvVars(
@@ -485,6 +519,7 @@ function resolveNativeCodexPluginMcpServers(
       };
       continue;
     }
+    delete sources[resolvedName];
     warnings.push(
       `Plugin MCP server "${plugin.marketplaceId}/${plugin.pluginName}:${serverName}" is invalid, skipping.`,
     );
@@ -492,7 +527,9 @@ function resolveNativeCodexPluginMcpServers(
 
   return {
     servers,
+    sources,
     hasMcpServers: Object.keys(rawServers).length > 0,
+    hasDisabledMcpServers,
   };
 }
 
@@ -825,6 +862,73 @@ function selectUniqueCodexPlugins(
   return result;
 }
 
+/**
+ * A Codex session's plugin MCP servers and their sources, read as
+ * `resolvePlugins` reads them but with nothing projected or written
+ * (CAN-6168): the launch decides with it whether the daemon can serve them.
+ */
+export function resolveCodexPluginMcpServers(
+  rawSelections: ChatTabPluginSelections,
+): {
+  mcpServers: Record<string, unknown>;
+  codexPluginMcpSources: Record<string, CodexPluginMcpSource>;
+  /**
+   * A selected plugin reaches Codex only through a compatibility build
+   * (a Claude plugin, or a Codex compatibility facet), which in process
+   * builds and here would lose its MCP servers.
+   */
+  compatibilityPlugins: boolean;
+  /**
+   * A selected plugin did not resolve here (not installed, or unknown). In
+   * process, a catalogued external plugin is installed first; here it would
+   * be silently missing.
+   */
+  unresolvedPlugins: boolean;
+  /**
+   * A selected native plugin declares an MCP server it turns off. Electron
+   * main keeps that server in a Codex session's config, turned off, so the
+   * capability snapshot names it; this resolver leaves it out.
+   */
+  disabledMcpServers: boolean;
+} {
+  const selections = normalizeSelections(rawSelections);
+  const warnings: string[] = [];
+  const marketplaces = readPluginsCache()?.marketplaces ?? [];
+  const mcpServers: Record<string, unknown> = {};
+  const codexPluginMcpSources: Record<string, CodexPluginMcpSource> = {};
+  let compatibilityPlugins = false;
+  let unresolvedPlugins = false;
+  let disabledMcpServers = false;
+  for (const ref of selections.pluginRefs) {
+    const plugin = resolvePluginSelection(
+      ref.marketplaceId,
+      ref.pluginName,
+      marketplaces,
+      warnings,
+      'codex-session',
+    );
+    if (!plugin) {
+      unresolvedPlugins = true;
+      continue;
+    }
+    if (plugin.provider !== 'codex' || plugin.mode !== 'native') {
+      compatibilityPlugins = true;
+      continue;
+    }
+    const resolved = resolveNativeCodexPluginMcpServers(plugin, warnings);
+    Object.assign(mcpServers, resolved.servers);
+    Object.assign(codexPluginMcpSources, resolved.sources);
+    if (resolved.hasDisabledMcpServers) disabledMcpServers = true;
+  }
+  return {
+    mcpServers,
+    codexPluginMcpSources,
+    compatibilityPlugins,
+    unresolvedPlugins,
+    disabledMcpServers,
+  };
+}
+
 export function resolvePlugins(
   rawSelections: ChatTabPluginSelections,
   _projectId: string,
@@ -839,6 +943,7 @@ export function resolvePlugins(
   const selectedClaudePlugins: ClaudeModPluginInput[] = [];
   let selectedCapabilityRoots: CodexSelectedCapabilityRoot[] = [];
   const mcpServers = resolveStandaloneMcpServers(selections, warnings);
+  const codexPluginMcpSources: Record<string, CodexPluginMcpSource> = {};
   const codexPluginsWithMcpServers = new Set<string>();
 
   const cache = readPluginsCache();
@@ -907,6 +1012,7 @@ export function resolvePlugins(
         warnings,
       );
       Object.assign(mcpServers, pluginMcpResolution.servers);
+      Object.assign(codexPluginMcpSources, pluginMcpResolution.sources);
       if (pluginMcpResolution.hasMcpServers) {
         codexPluginsWithMcpServers.add(plugin.pluginPath);
       }
@@ -1088,6 +1194,7 @@ export function resolvePlugins(
     sdkPlugins: finalSdkPlugins,
     selectedCapabilityRoots,
     mcpServers,
+    ...(purpose === 'codex-session' ? { codexPluginMcpSources } : {}),
     ...(claudeModAdmission ? { claudeModAdmission } : {}),
   };
 }

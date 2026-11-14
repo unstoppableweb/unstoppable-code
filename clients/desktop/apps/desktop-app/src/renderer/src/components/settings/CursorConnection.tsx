@@ -531,6 +531,7 @@ export function CursorConnection({
         </div>
       )}
       <DesktopErrorBanner
+        errorSource="cursor-connection-error"
         className=""
         error={error?.error}
         {...(error?.details === undefined ? {} : { details: error.details })}

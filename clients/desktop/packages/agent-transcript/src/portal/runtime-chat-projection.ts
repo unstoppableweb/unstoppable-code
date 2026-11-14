@@ -100,6 +100,7 @@ const NON_MESSAGE_RUNTIME_CHAT_EVENT_TYPES = new Set([
   // summary, not a transcript row.
   'canopy_cursor_usage',
   'canopy_opencode_usage',
+  'canopy_turn_usage',
   'canopy_set_auto_archive_requested',
   'canopy_usage_limit_reached',
   'canopy_user_prompt',
@@ -814,6 +815,7 @@ export function isCursorAssistantPatchEvent(
     data.type === 'canopy_assistant_patch' &&
     (data.provider === 'cursor' ||
       data.provider === 'copilot' ||
+      data.provider === 'antigravity' ||
       data.provider === 'opencode')
   );
 }

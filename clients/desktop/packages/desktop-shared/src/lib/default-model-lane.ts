@@ -111,6 +111,44 @@ export interface EnforcedOrgGatewayLane {
   models: readonly ChatModel[];
 }
 
+/**
+ * The user's own Personal AI gateway, saved but NOT made the only route
+ * (CAN-6444).
+ *
+ * Like an enforced org gateway ({@link EnforcedOrgGatewayLane} §1), these
+ * models run on the user's own gateway key rather than AI Credits, so they ride
+ * the credits lane. Unlike enforcement they only fill in when AI Credits are
+ * not confirmed eligible: with credits available, the credits lane keeps its
+ * own candidates and today's default. Without this, a user whose only working
+ * route is their own gateway got `no-dispatchable-model`, and the composer fell
+ * back to a built-in model the account cannot bill.
+ */
+export interface PersonalGatewayLane {
+  /**
+   * Gateway models this device can dispatch (its key is saved here), already
+   * in default order: see `orderGatewayModelsForDefault`. A model the user
+   * turned off is not in the saved list, so it is never here.
+   */
+  models: readonly ChatModel[];
+}
+
+/**
+ * The personal gateway supplies the credits lane only once AI Credits are
+ * CONFIRMED unavailable. While eligibility is unknown (the startup read, or a
+ * degraded one such as a keychain lock) it stays out: standing in on a guess
+ * would report the credits lane as confirmed, outranking an inconclusive
+ * Claude probe and moving a funded credits user onto their own key.
+ */
+function personalGatewayFillsCreditsLane(
+  availability: BillingLaneAvailability,
+  personalGateway: PersonalGatewayLane | undefined,
+): personalGateway is PersonalGatewayLane {
+  return (
+    availability.creditsEligible === false &&
+    (personalGateway?.models.length ?? 0) > 0
+  );
+}
+
 export type DefaultModelLaneResolution =
   | {
       outcome: 'resolved';
@@ -291,6 +329,7 @@ function laneAvailability(
   availability: BillingLaneAvailability,
   ollamaPinned: boolean,
   orgGateway?: EnforcedOrgGatewayLane,
+  personalGateway?: PersonalGatewayLane,
 ): boolean | undefined {
   switch (lane) {
     case 'claude-native':
@@ -299,8 +338,10 @@ function laneAvailability(
       return availability.codexNativeAuth;
     case 'ai-credits':
       // See {@link EnforcedOrgGatewayLane} §1: under enforcement this lane
-      // carries the org's gateway, funded by the member's own key.
-      return orgGateway?.enforced === true
+      // carries the org's gateway, funded by the member's own key. A Personal
+      // gateway does the same when credits can't (see PersonalGatewayLane).
+      return orgGateway?.enforced === true ||
+        personalGatewayFillsCreditsLane(availability, personalGateway)
         ? true
         : availability.creditsEligible;
     case 'ollama':
@@ -323,6 +364,7 @@ function defaultCandidates(
     model: ChatModel,
   ) => ProviderModelSelection['thinkingLevel'],
   orgGateway?: EnforcedOrgGatewayLane,
+  personalGateway?: PersonalGatewayLane,
 ): ProviderModelSelection[] {
   if (lane === 'claude-native') return [defaults.claude];
   if (lane === 'codex-native') return [defaults.codex];
@@ -332,6 +374,19 @@ function defaultCandidates(
   // it is the lane's ONLY candidate, so honoring it would strand the lane.
   if (orgGateway?.enforced === true) {
     return orgGateway.models.map((model) => ({
+      model,
+      thinkingLevel: clampThinkingLevel
+        ? clampThinkingLevel('high', model)
+        : 'high',
+    }));
+  }
+  // The same reasoning for a Personal gateway standing in for credits: a
+  // configured hosted credits default would bill credits the account lacks.
+  // Like enforcement, this also replaces a caller's cheap `creditsCandidates`
+  // (branch names, summaries): hosted helpers can't run without credits, so
+  // helper work runs on the user's own gateway model and key.
+  if (personalGateway) {
+    return personalGateway.models.map((model) => ({
       model,
       thinkingLevel: clampThinkingLevel
         ? clampThinkingLevel('high', model)
@@ -365,7 +420,8 @@ function defaultCandidates(
  * there are no routes at all, and a package model must still be offered.
  * `runnableOnLane` still decides routability and registry membership, so an
  * appended model that cannot route is skipped, not dispatched. Native lanes
- * run on the guest's own subscription and are left alone.
+ * run on the guest's own subscription and are left alone, and so does a
+ * Personal gateway: the guest pays for it with their own key.
  */
 function laneCandidates(
   lane: BillingLane,
@@ -377,6 +433,7 @@ function laneCandidates(
     model: ChatModel,
   ) => ProviderModelSelection['thinkingLevel'],
   orgGateway?: EnforcedOrgGatewayLane,
+  personalGateway?: PersonalGatewayLane,
 ): ProviderModelSelection[] {
   const candidates = defaultCandidates(
     lane,
@@ -384,8 +441,11 @@ function laneCandidates(
     creditsCandidates,
     clampThinkingLevel,
     orgGateway,
+    personalGateway,
   );
-  if (lane !== 'ai-credits' || !guestPrincipal) return candidates;
+  if (lane !== 'ai-credits' || !guestPrincipal || personalGateway) {
+    return candidates;
+  }
   const allowed = candidates.filter((selection) =>
     isGuestAllowedCreditsModel(selection.model),
   );
@@ -455,6 +515,12 @@ export function resolveDefaultModelLane(input: {
   /** Present only when an org has made its gateway the only route. */
   orgGateway?: EnforcedOrgGatewayLane;
   /**
+   * The user's Personal gateway when it is saved, usable on this device, and
+   * not enforced. Used only while AI Credits are not confirmed eligible; see
+   * {@link PersonalGatewayLane}.
+   */
+  personalGateway?: PersonalGatewayLane;
+  /**
    * The signed-in ChatGPT account's `model/list` ids. A `codex-native`
    * candidate the account cannot run falls through to the next lane instead
    * of being returned. Unknown (`null`/absent/empty) changes nothing; see
@@ -478,6 +544,14 @@ export function resolveDefaultModelLane(input: {
 }): DefaultModelLaneResolution {
   const creditsCandidates =
     input.creditsCandidates ?? CREDITS_LANE_DEFAULT_CANDIDATES;
+  // Decided once so availability and candidates can't disagree about whether
+  // the Personal gateway is standing in for credits.
+  const personalGateway = personalGatewayFillsCreditsLane(
+    input.availability,
+    input.personalGateway,
+  )
+    ? input.personalGateway
+    : undefined;
   const preferredLane = providerLane(input.preferredProvider);
   const baseOrder: BillingLane[] = [
     'claude-native',
@@ -496,6 +570,7 @@ export function resolveDefaultModelLane(input: {
       input.availability,
       input.ollamaPinned,
       input.orgGateway,
+      personalGateway,
     ) === true;
   // The index just past the last confirmed-available lane in `order`.
   const afterLastConfirmed = (): number => {
@@ -532,6 +607,7 @@ export function resolveDefaultModelLane(input: {
       input.availability,
       input.ollamaPinned,
       input.orgGateway,
+      personalGateway,
     ) === undefined
   ) {
     // Hold the last-known lane through a loading window so the composer does
@@ -565,6 +641,7 @@ export function resolveDefaultModelLane(input: {
       input.availability,
       input.ollamaPinned,
       input.orgGateway,
+      personalGateway,
     );
     if (available === false) continue;
     for (const selection of laneCandidates(
@@ -574,6 +651,7 @@ export function resolveDefaultModelLane(input: {
       input.guestPrincipal === true,
       input.clampThinkingLevel,
       input.orgGateway,
+      personalGateway,
     )) {
       const allowed = input.isModelAllowed(selection.model);
       if (allowed === false) continue;
@@ -622,6 +700,7 @@ export function resolveDefaultModelLane(input: {
       input.guestPrincipal === true,
       input.clampThinkingLevel,
       input.orgGateway,
+      personalGateway,
     ).some((selection) => {
       if (input.isModelAllowed(selection.model) === false) return false;
       return runnableOnLane(
@@ -640,6 +719,7 @@ export function resolveDefaultModelLane(input: {
         input.availability,
         input.ollamaPinned,
         input.orgGateway,
+        personalGateway,
       ) === false,
   );
   const hasConfirmedAvailableLane = baseOrder.some(
@@ -649,6 +729,7 @@ export function resolveDefaultModelLane(input: {
         input.availability,
         input.ollamaPinned,
         input.orgGateway,
+        personalGateway,
       ) === true,
   );
   const missing =

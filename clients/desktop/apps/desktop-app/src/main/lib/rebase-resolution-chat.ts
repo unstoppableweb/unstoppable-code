@@ -206,6 +206,10 @@ async function resolveModelAndThinking(
       `No execution harness is available for rebase resolution model "${model}".`,
     );
   }
+  if (executionHarness === 'antigravity')
+    throw new Error(
+      'Google subscription models are not available for automatic rebase resolution.',
+    );
   if (executionHarness === 'cursor')
     throw new Error('Cursor is not available for automatic rebase resolution.');
   if (executionHarness === 'opencode')

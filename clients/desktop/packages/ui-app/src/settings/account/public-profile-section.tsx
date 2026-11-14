@@ -221,6 +221,7 @@ export function PublicProfileSection({
                 </p>
               </Stack>
               <ErrorBanner
+                errorSource="public-profile-section-editor"
                 className="w-full max-w-md"
                 error={editor.error?.copy}
                 details={editor.error?.details}
@@ -354,6 +355,7 @@ export function PublicProfileSection({
             )}
           </Stack>
           <ErrorBanner
+            errorSource="public-profile-section-editor"
             className=""
             error={editor.error?.copy}
             details={editor.error?.details}

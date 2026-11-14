@@ -1,9 +1,10 @@
 import type { JSX } from 'react';
 import {
-  formatCostAmount,
+  formatCostSegmentIn,
   formatCostShare,
   type CostSegment,
 } from './cost-format';
+import { useCostCurrency } from './CostCurrencyContext';
 import { Fact, FactList } from '../FactList';
 import { ValueRow, ValueRows } from '../settings/ValueRows';
 
@@ -22,6 +23,7 @@ export function CostLegend({
   layout = 'inline',
   testId,
 }: CostLegendProps): JSX.Element {
+  const currency = useCostCurrency();
   const visibleSegments = segments.filter((segment) => segment.value > 0);
   const total = visibleSegments.reduce(
     (sum, segment) => sum + segment.value,
@@ -36,7 +38,7 @@ export function CostLegend({
             key={segment.key}
             swatch={segment.color}
             label={segment.label}
-            value={formatCostAmount(segment.value)}
+            value={formatCostSegmentIn(segment, currency)}
             share={
               showShare ? formatCostShare(segment.value, total) : undefined
             }
@@ -63,7 +65,7 @@ export function CostLegend({
           detail={showShare ? formatCostShare(segment.value, total) : undefined}
           numeric
         >
-          {formatCostAmount(segment.value)}
+          {formatCostSegmentIn(segment, currency)}
         </Fact>
       ))}
     </FactList>

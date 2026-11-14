@@ -27,6 +27,10 @@ import {
 } from '@canopy/ui-shared/lib';
 
 import { DrawerRowPresentationContext } from './activity/background-tray/drawer-presentation';
+import {
+  setComposerWorkDrawerOpenKind,
+  useComposerWorkDrawerOpenKind,
+} from './composer-work-drawer-open';
 
 export interface ComposerWorkDrawerSections {
   readonly needsYou: ReactNode;
@@ -195,7 +199,8 @@ interface WorkKind {
  * kind of work (Needs you, Queued, Running, Pull requests, Watching). A pill
  * opens a floating card above the pills with that kind alone; another pill
  * swaps the card's contents; the same pill, the card's minus button or Esc
- * closes it. Every kind's content stays mounted (hidden) so portals and refs
+ * closes it. Only those close it: the card stays open across sends, chat,
+ * tab and worktree switches, and gaps in the work. Every kind's content stays mounted (hidden) so portals and refs
  * into it, such as desktop's queue, keep their targets.
  */
 export function ComposerWorkDrawer({
@@ -258,18 +263,29 @@ export function ComposerWorkDrawer({
     },
   ];
   const shown = kinds.filter(({ count }) => count > 0);
-  const [selected, setSelected] = useState<string | null>(() =>
+  // Previews keep their own card; every composer shares one open card, so
+  // the drawer stays as the user left it across sends, chats, tabs and
+  // worktrees (composer-work-drawer-open.ts).
+  const [previewSelected, setPreviewSelected] = useState<string | null>(() =>
     defaultExpanded ? (shown[0]?.key ?? null) : null,
   );
+  const sharedSelected = useComposerWorkDrawerOpenKind();
+  const selected = defaultExpanded ? previewSelected : sharedSelected;
+  const setSelected = defaultExpanded
+    ? setPreviewSelected
+    : setComposerWorkDrawerOpenKind;
   const [animate, setAnimate] = useState(false);
   // The kind the card shows: the open one, or while it closes, the one it
   // showed, so its rows leave with it.
   const [lastKey, setLastKey] = useState<string | null>(null);
   if (selected !== null && selected !== lastKey) setLastKey(selected);
-  // A kind whose work ends closes its card, and forgets it: work that
-  // returns later never reopens a card on its own.
-  const open = shown.find(({ key }) => key === selected) ?? null;
-  if (selected !== null && open === null) setSelected(null);
+  // An open drawer stays open until the user closes it. Its card shows the
+  // kind last opened while that kind has work, and otherwise the first kind
+  // that does; the choice is kept, so its work coming back shows it again.
+  const open =
+    selected === null
+      ? null
+      : (shown.find(({ key }) => key === selected) ?? shown[0] ?? null);
   const expanded = open !== null;
   const shownKind = open ?? shown.find(({ key }) => key === lastKey) ?? null;
   // The execution controls (View tree, Stop all): the same element for every

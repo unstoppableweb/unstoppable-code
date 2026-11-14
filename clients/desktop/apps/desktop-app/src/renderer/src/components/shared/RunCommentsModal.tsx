@@ -213,7 +213,12 @@ export function RunCommentsModal({
             />
           </Surface>
 
-          <ErrorBanner className="" error={error} testId="run-comments-error" />
+          <ErrorBanner
+            errorSource="run-comments-error"
+            className=""
+            error={error}
+            testId="run-comments-error"
+          />
         </div>
       )}
     </DialogModal>

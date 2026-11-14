@@ -198,7 +198,7 @@ async function readSnapshot(
     accountGeneration: generationAtRead,
     state: preserveBalanceAfterFailedRefresh(previousState, state),
     routingMode,
-    lastUpdatedAt: Date.now(),
+    lastUpdatedAt: state?.balance && state.error === null ? Date.now() : null,
   };
 }
 

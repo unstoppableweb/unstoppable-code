@@ -29,6 +29,52 @@ import type { MarketplaceInfo, PluginInfo } from './catalog';
 export * from './catalog';
 
 /**
+ * The public GitHub package for a manifest-relative path inside an official
+ * marketplace checkout. Only the repository-relative path crosses hosts.
+ */
+export function officialMarketplaceRelativePackageUrl(
+  marketplace: Pick<MarketplaceInfo, 'id'> &
+    Partial<Pick<MarketplaceInfo, 'sourceUrl' | 'installLocation'>>,
+  sourcePath: string | undefined,
+): string | undefined {
+  const codex = marketplace.id === 'openai-curated';
+  const repository =
+    marketplace.id === 'claude-plugins-official'
+      ? 'https://github.com/anthropics/claude-plugins-official'
+      : codex || marketplace.id === 'openai-curated-remote'
+        ? 'https://github.com/openai/plugins'
+        : undefined;
+  const remote = marketplace.sourceUrl
+    ?.replace(/\/+$/, '')
+    .replace(/\.git$/i, '')
+    .toLowerCase();
+  if (
+    !repository ||
+    (remote !== repository && !(codex && remote === marketplace.id))
+  )
+    return undefined;
+
+  const root = marketplace.installLocation
+    ?.replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+  const source = sourcePath?.replace(/\\/g, '/');
+  if (!root || !source) return undefined;
+  const inside = source === root || source.startsWith(`${root}/`);
+  if (!inside && /^(?:\/|[A-Za-z][A-Za-z0-9+.-]*:)/.test(source))
+    return undefined;
+  const relative = inside ? source.slice(root.length) : source;
+  const segments = relative
+    .split('/')
+    .filter((segment) => segment && segment !== '.');
+  if (segments.includes('..') || relative.includes('\0')) return undefined;
+  try {
+    return [repository, ...segments.map(encodeURIComponent)].join('/');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Source of a shareable plugin/skill reference.
  *
  * - `builtin` identifies bundled skills/plugins shipped with Canopy. The `id`

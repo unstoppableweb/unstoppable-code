@@ -187,6 +187,7 @@ function FactSourceTranscript({
   if (selected.status === 'error') {
     return (
       <ErrorBanner
+        errorSource="fact-source-transcript-selected"
         className=""
         error={selected.failure.copy}
         details={selected.failure.details}

@@ -201,8 +201,10 @@ export async function copyInternalRootTree(
       ? await migrationNodeIdentity(from, before)
       : null;
     if (before.isDirectory()) {
-      if (!windows && (before.mode & 0o700) !== 0o700)
-        refuse(`Read-only or inaccessible source directory: ${from}`);
+      if (!windows && (before.mode & 0o500) !== 0o500)
+        refuse(
+          `Source directory requires owner read and search access: ${from}`,
+        );
       if (!(from === source && rootExists)) {
         if (windows) windowsFilesystem(host).copy(from, to);
         else await mkdir(to, { mode: 0o700 });

@@ -36,7 +36,11 @@ export { createAppError, toAppError } from './create';
 export type { CreateAppErrorOptions, ToAppErrorOptions } from './create';
 export { presentAppError, showsRawErrorDetail } from './display';
 export type { AppErrorDisplayPolicy, AppErrorPresentation } from './display';
-export { createAppErrorHandler } from './handler';
+export {
+  createAppErrorHandler,
+  getAppErrorThrownType,
+  rememberAppErrorNativeFrames,
+} from './handler';
 export { surfacedErrorSource, createSurfacedErrorRecorder } from './surfaced';
 export type {
   SurfacedErrorChokePoint,
@@ -50,6 +54,7 @@ export type {
   AppErrorSink,
   AppErrorScheduler,
   AppErrorHandlerOptions,
+  AppErrorThrownType,
   AppErrorReportOptions,
   AppErrorHandler,
 } from './handler';

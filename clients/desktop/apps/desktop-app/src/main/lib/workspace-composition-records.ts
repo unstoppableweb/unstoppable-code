@@ -17,11 +17,7 @@ import type {
   WorkspaceRepoData,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
-import {
-  getWorkspaceConfigPath,
-  getWorkspaceWorktreesFilePath,
-  getWorkspaceIndexFilePath,
-} from './paths';
+import { w5RecordReadPaths } from './paths';
 import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { IdentifierValidationError, validateId } from './validation';
 import { WorkspaceIndexUnreadableError } from './workspace-index-repository';
@@ -361,8 +357,8 @@ async function createTemporaryCompositionRecordsAdmitted(
   const stageTemporaryCompositionRecords = (): Promise<WorktreeData[]> =>
     withW5RepositoryLocks(
       [
-        { kind: 'manifest', path: getWorkspaceConfigPath(workspace.id) },
-        { kind: 'list', path: getWorkspaceWorktreesFilePath(workspace.id) },
+        { kind: 'manifest', path: w5RecordReadPaths.manifest(workspace.id) },
+        { kind: 'list', path: w5RecordReadPaths.worktrees(workspace.id) },
       ],
       async () =>
         (
@@ -390,8 +386,8 @@ async function createTemporaryCompositionRecordsAdmitted(
       operation: 'core.workspace.create',
     },
     [
-      { kind: 'manifest', path: getWorkspaceConfigPath(workspace.id) },
-      { kind: 'list', path: getWorkspaceWorktreesFilePath(workspace.id) },
+      { kind: 'manifest', path: w5RecordReadPaths.manifest(workspace.id) },
+      { kind: 'list', path: w5RecordReadPaths.worktrees(workspace.id) },
     ],
     stageTemporaryCompositionRecords,
   );
@@ -489,10 +485,10 @@ async function promoteCompositionWorkspaceAdmitted(
   const stageCompositionPromotion = (): Promise<void> =>
     withW5RepositoryLocks(
       [
-        { kind: 'index', path: getWorkspaceIndexFilePath() },
+        { kind: 'index', path: w5RecordReadPaths.index() },
         {
           kind: 'manifest',
-          path: getWorkspaceConfigPath(request.workspaceId),
+          path: w5RecordReadPaths.manifest(request.workspaceId),
         },
       ],
       () =>
@@ -513,8 +509,11 @@ async function promoteCompositionWorkspaceAdmitted(
       operation: 'core.workspace.composition.promote',
     },
     [
-      { kind: 'index', path: getWorkspaceIndexFilePath() },
-      { kind: 'manifest', path: getWorkspaceConfigPath(request.workspaceId) },
+      { kind: 'index', path: w5RecordReadPaths.index() },
+      {
+        kind: 'manifest',
+        path: w5RecordReadPaths.manifest(request.workspaceId),
+      },
     ],
     stageCompositionPromotion,
   );

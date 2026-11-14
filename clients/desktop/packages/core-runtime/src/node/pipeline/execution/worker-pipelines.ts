@@ -149,6 +149,19 @@ export interface PipelineExecutionWorker {
     execution?: CanopyHostExecution,
   ): Promise<WorkerPipelineExecution | null>;
   /**
+   * Takes a portable start sent again for a run the worker already holds
+   * (CAN-6376), as a new runner incarnation does once its owner restored
+   * the run there: the run is not started again, but the start becomes the
+   * launch its recovery controls run with. Resolves the run as `stored`
+   * holds it, without redeeming the start's secrets. Throws what
+   * {@link start} would refuse, and when the stored run is another
+   * workflow's. Without it, a held run answers as it is.
+   */
+  adoptStart?(
+    params: WorkerPipelineExecutionStartParams,
+    stored: WorkerPipelineExecution,
+  ): Promise<WorkerPipelineExecution>;
+  /**
    * Run the launch core prepared for this execution, once. Throws
    * {@link pipelineLaunchUnavailableError} when there is none, so a client
    * can never start a run core did not admit. Only a worker that runs
@@ -536,6 +549,106 @@ export function pipelineDataSnapshotGoneError(): CanopyOperationError {
   });
 }
 
+/**
+ * A run handoff export or import while the run is pending or running on the
+ * runner (CAN-6376): its state still moves. Also an import while another
+ * import of the run unpacks. Checkpoint the run first, then call again with
+ * a new key.
+ */
+export function pipelineHandoffBusyError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.handoffBusy',
+    message: 'This workflow run is running or being restored.',
+    retry: { kind: 'never' },
+  });
+}
+
+/**
+ * A run handoff the runner refuses (CAN-6376): over its limit, a chunk out
+ * of order, a digest that does not match, an archive that holds anything
+ * but the named run and its sessions, or an import once the lease ended.
+ */
+export function pipelineHandoffRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.handoffRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** A handoff export that continues a snapshot the runner no longer holds (CAN-6376). */
+export function pipelineHandoffSnapshotGoneError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.handoffSnapshotGone',
+    message: "This workflow run's handoff snapshot is gone. Export it again.",
+    retry: { kind: 'never' },
+  });
+}
+
+/** A transcript export of a step that recorded none (CAN-6421). */
+export function pipelineTranscriptNotFoundError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'not_found',
+    code: 'worker.pipeline.transcriptNotFound',
+    message: 'This step has no transcript.',
+    retry: { kind: 'never' },
+  });
+}
+
+/** A transcript over its limit, or one that is not a file of the run (CAN-6421). */
+export function pipelineTranscriptRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.transcriptRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/**
+ * A capability delivery over its limit, out of order or not matching its
+ * digest, or a bundle or blob that fails its checks (CAN-6439).
+ */
+export function pipelineCapabilitiesRefusedError(
+  message: string,
+  cause?: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'worker.pipeline.capabilitiesRefused',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** A transcript export that continues a transcript that changed since (CAN-6421). */
+export function pipelineTranscriptSnapshotGoneError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.pipeline.transcriptSnapshotGone',
+    message: "This step's transcript changed. Export it again.",
+    retry: { kind: 'never' },
+  });
+}
+
 const TERMINAL: ReadonlySet<string> = new Set(
   WORKER_PIPELINE_TERMINAL_STATUSES,
 );
@@ -770,10 +883,15 @@ export function createWorkerPipelineHandlers(
           const first = await receipt;
           return { execution: (await worker.get(executionId)) ?? first };
         }
-        // Without a receipt (evicted, or a restarted worker), a run the
-        // worker already holds answers as it is: nothing runs twice.
-        const run = (async (): Promise<WorkerPipelineExecution> =>
-          (await worker.get(executionId)) ?? startOnce())();
+        // Without a receipt (evicted, or a new incarnation its owner
+        // restored the run on), a run the worker already holds answers as it
+        // is, and the worker takes the start as that run's (CAN-6376):
+        // nothing runs twice, and no secret is redeemed for it.
+        const run = (async (): Promise<WorkerPipelineExecution> => {
+          const held = await worker.get(executionId);
+          if (!held) return startOnce();
+          return worker.adoptStart ? worker.adoptStart(params, held) : held;
+        })();
         portableStarts.set(executionId, run);
         const oldest = portableStarts.keys().next();
         if (portableStarts.size > PORTABLE_START_RECEIPTS_MAX && !oldest.done)

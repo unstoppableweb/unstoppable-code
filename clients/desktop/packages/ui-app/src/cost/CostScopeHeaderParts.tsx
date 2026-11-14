@@ -5,8 +5,10 @@ import { useShallow } from 'zustand/react/shallow';
 import type { CostScopeStore } from '@canopy/app-state/cost';
 import {
   CostFreshness,
-  formatCostTotal,
+  formatCostTotalIn,
+  useCostCurrency,
 } from '@canopy/ui-shared/components/cost';
+import { withCostCoverage } from './cost-coverage';
 
 /** The entry total for the rail section's inline subtitle (`$21.66`); nothing until the first read. */
 export function CostScopeTotalLabel({
@@ -14,9 +16,15 @@ export function CostScopeTotalLabel({
 }: {
   readonly store: CostScopeStore;
 }): JSX.Element | null {
+  const currency = useCostCurrency();
   const total = store(
     useShallow((state) =>
-      state.value === null ? null : formatCostTotal(state.value.totals),
+      state.value === null
+        ? null
+        : withCostCoverage(
+            formatCostTotalIn(state.value.totals, currency),
+            state.value.coverageStart,
+          ),
     ),
   );
   if (total === null) return null;

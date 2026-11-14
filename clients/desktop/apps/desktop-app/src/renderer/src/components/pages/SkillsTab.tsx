@@ -335,7 +335,11 @@ export function AddSkillsModal({
     >
       <Stack gap="group">
         {/* Error */}
-        <ErrorBanner error={error} className="" />
+        <ErrorBanner
+          errorSource="add-skills-modal"
+          error={error}
+          className=""
+        />
 
         {/* Source input step */}
         {modalStep.step === 'source' && (
@@ -2138,7 +2142,10 @@ export function CustomSkillEditor({
               </Button>
             </div>
           </div>
-          <ErrorBanner error={error || (editWithAI?.error ?? '')} />
+          <ErrorBanner
+            errorSource="custom-skill-edit-with-ai"
+            error={error || (editWithAI?.error ?? '')}
+          />
         </div>
         {fields}
       </section>
@@ -2157,7 +2164,7 @@ export function CustomSkillEditor({
       <div className="flex flex-col flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto pb-3">
           <div className="px-6">
-            <ErrorBanner error={error} />
+            <ErrorBanner errorSource="custom-skill-edit" error={error} />
           </div>
           {fields}
         </div>
@@ -2746,7 +2753,7 @@ export function SharedSkillDetailModal({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto pb-3">
         <div className={page ? 'px-5' : 'px-6'}>
-          <ErrorBanner error={error} />
+          <ErrorBanner errorSource="shared-skill-detail-modal" error={error} />
         </div>
         {!loading && detail?.savedFrom && (
           <p

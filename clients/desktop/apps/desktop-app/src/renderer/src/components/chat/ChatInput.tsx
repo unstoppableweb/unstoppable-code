@@ -1,4 +1,8 @@
+import { chatModelRecoveryTarget } from '@/lib/composerModelRecoveryTarget';
+import type { ModelRecoveryFreshness } from '@/lib/modelRecoveryLease';
+import { creditNoticeVisibility } from '@canopy/ui-shared/lib';
 import { useSuggestionsClaimApi } from '@canopy/ui-app/suggestions';
+import { importedChatNoticeTitle } from '@/components/import-projects/importProjectsCopy';
 import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
 import {
   isPlanModeReadOnly,
@@ -36,7 +40,15 @@ import {
   useAnimatedComposerBox,
   useOneLineComposer,
   VOICE_TAKE_EDITOR_CONTAINER_CLASS,
+  offeredPromptSuggestion,
+  promptSuggestionKeyAction,
+  PromptSuggestionKeyHint,
 } from '@canopy/ui-shared';
+import { usePromptSuggestionsEnabled } from '@/lib/prompt-suggestions-preference';
+import {
+  usePromptSuggestionEntry,
+  usePromptSuggestionStore,
+} from '@/stores/promptSuggestionStore';
 import { isClaudeTurnLimitMessage } from '@canopy/agent-transcript';
 import {
   ComposerWorkDrawer,
@@ -112,6 +124,7 @@ import {
   type ChatTab,
   type PendingPlanExit,
 } from '@/stores/chatStore';
+import { isScopeRevisionedLive } from '@/stores/chat/slices/revisioned';
 import type { QueuedWithoutDispatchLocation } from '@/stores/chat/types';
 import {
   useChatSurfaceScope,
@@ -162,6 +175,15 @@ import { isCoworkChatTarget } from '@/lib/cowork';
 import { isWebCoreScope, webCoreLocalId } from '@/lib/chat-authority';
 import { CloudChatPluginsPicker } from '@/cloud-chats/CloudChatPluginsPicker';
 import { CloudTaskCreationNotice } from '@/cloud-chats/CloudTaskCreationNotice';
+import {
+  CloudChatDeletedNotice,
+  CloudChatFilesNotAttachedNotice,
+} from '@/cloud-chats/CloudChatDeletedNotice';
+import { useCloudChatDeleted } from '@/stores/chat/web-core/task-deletions';
+import { WebCoreModelCatalogNotice } from '@/cloud-chats/WebCoreModelCatalogNotice';
+import { presentedCloudStop } from '@/stores/chat/cloud-stop';
+import { liveReplyKey } from '@/stores/chat/web-core/live-replies';
+import { useWebCoreStartingTurnStore } from '@/stores/chat/web-core/starting-turns';
 import { loadWebCoreModels, webCoreChatId } from '@/stores/chat/web-core';
 import { useWebCoreFastModeStore } from '@/stores/chat/web-core/fast-mode';
 import type { CodexSpeed } from '@canopy/protocol/automations';
@@ -232,9 +254,11 @@ import {
   type LinearTicketSearchResult,
   type ScheduledActivity,
   type SlashCommandData,
+  canSwitchProviderInPlace,
   clampThinkingLevelForModel,
   getAgentModelSelectionId,
   getEffectiveSupportedThinkingLevelsForModel,
+  getExecutionHarnessForModel,
   getProviderForModel,
   modelConfigForProviderSupportsFastMode,
   resolveOverallDefault,
@@ -297,6 +321,7 @@ import { useComposerWorkDrawerLink } from './composer-work-drawer-context';
 import { AiCreditsUsageLimitBanner } from './AiCreditsUsageLimitBanner';
 import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
 import { NoBillingSourceBanner } from './NoBillingSourceBanner';
+import { useUnbillableModelSwitch } from '@/lib/unbillableModel';
 import { OrgLapsedBanner } from './OrgLapsedBanner';
 import { FirstSendFailedSlot } from './FirstSendFailedSlot';
 import { usePanelHostState } from '@/lib/panels/panel-host-context';
@@ -313,6 +338,7 @@ import {
 import {
   canRestoreComposerDraft,
   applyComposerRecovery,
+  composerRefusalNotice,
   decideComposerRecovery,
 } from '@canopy/ui-app/composer-recovery';
 import {
@@ -329,6 +355,7 @@ import { useHeldQueueComposerRecovery } from '@/hooks/useHeldQueueComposerRecove
 import { useCatchingUpLag } from '@/stores/ingestionLagStore';
 import {
   isGatewayOnlyModel,
+  isOrgGatewayRoute,
   resolveOrgGatewayOrganizationId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { openPendingPlanExit } from '@/lib/plans/open-tracked-plan';
@@ -458,8 +485,17 @@ import {
   DISCARD_CHAT_DRAFT_EVENT,
   SAVE_CHAT_DRAFTS_EVENT,
   saveDraftForExistingTab,
+  saveOpenChatDrafts,
 } from '@/lib/chatDrafts';
 import { readTryItDraft, saveTryItDraft } from '@/lib/tryItDraftStorage';
+import { installChatDraftQuitFlush } from '@/lib/chatDraftStorage';
+import {
+  DRAFT_NOTICE_DISMISS_LABEL,
+  DRAFT_RESTORE_FAILED_MESSAGE,
+  DRAFT_RESTORE_FAILED_TITLE,
+  DRAFT_SAVE_FAILED_TITLE,
+  draftSaveFailedMessage,
+} from './chatDraftNoticeCopy';
 import { appendDraftText } from '@canopy/ui-rich/editor/append-draft-text';
 import {
   findComposerDensityPanel,
@@ -495,12 +531,19 @@ import {
   ComposerDrawer,
   ComposerNoticeStack,
   MessageEditCancelSave,
+  ModelUnavailableNotice,
+  PendingTurnSettingsHint,
   useCompactQueue,
 } from '@canopy/ui-shared/components';
-import { canContinueOnOtherHarness } from '@/lib/chatProviderLock';
+import {
+  canSwitchChatProvider,
+  isContinuableHarnessPair,
+} from '@/lib/chatProviderLock';
+import { nextMsgId } from '@/stores/chat/ids';
 import { hasPendingQuestionForChat } from '@/stores/chat/pending-questions';
 import { isTabAiCreditsRouted } from '@/stores/chat/tab-utils';
 import { tabRequestedCodexSpeed } from '@/stores/chat/codex-speed';
+import { usePendingTurnSettings } from './usePendingTurnSettings';
 import { useContextualCodexSpeedControl } from '@/hooks/useContextualCodexSpeedControl';
 import { useCodexSpeedDowngrade } from '@/hooks/useCodexSpeedDowngrade';
 import { getDocument } from '@canopy/ui-shared/panels';
@@ -519,6 +562,7 @@ import {
   createClipboardAttachments,
   importChatAttachments,
   importWebCoreChatFiles,
+  useCloudChatUploading,
 } from '@/lib/chatAttachments';
 import { stageLinearTicketAttachment } from '@/lib/linearTicketStaging';
 import { ComposerPlusMenu } from '@/components/shared/ComposerPlusMenu';
@@ -1008,6 +1052,10 @@ function ChatInputContent({
     };
   }, [discardTabId, editor, isEditingQueued]);
 
+  useEffect(() => {
+    if (!isEditingQueued) installChatDraftQuitFlush(saveOpenChatDrafts);
+  }, [isEditingQueued]);
+
   useLayoutEffect(() => {
     if (isEditingQueued) return undefined;
     const saveDraft = (): void => {
@@ -1058,6 +1106,12 @@ function ChatInputContent({
 
   const sendMessage = useChatStore((s) => s.sendMessage);
   const dismissSendRefusal = useChatStore((s) => s.dismissSendRefusal);
+  const draftRestoreFailed = useChatStore(
+    (s) => tabId !== undefined && s.tabDraftRestoreFailures[tabId] === true,
+  );
+  const draftSaveFailed = useChatStore(
+    (s) => tabId !== undefined && s.tabDraftSaveFailure === tabId,
+  );
   const cancelSession = useChatStore((s) => s.cancelSession);
   const resumeStoppedTurn = useChatStore((s) => s.resumeStoppedTurn);
   // Escape-to-cancel confirmation (ECW-8986): the arming hook may live in a
@@ -1127,9 +1181,6 @@ function ChatInputContent({
   const automationsActivities = useAutomationsStore((s) => s.activities);
   const createAutomationActivity = useAutomationsStore((s) => s.createActivity);
   const setUsageLimitBanner = useAiCreditsBannerStore((s) => s.setUsageLimit);
-  const setNoBillingSourceBanner = useAiCreditsBannerStore(
-    (s) => s.setNoBillingSource,
-  );
   const refreshProviderUsageSnapshot = useObservabilityStore(
     (s) => s.refreshProviderUsageSnapshot,
   );
@@ -1663,19 +1714,22 @@ function ChatInputContent({
           tab.id,
         ),
   );
-  // Claude and Codex are the only continuable harnesses, so a locked chat has
-  // exactly one cross-harness target.
+  // A started chat switches provider in place (CAN-6445) to any provider in
+  // the in-place set. The transient blockers (busy, queued, a pending plan)
+  // don't depend on which one, so one probe target answers them for every
+  // switchable row.
+  const switchProbeProvider: AgentProviderType =
+    lockedProvider === 'claude' ? 'codex' : 'claude';
   const continueTargetProvider: AgentProviderType | undefined =
-    lockedProvider === 'claude'
-      ? 'codex'
-      : lockedProvider === 'codex'
-        ? 'claude'
-        : undefined;
+    lockedProvider !== undefined &&
+    canSwitchProviderInPlace(lockedProvider, switchProbeProvider)
+      ? switchProbeProvider
+      : undefined;
   const continueEligibility = useMemo(() => {
     if (!continueTargetProvider) return undefined;
     // `lockedProvider` already encodes "this tab has conversation state", which
     // is the only thing `getLockedProvider` reads `messages` for.
-    return canContinueOnOtherHarness(
+    return canSwitchChatProvider(
       {
         messages: { length: 1 },
         // The existing active-composer selector projects only the count. This
@@ -1711,11 +1765,32 @@ function ChatInputContent({
   // clickable `ChatTabBar` above a single unkeyed `ChatContent`, so switching
   // there is a prop change and this component (and its state) survives it.
   const [continuePick, setContinuePick] = useState<
-    | { tabId: string; model: ChatModel; billingFramework?: BillingFramework }
+    | {
+        tabId: string;
+        model: ChatModel;
+        /** The provider the pick runs on; the chat switches to it in place. */
+        provider: AgentProviderType;
+        executionHarness?: ModelHarness;
+        billingFramework?: BillingFramework;
+        isStillWanted?: ModelRecoveryFreshness;
+        releaseRecovery?: () => void;
+        recoveryTarget?: {
+          projectId: string;
+          worktreeId: string;
+          chatId: string;
+        };
+      }
     | undefined
   >(undefined);
+  useEffect(() => {
+    return continuePick?.releaseRecovery;
+  }, [continuePick]);
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
+  // Which answer the dialog is running, for its busy label.
+  const [continueAction, setContinueAction] = useState<'switch' | 'fork'>(
+    'switch',
+  );
 
   // Only honor the pending pick while its own chat is still the active one.
   const continueTargetModel =
@@ -1784,30 +1859,33 @@ function ChatInputContent({
       billingFramework?: BillingFramework,
       executionHarness?: ModelHarness,
     ): void => {
-      // A pick from the other harness never reaches `setModel` (the main
-      // process would refuse it anyway). It opens the continue dialog, which
-      // creates a NEW chat on the target provider instead.
-      // Match the dialog's own target rather than "anything but the locked
-      // provider", so a row outside the continuable pair can never open a dialog
-      // that names a provider the pick is not for.
+      // A pick from another provider in a started chat opens the switch
+      // dialog: switch this chat in place (CAN-6445) or, for Claude and Codex,
+      // continue in a new chat. Only pairs main switches in place open it;
+      // every other provider change takes the ordinary path below.
       const sourceTabId = tab?.id;
+      const pickedProvider =
+        executionHarness ??
+        pickProvider(
+          nextModel,
+          chatDefaultModel(
+            (targetOverride ?? selectedWorktree)?.projectId,
+            useChatStore.getState().modelDefaults,
+          ),
+        );
       if (
         sourceTabId &&
         lockedProvider &&
         continueEligibility?.ok === true &&
-        (executionHarness ??
-          pickProvider(
-            nextModel,
-            chatDefaultModel(
-              (targetOverride ?? selectedWorktree)?.projectId,
-              useChatStore.getState().modelDefaults,
-            ),
-          )) === continueTargetProvider
+        pickedProvider !== undefined &&
+        canSwitchProviderInPlace(lockedProvider, pickedProvider)
       ) {
         setContinueError(null);
         setContinuePick({
           tabId: sourceTabId,
           model: nextModel,
+          provider: pickedProvider,
+          ...(executionHarness ? { executionHarness } : {}),
           ...(billingFramework ? { billingFramework } : {}),
         });
         return;
@@ -1830,7 +1908,6 @@ function ChatInputContent({
     },
     [
       continueEligibility,
-      continueTargetProvider,
       lockedProvider,
       setModel,
       setModelAndWait,
@@ -1857,78 +1934,77 @@ function ChatInputContent({
    * surface that carries the pick forward, which is the opposite of a silent
    * drop even though no model changed on THIS chat.
    */
+  const recoverySourceTarget = ((): typeof targetOverride => {
+    const sourceId = tab?.id;
+    const scope = targetOverride ?? selectedWorktree;
+    if (!sourceId || !scope) return undefined;
+    if (targetOverride && targetOverride.chatId !== sourceId) return undefined;
+    return useChatStore
+      .getState()
+      .worktreeChats[
+        `${scope.projectId}/${scope.worktreeId}`
+      ]?.tabs.some((candidate) => candidate.id === sourceId && candidate.kind !== 'file')
+      ? {
+          projectId: scope.projectId,
+          worktreeId: scope.worktreeId,
+          chatId: sourceId,
+        }
+      : undefined;
+  })();
+  const recoveryTarget = chatModelRecoveryTarget(
+    recoverySourceTarget,
+    useChatStore.getState,
+  );
+
   const handleRecoveryCommit = useCallback(
     async (
       nextModel: ChatModel,
       billingFramework?: BillingFramework,
       executionHarness?: ModelHarness,
+      isStillWanted?: ModelRecoveryFreshness,
+      retainContinuation?: () => () => void,
     ): Promise<boolean> => {
+      if (!recoverySourceTarget || isStillWanted?.() === false) return false;
       const sourceTabId = tab?.id;
+      const pickedProvider = pickProvider(
+        nextModel,
+        chatDefaultModel(
+          (targetOverride ?? selectedWorktree)?.projectId,
+          useChatStore.getState().modelDefaults,
+        ),
+      );
       if (
         sourceTabId &&
         lockedProvider &&
         continueEligibility?.ok === true &&
         executionHarness !== 'opencode' &&
-        pickProvider(
-          nextModel,
-          chatDefaultModel(
-            (targetOverride ?? selectedWorktree)?.projectId,
-            useChatStore.getState().modelDefaults,
-          ),
-        ) === continueTargetProvider
+        pickedProvider !== undefined &&
+        canSwitchProviderInPlace(lockedProvider, pickedProvider)
       ) {
         setContinueError(null);
         setContinuePick({
           tabId: sourceTabId,
           model: nextModel,
+          provider: pickedProvider,
+          isStillWanted,
+          releaseRecovery: retainContinuation?.(),
+          recoveryTarget: recoverySourceTarget,
+          ...(executionHarness ? { executionHarness } : {}),
           ...(billingFramework ? { billingFramework } : {}),
         });
         return true;
       }
-      // Resolve a CONCRETE target where we can prove one, so a chat switch
-      // during an in-flight recovery cannot land the commit on whatever chat is
-      // active by then — the cross-chat leak `recoveryModelChangeRef` and
-      // `recoveryChatKey` exist to prevent.
-      //
-      // The MEMBERSHIP CHECK is load-bearing, not defensive. `selectedWorktree`
-      // comes from the store while `sourceTabId` comes from the `tab` prop, and
-      // those two can describe different chats: `PanelContentRoot` mounts
-      // several layout keys, each with its own `PanelWorktreeContext`, so a
-      // composer without `targetOverride` (`QueuedMessageEditor` renders one)
-      // can belong to worktree A while the store's selection is B. Composing
-      // `{B, tabOfA}` unchecked yields a target `getWorktreeChatContext`
-      // resolves to B with `activeTab: undefined` — it does NOT bail — and
-      // `changeModel` then reports success for a chat that does not exist,
-      // closing the modal over a commit that landed nowhere. Falling back to
-      // `undefined` restores the previous behavior, which at least always names
-      // a real chat. Mirrors `watcherDestination` above.
-      const target = ((): typeof targetOverride => {
-        if (targetOverride) return targetOverride;
-        if (!sourceTabId || !selectedWorktree) return undefined;
-        const worktreeChat =
-          useChatStore.getState().worktreeChats[
-            `${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`
-          ];
-        return worktreeChat?.tabs.some(
-          (candidate) => candidate.id === sourceTabId,
-        )
-          ? {
-              projectId: selectedWorktree.projectId,
-              worktreeId: selectedWorktree.worktreeId,
-              chatId: sourceTabId,
-            }
-          : undefined;
-      })();
       return setModelAndWait(
         nextModel,
-        target,
+        recoverySourceTarget,
         executionHarness,
         billingFramework,
+        { isStillWanted },
       );
     },
     [
+      recoverySourceTarget,
       continueEligibility,
-      continueTargetProvider,
       lockedProvider,
       selectedWorktree,
       setModelAndWait,
@@ -2017,7 +2093,10 @@ function ChatInputContent({
     if (continueBusy || continuePick === undefined) return;
     // Re-check at confirm time: if the active chat moved on, the dialog is
     // already hidden and confirming must not continue the newly-selected chat.
-    if (continuePick.tabId !== tab?.id) {
+    if (
+      continuePick.tabId !== tab?.id ||
+      continuePick.isStillWanted?.() === false
+    ) {
       setContinuePick(undefined);
       setContinueError(null);
       return;
@@ -2025,6 +2104,7 @@ function ChatInputContent({
     const { tabId, model, billingFramework } = continuePick;
     const runId = continueRunIdRef.current + 1;
     continueRunIdRef.current = runId;
+    setContinueAction('fork');
     setContinueBusy(true);
     setContinueError(null);
     void (async (): Promise<void> => {
@@ -2032,8 +2112,9 @@ function ChatInputContent({
         const result = await continueTabOnProvider(
           tabId,
           model,
-          targetOverride,
-          ...(billingFramework ? [billingFramework] : []),
+          continuePick.recoveryTarget ?? targetOverride,
+          billingFramework,
+          continuePick.isStillWanted,
         );
         if (result.status === 'created' && billingFramework) {
           useChatStore.getState().rememberBillingFramework(billingFramework);
@@ -2063,6 +2144,88 @@ function ChatInputContent({
     continueBusy,
     continuePick,
     continueTabOnProvider,
+    tab?.id,
+    targetOverride,
+  ]);
+
+  // Switch this chat to the picked provider in place (CAN-6445). Main parks
+  // the current provider's session, and the next turn carries the
+  // conversation to the new one; the notice says so in the transcript.
+  const handleConfirmSwitch = useCallback((): void => {
+    if (continueBusy || continuePick === undefined) return;
+    if (
+      continuePick.tabId !== tab?.id ||
+      continuePick.isStillWanted?.() === false
+    ) {
+      setContinuePick(undefined);
+      setContinueError(null);
+      return;
+    }
+    // A turn, queued message, plan or question that arrived while the
+    // dialog was open (from another window or the Portal) blocks the switch.
+    if (!continueEligibility || !continueEligibility.ok) {
+      setContinueError(
+        continueEligibility
+          ? continueEligibility.reason
+          : "This chat can't switch right now.",
+      );
+      return;
+    }
+    const { model, executionHarness, billingFramework } = continuePick;
+    const modelName = getModelDisplayName(model);
+    const runId = continueRunIdRef.current + 1;
+    continueRunIdRef.current = runId;
+    setContinueAction('switch');
+    setContinueBusy(true);
+    setContinueError(null);
+    void (async (): Promise<void> => {
+      try {
+        const switchTarget = continuePick.recoveryTarget ?? targetOverride;
+        if (!continuePick.isStillWanted)
+          void setModelSelectionMode('manual', switchTarget);
+        const switched = await setModelAndWait(
+          model,
+          switchTarget,
+          executionHarness,
+          billingFramework,
+          {
+            isStillWanted: continuePick.isStillWanted,
+            switchesProvider: true,
+            notice: {
+              id: nextMsgId(),
+              timestamp: Date.now(),
+              text: `This chat switched to ${modelName}, which picks up the conversation so far.`,
+            },
+          },
+        );
+        if (continueRunIdRef.current !== runId) return;
+        if (!switched) {
+          setContinueError(
+            `This chat couldn't switch to ${modelName}. Try again.`,
+          );
+          return;
+        }
+        if (billingFramework)
+          useChatStore.getState().rememberBillingFramework(billingFramework);
+        setContinuePick(undefined);
+      } catch (error: unknown) {
+        // `setModelAndWait` reports refusals as false, so a throw here is
+        // unexpected: record it, and keep the dialog's own explanation.
+        reportClientAppError(error);
+        if (continueRunIdRef.current !== runId) return;
+        setContinueError(
+          `This chat couldn't switch to ${modelName}. Try again.`,
+        );
+      } finally {
+        if (continueRunIdRef.current === runId) setContinueBusy(false);
+      }
+    })();
+  }, [
+    continueBusy,
+    continueEligibility,
+    continuePick,
+    setModelAndWait,
+    setModelSelectionMode,
     tab?.id,
     targetOverride,
   ]);
@@ -2170,6 +2333,26 @@ function ChatInputContent({
     composerProjectId !== undefined && isWebCoreScope(composerProjectId)
       ? composerProjectId
       : undefined;
+  // CAN-6444 — this local chat's model can't run for this account; offer the
+  // user's own gateway model before send. Cloud chats bill in the web core.
+  const unbillableModelCandidate = useUnbillableModelSwitch(
+    webCoreProjectId === undefined
+      ? (pendingModelChange?.model ?? model ?? fallbackModel)
+      : undefined,
+  );
+  // A chat with conversation state is locked to its provider and harness; the
+  // one-click switch is offered only when the gateway model keeps both, so it
+  // never needs a cross-harness continue the picker would gate.
+  const unbillableModelSwitch =
+    unbillableModelCandidate &&
+    (lockedProvider === undefined ||
+      getProviderForModel(unbillableModelCandidate.switchModel) ===
+        lockedProvider) &&
+    (lockedHarness === undefined ||
+      getExecutionHarnessForModel(unbillableModelCandidate.switchModel) ===
+        lockedHarness)
+      ? unbillableModelCandidate
+      : null;
   // Why the web core refused this cloud chat's last send (CAN-6364).
   const sendRefusalTarget = useMemo(
     () =>
@@ -2191,6 +2374,17 @@ function ChatInputContent({
           `${sendRefusalTarget.projectId}/${sendRefusalTarget.worktreeId}`
         ]?.tabs.find((entry) => entry.id === sendRefusalTarget.chatId)
           ?.sendRefusal,
+  );
+  // A cloud chat's Stop: Stopping… until its turn ends, or why it couldn't
+  // stop yet (CAN-6592).
+  const cloudStop = useChatStore((s) =>
+    sendRefusalTarget === null
+      ? undefined
+      : presentedCloudStop(
+          s.worktreeChats[
+            `${sendRefusalTarget.projectId}/${sendRefusalTarget.worktreeId}`
+          ]?.tabs.find((entry) => entry.id === sendRefusalTarget.chatId),
+        ),
   );
   // A cloud chat's skills, plugins and MCP servers are its web core
   // catalog's, in the picker the web's cloud chats use (CAN-6175 R5).
@@ -2472,12 +2666,40 @@ function ChatInputContent({
   // Awaiting plan approval is treated as turn-ended (no cancel button, no
   // spinner).
   const composerTurn = useComposerTurnActivity(composerChatTarget, tab?.status);
-  const isStreaming = composerTurn.activity !== 'idle' && !pendingExit;
+  // A cloud chat's sent turn runs before Core names it: Stop stays in place
+  // from Send until the turn ends, and cancels it by its receipt (CAN-6592).
+  const cloudTurnStarting = useWebCoreStartingTurnStore(
+    (s) =>
+      sendRefusalTarget !== null &&
+      s.byChat[liveReplyKey(sendRefusalTarget)] === true,
+  );
+  const isStreaming =
+    (composerTurn.activity !== 'idle' || cloudTurnStarting) && !pendingExit;
+  // A sent cloud Stop on a turn still starting waits for its project to
+  // wake: Stop's tooltip says so, and the status row shows it (CAN-6721).
+  const cloudStopWaitsForWake =
+    isStreaming &&
+    pendingModelChange === undefined &&
+    (cloudStop === 'stopping' || cloudStop === 'retryable') &&
+    cloudTurnStarting;
+  // A model or thinking-level change made mid-turn on a session that applies
+  // setters only from its next turn (OpenCode) shows as pending beside the
+  // controls until that turn ends.
+  const pendingTurnSettingsState = usePendingTurnSettings({
+    projectId: targetOverride?.projectId ?? selectedWorktree?.projectId,
+    worktreeId: targetOverride?.worktreeId ?? selectedWorktree?.worktreeId,
+    chatId: tab?.id,
+    turnActive: isStreaming,
+    model,
+    thinkingLevel,
+    supportedThinkingLevels,
+  });
   const handleCancelRunningChat = useCallback((): void => {
     void cancelSession(targetOverride);
   }, [cancelSession, targetOverride]);
   useCancelRunningChatShortcut({
-    enabled: isStreaming,
+    // A cloud Stop already sent waits for its turn to end.
+    enabled: isStreaming && cloudStop !== 'stopping',
     // Only the active panel owns document-level composer shortcuts. Keeping
     // this separate from `enabled` prevents panel-focus handoffs from
     // disarming a still-running chat's confirmation.
@@ -2758,6 +2980,11 @@ function ChatInputContent({
   ]);
 
   const serializedDraft = useMemo(() => serializeEditorValue(value), [value]);
+  // The composer's text as the editor holds it now (CAN-6614 Copy draft).
+  const readComposerText = useCallback(
+    (): string => serializeEditorValue(editor.children).text.trim(),
+    [editor],
+  );
   const mergedFileReferences = useMemo(
     () =>
       mergePromptAwareFileReferences(
@@ -3139,6 +3366,29 @@ function ChatInputContent({
         bannerTarget.chatId,
       ),
   );
+  // Next prompt suggestions (a setting, on by default): only a native
+  // session composer, whose chat main sends them for, offers one.
+  const promptSuggestionsEnabled = usePromptSuggestionsEnabled();
+  const promptSuggestionTarget = promptSuggestionsEnabled
+    ? sessionChatTarget
+    : null;
+  const promptSuggestionEntry = usePromptSuggestionEntry(
+    promptSuggestionTarget,
+  );
+  // A suggestion follows the turn it came from; a later send makes it stale.
+  const latestUserMessageId = useChatStore((s): string | undefined => {
+    if (!promptSuggestionTarget || !promptSuggestionEntry) return undefined;
+    const messages = s.worktreeChats[
+      `${promptSuggestionTarget.projectId}/${promptSuggestionTarget.worktreeId}`
+    ]?.tabs.find(
+      (candidate) => candidate.id === promptSuggestionTarget.chatId,
+    )?.messages;
+    if (!messages) return undefined;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === 'user') return messages[index].id;
+    }
+    return undefined;
+  });
   // A newly displayed approval card takes focus only from the body or this
   // composer with no draft (`approval-focus-policy.ts`), evaluated now.
   const canApprovalTakeComposerFocus = useCallback((): boolean => {
@@ -3258,12 +3508,16 @@ function ChatInputContent({
       modelGatewayEnforced,
     ],
   );
+  const creditNotice = creditNoticeVisibility({
+    creditHeld: tab?.queuedCreditHeld === true,
+    aiCreditsBannerVisible: billingResolution.aiCreditsBannerVisible,
+  });
   // Whether the "Using AI Credits" card will show once this chat can spend
   // credits. Credits bought from the No billing source banner are confirmed
   // in that card, and the CTA learns of a purchase before this composer's
   // eligibility read does; the banner waits for the card instead of flashing
   // its own notice first (CAN-5160).
-  const aiCreditsCardExpected = useMemo((): boolean => {
+  const aiCreditsCardExpectedWhenFunded = useMemo((): boolean => {
     const availability = providerAvailability[billingProvider];
     if (!availability || availability.creditsEligible) {
       return billingResolution.aiCreditsBannerVisible;
@@ -3287,6 +3541,10 @@ function ChatInputContent({
     billingRoutingActiveForChat,
     modelGatewayEnforced,
   ]);
+  const aiCreditsCardExpected = creditNoticeVisibility({
+    creditHeld: tab?.queuedCreditHeld === true,
+    aiCreditsBannerVisible: aiCreditsCardExpectedWhenFunded,
+  }).aiCreditsBannerVisible;
   const billingControl = useMemo<
     | {
         value: 'subscription' | 'ai-credits';
@@ -3418,20 +3676,18 @@ function ChatInputContent({
     tab?.dismissedLlmProviderUsageLimitBannerKey,
   ]);
 
-  // Reload durability for the runtime no-billing-source banner (CAN-2413). The
-  // live chat event is the primary path; this replays the per-tab flag the
-  // transcript parser set, so a restart (or a tab hydrated from disk, or an E2E
-  // seed) still shows the recovery banner instead of leaving a chat that cannot
-  // send with no explanation above the composer.
-  useEffect(() => {
-    if (!bannerTarget) return;
-    const persisted = tab?.aiCreditsNoBillingSource;
-    if (!persisted) return;
-    setNoBillingSourceBanner(bannerTarget, {
-      provider: persisted.provider,
-      detectedAt: persisted.detectedAt,
-    });
-  }, [bannerTarget, setNoBillingSourceBanner, tab?.aiCreditsNoBillingSource]);
+  const usesCommittedChatState = useChatStore(
+    (state) =>
+      bannerTarget !== null &&
+      isScopeRevisionedLive(
+        state,
+        bannerTarget.projectId,
+        bannerTarget.worktreeId,
+      ),
+  );
+  const creditRefusal =
+    tab?.aiCreditsNoBillingSource ??
+    (usesCommittedChatState ? null : undefined);
 
   // Scheduled send + resume run through the Canopy composer: available for
   // native chats and `auto` terminal chats (the scheduled prompt is routed
@@ -3708,7 +3964,7 @@ function ChatInputContent({
       setModelAndWait,
       worktreeChatTarget,
     ]);
-  const aiCreditsCardVisible = billingResolution.aiCreditsBannerVisible;
+  const aiCreditsCardVisible = creditNotice.aiCreditsBannerVisible;
   useEffect(() => {
     if (!aiCreditsCardVisible || !pendingCardFocusRef.current) return;
     pendingCardFocusRef.current = false;
@@ -4592,12 +4848,33 @@ function ChatInputContent({
   const [cloudUploadsByTab, setCloudUploadsByTab] = useState<
     Readonly<Record<string, number>>
   >({});
+  // Also uploads this composer didn't start, such as a deleted chat's files
+  // attaching again to a new one (CAN-6614).
+  const sharedCloudUploading = useCloudChatUploading(
+    webCoreProjectId !== undefined &&
+      composerWorktreeId !== undefined &&
+      tabId !== undefined
+      ? {
+          projectId: webCoreProjectId,
+          worktreeId: composerWorktreeId,
+          chatId: tabId,
+        }
+      : null,
+  );
   const cloudUploading =
-    tabId !== undefined && (cloudUploadsByTab[tabId] ?? 0) > 0;
+    sharedCloudUploading ||
+    (tabId !== undefined && (cloudUploadsByTab[tabId] ?? 0) > 0);
+  // A cloud task deleted on another device takes no message; its notice
+  // offers a new chat with the draft instead (CAN-6614).
+  const cloudChatDeleted = useCloudChatDeleted(
+    webCoreProjectId,
+    composerWorktreeId,
+    tabId,
+  );
 
   const handleSend = useCallback(() => {
     if (!editingState && tab?.firstSendPreparing) return;
-    if (cloudUploading) return;
+    if (cloudUploading || cloudChatDeleted) return;
     // Slate mutates the editor tree before React commits the corresponding
     // `value` update. A queued-message Save can therefore run in the same
     // interaction window as the final edit and must read the live tree rather
@@ -5103,6 +5380,7 @@ function ChatInputContent({
     );
   }, [
     cloudUploading,
+    cloudChatDeleted,
     questionPromptOpen,
     questionPrompt.busy,
     questionPrompt.disconnected,
@@ -5411,12 +5689,12 @@ function ChatInputContent({
     (newValue: Descendant[]): void => {
       // Caret movement has only set_selection operations. Programmatic
       // restore/reset swaps children directly and calls onChange with none.
-      if (
+      const contentChanged =
         editor.operations.length === 0 ||
         editor.operations.some(
           (operation) => operation.type !== 'set_selection',
-        )
-      ) {
+        );
+      if (contentChanged) {
         draftRevisionRef.current += 1;
       }
       // A user edit, even one deleted again, makes the cleared composer theirs:
@@ -5439,10 +5717,16 @@ function ChatInputContent({
         messageHistoryNavigationRef.current = null;
       }
       setValue([...newValue]);
-      if (tabId && !isEditingQueued && readTryItDraft(tabId))
-        useChatStore
-          .getState()
-          .saveTabDraft(tabId, getDraftForSave(tabId, newValue));
+      if (tabId && !isEditingQueued) {
+        if (readTryItDraft(tabId))
+          useChatStore
+            .getState()
+            .saveTabDraft(tabId, getDraftForSave(tabId, newValue));
+        else if (contentChanged)
+          useChatStore
+            .getState()
+            .scheduleTabDraftWrite(tabId, getDraftForSave(tabId, newValue));
+      }
     },
     [
       editor,
@@ -6446,11 +6730,62 @@ function ChatInputContent({
     [confirmComposerTurn, verifyStreamingTabs],
   );
 
+  // Offered only where the default placeholder would show, so it never hides
+  // a question, plan, approval or other prompt the composer is waiting on.
+  const promptSuggestion = offeredPromptSuggestion({
+    suggestion: promptSuggestionEntry?.suggestion,
+    dismissed: promptSuggestionEntry?.dismissed ?? false,
+    latestUserMessageId,
+    // Untrimmed: Slate hides the placeholder for any text, whitespace too, and
+    // Tab must not insert a suggestion the person can no longer see.
+    draftEmpty:
+      serializedDraft.text.length === 0 &&
+      serializedDraft.fileReferences.length === 0 &&
+      pendingAttachments.length === 0,
+    showsDefaultPlaceholder:
+      !voiceRecording &&
+      voice.state === 'idle' &&
+      !questionPromptOpen &&
+      !planCardOpen &&
+      !isEditingQueued &&
+      !isTerminalMode &&
+      !pendingExit &&
+      !approvalPending &&
+      !isStreaming &&
+      !isAccountHarness &&
+      !readOnly &&
+      !sandbox,
+  });
+
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     // The `!` typeahead runs before send: Enter/Tab pick a script while it is
     // open, and an unmatched draft still sends raw.
     if (scriptTypeahead.handleKeyDown(e)) return;
     if (composerMenu.handleKeyDown(e)) return;
+    // Menus had the key first, so their Tab and Escape still work. With no
+    // suggestion offered, Tab keeps moving focus.
+    const suggestionAction = promptSuggestionKeyAction(
+      {
+        key: e.key,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        isComposing: e.nativeEvent.isComposing,
+      },
+      promptSuggestion !== null && promptSuggestionTarget !== null,
+    );
+    if (suggestionAction === 'accept' && promptSuggestion !== null) {
+      e.preventDefault();
+      dictationInputModeRef.current = 'typed';
+      Transforms.insertText(editor, promptSuggestion);
+      return;
+    }
+    if (suggestionAction === 'dismiss' && promptSuggestionTarget !== null) {
+      e.preventDefault();
+      usePromptSuggestionStore.getState().dismiss(promptSuggestionTarget);
+      return;
+    }
     // Cancel an active dictation session when the user hits Escape, and keep
     // any keystroke from staying marked as voice input.
     if (e.key === 'Escape' && voice.state !== 'idle') {
@@ -6652,6 +6987,19 @@ function ChatInputContent({
             >
               Your last message was not delivered.
             </Notice>
+          ) : tab?.importedFrom !== undefined ? (
+            // A chat imported as history: say where it came from, not that
+            // it was archived.
+            <Notice
+              intent="neutral"
+              role="none"
+              title={importedChatNoticeTitle(tab.importedFrom)}
+              {...(handoffError ? { detail: handoffError } : {})}
+              actions={readOnlySessionActions}
+              data-testid="read-only-imported-notice"
+            >
+              Messages are read-only. Hand off to keep working from here.
+            </Notice>
           ) : (
             <Notice
               intent="neutral"
@@ -6712,7 +7060,10 @@ function ChatInputContent({
                         ? 'Type to queue a follow-up message…'
                         : isAccountHarness
                           ? 'Send a message'
-                          : chatPlaceholder
+                          : (promptSuggestion ?? chatPlaceholder)
+      }
+      placeholderSuffix={
+        promptSuggestion !== null ? <PromptSuggestionKeyHint /> : undefined
       }
     />
   );
@@ -6948,6 +7299,11 @@ function ChatInputContent({
               kind="stop"
               onStop={(): void => void cancelSession(targetOverride)}
               pending={pendingModelChange !== undefined}
+              stopping={cloudStop === 'stopping' || cloudStop === 'retryable'}
+              stopRetryable={cloudStop === 'retryable'}
+              // A turn still starting ends only once its project wakes: the
+              // stop says what it waits for (CAN-6721).
+              stopWaitsForWake={cloudTurnStarting}
               armed={cancelShortcutArmed}
               shortcutReady={composerShortcutsEnabled}
               dataTestId="chat-stop-generation"
@@ -6967,7 +7323,8 @@ function ChatInputContent({
                 !serializedDraft.text.trim() ||
                 isResourceGuardBlocked ||
                 tab?.firstSendPreparing === true ||
-                cloudUploading
+                cloudUploading ||
+                cloudChatDeleted
               }
               pending={pendingModelChange !== undefined}
               {...(isResourceGuardBlocked
@@ -6976,7 +7333,9 @@ function ChatInputContent({
                   }
                 : cloudUploading
                   ? { blockedReason: 'Attachments are uploading' }
-                  : {})}
+                  : cloudChatDeleted
+                    ? { blockedReason: 'This chat was deleted' }
+                    : {})}
             />
           </>
         )
@@ -7023,13 +7382,46 @@ function ChatInputContent({
           corners, and collapses when none render. Every notice is the shared
           `Notice` primitive. */}
       <ComposerNoticeStack data-testid="chat-input-notices">
+        {unbillableModelSwitch ? (
+          <ModelUnavailableNotice
+            testId="chat-input-model-unavailable"
+            modelLabel={unbillableModelSwitch.modelLabel}
+            reason={unbillableModelSwitch.reason}
+            switchModelLabel={unbillableModelSwitch.switchModelLabel}
+            onSwitch={(): void =>
+              handleModelChange(unbillableModelSwitch.switchModel)
+            }
+          />
+        ) : null}
         {/* A cloud task the web core refused to create says why first, with
             Try again (CAN-6098). */}
         {webCoreProjectId !== undefined && composerWorktreeId !== undefined ? (
           <CloudTaskCreationNotice
             projectId={webCoreProjectId}
             worktreeId={composerWorktreeId}
+            draftText={isEditingQueued ? '' : serializedDraft.text.trim()}
+            readDraftText={readComposerText}
           />
+        ) : null}
+        {/* A cloud task deleted on another device keeps its draft and
+            attachments, and offers a new chat with them (CAN-6614). */}
+        {webCoreProjectId !== undefined && composerWorktreeId !== undefined ? (
+          <CloudChatDeletedNotice
+            projectId={webCoreProjectId}
+            worktreeId={composerWorktreeId}
+            tabId={tabId}
+            composerHasText={
+              !isEditingQueued && serializedDraft.text.trim() !== ''
+            }
+          />
+        ) : null}
+        {webCoreProjectId !== undefined ? (
+          <CloudChatFilesNotAttachedNotice tabId={tabId} />
+        ) : null}
+        {/* A cloud chat whose models could not be read says so, with Try
+            again, instead of a raw model id and a disabled Send (CAN-6615). */}
+        {webCoreProjectId !== undefined ? (
+          <WebCoreModelCatalogNotice projectId={webCoreProjectId} />
         ) : null}
         {/* A cloud send the web core refused: the draft is back above, and
             this says why (CAN-6364), as the cloud chat page does. */}
@@ -7037,14 +7429,25 @@ function ChatInputContent({
         sendRefusalTarget !== null &&
         sendRefusal !== undefined ? (
           <Notice
+            errorSource="chat-input-send-refused"
             intent="destructive"
             data-testid="chat-input-send-refused"
             onDismiss={(): void => dismissSendRefusal(sendRefusalTarget)}
             dismissLabel="Dismiss"
           >
-            {sendRefusal
-              ? `Your message wasn't sent: ${sendRefusal}`
-              : "Your message wasn't sent."}
+            {composerRefusalNotice(sendRefusal)}
+          </Notice>
+        ) : null}
+        {/* A cloud Stop that couldn't name its turn: the turn may still run,
+            and Stop stays to try again (CAN-6592). It says "select" rather
+            than "click" so it reads for Esc and touch too. */}
+        {!isEditingQueued && isStreaming && cloudStop === 'not_stopped' ? (
+          <Notice
+            errorSource="chat-input-stop-failed"
+            intent="destructive"
+            data-testid="chat-input-stop-failed"
+          >
+            {"Couldn't stop the reply yet. Select Stop to try again."}
           </Notice>
         ) : null}
         {!isEditingQueued && attachmentProblems.length > 0 ? (
@@ -7059,6 +7462,32 @@ function ChatInputContent({
                 {problem}
               </span>
             ))}
+          </Notice>
+        ) : null}
+        {!isEditingQueued && tabId !== undefined && draftRestoreFailed ? (
+          <Notice
+            intent="attention"
+            data-testid="chat-input-draft-restore-failed"
+            title={DRAFT_RESTORE_FAILED_TITLE}
+            onDismiss={(): void =>
+              useChatStore.getState().dismissTabDraftRestoreFailure(tabId)
+            }
+            dismissLabel={DRAFT_NOTICE_DISMISS_LABEL}
+          >
+            {DRAFT_RESTORE_FAILED_MESSAGE}
+          </Notice>
+        ) : null}
+        {!isEditingQueued && draftSaveFailed ? (
+          <Notice
+            intent="attention"
+            data-testid="chat-input-draft-save-failed"
+            title={DRAFT_SAVE_FAILED_TITLE}
+            onDismiss={(): void =>
+              useChatStore.getState().dismissTabDraftSaveFailure()
+            }
+            dismissLabel={DRAFT_NOTICE_DISMISS_LABEL}
+          >
+            {draftSaveFailedMessage()}
           </Notice>
         ) : null}
         {/* A Home first send whose model was refused (CAN-5021). First in
@@ -7126,6 +7555,7 @@ function ChatInputContent({
           tab?.status === 'error' &&
           isClaudeTurnLimitMessage(tab.error) && (
             <Notice
+              errorSource="claude-turn-limit-notice"
               intent="destructive"
               title="Claude turn limit reached"
               data-testid="claude-turn-limit-notice"
@@ -7239,7 +7669,7 @@ function ChatInputContent({
                       billingResolution.framework === 'ai-credits',
                   }
                 : {})}
-              aiCreditsCardVisible={billingResolution.aiCreditsBannerVisible}
+              aiCreditsCardVisible={aiCreditsCardVisible}
               modelRoutability={creditsModelRoutability}
               {...(chatModelLabel !== undefined
                 ? { modelLabel: chatModelLabel }
@@ -7284,9 +7714,10 @@ function ChatInputContent({
             />
             <TransientRetryBanner target={bannerTarget} />
             <AiCreditsRoutingStatusBanner
+              persistedRefusal={creditRefusal}
               target={bannerTarget}
               model={modelForBilling}
-              active={billingResolution.aiCreditsBannerVisible}
+              active={aiCreditsCardVisible}
               turnActive={isStreaming}
               {...(billingProvider === 'claude' || billingProvider === 'codex'
                 ? { provider: billingProvider }
@@ -7297,7 +7728,7 @@ function ChatInputContent({
               {...(billingAccountChangedAt !== undefined
                 ? { accountChangedAt: billingAccountChangedAt }
                 : {})}
-              {...(billingResolution.aiCreditsBannerVisible &&
+              {...(aiCreditsCardVisible &&
               interruptedTurnPending &&
               sessionChatTarget !== null
                 ? {
@@ -7359,19 +7790,29 @@ function ChatInputContent({
                 `gatewayOnlyModel` uses the same helper as the billing toggle's
                 `lockKind: 'gateway-only-model'`, so the banner and the toggle
                 never disagree about whether a native login is a remedy. */}
-            <NoBillingSourceBanner
-              provider={billingProvider}
-              availability={providerAvailability[billingProvider]}
-              orgLapseVisible={orgLapseVisible}
-              target={bannerTarget}
-              queuedCreditHeld={tab?.queuedCreditHeld}
-              gatewayOnlyModel={isGatewayOnlyModel(modelForBilling)}
-              effectiveBillingFramework={billingResolution.framework ?? null}
-              noDispatchableModel={noDispatchableModel}
-              turnActive={isStreaming}
-              aiCreditsCardVisible={billingResolution.aiCreditsBannerVisible}
-              aiCreditsCardExpected={aiCreditsCardExpected}
-            />
+            {/* An AI gateway model bills to the member's own gateway key, so
+                neither a Claude sign-in nor AI Credits is its remedy; a key
+                problem has its own gateway key banner. And while the
+                model-unavailable notice above offers the user's own gateway
+                model, it is the one notice for this dead end; the locked rows'
+                recovery still offers sign-in and credits (CAN-6444). */}
+            {isOrgGatewayRoute(modelForBilling) ||
+            unbillableModelSwitch ? null : (
+              <NoBillingSourceBanner
+                provider={billingProvider}
+                availability={providerAvailability[billingProvider]}
+                orgLapseVisible={orgLapseVisible}
+                target={bannerTarget}
+                queuedCreditHeld={creditNotice.queuedCreditNoticeVisible}
+                persistedRefusal={creditRefusal}
+                gatewayOnlyModel={isGatewayOnlyModel(modelForBilling)}
+                effectiveBillingFramework={billingResolution.framework ?? null}
+                noDispatchableModel={noDispatchableModel}
+                turnActive={isStreaming}
+                aiCreditsCardVisible={aiCreditsCardVisible}
+                aiCreditsCardExpected={aiCreditsCardExpected}
+              />
+            )}
           </>
         )}
         {/* An advanced-model purchase still finishing in the browser
@@ -7662,6 +8103,9 @@ function ChatInputContent({
       {!isEditingQueued && (
         <ComposerStatusRow
           rowRef={statusRowRef}
+          // While a cloud Stop waits for its project to wake, the row says
+          // so in text under Stop (CAN-6721).
+          stopWaitsForWake={cloudStopWaitsForWake}
           // The model and its effort lead the row and take its free width,
           // truncating as it narrows; the permission level and the usage
           // meter trail it at their own width.
@@ -7678,6 +8122,7 @@ function ChatInputContent({
                   // A cloud chat lists its web core catalog in the shared
                   // picker the web's cloud chats use (CAN-6175 R5).
                   <PortalModelPicker
+                    allowLegacyAgentRows={false}
                     statusRow
                     catalog={webCoreModels}
                     {...(model === undefined ? {} : { currentModel: model })}
@@ -7697,6 +8142,12 @@ function ChatInputContent({
                 ) : (
                   <ModelPicker
                     browserLayout="harnesses"
+                    separateAgents
+                    selectionModel={
+                      autoSelected
+                        ? undefined
+                        : (pendingModelChange?.model ?? model)
+                    }
                     currentModel={
                       pendingModelChange?.model ?? model ?? fallbackModel
                     }
@@ -7706,9 +8157,11 @@ function ChatInputContent({
                       ? { inheritedDefaultModel }
                       : {})}
                     allowCursor={allowCursor}
+                    allowAntigravity={allowCursor && !isAppAdvisorComposer}
                     allowCopilot={allowCursor}
                     allowOpenCode={allowCursor}
                     {...(tab?.id ? { recoveryChatKey: tab.id } : {})}
+                    recoveryTarget={recoveryTarget}
                     onRecoveryCommit={handleRecoveryCommit}
                     {...(creditsScope ? { aiCreditsScope: creditsScope } : {})}
                     lockedProvider={lockedProvider}
@@ -7793,6 +8246,13 @@ function ChatInputContent({
                       }
                     : {})}
                 />
+              ) : null}
+              {pendingTurnSettingsState ? (
+                // The row's own gap is zero (each control pads itself), so
+                // the cue carries its lead-in on a wrapper, never the badge.
+                <span className="flex shrink-0 pl-2">
+                  <PendingTurnSettingsHint pending={pendingTurnSettingsState} />
+                </span>
               ) : null}
               {/* Multi-repo projects: the folder the chat runs in, beside
                   effort. Its name truncates with the model's as the row
@@ -8090,7 +8550,8 @@ function ChatInputContent({
         />
       )}
 
-      {/* Cross-harness continue confirmation. Hosted here rather than inside
+      {/* Cross-provider switch confirmation (CAN-6445): switch this chat in
+          place, or for Claude and Codex continue in a new chat. Hosted here rather than inside
           ModelPicker because the picker is shared with pipelines, hooks,
           automations, the Agent base-model modal and the Home composer, none of
           which have a chat to continue. Opened in the composer's own document
@@ -8101,28 +8562,36 @@ function ChatInputContent({
           the only name they have any reason to recognize, so the dialog is
           written entirely in terms of it. Keep provider labels out of here. */}
       {continueTargetModel !== undefined &&
-        continueTargetProvider !== undefined &&
+        continuePick !== undefined &&
         lockedProvider !== undefined && (
           <ConfirmDialog
-            dataTestId="continue-on-provider-dialog"
-            confirmTestId="continue-on-provider-confirm"
-            title={`Start a new chat with ${getModelDisplayName(continueTargetModel)}?`}
+            dataTestId="switch-chat-provider-dialog"
+            confirmTestId="switch-chat-provider-confirm"
+            title={`Switch this chat to ${getModelDisplayName(continueTargetModel)}?`}
             message={
               <span className="flex flex-col gap-2">
                 <span>
-                  {`This chat isn't compatible with ${getModelDisplayName(continueTargetModel)}, so ${brandText.appName} will start a new chat with it and bring over a summary of what you've done so far.`}
+                  {`${getModelDisplayName(continueTargetModel)} picks up this chat with the conversation so far.`}
                 </span>
-                <span>
-                  Your files aren't changed, and this chat stays open.
-                </span>
+                <span>Your files aren't changed.</span>
               </span>
             }
-            confirmLabel="Start new chat"
+            confirmLabel="Switch chat"
             busy={continueBusy}
-            busyLabel="Setting up…"
+            busyLabel={continueAction === 'fork' ? 'Setting up…' : 'Switching…'}
             errorMessage={continueError}
-            onConfirm={handleConfirmContinue}
+            onConfirm={handleConfirmSwitch}
             onCancel={closeContinueDialog}
+            {...(isContinuableHarnessPair(lockedProvider, continuePick.provider)
+              ? {
+                  // The explicit fork: a new chat that starts from a summary.
+                  secondaryAction: {
+                    label: 'Start new chat',
+                    onSelect: handleConfirmContinue,
+                    testId: 'continue-on-provider-confirm',
+                  },
+                }
+              : {})}
             ownerDocument={getDocument(composerRootRef.current)}
           />
         )}

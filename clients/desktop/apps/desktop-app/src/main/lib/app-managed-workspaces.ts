@@ -18,13 +18,13 @@ import {
 } from '@canopy/desktop-shared/types';
 import { hasMigrationRun, markMigrationRun } from './migrations';
 import {
+  w5RecordReadPaths,
   getAppManagedChatWorkspaceDir,
   getAppAdvisorHomeDir,
   getCodeReviewChatsDir,
   getDataDir,
   getLegacyCodeReviewChatsDir,
   getPipelineEditorHomeDir,
-  getWorkspaceIndexFilePath,
 } from './paths';
 import { isErrnoException, isRecord } from './type-guards';
 
@@ -99,7 +99,7 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function isIndexedUserWorkspace(workspaceId: string): Promise<boolean> {
   try {
-    const raw = await readFile(getWorkspaceIndexFilePath(), 'utf8');
+    const raw = await readFile(w5RecordReadPaths.index(), 'utf8');
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || !Array.isArray(parsed.workspaces)) {
       return false;

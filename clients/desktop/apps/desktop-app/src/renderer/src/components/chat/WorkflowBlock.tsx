@@ -89,7 +89,7 @@ export function WorkflowBlock({
         )}
       </button>
       {expanded && (
-        <div className="border-t px-3 py-2">
+        <Surface variant="section" boundary="top" padding="section-compact">
           {!launched ? (
             <div className="py-2 text-xs fg-secondary">Launching workflow…</div>
           ) : (
@@ -99,7 +99,7 @@ export function WorkflowBlock({
               loading={loading}
             />
           )}
-        </div>
+        </Surface>
       )}
       {result?.fullOutputRef && result.messageId && result.toolUseId && (
         // The run view above owns the visible output; the viewer only adds the

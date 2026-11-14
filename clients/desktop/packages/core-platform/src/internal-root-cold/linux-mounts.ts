@@ -19,6 +19,10 @@ interface LinuxColdPathMapper {
     device: string,
     statDevice: string,
   ) => readonly LinuxColdPathIdentity[];
+  readonly deletedMapping: (
+    file: string,
+    device: string,
+  ) => readonly LinuxColdPathIdentity[];
 }
 interface Mount {
   readonly id: string;
@@ -241,6 +245,21 @@ export function createLinuxColdPathMapper(
           result.push(candidate);
       }
       return result;
+    },
+    deletedMapping: (
+      file: string,
+      device: string,
+    ): readonly LinuxColdPathIdentity[] => {
+      if (visible(file).device !== device)
+        throw new Error('Deleted mapping mount device is unresolved');
+      // No mount ID: include covered bind mounts, not only the visible pathname.
+      return mounts
+        .filter((mount) => mount.device === device && under(file, mount.point))
+        .map((mount) => {
+          if (!hasRoot(mount))
+            throw new Error('Deleted mapping mount ancestry is unresolved');
+          return coordinate(mount, file);
+        });
     },
     affected: (root: string): readonly LinuxColdPathIdentity[] => {
       const result = [mapPath(root)];

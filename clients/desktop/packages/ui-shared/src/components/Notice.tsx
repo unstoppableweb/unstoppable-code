@@ -12,6 +12,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
+import type { AppErrorCode } from '@canopy/protocol/app-errors';
 import {
   CircleCheckIcon,
   CloseMediumIcon,
@@ -193,12 +194,11 @@ export type NoticeActionsPlacement = 'trailing' | 'below';
 const NARROW_UNDER_DISMISS =
   '@max-sm/notice:-mr-9 @max-sm/notice:grow @max-sm/notice:max-w-none';
 
-export interface NoticeProps extends Omit<
+interface NoticeContentProps extends Omit<
   HTMLAttributes<HTMLDivElement>,
   'title' | 'children'
 > {
   readonly ref?: Ref<HTMLDivElement>;
-  intent?: NoticeIntent;
   /**
    * Leading glyph. Omit for the intent's default app icon, pass `null`
    * to render no icon column at all (status lines that need no emphasis).
@@ -242,6 +242,14 @@ export interface NoticeProps extends Omit<
   onDismiss?: () => void;
   /** Accessible name for the dismiss control. Defaults to `Dismiss`. */
   dismissLabel?: string;
+  /**
+   * Takes the dismiss control's accessible name from this element, over
+   * `dismissLabel`, for a name carrying user-authored text: session replay
+   * records `aria-label` verbatim, but keeps nothing of a blocked element.
+   */
+  dismissLabelledBy?: string;
+  /** Holds the dismiss control while its request is in flight. */
+  dismissDisabled?: boolean;
   dismissTestId?: string;
   /**
    * Live-region role. Defaults to `alert` for `destructive` (a failure the
@@ -284,6 +292,8 @@ export interface NoticeProps extends Omit<
    * reported, sets this so the crash does not count twice.
    */
   errorRecordingDisabled?: boolean;
+  /** Catalog code when the caller knows why this displayed failure occurred. */
+  displayErrorCode?: AppErrorCode;
   /**
    * The tray's hairline edge. `neutral` everywhere except `ErrorBanner`, the
    * one surface allowed a destructive edge (docs/design/feedback.md#notice).
@@ -291,6 +301,18 @@ export interface NoticeProps extends Omit<
    */
   edge?: NoticeEdge;
 }
+
+/** Destructive notices name a stable operation in telemetry. */
+export type NoticeProps = NoticeContentProps &
+  (
+    | { intent?: Exclude<NoticeIntent, 'destructive'>; errorSource?: string }
+    | { intent?: NoticeIntent; errorSource: string }
+    | {
+        intent?: NoticeIntent;
+        errorSource?: never;
+        errorRecordingDisabled: true;
+      }
+  );
 
 /** Whether a notice's title leads the message's line or sits above it. */
 export type NoticeTitleLayout = 'inline' | 'stacked';
@@ -499,12 +521,16 @@ export function Notice({
   actionsPlacement = 'trailing',
   onDismiss,
   dismissLabel = 'Dismiss',
+  dismissLabelledBy,
+  dismissDisabled = false,
   dismissTestId,
   role,
   liveRegionScope = 'notice',
   shape,
   surface = 'tray',
   titleLayout = 'inline',
+  errorSource,
+  displayErrorCode,
   errorRecordingChokePoint = 'notice',
   errorRecordingDisabled = false,
   edge = 'neutral',
@@ -528,11 +554,15 @@ export function Notice({
   // already recorded that event.
   const recordsError =
     intent === 'destructive' && !toastShape && !errorRecordingDisabled;
-  const copyRef = useNoticeErrorRecording(
-    recordsError,
-    errorRecordingChokePoint,
-    recordsError ? [title, children, detail].map(nodeText).join('\u0000') : '',
-  );
+  const copyRef = useNoticeErrorRecording({
+    enabled: recordsError,
+    chokePoint: errorRecordingChokePoint,
+    identifier: errorSource,
+    textKey: recordsError
+      ? [title, children, detail].map(nodeText).join('\u0000')
+      : '',
+    displayErrorCode,
+  });
   const resolvedIcon = icon === undefined ? defaultIcon(intent) : icon;
   const resolvedRole = role ?? (intent === 'destructive' ? 'alert' : 'status');
   const live = resolvedRole !== 'none';
@@ -717,7 +747,9 @@ export function Notice({
           size="sm"
           iconOnly
           onClick={onDismiss}
+          disabled={dismissDisabled}
           aria-label={dismissLabel}
+          aria-labelledby={dismissLabelledBy}
           data-testid={dismissTestId}
           className={toastShape ? 'mt-px' : pullControlsIn ? '-mr-1' : ''}
         >

@@ -1,7 +1,6 @@
 import { useState, type JSX } from 'react';
 import {
   Button,
-  ChatLookProvider,
   PlanCopyAction,
   STEP_GROUP_BODY_CLASS,
   STEP_ROW_BODY_CLASS,
@@ -102,16 +101,7 @@ export function PlanCopyActionSpecimen(): JSX.Element {
               write={COPY_FAILS}
             />
           </SpecimenCell>
-          <SpecimenCell label="Classic chat look: footer icon">
-            <ChatLookProvider value="classic">
-              <PlanCopyAction
-                state={READY}
-                appearance="footer"
-                dataTestId="lab-plan-copy-classic"
-                write={COPIES_OK}
-              />
-            </ChatLookProvider>
-          </SpecimenCell>
+
           <SpecimenCell label="Focused (keyboard ring)">
             <FocusOnMount>
               <PlanCopyAction
@@ -434,10 +424,10 @@ export function StepRowSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Tool call rows (step) under each chat look">
+      <SpecimenPanel title="Tool call rows (step)">
         <SpecimenGrid min={260}>
-          <SpecimenCell label="Clean look: words on a badge line">
-            <ChatLookProvider value="clean">
+          <SpecimenCell label="Words on a badge line">
+            <>
               <div className="w-full min-w-0">
                 <StepRow
                   step
@@ -446,19 +436,7 @@ export function StepRowSpecimen(): JSX.Element {
                   detail="packages/ui-shared/src/components/chat/StepRow.tsx"
                 />
               </div>
-            </ChatLookProvider>
-          </SpecimenCell>
-          <SpecimenCell label="Classic look: one truncating line">
-            <ChatLookProvider value="classic">
-              <div className="w-full min-w-0">
-                <StepRow
-                  step
-                  icon={stepKindIcon('read')}
-                  label="Read"
-                  detail="packages/ui-shared/src/components/chat/StepRow.tsx"
-                />
-              </div>
-            </ChatLookProvider>
+            </>
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

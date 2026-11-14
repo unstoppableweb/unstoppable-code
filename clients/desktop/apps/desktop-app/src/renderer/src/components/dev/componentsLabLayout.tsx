@@ -408,6 +408,15 @@ export function TooltipSpecimen(): JSX.Element {
             size="compact"
           />
         </SpecimenCell>
+        <SpecimenCell label="CopyButton, longer copied label">
+          <CopyButton
+            value="feat/components-lab"
+            label="Copy"
+            copiedLabel="Copied"
+            variant="secondary"
+            size="compact"
+          />
+        </SpecimenCell>
       </SpecimenGrid>
     </SpecimenPanel>
   );

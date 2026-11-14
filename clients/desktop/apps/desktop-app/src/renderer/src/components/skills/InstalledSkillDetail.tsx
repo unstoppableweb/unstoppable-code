@@ -248,8 +248,18 @@ export function InstalledSkillDetail({
           // either takes the place of the update notice.
           refreshError || editWithAI.error ? (
             <div className="flex flex-col gap-2">
-              {refreshError && <ErrorBanner error={refreshError} />}
-              {editWithAI.error && <ErrorBanner error={editWithAI.error} />}
+              {refreshError && (
+                <ErrorBanner
+                  errorSource="installed-skill-detail-refresh"
+                  error={refreshError}
+                />
+              )}
+              {editWithAI.error && (
+                <ErrorBanner
+                  errorSource="installed-skill-detail-edit-with-ai"
+                  error={editWithAI.error}
+                />
+              )}
             </div>
           ) : undefined
         }

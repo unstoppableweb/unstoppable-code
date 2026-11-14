@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { randomBytes } from 'node:crypto';
 import type { DeviceKind } from '@canopy/protocol/device-relay';
 import type { HostedDelegation } from '@canopy/protocol/remote-control';
@@ -41,8 +42,20 @@ import {
   type MessageCodecOptions,
 } from './message-codec';
 
+export type RelayFrameSendFailure = 'disconnected' | 'queue-full';
+
+export interface RelayFrameSendOptions {
+  readonly includeFailureReason: true;
+}
+
 /** Minimal view of the relay connection the session layer needs. */
 export interface RelayTransport {
+  /** Boolean-only implementations can ignore options and return false. */
+  sendFrame(
+    peerDeviceId: string,
+    payload: Uint8Array,
+    options: RelayFrameSendOptions,
+  ): boolean | RelayFrameSendFailure;
   sendFrame(peerDeviceId: string, payload: Uint8Array): boolean;
   onFrame(
     listener: (peerDeviceId: string, payload: Buffer) => void,
@@ -730,17 +743,32 @@ export class RemoteSessionManager {
     return new Promise<SecureSession>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.initiators.delete(key);
-        reject(new Error('The other computer did not answer the connection.'));
+        reject(
+          classifyError(
+            new Error('The other computer did not answer the connection.'),
+            'external.service_unavailable',
+          ),
+        );
       }, this.handshakeTimeoutMs);
       this.initiators.set(key, { handshake, resolve, reject, timer });
       const sent = this.options.transport.sendFrame(
         options.peerDeviceId,
         encodeEnvelope('hello1', sessionId, jsonBody(handshake.start())),
+        { includeFailureReason: true },
       );
-      if (!sent) {
+      if (sent !== true) {
         clearTimeout(timer);
         this.initiators.delete(key);
-        reject(new Error('Not connected to the relay.'));
+        const error = new Error(
+          sent === 'queue-full'
+            ? 'Relay send queue is full.'
+            : 'Not connected to the relay.',
+        );
+        reject(
+          sent === 'disconnected'
+            ? classifyError(error, 'external.offline')
+            : error,
+        );
       }
     });
   }
@@ -1200,7 +1228,12 @@ export class RemoteSessionManager {
       if (!key.startsWith(`${peer}:`)) continue;
       clearTimeout(pending.timer);
       this.initiators.delete(key);
-      pending.reject(new Error(message));
+      const error = new Error(message);
+      pending.reject(
+        reason === 'peer_offline'
+          ? classifyError(error, 'external.offline')
+          : error,
+      );
     }
     for (const [key, pending] of Array.from(this.responders)) {
       if (!key.startsWith(`${peer}:`)) continue;

@@ -9,7 +9,6 @@ import {
   w5RecordPortTransport,
 } from '../lib/w5-daemon-record-store';
 import { countingW5HostPort } from '../lib/w5-work-counters';
-import { getW5CommitLogHost } from '../w5-commit-log/commit-log-host';
 import { startW5RecordPortLoopback } from './w5-record-port-loopback';
 
 /*
@@ -74,7 +73,7 @@ export async function startW5StoreArm(arm: string): Promise<W5StoreArmStart> {
  */
 export async function installW5StoreArm(
   arm: string,
-  getHost: () => W5CommitLogHostPort = getW5CommitLogHost,
+  getHost?: () => W5CommitLogHostPort,
 ): Promise<W5StoreArmHandle | null> {
   if (!isE2eBuild())
     throw new Error('The W5 store arm exists only in E2E builds.');
@@ -87,6 +86,10 @@ export async function installW5StoreArm(
       'The W5 store performance arm cannot run on a W5 flip build; the startup handoff owns the store.',
     );
   if (arm === 'in-process') return null;
+  if (!getHost)
+    throw new Error(
+      'An explicit test host is required; ordinary in-process hosting is retired.',
+    );
   const loopback = await startW5RecordPortLoopback(
     w5StoreArmAuthorityOptions(countingW5HostPort(getHost())),
   );

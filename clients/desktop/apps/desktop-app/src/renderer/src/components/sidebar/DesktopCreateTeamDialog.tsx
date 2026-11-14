@@ -4,6 +4,7 @@ import { organizationSettingsPath } from '@canopy/ui-app';
 import { InviteToOrganizationDialog } from '@canopy/ui-app/sharing/InviteToOrganizationDialog';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { desktopPersonalOrganizationUpgradePort } from '../../lib/personal-organization-upgrade-port';
+import { refreshCanopyCloudAccountData } from '../../lib/canopyCloudAccountChange';
 import { openSettingsPathOrWeb } from '../../lib/navigation/settings-destinations';
 
 export interface DesktopCreateTeamDialogProps {
@@ -51,6 +52,15 @@ export function DesktopCreateTeamDialog({
       accountKey={accountId}
       recovery={recovery}
       inviteRequired={inviteRequired}
+      readRestartPersonalOrganizationId={async () => {
+        const result = await refreshCanopyCloudAccountData();
+        return result.status === 'refreshed' &&
+          result.reason === 'same-account-refresh' &&
+          result.account.accountProbeApplied === true &&
+          result.account.account?.id === accountId
+          ? (result.account.personalOrganizationId ?? null)
+          : null;
+      }}
       onPromoted={() => {
         window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
         onPromoted?.();

@@ -5,10 +5,32 @@ import type {
   ChatHistoryProfileInput,
   ChatHistoryProjectInput,
 } from '../memory/local/chat-history-profile';
+import { preferredSession } from './normalize';
 import type { DiscoveredRoot, DiscoveredSession } from './types';
 
-function sessionKey(session: DiscoveredSession): string {
-  return `${session.provider}:${session.id}`;
+/**
+ * One native session per id, chosen as the normalizer chooses a candidate's
+ * row: a T3 Code thread and the Codex, Claude, or OpenCode session it is
+ * backed by share an id and are one conversation, named by T3.
+ */
+function distinctNativeSessions(
+  roots: readonly DiscoveredRoot[],
+): DiscoveredSession[] {
+  const byId = new Map<string, DiscoveredSession>();
+  for (const root of roots) {
+    for (const session of root.sessions) {
+      if (!session.native) continue;
+      const existing = byId.get(session.id);
+      if (!existing) {
+        byId.set(session.id, session);
+        continue;
+      }
+      const kept = preferredSession(existing, session);
+      const other = kept === existing ? session : existing;
+      byId.set(session.id, { ...kept, title: kept.title ?? other.title });
+    }
+  }
+  return Array.from(byId.values());
 }
 
 function projectsWithHistory(
@@ -51,8 +73,8 @@ function projectsWithHistory(
       chatCount: candidate.sessionCount,
     });
     for (const session of sessionsByCandidate.get(candidate.id) ?? []) {
-      if (!projectBySession.has(sessionKey(session))) {
-        projectBySession.set(sessionKey(session), candidate.displayName);
+      if (!projectBySession.has(session.id)) {
+        projectBySession.set(session.id, candidate.displayName);
       }
     }
   }
@@ -79,11 +101,8 @@ export function collectChatHistoryProfileInput(options: {
     options.privateRoots ?? [],
   );
   const chats: ChatHistoryChatInput[] = [];
-  const seen = new Set<string>();
-  const sessions = options.roots.flatMap((root) => root.sessions);
-  for (const session of sessions) {
-    const key = sessionKey(session);
-    if (!session.native || !session.title || seen.has(key)) continue;
+  for (const session of distinctNativeSessions(options.roots)) {
+    if (!session.title) continue;
     // Platform-aware containment: Windows paths compare case-insensitively.
     if (options.excludedRoots.some((root) => isPathInside(root, session.cwd))) {
       continue;
@@ -95,8 +114,7 @@ export function collectChatHistoryProfileInput(options: {
       )
     )
       continue;
-    seen.add(key);
-    const project = projectBySession.get(key);
+    const project = projectBySession.get(session.id);
     chats.push({
       title: session.title,
       ...(project ? { project } : {}),

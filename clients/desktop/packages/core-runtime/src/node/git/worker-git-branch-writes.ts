@@ -296,6 +296,7 @@ export function createWorkerGitBranchWriteHandlers<Checkout, Repository>(
         async (port, branch): Promise<WorkerGitCheckoutResult> => {
           await checkoutGitBranch(port, branch, {
             expectedBranch: params.expected?.branch,
+            remote: params.remote,
           });
           return { branch };
         },
@@ -308,14 +309,14 @@ export function createWorkerGitBranchWriteHandlers<Checkout, Repository>(
         context,
         CREATE_CODES,
         () => gitBranchCreateRequest(params.name, params.startPoint),
-        async (port, request): Promise<WorkerGitBranchCreateResult> => ({
-          branch: await createGitBranch(
-            port,
-            request.name,
-            request.startPoint,
-            { expectedBranch: params.expected?.branch },
-          ),
-        }),
+        (port, request): Promise<WorkerGitBranchCreateResult> =>
+          createGitBranch(port, request.name, request.startPoint, {
+            expectedBranch: params.expected?.branch,
+            baseBranch:
+              params.startPoint.source === 'catalog'
+                ? params.startPoint
+                : undefined,
+          }),
       ),
     'worker.git.branch.rename': (params, context) =>
       run(

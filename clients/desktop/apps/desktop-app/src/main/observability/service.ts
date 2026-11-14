@@ -1,3 +1,4 @@
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
 import {
@@ -237,6 +238,7 @@ import {
   matchesUsageMetricsRequest,
   normalizeAuditEntry,
   normalizeUsageMetricEvent,
+  observedModelIdentity,
   readArray,
   readBoolean,
   readNumber,
@@ -329,6 +331,7 @@ const TRACKED_PIPELINE_PROVIDERS: Readonly<Record<AgentProviderType, true>> = {
   cursor: true,
   opencode: true,
   copilot: true,
+  antigravity: true,
 };
 
 // Persisted execution state can carry a provider from a newer app version.
@@ -2509,6 +2512,7 @@ function chatEntryMetadata(
       ? { executionHarness: entry.executionHarness }
       : {}),
     ...(entry.model ? { model: entry.model } : {}),
+    ...(entry.agentId ? { agentId: entry.agentId } : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(entry.modelRouting ? { modelRouting: entry.modelRouting } : {}),
     ...(entry.serviceTier ? { serviceTier: entry.serviceTier } : {}),
@@ -4876,6 +4880,7 @@ export class ObservabilityService {
   startChatTurn(
     options: ChatTranscriptStartOptions & {
       model?: string;
+      agentId?: string;
       /**
        * The selection the turn started with; pass it when it differs from
        * `model` (an Agent id, for example). Defaults to `model`, so every
@@ -4960,7 +4965,11 @@ export class ObservabilityService {
             : 'claude'),
       label: labelForEventType(eventType),
       startedAt,
-      model: options.model,
+      ...observedModelIdentity({
+        model: options.model,
+        requestedModel,
+        agentId: options.agentId,
+      }),
       ...(requestedModel !== undefined ? { requestedModel } : {}),
       serviceTier: options.serviceTier,
       ...(options.aiCreditsRouted ? { aiCreditsRouted: true } : {}),
@@ -5076,7 +5085,8 @@ export class ObservabilityService {
       initiationSource: options.initiationSource ?? 'unknown',
       chatId: options.chatId,
       auditEntryId: entry.id,
-      model: options.model,
+      model: entry.model,
+      ...(entry.agentId ? { agentId: entry.agentId } : {}),
       turnStartedAt: startedAt,
     };
     this.chatTurnUsageStartsByAuditEntryId.set(entry.id, startedUsageEvent);
@@ -5195,6 +5205,7 @@ export class ObservabilityService {
     this.startChatTurn({
       ...options,
       model: previous?.model,
+      agentId: previous?.agentId,
       // An entry written before `requestedModel` existed has none, so its
       // steer inherits the served model as the requested one.
       requestedModel: previous?.requestedModel ?? previous?.model,
@@ -5624,6 +5635,7 @@ export class ObservabilityService {
     if (
       provider === 'cursor' ||
       provider === 'copilot' ||
+      provider === 'antigravity' ||
       provider === 'opencode'
     ) {
       if (data.type === 'canopy_cursor_usage') {
@@ -5684,6 +5696,7 @@ export class ObservabilityService {
         message,
         ...(provider === 'cursor' ||
         provider === 'copilot' ||
+        provider === 'antigravity' ||
         provider === 'opencode'
           ? { provider, error: message }
           : {}),
@@ -5741,6 +5754,7 @@ export class ObservabilityService {
       completedAt: timestamp,
       durationMs: 0,
       model: sourceEntry.model,
+      ...(sourceEntry.agentId ? { agentId: sourceEntry.agentId } : {}),
       tokens: defaultTokens(),
       messageCount: 0,
       assistantMessageCount: 0,
@@ -5847,7 +5861,7 @@ export class ObservabilityService {
   observeClaudeEvent(
     key: string,
     data: Record<string, unknown>,
-    provider: 'claude' | 'ollama' | 'copilot' | 'opencode',
+    provider: 'claude' | 'ollama' | 'copilot' | 'opencode' | 'antigravity',
   ): void {
     const openEntry = this.openEntries.get(key);
     if (provider === 'claude' && data.type === 'conversation_reset') {
@@ -6074,6 +6088,14 @@ export class ObservabilityService {
             });
             if (context) mergeAuditContextUsage(openEntry.entry, context);
           }
+        }
+        if (provider === 'antigravity' && usage) {
+          // The native turn reports reasoning as a subset of output, and its
+          // counters are per prompt. Keep the provider and do not add it twice.
+          openEntry.entry.tokens.reasoningOutputTokens = readNumber(
+            usage,
+            'reasoning_tokens',
+          );
         }
         const recorded =
           provider === 'claude' &&
@@ -7289,6 +7311,7 @@ export class ObservabilityService {
       : undefined;
     const observedEntry: AgentAuditEntry = {
       ...entry,
+      ...observedModelIdentity(entry),
       ...(entry.modelGatewayRouted === true || usedOrganizationGateway(entry)
         ? { modelGatewayRouted: true }
         : {}),
@@ -7382,6 +7405,7 @@ export class ObservabilityService {
       return;
     }
     const nextEntry: AgentAuditEntry = { ...openEntry.entry, model };
+    Object.assign(nextEntry, observedModelIdentity(nextEntry));
     if (usedOrganizationGateway(nextEntry)) {
       nextEntry.modelGatewayRouted = true;
     } else {
@@ -7482,6 +7506,7 @@ export class ObservabilityService {
         AgentAuditEntry,
         | 'sdkSessionId'
         | 'model'
+        | 'agentId'
         | 'provider'
         | 'modelSource'
         | 'executionHarness'
@@ -7506,6 +7531,7 @@ export class ObservabilityService {
       const previousEntry = recentEntry ?? retainedEntry;
       if (!previousEntry) return;
       const nextEntry: AgentAuditEntry = { ...previousEntry, ...patch };
+      Object.assign(nextEntry, observedModelIdentity(nextEntry));
       this.enqueueAuditEntry(nextEntry);
       this.upsertRecentEntry(nextEntry);
       if (retainedEntry) {
@@ -7529,6 +7555,7 @@ export class ObservabilityService {
       ...openEntry.entry,
       ...patch,
     };
+    Object.assign(nextEntry, observedModelIdentity(nextEntry));
     if (
       patch.modelGatewayRouted === undefined &&
       (patch.model !== undefined || patch.aiCreditsRouted !== undefined)
@@ -7788,7 +7815,10 @@ export class ObservabilityService {
               attempt: historicalAttempt.attempt,
               iteration: iteration.iteration,
               step: stepValue,
-              modelConfig: stepValue.agent_model_config ?? state.model_config,
+              modelConfig: mergeAgentModelConfig(
+                state.model_config,
+                stepValue.agent_model_config ?? {},
+              ),
             });
           }
         }
@@ -7808,7 +7838,10 @@ export class ObservabilityService {
               historicalAttempt.iteration_history,
             ),
             step: stepValue,
-            modelConfig: stepValue.agent_model_config ?? state.model_config,
+            modelConfig: mergeAgentModelConfig(
+              state.model_config,
+              stepValue.agent_model_config ?? {},
+            ),
           });
         }
       }
@@ -7827,7 +7860,10 @@ export class ObservabilityService {
             attempt: currentAttempt,
             iteration: iteration.iteration,
             step: stepValue,
-            modelConfig: stepValue.agent_model_config ?? state.model_config,
+            modelConfig: mergeAgentModelConfig(
+              state.model_config,
+              stepValue.agent_model_config ?? {},
+            ),
           });
         }
       }
@@ -7865,7 +7901,10 @@ export class ObservabilityService {
             attempt: currentAttempt,
             iteration: job.iteration_count,
             step: stepValue,
-            modelConfig: stepValue.agent_model_config ?? state.model_config,
+            modelConfig: mergeAgentModelConfig(
+              state.model_config,
+              stepValue.agent_model_config ?? {},
+            ),
           });
         }
       }
@@ -8061,6 +8100,7 @@ export class ObservabilityService {
       }
       if (
         openEntry.entry.provider === 'opencode' ||
+        openEntry.entry.provider === 'antigravity' ||
         openEntry.entry.provider === 'copilot'
       ) {
         const provider = openEntry.entry.provider;
@@ -8318,7 +8358,17 @@ export class ObservabilityService {
       status === 'skipped';
     const provider = options.step.agent_provider;
     const logFormatHint = options.step.log_format_hint;
-    const model = options.step.agent_model;
+    const identity = observedModelIdentity({
+      model:
+        options.step.agent_runtime_model ??
+        options.step.agent_model_config?.baseModel ??
+        options.step.agent_model,
+      agentId: options.step.agent_model_config?.agentId,
+      requestedModel:
+        options.step.agent_model_config?.requestedModel ??
+        options.step.agent_model,
+    });
+    const model = identity.model;
     const shouldTrack =
       provider === undefined
         ? logFormatHint === 'agent'
@@ -8367,7 +8417,7 @@ export class ObservabilityService {
           (model ? getExecutionHarnessForModel(model) : undefined),
         label: labelForEventType('pipeline_agent_turn'),
         startedAt,
-        model,
+        ...identity,
         serviceTier:
           options.step.agent_harness === 'codex' || provider === 'codex'
             ? codexServiceTierForModelConfig(options.modelConfig)
@@ -8426,7 +8476,7 @@ export class ObservabilityService {
     }
 
     if (model) {
-      openEntry.entry.model = model;
+      Object.assign(openEntry.entry, identity);
     }
     if (options.step.agent_harness === 'codex' || provider === 'codex') {
       openEntry.entry.serviceTier = codexServiceTierForModelConfig(
@@ -8868,6 +8918,9 @@ export class ObservabilityService {
       chatId: entry.chatId,
       auditEntryId: entry.id,
       model: entry.model ?? startedEvent?.model,
+      ...((entry.agentId ?? startedEvent?.agentId)
+        ? { agentId: entry.agentId ?? startedEvent?.agentId }
+        : {}),
       turnStartedAt: entry.startedAt,
       turnCompletedAt: completedAt,
       turnDurationMs: entry.durationMs,

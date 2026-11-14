@@ -1,3 +1,42 @@
+import type * as TestHost from '../../w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host';
+import type * as CoreStorage from '@canopy/core-runtime/storage';
+jest.mock('node:worker_threads', () =>
+  jest
+    .requireActual<
+      typeof TestHost
+    >('../../w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host')
+    .createTsxWorkerThreads(),
+);
+jest.mock('@canopy/core-runtime/storage', () => {
+  const actual = jest.requireActual<typeof CoreStorage>(
+    '@canopy/core-runtime/storage',
+  );
+  return {
+    ...actual,
+    STORAGE_OWNERSHIP: actual.STORAGE_OWNERSHIP.map((row) =>
+      ['workspace_index', 'workspace_manifest', 'worktree_list'].includes(
+        row.id,
+      )
+        ? { ...row, transitionOwner: 'daemon', currentWriters: [] }
+        : row,
+    ),
+  };
+});
+import type { CreateWorktreeServiceOptions } from '../worktree-service';
+import type { WorktreeData, ArchiveWorktreeResponse } from '../../../types';
+import { startW5ServiceAdapter } from '../../w5-routed-writes/__tests__/fixtures/w5-service-adapter';
+let routed: Awaited<ReturnType<typeof startW5ServiceAdapter>>;
+const createSingleRepoWorktree = (
+  options: CreateWorktreeServiceOptions,
+): Promise<WorktreeData> => routed.createWorktree(options);
+const createMultiRepoWorktree = createSingleRepoWorktree;
+const archiveSingleRepoWorktree = (options: {
+  workspaceId: string;
+  worktreeId: string;
+}): Promise<ArchiveWorktreeResponse> => routed.deleteWorktree(options);
+const archiveMultiRepoWorktree = archiveSingleRepoWorktree;
+import { DatabaseSync } from 'node:sqlite';
+import * as deleteGate from '@canopy/core-platform/w5-process-file-lock';
 import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import * as corePlatform from '@canopy/core-platform';
 import * as cliReads from '../worktree-cli-reads';
@@ -7,22 +46,16 @@ import * as fs from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { registerW5Host } from '@canopy/execution-engine/node/w5-host-cohort';
+import { leaveW5RootPresenceSync } from '../../w5-root-presence';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
   WORKSPACE_ROOT_REPO_ID,
 } from '../../../types';
 import {
-  createMultiRepoWorktree,
-  createSingleRepoWorktree,
-  archiveSingleRepoWorktree,
-  archiveMultiRepoWorktree,
   ensureAgentsMdSymlinkOrCopy,
   listWorktreeCliRepoEntries,
   listWorktreePipelineExecutions,
-  rollbackWorkspaceWorktree,
-  rollbackPersistedReservation,
 } from '../worktree-service';
 import { BrowserProfileRepository } from '../../browser-profiles/repository';
 import { resolveBrowserTaskOwner } from '../../browser-profiles/owners';
@@ -33,6 +66,57 @@ import {
   normalizePipeline,
   saveExecutionState,
 } from '@canopy/execution-engine/node/pipelines/executor';
+
+function including(values: unknown[]): unknown {
+  return expect.arrayContaining(values);
+}
+function containing(value: Record<string, unknown>): unknown {
+  return expect.objectContaining(value);
+}
+
+function observeDurableRecovery(): () => Awaited<
+  ReturnType<typeof routed.durableState>
+> {
+  let captured: Awaited<ReturnType<typeof routed.durableState>> | undefined;
+  const mark = routed.transport.markReservationRecoveryRequired.bind(
+    routed.transport,
+  );
+  jest
+    .spyOn(routed.transport, 'markReservationRecoveryRequired')
+    .mockImplementation(async (input) => {
+      await mark(input);
+      captured = await routed.durableState();
+    });
+  return () => {
+    if (!captured)
+      throw new Error(
+        'No independently observed durable recovery mark before rejection',
+      );
+    expect(captured.reservations).toHaveLength(1);
+    expect(captured.reservations[0]?.state).toBe('recovery-required');
+    return captured;
+  };
+}
+
+function pendingOwner(
+  dataDir: string,
+  workspaceId: string,
+  worktreeId: string,
+): string {
+  const value: unknown = readWorktrees(dataDir, workspaceId);
+  if (!isRecord(value) || !Array.isArray(value.worktrees))
+    throw new Error('Invalid worktree list');
+  const row: unknown = value.worktrees.find(
+    (entry: unknown) => isRecord(entry) && entry.id === worktreeId,
+  );
+  if (
+    !isRecord(row) ||
+    !isRecord(row.creation) ||
+    typeof row.creation.operationId !== 'string'
+  )
+    throw new Error('Missing retained creation owner');
+  return row.creation.operationId;
+}
 
 function runGit(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
@@ -124,14 +208,14 @@ describe('desktop-shared node worktree service', () => {
       path.join(os.tmpdir(), 'canopy-worktree-service-'),
     );
     process.env.CANOPY_DATA_DIR = path.join(tempDir, 'data');
-    // Shared W5 writers run only in registered hosts (CAN-3797).
-    await registerW5Host({
-      dataRoot: process.env.CANOPY_DATA_DIR ?? '',
-      hostKind: 'cli',
-    });
+    routed = await startW5ServiceAdapter(process.env.CANOPY_DATA_DIR ?? '');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await routed.close();
+    leaveW5RootPresenceSync();
+    await Promise.resolve();
     jest.restoreAllMocks();
     if (originalCanopyDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
@@ -255,27 +339,39 @@ describe('desktop-shared node worktree service', () => {
       });
       const create =
         mode === 'single' ? createSingleRepoWorktree : createMultiRepoWorktree;
+      const durable = observeDurableRecovery();
       const error: unknown = await create({
         workspaceId: 'partial',
         branchName: 'candidate',
         seedPanelLayoutMode: false,
       }).catch((caught: unknown) => caught);
-      const remainingPaths: unknown = expect.arrayContaining([attemptedPath]);
-      expect(error).toMatchObject({
-        name: 'WorktreeCreationConflictError',
-        cause: primary,
-        message: primary.message,
-        remainingPaths,
+      expect(error).toBe(primary);
+      const state = durable();
+      expect(state.reservations[0]).toMatchObject({
+        operation: 'core.worktree.create',
+        diagnostics: {
+          workspaceId: 'partial',
+          ownedPaths: including([attemptedPath]),
+        },
       });
+      expect(pendingOwner(dataDir, 'partial', 'candidate')).toBe(
+        state.reservations[0]?.reservationId,
+      );
       expect(fs.existsSync(path.join(attemptedPath, 'README.md'))).toBe(true);
-      expect(readWorktrees(dataDir, 'partial')).toEqual({
+      expect(readWorktrees(dataDir, 'partial')).toMatchObject({
         version: 1,
-        worktrees: [],
+        worktrees: [
+          {
+            id: 'candidate',
+            creation: { operationId: state.reservations[0]?.reservationId },
+            setupPhase: 'git-pending',
+          },
+        ],
       });
     },
   );
 
-  it('refuses rollback after another operation replaces the same candidate ID', async () => {
+  it('retains a peer replacement when routed creation fails for the same candidate ID', async () => {
     const repoPath = path.join(tempDir, 'repo');
     initRepo(repoPath);
     const dataDir = process.env.CANOPY_DATA_DIR ?? '';
@@ -287,28 +383,45 @@ describe('desktop-shared node worktree service', () => {
       repoPath,
       repos: [],
     });
-    const created = await createSingleRepoWorktree({
-      workspaceId: 'single',
-      branchName: 'candidate',
-      seedPanelLayoutMode: false,
-    });
     const file = path.join(dataDir, 'workspaces/single/worktrees.json');
     const winner = {
-      id: created.id,
+      id: 'candidate',
       branchName: 'winner',
       createdAt: 'later',
       cliCreationToken: 'other-invocation',
     };
-    fs.writeFileSync(file, JSON.stringify({ version: 1, worktrees: [winner] }));
+
     const metadata = path.join(
       dataDir,
       'workspaces/single/worktree-data/candidate',
     );
     fs.mkdirSync(metadata, { recursive: true });
     fs.writeFileSync(path.join(metadata, 'winner.txt'), 'keep');
+    const primary = new Error('Git failed after a peer replaced the candidate');
+    const actualGit = cliReads.runGit;
+    const durable = observeDurableRecovery();
+    jest.spyOn(cliReads, 'runGit').mockImplementation(async (args, cwd) => {
+      const output = await actualGit(args, cwd);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        fs.writeFileSync(
+          file,
+          JSON.stringify({ version: 1, worktrees: [winner] }),
+        );
+        throw primary;
+      }
+      return output;
+    });
     await expect(
-      rollbackPersistedReservation('single', created.id, metadata),
-    ).rejects.toMatchObject({ name: 'WorktreeCreationConflictError' });
+      createSingleRepoWorktree({
+        workspaceId: 'single',
+        branchName: 'candidate',
+        seedPanelLayoutMode: false,
+      }),
+    ).rejects.toBe(primary);
+    expect(durable().reservations[0]).toMatchObject({
+      operation: 'core.worktree.create',
+      diagnostics: { workspaceId: 'single' },
+    });
     expect(readWorktrees(dataDir, 'single')).toEqual({
       version: 1,
       worktrees: [winner],
@@ -351,9 +464,43 @@ describe('desktop-shared node worktree service', () => {
       const listPath = path.join(dataDir, 'workspaces/archive/worktrees.json');
       const before = fs.readFileSync(listPath, 'utf8');
       const primary = new processLocks.W5ProcessFileLockTimeoutError(listPath);
+      const commit = routed.transport.commit.bind(routed.transport);
       jest
-        .spyOn(processLocks, 'worktreeListProcessLock')
-        .mockReturnValue(() => Promise.reject(primary));
+        .spyOn(routed.transport, 'commit')
+        .mockImplementation(async (request) => {
+          if (request.operation === 'internal.cli.worktree.delete.remove')
+            throw primary;
+          return commit(request);
+        });
+      const durable = observeDurableRecovery();
+      const acquire = deleteGate.acquireW5DesktopDeleteGate;
+      let latchObservedBeforeRejection = false;
+      jest
+        .spyOn(deleteGate, 'acquireW5DesktopDeleteGate')
+        .mockImplementation(async (...args) => {
+          const gate = await acquire(...args);
+          return {
+            ...gate,
+            close: (): void => {
+              gate.close();
+              if (args[1] === 'delete') {
+                const db = new DatabaseSync(
+                  path.join(dataDir, 'runtime/locks/desktop-delete.sqlite'),
+                  { readOnly: true },
+                );
+                try {
+                  expect(
+                    db.prepare('SELECT reservation_id FROM deletion_hold').get()
+                      ?.reservation_id,
+                  ).toBe(durable().reservations[0]?.reservationId);
+                  latchObservedBeforeRejection = true;
+                } finally {
+                  db.close();
+                }
+              }
+            },
+          };
+        });
       const gitCalls = jest.spyOn(cliReads, 'runGit');
       const archive =
         mode === 'single'
@@ -361,9 +508,11 @@ describe('desktop-shared node worktree service', () => {
           : archiveMultiRepoWorktree;
       await expect(
         archive({ workspaceId: 'archive', worktreeId: 'candidate' }),
-      ).rejects.toMatchObject({
-        name: 'WorktreeArchiveMetadataError',
-        cause: primary,
+      ).rejects.toBe(primary);
+      expect(latchObservedBeforeRejection).toBe(true);
+      expect(durable().reservations[0]).toMatchObject({
+        operation: 'core.worktree.delete',
+        state: 'recovery-required',
       });
       expect(
         fs.existsSync(
@@ -430,7 +579,7 @@ describe('desktop-shared node worktree service', () => {
       if (failGit)
         await expect(creation).rejects.toThrow('Git failed after peer edit');
       else await creation;
-      const expectedPeer: unknown = expect.arrayContaining([
+      const expectedPeer: unknown = including([
         {
           id: 'peer',
           branchName: 'peer',
@@ -483,7 +632,7 @@ describe('desktop-shared node worktree service', () => {
       lifecycle: 'retired',
     });
     expect(await profiles.getCleanupJobs()).toEqual([
-      expect.objectContaining({
+      containing({
         profileId: profile.profileId,
         storageGeneration: profile.storageGeneration,
         status: 'pending',
@@ -535,6 +684,7 @@ describe('desktop-shared node worktree service', () => {
       ).toBeNull();
       expect(response.warnings).toEqual([
         expect.stringMatching(/browser data/i),
+        'Any remaining chats, summaries and observability sidecars need desktop reconciliation the next time the app starts.',
       ]);
     },
   );
@@ -640,7 +790,7 @@ describe('desktop-shared node worktree service', () => {
     );
   });
 
-  it('rolls back the persisted record when single-repo git setup fails', async () => {
+  it('retains the owned record and durable recovery evidence when single-repo git setup fails', async () => {
     const repoPath = path.join(tempDir, 'repo');
     initRepo(repoPath);
     const dataDir = process.env.CANOPY_DATA_DIR ?? '';
@@ -661,6 +811,7 @@ describe('desktop-shared node worktree service', () => {
       'utf8',
     );
 
+    const durable = observeDurableRecovery();
     await expect(
       createSingleRepoWorktree({
         workspaceId: 'single',
@@ -669,9 +820,12 @@ describe('desktop-shared node worktree service', () => {
       }),
     ).rejects.toThrow();
 
-    expect(readWorktrees(dataDir, 'single')).toEqual({
-      version: 1,
-      worktrees: [],
+    const state = durable();
+    expect(pendingOwner(dataDir, 'single', 'feature')).toBe(
+      state.reservations[0]?.reservationId,
+    );
+    expect(readWorktrees(dataDir, 'single')).toMatchObject({
+      worktrees: [{ id: 'feature', setupPhase: 'git-pending' }],
     });
   });
 
@@ -2115,89 +2269,105 @@ describe('desktop-shared node worktree service', () => {
     ]);
   });
 
-  it('settles every owned rollback removal before returning its primary failure', async () => {
+  it('records durable recovery before returning its primary failure without removing owned effects', async () => {
     const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+    const repos = ['repo-a', 'repo-b'].map((id) => {
+      const repoPath = path.join(tempDir, id);
+      initRepo(repoPath);
+      return { id, name: id, repoPath };
+    });
+    writeWorkspaceIndex(dataDir, [
+      { id: 'ws', name: 'WS', type: 'multi-repo' },
+    ]);
+    writeWorkspaceConfig(dataDir, 'ws', { type: 'multi-repo', repos });
     const worktreeDir = path.join(dataDir, 'workspaces/ws/worktrees/wt');
-    fs.mkdirSync(worktreeDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(dataDir, 'workspaces/ws/worktrees.json'),
-      JSON.stringify({
-        version: 1,
-        worktrees: [
-          {
-            id: 'wt',
-            branchName: 'wt',
-            createdAt: 'now',
-            cliCreationToken: 'owned',
-          },
-        ],
-      }),
-    );
+    const primary = new Error('repo-a Git failed after checkout creation');
     const fsPromises =
       jest.requireActual<typeof FsPromises>('node:fs/promises');
-    const actualRm = fsPromises.rm;
-    const primary = new Error('repo-a cleanup failed');
-    let release = (): void => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered = (): void => undefined;
-    const removing = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let removedB = false;
-    jest.spyOn(fsPromises, 'rm').mockImplementation(async (target, options) => {
-      if (String(target).endsWith(`${path.sep}repo-a`)) throw primary;
-      if (String(target).endsWith(`${path.sep}repo-b`)) {
-        entered();
-        await gate;
-        removedB = true;
-        return;
+    const rm = jest.spyOn(fsPromises, 'rm');
+    const git = cliReads.runGit;
+    let failed = false;
+    const afterFailure: string[][] = [];
+    jest.spyOn(cliReads, 'runGit').mockImplementation(async (args, cwd) => {
+      if (failed) afterFailure.push(args);
+      const output = await git(args, cwd);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        failed = true;
+        throw primary;
       }
-      await actualRm(target, options);
+      return output;
     });
-    const repos = ['repo-a', 'repo-b'].map((id) => ({
-      id,
-      name: id,
-      repoPath: path.join(tempDir, 'missing', id),
-    }));
-    let settled = false;
-    const rollback = rollbackWorkspaceWorktree(
-      'ws',
-      'wt',
-      worktreeDir,
-      repos,
-      undefined,
-      undefined,
-      'owned',
-    ).finally(() => {
-      settled = true;
+    const durable = observeDurableRecovery();
+    await expect(
+      createMultiRepoWorktree({
+        workspaceId: 'ws',
+        branchName: 'wt',
+        seedPanelLayoutMode: false,
+      }),
+    ).rejects.toBe(primary);
+    const state = durable();
+    expect(fs.existsSync(worktreeDir)).toBe(true);
+    expect(
+      fs.readFileSync(path.join(worktreeDir, 'repos/repo-a/README.md'), 'utf8'),
+    ).toBe('hello\n');
+    expect(pendingOwner(dataDir, 'ws', 'wt')).toBe(
+      state.reservations[0]?.reservationId,
+    );
+    expect(state.reservations[0]).toMatchObject({
+      operation: 'core.worktree.create',
+      diagnostics: {
+        workspaceId: 'ws',
+        ownedPaths: including([
+          path.join(worktreeDir, 'repos/repo-a'),
+          path.join(worktreeDir, 'repos/repo-b'),
+        ]),
+      },
     });
-    void rollback.catch(() => undefined);
-    await removing;
-    expect(settled).toBe(false);
-    expect(fs.existsSync(worktreeDir)).toBe(true);
-    release();
-    await expect(rollback).rejects.toBe(primary);
-    expect(removedB).toBe(true);
-    expect(fs.existsSync(worktreeDir)).toBe(true);
+    expect(rm).not.toHaveBeenCalled();
+    expect(afterFailure).toEqual([]);
     expect(readWorktrees(dataDir, 'ws')).toMatchObject({
-      worktrees: [{ id: 'wt', cliCreationToken: 'owned' }],
+      worktrees: [
+        {
+          id: 'wt',
+          creation: { operationId: state.reservations[0]?.reservationId },
+        },
+      ],
     });
   });
 
-  it('refuses rollback without invocation ownership before deleting files', async () => {
-    const worktreeDir = path.join(tempDir, 'rollback-worktree');
-    fs.mkdirSync(worktreeDir);
-    fs.writeFileSync(path.join(worktreeDir, 'winner.txt'), 'winner');
-    await expect(
-      rollbackWorkspaceWorktree('ws', 'wt', worktreeDir, []),
-    ).rejects.toMatchObject({
-      name: 'WorktreeCreationConflictError',
-      remainingPaths: [worktreeDir],
+  it('refuses unowned checkout adoption without removing its files', async () => {
+    const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+    const repoPath = path.join(tempDir, 'repo');
+    initRepo(repoPath);
+    writeWorkspaceIndex(dataDir, [
+      { id: 'ws', name: 'WS', type: 'single-repo' },
+    ]);
+    writeWorkspaceConfig(dataDir, 'ws', {
+      type: 'single-repo',
+      repoPath,
+      repos: [],
     });
+    const worktreeDir = path.join(dataDir, 'workspaces/ws/worktrees/wt');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    fs.writeFileSync(path.join(worktreeDir, 'winner.txt'), 'winner');
+    const fsPromises =
+      jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const remove = jest.spyOn(fsPromises, 'rm');
+    const durable = observeDurableRecovery();
+    await expect(
+      createSingleRepoWorktree({
+        workspaceId: 'ws',
+        branchName: 'wt',
+        seedPanelLayoutMode: false,
+      }),
+    ).rejects.toThrow();
     expect(fs.readFileSync(path.join(worktreeDir, 'winner.txt'), 'utf8')).toBe(
       'winner',
+    );
+    expect(remove).not.toHaveBeenCalled();
+    const state = durable();
+    expect(pendingOwner(dataDir, 'ws', 'wt')).toBe(
+      state.reservations[0]?.reservationId,
     );
   });
 
@@ -2217,11 +2387,27 @@ describe('desktop-shared node worktree service', () => {
       ],
     });
     const worktreeDir = path.join(dataDir, 'workspaces/ws/worktrees/feature');
-    await expect(
-      createMultiRepoWorktree({ workspaceId: 'ws', branchName: 'feature' }),
-    ).rejects.toMatchObject({
-      name: 'WorktreeCreationConflictError',
-      remainingPaths: [worktreeDir, path.join(worktreeDir, 'repos/missing')],
+    const actualGit = cliReads.runGit;
+    let primary: unknown;
+    jest.spyOn(cliReads, 'runGit').mockImplementation(async (...args) => {
+      try {
+        return await actualGit(...args);
+      } catch (error) {
+        primary = error;
+        throw error;
+      }
+    });
+    const durable = observeDurableRecovery();
+    const error: unknown = await createMultiRepoWorktree({
+      workspaceId: 'ws',
+      branchName: 'feature',
+    }).catch((failure: unknown) => failure);
+    expect(primary).toBeDefined();
+    expect(error).toBe(primary);
+    expect(error).toMatchObject({ code: 'ENOENT' });
+    expect(durable().reservations[0]).toMatchObject({
+      operation: 'core.worktree.create',
+      diagnostics: { ownedPaths: [path.join(worktreeDir, 'repos/missing')] },
     });
     expect(fs.existsSync(worktreeDir)).toBe(true);
   });

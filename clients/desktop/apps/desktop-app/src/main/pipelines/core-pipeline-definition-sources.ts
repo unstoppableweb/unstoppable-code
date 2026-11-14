@@ -272,10 +272,9 @@ async function projectCheckout(scope: CanopyWorkspaceScope): Promise<string> {
       );
     }
   }
-  const [{ readAllSidebarItems }, paths] = await Promise.all([
-    import('../lib/sidebar-items'),
-    import('../lib/paths'),
-  ]);
+  const { getWorktreeDir, getWorkspaceWorktreeRootRepoDir } =
+    await import('../lib/paths');
+  const { readAllSidebarItems } = await import('../lib/sidebar-items');
   const item = (await readAllSidebarItems()).items.find(
     (candidate) => candidate.id === workspaceId,
   );
@@ -287,8 +286,8 @@ async function projectCheckout(scope: CanopyWorkspaceScope): Promise<string> {
     );
   if (member === undefined)
     return item.type === 'single-repo'
-      ? paths.getWorktreeDir(workspaceId, worktreeId)
-      : paths.getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
+      ? getWorktreeDir(workspaceId, worktreeId)
+      : getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
   if (item.type === 'single-repo')
     throw new PipelineDefinitionSourceError(
       'core.pipeline.scopeInvalid',

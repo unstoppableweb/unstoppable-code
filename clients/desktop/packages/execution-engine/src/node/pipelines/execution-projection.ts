@@ -108,6 +108,7 @@ const REASON_KINDS: { readonly [K in ReasonKind]: K } = {
   app_shutdown: 'app_shutdown',
   owner_lost: 'owner_lost',
   host_rollover: 'host_rollover',
+  core_lost: 'core_lost',
   input_required: 'input_required',
   action_paused: 'action_paused',
   provider_authentication_required: 'provider_authentication_required',
@@ -120,6 +121,7 @@ const REASON_CODES: { readonly [K in ReasonCode]: K } = {
   app_shutdown: 'app_shutdown',
   owner_lost: 'owner_lost',
   host_rollover: 'host_rollover',
+  core_lost: 'core_lost',
   input_requested: 'input_requested',
   action_requested_pause: 'action_requested_pause',
   authentication_failed: 'authentication_failed',
@@ -140,6 +142,7 @@ const REASON_CODES: { readonly [K in ReasonCode]: K } = {
 } satisfies Record<ReasonCode, WorkerPipelineStatusReason['code']>;
 
 const PROVIDERS: { readonly [K in Provider]: K } = {
+  antigravity: 'antigravity',
   claude: 'claude',
   codex: 'codex',
   ollama: 'ollama',
@@ -152,6 +155,7 @@ const PROVIDERS: { readonly [K in Provider]: K } = {
 >;
 
 const HARNESSES: { readonly [K in Harness]: K } = {
+  antigravity: 'antigravity',
   claude: 'claude',
   codex: 'codex',
   cursor: 'cursor',

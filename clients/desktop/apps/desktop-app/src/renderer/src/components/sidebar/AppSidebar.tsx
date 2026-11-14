@@ -80,6 +80,7 @@ import {
 } from '@/stores/labsExperimentsStore';
 import { useSidebarStore } from '@/stores/sidebarStore';
 import {
+  Surface,
   Badge,
   RailIconButton,
   RunningGlyph,
@@ -184,13 +185,6 @@ export interface AppSidebarProps {
   settingsOpen: boolean;
   /** Opens the Remote Control dialog from the account menu. */
   onCanopyPortalClick: () => void;
-  /**
-   * Mirror of the `canopy-portal-enabled` client feature-flag value, handed
-   * to the account menu: its Remote Control item and the row's status line
-   * are hidden while it is false so users cannot dispatch portal actions
-   * while the rollout flag is off (CAN-3659).
-   */
-  canopyPortalEnabled: boolean;
   /** Gates the Feed entry point behind `canopy-ledger-enabled`. */
   ledgerEnabled?: boolean;
   /**
@@ -2339,7 +2333,6 @@ export function AppSidebar({
   onSettingsClick,
   settingsOpen,
   onCanopyPortalClick,
-  canopyPortalEnabled,
   ledgerEnabled = false,
   claudeTuiWorkersEnabled,
   onAppAdvisorClick,
@@ -2816,8 +2809,9 @@ export function AppSidebar({
           {def.label}
         </SidebarNavRow>
         {/* New chat and, with chats, the fold chevron: revealed on hover
-            like a project row's actions. */}
-        <span className="absolute inset-y-0 right-0 flex items-center gap-0.5">
+            like a project row's actions, and inset 2px from the row's edge
+            on every side, like every sidebar row's controls. */}
+        <span className="absolute inset-y-0 right-0.5 flex items-center gap-0.5">
           <RailIconButton
             icon={PlusMediumIcon}
             onClick={(event): void => {
@@ -3668,9 +3662,11 @@ export function AppSidebar({
                       hidden
                       inert
                     >
-                      <div
+                      <Surface
+                        variant="section"
+                        boundary="top"
                         aria-hidden="true"
-                        className="pointer-events-none absolute -top-px left-2 right-2 border-t"
+                        className="pointer-events-none absolute -top-px left-2 right-2"
                         data-testid="sidebar-selected-pin-bottom-divider"
                       />
                       <div data-sidebar-selected-pin-part="header" />
@@ -3791,7 +3787,6 @@ export function AppSidebar({
                     onNavigate={onNavigate}
                     onSettingsClick={onSettingsClick}
                     settingsOpen={settingsOpen}
-                    canopyPortalEnabled={canopyPortalEnabled}
                     onCanopyPortalClick={onCanopyPortalClick}
                     footerBanner={
                       <>

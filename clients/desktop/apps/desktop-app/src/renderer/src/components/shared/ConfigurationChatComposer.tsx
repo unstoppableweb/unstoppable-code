@@ -28,6 +28,12 @@ import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-
 import {
   APP_ADVISOR_PROJECT_ID,
   getSupportedThinkingLevelsForModel,
+  getProviderForChatModel,
+  getChatHarnessOptions,
+  pinInheritingAgentModel,
+  isAgentModel,
+  clampThinkingLevelForModel,
+  resolveProviderModelConfig,
 } from '@canopy/desktop-shared/types';
 import {
   ChatComposerToolbarChip,
@@ -65,7 +71,13 @@ import {
   resolveConfiguredEditorReferences,
   unresolvedConfiguredFiles,
 } from '@/lib/configurationComposerReferences';
-import { resolveHomeEffectiveProviderType } from '@/stores/homeComposerStore';
+import {
+  resolveHomeEffectiveProviderType,
+  resolveHomeEffectiveModelSettings,
+  resolveHomeEffectiveDefaults,
+} from '@/stores/homeComposerStore';
+import { useChatStore } from '@/stores/chatStore';
+import { resolveProviderDefaults } from '@/stores/chat/defaults';
 import { createEmptySelections } from '@/lib/pluginSelections';
 import { getSlashCommandInsertText } from '@/hooks/useSlashCommands';
 import {
@@ -151,6 +163,7 @@ function ComposerInstance({
   onChange,
   context,
   selectionMode,
+  allowAgents = false,
   dataTestId,
   effectiveModel,
   effectiveModelConfig,
@@ -218,16 +231,20 @@ function ComposerInstance({
     effectiveApprovalMode,
   );
   const effective = defaults.model;
+  const defaultsWorkspaceId =
+    context.kind === 'workspace'
+      ? context.workspaceId
+      : context.kind === 'advisor'
+        ? APP_ADVISOR_PROJECT_ID
+        : null;
   const provider =
     context.kind === 'unresolved'
       ? undefined
-      : context.kind === 'workspace'
-        ? resolveHomeEffectiveProviderType(
-            context.workspaceId,
-            effective,
-            executionHarness,
-          )
-        : resolveHomeEffectiveProviderType(null, effective, executionHarness);
+      : resolveHomeEffectiveProviderType(
+          defaultsWorkspaceId,
+          effective,
+          executionHarness,
+        );
   // Speed availability follows the model this action would run. The billing
   // lane is resolved when the action runs, where admission re-checks it.
   const speedControl = useContextualCodexSpeedControl({
@@ -344,7 +361,10 @@ function ComposerInstance({
     // commands come from the inventory), so only the destination's files
     // are indexed for it; the Home store makes the same distinction.
     const discoveryProvider =
-      provider === 'cursor' || provider === 'copilot' || provider === 'opencode'
+      provider === 'antigravity' ||
+      provider === 'cursor' ||
+      provider === 'copilot' ||
+      provider === 'opencode'
         ? undefined
         : provider;
     const request =
@@ -762,7 +782,11 @@ function ComposerInstance({
         readOnly={readOnly || disabled}
       />
       {statusMessage && (
-        <Notice intent="destructive" className="mx-3">
+        <Notice
+          errorSource="composer-instance-status"
+          intent="destructive"
+          className="mx-3"
+        >
           {statusMessage}
         </Notice>
       )}
@@ -845,8 +869,97 @@ function ComposerInstance({
         />
         <ModelPicker
           currentModel={effective}
+          separateAgents={allowAgents}
+          selectionModel={
+            value.model?.startsWith('$')
+              ? undefined
+              : (value.model ??
+                (isAgentModel(effectiveModel) ? effectiveModel : undefined))
+          }
+          inheritedDefaultModel={
+            resolveHomeEffectiveDefaults(defaultsWorkspaceId).model
+          }
           allowWorkspaceDefault
-          onModelChange={(model) => updateValue({ model })}
+          onModelChange={(model): void => {
+            if (!model) {
+              updateValue({ model });
+              return;
+            }
+            const normalizedModel = pinInheritingAgentModel(
+              model,
+              resolveHomeEffectiveDefaults(defaultsWorkspaceId).model,
+            );
+            const nextHarness =
+              executionHarness &&
+              getChatHarnessOptions(normalizedModel).includes(executionHarness)
+                ? executionHarness
+                : undefined;
+            const nextProvider = getProviderForChatModel(
+              normalizedModel,
+              nextHarness,
+            );
+            if (!nextProvider) {
+              updateValue({ model });
+              return;
+            }
+            const currentProvider = effective?.trim()
+              ? getProviderForChatModel(effective, executionHarness)
+              : undefined;
+            const providerChanged =
+              currentProvider !== undefined && nextProvider !== currentProvider;
+            const explicitConfig = valueRef.current.modelConfig;
+            if (!providerChanged && !isAgentModel(model)) {
+              updateValue({
+                model,
+                ...(explicitConfig?.thinkingLevel !== undefined
+                  ? {
+                      modelConfig: {
+                        ...explicitConfig,
+                        thinkingLevel: clampThinkingLevelForModel(
+                          explicitConfig.thinkingLevel,
+                          normalizedModel,
+                          nextProvider,
+                        ),
+                      },
+                    }
+                  : {}),
+              });
+              return;
+            }
+            const modelDefaults = useChatStore.getState().modelDefaults;
+            const providerDefault = defaultsWorkspaceId
+              ? resolveProviderDefaults(
+                  defaultsWorkspaceId,
+                  modelDefaults,
+                  nextProvider,
+                ).thinkingLevel
+              : undefined;
+            const { thinkingLevel } = resolveHomeEffectiveModelSettings(
+              defaultsWorkspaceId,
+              normalizedModel,
+              providerChanged
+                ? providerDefault
+                : (valueRef.current.modelConfig?.thinkingLevel ??
+                    defaults.modelConfig.thinkingLevel),
+              nextHarness,
+            );
+            updateValue({
+              model,
+              modelConfig: resolveProviderModelConfig(
+                nextProvider,
+                {
+                  thinkingLevel,
+                  modelConfig: providerChanged
+                    ? undefined
+                    : {
+                        ...valueRef.current.modelConfig,
+                        thinkingLevel,
+                      },
+                },
+                modelDefaults?.modelConfigDefaultsByProvider,
+              ),
+            });
+          }}
           openSignal={modelPickerSignal}
           disabled={disabled || readOnly || pending}
           capsule

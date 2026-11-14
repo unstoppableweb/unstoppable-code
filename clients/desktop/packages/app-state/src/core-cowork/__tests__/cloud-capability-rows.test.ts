@@ -12,6 +12,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import {
   cloudCapabilityRows,
+  needsCloudUpload,
   type CloudCapabilityState,
 } from '../cloud-capability-rows';
 
@@ -183,6 +184,24 @@ describe('cloud capability rows (CAN-6176)', () => {
         cloudEntryId: null,
       });
     }
+    // The picker narrows to the rows its cloud-copy slot handles (R5d).
+    const rows = cloudCapabilityRows({
+      local: [localSkill],
+      localSkills: [row(LOCAL_SKILL_ID, 'custom')],
+      cloud: [cloudSkill],
+      harness: 'claude',
+    });
+    expect(
+      rows.filter(needsCloudUpload).map((each) => each.localEntry),
+    ).toEqual([localSkill]);
+    expect(
+      cloudCapabilityRows({
+        local: [localSkill],
+        localSkills: [row(LOCAL_SKILL_ID, 'custom', share())],
+        cloud: [cloudSkill],
+        harness: 'claude',
+      }).filter(needsCloudUpload),
+    ).toEqual([]);
   });
 
   it('a linked skill is ready only while its SKILL.md matches the cloud copy', () => {

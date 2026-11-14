@@ -98,7 +98,11 @@ export function LedgerCloseIntentPrompt({
           {openCountIsLowerBound ? 'Complete all' : `Complete all ${openCount}`}
         </Button>
       </div>
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="ledger-close-intent-prompt"
+        className=""
+        error={error}
+      />
     </Surface>
   );
 }

@@ -11,11 +11,7 @@ import type {
 import { CanopyOperationError } from '@canopy/core-runtime';
 import { w5DaemonReceiptCaller } from '@canopy/core-runtime/node/w5/workspace-metadata/receipt-caller';
 import type { WorkspaceConfigFile } from '@canopy/desktop-shared/types';
-import {
-  getWorkspaceConfigPath,
-  getWorkspaceIndexFilePath,
-  getWorkspaceWorktreesFilePath,
-} from './paths';
+import { w5RecordReadPaths } from './paths';
 import { validateId } from './validation';
 import { checkW5ExpectedRevision } from './w5-boundary-operation';
 import { withW5Commit } from './w5-commit-log-file-store';
@@ -58,9 +54,10 @@ export function desktopW5WorkspaceCommandHost<
       checkW5ExpectedRevision(resource, expected),
     withCommit: (options, work) => withW5Commit(options, work),
     paths: {
-      workspaceIndex: () => getWorkspaceIndexFilePath(),
-      workspaceManifest: (workspaceId) => getWorkspaceConfigPath(workspaceId),
-      worktreeList: (workspaceId) => getWorkspaceWorktreesFilePath(workspaceId),
+      workspaceIndex: () => w5RecordReadPaths.index(),
+      workspaceManifest: (workspaceId) =>
+        w5RecordReadPaths.manifest(workspaceId),
+      worktreeList: (workspaceId) => w5RecordReadPaths.worktrees(workspaceId),
     },
     validateId: assertValidId,
   };

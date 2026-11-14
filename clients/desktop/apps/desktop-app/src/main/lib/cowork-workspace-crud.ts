@@ -72,8 +72,8 @@ import {
   listWorkEntryIds,
 } from './cowork-work-entries';
 import {
+  w5RecordReadPaths,
   getCoworkWorkspaceRootDir,
-  getWorkspaceConfigPath,
   getWorkspaceDir,
 } from './paths';
 import { isPathInside } from './path-safety';
@@ -965,7 +965,7 @@ export async function deleteCoworkWorkspace(
   } finally {
     if (ownerCommitted)
       projectPluginDefaultsWritten({
-        configPath: getWorkspaceConfigPath(workspaceId),
+        configPath: w5RecordReadPaths.manifest(workspaceId),
         workspaceId,
         layerChanged: true,
       });

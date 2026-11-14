@@ -72,6 +72,7 @@ export function SubagentWorktreeDetails({
   if (state.status === 'error') {
     return (
       <ErrorBanner
+        errorSource="subagent-worktree-details"
         className=""
         error={subagentFailureWithReason(
           SUBAGENT_WORKTREE_FAILED_LABEL,

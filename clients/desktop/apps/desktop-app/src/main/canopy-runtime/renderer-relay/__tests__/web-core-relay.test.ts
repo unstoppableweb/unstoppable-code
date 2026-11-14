@@ -1,4 +1,7 @@
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import type {
+  CanopyCallerDescriptor,
+  CanopyJsonValue,
+} from '@canopy/protocol/canopy-core';
 import { CanopyTransportError } from '@canopy/core-transport';
 import type { RelayBindingProvider } from '../definitions';
 import {
@@ -10,6 +13,7 @@ import { routeRendererRelayRequest } from '../relay-authority';
 import type { RendererRelaySurface } from '../surface-allowlist';
 import {
   WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS,
+  WEB_CORE_TEARDOWN_RELAY_OPERATIONS,
   WEB_CORE_RELAY_OPERATIONS,
 } from '../web-core-relay-definitions';
 import { createWebCoreRendererRelay } from '../../../ipc/canopy-core-relay';
@@ -76,9 +80,8 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       'core.workspace.create',
       'core.git.status.get',
       'core.runtime.initialize',
-      'worker.filesystem.file.write',
-      'worker.filesystem.entry.delete',
-      'worker.terminal.create',
+      'worker.filesystem.entry.copy',
+      'worker.terminal.restore',
     ]) {
       expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
       await expect(
@@ -119,6 +122,52 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       params: {},
     });
     expect(binding).toHaveBeenCalledTimes(1);
+    relay.dispose();
+    advisor.dispose();
+  });
+
+  it("a cloud task's cost reads and the manifest that offers them reach the web core binding, from the main window only (CAN-6180)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const requests = [
+      { method: 'core.runtime.manifest.get', params: {} },
+      {
+        method: 'core.cost.scope.get',
+        params: { scope: { kind: 'entry', projectId: 'p', worktreeId: 'c' } },
+      },
+      {
+        method: 'core.cost.chat.get',
+        params: {
+          scope: { kind: 'entry', projectId: 'p', worktreeId: 'c' },
+          chatId: 'c',
+          detail: 'summary',
+        },
+      },
+    ];
+    for (const { method, params } of requests) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      await expect(
+        advisor.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+      // Past the allowlist, the request fails only at the unreachable binding.
+      await expect(
+        relay.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(binding).toHaveBeenCalledTimes(requests.length);
+    // Rebuilding the cost index and pipeline run cost stay local-only.
+    for (const method of [
+      'core.cost.index.refresh',
+      'core.cost.pipelineRun.get',
+    ])
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
     relay.dispose();
     advisor.dispose();
   });
@@ -278,6 +327,289 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
     }
     expect(binding).toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it("passes a sleeping sandbox's reason to the renderer and no other details (CAN-6543)", async () => {
+    const refusals: CanopyTransportError[] = [];
+    const relay = webCoreRelay(() =>
+      Promise.reject(refusals.shift() ?? new Error('unexpected')),
+    );
+    const list = {
+      kind: 'request',
+      method: 'worker.filesystem.directory.list',
+      params: {
+        scope: { chatId: 'chat-1' },
+        fileRootId: 'workspace',
+        relativePath: '',
+      },
+    } as const;
+    const refusal = (details: CanopyJsonValue): CanopyTransportError =>
+      new CanopyTransportError({
+        kind: 'failed_precondition',
+        message: 'The sandbox is asleep.',
+        code: 'worker.filesystem.directory.invalidState',
+        details,
+        retry: {
+          kind: 'after_refresh',
+          resource: 'worker.filesystem.directory',
+        },
+      });
+
+    /** The details the renderer gets for `details`, or undefined for none. */
+    const relayed = async (details: CanopyJsonValue): Promise<unknown> => {
+      refusals.push(refusal(details));
+      const reply = await relay.invoke(rendererEvent(), list);
+      if (reply.ok) throw new Error('expected a refusal');
+      // The rest of the payload passes as it always did.
+      expect(reply.error).toMatchObject({
+        kind: 'failed_precondition',
+        message: 'The sandbox is asleep.',
+        code: 'worker.filesystem.directory.invalidState',
+      });
+      return 'details' in reply.error ? reply.error.details : undefined;
+    };
+    const extras = {
+      message: 'Sandbox sbx-1 for chat chat-1 is asleep.',
+      path: '/Users/someone/project/README.md',
+      chatId: 'chat-1',
+      sandboxId: 'sbx-secret',
+      expiresAt: 1_700_000_000,
+    };
+
+    // The sleeping reason passes with only its allowed keys.
+    await expect(
+      relayed({
+        reason: 'sandbox_sleeping',
+        wakeAllowed: false,
+        cloudCode: 'SANDBOX_STOPPING',
+        ...extras,
+      }),
+    ).resolves.toEqual({
+      reason: 'sandbox_sleeping',
+      wakeAllowed: false,
+      cloudCode: 'SANDBOX_STOPPING',
+    });
+    // A non-boolean wakeAllowed and an unknown cloudCode are dropped, not
+    // coerced.
+    await expect(
+      relayed({
+        reason: 'sandbox_sleeping',
+        wakeAllowed: 'false',
+        cloudCode: 'rm -rf /',
+        ...extras,
+      }),
+    ).resolves.toEqual({ reason: 'sandbox_sleeping' });
+    await expect(
+      relayed({ reason: 'sandbox_sleeping', wakeAllowed: 1, cloudCode: 409 }),
+    ).resolves.toEqual({ reason: 'sandbox_sleeping' });
+
+    // An unknown reason fails closed: no details at all, so no reason key,
+    // whatever else is allowed beside it.
+    const failClosed: readonly CanopyJsonValue[] = [
+      { reason: 'something_else', wakeAllowed: true, ...extras },
+      {
+        reason: 'insufficient_credits',
+        cloudCode: 'SANDBOX_NOT_READY',
+        ...extras,
+      },
+      { reason: 'SANDBOX_SLEEPING', wakeAllowed: true },
+      { wakeAllowed: true, cloudCode: 'SANDBOX_NOT_READY', ...extras },
+      extras,
+      {},
+      'sandbox_sleeping',
+      ['sandbox_sleeping'],
+      null,
+    ];
+    for (const details of failClosed)
+      await expect(relayed(details)).resolves.toBeUndefined();
+    relay.dispose();
+  });
+
+  it('a saved deliverable reads through the web core, and no upload or download open does (CAN-6587)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const event = rendererEvent();
+    // Uploads, and the open that hands out a download link, stay main's.
+    for (const method of [
+      'worker.artifact.download.open',
+      'worker.artifact.upload.open',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.commit',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
+      await expect(
+        relay.invoke(event, { kind: 'request', method, params: {} }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+    expect(WEB_CORE_RELAY_OPERATIONS.has('worker.artifact.download.read')).toBe(
+      true,
+    );
+    // Past the allowlist, the read fails only at the unreachable binding.
+    await expect(
+      relay.invoke(event, {
+        kind: 'request',
+        method: 'worker.artifact.download.read',
+        params: {
+          artifactId: 'deliverable:00000000-0000-4000-8000-000000000001',
+          scope: { chatId: 'chat-1' },
+          offset: 0,
+          length: 1024,
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalledTimes(1);
+    relay.dispose();
+  });
+
+  it('cloud durable terminal operations reach the web core binding (CAN-6175 R10)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    for (const method of [
+      'worker.terminal.create',
+      'worker.terminal.get',
+      'worker.terminal.list',
+      'worker.terminal.write',
+      'worker.terminal.resize',
+      'worker.terminal.kill',
+      'worker.terminal.release',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      await expect(
+        relay.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: { scope: { chatId: 'chat-1' } },
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(WEB_CORE_RELAY_OPERATIONS.has('worker.terminal.attach')).toBe(true);
+    await expect(
+      relay.invoke(rendererEvent(), {
+        kind: 'openStream',
+        method: 'worker.terminal.attach',
+        params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it('ending a cloud terminal reaches the web core after cloud chats are turned off, and nothing else does (CAN-6175 R10)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = createWebCoreRendererRelay({
+      bindingProvider: binding,
+      resolveSurface: (): RendererRelaySurfaceResolution => ({
+        surface: 'main',
+        caller: CALLER,
+      }),
+      cloudChatsEnabled: () => false,
+    });
+    const event = rendererEvent();
+    expect([...WEB_CORE_TEARDOWN_RELAY_OPERATIONS]).toEqual([
+      'worker.terminal.kill',
+    ]);
+    // The renderer's teardown kill gets past the flag to the binding.
+    await expect(
+      relay.invoke(event, {
+        kind: 'request',
+        method: 'worker.terminal.kill',
+        params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalledTimes(1);
+    binding.mockClear();
+    // Every other terminal call is refused before the binding.
+    for (const method of [
+      'worker.terminal.create',
+      'worker.terminal.write',
+      'worker.terminal.release',
+    ]) {
+      await expect(
+        relay.invoke(event, {
+          kind: 'request',
+          method,
+          params: { scope: { chatId: 'chat-1' }, terminalId: 'terminal-1' },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+    relay.dispose();
+  });
+
+  it('cloud file writes reach the web core and are never replayed with the same key (CAN-6175)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(() =>
+      Promise.reject(
+        new CanopyTransportError({
+          kind: 'unavailable',
+          message: 'Not connected in this test.',
+          retry: { kind: 'same_idempotency_key' },
+        }),
+      ),
+    );
+    const relay = webCoreRelay(binding);
+    for (const method of [
+      'worker.filesystem.file.write',
+      'worker.filesystem.directory.create',
+      'worker.filesystem.entry.delete',
+      'worker.filesystem.entry.move',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      // The web core releases a key when its write fails, even after the
+      // write may have applied, so a same-key replay could act twice
+      // (CAN-4733): the relay answers never, as for local writes.
+      await expect(
+        relay.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: {
+            scope: { chatId: 'chat-1' },
+            _meta: { idempotencyKey: `key-${method}` },
+          },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable', retry: { kind: 'never' } },
+      });
+    }
+    expect(binding).toHaveBeenCalled();
+
+    // A save of a file at the web core's 1 MiB read limit is past the local
+    // relay's 1 MiB request cap once JSON-encoded; the web core relay takes it.
+    await expect(
+      relay.invoke(rendererEvent(), {
+        kind: 'request',
+        method: 'worker.filesystem.file.write',
+        params: {
+          scope: { chatId: 'chat-1' },
+          fileRootId: 'workspace',
+          relativePath: 'large.txt',
+          content: 'x'.repeat(1024 * 1024 + 1),
+          createOnly: false,
+          expectedVersion: 'v1',
+          _meta: { idempotencyKey: 'key-large' },
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
     relay.dispose();
   });
 

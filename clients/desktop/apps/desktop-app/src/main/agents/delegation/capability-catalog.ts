@@ -63,11 +63,20 @@ export interface DelegationCapabilityCatalog {
  * of the deferred-tools catalog, keyed by delegation capability ID.
  */
 export async function loadDelegationCapabilityCatalog(
-  harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
 ): Promise<DelegationCapabilityCatalog> {
   const catalog = await buildDeferredToolsCatalog({
     provider:
-      harness === 'cursor' || harness === 'copilot' || harness === 'opencode'
+      harness === 'antigravity' ||
+      harness === 'cursor' ||
+      harness === 'copilot' ||
+      harness === 'opencode'
         ? 'claude'
         : harness,
   });

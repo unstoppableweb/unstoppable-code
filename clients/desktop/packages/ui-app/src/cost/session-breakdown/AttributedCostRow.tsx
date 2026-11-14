@@ -6,7 +6,9 @@ import {
 import {
   COST_BILLING_LABELS,
   COST_NOT_PRICED_LABEL,
-  formatCostAmount,
+  formatCostAmountIn,
+  type CostCurrency,
+  useCostCurrency,
   formatCostShare,
   unpricedCostItemLabel,
 } from '@canopy/ui-shared/components/cost';
@@ -38,6 +40,7 @@ function includedCostLabel(
 function itemCostLabel(
   item: CostAttributedItem,
   parentCost: number | undefined,
+  currency: CostCurrency,
 ): string {
   if (item.inclusion === 'included') {
     return includedCostLabel(item, parentCost);
@@ -45,7 +48,11 @@ function itemCostLabel(
   if (item.usd === undefined || item.costStatus === 'not_priced') {
     return COST_NOT_PRICED_LABEL;
   }
-  return formatCostAmount(item.usd);
+  return formatCostAmountIn(
+    item.usd,
+    currency,
+    item.billingBasis === 'ai_credits',
+  );
 }
 
 function itemMetadata(item: CostAttributedItem): string {
@@ -79,7 +86,8 @@ export function AttributedCostRow({
   testId,
 }: AttributedCostRowProps): JSX.Element {
   const metadata = itemMetadata(item);
-  const amount = itemCostLabel(item, parentCost);
+  const currency = useCostCurrency();
+  const amount = itemCostLabel(item, parentCost, currency);
   const idPrefix = useId();
   const labelId = `${idPrefix}-label`;
   const metadataId = `${idPrefix}-metadata`;

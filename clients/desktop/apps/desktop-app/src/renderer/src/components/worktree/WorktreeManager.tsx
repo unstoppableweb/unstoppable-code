@@ -46,7 +46,7 @@ import {
 import { WorktreePart } from '../panels/WorktreePart';
 import { isWorktreeSurfaceVisible } from './worktreeSurfaceVisibility';
 import { ArchivedContainerView } from '../archive/ArchivedContainerView';
-import { ArchivedContainersOverviewPage } from '../archive/ArchivedContainersOverviewPage';
+import { MoreWorktreesOverviewPage } from '../archive/MoreWorktreesOverviewPage';
 import { SharedContainerWorkspace } from '../shared-containers/SharedContainerWorkspace';
 import { SharedContainerPastSharesPage } from '../shared-containers/SharedContainerPastSharesPage';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
@@ -2370,8 +2370,8 @@ export function WorktreeManager(): JSX.Element {
       {/* Archived-worktree viewer: absolute z-30 overlay above WorktreePart
           (grid content stays mounted behind it, mirroring the cowork archive
           overlay), below app modals at z-modal. `electron-no-drag` is
-          load-bearing: WorktreePart paints an `electron-drag` rect over the
-          top 40px of this same area, and app-region hit testing ignores
+          load-bearing: on Windows WorktreePart paints an `electron-drag` rect
+          over the top 40px of this same area, and app-region hit testing ignores
           z-order — without the hole, the viewer's header buttons receive
           window-drag instead of clicks (real mice only; Playwright's
           synthetic clicks bypass app-region, so E2E cannot catch it). */}
@@ -2385,9 +2385,10 @@ export function WorktreeManager(): JSX.Element {
         </div>
       ) : archivedOverviewWorkspaceId !== null ? (
         <div className="electron-no-drag absolute inset-0 z-30 bg-base">
-          <ArchivedContainersOverviewPage
+          <MoreWorktreesOverviewPage
+            // One page per project: its load state never carries over.
+            key={archivedOverviewWorkspaceId}
             workspaceId={archivedOverviewWorkspaceId}
-            surface="code"
             onClose={closeArchivedOverview}
           />
         </div>

@@ -1,3 +1,8 @@
+import { desktopChatHistoryPort } from './desktop-chat-history-port';
+import {
+  createChatHistoryActionFamily,
+  type AgentChatHistoryPort,
+} from '@canopy/agent-actions/families/chat-history';
 import { desktopBrowserPort } from './desktop-browser-port';
 import { desktopExperimentsPort } from './desktop-experiments-port';
 import { desktopInstalledItemsPort } from './desktop-installed-items-port';
@@ -78,6 +83,8 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
     'browser',
     'desktop-legacy',
     'editor-setup',
+    // History actions mount on the Orchestrator; scoped chats use the injected tools.
+    'chat-history',
     'cloud-chats',
   ],
   profiles: {
@@ -158,6 +165,7 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
 });
 
 export interface DesktopAgentActionPorts {
+  chatHistory?: AgentChatHistoryPort<CanopyInjectedToolRuntime>;
   /** Runs browser actions on the calling chat's in-app browser. */
   browser?: AgentBrowserPort<CanopyInjectedToolRuntime>;
   installedItems?: AgentInstalledItemsPort<CanopyInjectedToolRuntime>;
@@ -187,6 +195,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
   if (!defaultPorts) {
     const receipts = desktopAgentActionReceipts;
     defaultPorts = {
+      chatHistory: desktopChatHistoryPort,
       environment: createDesktopEnvironmentPort(desktopEnvironmentPortDeps()),
       transcriptRead: createDesktopTranscriptReadPort(),
       limits: desktopAgentActionLimits,
@@ -225,6 +234,7 @@ export function desktopAgentActionFamilies(
       receipts: ports.receipts,
     }),
     createTranscriptReadActionFamily({ port: ports.transcriptRead }),
+    createChatHistoryActionFamily(ports.chatHistory ?? desktopChatHistoryPort),
     createProjectActionFamily(ports.projectBot ?? desktopProjectBotPort),
     createBotActionFamily(ports.projectBot ?? desktopProjectBotPort),
     createInstalledItemsActionFamily({

@@ -12,10 +12,8 @@ import {
   Button,
   CLEAN_ICON_BUTTON_VARIANT,
   Tooltip,
-  useCleanChatLook,
 } from '@canopy/ui-shared/components';
 import { WatcherEyeIcon } from '@canopy/ui-shared/icons';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useWatcherModalStore } from '@/stores/watcherModalStore';
 
@@ -23,15 +21,12 @@ export interface ChatWatcherButtonProps {
   projectId: string;
   worktreeId: string;
   chatId: string;
-  /** Extra classes appended to the button (optional). */
-  className?: string;
 }
 
 export function ChatWatcherButton({
   projectId,
   worktreeId,
   chatId,
-  className,
 }: ChatWatcherButtonProps): JSX.Element {
   const allWatchers = useAppAdvisorWatchersStore((s) => s.watchers);
   const openModal = useWatcherModalStore((s) => s.open);
@@ -58,69 +53,35 @@ export function ChatWatcherButton({
   );
 
   const hasWatchers = watchers.length > 0;
-  const clean = useCleanChatLook();
-  if (clean) {
-    // Clean chat look: the turn actions' shared quiet ghost button and
-    // one-line tooltip. An armed watcher keeps its info ink and count, in
-    // the same 28px capsule.
-    return (
-      <Tooltip label="Watch this chat">
-        {hasWatchers ? (
-          <Button
-            variant="ghost-accent"
-            size="sm"
-            onClick={(): void => openModal({ projectId, worktreeId, chatId })}
-            aria-label="Watch this chat"
-            data-testid={`chat-watcher-button-${chatId}`}
-            data-attention=""
-          >
-            <WatcherEyeIcon size="sm" aria-hidden="true" />
-            <span data-testid={`chat-watcher-button-${chatId}-count`}>
-              {watchers.length}
-            </span>
-          </Button>
-        ) : (
-          <Button
-            variant={CLEAN_ICON_BUTTON_VARIANT}
-            size="sm"
-            iconOnly
-            onClick={(): void => openModal({ projectId, worktreeId, chatId })}
-            aria-label="Watch this chat"
-            data-testid={`chat-watcher-button-${chatId}`}
-          >
-            <WatcherEyeIcon size="sm" aria-hidden="true" />
-          </Button>
-        )}
-      </Tooltip>
-    );
-  }
+
   return (
-    <ActionTooltip
-      title="Watch this chat"
-      description={
-        hasWatchers
-          ? 'Manage who gets notified when this chat finishes its turn.'
-          : 'Notify a chat when this one finishes its turn.'
-      }
-    >
-      <span className={className}>
+    <Tooltip label="Watch this chat">
+      {hasWatchers ? (
         <Button
-          variant={hasWatchers ? 'ghost-accent' : 'ghost-quiet'}
+          variant="ghost-accent"
           size="sm"
-          iconOnly={!hasWatchers}
           onClick={(): void => openModal({ projectId, worktreeId, chatId })}
           aria-label="Watch this chat"
           data-testid={`chat-watcher-button-${chatId}`}
-          data-attention={hasWatchers ? '' : undefined}
+          data-attention=""
         >
           <WatcherEyeIcon size="sm" aria-hidden="true" />
-          {hasWatchers && (
-            <span data-testid={`chat-watcher-button-${chatId}-count`}>
-              {watchers.length}
-            </span>
-          )}
+          <span data-testid={`chat-watcher-button-${chatId}-count`}>
+            {watchers.length}
+          </span>
         </Button>
-      </span>
-    </ActionTooltip>
+      ) : (
+        <Button
+          variant={CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
+          onClick={(): void => openModal({ projectId, worktreeId, chatId })}
+          aria-label="Watch this chat"
+          data-testid={`chat-watcher-button-${chatId}`}
+        >
+          <WatcherEyeIcon size="sm" aria-hidden="true" />
+        </Button>
+      )}
+    </Tooltip>
   );
 }

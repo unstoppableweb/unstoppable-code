@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-5940 D1: captured before changing source-change apply's Git route.
 import { execFileSync, type ExecFileOptions } from 'node:child_process';
 import type * as ChildProcess from 'node:child_process';
@@ -147,7 +148,9 @@ async function ipc(channel: string, request: unknown): Promise<unknown> {
   if (!handler) throw new Error('missing handler');
   return handler({}, request);
 }
-beforeAll(() => {
+let closeW5Store: (() => Promise<void>) | undefined;
+
+beforeAll(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'source-apply-golden-')));
   data = join(root, 'data');
   saved = { ...process.env };
@@ -178,8 +181,10 @@ beforeAll(() => {
       { id: 'multi', name: 'Multi', type: 'multi-repo' },
     ],
   });
+  closeW5Store = await installRoutedW5GoldenStore();
 });
 afterAll(async () => {
+  await closeW5Store?.();
   await settleDetachedWork();
   await runtime?.shutdown();
   restoreEnv(saved);
@@ -429,11 +434,11 @@ it('starts a new branch at origin default after parallel preparation and preserv
   expect(branchProbe).toBeGreaterThan(fetch);
   expect(branchProbe).toBeGreaterThan(defaultBranch);
   expect(commands).toContain(
-    `-c core.hooksPath=/dev/null worktree add -b topic ${target} origin/main`,
+    `-c core.hooksPath=/dev/null -c core.warnAmbiguousRefs=false worktree add -b topic ${target} refs/remotes/origin/main`,
   );
   await expect(
     createWorktree(source, join(root, 'occupied'), 'topic'),
-  ).rejects.toThrow('is already used by worktree');
+  ).rejects.toThrow(/is already (?:used by worktree|checked out at)/);
   // afterAll removes this entire fixture. App process cleanup would scan the
   // host even though this creation case launches no worktree processes.
 }, 30_000);

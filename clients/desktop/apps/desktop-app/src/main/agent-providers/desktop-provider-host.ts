@@ -1,3 +1,5 @@
+import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { WorkerAgentProviderHost } from '@canopy/core-runtime/node/agent/providers';
 import {
@@ -80,6 +82,9 @@ const productionSources = {
       import('@canopy/desktop-shared/node/opencode/runtime-metadata'),
     ]);
     return {
+      antigravity:
+        isAntigravityHarnessEnabled() &&
+        hostPlatformOperatingSystem() === 'darwin',
       claude: true,
       codex: true,
       ollama: isOllamaSupportedOnPlatform(),
@@ -113,6 +118,14 @@ const productionSources = {
           probe
             ? await cursor.isCursorRuntimeAvailable()
             : cursor.peekCursorRuntimeAvailability(),
+        );
+      }
+      case 'antigravity': {
+        const google = await import('../antigravity/models');
+        return availabilityAuthState(
+          probe
+            ? await google.refreshAntigravityModels()
+            : google.peekAntigravityAvailability(),
         );
       }
       case 'copilot': {
@@ -211,9 +224,6 @@ export function createDesktopProviderHost(
     authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
     targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
     async list({ scope, probe }) {
-      const registry = await sources.buildRegistry();
-      const capture = registryCapture.getStore();
-      if (capture) capture.snapshot = registry;
       const supported = await sources.supported();
 
       const authStates: Partial<
@@ -260,6 +270,10 @@ export function createDesktopProviderHost(
         policyRead,
         ...authReads,
       ]);
+
+      const registry = await sources.buildRegistry();
+      const capture = registryCapture.getStore();
+      if (capture) capture.snapshot = registry;
 
       const checkedAt = sources.now().toISOString();
       const project = (

@@ -55,6 +55,8 @@ class StubWebCore {
 
   readonly connections = new Map<string, StubConnection>();
   readonly methods: string[] = [];
+  /** The params of each `worker.filesystem.file.read` the web core received. */
+  readonly fileReads: unknown[] = [];
   private opened = 0;
   private subscriptionCount = 0;
 
@@ -275,6 +277,7 @@ class StubWebCore {
       case 'core.workspace.list':
         return result({ items: [], nextCursor: null });
       case 'worker.filesystem.file.read':
+        this.fileReads.push(params);
         return result({
           fileRootId: 'workspace',
           relativePath: 'image.png',
@@ -481,6 +484,27 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
     expect(typeof content === 'string' && content.length).toBe(
       Math.ceil(WEB_CORE_MAX_READ_BYTES / 3) * 4,
     );
+  });
+
+  it('a renderer wake never reaches the web core: main has no wake proof, so the read stays non-waking (CAN-6114)', async () => {
+    const server = new StubWebCore();
+    const relay = webCoreRelay(server);
+    relays.push(relay);
+    const read = {
+      scope: { chatId: 'chat-1' },
+      fileRootId: 'workspace',
+      relativePath: 'image.png',
+      maxBytes: 1024,
+    };
+    await expect(
+      relay.invoke(mainWindowEvent(), {
+        kind: 'request',
+        method: 'worker.filesystem.file.read',
+        params: { ...read, wake: true },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(server.fileReads).toEqual([expect.objectContaining(read)]);
+    expect(server.fileReads[0]).not.toHaveProperty('wake');
   });
 
   it('more than maxInFlight items flow through readStream without stalling', async () => {

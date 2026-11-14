@@ -228,7 +228,11 @@ export function QueuedMessageStack({
         >
           {error ? (
             <div className="px-3 py-2">
-              <ErrorBanner className="" error={QUEUED_MESSAGE_REORDER_ERROR} />
+              <ErrorBanner
+                errorSource="queued-message-stack-reorder"
+                className=""
+                error={QUEUED_MESSAGE_REORDER_ERROR}
+              />
             </div>
           ) : null}
           {reorderable ? (

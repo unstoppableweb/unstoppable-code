@@ -109,6 +109,7 @@ export function CreateTeamStep({
       >
         {failed && (
           <Notice
+            errorSource="create-team-step-projects-failed"
             intent="destructive"
             data-testid={`${p}-projects-error`}
             actions={

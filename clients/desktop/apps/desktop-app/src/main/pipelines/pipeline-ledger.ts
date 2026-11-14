@@ -7,7 +7,6 @@ import type {
 } from '@canopy/execution-engine/types/approvals';
 import type { CodexHostToolPolicy } from '@canopy/execution-engine/node/codex-runtime/thread-handle';
 import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
-import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
 import type {
   PipelineLedgerAttempt,
   PipelineLedgerAttemptOutcome,
@@ -15,6 +14,7 @@ import type {
   PipelineLedgerPort,
   PipelineLedgerSubprocessTools,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
+import { ledgerCodexToolPolicy } from '@canopy/execution-engine/node/ledger-tools/codex';
 import {
   createApprovalSession,
   type ApprovalSessionHandle,
@@ -30,7 +30,6 @@ import {
   findDesktopGlobalLedgerScope,
   resolveDesktopGlobalLedgerScope,
 } from '../ledger/core-ledger-adapter';
-import { buildLedgerCodexDynamicToolSpecs } from '../codex/canopy-dynamic-tools';
 import {
   getLedgerPipelineAgentOwners,
   retireLedgerPipelineExecution,
@@ -107,7 +106,12 @@ function attemptRouteScope(request: PipelineLedgerAttemptRequest): {
 interface OpenAttempt {
   readonly tools: PipelineLedgerAttemptTools;
   readonly request: PipelineLedgerAttemptRequest;
+  /** Routes opened for the attempt's agent, released when it closes. */
+  readonly routes: Set<() => void>;
 }
+
+/** The step providers whose Ledger calls the host gates itself. */
+type PipelineLedgerProvider = 'claude' | 'codex' | 'opencode';
 
 const openAttempts = new Map<string, OpenAttempt>();
 
@@ -138,69 +142,24 @@ export function pipelineLedgerClaudeToolNames(): string[] {
 }
 
 /**
- * The attempt's Ledger tools as Codex dynamic tools: the specs a new thread
- * starts with and, per turn, the host policy that runs them. Only calls on
- * the step's own thread reach the attempt's binding, and each passes the
- * step's approval session first, as a native chat's injected tools do.
+ * The attempt's Ledger tools as Codex dynamic tools, each call passing the
+ * step's approval session first (`ledgerCodexToolPolicy`).
  */
 export function pipelineLedgerCodexTools(
   tools: LedgerToolsRuntime,
   approval: Pick<ApprovalSessionHandle, 'check'>,
-): {
-  readonly specs: DynamicToolSpec[];
-  readonly policy: (threadId: string) => CodexHostToolPolicy;
-} {
-  const specs = buildLedgerCodexDynamicToolSpecs();
-  const keyOf = (name: string): LedgerToolKey | undefined =>
-    LEDGER_TOOL_KEYS.find(
-      (key) => CANOPY_INJECTED_TOOL_REGISTRY[key].codexToolName === name,
+): ReturnType<typeof ledgerCodexToolPolicy> {
+  return ledgerCodexToolPolicy(tools, async (call): Promise<boolean> => {
+    const outcome = await approval.check(
+      { kind: 'tool', toolName: call.tool },
+      {
+        title: `Use ${call.tool}?`,
+        details: { kind: 'tool', toolName: call.tool },
+        toolUseId: `codex-${call.callId}`,
+      },
     );
-  return {
-    specs,
-    policy: (threadId): CodexHostToolPolicy => ({
-      allowedTools: specs.map(({ name }) => ({ namespace: null, tool: name })),
-      authorize: async (call, signal): Promise<boolean> => {
-        if (
-          signal.aborted ||
-          call.threadId !== threadId ||
-          call.namespace !== null ||
-          keyOf(call.tool) === undefined
-        ) {
-          return false;
-        }
-        const outcome = await approval.check(
-          { kind: 'tool', toolName: call.tool },
-          {
-            title: `Use ${call.tool}?`,
-            details: { kind: 'tool', toolName: call.tool },
-            toolUseId: `codex-${call.callId}`,
-          },
-        );
-        return outcome.decision === 'allow' && !signal.aborted;
-      },
-      execute: async (call, signal): Promise<DynamicToolCallResponse> => {
-        const key = keyOf(call.tool);
-        if (
-          signal.aborted ||
-          call.namespace !== null ||
-          call.threadId !== threadId ||
-          key === undefined
-        ) {
-          return { success: false, contentItems: [] };
-        }
-        // Codex repeats the thread, turn and call IDs for one call, so a
-        // Ledger key derived from them dedupes its retries.
-        const result = await tools.execute(key, call.arguments, {
-          invocationId: `codex:${call.threadId}:${call.turnId}:${call.callId}`,
-          signal,
-        });
-        return {
-          success: result.isError !== true,
-          contentItems: [{ type: 'inputText', text: result.text }],
-        };
-      },
-    }),
-  };
+    return outcome.decision === 'allow';
+  });
 }
 
 /** A Codex step's Ledger tools, under the step's approval session. */
@@ -215,11 +174,11 @@ export interface PipelineLedgerCodexTools {
 
 /**
  * How a pipeline step's provider names a Ledger tool to the approval policy:
- * Codex as an exact tool, Claude as a tool on the brand's injected MCP server,
- * as a Claude pipeline worker's calls are checked.
+ * Codex as an exact tool, Claude and OpenCode as a tool on the brand's
+ * injected MCP server, as a Claude pipeline worker's calls are checked.
  */
 function ledgerToolApprovalTarget(
-  provider: 'claude' | 'codex',
+  provider: PipelineLedgerProvider,
   key: LedgerToolKey,
 ): ApprovalRuleTarget {
   const tool = CANOPY_INJECTED_TOOL_REGISTRY[key];
@@ -239,7 +198,7 @@ function createPipelineLedgerApprovalSession(
   attemptKey: string,
   request: PipelineLedgerAttemptRequest,
   cwd: string,
-  provider: 'claude' | 'codex',
+  provider: PipelineLedgerProvider,
 ): ApprovalSessionHandle {
   const createdAt = new Date().toISOString();
   const route = attemptRouteScope(request);
@@ -317,6 +276,91 @@ export function openPipelineLedgerCodexTools(
   };
 }
 
+/** An OpenCode step's Ledger tools: the attempt's route on the app's server. */
+export interface PipelineLedgerOpenCodeTools {
+  /** The Ledger block for the session's instructions. */
+  readonly instructions: string;
+  /** The app server the step adds to its MCP servers. */
+  readonly server: {
+    readonly name: string;
+    readonly url: string;
+    readonly authToken: string;
+  };
+  /** Unregisters the route and ends its approval session. */
+  dispose(): void;
+}
+
+/**
+ * The Ledger tools of an OpenCode step's open attempt: a per-run route on the
+ * app's MCP server that lists exactly the three tools and gates each call
+ * with the step's unattended approval session, as a Claude action
+ * subprocess's route does. Undefined without an attempt. The route ends with
+ * `dispose` or when the attempt closes, whichever comes first.
+ */
+export async function openPipelineLedgerOpenCodeTools(
+  attemptKey: string | undefined,
+  cwd: string,
+): Promise<PipelineLedgerOpenCodeTools | undefined> {
+  const open =
+    attemptKey === undefined ? undefined : openAttempts.get(attemptKey);
+  if (attemptKey === undefined || open === undefined) return undefined;
+  const { request } = open;
+  const proxy = getMcpHttpProxyService();
+  const sessionKey = `pipeline-ledger-opencode-${attemptKey}-${randomUUID()}`;
+  const authToken = randomBytes(32).toString('base64url');
+  const approval = createPipelineLedgerApprovalSession(
+    attemptKey,
+    request,
+    cwd,
+    'opencode',
+  );
+  const route = attemptRouteScope(request);
+  let live = true;
+  const dispose = (): void => {
+    if (!live) return;
+    live = false;
+    open.routes.delete(dispose);
+    proxy.unregisterCanopyWorktreeSessionRoute(sessionKey);
+    approval.dispose();
+  };
+  try {
+    await proxy.registerCanopyWorktreeSessionRoute({
+      sessionKey,
+      projectId: route.projectId,
+      worktreeId: route.worktreeId,
+      chatId: `pipeline:${request.executionId}`,
+      // The worker surface lists the Ledger tools for a route whose session
+      // passed the gate, and nothing else.
+      toolSurface: 'claude-worker',
+      providerType: 'opencode',
+      sdkSessionId: sessionKey,
+      authToken,
+      createdAt: Date.now(),
+      hookHandler: () => undefined,
+      ledgerTools: open.tools,
+      authorizeToolCall: pipelineLedgerSubprocessGate(approval),
+    });
+  } catch (error) {
+    approval.dispose();
+    throw error;
+  }
+  // The attempt may have closed while the route registered.
+  if (!openAttempts.has(attemptKey)) {
+    dispose();
+    return undefined;
+  }
+  open.routes.add(dispose);
+  return {
+    instructions: open.tools.systemPrompt(),
+    server: {
+      name: BRAND.tools.namespace,
+      url: proxy.getCanopyWorktreeMcpUrl(sessionKey),
+      authToken,
+    },
+    dispose,
+  };
+}
+
 /**
  * Opens one agent attempt's Ledger tools when the gate passes: the flag, the
  * "Agents add to the Feed" setting and a Ledger scope, the execution's
@@ -374,7 +418,8 @@ async function openAttempt(
   // A running agent is not an assignable owner.
   owners.noteRunning(agentSessionId);
   const attemptKey = randomUUID();
-  openAttempts.set(attemptKey, { tools, request });
+  const open: OpenAttempt = { tools, request, routes: new Set() };
+  openAttempts.set(attemptKey, open);
   let routeKey: string | undefined;
   let routeApproval: ApprovalSessionHandle | undefined;
   let subprocessTools: Promise<PipelineLedgerSubprocessTools> | undefined;
@@ -451,6 +496,7 @@ async function openAttempt(
         getMcpHttpProxyService().unregisterCanopyWorktreeSessionRoute(routeKey);
       }
       routeApproval?.dispose();
+      for (const release of Array.from(open.routes)) release();
       if (outcome.kind === 'paused') {
         owners.notePaused({
           agentSessionId,

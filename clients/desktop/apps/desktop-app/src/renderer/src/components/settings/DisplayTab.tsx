@@ -341,6 +341,7 @@ function ChatEnrichmentSection(): JSX.Element {
               }
             >
               <ErrorBanner
+                errorSource="chat-enrichment-section"
                 className=""
                 error={
                   failed[provider]
@@ -641,7 +642,11 @@ export function DisplayTab(): JSX.Element {
               />
             }
           >
-            <ErrorBanner error={workspaceLayoutSaveError} className="" />
+            <ErrorBanner
+              errorSource="display-tab-workspace-layout-save"
+              error={workspaceLayoutSaveError}
+              className=""
+            />
           </SettingsRow>
           <SettingsRow
             label="Scrollbars"

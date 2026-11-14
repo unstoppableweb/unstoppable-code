@@ -12,6 +12,8 @@ export function ClaudeAiCreditsFallbackErrorNotice({
 }: ClaudeAiCreditsFallbackErrorNoticeProps): JSX.Element {
   return (
     <Notice
+      errorSource="claude-ai-credits-fallback-error"
+      displayErrorCode="external.sign_in_required"
       intent="destructive"
       role="none"
       title="Claude is signed out."

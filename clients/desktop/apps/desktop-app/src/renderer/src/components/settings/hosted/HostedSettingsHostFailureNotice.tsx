@@ -21,6 +21,7 @@ export function HostedSettingsHostFailureNotice({
   const failure = useHostedSettingsHostFailure(location, account);
   return (
     <DesktopErrorBanner
+      errorSource="hosted-settings-host-failure"
       className=""
       error={failure?.error}
       {...(failure?.details === undefined ? {} : { details: failure.details })}

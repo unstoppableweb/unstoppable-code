@@ -9,7 +9,7 @@ import {
 } from '@canopy/execution-engine/node/codex-runtime/transport-errors';
 import {
   codexTranscriptEventsHaveAgentActivity,
-  createCodexCapabilitySnapshotId,
+  createCodexCapabilitySnapshotIds,
   createHeadlessMcpElicitationPolicy,
   isForeignThreadTokenUsageEvent,
   projectCodexRuntimeEvent,
@@ -86,6 +86,11 @@ export interface CodexPipelinePromptPorts {
   ) => Promise<CodexPipelinePluginResolution>;
   /** MCP HTTP proxy authority ids for the resolved servers. */
   mcpCapabilityAuthorityIds(servers: CodexConfig): string[];
+  /**
+   * The ids fingerprint v1 named the same servers by, where they differ
+   * (CAN-6168); absent when they don't.
+   */
+  legacyMcpCapabilityAuthorityIds?(servers: CodexConfig): string[];
   /** Routing for a step that carries no harness invocation. */
   resolveRouting(
     model: string,
@@ -280,10 +285,14 @@ export async function runCodexPipelinePromptWith(
     const roots = resolved?.selectedCapabilityRoots ?? [];
     const mcpServers = resolved?.codexMcpServers ?? {};
     const mcpAuthorityIds = ports.mcpCapabilityAuthorityIds(mcpServers);
-    const snapshotId = createCodexCapabilitySnapshotId({
+    const { snapshotId, legacySnapshotId } = createCodexCapabilitySnapshotIds({
       roots,
       mcpServers,
       mcpAuthorityIds,
+      ...(ports.legacyMcpCapabilityAuthorityIds && {
+        legacyMcpAuthorityIds:
+          ports.legacyMcpCapabilityAuthorityIds(mcpServers),
+      }),
     });
     const mockOverride = resolveCodexMockAppServerOverride();
     const aiCredits = request.harnessInvocation
@@ -398,6 +407,7 @@ export async function runCodexPipelinePromptWith(
             ...commonParams,
           },
           capabilitySnapshotId: snapshotId,
+          legacyCapabilitySnapshotId: legacySnapshotId,
           capabilityLeaseKind: 'persisted-helper',
           profile,
         })

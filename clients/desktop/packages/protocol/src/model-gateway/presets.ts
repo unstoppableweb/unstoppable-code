@@ -104,6 +104,36 @@ export const AI_GATEWAY_PRESETS: readonly AiGatewayPreset[] = [
 ];
 
 /**
+ * Order a saved gateway's models for picking a default, models the user
+ * chose first.
+ *
+ * Nothing records whether a saved model was one of the preset's suggestions or
+ * one the user turned on themselves, so this infers it: a model outside the
+ * matching preset's `suggestedModelIds` must have been chosen deliberately, and
+ * leads. Both groups keep their saved order. A gateway with no preset keeps its
+ * saved order. Models the user turned off are absent from the saved list, so
+ * they never appear here.
+ *
+ * Because the split is inferred, editing a preset's `suggestedModelIds` also
+ * changes which saved model existing users of that preset default to: a model
+ * dropped from the suggestions moves ahead, one added moves behind.
+ *
+ * Shared by the desktop resolver and the web cloud catalog so both hosts pick
+ * the same default for the same gateway.
+ */
+export function orderGatewayModelsForDefault<
+  T extends { readonly gatewayId: string },
+>(baseUrl: string | null | undefined, models: readonly T[]): T[] {
+  const suggested = new Set(
+    matchAiGatewayPreset(baseUrl)?.suggestedModelIds ?? [],
+  );
+  return [
+    ...models.filter((model) => !suggested.has(model.gatewayId)),
+    ...models.filter((model) => suggested.has(model.gatewayId)),
+  ];
+}
+
+/**
  * Recognize a hosted preset from a base URL. Never throws and never rewrites
  * the URL; self-hosted presets have no hosts, so they never match.
  */

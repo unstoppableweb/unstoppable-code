@@ -71,7 +71,11 @@ export function AddedPluginsList({
           </ActivityItemRow>
         ))}
       </div>
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="added-plugins-list"
+        className=""
+        error={error}
+      />
     </Stack>
   );
 }

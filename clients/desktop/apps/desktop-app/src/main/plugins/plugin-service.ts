@@ -90,6 +90,8 @@ import {
   installCodexPlugin as installCodexPluginUnchecked,
   isStructuralCodexMarketplaceFailure,
   listCodexPlugins,
+  readCuratedCodexInstalledRoots,
+  refreshCuratedCodexPlugins,
   readCodexMarketplaceInstallMetadata,
   removeCodexMarketplace as removeCodexMarketplaceUnchecked,
   resolveCodexPluginInstallRoots,
@@ -1599,6 +1601,10 @@ async function readCodexBuiltInPluginInstallStatus(
       };
     }
     const list = listResult.data;
+    if (marketplaceName === getCuratedPluginMarketplaceName()) {
+      const error = managedMarketplaceLoadError(list, marketplaceName);
+      if (error) return { available: true, installed: false, version, error };
+    }
     const marketplace = list.marketplaces.find(
       (entry) => entry.name === marketplaceName,
     );
@@ -1613,6 +1619,20 @@ async function readCodexBuiltInPluginInstallStatus(
     const summary = marketplace?.plugins.find(
       (entry) => entry.name.toLowerCase() === pluginName.toLowerCase(),
     );
+    // First install registers Codex. Absence without a load error is known
+    // uninstalled; an existing marketplace omitting this plugin is incomplete.
+    if (
+      marketplaceName === getCuratedPluginMarketplaceName() &&
+      marketplace &&
+      !summary
+    ) {
+      return {
+        available: true,
+        installed: false,
+        version,
+        error: 'Incomplete curated Codex plugin listing.',
+      };
+    }
     return {
       available: true,
       installed: summary?.installed === true,
@@ -1688,7 +1708,168 @@ async function withManagedPluginInstallStatus(
       ),
     });
   }
+  if (marketplaceName === getCuratedPluginMarketplaceName()) {
+    await resolveCuratedActiveRoots(pluginsWithStatus, codexPluginListResult);
+  }
   return carryOverBuiltInPluginInstallErrors(pluginsWithStatus);
+}
+
+/** Claude reports readFromFolder; Codex executes its installed cache copy.
+ * Never infer installed revisions from plugin/read or marketplace source paths,
+ * or borrow a path after a failed/partial listing.
+ */
+async function resolveCuratedActiveRoots(
+  plugins: PluginInfo[],
+  codexResult: CodexPluginListResult | undefined,
+): Promise<void> {
+  const name = getCuratedPluginMarketplaceName();
+  const root = path.resolve(getCuratedPluginsMarketplaceDir());
+  let claudeRows: unknown;
+  let claudeError: string | undefined;
+  if (plugins.some((plugin) => plugin.globalInstallStatus?.claude?.installed)) {
+    try {
+      claudeRows = await readCuratedClaudeListings();
+    } catch (error) {
+      claudeError = errorMessage(error);
+    }
+  }
+  const codexMarketplace = codexResult?.success
+    ? codexResult.data.marketplaces.find((entry) => entry.name === name)
+    : undefined;
+  const codexRoot =
+    codexMarketplace && codexMarketplaceRootFromPath(codexMarketplace.path);
+  const codexInstalledRoots =
+    codexRoot && (await sameExistingPluginRoot(codexRoot, root))
+      ? await readCuratedCodexInstalledRoots(
+          name,
+          codexMarketplace?.plugins.filter((entry) => entry.installed) ?? [],
+        ).catch(() => new Map<string, string>())
+      : new Map<string, string>();
+  for (const plugin of plugins) {
+    const expected = path.join(root, plugin.name);
+    const claude = plugin.globalInstallStatus?.claude;
+    if (claude?.installed && !claude.error) {
+      const row: unknown = Array.isArray(claudeRows)
+        ? claudeRows.find(
+            (value: unknown) =>
+              isRecord(value) &&
+              value.id === `${plugin.name}@${name}` &&
+              isUserScopedInstall(value),
+          )
+        : undefined;
+      if (claudeError || !isRecord(row)) {
+        claude.error = claudeError ?? 'Incomplete Claude plugin listing.';
+      } else if (typeof row.readFromFolder === 'string') {
+        if (await sameExistingPluginRoot(row.readFromFolder, expected))
+          claude.installPath = expected;
+        else
+          claude.error =
+            'The curated Claude plugin source does not match its managed folder.';
+      }
+      // Older CLIs omit readFromFolder: keep their recorded installPath.
+    }
+    const codex = plugin.globalInstallStatus?.codex;
+    if (codex?.installed && !codex.error) {
+      const summary = codexMarketplace?.plugins.find(
+        (entry) => entry.name === plugin.name && entry.installed,
+      );
+      if (
+        codexRoot &&
+        (await sameExistingPluginRoot(codexRoot, root)) &&
+        summary?.source.type === 'local' &&
+        (await sameExistingPluginRoot(
+          path.resolve(root, summary.source.path),
+          expected,
+        ))
+      ) {
+        // Unresolved runtime evidence suppresses artwork, not known install state.
+        codex.installPath = codexInstalledRoots.get(plugin.name);
+      } else
+        codex.error =
+          'The curated Codex plugin source is unavailable or incomplete.';
+    }
+  }
+}
+
+async function sameExistingPluginRoot(
+  left: string,
+  right: string,
+): Promise<boolean> {
+  try {
+    const [actual, expected] = await Promise.all([
+      fs.promises.realpath(left),
+      fs.promises.realpath(right),
+    ]);
+    return actual === expected;
+  } catch {
+    return false;
+  }
+}
+
+async function readCuratedClaudeListings(): Promise<unknown[]> {
+  const root = path.resolve(getCuratedPluginsMarketplaceDir());
+  if (
+    claudeRegisteredMarketplaceRoot(
+      readKnownMarketplaces(),
+      getCuratedPluginMarketplaceName(),
+    ) !== root
+  )
+    throw new Error(
+      'The curated Claude marketplace registration is unavailable.',
+    );
+  const result = await runClaudeCliProcessOffMain({
+    command: getBundledClaudeBinaryPath(),
+    args: ['plugin', 'list', '--json'],
+    env: getEnhancedEnv(),
+    timeoutMs: PLUGIN_CLI_TIMEOUT_MS,
+  });
+  const rows: unknown = JSON.parse(result.stdout);
+  if (!Array.isArray(rows))
+    throw new Error('Incomplete Claude plugin listing.');
+  return rows.map((value: unknown) => value);
+}
+
+/** Older Claude releases may actually load installPath. Let that provider
+ * refresh its own copy; never edit caches, uninstall, or change enabled state.
+ * Current local installs explicitly report readFromFolder and need no refresh.
+ */
+async function refreshLegacyCuratedClaudeCopies(): Promise<void> {
+  const rows = await readCuratedClaudeListings();
+  const marketplaceName = getCuratedPluginMarketplaceName();
+  const manifest = safeReadJson<MarketplaceManifest>(
+    path.join(
+      getCuratedPluginsMarketplaceDir(),
+      '.claude-plugin',
+      'marketplace.json',
+    ),
+  );
+  for (const entry of manifest?.plugins ?? []) {
+    const id = `${entry.name}@${marketplaceName}`;
+    const row = rows.find(
+      (value) =>
+        isRecord(value) && value.id === id && isUserScopedInstall(value),
+    );
+    if (!isRecord(row) || typeof row.readFromFolder === 'string') continue;
+    const installedRoot = installPathOf(row);
+    if (!installedRoot) continue;
+    const relative = path.join('.claude-plugin', 'canopy-display.json');
+    const staged = safeReadJson<unknown>(
+      path.join(getCuratedPluginsMarketplaceDir(), entry.name, relative),
+    );
+    if (
+      !staged ||
+      JSON.stringify(staged) ===
+        JSON.stringify(
+          safeReadJson<unknown>(path.join(installedRoot, relative)),
+        )
+    )
+      continue;
+    await execPluginCli(
+      getBundledClaudeBinaryPath(),
+      ['plugin', 'update', id, '--scope', 'user'],
+      getEnhancedEnv(),
+    );
+  }
 }
 
 const BUILT_IN_INSTALL_PROVIDERS: readonly PluginProvider[] = [
@@ -1724,8 +1905,18 @@ function carryOverBuiltInPluginInstallErrors(
     let changed = false;
     const next: BuiltInPluginInstallStatus = { ...status };
     for (const provider of BUILT_IN_INSTALL_PROVIDERS) {
-      const installError = before[provider]?.installError;
       const current = status[provider];
+      const prior = before[provider];
+      if (
+        isCuratedPluginMarketplaceId(plugin.marketplaceId) &&
+        current?.error &&
+        prior?.installed
+      ) {
+        next[provider] = { ...prior, error: current.error };
+        changed = true;
+        continue;
+      }
+      const installError = before[provider]?.installError;
       if (
         installError === undefined ||
         !current ||
@@ -3041,6 +3232,13 @@ async function nudgeManagedProviderMarketplace(
         }\n`,
       );
     }
+    if (
+      updated.accepted &&
+      marketplaceName === getCuratedPluginMarketplaceName()
+    ) {
+      await refreshLegacyCuratedClaudeCopies();
+      invalidateCuratedMarketplaceScanCache();
+    }
   }
   // Managed Codex marketplaces are registered from absolute local roots, not
   // Git repositories. The provider scan that follows this nudge observes their
@@ -3107,10 +3305,12 @@ export async function syncCuratedPluginsForRefresh(options?: {
   providerNudge?: 'await' | 'background';
 }): Promise<CuratedPluginSyncResult | null> {
   try {
-    return await withMarketplaceRefreshLock(() =>
-      syncCuratedPluginsForRefreshUnlocked(options, {
-        lockBackgroundNudge: true,
-      }),
+    return await runSerializedPluginMutation(() =>
+      withMarketplaceRefreshLock(() =>
+        syncCuratedPluginsForRefreshUnlocked(options, {
+          lockBackgroundNudge: true,
+        }),
+      ),
     );
   } catch (error) {
     process.stderr.write(
@@ -3139,13 +3339,30 @@ async function syncCuratedPluginsForRefreshUnlocked(
       );
       if (marketplace) await initializeCuratedPluginDefaults([marketplace]);
     }
+    if (result.status !== 'skipped') {
+      const refreshed = await refreshCuratedCodexPlugins(
+        getCuratedPluginMarketplaceName(),
+        getCuratedPluginsMarketplaceDir(),
+      ).catch((error) => {
+        process.stderr.write(
+          `[plugins] Curated Codex refresh deferred: ${errorMessage(error)}\n`,
+        );
+      });
+      if (refreshed) {
+        invalidateCuratedMarketplaceScanCache();
+        await persistCuratedMarketplaceAfterSync();
+      }
+    }
     if (result.status !== 'synced') return result;
     await persistCuratedMarketplaceAfterSync();
-    const nudgeProvider = (): Promise<void> =>
-      nudgeManagedProviderMarketplace(
+    const nudgeProvider = async (): Promise<void> => {
+      await nudgeManagedProviderMarketplace(
         getCuratedPluginMarketplaceName(),
         'curated',
       );
+      invalidateCuratedMarketplaceScanCache();
+      await persistCuratedMarketplaceAfterSync();
+    };
     if (options?.providerNudge === 'background') {
       const providerNudge = behavior?.lockBackgroundNudge
         ? withMarketplaceRefreshLock(nudgeProvider)
@@ -3177,9 +3394,11 @@ export async function refreshMarketplaces(
 ): Promise<IPCResult<PluginsCache>> {
   try {
     assertCatalogHealth({ allowLegacy: true });
-    return await withMarketplaceRefreshLock(() =>
-      providerRevalidation.run(true, () =>
-        refreshMarketplacesUnlocked(progress, options),
+    return await runSerializedPluginMutation(() =>
+      withMarketplaceRefreshLock(() =>
+        providerRevalidation.run(true, () =>
+          refreshMarketplacesUnlocked(progress, options),
+        ),
       ),
     );
   } catch (error) {

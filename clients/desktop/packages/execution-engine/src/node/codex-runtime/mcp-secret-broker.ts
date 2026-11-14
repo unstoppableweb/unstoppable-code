@@ -74,7 +74,17 @@ interface BrokerRouteAuth {
   parentPid: number;
 }
 
-function routeDigest(request: CodexStdioMcpLaunchRequest): string {
+/**
+ * A stdio MCP server's capability id: the digest of what it runs, not of how
+ * a host launches it. The broker's launch route carries it, and the capability
+ * snapshot reads it, so the same server has the same id on every host.
+ */
+export function codexStdioMcpCapabilityId(
+  request: Pick<
+    CodexStdioMcpLaunchRequest,
+    'command' | 'args' | 'cwd' | 'baseEnv' | 'env'
+  >,
+): string {
   return createHash('sha256')
     .update(
       JSON.stringify({
@@ -218,7 +228,7 @@ export class CodexMcpSecretBroker {
     await this.ensureStarted();
     assertRegistrationActive();
     const ownerKey = `${request.ownerId}\0${request.routeKey}`;
-    const digest = routeDigest(request);
+    const digest = codexStdioMcpCapabilityId(request);
     const existingId = this.routeByOwnerKey.get(ownerKey);
     const existing = existingId ? this.routes.get(existingId) : undefined;
     if (

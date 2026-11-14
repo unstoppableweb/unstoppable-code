@@ -392,6 +392,15 @@ export interface TranscriptPage {
   cursor?: string;
   /** Render as a sticky supplement, never as an extra chronological row. */
   latestHumanMessage?: PersistedChatMessage;
+  /**
+   * How the page's turns ended, by prompt id, for a host whose tabs record
+   * no turn ends (the web core names them only in its timer rows, CAN-6560).
+   * The reader lays them over the tab's own.
+   */
+  turnEnds?: Record<
+    string,
+    { outcome: 'completed' | 'failed' | 'cancelled'; endedAt: number }
+  >;
 }
 
 export interface TurnSummaryCounts {

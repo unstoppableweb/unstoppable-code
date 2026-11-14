@@ -1,7 +1,9 @@
+import { readW5BackupPosition } from './backup-position';
 import { basename, dirname } from 'node:path';
 import type { W5FileConflict } from './apply';
 import {
   W5_CAPTURE_LIMITS,
+  W5_CAPTURE_KEY_MAX,
   type W5CaptureEvidence,
   type W5CaptureFile,
   type W5FileChainEvidence,
@@ -225,38 +227,7 @@ export class W5CommitLog {
 
   /** Runs synchronously on the worker's single exclusively held connection. */
   snapshot(): W5BackupPosition {
-    const commitId = asInteger(
-      this.db
-        .prepare(
-          'SELECT COALESCE(MAX(commit_id), 0) AS commit_id FROM w5_commits',
-        )
-        .get()?.commit_id,
-    );
-    const schemaVersion = Number(
-      asText(
-        this.db
-          .prepare("SELECT value FROM w5_meta WHERE key = 'schema_version'")
-          .get()?.value,
-      ),
-    );
-    const revisions: Record<string, number> = {};
-    for (const row of this.db
-      .prepare('SELECT resource, revision FROM w5_revisions ORDER BY resource')
-      .all())
-      revisions[asText(row.resource)] = asInteger(row.revision);
-    // A partially applied or conflicted decision is not a verified source.
-    const pending = this.db
-      .prepare(
-        "SELECT commit_id FROM w5_commits WHERE state != 'applied' ORDER BY commit_id LIMIT 1",
-      )
-      .get();
-    if (pending)
-      throw new W5CommitRefusedError(
-        'recovery-required',
-        'W5 backup requires completed file recovery.',
-        { commitId: asInteger(pending.commit_id) },
-      );
-    return { commitId, schemaVersion, revisions };
+    return readW5BackupPosition(this.db);
   }
 
   /** Bounded retained evidence, not a claim of canonical revision eligibility. */
@@ -314,7 +285,7 @@ export class W5CommitLog {
         if (++count > W5_CAPTURE_LIMITS.evidenceRows) limit();
         // node:sqlite truncates TEXT results at NUL; bounded hex preserves the key.
         const key = Buffer.from(asText(row.resource), 'hex').toString('utf8');
-        if (key.length > 512) limit();
+        if (key.length > W5_CAPTURE_KEY_MAX) limit();
         revisions[key] = asInteger(row.revision);
       }
     } finally {

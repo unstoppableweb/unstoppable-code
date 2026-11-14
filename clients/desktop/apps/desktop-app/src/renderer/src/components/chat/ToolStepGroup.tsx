@@ -1,10 +1,8 @@
 import { memo, type JSX, type ReactNode } from 'react';
 import {
   ChatToolStepGroup,
-  getToolDisplayInfo,
   liveToolCallActivity,
   stepKindIcon,
-  useCleanChatLook,
   useToolApprovalWait,
   type ChatToolStepLive,
   type ToolApprovalWait,
@@ -14,93 +12,12 @@ import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { brand } from '@/lib/brand';
 import type { TurnOutcomeEvidence } from '@canopy/protocol/portal';
-import type { DisplayBlock } from './types';
 import {
   cleanBlockRole,
   describeCleanSteps,
-  describeSteps,
-  firstStepKind,
-  runningToolUse,
   stepsBeforeLiveWindow,
-  summarizeSteps,
   type CleanStepSegment,
-  type ToolStepBlock,
 } from './tool-step-groups';
-
-type ToolUseBlock = Extract<DisplayBlock, { type: 'tool_use' }>;
-
-/**
- * Early access: one row standing in for a run of back-to-back tool calls.
- * Collapsed it reads "Searched 3 times, read 4 files"; while the last call is
- * still running, that call's own label and the spinner follow the summary.
- * Opening it shows the run's messages as today's tool rows, without gaps.
- *
- * With the live step window (CAN-4274), the run a turn is still adding to
- * also shows its newest steps under the closed row (`liveSteps`). Text that
- * ends the run, or the turn finishing, drops them and leaves the row.
- *
- * The row itself is the shared `ChatToolStepGroup`; this adapter turns the
- * desktop transcript's blocks into its summary and running label.
- */
-export const ToolStepGroup = memo(function ToolStepGroup({
-  toolUses,
-  steps,
-  streaming,
-  forceExpanded = false,
-  openRequest,
-  isCodeReviewChat,
-  liveSteps,
-  children,
-}: {
-  toolUses: readonly ToolUseBlock[];
-  /** What the summary counts, when it is more than the tool calls. */
-  steps?: readonly ToolStepBlock[];
-  /** True while the turn is still running. */
-  streaming: boolean;
-  /** Opens the group without changing its saved state (search reveal). */
-  forceExpanded?: boolean;
-  /** Opens the group as saved state once per new object (a call reveal). */
-  openRequest?: object;
-  isCodeReviewChat?: boolean;
-  /** The newest steps, shown under the closed row while the run is live. */
-  liveSteps?: ReactNode;
-  /** The run's messages, rendered when the group is open. */
-  children: ReactNode;
-}): JSX.Element {
-  const scope = {
-    isCodeReview: isCodeReviewChat,
-    trustedMcpNamespace: brand.tools.namespace,
-  };
-  const running = streaming ? runningToolUse(toolUses) : undefined;
-  const firstKind = firstStepKind(steps ?? toolUses, scope);
-  // Clean chat look: the run's words without counts, like the Codex app.
-  const clean = useCleanChatLook();
-  const approvalWait = useToolApprovalWait();
-
-  return (
-    <ChatToolStepGroup
-      summary={
-        clean
-          ? describeSteps(steps ?? toolUses, scope)
-          : summarizeSteps(steps ?? toolUses, scope)
-      }
-      runningLabel={
-        running
-          ? getToolDisplayInfo(running.toolName, running.input, scope).label
-          : undefined
-      }
-      runningWaiting={
-        running !== undefined && approvalWait.isCallWaiting(running)
-      }
-      forceExpanded={forceExpanded}
-      openRequest={openRequest}
-      liveSteps={liveSteps}
-      icon={firstKind ? stepKindIcon(firstKind) : undefined}
-    >
-      {children}
-    </ChatToolStepGroup>
-  );
-});
 
 type CleanStepsSegment = Extract<CleanStepSegment, { kind: 'steps' }>;
 

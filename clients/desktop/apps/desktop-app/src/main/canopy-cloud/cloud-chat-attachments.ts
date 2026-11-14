@@ -4,6 +4,8 @@ import {
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   composeCanopyInstructionRegistries,
   CoreChatAttachmentUploadResultSchema,
+  type CanopyInstructionDefinitionMap,
+  type CanopyQueryDefinitionMap,
   type CoreChatAttachmentUploadParams,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -16,6 +18,7 @@ import {
   CanopyClientError,
   createCanopyClient,
   createCanopyClientLease,
+  type CanopyClient,
 } from '@canopy/core-client';
 import { CanopyTransportError } from '@canopy/core-transport';
 import type {
@@ -81,7 +84,11 @@ export function cloudChatIdOfKey(chatKey: unknown): string | null {
   }
 }
 
-function validIds(target: z.output<typeof targetSchema>): boolean {
+/** Whether a cloud chat target's workspace and task ids pass the shared validator. */
+export function validIds(target: {
+  readonly workspaceId: string;
+  readonly worktreeId: string;
+}): boolean {
   try {
     validateId(target.workspaceId, 'cloud workspace id');
     validateId(target.worktreeId, 'cloud task id');
@@ -92,60 +99,86 @@ function validIds(target: z.output<typeof targetSchema>): boolean {
 }
 
 /**
- * Sends each upload on a connection of its own: opened with main's web core
- * binding, closed once the upload settles. The connection holds a client
- * lease for the upload's life, so a slow upload outlives the web core's
- * unleased connection TTL.
+ * Runs `run` on a client of a web core connection of its own: opened with
+ * main's web core binding, closed once `run` settles. The connection holds a
+ * client lease for its life, so slow work outlives the web core's unleased
+ * connection TTL.
  */
+export async function withLeasedWebCoreClient<
+  Q extends CanopyQueryDefinitionMap,
+  I extends CanopyInstructionDefinitionMap,
+  T,
+>(
+  binding: WebCoreBindingOptions,
+  options: {
+    readonly clientName: string;
+    readonly clientVersion: string;
+    readonly label: string;
+    readonly definitions: { readonly queries: Q; readonly instructions: I };
+    readonly signal: AbortSignal;
+  },
+  run: (client: CanopyClient<Q, I, Record<never, never>>) => Promise<T>,
+): Promise<T> {
+  // The client owns the connection: closing it, or a failed handshake,
+  // closes the connection too.
+  const client = await createCanopyClient<Q, I>({
+    connection: await connectWebCore(binding, options.signal),
+    clientName: options.clientName,
+    clientVersion: options.clientVersion,
+    definitions: { ...options.definitions, streams: {} },
+    signal: options.signal,
+  });
+  const lease = createCanopyClientLease({
+    client,
+    // One piece of work per connection: a dropped connection fails it.
+    attach: () =>
+      Promise.reject(
+        new CanopyClientError({
+          kind: 'unavailable',
+          message: 'The connection closed.',
+          retry: { kind: 'never' },
+        }),
+      ),
+    identity: {
+      clientInstanceId: randomUUID(),
+      interfaceKind: 'http',
+      label: options.label,
+    },
+    renewalIntervalMs: LEASE_RENEWAL_MS,
+    presence: () => ({ interactive: true, foreground: true }),
+  });
+  try {
+    await lease.acquire();
+    return await run(client);
+  } finally {
+    await lease.release('normal_shutdown').catch(() => undefined);
+    await client.close();
+  }
+}
+
+/** Sends each upload on a connection of its own (`withLeasedWebCoreClient`). */
 export function createWebCoreAttachmentSender(
   binding: WebCoreBindingOptions,
   clientVersion: string,
 ): CloudChatAttachmentSender {
-  return async (params) => {
-    const signal = AbortSignal.timeout(UPLOAD_TIMEOUT_MS);
-    // The client owns the connection: closing it, or a failed handshake,
-    // closes the connection too.
-    const client = await createCanopyClient({
-      connection: await connectWebCore(binding, signal),
-      clientName: 'canopy-desktop-cloud-chat-attachments',
-      clientVersion,
-      definitions: {
-        queries: {},
-        instructions: composeCanopyInstructionRegistries(
-          CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
-          CORE_CHAT_ATTACHMENT_DEFINITIONS,
-        ),
-        streams: {},
-      },
-      signal,
-    });
-    const lease = createCanopyClientLease({
-      client,
-      // One upload per connection: a dropped connection fails the upload.
-      attach: () =>
-        Promise.reject(
-          new CanopyClientError({
-            kind: 'unavailable',
-            message: 'The upload connection closed.',
-            retry: { kind: 'never' },
-          }),
-        ),
-      identity: {
-        clientInstanceId: randomUUID(),
-        interfaceKind: 'http',
+  return (params) =>
+    withLeasedWebCoreClient(
+      binding,
+      {
+        clientName: 'canopy-desktop-cloud-chat-attachments',
+        clientVersion,
         label: 'Desktop cloud chat upload',
+        definitions: {
+          queries: {},
+          instructions: composeCanopyInstructionRegistries(
+            CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+            CORE_CHAT_ATTACHMENT_DEFINITIONS,
+          ),
+        },
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
       },
-      renewalIntervalMs: LEASE_RENEWAL_MS,
-      presence: () => ({ interactive: true, foreground: true }),
-    });
-    try {
-      await lease.acquire();
-      return await client.instruction('core.chat.attachment.upload', params);
-    } finally {
-      await lease.release('normal_shutdown').catch(() => undefined);
-      await client.close();
-    }
-  };
+      (client) => client.instruction('core.chat.attachment.upload', params),
+    );
 }
 
 /** The renderer-facing reason for a refused or failed upload. */
@@ -167,6 +200,29 @@ function failureReason(
   )
     return 'offline';
   return 'rejected';
+}
+
+/**
+ * Refusals the web core answers in words meant for the person. An error the
+ * client or transport raised itself, such as `internal`, can carry developer
+ * text, so it never reaches the composer.
+ */
+const EXPLAINED_REFUSALS: ReadonlySet<string> = new Set([
+  'invalid_argument',
+  'permission_denied',
+  'not_found',
+  'already_exists',
+  'conflict',
+  'failed_precondition',
+  'resource_exhausted',
+]);
+
+/** The web core's message for a refusal it answered, or null. */
+function refusalMessage(error: unknown): string | null {
+  if (!(error instanceof CanopyClientError)) return null;
+  if (!EXPLAINED_REFUSALS.has(error.payload.kind)) return null;
+  const message = error.payload.message.trim();
+  return message === '' ? null : message;
 }
 
 /**
@@ -220,7 +276,12 @@ export function createCloudChatAttachmentUpload(
         _meta: { idempotencyKey: randomUUID() },
       });
     } catch (error) {
-      return { ok: false, reason: failureReason(error) };
+      const reason = failureReason(error);
+      const message = refusalMessage(error);
+      // A refusal the web core explained keeps its words (CAN-6369).
+      return reason === 'rejected' && message !== null
+        ? { ok: false, reason, message }
+        : { ok: false, reason };
     }
     const parsed = CoreChatAttachmentUploadResultSchema.safeParse(value);
     if (!parsed.success) return { ok: false, reason: 'rejected' };

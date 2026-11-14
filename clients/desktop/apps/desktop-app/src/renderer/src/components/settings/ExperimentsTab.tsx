@@ -1,3 +1,5 @@
+import { isAntigravityHarnessReleased } from '@/lib/antigravity-settings';
+import { GoogleSubscriptionConnection } from './GoogleSubscriptionConnection';
 import { OpenCodeConnection } from './OpenCodeConnection';
 import { AccountProxyOptInSection } from './account-proxy/AccountProxyOptInSection';
 import { isCursorHarnessReleased } from '@/lib/cursor-settings';
@@ -33,6 +35,12 @@ export function ExperimentsTab(): JSX.Element {
   );
   const cursorHarnessEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key),
+  );
+  const antigravityEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
+  );
+  const antigravityReleased = useFeatureFlagsStore(
+    isAntigravityHarnessReleased,
   );
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
@@ -130,6 +138,9 @@ export function ExperimentsTab(): JSX.Element {
           <CursorApprovalCheck />
         </>
       )}
+      {window.platform === 'darwin' &&
+        antigravityEnabled &&
+        !antigravityReleased && <GoogleSubscriptionConnection />}
       {copilotHarnessEnabled && !copilotReleased && <CopilotConnection />}
       {opencodeHarnessEnabled && !opencodeReleased && <OpenCodeConnection />}
       {accountProxyFlagEnabled && <AccountProxyOptInSection />}

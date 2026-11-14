@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import {
   revertFileThroughWorker,
@@ -913,10 +914,20 @@ export function registerActivityPanelHandlers(
   registerIpcHandler<[ActivityStopOutputPollingRequest], void>(
     IPC_CHANNELS.activityStopOutputPolling,
     (_event, request) => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      validateId(request.chatId, 'chatId');
-      validateTaskId(request.taskId, 'taskId');
+      try {
+        if (
+          !request ||
+          typeof request !== 'object' ||
+          typeof request.taskId !== 'string'
+        )
+          throw new Error('Invalid output polling stop request.');
+        validateId(request.projectId, 'projectId');
+        validateId(request.worktreeId, 'worktreeId');
+        validateId(request.chatId, 'chatId');
+        validateTaskId(request.taskId, 'taskId');
+      } catch (error) {
+        throw classifyError(error, 'input.not_accepted');
+      }
       stopOutputPolling(
         request.projectId,
         request.worktreeId,

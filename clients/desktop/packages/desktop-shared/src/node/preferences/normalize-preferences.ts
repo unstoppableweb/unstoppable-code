@@ -235,6 +235,11 @@ export function normalizePreferences(
 
   return {
     cursorEnabled: data?.cursorEnabled === true,
+    // An absent legacy field keeps existing access. Malformed opt-outs must
+    // not silently re-enable a previously disconnected subscription.
+    googleSubscriptionDisconnected:
+      data?.googleSubscriptionDisconnected !== undefined &&
+      data.googleSubscriptionDisconnected !== false,
     copilotEnabled: data?.copilotEnabled === true,
     opencodeEnabled: data?.opencodeEnabled === true,
     accountProxyEnabled: data?.accountProxyEnabled === true,
@@ -810,6 +815,10 @@ export function normalizePreferences(
       typeof data?.singleDollarMath === 'boolean'
         ? data.singleDollarMath
         : DEFAULT_PREFERENCES.singleDollarMath,
+    promptSuggestionsEnabled:
+      typeof data?.promptSuggestionsEnabled === 'boolean'
+        ? data.promptSuggestionsEnabled
+        : DEFAULT_PREFERENCES.promptSuggestionsEnabled,
     linearChatEnrichmentMode: isChatEnrichmentMode(
       data?.linearChatEnrichmentMode,
     )

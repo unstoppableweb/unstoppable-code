@@ -51,6 +51,7 @@ export function TurnResumeNotice({
 }: TurnResumeNoticeProps): JSX.Element {
   return (
     <Notice
+      errorSource="turn-resume-title"
       intent={error ? 'attention' : intent}
       title={title}
       aria-busy={busy || undefined}

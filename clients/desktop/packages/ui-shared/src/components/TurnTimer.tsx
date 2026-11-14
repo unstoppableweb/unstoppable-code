@@ -7,7 +7,6 @@ import {
   type ComponentPropsWithoutRef,
 } from 'react';
 import { ChatToolStepGroup } from './ChatToolStepGroup';
-import { useCleanChatLook } from './chat-look';
 import { ChatCopyAction } from './chat/ChatCopyAction';
 import { PlanCopyAction, type PlanCopyState } from './chat/PlanCopyAction';
 import type { TurnCompletionStatus } from './chat/turn-completion-status';
@@ -58,12 +57,6 @@ export interface TurnTimerProps {
    */
   liveLine?: ReactNode;
   /**
-   * Optional override for the spinner rendered while the timer is live.
-   * When omitted, no spinner is rendered. The desktop and web call sites
-   * pass their own animated spinner (e.g., `<ThinkingSpinner />`).
-   */
-  spinner?: ReactNode;
-  /**
    * Optional control rendered right after the completion stamp and, like the
    * stamp, always visible (CAN-1521's turn-level thumbs up/down, CAN-4278).
    */
@@ -91,14 +84,6 @@ export interface TurnTimerProps {
    * instead of a chip in the row.
    */
   modelLabel?: string;
-  /**
-   * Keeps the whole row visible at rest. A successfully completed row
-   * otherwise shows only its timestamp and {@link stampAccessory} until its
-   * turn is hovered or focused (CAN-4278).
-   * Hosts set this where the row has no per-turn `group/turn` scope, since
-   * nothing there could ever reveal it.
-   */
-  alwaysVisible?: boolean;
   /**
    * Opt into the desktop transcript's row insets: the user bubble's `px-3`
    * text inset, so the timer shares one left edge with the flat assistant
@@ -133,9 +118,8 @@ export interface TurnTimerProps {
 
 /**
  * Reveal rules for the hover-only parts of a successfully completed footer
- * (CAN-4278): the "Completed in" label, the trailing model pill and actions.
- * Copy in either look, and the classic time-of-day stamp and thumbs, are
- * never faded. Faded parts
+ * (CAN-4278). Timer rows stay visible; separate action slots can opt into
+ * this reveal policy. Faded parts
  * stay in the layout, tab order, and accessibility tree; only their opacity
  * changes, so revealing them never moves the transcript. No transition: the
  * reveal is intentionally instant.
@@ -218,28 +202,11 @@ const FOCUS_RECHECK_EVENTS = [
 ];
 
 /**
- * The one icon-button treatment for every control in a footer row, taken from
- * the thumbs beside the stamp (CAN-4278): borderless and unfilled, the
- * stamp's muted `fg-quaternary` tone, and a `fg-secondary` hover with a
- * subtle tint and a stronger pressed tint. Disabled controls do not react.
- * The row applies it to every descendant button, so Fork, Branch, Share and
- * any later action cannot drift from the thumbs. Catalog icons render at 14px
- * for any requested size up to 16px, so footer icons match the thumbs' size.
- * Pressed controls (a selected thumb, a shared session) and controls asking
- * for attention (`data-attention`: unread run comments, an armed watcher)
- * keep their state styling and their own size. Button sizes apply to fine
- * pointers only, so touch keeps each control's own larger target. The border
- * is removed by width: border colors are inert here (CAN-2734).
- */
-/**
  * The clean chat look's footer controls (copy, fork, "•••", thumbs) are the
  * shared ghost `Button`, which owns their 28px capsule, ink, hover and focus;
  * the row only keeps their icons at 14px.
  */
 const CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME = '[&_svg]:size-3.5';
-
-const TURN_FOOTER_CONTROLS_CLASSNAME =
-  'pointer-fine:[&_button:not([data-attention])]:size-5 [&_button]:rounded [&_button]:ring-0 [&_button:not([aria-pressed=true]):not([data-attention])]:border-0 [&_button:not([aria-pressed=true]):not([data-attention])]:bg-transparent [&_button:not([aria-pressed=true]):not([data-attention])]:fg-quaternary [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):hover]:fg-secondary [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):hover:not(:active)]:bg-fg-primary/[0.04] [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):active]:fg-secondary [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):active]:bg-fg-primary/[0.08] pointer-fine:[&_svg]:size-3';
 
 /**
  * A turn footer row. The row itself never fades, so its height never changes;
@@ -292,13 +259,11 @@ export function TurnFooterRow({
   }, [focusWithin]);
   // Clean chat look: the row is one more line in the turn's rhythm, in the
   // step rows' text, rather than a small stamp tucked under the last row.
-  const clean = useCleanChatLook();
+
   const className =
     variant === 'actions'
-      ? `group/footer flex justify-end gap-0.5 pointer-coarse:gap-4 ${clean ? CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME : `-mt-1.5 ${TURN_FOOTER_CONTROLS_CLASSNAME}`}`
-      : clean
-        ? `group/footer flex min-h-7 items-center gap-1.5 pointer-coarse:gap-4 text-s fg-secondary ${inset ? 'px-3' : ''} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME}`
-        : `group/footer flex min-h-5 items-center gap-1.5 pointer-coarse:gap-4 text-2xs leading-none fg-tertiary ${inset ? 'px-3 -mt-1.5' : '-mt-1'} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${TURN_FOOTER_CONTROLS_CLASSNAME}`;
+      ? `group/footer flex justify-end gap-0.5 pointer-coarse:gap-4 ${CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME}`
+      : `group/footer flex min-h-7 items-center gap-1.5 pointer-coarse:gap-4 text-s fg-secondary ${inset ? 'px-3' : ''} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME}`;
   return (
     <div
       {...props}
@@ -609,13 +574,11 @@ export function TurnTimer({
   isStreaming,
   trailing,
   liveLine,
-  spinner,
   stampAccessory,
   copyText,
   planCopy,
   moreMenu,
   modelLabel,
-  alwaysVisible = false,
   inset = false,
   hostTurnGap = false,
   workingLabel,
@@ -624,7 +587,7 @@ export function TurnTimer({
   // Clean chat look: the turn's header owns the elapsed time ("Working for
   // 28s") and the transcript's live line what the turn is doing, so this
   // row keeps only its stamp and actions.
-  const clean = useCleanChatLook();
+
   const resolvedWorkingLabel = workingLabel ?? 'Working…';
   const paused = isTurnTimerPaused({
     finishedAt,
@@ -685,7 +648,7 @@ export function TurnTimer({
   const reveal = turnFooterRevealClassName(
     state === 'completed',
     completionStatus,
-    alwaysVisible || clean,
+    true,
   );
   const replyToCopy =
     state === 'completed' && copyText !== undefined && copyText.trim() !== ''
@@ -705,13 +668,11 @@ export function TurnTimer({
   // Clean chat look: a finished turn's row drops "Completed in …", but a
   // failed, cancelled or interrupted turn keeps its outcome so it never
   // reads as done.
-  const cleanOutcomeShown =
-    clean && state === 'completed' && completionStatus !== 'complete';
+  const outcomeShown = state === 'completed' && completionStatus !== 'complete';
   // The running turn's live line in the transcript says what it is doing,
   // so this row never does: it only holds the turn's actions, in place.
-  const showLabel = !clean || cleanOutcomeShown;
 
-  if (clean && state !== 'completed') {
+  if (state !== 'completed') {
     // Clean chat look, running or paused: the row is the live line's slot,
     // the same height with or without it. The line brings its own inset. A
     // paused turn is not working, so it holds no live line.
@@ -744,28 +705,7 @@ export function TurnTimer({
       data-testid="turn-timer"
       data-state={state}
     >
-      {!clean && relativeLabel != null && (
-        <span
-          data-testid="turn-timer-relative"
-          className="shrink-0 whitespace-nowrap tabular-nums fg-quaternary"
-          title={completedTitle}
-        >
-          {relativeLabel}
-        </span>
-      )}
-      {/* Classic look: Copy sits with the stamp and thumbs, outside the
-          hover reveal, so every finished reply can be kept at a glance. */}
-      {!clean && copyAction}
-      {!clean && stampAccessory != null && (
-        <span
-          data-testid="turn-timer-stamp-accessory"
-          className="flex shrink-0 items-center"
-        >
-          {stampAccessory}
-        </span>
-      )}
-      {live && !clean && spinner}
-      {cleanOutcomeShown && (
+      {outcomeShown && (
         <span
           data-testid="turn-timer-label"
           className="min-w-0 truncate whitespace-nowrap tabular-nums"
@@ -774,56 +714,39 @@ export function TurnTimer({
           {label}
         </span>
       )}
-      {showLabel && !clean && (
-        <span
-          data-testid="turn-timer-label"
-          className={`min-w-0 truncate whitespace-nowrap tabular-nums ${reveal}`}
-          title={completedTitle}
-        >
-          {label}
-        </span>
-      )}
-      {!clean && trailing != null && (
-        <span
-          className={`flex items-center gap-1.5 pointer-coarse:gap-4 ${reveal}`}
-        >
-          {trailing}
-        </span>
-      )}
+
       {/* Clean chat look: Copy, Fork, "•••" for the rest, the thumbs, then
           the time, all in one quiet gray, the icons 2px apart; always in
           view, never only on hover. */}
-      {clean &&
-        (copyAction !== undefined ||
-          stampAccessory != null ||
-          trailing != null ||
-          moreMenu != null) && (
+      {(copyAction !== undefined ||
+        stampAccessory != null ||
+        trailing != null ||
+        moreMenu != null) && (
+        <span
+          data-testid="turn-actions"
+          // Leading the row, the first icon (not its 28px button) lines up
+          // with the reply's text.
+          className={`flex items-center gap-0.5 pointer-coarse:gap-4${outcomeShown ? '' : ' -ml-1.75'}`}
+        >
+          {copyAction}
           <span
-            data-testid="turn-actions"
-            // Leading the row, the first icon (not its 28px button) lines up
-            // with the reply's text.
-            className={`flex items-center gap-0.5 pointer-coarse:gap-4${showLabel ? '' : ' -ml-1.75'}`}
+            data-testid="turn-actions-reveal"
+            className={`flex items-center gap-0.5 pointer-coarse:gap-4${reveal ? ` ${reveal}` : ''}`}
           >
-            {copyAction}
-            <span
-              data-testid="turn-actions-reveal"
-              className={`flex items-center gap-0.5 pointer-coarse:gap-4${reveal ? ` ${reveal}` : ''}`}
-            >
-              {trailing}
-              {moreMenu}
-              {stampAccessory != null && (
-                <span
-                  data-testid="turn-timer-stamp-accessory"
-                  className="flex shrink-0 items-center gap-0.5 pointer-coarse:gap-4"
-                >
-                  {stampAccessory}
-                </span>
-              )}
-            </span>
+            {trailing}
+            {moreMenu}
+            {stampAccessory != null && (
+              <span
+                data-testid="turn-timer-stamp-accessory"
+                className="flex shrink-0 items-center gap-0.5 pointer-coarse:gap-4"
+              >
+                {stampAccessory}
+              </span>
+            )}
           </span>
-        )}
-      {clean &&
-        relativeLabel != null &&
+        </span>
+      )}
+      {relativeLabel != null &&
         completedAtMs != null &&
         ((): JSX.Element => {
           const stamp = (

@@ -203,6 +203,7 @@ export function cloneChatTabTranscript(
   // attribute those counters to the earlier transcript it retained.
   if (usage && messagesToClone.length < source.messages.length) {
     delete usage.cursorReportedUsage;
+    if (usage.reportedTurnUsage !== undefined) usage.reportedTurnUsage = null;
     if (usage.opencodeReportedUsage) {
       delete usage.opencodeReportedUsage;
       usage.contextTokens = 0;
@@ -451,11 +452,14 @@ export function appendQueuedMessageToTab(
   };
 }
 
-export function clearUsageLimitBannerForNewUserMessage(tab: ChatTab): ChatTab {
+export function clearUsageLimitBannerForNewUserMessage(
+  tab: ChatTab,
+  preserveCreditWarning = false,
+): ChatTab {
   if (
     tab.llmProviderUsageLimitBanner === undefined &&
     tab.dismissedLlmProviderUsageLimitBannerKey === undefined &&
-    tab.aiCreditsNoBillingSource === undefined
+    (preserveCreditWarning || tab.aiCreditsNoBillingSource === undefined)
   ) {
     return tab;
   }
@@ -468,7 +472,7 @@ export function clearUsageLimitBannerForNewUserMessage(tab: ChatTab): ChatTab {
   // describing the chat's current state. If credits are still empty the new turn
   // re-emits the runtime signal, so a premature clear only ever costs one
   // render, while never clearing would strand the banner forever.
-  delete nextTab.aiCreditsNoBillingSource;
+  if (!preserveCreditWarning) delete nextTab.aiCreditsNoBillingSource;
   return nextTab;
 }
 
@@ -648,6 +652,7 @@ export function createEmptyTab(options: CreateEmptyTabOptions = {}): ChatTab {
     ...(interfaceMode ? { interfaceMode } : {}),
     ...(providerType === 'cursor' ||
     providerType === 'copilot' ||
+    providerType === 'antigravity' ||
     providerType === 'opencode'
       ? {}
       : billingSeedFields(billingSeed)),
@@ -980,10 +985,16 @@ export function clearUsageLimitBannerForDispatchedUserMessage(
   set((state) => {
     const currentWc = state.worktreeChats[key];
     if (!currentWc) return state;
+    const sync = state.chatStateSync[key];
+    const usesCommittedChatState =
+      sync !== undefined && sync.phase !== 'hydrating';
     let changed = false;
     const tabs = currentWc.tabs.map((tab) => {
       if (tab.id !== chatId) return tab;
-      const nextTab = clearUsageLimitBannerForNewUserMessage(tab);
+      const nextTab = clearUsageLimitBannerForNewUserMessage(
+        tab,
+        usesCommittedChatState,
+      );
       if (nextTab !== tab) {
         changed = true;
       }

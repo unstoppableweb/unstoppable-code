@@ -256,6 +256,7 @@ export function BrowserProfilesSettings(): JSX.Element {
         dataTestId="browser-profiles-settings"
       >
         <DesktopErrorBanner
+          errorSource="browser-profiles-error"
           className=""
           error={error?.error}
           {...(error?.details === undefined ? {} : { details: error.details })}
@@ -438,6 +439,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                       value={selected.color}
                       disabled={busy}
                       testId="browser-profile-color-swatches"
+                      label="Profile color"
                       onChange={(color) => update({ color })}
                     />
                   }

@@ -629,6 +629,7 @@ export function CodexTab(): JSX.Element {
   return (
     <SettingsPage title="Codex" dataTestId="settings-tab-codex">
       <DesktopErrorBanner
+        errorSource="settings-codex-save-error"
         className=""
         error={saveError?.error}
         {...(saveError?.details === undefined

@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { Tooltip } from './Tooltip';
 
 export interface CustomizeBreadcrumbItem {
   /** Stable React key. */
@@ -29,7 +30,6 @@ export interface CustomizeBreadcrumbsProps {
     href: string;
     className: string;
     testId?: string;
-    title?: string;
     entryKind?: string;
     children: ReactNode;
   }) => ReactNode;
@@ -57,19 +57,12 @@ export function CustomizeBreadcrumbs({
       <ol className="flex h-full min-w-0 items-center gap-1">
         {items.map((item, index) => {
           const current = index === items.length - 1;
-          // The full text is a native title on the truncated text only, never
-          // on the crumb button (docs/design/interaction.md#tooltips).
           const label = item.privateLabel ? (
-            <span
-              className={`min-w-0 truncate ${REPLAY_MASK_CLASS}`}
-              title={item.title}
-            >
+            <span className={`min-w-0 truncate ${REPLAY_MASK_CLASS}`}>
               {item.label}
             </span>
           ) : item.shrink ? (
-            <span className="min-w-0 truncate" title={item.title}>
-              {item.label}
-            </span>
+            <span className="min-w-0 truncate">{item.label}</span>
           ) : (
             item.label
           );
@@ -82,7 +75,6 @@ export function CustomizeBreadcrumbs({
                 aria-current="page"
                 data-testid={item.testId}
                 data-entry-kind={item.entryKind}
-                title={item.title}
                 className="flex h-7 min-w-0 items-center truncate whitespace-nowrap px-1.5 fg-primary"
               >
                 {label}
@@ -93,7 +85,6 @@ export function CustomizeBreadcrumbs({
               href: item.href,
               className: navigable,
               testId: item.testId,
-              title: item.title,
               entryKind: item.entryKind,
               children: label,
             });
@@ -114,7 +105,6 @@ export function CustomizeBreadcrumbs({
               <span
                 data-testid={item.testId}
                 data-entry-kind={item.entryKind}
-                title={item.title}
                 className="flex h-7 items-center whitespace-nowrap px-1.5 fg-secondary"
               >
                 {label}
@@ -132,7 +122,15 @@ export function CustomizeBreadcrumbs({
               </li>
             ) : null,
             <li key={item.key} className={`flex h-full items-center ${width}`}>
-              {crumb}
+              <Tooltip
+                label={item.title}
+                disabled={!item.title}
+                allowShrink={item.shrink || current}
+                className="max-w-full"
+                replayBlock={item.privateLabel}
+              >
+                {crumb}
+              </Tooltip>
             </li>,
           ];
         })}

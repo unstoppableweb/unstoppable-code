@@ -154,7 +154,11 @@ function EditorModal({
             />
           </div>
         </DialogFormField>
-        <ErrorBanner className="" error={saveError} />
+        <ErrorBanner
+          errorSource="editor-modal-save"
+          className=""
+          error={saveError}
+        />
         <div className="flex justify-end gap-2">
           <Button size="compact" onClick={onClose}>
             Cancel

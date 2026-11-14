@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { SegmentsBar } from '../Progress';
-import { formatCostAmount, type CostSegment } from './cost-format';
+import { formatCostSegmentIn, type CostSegment } from './cost-format';
+import { useCostCurrency } from './CostCurrencyContext';
 
 export interface CostSplitBarProps {
   readonly segments: readonly CostSegment[];
@@ -20,13 +21,16 @@ export function CostSplitBar({
   size = 'row',
   testId,
 }: CostSplitBarProps): JSX.Element {
+  const currency = useCostCurrency();
   const visibleSegments = segments.filter((segment) => segment.value > 0);
   const visibleTotal = visibleSegments.reduce(
     (sum, segment) => sum + segment.value,
     0,
   );
   const description = visibleSegments
-    .map((segment) => `${segment.label} ${formatCostAmount(segment.value)}`)
+    .map(
+      (segment) => `${segment.label} ${formatCostSegmentIn(segment, currency)}`,
+    )
     .join(', ');
   const boundedScale = Number.isNaN(scale)
     ? 0

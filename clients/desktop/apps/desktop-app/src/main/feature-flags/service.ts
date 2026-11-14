@@ -628,6 +628,12 @@ export class FeatureFlagService {
     return this.snapshot.values[key] === true;
   }
 
+  /** A missing or invalid evaluation is distinct from a live boolean false. */
+  getLiveBooleanValue(key: ClientFeatureFlagKey): boolean | undefined {
+    const value = this.liveValues[key];
+    return typeof value === 'boolean' ? value : undefined;
+  }
+
   refreshContext(): Promise<FeatureFlagSnapshot> {
     if (this.refreshPromise) {
       return this.refreshPromise;

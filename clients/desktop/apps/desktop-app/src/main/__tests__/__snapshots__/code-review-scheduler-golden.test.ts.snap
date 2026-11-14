@@ -1,0 +1,150 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`code review scheduling (CAN-4167 golden) arms through IPC and generates every artifact once 1`] = `
+{
+  "calls": [
+    "annotations",
+    "logicDiff",
+  ],
+  "helperTasks": [
+    "start helper:code-review-annotations:golden-review/golden-wt:<fp>",
+    "start helper:code-review-logic-diagram:golden-review/golden-wt:<fp>",
+    "success helper:code-review-annotations:golden-review/golden-wt:<fp>",
+    "success helper:code-review-logic-diagram:golden-review/golden-wt:<fp>",
+  ],
+  "result": {
+    "status": "generated",
+  },
+  "review": {
+    "annotations": {
+      "error": undefined,
+      "fingerprint": "fp-1",
+      "hasData": true,
+      "status": "ready",
+    },
+    "armed": true,
+    "dataModelDiff": null,
+    "logicDiff": {
+      "error": undefined,
+      "fingerprint": "fp-1",
+      "hasData": true,
+      "status": "ready",
+    },
+    "threads": 0,
+  },
+  "updates": {
+    "count": 6,
+    "first": {
+      "channel": "code-review:updated",
+      "status": {
+        "annotations": null,
+        "armed": true,
+        "dataModelDiff": null,
+        "logicDiff": null,
+      },
+    },
+    "last": {
+      "channel": "code-review:updated",
+      "status": {
+        "annotations": "ready",
+        "armed": true,
+        "dataModelDiff": null,
+        "logicDiff": "ready",
+      },
+    },
+  },
+}
+`;
+
+exports[`code review scheduling (CAN-4167 golden) coalesces activity into one run after the idle debounce 1`] = `
+{
+  "annotations": {
+    "error": undefined,
+    "fingerprint": "fp-2",
+    "hasData": true,
+    "status": "ready",
+  },
+  "armed": true,
+  "dataModelDiff": null,
+  "logicDiff": {
+    "error": undefined,
+    "fingerprint": "fp-2",
+    "hasData": true,
+    "status": "ready",
+  },
+  "threads": 0,
+}
+`;
+
+exports[`code review scheduling (CAN-4167 golden) drains an in-flight review on worktree delete, then refuses new work 1`] = `
+{
+  "afterDrain": {
+    "status": "stopped",
+  },
+  "drained": true,
+  "drainedBeforeRelease": false,
+  "inFlight": {
+    "error": "Code review state is being removed for this worktree.",
+  },
+}
+`;
+
+exports[`code review scheduling (CAN-4167 golden) polls only while a review view is open 1`] = `
+{
+  "afterClose": [
+    "annotations",
+    "logicDiff",
+  ],
+}
+`;
+
+exports[`code review scheduling (CAN-4167 golden) queues one rerun for a request made while a run is in flight 1`] = `
+{
+  "firstResult": {
+    "status": "generated",
+  },
+  "midFlight": {
+    "annotations": {
+      "error": undefined,
+      "fingerprint": "fp-5",
+      "hasData": true,
+      "status": "generating",
+    },
+    "armed": true,
+    "dataModelDiff": null,
+    "logicDiff": {
+      "error": undefined,
+      "fingerprint": "fp-5",
+      "hasData": true,
+      "status": "generating",
+    },
+    "threads": 0,
+  },
+  "second": {
+    "status": "queued",
+  },
+  "third": {
+    "status": "queued",
+  },
+}
+`;
+
+exports[`code review scheduling (CAN-4167 golden) saves comment threads and an agent reply 1`] = `
+{
+  "comments": [
+    {
+      "author": "user",
+      "body": "Why one?",
+    },
+    {
+      "author": "agent",
+      "body": "Because the plan says so.",
+    },
+  ],
+  "replyKeys": [
+    "ok",
+    "review",
+  ],
+  "savedThreads": 1,
+}
+`;

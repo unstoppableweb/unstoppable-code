@@ -29,8 +29,8 @@ export type WorkerGitCheckoutScope = z.output<
 >;
 
 /**
- * A compare-and-swap precondition: the branch the checkout must be on right
- * before the change. Omitted, the change runs on whatever is checked out.
+ * Rename checks this branch before changing its name. Checkout and create
+ * accept the legacy field but rely on Git’s switch safety checks instead.
  */
 export const WorkerGitExpectedHeadSchema = z.strictObject({
   branch: z.string().min(1),
@@ -64,6 +64,8 @@ export const WorkerGitCheckoutParamsSchema = z.strictObject({
    * `branchNotFound`.
    */
   branch: z.string(),
+  /** Explicit catalogue provenance. Omitted callers keep local-first lookup. */
+  remote: z.boolean().optional(),
   expected: WorkerGitExpectedHeadSchema.optional(),
 });
 
@@ -103,15 +105,17 @@ export type WorkerGitBranchCreateErrorCode =
   (typeof WORKER_GIT_BRANCH_CREATE_ERROR_CODES)[number];
 
 export const WorkerGitBranchStartPointSchema = z.strictObject({
-  /** A branch name as `worker.git.branch.list` lists it. */
+  /** A Git start point, or a canonical branch name when source is catalog. */
   branch: z.string(),
   /** Start at `origin/<branch>` instead of the local branch. */
   remote: z.boolean(),
+  /** An explicit catalogue selection must resolve only its local/origin ref. */
+  source: z.literal('catalog').optional(),
 });
 
 export const WorkerGitBranchCreateParamsSchema = z.strictObject({
   scope: WorkerGitCheckoutScopeSchema,
-  /** Trimmed; a name already taken gets the first free `-<n>` suffix. */
+  /** The typed name; a name already taken gets the first free `-<n>` suffix. */
   name: z.string(),
   startPoint: WorkerGitBranchStartPointSchema,
   expected: WorkerGitExpectedHeadSchema.optional(),
@@ -124,6 +128,13 @@ export type WorkerGitBranchCreateParams = z.output<
 export const WorkerGitBranchCreateResultSchema = z.strictObject({
   /** The branch created and checked out, after any suffix. */
   branch: z.string(),
+  /** Git returned an error after switching HEAD to the created branch. */
+  warning: z
+    .strictObject({
+      code: z.literal('checkout-command-failed'),
+      upstream: z.enum(['configured', 'partial', 'unset']),
+    })
+    .optional(),
 });
 
 export type WorkerGitBranchCreateResult = z.output<

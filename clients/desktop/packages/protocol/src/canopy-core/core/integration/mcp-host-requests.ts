@@ -107,6 +107,13 @@ export function isMcpHostRequestWithdrawal(
 export const McpHostRequestsParamsSchema = z.strictObject({
   /** The stream doesn't resume; a new subscriber gets every pending request. */
   cursor: z.null().optional(),
+  /**
+   * This desktop reports its servers' serving state with
+   * `core.integration.mcpHostStatus.report` (CAN-6659), so a server it hasn't
+   * reported ready over this connection isn't offered to cloud chats.
+   * Without it, its servers are offered while the stream is open.
+   */
+  servingReports: z.literal(true).optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
@@ -117,6 +124,7 @@ export const McpHostRequestsOpenResultSchema = z.strictObject({
 
 export const CORE_INTEGRATION_MCP_HOST_REQUEST_CODES = [
   'core.integration.mcpHostRequestNotFound',
+  'core.integration.mcpHostConnectionNotOwned',
 ] as const;
 
 export const McpHostRequestErrorSchema = CanopyErrorPayloadSchema.extend({
@@ -151,6 +159,59 @@ export type McpHostRequestRespondResult = z.output<
 >;
 
 /**
+ * Why a desktop can't serve one of its servers now (CAN-6659). The desktop
+ * sends one of these and, at most, a short message it redacted: never a URL,
+ * a header or an environment value.
+ */
+export const MCP_HOST_SERVING_CAUSES = [
+  'start_failed',
+  'proxy_unavailable',
+  'upstream_unreachable',
+  'timed_out',
+  'refused',
+  'unknown',
+] as const;
+
+export const McpHostServingCauseSchema = z.enum(MCP_HOST_SERVING_CAUSES);
+
+/**
+ * One server's serving state, as its desktop reports it, by the desktop's
+ * own server and config ids: the ones its requests carry.
+ */
+export const McpHostServingServerSchema = z.strictObject({
+  serverId: id,
+  configId: id,
+  /** `ready`: the desktop can serve it now; `unreachable`: it can't. */
+  state: z.enum(['ready', 'unreachable']),
+  cause: McpHostServingCauseSchema.optional(),
+  message: z.string().max(300).optional(),
+});
+
+/**
+ * Whether each server this desktop allowed in cloud chats can be served now.
+ * A server not in the report keeps its last state from this connection; a
+ * report from an earlier connection counts for nothing.
+ */
+export const McpHostStatusReportParamsSchema = z.strictObject({
+  servers: z.array(McpHostServingServerSchema).max(256),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+export const McpHostStatusReportResultSchema = z.strictObject({
+  reportedAt: timestamp,
+  servers: z.number().int().min(0),
+});
+
+export type McpHostServingCause = z.output<typeof McpHostServingCauseSchema>;
+export type McpHostServingServer = z.output<typeof McpHostServingServerSchema>;
+export type McpHostStatusReportParams = z.output<
+  typeof McpHostStatusReportParamsSchema
+>;
+export type McpHostStatusReportResult = z.output<
+  typeof McpHostStatusReportResultSchema
+>;
+
+/**
  * Served by the web core to desktop-key connections only, which alone hold
  * `core.integration.host`; never relayed from a renderer.
  */
@@ -182,6 +243,17 @@ export const CORE_INTEGRATION_MCP_HOST_INSTRUCTION_DEFINITIONS =
       requiredGrants: [CORE_INTEGRATION_HOST_GRANT],
       params: McpHostRequestRespondParamsSchema,
       result: McpHostRequestRespondResultSchema,
+      error: McpHostRequestErrorSchema,
+    }),
+    'core.integration.mcpHostStatus.report': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'integration',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: [CORE_INTEGRATION_HOST_GRANT],
+      params: McpHostStatusReportParamsSchema,
+      result: McpHostStatusReportResultSchema,
       error: McpHostRequestErrorSchema,
     }),
   });

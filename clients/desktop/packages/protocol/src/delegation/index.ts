@@ -128,6 +128,7 @@ export type AgentDelegationResult<T> =
   | { readonly ok: false; readonly error: AgentDelegationError };
 
 export interface AgentDelegationSpawnRequest {
+  /** Provider model ID, bare Agent ID, or explicit agent_model_<id>@<model> route. */
   readonly modelId: string;
   readonly description: string;
   readonly prompt: string;

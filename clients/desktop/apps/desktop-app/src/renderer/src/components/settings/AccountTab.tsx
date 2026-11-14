@@ -1,3 +1,5 @@
+import { isAntigravityHarnessReleased } from '@/lib/antigravity-settings';
+import { GoogleSubscriptionConnection } from './GoogleSubscriptionConnection';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { isCursorHarnessReleased } from '@/lib/cursor-settings';
 import { isCopilotHarnessReleased } from '@/lib/copilot-settings';
@@ -53,6 +55,9 @@ function LlmProviderSection({
 }: {
   cursorReleased: boolean;
 }): JSX.Element {
+  const antigravityReleased = useFeatureFlagsStore(
+    isAntigravityHarnessReleased,
+  );
   const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
   const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
   const accountProxyFlagEnabled = useFeatureFlagsStore((state) =>
@@ -82,6 +87,7 @@ function LlmProviderSection({
           <ModelGatewayCredentialSection
             key={personalGateway.organizationId}
             gateway={personalGateway}
+            personal
           />
         ) : null}
         {/* Each org gateway is a provider row. Show the selected org first. */}
@@ -93,6 +99,9 @@ function LlmProviderSection({
         ))}
         <ProviderAuthPanel provider="claude" layout="row" />
         <ProviderAuthPanel provider="codex" layout="row" />
+        {window.platform === 'darwin' && antigravityReleased && (
+          <GoogleSubscriptionConnection />
+        )}
         {/* Released Copilot and OpenCode are provider rows too (and render
             nothing while unsupported on this computer). */}
         {copilotReleased && <CopilotConnection placement="row" />}

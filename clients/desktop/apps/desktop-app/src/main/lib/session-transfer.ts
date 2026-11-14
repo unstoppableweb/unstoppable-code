@@ -245,6 +245,12 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   // instruction context under which that provider session was created.
   globalInstructionsSnapshot: true,
   codexReconstructionSeedId: true,
+  // Stripped: other providers' parked sessions, whose session files the
+  // bundle does not carry (CAN-6445).
+  providerSessions: true,
+  // Kept without an active session: the imported chat's next turn starts
+  // fresh, so it still carries the conversation as a seed (CAN-6445).
+  providerSwitchSeedPending: true,
   claudeForkSessionOnNextSend: true,
   autoArchive: true,
   autoArchiveTurnId: true,
@@ -259,6 +265,9 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   pendingClaudeTerminalWatcherMessages: true,
   scheduledSendDraft: true,
   readOnly: true,
+  // Stripped with `readOnly`: it marks a chat the external project import
+  // brought in, and a transferred chat is no longer that read-only import.
+  importedFrom: true,
   staleSessionDetected: true,
   llmProviderUsageLimitBanner: true,
   // Stripped: the billing-source failure belongs to the source account and
@@ -375,6 +384,9 @@ export function sanitizeTabForExport(
       : {}),
     ...(tab.globalInstructionsSnapshot !== undefined
       ? { globalInstructionsSnapshot: tab.globalInstructionsSnapshot }
+      : {}),
+    ...(tab.providerSwitchSeedPending === true && tab.sdkSessionId === undefined
+      ? { providerSwitchSeedPending: true }
       : {}),
     ...(tab.pluginSelections !== undefined
       ? { pluginSelections: tab.pluginSelections }
@@ -1397,12 +1409,14 @@ function isPersistedChatTab(value: unknown): value is PersistedChatTab {
       value.providerType === 'ollama' ||
       value.providerType === 'cursor' ||
       value.providerType === 'copilot' ||
+      value.providerType === 'antigravity' ||
       value.providerType === 'opencode') &&
     (value.executionHarness === undefined ||
       value.executionHarness === 'claude' ||
       value.executionHarness === 'codex' ||
       value.executionHarness === 'cursor' ||
       value.executionHarness === 'copilot' ||
+      value.executionHarness === 'antigravity' ||
       value.executionHarness === 'opencode') &&
     isCompatibleManagedModelHarness(value.model, value.executionHarness) &&
     (value.sdkSessionId === undefined ||
@@ -2429,6 +2443,7 @@ async function finalizeImportedSession(args: {
   }
   delete baseTab.pendingSystemInstructions;
   delete baseTab.readOnly;
+  delete baseTab.importedFrom;
   if (baseTab.portablePluginSelections) {
     const resolved = await resolvePortableSessionSelections(
       baseTab.portablePluginSelections,

@@ -11,6 +11,7 @@ import {
   resolveGatewayModelEntry,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
+  canSwitchProviderInPlace,
   DEFAULT_OLLAMA_HARNESS,
   getExecutionHarnessForModel,
   hasGatewayModelRoutes,
@@ -59,11 +60,13 @@ import { resolveModelLibraryLock } from '@/lib/modelLibraryAccess';
  * - `'disabled'` (default): the row is greyed out and explains itself through
  *   the standard unavailable-reason tooltip. Every non-chat call site keeps
  *   this behavior at zero diff.
- * - `'continue'`: harness-mismatched Claude/Codex rows render as ordinary
- *   selectable models and call `onModelChange` like any other row. The consumer
- *   already knows `lockedProvider`, so it recognizes the cross-harness pick and
- *   owns the confirm-and-continue flow. Rows that can never be continued
- *   (Ollama in either direction) become case H instead.
+ * - `'continue'`: rows a started chat can switch to in place (Claude, Codex,
+ *   Cursor and Copilot, CAN-6445) render as ordinary selectable models and
+ *   call `onModelChange` like any other row. The consumer already knows
+ *   `lockedProvider`, so it recognizes the cross-provider pick and owns the
+ *   switch dialog (and, for Claude and Codex, the continue-in-a-new-chat
+ *   fork). Rows that can never switch (Ollama in either direction) become
+ *   case H instead.
  */
 export type LockedProviderBehavior = 'disabled' | 'continue';
 
@@ -200,6 +203,8 @@ export interface ModelRowGateInput {
    * owner, where the copy stays generic.
    */
   readonly organizationName?: string;
+  /** Personal work, where only-gateway is the user's own choice. */
+  readonly personalOwner?: boolean;
   /**
    * CAN-3026 — the saved Canopy Cloud credential is a guest.
    *
@@ -222,6 +227,21 @@ export interface ModelRowGateInput {
 }
 
 /**
+ * A started chat's row the composer can take: switched in place (CAN-6445) or,
+ * for Claude and Codex, also continued in a new chat. Ollama and OpenCode stay
+ * a new chat.
+ */
+function isSwitchablePair(
+  lockedProvider: AgentProviderType,
+  rowProvider: AgentProviderType,
+): boolean {
+  return (
+    canSwitchProviderInPlace(lockedProvider, rowProvider) ||
+    isContinuableHarnessPair(lockedProvider, rowProvider)
+  );
+}
+
+/**
  * Reason copy for a row disabled purely by the provider lock.
  *
  * `lockedProviderReason` describes a chat that *could* be continued but is
@@ -237,7 +257,7 @@ function resolveLockedRowReason(
   lockedProviderReason: string | undefined,
 ): string {
   return lockedProviderReason !== undefined &&
-    isContinuableHarnessPair(lockedProvider, rowProvider)
+    isSwitchablePair(lockedProvider, rowProvider)
     ? lockedProviderReason
     : describeLockedProviderReason(lockedProvider, rowProvider);
 }
@@ -313,6 +333,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     staleAgent,
     modelGatewayEnforced,
     organizationName,
+    personalOwner,
     isGuest,
     libraryAccess,
   } = input;
@@ -401,9 +422,11 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
       ? {
           kind: 'hard-disabled',
           cause: 'org-gateway',
-          reason: organizationName
-            ? `${organizationName} requires its configured AI gateway.`
-            : 'Your organization requires its configured AI gateway.',
+          reason: personalOwner
+            ? 'You chose to use only your AI gateway. Pick one of its models, or add its key in Providers.'
+            : organizationName
+              ? `${organizationName} requires its configured AI gateway.`
+              : 'Your organization requires its configured AI gateway.',
         }
       : { kind: 'hidden', cause: 'org-gateway-only' };
   }
@@ -445,6 +468,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     // Cursor uses its own account regardless of the shared billing toggle.
     provider !== 'cursor' &&
     provider !== 'copilot' &&
+    provider !== 'antigravity' &&
     provider !== 'opencode' &&
     hasGatewayModelRoutes() &&
     !isGatewayRoutableModel(model);
@@ -541,10 +565,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     // was being offered as "start a new chat" purely because the pair could not
     // be named. `ModelHarness` is a subset of `AgentProviderType`, so the
     // captured harness answers the same question.
-    const continuablePair = isContinuableHarnessPair(
-      lockedOtherProvider,
-      provider,
-    );
+    const continuablePair = isSwitchablePair(lockedOtherProvider, provider);
     const continuable =
       lockedProviderBehavior === 'continue' && continuablePair;
     if (!continuable) {

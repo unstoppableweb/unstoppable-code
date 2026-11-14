@@ -11,7 +11,10 @@ import type {
   ExecutionSummary,
 } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineRunStepCost } from '@canopy/protocol/cost-view';
-import { formatCostTotal } from '@canopy/ui-shared/components/cost';
+import {
+  formatCostTotalIn,
+  useCostCurrency,
+} from '@canopy/ui-shared/components/cost';
 import {
   buildAttemptViews,
   buildStepInstanceKey,
@@ -89,6 +92,7 @@ function PipelineJobViewComponent({
   logsEnabled,
   stepCosts,
 }: PipelineJobViewProps): JSX.Element {
+  const costCurrency = useCostCurrency();
   const archived = archivedSource !== undefined;
   const retryMatrixJob = usePipelineRunsStore((store) => store.retryMatrixJob);
   const cancelMatrixVariant = usePipelineRunsStore(
@@ -215,7 +219,11 @@ function PipelineJobViewComponent({
                   ) : null}
                 </div>
               ) : null}
-              <ErrorBanner className="" error={matrixError} />
+              <ErrorBanner
+                errorSource="pipeline-job-component-matrix"
+                className=""
+                error={matrixError}
+              />
             </Stack>
           )}
         </Surface>
@@ -437,7 +445,7 @@ function PipelineJobViewComponent({
                       logsEnabled={logsEnabled}
                       costAmount={
                         stepCost !== undefined && !stepIsRenderedInALaterAttempt
-                          ? formatCostTotal(stepCost.totals)
+                          ? formatCostTotalIn(stepCost.totals, costCurrency)
                           : undefined
                       }
                     />

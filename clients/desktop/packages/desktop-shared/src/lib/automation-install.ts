@@ -7,6 +7,11 @@ import type {
   SharedAutomationTrigger,
 } from '@canopy/protocol/automations';
 import {
+  formatAgentRouteModelId,
+  isValidSharedAgentModelId,
+  parseAgentRouteModelId,
+} from '@canopy/protocol/agents';
+import {
   SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
   SHARED_AUTOMATION_API_VERSION,
   SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
@@ -35,6 +40,10 @@ import {
   type PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
 import { CANOPY_CLOUD_SERVER_ID } from '../constants/canopy-cloud';
+import {
+  completeSharedWorkflowInputs,
+  sharedPipelineInputKinds,
+} from './shared-workflow-inputs';
 import type {
   AgentModelConfig,
   AutomationAction,
@@ -83,6 +92,8 @@ const PIPELINES_NOT_INSTALLED_MESSAGE =
   'Install the pipelines this automation uses before installing it.';
 
 export interface InstallSharedAutomationBindings {
+  /** Result of importing the exact hosted Agent snapshot, including collision remapping. */
+  agent?: { remoteId: string; contentHash: string; localAgentId: string };
   /** Advisory facts; main independently resolves the selected IDs. */
   targetKind?: AutomationSessionTargetKind;
   pipelineResolution?: AutomationPipelineResolution;
@@ -458,11 +469,19 @@ function mapTrigger(trigger: SharedAutomationTrigger): AutomationTrigger {
  * lives beside the action, while thinking level and fast mode form the local
  * {@link AgentModelConfig}.
  */
-function splitModelConfig(config: SharedAutomationModelConfig | undefined): {
+function splitModelConfig(
+  config: SharedAutomationModelConfig | undefined,
+  bindings: InstallSharedAutomationBindings,
+): {
   model?: string;
   modelConfig?: AgentModelConfig;
 } {
   if (!config) return {};
+  const route = config.model ? parseAgentRouteModelId(config.model) : null;
+  const model =
+    route && config.agent && bindings.agent
+      ? formatAgentRouteModelId(bindings.agent.localAgentId, route.baseModel)
+      : config.model;
   const modelConfig: AgentModelConfig = {
     ...(config.thinkingLevel !== undefined
       ? { thinkingLevel: config.thinkingLevel }
@@ -475,7 +494,7 @@ function splitModelConfig(config: SharedAutomationModelConfig | undefined): {
         : {}),
   };
   return {
-    ...(config.model !== undefined ? { model: config.model } : {}),
+    ...(model !== undefined ? { model } : {}),
     ...(Object.keys(modelConfig).length > 0 ? { modelConfig } : {}),
   };
 }
@@ -515,6 +534,21 @@ function mapAction(
   bindings: InstallSharedAutomationBindings,
   localPipelineIds: ReadonlyMap<string, string>,
 ): { ok: true; action: AutomationAction } | { ok: false; error: string } {
+  if ('modelConfig' in action && action.modelConfig?.agent) {
+    const reference = action.modelConfig.agent;
+    if (
+      !bindings.agent ||
+      bindings.agent.remoteId !== reference.remoteId ||
+      bindings.agent.contentHash !== reference.contentHash ||
+      !isValidSharedAgentModelId(bindings.agent.localAgentId)
+    ) {
+      return {
+        ok: false,
+        error:
+          'Install the shared Agent this automation uses before installing the automation.',
+      };
+    }
+  }
   if (
     'promptReferences' in action &&
     action.promptReferences?.some(
@@ -541,7 +575,7 @@ function mapAction(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
-        ...splitModelConfig(action.modelConfig),
+        ...splitModelConfig(action.modelConfig, bindings),
         ...(bindings.pluginSelections
           ? { pluginSelections: bindings.pluginSelections }
           : {}),
@@ -567,7 +601,7 @@ function mapAction(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
-        ...splitModelConfig(action.modelConfig),
+        ...splitModelConfig(action.modelConfig, bindings),
         ...(bindings.pluginSelections
           ? { pluginSelections: bindings.pluginSelections }
           : {}),
@@ -599,7 +633,7 @@ function mapAction(
       ...(action.promptReferences
         ? { promptReferences: action.promptReferences }
         : {}),
-      ...splitModelConfig(action.modelConfig),
+      ...splitModelConfig(action.modelConfig, bindings),
       ...(action.planMode !== undefined ? { planMode: action.planMode } : {}),
       ...(action.interfaceMode !== undefined
         ? { interfaceMode: action.interfaceMode }
@@ -680,10 +714,15 @@ function mapPipelineAction(
   if (inputsError) {
     return { ok: false, error: inputsError };
   }
+  // CAN-6548: a project input is required and an Orchestrator input is
+  // always the Orchestrator, whatever the caller sent.
+  const completed = completeSharedWorkflowInputs(
+    sharedPipelineInputKinds(action),
+    bindings.inputs,
+  );
+  if (!completed.ok) return completed;
   const inputs =
-    bindings.inputs && Object.keys(bindings.inputs).length > 0
-      ? bindings.inputs
-      : undefined;
+    Object.keys(completed.inputs).length > 0 ? completed.inputs : undefined;
 
   if (action.pipeline.source === 'bundled') {
     return {
@@ -1075,6 +1114,29 @@ function withRecordedPipelineBindings(
 }
 
 /**
+ * Whether an update moves a workflow to another project through one of its
+ * project inputs (CAN-6548), which, like any other change of target, needs
+ * the copy turned on again.
+ */
+function projectInputChanged(
+  sharedAction: SharedAutomationAction,
+  existing: AutomationAction,
+  applied: AutomationAction,
+): boolean {
+  if (
+    sharedAction.type !== 'worktree_pipeline' ||
+    existing.type !== 'worktree_pipeline' ||
+    applied.type !== 'worktree_pipeline'
+  )
+    return false;
+  return Object.entries(sharedPipelineInputKinds(sharedAction)).some(
+    ([key, kind]) =>
+      kind.kind === 'project' &&
+      existing.inputs?.[key] !== applied.inputs?.[key],
+  );
+}
+
+/**
  * Build the update request that re-applies a remote change to an installed
  * copy. The caller prefills `bindings` from the existing activity (dropping
  * input values whose keys no longer exist in the new document); the enabled
@@ -1110,20 +1172,28 @@ export function buildApplyUpdateRequest(
           bundledPipelineLocalId: existing.installedFrom.bundledPipelineLocalId,
         }
       : bindings;
+  // CAN-6548: the automations list shows a converted chat automation as its
+  // chat action. A workflow update compares with and keeps bindings from the
+  // workflow action main stores, so the copy keeps its project and stays on.
+  const existingAction =
+    sharedAction.type === 'worktree_pipeline' &&
+    existing.ownedPipeline !== undefined
+      ? existing.ownedPipeline.storedAction
+      : existing.action;
   // A task binding survives an update that keeps the task kind in the same
   // project; any other kind change needs an explicit rebind.
   const existingTaskId =
-    existing.action.type === 'worktree_pipeline'
-      ? pipelineAutomationTaskId(existing.action)
+    existingAction.type === 'worktree_pipeline'
+      ? pipelineAutomationTaskId(existingAction)
       : undefined;
   const effectiveBindings =
     sharedAction.type === 'worktree_pipeline' &&
     sharedAction.target.kind === 'task' &&
     withBundledPipeline.taskId === undefined &&
     existingTaskId !== undefined &&
-    existing.action.type === 'worktree_pipeline' &&
+    existingAction.type === 'worktree_pipeline' &&
     withBundledPipeline.workspaceId ===
-      pipelineAutomationWorkspaceId(existing.action)
+      pipelineAutomationWorkspaceId(existingAction)
       ? { ...withBundledPipeline, taskId: existingTaskId }
       : withBundledPipeline;
   const localPipelineIds = packagedPipelineLocalIds(
@@ -1147,7 +1217,7 @@ export function buildApplyUpdateRequest(
   if (compatibilityError) return { ok: false, error: compatibilityError };
   const appliedAction = preserveLocalCustomizations(
     mapped.action,
-    existing.action,
+    existingAction,
   );
   // A newly approved command that differs from the current gate is a new
   // author command on this machine, so the copy lands disabled for review.
@@ -1163,7 +1233,8 @@ export function buildApplyUpdateRequest(
     !detail.automation.hasRunCondition;
   const keptEnabled =
     triggersEqual(existing.schedule, detail.automation.trigger) &&
-    !automationTargetBindingChanged(existing.action, appliedAction) &&
+    !automationTargetBindingChanged(existingAction, appliedAction) &&
+    !projectInputChanged(sharedAction, existingAction, appliedAction) &&
     (approved === undefined || approved === currentGate) &&
     existing.enabled;
   // Pipeline provenance describes only the currently installed inline ref.

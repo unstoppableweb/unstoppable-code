@@ -5,6 +5,7 @@ export * from './receipts';
 export * from './runtime';
 export * from './recovery';
 export * from './owned-paths';
+export * from './capture';
 
 import type { RelocationTransition } from './transition';
 import { movedOwnedPath, relocationTransition } from './transition';

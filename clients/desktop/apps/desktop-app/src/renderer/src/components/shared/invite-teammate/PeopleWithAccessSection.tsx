@@ -141,6 +141,7 @@ export function PeopleWithAccessSection({
             )}
           {!recipients.recipientsLoading && recipients.recipientsError && (
             <ErrorBanner
+              errorSource="people-with-access-section"
               className=""
               error={
                 recipients.recipients.length > 0

@@ -54,6 +54,7 @@ export function AccountProxySignInAgainButton({
       </Button>
       {failure ? (
         <DesktopErrorBanner
+          errorSource="account-proxy-sign-in-again-button"
           error={failure.error}
           {...(failure.details === undefined
             ? {}

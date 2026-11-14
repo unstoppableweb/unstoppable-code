@@ -55,9 +55,6 @@ import {
   resolvePlanTurn,
   type PlanCopyState,
   type PlanTurnToolCall,
-  CollapsedTurnSummaryChips,
-  CollapsedTurnSummaryContent,
-  CollapsedTurnSummaryRow,
   describeStepCounts,
   formatTurnSummaryAriaLabel,
   hasTurnOutcomes,
@@ -75,9 +72,7 @@ import {
   isStartingTurnOutput,
   extractExitPlanModePlan,
   useChatDetail,
-  useCleanChatLook,
   useTurnCollapse,
-  useIsPhone,
   type TurnSummaryChip,
 } from '@canopy/ui-shared/components';
 import {
@@ -124,7 +119,6 @@ import {
   type JSX,
   type MouseEvent,
   type ReactNode,
-  type RefObject,
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { AutoArchiveToggleButton } from './AutoArchiveToggleButton';
@@ -135,7 +129,7 @@ import { TurnMoreActions } from './TurnMoreActions';
 import { DesktopAgentActivitySection } from './DesktopAgentActivitySection';
 import { RunCommentsButton } from './RunCommentsButton';
 import { StickyTurnSummary } from './StickyTurnSummary';
-import { CleanToolStepGroup, ToolStepGroup } from './ToolStepGroup';
+import { CleanToolStepGroup } from './ToolStepGroup';
 import { TurnDiffSummary } from './TurnDiffSummary';
 import { continuationPromptId } from './continuation-transcript-turns';
 import { hasForkableAssistantContent } from './incremental-turn-groups';
@@ -145,7 +139,6 @@ import { readStickyUserHeight } from './sticky-user-height';
 import {
   liveStepWindow,
   segmentCleanSteps,
-  segmentToolSteps,
   stepPieceOf,
   stepsBeforeLiveWindow,
   turnStepCounts,
@@ -176,57 +169,6 @@ const LANDING_RETRY_MS = 2000;
 
 /** A turn no approval holds. */
 const NO_APPROVALS: readonly ApprovalRequestEvent[] = [];
-
-/**
- * Finds the rendered user bubble of the turn `userMessageId`: hoisted into
- * its section's sticky header, or inline in the turn group.
- */
-function findTurnUserBubble(
-  from: HTMLElement,
-  userMessageId: string,
-): HTMLElement | null {
-  const scope =
-    from.closest('[data-chat-sticky-section]') ??
-    from.closest('[data-chat-turn-group]');
-  if (!scope) return null;
-  const id = CSS.escape(userMessageId);
-  return scope.querySelector<HTMLElement>(
-    `[data-sticky-user-message-id="${id}"] [data-role="user"], [data-chat-turn-group="${id}"] [data-role="user"]`,
-  );
-}
-
-/**
- * Early access, narrow transcripts (the App Advisor panel): the user bubble
- * shrinks to its text and sits flush right, so the steps banner below it
- * takes the bubble's width and right edge to read as one stack with it.
- * Elsewhere the bubble spans the column and the banner keeps `w-full`.
- */
-function useMatchUserBubbleWidth(
-  bannerRef: RefObject<HTMLElement | null>,
-  userMessageId: string | undefined,
-  enabled: boolean,
-): void {
-  useLayoutEffect(() => {
-    const banner = bannerRef.current;
-    if (!enabled || !banner || !userMessageId) return;
-    const bubble = findTurnUserBubble(banner, userMessageId);
-    if (!bubble) return;
-    // Never narrower than its own step chips (a short prompt makes a narrow
-    // bubble); it then grows past the bubble's left edge instead of clipping.
-    banner.style.minWidth = 'max-content';
-    const apply = (): void => {
-      banner.style.width = `${bubble.getBoundingClientRect().width}px`;
-    };
-    apply();
-    const observer = new ResizeObserver(apply);
-    observer.observe(bubble);
-    return (): void => {
-      observer.disconnect();
-      banner.style.width = '';
-      banner.style.minWidth = '';
-    };
-  }, [bannerRef, enabled, userMessageId]);
-}
 
 /** A turn's timer, as the clean chat look's header reads it. */
 interface TurnHeaderTimer {
@@ -412,20 +354,19 @@ function DesktopCollapsedTurnSummary({
    * whole chip swaps to the code-flavored icon instead of the Plan Explore
    * map glyph. */
   isCodeReviewChat?: boolean;
-  /** The turn's user message; the banner matches its bubble's width. */
+  /** The turn's user message, used to scope scroll cleanup. */
   userMessageId?: string;
   /** Clean chat look: the turn's time, for "Worked for 3m 24s". */
   timer?: TurnHeaderTimer;
   /** Clean chat look: how the turn ended, when not plainly complete. */
   outcome?: TurnTerminalStatus;
 }): JSX.Element {
-  // The classic row's wrapper takes the bubble's width; the clean header is
-  // its toggle button.
-  const rowRef = useRef<HTMLDivElement>(null);
+  // The work header owns the disclosure toggle.
+
   const headerRef = useRef<HTMLButtonElement>(null);
-  const banner = (): HTMLElement | null => rowRef.current ?? headerRef.current;
+  const banner = (): HTMLElement | null => headerRef.current;
   useEffect(() => {
-    const scroller = (rowRef.current ?? headerRef.current)?.closest(
+    const scroller = headerRef.current?.closest(
       '[data-testid="chat-message-list-scroll"]',
     );
     return (): void => {
@@ -433,12 +374,10 @@ function DesktopCollapsedTurnSummary({
     };
   }, [userMessageId]);
 
-  const isPhone = useIsPhone();
   // Clean chat look: the turn's header, "Worked for 3m 24s", opens the
   // steps; what they did reads as words on hover.
-  const clean = useCleanChatLook();
-  useMatchUserBubbleWidth(rowRef, userMessageId, isPhone && !clean);
-  const stepCounts = clean ? turnStepCounts(counts) : [];
+
+  const stepCounts = turnStepCounts(counts);
 
   // The desktop vocabulary: more families than the shared summary, and the
   // host's own brand and workflow glyphs.
@@ -566,54 +505,25 @@ function DesktopCollapsedTurnSummary({
     />
   ) : undefined;
 
-  if (clean) {
-    return (
-      <TurnWorkHeader
-        ref={headerRef}
-        startedAt={timer?.startedAt}
-        finishedAt={timer?.completedAt ?? null}
-        pausedAt={timer?.pausedAt}
-        resumedAt={timer?.resumedAt}
-        accumulatedPausedDurationMs={timer?.accumulatedPausedDurationMs}
-        live={false}
-        completionStatus={outcome ?? 'complete'}
-        expandable
-        isOpen={isExpanded}
-        onToggle={handleToggle}
-        ariaLabel={ariaLabel}
-        title={describeStepCounts(stepCounts) || undefined}
-        stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
-        outcome={outcomeControl}
-        dataTestId="turn-work-header"
-      />
-    );
-  }
-
   return (
-    <CollapsedTurnSummaryRow
-      ref={rowRef}
-      onClick={handleToggle}
-      isExpanded={isExpanded}
+    <TurnWorkHeader
+      ref={headerRef}
+      startedAt={timer?.startedAt}
+      finishedAt={timer?.completedAt ?? null}
+      pausedAt={timer?.pausedAt}
+      resumedAt={timer?.resumedAt}
+      accumulatedPausedDurationMs={timer?.accumulatedPausedDurationMs}
+      live={false}
+      completionStatus={outcome ?? 'complete'}
+      expandable
+      isOpen={isExpanded}
+      onToggle={handleToggle}
       ariaLabel={ariaLabel}
-      dataTestId="chat-turn-summary"
-      phoneTouchTarget={false}
-      // No surface of its own: the row sits on the transcript background.
-      // While pinned, the sticky wrapper's opaque backing is what masks content
-      // scrolling behind it, so nothing here needs to be opaque.
-      //
-      // `relative` keeps the keyboard focus outline visible while pinned. The
-      // sticky wrapper's `::before` gap-filler is absolutely positioned, so it
-      // paints above in-flow siblings — including this button's outline, which
-      // reaches into exactly that 8px band. Positioning the row puts it in
-      // the same layer, after the pseudo-element, so the outline survives.
-      className="relative ml-auto"
+      title={describeStepCounts(stepCounts) || undefined}
+      stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
       outcome={outcomeControl}
-      trailing={
-        chips.length > 0 ? <CollapsedTurnSummaryChips chips={chips} /> : null
-      }
-    >
-      <CollapsedTurnSummaryContent chips={chips} />
-    </CollapsedTurnSummaryRow>
+      dataTestId="turn-work-header"
+    />
   );
 }
 
@@ -677,7 +587,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   hideUserMessage = false,
   stickyTurnSummary = false,
   forceExpandedUserMessage = false,
-  footerAlwaysVisible = false,
   onJumpToMessage,
   onShowSpawningCall,
   revealRequest,
@@ -729,12 +638,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   appliedMemory?: AppliedOrgMemoryTurn;
   /** Still drives turn-diff summary placement even when another turn owns fork actions. */
   isLastTurnGroup: boolean;
-  /**
-   * Keeps the completed turn footer visible at rest. Set by hosts that do not
-   * wrap each turn in a `group/turn` scope, where the footer's hover/focus
-   * reveal could never fire (CAN-4278).
-   */
-  footerAlwaysVisible?: boolean;
   isLastForkableTurnGroup: boolean;
   onResetToPoint?: (userMessageId: string) => Promise<void>;
   /**
@@ -845,7 +748,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     pending: pendingTurnFiles,
     pendingPathAliases,
     located: locatedTurnFiles,
-    settled: turnFilesSettled,
   } = useTurnFileLocations(routedChatTarget, turnFiles, group.isComplete);
   const modelRoutingStartedAt = useChatTabRenderState(chatTarget, ({ tab }) =>
     hasRoutingTarget ? tab?.modelRoutingStartedAt : undefined,
@@ -869,7 +771,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     ({ tab }) => tab?.interruptedTurns?.[group.userMessage.id] !== undefined,
   );
   const [showChoosingModel, setShowChoosingModel] = useState(false);
-  const cleanChatLook = useCleanChatLook();
+
   const chatDetail = useChatDetail();
   useEffect(() => {
     if (modelRoutingStartedAt === undefined) {
@@ -938,7 +840,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     !isCoworkChatTarget(selectedWorktreeProjectId);
   const [collapsed, setIsCollapsed] = useTurnCollapse(
     group.isComplete,
-    cleanChatLook,
     chatDetail,
   );
   const isCollapsed = searchMessageId ? false : collapsed;
@@ -1235,7 +1136,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     intermediateMessages,
     trailingToolMessages,
     group.assistantMessages,
-    transcriptTurn,
     outcomes,
     receiptOwnerId,
     usesProjectedOutcomes,
@@ -1435,30 +1335,11 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // Clean chat look with grouping on: every step between two replies is one
   // closed line, and the running turn's tail is a live line that shimmers
   // what it does. "Show only recent steps" also keeps the work on one line.
-  const cleanGrouping =
-    cleanChatLook && (groupToolCalls || liveStepWindowEnabled);
-  const toolStepSegments = useMemo(() => {
-    if (cleanGrouping) return null;
-    if (liveStepWindowEnabled) {
-      return segmentToolSteps(renderedVisibleMessages, {
-        liveStepWindow: true,
-      });
-    }
-    return groupToolCalls ? segmentToolSteps(renderedVisibleMessages) : null;
-  }, [
-    cleanGrouping,
-    groupToolCalls,
-    liveStepWindowEnabled,
-    renderedVisibleMessages,
-  ]);
+  const cleanGrouping = groupToolCalls || liveStepWindowEnabled;
   const cleanSegments = useMemo(
-    () => (cleanChatLook ? segmentCleanSteps(renderedVisibleMessages) : null),
-    [cleanChatLook, renderedVisibleMessages],
+    () => segmentCleanSteps(renderedVisibleMessages),
+    [renderedVisibleMessages],
   );
-  const liveStepSegment =
-    liveStepWindowEnabled && !group.isComplete
-      ? toolStepSegments?.[toolStepSegments.length - 1]
-      : undefined;
   const renderMessageItem = (msg: DisplayMessage): JSX.Element => {
     // With the live step window a row can be part of a message, or a trimmed
     // copy of one; key, settle and place it by the message it came from.
@@ -1877,7 +1758,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         }
       : undefined;
   const moreMenu =
-    cleanChatLook &&
     chatId &&
     selectedWorktreeProjectId &&
     selectedWorktreeWorktreeId &&
@@ -1925,7 +1805,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // the reply holds the live line, so that row keeps one height from the
   // first frame to the last.
   const cleanLiveActions =
-    cleanChatLook &&
     isActiveTimer &&
     (watcherButton !== undefined ||
       forkHandler !== undefined ||
@@ -1946,16 +1825,15 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     (((lastShownBlock.type === 'tool_use' || lastShownBlock.type === 'agent') &&
       lastShownBlock.result === undefined) ||
       lastShownBlock.type === 'thinking');
-  const lastCleanSegment = cleanSegments?.[cleanSegments.length - 1];
+  const lastCleanSegment = cleanSegments[cleanSegments.length - 1];
   const liveLineInSteps =
     (!cleanGrouping || liveStepWindowEnabled) &&
     lastCleanSegment?.kind === 'steps';
   const cleanLiveLine =
-    cleanChatLook &&
     !showStarting &&
     !group.isComplete &&
     (cleanGrouping && !liveStepWindowEnabled
-      ? cleanSegments?.[cleanSegments.length - 1]?.kind !== 'steps'
+      ? cleanSegments[cleanSegments.length - 1]?.kind !== 'steps'
       : !stepShimmersOnScreen) ? (
       <CleanToolStepGroup
         live
@@ -2056,15 +1934,15 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         />
       )}
       {/* Clean chat look: the running turn opens with "Working for 28s"; once
-          it is done the folded steps' header reads "Worked for 3m 24s". Both
-          looks open a just-submitted first send with "Starting…" instead. */}
+          it is done the folded steps' header reads "Worked for 3m 24s". The
+          header opens a just-submitted first send with "Starting…" instead. */}
       {showStarting ? (
         <TurnWorkHeader
           starting
           setup={startingSetup}
           dataTestId="turn-starting-status"
         />
-      ) : cleanChatLook && !group.isComplete ? (
+      ) : !group.isComplete ? (
         stickyTurnSummary && !isReverted ? (
           // Pinned like the finished turn's header, in the same wrapper, so
           // finishing only changes its words.
@@ -2145,105 +2023,39 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           and expand/collapse, while preserving the original message order.
           Questions never fold into a tool-step group, so they stay keyed at
           this level. */}
-      {cleanSegments ? (
-        <>
-          {cleanSegments.map((segment, index) =>
-            segment.kind === 'message' ? (
-              renderMessageItem(segment.message)
-            ) : !cleanGrouping ? (
-              <div
-                key={`clean-steps-${segment.key}`}
-                className={STEP_GROUP_BODY_CLASS}
-                data-testid="chat-tool-step-detailed"
-              >
-                {segment.messages.map(renderMessageItem)}
-                {segment === lastCleanSegment &&
-                  liveLineInSteps &&
-                  cleanLiveLine}
-              </div>
-            ) : (
-              <CleanToolStepGroup
-                key={`clean-steps-${segment.key}`}
-                segment={segment}
-                trailingActivity={
-                  liveStepWindowEnabled && segment === lastCleanSegment
-                    ? cleanLiveLine
-                    : undefined
-                }
-                live={!group.isComplete && index === cleanSegments.length - 1}
-                outcomeEvidence={outcomeEvidence}
-                deniedToolUseIds={cleanDeniedToolUseIds}
-                workingLabel={
-                  showChoosingModel ? 'Choosing a model…' : undefined
-                }
-                forceExpanded={segment.messages.some((message) => {
-                  const id = stepPieceOf(message).source.id;
-                  return (
-                    (searchMessageId !== undefined && id === searchMessageId) ||
-                    (revealMessageId !== undefined && id === revealMessageId)
-                  );
-                })}
-                openRequest={
-                  revealRequest !== undefined &&
-                  segment.messages.some(
-                    (message) => message.id === revealRequest.messageId,
-                  )
-                    ? revealRequest
-                    : undefined
-                }
-                isCodeReviewChat={isCodeReviewChat}
-                liveSteps={
-                  liveStepWindowEnabled &&
-                  !group.isComplete &&
-                  index === cleanSegments.length - 1
-                    ? liveStepWindow(segment.messages).map(renderMessageItem)
-                    : undefined
-                }
-                hiddenSteps={
-                  liveStepWindowEnabled &&
-                  !group.isComplete &&
-                  index === cleanSegments.length - 1
-                    ? stepsBeforeLiveWindow(segment.messages).map(
-                        renderMessageItem,
-                      )
-                    : undefined
-                }
-              >
-                {segment.messages.map(renderMessageItem)}
-              </CleanToolStepGroup>
-            ),
-          )}
-        </>
-      ) : toolStepSegments ? (
-        toolStepSegments.map((segment) =>
+      <>
+        {cleanSegments.map((segment, index) =>
           segment.kind === 'message' ? (
             renderMessageItem(segment.message)
+          ) : !cleanGrouping ? (
+            <div
+              key={`clean-steps-${segment.key}`}
+              className={STEP_GROUP_BODY_CLASS}
+              data-testid="chat-tool-step-detailed"
+            >
+              {segment.messages.map(renderMessageItem)}
+              {segment === lastCleanSegment && liveLineInSteps && cleanLiveLine}
+            </div>
           ) : (
-            <ToolStepGroup
-              // Live step window: text ending a run, or the turn finishing,
-              // compresses the group, so it remounts closed at those points
-              // and stays mounted (and open) while its own run grows.
-              key={
-                liveStepWindowEnabled
-                  ? `tool-steps-${segment.key}:${
-                      group.isComplete
-                        ? 'complete'
-                        : segment === liveStepSegment
-                          ? 'live'
-                          : 'closed'
-                    }`
-                  : `tool-steps-${segment.key}`
+            <CleanToolStepGroup
+              key={`clean-steps-${segment.key}`}
+              segment={segment}
+              trailingActivity={
+                liveStepWindowEnabled && segment === lastCleanSegment
+                  ? cleanLiveLine
+                  : undefined
               }
-              toolUses={segment.toolUses}
-              steps={segment.steps}
-              streaming={!group.isComplete}
-              forceExpanded={segment.messages.some(
-                (message) =>
-                  (searchMessageId !== undefined &&
-                    message.id === searchMessageId) ||
-                  (revealMessageId !== undefined &&
-                    message.id === revealMessageId),
-              )}
+              live={!group.isComplete && index === cleanSegments.length - 1}
+              outcomeEvidence={outcomeEvidence}
+              deniedToolUseIds={cleanDeniedToolUseIds}
+              workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
+              forceExpanded={segment.messages.some((message) => {
+                const id = stepPieceOf(message).source.id;
+                return (
+                  (searchMessageId !== undefined && id === searchMessageId) ||
+                  (revealMessageId !== undefined && id === revealMessageId)
+                );
+              })}
               openRequest={
                 revealRequest !== undefined &&
                 segment.messages.some(
@@ -2254,18 +2066,27 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
               }
               isCodeReviewChat={isCodeReviewChat}
               liveSteps={
-                segment === liveStepSegment
+                liveStepWindowEnabled &&
+                !group.isComplete &&
+                index === cleanSegments.length - 1
                   ? liveStepWindow(segment.messages).map(renderMessageItem)
+                  : undefined
+              }
+              hiddenSteps={
+                liveStepWindowEnabled &&
+                !group.isComplete &&
+                index === cleanSegments.length - 1
+                  ? stepsBeforeLiveWindow(segment.messages).map(
+                      renderMessageItem,
+                    )
                   : undefined
               }
             >
               {segment.messages.map(renderMessageItem)}
-            </ToolStepGroup>
+            </CleanToolStepGroup>
           ),
-        )
-      ) : (
-        renderedVisibleMessages.map(renderMessageItem)
-      )}
+        )}
+      </>
 
       {/* Live runs stay in the drawer; finished runs remain discoverable
           even when the parent turn is paused or still working. */}
@@ -2293,11 +2114,10 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           files={locatedTurnFiles}
           pendingFiles={pendingTurnFiles}
           fileTarget={routedChatTarget}
-          filesSettled={turnFilesSettled}
           turnId={group.userMessage.id}
           isLastTurnGroup={isLastTurnGroup}
           originChatTabId={chatId}
-          {...(cleanChatLook && userResetHandler && group.isComplete
+          {...(userResetHandler && group.isComplete
             ? {
                 onUndo: (): void => {
                   setUndoConfirmOpen(true);
@@ -2328,13 +2148,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           accumulatedPausedDurationMs={timerBlock.accumulatedPausedDurationMs}
           waitingForUser={waitingForUser}
           completedAt={timerBlock.completedAt ?? null}
-          alwaysVisible={
-            footerAlwaysVisible ||
-            // Every completed reply keeps its actions visible, including
-            // background replies and historical fork points.
-            (cleanChatLook && (isLastTurnGroup || group.isComplete)) ||
-            headerOutcome !== undefined
-          }
           completionStatus={completionStatus}
           workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
           liveLine={liveLineInSteps ? null : cleanLiveLine}

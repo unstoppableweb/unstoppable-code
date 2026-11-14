@@ -185,6 +185,21 @@ class FakeWebCore implements CoreCoworkInvoker {
         },
       };
     }
+    if (method === 'core.chat.archive') {
+      // As the web core does: archiving a task's own chat archives the task.
+      const tabId = String(Reflect.get(Object(params.action), 'tabId'));
+      const known = this.tasks.some((task) => task.worktreeId === tabId);
+      this.tasks = this.tasks.filter((task) => task.worktreeId !== tabId);
+      return {
+        ok: true,
+        value: {
+          commandId: params.commandId,
+          revision: 0,
+          outcome: known ? 'applied' : 'already_applied',
+          entityId: tabId,
+        },
+      };
+    }
     if (method === 'core.chat.task.list') {
       const failure = this.taskListFailures.shift();
       if (failure) return { ok: false, error: failure };
@@ -415,6 +430,40 @@ describe('core cowork store', () => {
     ]);
   });
 
+  it('a task re-read the web core answers unavailable is read again, and the section stays online (CAN-6394)', async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    // As the transport answers a request a gateway lost mid-flight.
+    core.taskListFailures.push({
+      kind: 'unavailable',
+      message: 'The web core answered HTTP 503.',
+      retry: { kind: 'same_request' },
+    });
+    core.tasks = [
+      {
+        worktreeId: 'task-2',
+        title: 'Later',
+        updatedAt: '2026-11-07T12:00:00Z',
+      },
+      ...core.tasks,
+    ];
+    core.stream.item(1, {
+      kind: 'task',
+      workspaceId: PROJECT,
+      worktreeId: 'task-2',
+      batchId: '1',
+    });
+    const reads = core.count('core.chat.task.list');
+    await jest.advanceTimersByTimeAsync(250);
+    expect(core.count('core.chat.task.list')).toBe(reads + 1);
+    expect(store.getState().status).toBe('online');
+    expect(taskTitles(store)).toEqual(['First']);
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(core.count('core.chat.task.list')).toBe(reads + 2);
+    expect(store.getState().status).toBe('online');
+    expect(taskTitles(store)).toEqual(['Later', 'First']);
+  });
+
   it('a task created for the cloud chat page shows only once the web core created it, and a refused one leaves no row (CAN-6099, CAN-6098)', async () => {
     const core = new FakeWebCore();
     const store = await connected(core);
@@ -620,6 +669,56 @@ describe('core cowork store', () => {
     expect(taskTitles(store)).toEqual(['Newer']);
   });
 
+  it('a store whose connection was lost reconnects by itself, waiting longer each time (CAN-6442)', async () => {
+    const lost: CanopyErrorPayload = {
+      kind: 'unavailable',
+      message: 'The web core is unreachable.',
+      retry: { kind: 'same_request' },
+    };
+    const down: CoreCoworkInvoker = {
+      request: () => Promise.resolve({ ok: false, error: lost }),
+      openStream: () => Promise.reject(new CoreCoworkRequestError(lost)),
+    };
+    const first = new FakeWebCore();
+    const later = new FakeWebCore();
+    const opens: CoreCoworkInvoker[] = [down, later];
+    let reconnects = 0;
+    const store = createCoreCoworkStore({
+      reconnect: () => {
+        reconnects += 1;
+        return opens.shift() ?? null;
+      },
+    });
+    await store.getState().connect(first);
+    expect(store.getState().status).toBe('online');
+
+    first.stream.push({
+      kind: 'end',
+      cursor: { daemonEpoch: EPOCH, sequence: 0 },
+      outcome: 'error',
+      error: lost,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(store.getState().status).toBe('offline');
+    await jest.advanceTimersByTimeAsync(999);
+    expect(reconnects).toBe(0);
+    // The first try finds the web core still down: offline, and it waits longer.
+    await jest.advanceTimersByTimeAsync(1);
+    expect(reconnects).toBe(1);
+    expect(store.getState().status).toBe('offline');
+    await jest.advanceTimersByTimeAsync(1_999);
+    expect(reconnects).toBe(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(reconnects).toBe(2);
+    expect(store.getState().status).toBe('online');
+    expect(taskTitles(store)).toEqual(['First']);
+
+    // Turned off, it stays off: nothing reconnects it.
+    store.getState().disconnect('disabled');
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(reconnects).toBe(2);
+  });
+
   it('a snapshotRequired reopen after a clean end re-lists instead of going offline', async () => {
     const core = new FakeWebCore();
     const store = await connected(core);
@@ -754,6 +853,53 @@ describe('core cowork store', () => {
     // A project the listing gave no revision is never sent.
     await expect(store.getState().deleteProject(REPO)).rejects.toThrow();
     expect(core.count('core.workspace.delete')).toBe(1);
+  });
+
+  it('archiving a task archives its own chat through core.chat.archive, keyed, and drops its row (CAN-6511)', async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    const { task, created } = store.getState().beginTask(PROJECT);
+    await created;
+    expect(tasksOf(store).map((row) => row.worktreeId)).toContain(
+      task.worktreeId,
+    );
+
+    await store.getState().archiveTask(PROJECT, task.worktreeId);
+
+    // The web's own Archive takes the same path: the task's own chat
+    // archives the task with its tabs and stops its delegates.
+    const archives = core.calls.filter(
+      (call) => call.method === 'core.chat.archive',
+    );
+    expect(archives).toHaveLength(1);
+    expect(archives[0]?.params).toMatchObject({
+      projectId: PROJECT,
+      worktreeId: task.worktreeId,
+      action: { type: 'chat.archive_tab', tabId: task.worktreeId },
+    });
+    expect(typeof idempotencyKeyOf(archives[0]?.params)).toBe('string');
+    expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain(
+      task.worktreeId,
+    );
+  });
+
+  it('an archive the web core applied stands, and its row leaves, even when the re-read after it fails (CAN-6511)', async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    const { task, created } = store.getState().beginTask(PROJECT);
+    await created;
+    core.taskListFailures.push({
+      kind: 'invalid_argument',
+      message: 'The list read failed.',
+      retry: { kind: 'never' },
+    });
+
+    await expect(
+      store.getState().archiveTask(PROJECT, task.worktreeId),
+    ).resolves.toBeUndefined();
+    expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain(
+      task.worktreeId,
+    );
   });
 
   it('renaming a project sends a keyed patch at its listed revision (CAN-6099)', async () => {

@@ -19,6 +19,7 @@ import {
 } from '../icons';
 import { BundleIcon, RepoIcon } from '../icons/AppIcons';
 import { formatDate } from '../lib/format-date';
+import { Tooltip } from './Tooltip';
 import {
   DEFAULT_SELECTION_TABLE_COPY,
   type SelectionTableCopy,
@@ -327,6 +328,7 @@ const SOURCE_GLYPHS: Readonly<
   ),
 };
 
+/** Selection, Name, Source, Last updated and Actions. */
 const COLUMN_COUNT = 5;
 const VIRTUALIZED_ROW_THRESHOLD = 120;
 const ESTIMATED_ROW_HEIGHT_PX = 48;
@@ -345,6 +347,8 @@ interface RowViewProps {
   virtualIndex?: number;
   rowCheckboxTestId?: string;
   selectionCopy: SelectionTableCopy;
+  /** False when no row of the table has a date, so the column is left out. */
+  showLastUpdated: boolean;
 }
 
 const UnifiedTableRowView = memo(function UnifiedTableRowView({
@@ -361,6 +365,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
   virtualIndex,
   rowCheckboxTestId,
   selectionCopy,
+  showLastUpdated,
 }: RowViewProps): JSX.Element {
   const toggleMode = row.toggleMode ?? 'normal';
   const locked = toggleMode === 'locked';
@@ -449,12 +454,17 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
                     )}
                   </span>
                   {row.description && (
-                    <span
-                      className="block truncate text-xs fg-secondary"
-                      title={row.description}
+                    <Tooltip
+                      label={row.description}
+                      clamp
+                      allowShrink
+                      className="max-w-full"
+                      replayBlock
                     >
-                      {row.description}
-                    </span>
+                      <span className="min-w-0 truncate text-xs fg-secondary">
+                        {row.description}
+                      </span>
+                    </Tooltip>
                   )}
                 </span>
               </Stack>
@@ -529,9 +539,11 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
           <span className="fg-secondary">—</span>
         )}
       </DataTableCell>
-      <DataTableCell>
-        {row.lastUpdated ? formatDate(row.lastUpdated) : '—'}
-      </DataTableCell>
+      {showLastUpdated && (
+        <DataTableCell>
+          {row.lastUpdated ? formatDate(row.lastUpdated) : '—'}
+        </DataTableCell>
+      )}
       <DataTableCell align="right">
         <span className="inline-flex items-center justify-end gap-1">
           {row.rowAction}
@@ -590,8 +602,10 @@ function kindFilterOptionsFor(
 
 function UnifiedTableHead({
   selectionLabel,
+  showLastUpdated,
 }: {
   selectionLabel: string;
+  showLastUpdated: boolean;
 }): JSX.Element {
   return (
     <DataTableHead sticky>
@@ -600,7 +614,9 @@ function UnifiedTableHead({
       </DataTableHeaderCell>
       <DataTableHeaderCell width="40%">Name</DataTableHeaderCell>
       <DataTableHeaderCell width="30%">Source</DataTableHeaderCell>
-      <DataTableHeaderCell width="7rem">Last updated</DataTableHeaderCell>
+      {showLastUpdated && (
+        <DataTableHeaderCell width="7rem">Last updated</DataTableHeaderCell>
+      )}
       <DataTableHeaderCell width="3.5rem" labelHidden>
         Actions
       </DataTableHeaderCell>
@@ -666,6 +682,7 @@ function UnifiedTableSkeleton({
         >
           <UnifiedTableHead
             selectionLabel={DEFAULT_SELECTION_TABLE_COPY.headerLabel}
+            showLastUpdated
           />
           <DataTableBody>
             {SAMPLE_ROWS.map((row) => (
@@ -679,6 +696,7 @@ function UnifiedTableSkeleton({
                 onToggle={noop}
                 onView={noop}
                 selectionCopy={DEFAULT_SELECTION_TABLE_COPY}
+                showLastUpdated
               />
             ))}
           </DataTableBody>
@@ -752,6 +770,14 @@ export function UnifiedTable({
     () => new Set(rows.map((row) => row.kind)),
     [rows],
   );
+  // A catalog whose rows carry no dates, such as a cloud chat's on desktop,
+  // would show a column of dashes; it is left out instead (CAN-6397). Every
+  // row counts, not only the filtered ones, so a filter never moves columns.
+  const showLastUpdated = useMemo(
+    () => rows.some((row) => row.lastUpdated !== ''),
+    [rows],
+  );
+  const columnCount = showLastUpdated ? COLUMN_COUNT : COLUMN_COUNT - 1;
   const showMcpKind = availableKinds.has('mcp');
   const kindFilterOptions = useMemo(
     () => kindFilterOptionsFor(showCollectionKind, showMcpKind),
@@ -963,11 +989,14 @@ export function UnifiedTable({
             layout="fixed"
             caption="Plugins, skills and MCP servers"
           >
-            <UnifiedTableHead selectionLabel={selectionCopy.headerLabel} />
+            <UnifiedTableHead
+              selectionLabel={selectionCopy.headerLabel}
+              showLastUpdated={showLastUpdated}
+            />
             <DataTableBody replay={blockRowsFromReplay ? 'block' : undefined}>
               {paddingTop > 0 && (
                 <tr aria-hidden style={{ height: paddingTop }}>
-                  <td colSpan={COLUMN_COUNT} />
+                  <td colSpan={columnCount} />
                 </tr>
               )}
               {(virtualized ? virtualItems : filteredRows).map(
@@ -1007,13 +1036,14 @@ export function UnifiedTable({
                       virtualIndex={virtualIndex}
                       rowCheckboxTestId={rowCheckboxTestId}
                       selectionCopy={selectionCopy}
+                      showLastUpdated={showLastUpdated}
                     />
                   );
                 },
               )}
               {paddingBottom > 0 && (
                 <tr aria-hidden style={{ height: paddingBottom }}>
-                  <td colSpan={COLUMN_COUNT} />
+                  <td colSpan={columnCount} />
                 </tr>
               )}
             </DataTableBody>

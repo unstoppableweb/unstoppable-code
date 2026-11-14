@@ -123,7 +123,14 @@ export function CloudModelReplacementDialog({
             last chose, so choose again.
           </Notice>
         )}
-        {error !== null && <Notice intent="destructive">{error}</Notice>}
+        {error !== null && (
+          <Notice
+            errorSource="cloud-model-replacement-dialog"
+            intent="destructive"
+          >
+            {error}
+          </Notice>
+        )}
         {preflight.items.map((item) => {
           const fieldId = `${idPrefix}-${item.itemKey}`;
           const model = item.model === '' ? 'the default model' : item.model;

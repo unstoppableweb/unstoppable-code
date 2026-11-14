@@ -39,7 +39,9 @@ import {
   analyzeCapabilityPackage,
   analyzePipelinePackage,
   buildPipelineCapabilityPackageSources,
+  loadPipelinePluginCollectionPreferences,
   pipelinePackageAnalysisIsStale,
+  pluginCollectionSelectionRequests,
   type PipelinePackageAnalysisInternal,
   type PipelinePackageProvider,
   type PipelinePackageStepProviders,
@@ -49,6 +51,7 @@ import {
   type CapabilityPackagePromptSource,
   type AutomationPipelinePortableInput,
   type FileAssetPortableInput,
+  type PipelinePackageSourceDescriptor,
 } from '@canopy/desktop-shared/node';
 import {
   AUTOMATION_ACTION_PIPELINE_KEY,
@@ -94,6 +97,7 @@ import type {
   AutomationPipelineDependency,
   ChatTabPluginSelections,
   CommitAutomationCapabilityPackageRequest,
+  CloudCopyAudience,
 } from '@canopy/desktop-shared/types';
 import type { InvocableInventoryEnableRef } from '@canopy/execution-engine/types/invocable-inventory';
 import type {
@@ -163,7 +167,10 @@ import {
   loadShareablePluginCatalog,
   matchShareablePluginRef,
 } from '../plugins/shareable-plugin-resolution';
-import { resolveEffectivePluginSelectionRefs } from '../plugins/plugin-resolver';
+import {
+  resolveEffectivePluginSelectionRefs,
+  type EffectivePluginSelectionRefs,
+} from '../plugins/plugin-resolver';
 import {
   getPipelinePackageDismissalStorePath,
   getPipelinePackageInstallStorePath,
@@ -218,6 +225,7 @@ import {
   type CanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
 import {
+  PackageAnalysisBlockedError,
   ShareOperationError,
   ShareStageError,
   shareFailureFromError,
@@ -266,6 +274,7 @@ import {
   replacePipelinePackageDismissals,
 } from './pipeline-package-dismissal-store';
 import { sendToWebContents } from '../lib/web-contents-send';
+import type { GitIgnoredAnswer } from './cloud-copy-git-ignored';
 
 const ANALYSIS_LIMIT = 8;
 /** Attempts per blob PUT. Writes are content-addressed, so repeats are safe. */
@@ -298,13 +307,40 @@ const AUTOMATION_INSTALLED_RESOURCE_KINDS: ReadonlySet<
   'automation_pipeline',
   'file_asset',
 ]);
+/**
+ * What a cloud copy analysis was made for (CAN-6176). A publish to the cloud
+ * reads only an analysis made for exactly the item it publishes, never one
+ * made for sharing, a reference review or another item that happens to
+ * include it.
+ */
+export interface CloudCopySubject {
+  kind: 'plugin';
+  marketplaceId: string;
+  pluginName: string;
+}
+
+export const cloudCopySubjectMatches = (
+  recorded: CloudCopySubject | undefined,
+  expected: CloudCopySubject,
+): boolean =>
+  recorded !== undefined &&
+  recorded.kind === expected.kind &&
+  recorded.marketplaceId === expected.marketplaceId &&
+  recorded.pluginName === expected.pluginName;
+
 const analyses = new Map<
   string,
   PipelinePackageAnalysisInternal & {
     shareSource?: PipelineShareSource;
     shareBytes?: string;
+    /** Set only by an analysis made for a cloud copy of this item. */
+    cloudCopy?: CloudCopySubject;
+    /** The account a cloud copy analysis was issued for (CAN-6176). */
+    cloudCopyAccountId?: string;
+    /** The audience the consent dialog showed for its cloud copy. */
+    cloudCopyAudience?: CloudCopyAudience;
     /** The skill a skill analysis read its folder from. */
-    skill?: { sourceId: string; skillName: string };
+    skill?: { sourceId: string; skillName: string; cloudCopy?: true };
   }
 >();
 const activeAnalysisRequests = new Map<string, symbol>();
@@ -380,7 +416,9 @@ function providerForConfiguredModel(
   // with, so they stay the analyzed (confirmed) model.
   if (alias && !alias.defaults) return undefined;
   const concreteModel =
-    alias?.defaults && 'base' in alias.defaults
+    alias?.defaults &&
+    'base' in alias.defaults &&
+    alias.defaults.base !== undefined
       ? alias.defaults.base
       : alias?.defaults && 'agent_id' in alias.defaults
         ? alias.defaults.agent_id
@@ -1421,34 +1459,9 @@ export async function analyzeAutomationCapabilityPackage(
         );
       }
     };
-    const requestedKeys: string[] = [];
-    for (const skill of effectiveSelections.skillRefs) {
-      const key = `skill:${skill.sourceId}:${skill.skillName}`;
-      requestedKeys.push(key);
-      inventoryEntryIdsByKey[key] = inventory.entries
-        .filter(
-          (entry) =>
-            entry.enableRef.kind === 'skill' &&
-            entry.enableRef.sourceId === skill.sourceId &&
-            entry.enableRef.skillName === skill.skillName,
-        )
-        .map((entry) => entry.id);
-    }
-    for (const plugin of effectiveSelections.pluginRefs) {
-      const key = `plugin:${plugin.marketplaceId}:${plugin.pluginName}`;
-      requestedKeys.push(key);
-      inventoryEntryIdsByKey[key] = inventory.entries
-        .filter(
-          (entry) =>
-            entry.enableRef.kind === 'plugin' &&
-            entry.enableRef.marketplaceId === plugin.marketplaceId &&
-            entry.enableRef.pluginName === plugin.pluginName,
-        )
-        .map((entry) => entry.id);
-    }
-    const requests: CapabilityPackageRequest[] = Array.from(
-      new Set(requestedKeys),
-    ).flatMap((key) =>
+    const selected = selectionInventoryKeys(effectiveSelections, inventory);
+    mergeInventoryEntryIds(selected.entryIdsByKey);
+    const requests: CapabilityPackageRequest[] = selected.keys.flatMap((key) =>
       (['claude', 'codex'] as const).map((provider) => ({
         key,
         provider,
@@ -1457,6 +1470,8 @@ export async function analyzeAutomationCapabilityPackage(
       })),
     );
     const promptSources: CapabilityPackagePromptSource[] = [];
+    /** Selections that stay on this machine, beyond the action's own. */
+    const unpackageableLabels: string[] = [];
     const environmentRequirements: PipelinePackageEnvironmentRequirement[] = [];
     const portableResources: CapabilityPackagePortableResourceInput[] = [];
     const hostBlockers: PipelinePackageAnalysisBlocker[] = [];
@@ -1583,6 +1598,19 @@ export async function analyzeAutomationCapabilityPackage(
           pipeline,
           fileDir: pipelineFileDir(actionPath),
         });
+        // The skills and plugins its collections take on this machine, such
+        // as a converted chat automation's local `chat_plugins` selections,
+        // travel bound to the steps that use them.
+        if (actionPipeline.source === 'user') {
+          const local = await localCollectionSelectionRequests(
+            pipeline,
+            actionPipeline.pipelineId,
+            inventory,
+          );
+          requests.push(...local.requests);
+          mergeInventoryEntryIds(local.entryIdsByKey);
+          unpackageableLabels.push(...local.unpackageableLabels);
+        }
       } else {
         // Shared and other pipelines keep the inline handling: their skills
         // and plugins travel under their real step bindings.
@@ -1702,6 +1730,7 @@ export async function analyzeAutomationCapabilityPackage(
       new Set([
         ...effectiveSelections.mcpServerRefs.map((server) => server.serverId),
         ...effectiveSelections.warnings,
+        ...unpackageableLabels,
       ]),
     );
     return {
@@ -1715,6 +1744,122 @@ export async function analyzeAutomationCapabilityPackage(
       activeAnalysisRequests.delete(scopeKey);
     }
   }
+}
+
+type PackageInventory = Awaited<
+  ReturnType<typeof loadPipelinePackageInventorySources>
+>['inventory'];
+
+/**
+ * The inventory keys an effective selection set requests, each with the
+ * inventory entries that can satisfy it.
+ */
+function selectionInventoryKeys(
+  selections: Pick<EffectivePluginSelectionRefs, 'skillRefs' | 'pluginRefs'>,
+  inventory: PackageInventory,
+): { keys: string[]; entryIdsByKey: Record<string, string[]> } {
+  const entryIdsByKey: Record<string, string[]> = {};
+  for (const skill of selections.skillRefs) {
+    entryIdsByKey[`skill:${skill.sourceId}:${skill.skillName}`] =
+      inventory.entries
+        .filter(
+          (entry) =>
+            entry.enableRef.kind === 'skill' &&
+            entry.enableRef.sourceId === skill.sourceId &&
+            entry.enableRef.skillName === skill.skillName,
+        )
+        .map((entry) => entry.id);
+  }
+  for (const plugin of selections.pluginRefs) {
+    entryIdsByKey[`plugin:${plugin.marketplaceId}:${plugin.pluginName}`] =
+      inventory.entries
+        .filter(
+          (entry) =>
+            entry.enableRef.kind === 'plugin' &&
+            entry.enableRef.marketplaceId === plugin.marketplaceId &&
+            entry.enableRef.pluginName === plugin.pluginName,
+        )
+        .map((entry) => entry.id);
+  }
+  return { keys: Object.keys(entryIdsByKey), entryIdsByKey };
+}
+
+/**
+ * Requests for what a stored user pipeline's plugin collections take on this
+ * machine, outside its YAML: each collection preference's extra selections,
+ * Collections expanded, bound to the steps that use the collection. MCP
+ * servers and selections that can't resolve stay on this machine and are
+ * named, as a chat automation's are.
+ */
+/**
+ * The providers a step's local collection selections are packaged for. A send
+ * step with no model starts its chat on the destination's default model,
+ * which may be Codex, so its Codex variants are packaged too, as a chat
+ * automation's selections were. Codex stays unconfirmed: a variant found is
+ * packaged, one missing never blocks the share.
+ */
+function collectionSelectionProviderByStep(
+  pipeline: Pipeline,
+): Record<string, PipelinePackageStepProviders> {
+  const providerByStep = resolvePipelinePackageProviderByStep(pipeline);
+  for (const [jobId, job] of Object.entries(pipeline.jobs)) {
+    const stepIds = assignStepIds(job.steps, jobId).map((step) => step.id);
+    job.steps.forEach((step, index) => {
+      const stepId = stepIds[index];
+      if (
+        stepId === undefined ||
+        step.uses !== 'builtin/send-agent-message' ||
+        typeof step.with?.model === 'string'
+      )
+        return;
+      providerByStep[`${jobId}.${stepId}`] = [
+        { provider: 'claude' },
+        { provider: 'codex', unconfirmed: true },
+      ];
+    });
+  }
+  return providerByStep;
+}
+
+async function localCollectionSelectionRequests(
+  pipeline: Pipeline,
+  pipelineId: string,
+  inventory: PackageInventory,
+): Promise<{
+  requests: CapabilityPackageRequest[];
+  entryIdsByKey: Record<string, string[]>;
+  unpackageableLabels: string[];
+}> {
+  const preferences = loadPipelinePluginCollectionPreferences({
+    type: 'stored',
+    source: 'user',
+    value: pipelineId,
+  });
+  const collections: Array<{ collectionId: string; keys: string[] }> = [];
+  const entryIdsByKey: Record<string, string[]> = {};
+  const unpackageableLabels: string[] = [];
+  for (const [collectionId, preference] of Object.entries(preferences)) {
+    const effective = await resolveEffectivePluginSelectionRefs(
+      preference.extraSelections,
+    );
+    const selected = selectionInventoryKeys(effective, inventory);
+    Object.assign(entryIdsByKey, selected.entryIdsByKey);
+    if (selected.keys.length > 0)
+      collections.push({ collectionId, keys: selected.keys });
+    unpackageableLabels.push(
+      ...effective.mcpServerRefs.map((server) => server.serverId),
+      ...effective.warnings,
+    );
+  }
+  return {
+    requests: pluginCollectionSelectionRequests(
+      pipeline,
+      collectionSelectionProviderByStep(pipeline),
+      collections,
+    ),
+    entryIdsByKey,
+    unpackageableLabels,
+  };
 }
 
 export interface AnalyzeSubjectCapabilityPackageInput {
@@ -1857,6 +2002,11 @@ export interface AnalyzeSkillCapabilityPackageInput {
   rawSkill: string;
   worktree?: PackageWorktreeContext;
   dismissedInvocations?: PipelinePackageInvocationDismissal[];
+  /**
+   * A cloud copy (CAN-6176): files a share blocks on are withheld instead,
+   * with git-ignored ones, and listed in the summary.
+   */
+  cloudCopy?: true;
 }
 
 /**
@@ -1924,6 +2074,11 @@ export async function analyzeSkillCapabilityPackage(
           );
     const analysis = await analyzeCapabilityPackage({
       rawContent: input.rawSkill,
+      ...(input.cloudCopy === true
+        ? {
+            cloudCopy: { gitIgnored: memberGitIgnored() },
+          }
+        : {}),
       invocableInventory: inventory,
       capabilityInventoryEntryIdsByKey,
       sourceByInventoryEntryId: sources,
@@ -1953,7 +2108,11 @@ export async function analyzeSkillCapabilityPackage(
       );
     analyses.set(analysis.summary.analysisId, {
       ...analysis,
-      skill: { sourceId: input.sourceId, skillName: input.skillName },
+      skill: {
+        sourceId: input.sourceId,
+        skillName: input.skillName,
+        ...(input.cloudCopy === true ? { cloudCopy: true as const } : {}),
+      },
     });
     pruneAnalyses();
     return analysis.summary;
@@ -1980,6 +2139,89 @@ export interface SkillAnalysisSubject {
   sourceId: string;
   skillName: string;
   contentHash: string;
+  /** The account a cloud copy analysis was issued for; null otherwise. */
+  accountId: string | null;
+  /** The audience its consent dialog showed; null when it was never shown. */
+  audience: CloudCopyAudience | null;
+  /** Made for a cloud copy, with what a share blocks on withheld. */
+  cloudCopy: boolean;
+}
+
+/**
+ * Each packaged member's git-ignored paths, from its own folder: a plugin's
+ * members from the plugin's root, a standalone skill (the subject or a skill
+ * it invokes) from its own skill folder. Asked once per folder.
+ */
+function memberGitIgnored(): (
+  descriptor: PipelinePackageSourceDescriptor,
+) => Promise<GitIgnoredAnswer> {
+  const byRoot = new Map<string, Promise<GitIgnoredAnswer>>();
+  return (descriptor) => {
+    const root =
+      descriptor.runtimeKind === 'plugin_fragment'
+        ? path.resolve(descriptor.sourceRoot)
+        : path.resolve(descriptor.sourceRoot, descriptor.memberPath);
+    let answer = byRoot.get(root);
+    if (answer === undefined) {
+      answer = import('./cloud-copy-git-ignored').then(
+        ({ gitIgnoredPredicate }) => gitIgnoredPredicate(root),
+      );
+      byRoot.set(root, answer);
+    }
+    return answer;
+  };
+}
+
+/**
+ * Analyze an installed plugin for its cloud copy (CAN-6176 D13): its members
+ * and their files, with what a share would block on withheld instead and
+ * git-ignored files left out, for the consent dialog and then the upload.
+ */
+export async function analyzePluginForCloudCopy(input: {
+  marketplaceId: string;
+  pluginName: string;
+}): Promise<PipelinePackageAnalysisSummary> {
+  pruneAnalyses();
+  const { inventory, sources } = await loadPipelinePackageInventorySources();
+  const key = `plugin:${input.marketplaceId}:${input.pluginName}`;
+  const members = inventory.entries.filter(
+    (entry) =>
+      entry.enableRef.kind === 'plugin' &&
+      entry.enableRef.marketplaceId === input.marketplaceId &&
+      entry.enableRef.pluginName === input.pluginName,
+  );
+  const entryIds = members.map((entry) => entry.id);
+  // Only the providers the plugin has entries for: a Claude-only plugin,
+  // with Codex compatibility off, has no Codex tree to require.
+  const providers = (['claude', 'codex'] as const).filter((provider) =>
+    members.some((entry) => entry.provider === provider),
+  );
+  const analysis = await analyzeCapabilityPackage({
+    rawContent: key,
+    cloudCopy: { gitIgnored: memberGitIgnored() },
+    invocableInventory: inventory,
+    capabilityInventoryEntryIdsByKey: { [key]: entryIds },
+    sourceByInventoryEntryId: sources,
+    requests: (providers.length > 0
+      ? providers
+      : (['claude', 'codex'] as const)
+    ).map((provider) => ({
+      key,
+      provider,
+      required: true,
+      bindingKey: CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+    })),
+  });
+  analyses.set(analysis.summary.analysisId, {
+    ...analysis,
+    cloudCopy: {
+      kind: 'plugin',
+      marketplaceId: input.marketplaceId,
+      pluginName: input.pluginName,
+    },
+  });
+  pruneAnalyses();
+  return analysis.summary;
 }
 
 /**
@@ -1995,8 +2237,33 @@ export function skillAnalysisSubject(
   pruneAnalyses();
   const analysis = analyses.get(analysisId);
   return analysis?.skill && Date.parse(analysis.summary.expiresAt) > Date.now()
-    ? { ...analysis.skill, contentHash: analysis.summary.pipelineContentHash }
+    ? {
+        sourceId: analysis.skill.sourceId,
+        skillName: analysis.skill.skillName,
+        contentHash: analysis.summary.pipelineContentHash,
+        cloudCopy: analysis.skill.cloudCopy === true,
+        accountId: analysis.cloudCopyAccountId ?? null,
+        audience: analysis.cloudCopyAudience ?? null,
+      }
     : null;
+}
+
+/**
+ * Records the account a cloud copy analysis was issued for, so its publish
+ * goes only to that account (CAN-6176). Nothing for any other analysis.
+ */
+export function bindCloudCopyAnalysis(
+  analysisId: string,
+  accountId: string,
+  audience: CloudCopyAudience,
+): void {
+  const analysis = analyses.get(analysisId);
+  if (analysis && (analysis.cloudCopy || analysis.skill?.cloudCopy === true))
+    analyses.set(analysisId, {
+      ...analysis,
+      cloudCopyAccountId: accountId,
+      cloudCopyAudience: audience,
+    });
 }
 
 export function cancelPackageAnalysis(analysisId: string): void {
@@ -2225,15 +2492,22 @@ async function runBounded<T>(
   );
 }
 
-async function commitAnalyzedCapabilityPackage(
-  request: {
-    analysisId: string;
-    selectedOptionalResourceIds: string[];
-  },
-  getWindow?: () => BrowserWindow | null,
-  beforeCommit?: () => Promise<void>,
-  credentialContext?: CanopyCloudCredentialContext,
-): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
+/**
+ * The selected manifest of a live, ready analysis whose sources are unchanged,
+ * with its analysed bytes. Refuses an expired, blocked or stale analysis with
+ * `dependency-review`, deleting a stale one, and, for a cloud copy, one that
+ * wasn't made for a cloud copy of exactly `cloudCopyOf`.
+ */
+export async function readAnalyzedCapabilityPackage(request: {
+  analysisId: string;
+  selectedOptionalResourceIds: readonly string[];
+  cloudCopyOf?: CloudCopySubject;
+  /** With `cloudCopyOf`: the account the analysis must have been issued for. */
+  cloudCopyAccountId?: string;
+}): Promise<{
+  manifest: PipelinePackageManifestV1;
+  readBlob: (sha256: string) => Uint8Array;
+}> {
   pruneAnalyses();
   const analysis = analyses.get(request.analysisId);
   if (!analysis || Date.parse(analysis.summary.expiresAt) <= Date.now()) {
@@ -2243,14 +2517,22 @@ async function commitAnalyzedCapabilityPackage(
       'prepare',
     );
   }
+  if (
+    request.cloudCopyOf !== undefined &&
+    (!cloudCopySubjectMatches(analysis.cloudCopy, request.cloudCopyOf) ||
+      analysis.cloudCopyAccountId === undefined ||
+      analysis.cloudCopyAccountId !== request.cloudCopyAccountId)
+  ) {
+    throw new ShareOperationError(
+      'dependency-review',
+      'This review was not made for adding this item to the cloud. Review it again.',
+      'prepare',
+    );
+  }
   // This state check is load-bearing even though blocked analyses now retain
   // a partial manifest for publisher review.
   if (analysis.summary.state !== 'ready' || !analysis.summary.manifest) {
-    throw new ShareOperationError(
-      'dependency-review',
-      'Dependencies are not ready to package. Resolve the listed problems first.',
-      'prepare',
-    );
+    throw new PackageAnalysisBlockedError();
   }
   if (await pipelinePackageAnalysisIsStale(analysis)) {
     analyses.delete(request.analysisId);
@@ -2260,19 +2542,34 @@ async function commitAnalyzedCapabilityPackage(
       'prepare',
     );
   }
-  const manifest = selectPipelinePackageManifest(
-    analysis.summary.manifest,
-    request.selectedOptionalResourceIds,
-    analysis.optionalBindings,
-    analysis.publisherNoteSources,
-  );
-  return commitCapabilityPackageUpload(
-    manifest,
-    (sha256) => {
+  return {
+    manifest: selectPipelinePackageManifest(
+      analysis.summary.manifest,
+      request.selectedOptionalResourceIds,
+      analysis.optionalBindings,
+      analysis.publisherNoteSources,
+    ),
+    readBlob: (sha256) => {
       const bytes = analysis.blobs.get(sha256);
       if (!bytes) throw new Error(`Analyzed package blob ${sha256} is missing`);
       return bytes;
     },
+  };
+}
+
+async function commitAnalyzedCapabilityPackage(
+  request: {
+    analysisId: string;
+    selectedOptionalResourceIds: string[];
+  },
+  getWindow?: () => BrowserWindow | null,
+  beforeCommit?: () => Promise<void>,
+  credentialContext?: CanopyCloudCredentialContext,
+): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
+  const { manifest, readBlob } = await readAnalyzedCapabilityPackage(request);
+  return commitCapabilityPackageUpload(
+    manifest,
+    readBlob,
     getWindow,
     beforeCommit,
     credentialContext,
@@ -3131,6 +3428,31 @@ export async function repinAutomationCapabilityPackageContent(
     expected,
     next,
   );
+}
+
+/**
+ * CAN-6065: gives `toAutomationId` the package install `fromAutomationId`
+ * has, when a workflow's installed schedule hands it to another. Resolves to
+ * whether `to` holds it, read back; with nothing to copy, `to` holds what
+ * `from` did. `from`'s own install stays until its record is deleted.
+ */
+export async function copyAutomationCapabilityPackageInstall(
+  fromAutomationId: string,
+  toAutomationId: string,
+): Promise<boolean> {
+  const storePath = getPipelinePackageInstallStorePath();
+  const to = { kind: 'automation' as const, localAutomationId: toAutomationId };
+  try {
+    const install = await findCapabilityPackageInstallByOwner(storePath, {
+      kind: 'automation',
+      localAutomationId: fromAutomationId,
+    });
+    if (!install) return true;
+    await upsertCapabilityPackageInstall(storePath, { ...install, owner: to });
+    return (await findCapabilityPackageInstallByOwner(storePath, to)) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**

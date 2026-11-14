@@ -31,6 +31,7 @@ import {
   FieldError,
 } from '@canopy/ui-shared/components';
 import {
+  Bot,
   ChevronLeftMediumIcon,
   ChevronRightIcon,
   ClaudeIcon,
@@ -444,200 +445,211 @@ export function AgentRow({
 export function ConnectSection({
   servers,
   cursorClientId,
+  showComputersHint,
 }: {
   readonly servers: readonly ExternalAgentServerAddress[];
   readonly cursorClientId: string;
+  /** The page lists Computers, so the Tasks address points there. */
+  readonly showComputersHint: boolean;
 }): JSX.Element {
   return (
-    <>
-      <SettingsSection
-        title="Connect an agent"
-        description="Any agent that supports MCP can connect to your account."
-        testId="external-agents-connect"
-      >
-        <SettingsGroup>
-          {servers.map((server) => {
-            const copy = EXTERNAL_AGENT_SERVER_COPY[server.server];
-            return (
-              <div
-                key={server.server}
-                data-testid={`external-agents-server-${server.server}`}
-              >
-                <SettingsRow
-                  label={copy.title}
-                  description={
-                    <span className="min-w-0 flex flex-col gap-0.5">
-                      <span className="block">{copy.line}</span>
-                      <span className="block wrap-anywhere font-mono fg-secondary">
-                        {server.url}
-                      </span>
-                    </span>
-                  }
-                  control={
-                    <CopyButton
-                      value={server.url}
-                      ariaLabel="Copy"
-                      label="Copy"
-                      copiedLabel="Copied"
-                      variant="secondary"
-                      size="compact"
-                    />
-                  }
-                />
-              </div>
-            );
-          })}
-          <ol className="flex list-decimal flex-col gap-1 pl-5 text-s fg-secondary">
-            <li>
-              In your agent, add an MCP server and paste one of these addresses.
-            </li>
-            <li>
-              The agent sends you to this site to sign in and choose what it can
-              do.
-            </li>
-            <li>The agent then appears on this page.</li>
-          </ol>
-        </SettingsGroup>
-      </SettingsSection>
-      <SettingsSection
-        title="Set up your preferred agent"
-        description="Click to see your agent’s specific setup steps."
-        testId="external-agents-setup"
-      >
-        <SettingsGroup>
-          <AgentSetup
-            testId="external-agents-claude-code"
-            logo={<ClaudeIcon size={16} />}
-            name="Claude Code"
-            description={
-              <>
-                Run these in your terminal, then run{' '}
-                <InlineCode>/mcp</InlineCode> in Claude Code and choose each
-                server to sign in.
-              </>
-            }
-          >
-            <ServerCommands
-              agent="claude-code"
-              servers={servers}
-              command={claudeCodeAddCommand}
-            />
-          </AgentSetup>
-          <AgentSetup
-            testId="external-agents-codex"
-            logo={<CodexIcon size={16} />}
-            name="Codex"
-            description={
-              <>
-                Run these in your terminal. Codex opens the sign-in page for
-                each server; if it doesn’t, run{' '}
-                <InlineCode>codex mcp login</InlineCode> with the server name.
-              </>
-            }
-          >
-            <ServerCommands
-              agent="codex"
-              servers={servers}
-              command={codexAddCommand}
-            />
-          </AgentSetup>
-          <AgentSetup
-            testId="external-agents-cursor"
-            logo={<CursorIcon size={16} />}
-            name="Cursor"
-            description="Cursor can’t register itself here. Copy these entries into Cursor’s mcp.json instead."
-            control={
-              <CopyButton
-                value={cursorMcpSnippet(servers, cursorClientId)}
-                ariaLabel="Copy entries"
-                label="Copy entries"
-                copiedLabel="Copied"
-                variant="secondary"
-                size="compact"
-                dataTestId="external-agents-cursor-copy"
-              />
-            }
-          >
-            <Surface variant="inset" className="max-w-full overflow-hidden">
-              <pre
-                data-testid="external-agents-cursor-snippet"
-                className="overflow-x-auto whitespace-pre p-3 font-mono text-xs fg-secondary"
-              >
-                {cursorMcpSnippet(servers, cursorClientId)}
-              </pre>
-            </Surface>
-          </AgentSetup>
-          <AgentSetup
-            testId="external-agents-opencode"
-            logo={<OpenCodeLogo aria-hidden />}
-            name="OpenCode"
-            description={
-              <>
-                Add these entries to <InlineCode>opencode.json</InlineCode>,
-                then run each sign-in command in your terminal.
-              </>
-            }
-          >
-            <CommandBlock
-              value={openCodeConfigSnippet(servers)}
-              testId="external-agents-opencode-config"
-            />
-            <ServerCommands
-              agent="opencode"
-              servers={servers}
-              command={openCodeAuthCommand}
-            />
-          </AgentSetup>
-          <AgentSetup
-            testId="external-agents-hermes"
-            logo={<HermesLogo aria-hidden />}
-            name="Hermes"
-            description="Run these in your terminal. Each adds the server, then opens its sign-in page."
-          >
-            <ServerCommands
-              agent="hermes"
-              servers={servers}
-              command={hermesAddCommand}
-            />
-          </AgentSetup>
-          <AgentSetup
-            testId="external-agents-openclaw"
-            logo={<OpenClawLogo aria-hidden />}
-            name="OpenClaw"
-            description="OpenClaw can’t sign in here yet: it doesn’t publish the client ID document this site requires. These commands add the servers so sign-in works once it does. Stop the OpenClaw Gateway before running them."
-          >
-            <ServerCommands
-              agent="openclaw"
-              servers={servers}
-              command={openClawAddCommand}
-            />
-          </AgentSetup>
-          <AgentSetup
-            testId="external-agents-muse"
-            logo={<MuseLogo aria-hidden />}
-            name="Meta Muse"
-            description={
-              <>
-                Ask Muse to set up a custom connector and give it one of the
-                addresses above. When Muse asks for a client ID, enter{' '}
-                <InlineCode>{MUSE_CLIENT_ID}</InlineCode>.
-              </>
-            }
-            control={
-              <CopyButton
-                value={MUSE_CLIENT_ID}
-                ariaLabel="Copy client ID"
-                label="Copy client ID"
-                copiedLabel="Copied"
-                variant="secondary"
-                size="compact"
-                dataTestId="external-agents-muse-copy"
-              />
-            }
+    <SettingsSection
+      title="Connect an agent"
+      description="Choose your agent for its setup steps. Any agent that supports MCP can connect."
+      testId="external-agents-connect"
+    >
+      <SettingsGroup>
+        <AgentSetup
+          testId="external-agents-claude-code"
+          logo={<ClaudeIcon size={16} />}
+          name="Claude Code"
+          description={
+            <>
+              Run these in your terminal, then run <InlineCode>/mcp</InlineCode>{' '}
+              in Claude Code and choose each server to sign in.
+            </>
+          }
+        >
+          <ServerCommands
+            agent="claude-code"
+            servers={servers}
+            command={claudeCodeAddCommand}
           />
-        </SettingsGroup>
-      </SettingsSection>
-    </>
+        </AgentSetup>
+        <AgentSetup
+          testId="external-agents-codex"
+          logo={<CodexIcon size={16} />}
+          name="Codex"
+          description={
+            <>
+              Run these in your terminal. Codex opens the sign-in page for each
+              server; if it doesn’t, run{' '}
+              <InlineCode>codex mcp login</InlineCode> with the server name.
+            </>
+          }
+        >
+          <ServerCommands
+            agent="codex"
+            servers={servers}
+            command={codexAddCommand}
+          />
+        </AgentSetup>
+        <AgentSetup
+          testId="external-agents-cursor"
+          logo={<CursorIcon size={16} />}
+          name="Cursor"
+          description="Cursor can’t register itself here. Copy these entries into Cursor’s mcp.json instead."
+          control={
+            <CopyButton
+              value={cursorMcpSnippet(servers, cursorClientId)}
+              ariaLabel="Copy entries"
+              label="Copy entries"
+              copiedLabel="Copied"
+              variant="secondary"
+              size="compact"
+              dataTestId="external-agents-cursor-copy"
+            />
+          }
+        >
+          <Surface variant="inset" className="max-w-full overflow-hidden">
+            <pre
+              data-testid="external-agents-cursor-snippet"
+              className="overflow-x-auto whitespace-pre p-3 font-mono text-xs fg-secondary"
+            >
+              {cursorMcpSnippet(servers, cursorClientId)}
+            </pre>
+          </Surface>
+        </AgentSetup>
+        <AgentSetup
+          testId="external-agents-opencode"
+          logo={<OpenCodeLogo aria-hidden />}
+          name="OpenCode"
+          description={
+            <>
+              Add these entries to <InlineCode>opencode.json</InlineCode>, then
+              run each sign-in command in your terminal.
+            </>
+          }
+        >
+          <CommandBlock
+            value={openCodeConfigSnippet(servers)}
+            testId="external-agents-opencode-config"
+          />
+          <ServerCommands
+            agent="opencode"
+            servers={servers}
+            command={openCodeAuthCommand}
+          />
+        </AgentSetup>
+        <AgentSetup
+          testId="external-agents-hermes"
+          logo={<HermesLogo aria-hidden />}
+          name="Hermes"
+          description="Run these in your terminal. Each adds the server, then opens its sign-in page."
+        >
+          <ServerCommands
+            agent="hermes"
+            servers={servers}
+            command={hermesAddCommand}
+          />
+        </AgentSetup>
+        <AgentSetup
+          testId="external-agents-openclaw"
+          logo={<OpenClawLogo aria-hidden />}
+          name="OpenClaw"
+          description="OpenClaw can’t sign in here yet: it doesn’t publish the client ID document this site requires. These commands add the servers so sign-in works once it does. Stop the OpenClaw Gateway before running them."
+        >
+          <ServerCommands
+            agent="openclaw"
+            servers={servers}
+            command={openClawAddCommand}
+          />
+        </AgentSetup>
+        <AgentSetup
+          testId="external-agents-muse"
+          logo={<MuseLogo aria-hidden />}
+          name="Meta Muse"
+          description={
+            <>
+              Ask Muse to set up a custom connector and give it one of the
+              addresses under Other MCP agent. When Muse asks for a client ID,
+              enter <InlineCode>{MUSE_CLIENT_ID}</InlineCode>.
+            </>
+          }
+          control={
+            <CopyButton
+              value={MUSE_CLIENT_ID}
+              ariaLabel="Copy client ID"
+              label="Copy client ID"
+              copiedLabel="Copied"
+              variant="secondary"
+              size="compact"
+              dataTestId="external-agents-muse-copy"
+            />
+          }
+        />
+        <AgentSetup
+          testId="external-agents-other"
+          logo={<Bot size={16} />}
+          name="Other MCP agent"
+          description="Add an MCP server in your agent and paste one of these addresses."
+        >
+          <div className="flex min-w-0 flex-col gap-3">
+            {servers.map((server) => {
+              const copy = EXTERNAL_AGENT_SERVER_COPY[server.server];
+              return (
+                <div
+                  key={server.server}
+                  data-testid={`external-agents-server-${server.server}`}
+                >
+                  <SettingsRow
+                    label={copy.title}
+                    description={
+                      <span className="min-w-0 flex flex-col gap-0.5">
+                        <span className="block">{copy.line}</span>
+                        <span className="block wrap-anywhere font-mono fg-secondary">
+                          {server.url}
+                        </span>
+                        {showComputersHint && server.server === 'tasks' ? (
+                          <span
+                            className="block"
+                            data-testid="external-agents-tasks-computers-hint"
+                          >
+                            To work on your devices, connect a computer under
+                            Computers.
+                          </span>
+                        ) : null}
+                      </span>
+                    }
+                    control={
+                      <CopyButton
+                        value={server.url}
+                        ariaLabel="Copy"
+                        label="Copy"
+                        copiedLabel="Copied"
+                        variant="secondary"
+                        size="compact"
+                      />
+                    }
+                  />
+                </div>
+              );
+            })}
+            <ol className="flex list-decimal flex-col gap-1 pl-5 text-s fg-secondary">
+              <li>
+                In your agent, add an MCP server and paste one of these
+                addresses.
+              </li>
+              <li>
+                The agent sends you to this site to sign in and choose what it
+                can do.
+              </li>
+              <li>The agent then appears on this page.</li>
+            </ol>
+          </div>
+        </AgentSetup>
+      </SettingsGroup>
+    </SettingsSection>
   );
 }
 

@@ -532,6 +532,7 @@ function SharedContainerForkReview({
           )}
           {unavailable && (
             <ErrorBanner
+              errorSource="shared-container-fork-revision-unavailable"
               className=""
               testId="shared-container-fork-revision-unavailable"
               error="This share can't be copied right now. Open it again, then make your copy."
@@ -552,6 +553,7 @@ function SharedContainerForkReview({
 
             {owningContext === null && (
               <ErrorBanner
+                errorSource="shared-container-fork-context-unavailable"
                 className=""
                 testId="shared-container-fork-context-unavailable"
                 error="This share's organization couldn't be identified, so a copy can't be made right now."
@@ -779,6 +781,7 @@ function SharedContainerForkReview({
 
         {/* Main's refusals can name the share's owner. */}
         <ErrorBanner
+          errorSource="shared-container-fork-error"
           className=""
           error={error}
           testId="shared-container-fork-error"

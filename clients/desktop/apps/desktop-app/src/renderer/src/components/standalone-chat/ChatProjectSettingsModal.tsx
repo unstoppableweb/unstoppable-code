@@ -756,6 +756,7 @@ export function ChatProjectSettingsModal({
             notices={
               instructionsSaveIssue !== null ? (
                 <Notice
+                  errorSource="chat-project-instructions-save-issue"
                   shape="settings"
                   intent={
                     instructionsSaveIssue.status === 'conflict'
@@ -785,6 +786,7 @@ export function ChatProjectSettingsModal({
                 </Notice>
               ) : instructionsLoadFailed ? (
                 <Notice
+                  errorSource="chat-project-instructions-load-failed"
                   shape="settings"
                   intent="destructive"
                   role="none"
@@ -903,7 +905,12 @@ export function ChatProjectSettingsModal({
         activeTab !== 'environment' &&
         activeTab !== 'share' &&
         isDirty && (
-          <div className="flex justify-end border-t px-6 py-3">
+          <Surface
+            variant="section"
+            boundary="top"
+            padding="dialog-footer"
+            className="flex justify-end"
+          >
             <Button
               variant="primary"
               size="compact"
@@ -912,12 +919,13 @@ export function ChatProjectSettingsModal({
             >
               {isSaving ? 'Saving…' : 'Save'}
             </Button>
-          </div>
+          </Surface>
         )}
 
       {error && (
         <div className="shrink-0 px-6 pb-4">
           <ErrorBanner
+            errorSource="chat-project-settings-modal"
             error={error}
             className=""
             {...(errorDetails ? { details: errorDetails } : {})}

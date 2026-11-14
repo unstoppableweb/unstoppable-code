@@ -385,11 +385,12 @@ export function FilesTab({
       <div className="flex items-center gap-0.5 rounded-md bg-base">
         {showMention && (
           <Tooltip label={`Mention ${target.name} in chat`}>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
+              iconOnly
               data-testid="activity-files-mention"
               aria-label={`Mention ${target.name} in chat`}
-              className="focus-ring flex items-center rounded-md bg-base p-1 fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:fg-primary"
               onPointerDown={(event): void => event.stopPropagation()}
               onMouseDown={(event): void => event.stopPropagation()}
               onClick={(event): void => {
@@ -399,16 +400,17 @@ export function FilesTab({
               }}
             >
               <MentionIcon size="sm" />
-            </button>
+            </Button>
           </Tooltip>
         )}
         {showDownload && (
           <Tooltip label={`Download ${target.name}`}>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
+              iconOnly
               data-testid="activity-files-download"
               aria-label={`Download ${target.name}`}
-              className="focus-ring flex items-center rounded-md bg-base p-1 fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:fg-primary"
               onPointerDown={(event): void => event.stopPropagation()}
               onMouseDown={(event): void => event.stopPropagation()}
               onClick={(event): void => {
@@ -418,7 +420,7 @@ export function FilesTab({
               }}
             >
               <DownloadIcon size="sm" aria-hidden="true" />
-            </button>
+            </Button>
           </Tooltip>
         )}
       </div>
@@ -808,6 +810,7 @@ export function FilesTab({
     <>
       {search?.error !== undefined ? (
         <ErrorBanner
+          errorSource="files-tree-search-error"
           className="mx-2 my-2"
           error={search.error}
           testId="files-tree-search-error"
@@ -969,6 +972,7 @@ export function FilesTab({
   const downloadErrorNode =
     downloadError === undefined ? null : (
       <ErrorBanner
+        errorSource="activity-files-download-error"
         className="mx-2 my-1"
         error={downloadError}
         testId="activity-files-download-error"
@@ -1130,6 +1134,7 @@ export function FilesTab({
       </div>
       {actionError !== null && (
         <Notice
+          errorSource="files-tree-action-error"
           intent="destructive"
           className="mx-2 my-2"
           data-testid="files-tree-action-error"
@@ -1141,6 +1146,7 @@ export function FilesTab({
       )}
       {mutations?.error && editor === null && (
         <Notice
+          errorSource="files-tree-mutation-error"
           intent="destructive"
           className="mx-2 my-2"
           data-testid="files-tree-mutation-error"

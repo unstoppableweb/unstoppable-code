@@ -320,6 +320,7 @@ export async function diagnoseW5State(
       'commit-log.sqlite-journal',
       'backups',
       'restore-evidence',
+      'archive-recovery',
     ]);
     const logArtifacts = await readdir(join(dataRoot, 'w5'), {
       withFileTypes: true,

@@ -41,6 +41,7 @@ import {
   buildAppErrorViewPostHogProperties,
   buildFeedbackReportTelemetry,
   type AppErrorTelemetrySessions,
+  appErrorException,
   buildAppErrorPostHogProperties,
 } from '../app-error-telemetry';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
@@ -50,7 +51,8 @@ import {
   type AppErrorHandler,
   type AppErrorReport,
   type AppErrorReportOptions,
-  type AppErrorSink,
+  type AppErrorRecord,
+  type AppErrorThrownType,
 } from '@canopy/protocol/app-errors';
 import type { PostHog } from 'posthog-js/dist/module.full.no-external';
 import type {
@@ -115,9 +117,8 @@ export function disposePostHogInstrumentationClient(): void {
 async function initializePostHogClient(
   options: DesktopInstrumentationClientInitOptions,
 ): Promise<DesktopInstrumentationInitResult> {
-  const readiness = getPostHogInstrumentationReadiness(
-    getDesktopInstrumentationConfig().posthog,
-  );
+  const config = getDesktopInstrumentationConfig();
+  const readiness = getPostHogInstrumentationReadiness(config.posthog);
   if (!readiness.enabled) {
     return { enabled: false, provider: 'posthog', reason: readiness.reason };
   }
@@ -270,6 +271,11 @@ async function initializePostHogClient(
     // Subscribe before reading, and never let a stale read undo a push.
     unsubscribe = options.posthogFlags?.onSnapshotChanged((next) => {
       if (disposed) return;
+      // Close disabled-period folds while both the reporter and controller
+      // still reject errors. The first eligible recurrence gets its own record.
+      if (!errorsPermitted() && next.captureEnabled && next.errorReports) {
+        appErrorHandler?.flush();
+      }
       revision++;
       flags = next;
       waitingForFlags = false;
@@ -367,6 +373,20 @@ async function initializePostHogClient(
             event.event === '$unset'
           )
             return null;
+          if (event.event === '$exception') {
+            const exceptions: unknown = event.properties.$exception_list;
+            if (Array.isArray(exceptions) && exceptions.length === 1) {
+              const exception: unknown = exceptions[0];
+              if (
+                exception &&
+                typeof exception === 'object' &&
+                'value' in exception &&
+                exception.value ===
+                  'ResizeObserver loop completed with undelivered notifications.'
+              )
+                return null;
+            }
+          }
           // Main alone owns the installation profile. SDK-cached person
           // properties must not restore an earlier account on a later event.
           const properties: Record<string, unknown> = { ...event.properties };
@@ -395,6 +415,7 @@ async function initializePostHogClient(
                 },
                 {
                   preserveBrowserProjectToken: true,
+                  exceptionBuild: config,
                   ...(event.event === '$snapshot' && {
                     passthroughProperties: ['$snapshot_data'],
                   }),
@@ -583,12 +604,22 @@ const appErrorSessions: AppErrorTelemetrySessions = {
   },
 };
 
-const captureAppErrorInPostHog: AppErrorSink = (record) => {
-  reportPostHogAppError?.({
-    event: APP_ERROR_POSTHOG_EVENT,
-    properties: buildAppErrorPostHogProperties(record),
-  });
-};
+function captureAppErrorInPostHog(
+  record: AppErrorRecord,
+  frames: readonly string[],
+  thrownType?: AppErrorThrownType,
+): void {
+  const properties = buildAppErrorPostHogProperties(record);
+  reportPostHogAppError?.({ event: APP_ERROR_POSTHOG_EVENT, properties });
+  if (!record.isRepeatSummary) {
+    reportPostHogException?.(
+      appErrorException(record, frames),
+      thrownType === undefined
+        ? properties
+        : { ...properties, thrown_type: thrownType },
+    );
+  }
+}
 
 let appErrorHandler: AppErrorHandler | undefined;
 
@@ -596,7 +627,8 @@ function createClientAppErrorHandler(appVersion: string): AppErrorHandler {
   return createAppErrorHandler({
     host: 'renderer',
     appVersion,
-    sinks: [captureAppErrorInPostHog],
+    sinks: [],
+    diagnosticSink: captureAppErrorInPostHog,
   });
 }
 

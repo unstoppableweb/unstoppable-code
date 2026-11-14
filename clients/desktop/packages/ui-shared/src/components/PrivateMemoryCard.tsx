@@ -92,6 +92,7 @@ export function PrivateMemoryCard({
           }
         />
         <ErrorBanner
+          errorSource="private-memory-card"
           className=""
           error={error}
           testId={`${dataTestId}-error`}

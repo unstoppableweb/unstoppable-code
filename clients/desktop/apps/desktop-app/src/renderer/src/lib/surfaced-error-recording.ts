@@ -9,6 +9,7 @@ import {
   type AppError,
   type AppErrorReport,
   type AppErrorSurface,
+  type AppErrorThrownType,
   type SurfacedErrorInput,
   type SurfacedErrorRecorder,
 } from '@canopy/protocol/app-errors';
@@ -21,9 +22,8 @@ export type RendererErrorBoundaryId = 'root' | 'panel' | 'chart' | 'lazy-load';
 let activeRecorder: SurfacedErrorRecorder | null = null;
 
 /**
- * The recorder classifies a caught value before reporting it, so an IPC
- * rejection resolves here. Presence of `error` selects classification, so a
- * text-only sighting stays text-only, even for a failure main already recorded.
+ * Resolve IPC rejections before recording so the existing reference is linked
+ * to this renderer. Only caught values go through the resolver.
  */
 function recordCaughtValue(
   recorder: SurfacedErrorRecorder,
@@ -85,6 +85,7 @@ export function recordBoundaryError(
   identifier: RendererErrorBoundaryId,
   surface: AppErrorSurface,
   error: unknown,
+  thrownType?: AppErrorThrownType,
 ): AppErrorReport | undefined {
   if (!activeRecorder) return undefined;
   return recordCaughtValue(activeRecorder, {
@@ -92,5 +93,6 @@ export function recordBoundaryError(
     identifier,
     surface,
     error,
+    thrownType,
   });
 }

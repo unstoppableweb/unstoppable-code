@@ -181,6 +181,7 @@ export function createQuestionSandbox(): QuestionSandbox {
     getTabDraft: (id) => store.getState().tabDrafts[id],
     saveTabDraft: (id, content) =>
       store.setState((s) => ({ tabDrafts: { ...s.tabDrafts, [id]: content } })),
+    scheduleTabDraftWrite: () => {},
     clearTabDraft: (id) =>
       store.setState((s) => {
         const tabDrafts = { ...s.tabDrafts };

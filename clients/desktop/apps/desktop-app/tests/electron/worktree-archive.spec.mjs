@@ -1,3 +1,4 @@
+import { seedChatsSectionFixture } from './seeders/seedChatsSectionFixture.mjs';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -347,4 +348,225 @@ test.describe('worktree archive', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
+});
+
+// Exercises the work-entries:delete compatibility boundary through its real
+// desktop control, durable archive, and restore flow (not just chat cleanup).
+test('work-entries:delete and archived-containers:restore retain the standalone transcript', async () => {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-we-'));
+  seedChatsSectionFixture(userDataDir, { worktreeCount: 0, chatEntryCount: 1 });
+  const projectId = 'cowork-default';
+  const entryId = 'entry-chat-001';
+  const chatId = 'chat-entry-chat-001';
+  const workspaceRoot = path.join(userDataDir, 'workspaces', projectId);
+  const entriesFile = path.join(workspaceRoot, 'work-entries.json');
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.showSidebar();
+    const row = window.getByTestId(`sidebar-work-entry-${entryId}`);
+    await expect(row).toBeVisible();
+    const openArchive = async () => {
+      await row.click({ button: 'right' });
+      await window.getByTestId(`sidebar-work-entry-${entryId}-archive`).click();
+      const dialog = window.getByTestId(
+        `sidebar-work-entry-${entryId}-delete-dialog`,
+      );
+      await expect(dialog).toBeVisible();
+      return dialog;
+    };
+    const cancelled = await openArchive();
+    await cancelled.getByRole('button', { name: /^Cancel/ }).click();
+    await expect(cancelled).toHaveCount(0);
+    await expect(row).toBeVisible();
+    const confirmed = await openArchive();
+    await confirmed
+      .getByTestId(`sidebar-work-entry-${entryId}-confirm-delete`)
+      .click();
+    await expect(row).toHaveCount(0);
+    await expect
+      .poll(() =>
+        JSON.parse(readFileSync(entriesFile, 'utf8')).entries.some(
+          (entry) => entry.id === entryId,
+        ),
+      )
+      .toBe(false);
+    const manifest = JSON.parse(
+      readFileSync(
+        path.join(
+          workspaceRoot,
+          'archived-containers',
+          entryId,
+          'container.json',
+        ),
+        'utf8',
+      ),
+    );
+    expect(manifest.lockedAt).toBeTruthy();
+    expect(manifest.chatCount).toBe(1);
+    await window
+      .getByTestId(`sidebar-cowork-project-${projectId}-archived-link`)
+      .click();
+    await window.getByTestId(`archived-overview-open-${entryId}`).click();
+    const viewer = window.getByTestId('cowork-archive-overlay');
+    await expect(viewer).toBeVisible();
+    await viewer.getByTestId('archived-restore').click();
+    await expect(viewer).toHaveCount(0);
+    const destination = await window.evaluate(
+      ({ projectId, chatId }) =>
+        window.api.workEntries.resolveChat({ projectId, chatId }),
+      { projectId, chatId },
+    );
+    expect(destination.entryId).toBeTruthy();
+    expect(destination.entryId).not.toBe(entryId);
+    const transcript = await window.evaluate(
+      ({ projectId, worktreeId, chatId }) =>
+        window.api.chat.getTranscriptPage({ projectId, worktreeId, chatId }),
+      { projectId, worktreeId: destination.entryId, chatId },
+    );
+    expect(JSON.stringify(transcript.messages)).toContain(
+      'Chat topic 1 is ready for review.',
+    );
+    await expect(
+      window.getByTestId(`sidebar-work-entry-${destination.entryId}`),
+    ).toBeVisible();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-6390 boundaries: work-entry-auto-delete:list replays Auto Delete attention;
+// auto-archive:completed must never announce a refusal as successful removal.
+// startAutoArchiveScheduler and startWorkEntryAutoDeleteScheduler share that outcome.
+test('background removal attention remains reviewable across restart without another popup', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-auto-delete-attention-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const worktrees = JSON.parse(
+    readFileSync(
+      path.join(userDataDir, 'workspaces', WORKSPACE_ID, 'worktrees.json'),
+      'utf8',
+    ),
+  ).worktrees;
+  const worktree = worktrees.find((row) => row.id === WORKTREE_BRANCH);
+  const id = '00000000-0000-4000-8000-000000006390';
+  writeFileSync(
+    path.join(userDataDir, 'auto-delete-attention.json'),
+    JSON.stringify({
+      version: 1,
+      incidents: [
+        {
+          attention: {
+            kind: 'worktree',
+            id,
+            workspaceId: WORKSPACE_ID,
+            worktreeId: WORKTREE_BRANCH,
+            createdAt: worktree.createdAt,
+            worktreeName: WORKTREE_BRANCH,
+            reason: {
+              code: 'external.worktree_recovery_required',
+              intent: 'delete',
+              stoppingPoint: { phase: 'teardown-script', state: 'failed' },
+            },
+          },
+          operationIds: [],
+        },
+      ],
+    }),
+  );
+  for (const restart of [false, true]) {
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      const attention = window.getByTestId('auto-delete-attention');
+      await expect(attention).toBeVisible();
+      const popupAction = window.getByTestId(
+        'auto-delete-attention-toast-review',
+      );
+      if (restart) await expect(popupAction).toHaveCount(0);
+      else await expect(popupAction).toBeVisible();
+      await attention.getByRole('button').click();
+      const recovery = window.getByTestId('worktree-recovery-dialog');
+      await expect(recovery).toBeVisible();
+      await expect(recovery.getByTestId('worktree-recovery-reason')).toHaveText(
+        "The cleanup script didn't finish.",
+      );
+      await expect(window.getByTestId('toast-stack-host')).not.toContainText(
+        'Error invoking remote method',
+      );
+      expect(
+        await sessionSnapshotListsWorktree(
+          window,
+          WORKSPACE_ID,
+          WORKTREE_BRANCH,
+        ),
+      ).toBe(true);
+      const snapshots = await window.evaluate(() =>
+        window.api.workEntryAutoDelete.list(),
+      );
+      expect(
+        snapshots.flatMap((row) => row.attention ?? []).map((row) => row.id),
+      ).toContain(id);
+    } finally {
+      await closeCanopy(electronApp, userDataDir, { keepUserData: !restart });
+    }
+  }
+});
+
+// CAN-6389: the real main refusal reaches the shared host only after rollback.
+test('a stopped removal opens recovery without finalizing the worktree', async () => {
+  const { seedWorktreeRecoveryFixture } =
+    await import('./seeders/worktreeRecoveryFixture.mjs');
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-recovery-'));
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeRecoveryFixture({ userDataDir });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    const row = window
+      .locator('[data-testid="worktree-row"][data-worktree-id="demo-main"]')
+      .first();
+    await expect(row).toBeVisible();
+    await (
+      await revealRowActions(window, row.getByTestId('worktree-archive-button'))
+    ).click();
+    const recovery = window.getByTestId('worktree-recovery-dialog');
+    await expect(recovery).toBeVisible();
+    await expect(recovery).toBeFocused();
+    await expect(recovery.getByTestId('worktree-recovery-reason')).toHaveText(
+      "Saving Git snapshots didn't finish.",
+    );
+    await expect(recovery.getByTestId('worktree-recovery-keep')).toHaveCount(0);
+    await expect(
+      recovery.getByRole('button', { name: 'Keep worktree', exact: true }),
+    ).toHaveCount(0);
+    const close = recovery.getByRole('button', { name: 'Close', exact: true });
+    const lastAction = recovery.locator('[data-dialog-footer] button').last();
+    await window.keyboard.press('Tab');
+    await expect(close).toBeFocused();
+    await window.keyboard.press('Shift+Tab');
+    await expect(lastAction).toBeFocused();
+    await window.keyboard.press('Tab');
+    await expect(close).toBeFocused();
+    await expect(recovery).not.toContainText('Error invoking remote method');
+    await expect(recovery).not.toContainText('Private persisted step detail');
+    await expect(row).toBeVisible();
+    expect(
+      await sessionSnapshotListsWorktree(window, WORKSPACE_ID, WORKTREE_BRANCH),
+    ).toBe(true);
+    await recovery.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(row).toBeVisible();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
 });

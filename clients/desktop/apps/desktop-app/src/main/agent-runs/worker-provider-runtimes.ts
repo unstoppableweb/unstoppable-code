@@ -24,6 +24,10 @@ export interface WorkerProviderRuntime {
 const LOADERS: Partial<
   Record<WorkerProviderHarness, () => Promise<WorkerProviderRuntime>>
 > = {
+  antigravity: async () =>
+    (
+      await import('./antigravity-worker-runtime')
+    ).getAntigravityWorkerRuntime(),
   claude: async () =>
     (await import('./claude-worker-runtime')).getClaudeWorkerRuntime(),
   codex: async () =>

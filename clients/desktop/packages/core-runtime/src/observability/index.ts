@@ -13,7 +13,11 @@ export {
   type AuditDayWindow,
 } from './audit-days';
 export { labelForEventType } from './audit-labels';
-export { defaultTokens, defaultToolCounts } from './audit-records';
+export {
+  defaultTokens,
+  defaultToolCounts,
+  observedModelIdentity,
+} from './audit-records';
 export {
   isRecord,
   readArray,

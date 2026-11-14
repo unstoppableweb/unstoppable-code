@@ -2,6 +2,10 @@ import type {
   CanopyErrorPayload,
   CanopyRetryDirective,
 } from '@canopy/protocol/canopy-core';
+import {
+  CLOUD_SANDBOX_SLEEPING_REASON,
+  isCloudSandboxNotAwakeCode,
+} from '@canopy/protocol/cloud-session/sandbox-status';
 
 /**
  * Keyed instructions this host serves without a retained outcome (CAN-4733).
@@ -25,6 +29,29 @@ export function relayRetryFor(
     UNRETAINED_KEYED_METHODS.has(method)
     ? { kind: 'never' }
     : retry;
+}
+
+/**
+ * The one part of an error's `details` that crosses the relay to the
+ * renderer: that a cloud chat's sandbox is not awake (CAN-6543). Only
+ * enumerated values and a boolean, each checked against the protocol's
+ * constants: `reason` must be the sleeping reason or nothing passes, and an
+ * invalid `wakeAllowed` or `cloudCode` is dropped, not coerced. Every other
+ * key stays behind. Main and the preload both apply it.
+ */
+export function relayableErrorDetails(
+  details: unknown,
+): CanopyErrorPayload['details'] | undefined {
+  if (typeof details !== 'object' || details === null) return undefined;
+  if (Reflect.get(details, 'reason') !== CLOUD_SANDBOX_SLEEPING_REASON)
+    return undefined;
+  const wakeAllowed: unknown = Reflect.get(details, 'wakeAllowed');
+  const cloudCode: unknown = Reflect.get(details, 'cloudCode');
+  return {
+    reason: CLOUD_SANDBOX_SLEEPING_REASON,
+    ...(typeof wakeAllowed === 'boolean' ? { wakeAllowed } : {}),
+    ...(isCloudSandboxNotAwakeCode(cloudCode) ? { cloudCode } : {}),
+  };
 }
 
 /** The one non-local authority the relay can reach; absent means the local core. */

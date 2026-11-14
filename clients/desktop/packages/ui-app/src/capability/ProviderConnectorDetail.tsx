@@ -14,6 +14,7 @@ import {
   RefreshSpinner,
   EmptyStateRow,
   Heading,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
@@ -312,26 +313,31 @@ function ProviderRow({
             // A provider Canopy could not read cannot honestly be offered as a
             // route — clicking through would send the user to link something that
             // still would not appear. The reason is on the tooltip.
-            <span
-              data-testid={`${testId.replace('-connect-', '-unavailable-')}`}
-              title={entry.unavailable}
-              className="text-xs fg-secondary"
-            >
-              Unavailable
-            </span>
+            <Tooltip label={entry.unavailable} clamp={false} replayBlock>
+              <span
+                data-testid={`${testId.replace('-connect-', '-unavailable-')}`}
+                className="text-xs fg-secondary"
+              >
+                Unavailable
+              </span>
+            </Tooltip>
           ) : entry.alternateRoute ? (
             // Already served by another route — a plugin-provided server, say. A
             // bare Connect here tells a user whose Slack works that they need to
             // connect Slack: true about the connector, wrong about the capability.
             <span className="flex items-center gap-2">
-              <span
-                data-testid={`provider-connector-detail-alternate-${entry.provider}`}
-                title={`Served by ${entry.alternateRoute}`}
-                className="inline-flex items-center gap-1.5 text-xs fg-success"
+              <Tooltip
+                label={`Served by ${entry.alternateRoute}`}
+                clamp={false}
               >
-                <AppCatalogCheckIcon size="sm" aria-hidden="true" />
-                Already available
-              </span>
+                <span
+                  data-testid={`provider-connector-detail-alternate-${entry.provider}`}
+                  className="inline-flex items-center gap-1.5 text-xs fg-success"
+                >
+                  <AppCatalogCheckIcon size="sm" aria-hidden="true" />
+                  Already available
+                </span>
+              </Tooltip>
               <Button
                 type="button"
                 variant="ghost"
@@ -379,15 +385,19 @@ function ProviderRow({
                 // can invoke refreshes it. Saying "not connected" would be a claim
                 // Canopy cannot support — and reads as broken to someone who just
                 // linked it.
-                <span
-                  data-testid={`provider-connector-detail-stale-${entry.provider}`}
-                  title={`${label} last refreshed its app list on ${new Date(
+                <Tooltip
+                  clamp={false}
+                  label={`${label} last refreshed its app list on ${new Date(
                     entry.staleSince,
                   ).toLocaleString()}. A link made since then shows up after ${label} next refreshes.`}
-                  className="text-xs fg-secondary"
                 >
-                  Status may be out of date
-                </span>
+                  <span
+                    data-testid={`provider-connector-detail-stale-${entry.provider}`}
+                    className="text-xs fg-secondary"
+                  >
+                    Status may be out of date
+                  </span>
+                </Tooltip>
               ) : null}
               <Button
                 type="button"

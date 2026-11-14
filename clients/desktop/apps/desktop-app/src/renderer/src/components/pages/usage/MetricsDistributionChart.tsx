@@ -13,7 +13,14 @@ import {
   CHART_HEIGHT_PX,
   formatBucketLabel,
   formatCompactNumber,
-} from './chart-primitives';
+} from '@canopy/ui-app/charts/chart-controls';
+import {
+  CHART_GRID_DASH,
+  CHART_LINE,
+  CHART_TICK_FONT_SIZE,
+  CHART_TICK_INK,
+} from '@canopy/ui-app/charts/chart-theme';
+import { ChartTooltip } from '@canopy/ui-shared/components';
 
 export type Percentile = 'p50' | 'p95' | 'p99';
 
@@ -36,60 +43,6 @@ interface DistributionDatum {
   p95: number;
   p99: number;
   sampleCount: number;
-}
-
-interface DistributionTooltipEntry {
-  dataKey?: unknown;
-  name?: unknown;
-  value?: unknown;
-  stroke?: unknown;
-}
-
-interface DistributionTooltipProps {
-  active?: boolean;
-  label?: unknown;
-  payload?: ReadonlyArray<unknown>;
-}
-
-function DistributionTooltipContent({
-  active,
-  label,
-  payload,
-}: DistributionTooltipProps): JSX.Element {
-  if (!active || !payload || payload.length === 0) return <></>;
-  const labelStr =
-    typeof label === 'string'
-      ? label
-      : typeof label === 'number'
-        ? String(label)
-        : '';
-  return (
-    <div className="flex flex-col rounded bg-popover fg-primary p-2 shadow-md text-xs gap-1">
-      {labelStr ? <div className="font-semibold">{labelStr}</div> : null}
-      {payload.map((raw, i) => {
-        const entry = raw as DistributionTooltipEntry;
-        const name = typeof entry.name === 'string' ? entry.name : '';
-        const value = typeof entry.value === 'number' ? entry.value : 0;
-        const stroke =
-          typeof entry.stroke === 'string' ? entry.stroke : undefined;
-        return (
-          <div key={i} className="flex items-center gap-2 whitespace-nowrap">
-            {stroke ? (
-              <span
-                aria-hidden="true"
-                className="inline-block h-0.5 w-3"
-                style={{ backgroundColor: stroke }}
-              />
-            ) : null}
-            <span className="fg-secondary">{name}</span>
-            <span className="ml-auto tabular-nums">
-              {formatCompactNumber(value)}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
 }
 
 export function MetricsDistributionChart({
@@ -115,24 +68,33 @@ export function MetricsDistributionChart({
   return (
     <ResponsiveContainer width="100%" height={CHART_HEIGHT_PX}>
       <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--line-base)" />
+        <CartesianGrid strokeDasharray={CHART_GRID_DASH} stroke={CHART_LINE} />
         <XAxis
           dataKey="label"
-          stroke="var(--fg-secondary)"
-          fontSize={11}
+          stroke={CHART_TICK_INK}
+          fontSize={CHART_TICK_FONT_SIZE}
           tickLine={false}
           axisLine={false}
         />
         <YAxis
-          stroke="var(--fg-secondary)"
-          fontSize={11}
+          stroke={CHART_TICK_INK}
+          fontSize={CHART_TICK_FONT_SIZE}
           tickFormatter={(v: number) => formatCompactNumber(v)}
           tickLine={false}
           axisLine={false}
         />
         <Tooltip
           cursor={{ stroke: 'var(--bg-secondary)', strokeWidth: 1 }}
-          content={DistributionTooltipContent}
+          content={(props) => (
+            <ChartTooltip
+              active={props.active}
+              label={props.label}
+              payload={props.payload}
+              accessibilityLayer={props.accessibilityLayer}
+              marker="line"
+              formatValue={formatCompactNumber}
+            />
+          )}
         />
         {percentileOrder.map((p) =>
           visiblePercentiles.has(p) ? (

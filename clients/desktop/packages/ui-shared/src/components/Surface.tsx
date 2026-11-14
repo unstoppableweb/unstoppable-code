@@ -26,6 +26,7 @@ import {
  *   card (a code sample, a nested preview).
  * - `dashed`: a dashed line with no fill, for a drop zone or an empty
  *   placeholder that is waiting for something.
+ * - `page`: the full-height page column, with base fill and primary ink.
  * - `pane`: a full-bleed page region, without rounded corners.
  * - `panel`: a full-bleed card-fill work panel.
  * - `rail`: a full-bleed navigation region on the sidebar fill.
@@ -40,6 +41,7 @@ export type SurfaceVariant =
   | 'raised'
   | 'inset'
   | 'dashed'
+  | 'page'
   | 'pane'
   | 'panel'
   | 'rail'
@@ -92,7 +94,15 @@ const SURFACE_EXTENT_CLASS: Readonly<Record<SurfaceExtent, string>> = {
  * The inner padding, by role. `none` lets the content lay itself out (a
  * list of rows, a full-bleed image).
  */
-export type SurfacePadding = 'none' | 'tight' | 'compact' | 'default' | 'roomy';
+export type SurfacePadding =
+  | 'none'
+  | 'tight'
+  | 'compact'
+  | 'default'
+  | 'roomy'
+  | 'section-compact'
+  | 'section-default'
+  | 'dialog-footer';
 
 /**
  * Fill, edge and shadow per variant: the one place a surface's look changes.
@@ -105,6 +115,7 @@ export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   raised: 'bg-card shadow-sm',
   inset: `bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
   dashed: 'border border-dashed border-line-secondary',
+  page: 'flex min-h-screen flex-col bg-base fg-primary',
   pane: 'bg-base',
   panel: 'bg-card',
   rail: 'bg-sidebar',
@@ -130,6 +141,7 @@ export const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   raised: 'rounded-xl',
   inset: 'rounded-md',
   dashed: 'rounded-lg',
+  page: '',
   pane: '',
   panel: '',
   rail: '',
@@ -152,6 +164,9 @@ export const SURFACE_PADDING_CLASS: Readonly<Record<SurfacePadding, string>> = {
   compact: 'p-3',
   default: 'p-4',
   roomy: 'p-6',
+  'section-compact': 'px-3 py-2',
+  'section-default': 'px-4 py-2',
+  'dialog-footer': 'px-6 py-3',
 };
 
 type SurfaceAttributes = Omit<

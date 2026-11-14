@@ -11,29 +11,72 @@ import { getBrowserProfileService } from './browser-profile-service';
 import { getBrowserService } from './browser-service-registry';
 import { lstat } from 'node:fs/promises';
 import { getWorkspaceWorktreeDir } from '../lib/paths';
+import { KeyedAsyncLock } from '../lib/keyed-async-lock';
+
+// Serialize admission, not disposal: a renderer save can need the archive lock
+// while disposal drains the browser queues. Exclusive claims last to settlement.
+const retirementAdmissions = new KeyedAsyncLock();
+const exclusiveRetirements = new Set<string>();
 
 export async function prepareTaskBrowserRetirement(
   projectId: string,
   worktreeId: string,
+  exclusiveOwnerCreatedAt?: string,
+  /** Runs right before live views are disposed; a throw aborts the prepared
+   * retirement with no disposal. Remote callers recheck authorization here. */
+  beforeDispose?: () => void,
 ): Promise<string | null> {
   const service = getBrowserProfileService();
   await service.ensureReady();
-  const owner = await resolveBrowserTaskOwner(
-    service.dataRoot,
-    projectId,
-    worktreeId,
-  );
-  if (!owner) return null;
-  const id = await prepareBrowserTaskRetirement(
-    service.repository,
-    service.dataRoot,
-    owner,
+  const id = await retirementAdmissions.run(
+    JSON.stringify([projectId, worktreeId]),
+    async () => {
+      const owner = await resolveBrowserTaskOwner(
+        service.dataRoot,
+        projectId,
+        worktreeId,
+      );
+      if (
+        exclusiveOwnerCreatedAt !== undefined &&
+        owner?.createdAt !== exclusiveOwnerCreatedAt
+      )
+        throw new BrowserProfileError(
+          'scope_retired',
+          'The browser task identity changed before deletion.',
+        );
+      if (!owner) return null;
+      const operationId = await prepareBrowserTaskRetirement(
+        service.repository,
+        service.dataRoot,
+        owner,
+        undefined,
+        exclusiveOwnerCreatedAt === undefined,
+      );
+      if (operationId && exclusiveRetirements.has(operationId))
+        throw new BrowserProfileError(
+          'operation_conflict',
+          'Another operation is retiring this browser task.',
+        );
+      if (operationId && exclusiveOwnerCreatedAt !== undefined)
+        exclusiveRetirements.add(operationId);
+      return operationId;
+    },
   );
   try {
-    if (id)
-      await getBrowserService()?.disposeWorktreeViews(projectId, worktreeId);
+    if (id) {
+      beforeDispose?.();
+      // Disposal first settles in-flight opens; check again right before it
+      // cancels downloads and closes views.
+      await (beforeDispose
+        ? getBrowserService()?.disposeWorktreeViews(
+            projectId,
+            worktreeId,
+            beforeDispose,
+          )
+        : getBrowserService()?.disposeWorktreeViews(projectId, worktreeId));
+    }
   } catch (error) {
-    if (id) await service.repository.abortRetirement(id);
+    if (id) await abortTaskBrowserRetirement(id);
     throw error;
   }
   return id;
@@ -44,12 +87,17 @@ export async function commitTaskBrowserRetirement(
   projectId: string,
   worktreeId: string,
   kind: 'owner_removed' | 'git_quarantine' = 'owner_removed',
+  operationId?: string | null,
 ): Promise<boolean> {
   const service = getBrowserProfileService();
   const pending = (await service.repository.getRetirements()).filter(
     (entry) => {
       const ids = browserTaskOwnerIds(entry.scope);
-      return ids.projectId === projectId && ids.worktreeId === worktreeId;
+      return (
+        ids.projectId === projectId &&
+        ids.worktreeId === worktreeId &&
+        (operationId === undefined || entry.operationId === operationId)
+      );
     },
   );
   if (pending.length > 1)
@@ -62,6 +110,7 @@ export async function commitTaskBrowserRetirement(
       kind,
       ownerOperationId: entry.operationId,
     });
+    exclusiveRetirements.delete(entry.operationId);
     await getBrowserService()?.cleanupRetiredTaskScratch(
       entry.scope,
       entry.incarnationId,
@@ -90,6 +139,7 @@ export async function abortTaskBrowserRetirement(
     (entry) => entry.operationId === operationId,
   );
   if (pending) await service.repository.abortRetirement(operationId);
+  exclusiveRetirements.delete(operationId);
 }
 
 /** Rollback of a newly created import/restore destination owns only that destination. */

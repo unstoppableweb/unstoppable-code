@@ -4,15 +4,19 @@
 // so preflight carries the host's verdict for each bundled action. This
 // golden runs the host's own classifier over the real manifests and fails
 // when the two disagree or a bundled action is missing from preflight.
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
 import {
+  CLOUD_RUN_ALIAS_MODEL_ACTIONS,
   CLOUD_RUN_BUNDLED_ACTIONS,
+  CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_DIRECTORY,
   CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL,
   CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
   CLOUD_RUN_HOST_ACTIONS,
   CLOUD_RUN_PORTABLE_MODEL_ACTIONS,
+  CLOUD_RUN_REPOSITORY_MODEL_INPUTS,
+  cloudModelAliasOf,
   preflightCloudRun,
 } from '@canopy/pipeline-interop/cloud-preflight';
 import {
@@ -20,12 +24,16 @@ import {
   CLOUD_MODEL_ACTION_HARNESSES,
   CLOUD_NATIVE_MODEL_ALIASES,
   CLOUD_NATIVE_MODEL_GATEWAY_IDS,
+  applyCloudModelChoices,
   findCloudModelItems,
 } from '@canopy/pipeline-interop/cloud-model-preflight';
 import { readFileSync } from 'node:fs';
+import { BUILTIN_APP_SKILL_TEMPLATES } from '@canopy/pipeline-interop/builtin-skills';
 import { z } from 'zod';
 import { isPipelineHostActionId } from '@canopy/execution-engine/pipelines/host-actions';
 import {
+  CLAUDE_MODELS,
+  CODEX_MODELS,
   DEFAULT_CLAUDE_MODEL,
   OLLAMA_MODEL_PREFIX,
   isOllamaModel,
@@ -48,8 +56,12 @@ import {
   getProjectActionsDirCandidates,
 } from '@canopy/execution-engine/node/pipelines/config-paths';
 import {
+  DAEMON_ACTION_MODEL_INPUTS,
+  DAEMON_ALIAS_MODEL_ACTIONS,
+  DAEMON_BROKERED_REPOSITORY_MODEL_ACTIONS,
   DAEMON_PORTABLE_MODEL_ACTIONS,
   classifyDaemonPipeline,
+  type DaemonModelAliasResolution,
 } from '@canopy/execution-engine/node/pipelines/daemon-eligibility';
 
 const BUNDLED_ACTIONS = resolve(__dirname, '../../../../resources/actions');
@@ -66,8 +78,35 @@ function oneStep(step: Step, extra: Partial<Pipeline> = {}): Pipeline {
 }
 
 /**
+ * What the web core resolves before a cloud run starts (CAN-6439): every
+ * collection the workflow declares, and each inline model alias.
+ */
+function resolvedByWebCore(pipeline: Pipeline): {
+  pluginCollections: ReadonlySet<string>;
+  modelAliases: Record<string, DaemonModelAliasResolution>;
+} {
+  const modelAliases: Record<string, DaemonModelAliasResolution> = {};
+  for (const alias of pipeline.model_aliases ?? []) {
+    const resolved = cloudModelAliasOf(pipeline, alias.id);
+    if (resolved)
+      modelAliases[alias.id] = {
+        base: resolved.base,
+        plugins: resolved.pluginCollectionId !== undefined,
+      };
+  }
+  return {
+    pluginCollections: new Set(
+      (pipeline.plugin_collections ?? []).map(({ id }) => id.trim()),
+    ),
+    modelAliases,
+  };
+}
+
+/**
  * What the cloud runner's host decides, with the options the web core owner
- * serves and the tsx CLI the runner stages (CAN-6316 G1).
+ * serves, what it resolves before the start, and the tsx CLI the runner
+ * stages (CAN-6316 G1). A folder or worktree run's launch is brokered
+ * (CAN-6739); a global run's scope refuses the repository actions anyway.
  */
 function hostVerdict(pipeline: Pipeline): string {
   const result = classifyDaemonPipeline(
@@ -79,11 +118,13 @@ function hostVerdict(pipeline: Pipeline): string {
         getProjectActionsDirCandidates,
         tsxCli: '/runner/tsx/node_modules/tsx/dist/cli.mjs',
       },
+      ...resolvedByWebCore(pipeline),
     },
     {
       modelSteps: 'claude_codex',
       hostSteps: 'owner',
       compositeModels: 'resolve',
+      repositoryActions: 'brokered',
     },
   );
   return result.eligible ? 'portable' : result.reason;
@@ -92,6 +133,24 @@ function hostVerdict(pipeline: Pipeline): string {
 function preflightVerdict(pipeline: Pipeline): string {
   return preflightCloudRun(pipeline)[0]?.reason ?? 'portable';
 }
+
+// The models a run's catalog names (CAN-6439): a model alias names its base
+// model, which the host resolves against the run's catalog. It names the
+// repository actions' default commit and PR models too (CAN-6739), which the
+// cloud routes.
+const RUN_MODELS: [string[], string][] = [
+  [CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL],
+  [CLAUDE_MODELS, 'haiku'],
+  [CLAUDE_MODELS, 'sonnet'],
+  [CODEX_MODELS, 'gpt-6.1-terra'],
+];
+beforeAll(() => {
+  for (const [models, model] of RUN_MODELS) models.push(model);
+});
+afterAll(() => {
+  for (const [models, model] of RUN_MODELS)
+    models.splice(models.lastIndexOf(model), 1);
+});
 
 const bundled = readdirSync(BUNDLED_ACTIONS, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -123,6 +182,21 @@ it('refuses the bundled actions whose scope leaves out global runs', () => {
   expect([...CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL].sort()).toEqual(
     outsideGlobal,
   );
+  // And those whose scope leaves out folder runs, refused there (CAN-6739).
+  const outsideDirectory = bundled.filter((name) => {
+    const resolved = resolveActionRuntime(`builtin/${name}`, runtime);
+    return !resolved?.definition.scopes.includes('directory');
+  });
+  expect([...CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_DIRECTORY].sort()).toEqual(
+    outsideDirectory,
+  );
+  for (const name of outsideDirectory)
+    expect(
+      preflightCloudRun(
+        oneStep({ uses: `builtin/${name}` }, { scope: 'directory' }),
+        { scope: 'directory' },
+      ).map((refusal) => refusal.reason),
+    ).toEqual(['action_scope']);
   const portable = outsideGlobal.filter(
     (name) => CLOUD_RUN_BUNDLED_ACTIONS[name] === 'portable',
   );
@@ -138,6 +212,18 @@ it('checks the same host and model actions the host does', () => {
   );
   expect([...CLOUD_RUN_PORTABLE_MODEL_ACTIONS].sort()).toEqual(
     [...DAEMON_PORTABLE_MODEL_ACTIONS.keys()].sort(),
+  );
+  // The repository actions and the input each names its model in (CAN-6739).
+  expect(CLOUD_RUN_REPOSITORY_MODEL_INPUTS).toEqual(
+    Object.fromEntries(
+      [...DAEMON_BROKERED_REPOSITORY_MODEL_ACTIONS.keys()].map((name) => {
+        const spec = DAEMON_ACTION_MODEL_INPUTS.get(name);
+        return [
+          name,
+          { input: spec?.input, runnerDefault: spec?.runnerDefault },
+        ];
+      }),
+    ),
   );
 });
 
@@ -200,7 +286,6 @@ it.each<[string, Pipeline]>([
   ],
   ['an expression action', oneStep({ uses: '${{ inputs.action }}' })],
   ['an aliased bundled path', oneStep({ uses: 'builtin/./run-pipeline' })],
-  ['a bundled name in another case', oneStep({ uses: 'builtin/Run-Pipeline' })],
   ['a name the table inherits', oneStep({ uses: 'builtin/constructor' })],
   ['an unknown bundled action', oneStep({ uses: 'builtin/no-such-action' })],
   [
@@ -218,11 +303,102 @@ it.each<[string, Pipeline]>([
     ),
   ],
   [
-    'a plugin collection on a model step',
+    'a plugin collection the workflow does not declare',
     oneStep({
       uses: 'builtin/agent-prompt',
       with: { prompt: 'x', plugin_collection_id: 'tools' },
     }),
+  ],
+  [
+    'a declared plugin collection on an agent step',
+    oneStep(
+      {
+        uses: 'builtin/agent-prompt',
+        with: { prompt: 'x', plugin_collection_id: 'tools' },
+      },
+      { plugin_collections: [{ id: 'tools', name: 'Tools', defaults: [] }] },
+    ),
+  ],
+  [
+    'a plugin collection on a model action the host takes none on',
+    oneStep(
+      {
+        uses: 'builtin/router',
+        with: { prompt: 'x', plugin_collection_id: 'tools' },
+      },
+      { plugin_collections: [{ id: 'tools', name: 'Tools', defaults: [] }] },
+    ),
+  ],
+  [
+    'an inline model alias',
+    oneStep(
+      { uses: 'builtin/agent-prompt', with: { prompt: 'x', model: 'fast' } },
+      {
+        model_aliases: [
+          {
+            id: 'fast',
+            name: 'Fast',
+            defaults: { base: DEFAULT_CLAUDE_MODEL },
+          },
+        ],
+      },
+    ),
+  ],
+  [
+    'an inline model alias that adds a collection, on a Claude model',
+    oneStep(
+      { uses: 'builtin/agent-prompt', with: { prompt: 'x', model: 'fast' } },
+      {
+        model_aliases: [
+          {
+            id: 'fast',
+            name: 'Fast',
+            defaults: {
+              base: DEFAULT_CLAUDE_MODEL,
+              plugin_collection_id: 'tools',
+            },
+          },
+        ],
+        plugin_collections: [{ id: 'tools', name: 'Tools', defaults: [] }],
+      },
+    ),
+  ],
+  [
+    'an Agent model alias',
+    oneStep(
+      { uses: 'builtin/agent-prompt', with: { prompt: 'x', model: 'fast' } },
+      {
+        model_aliases: [
+          { id: 'fast', name: 'Fast', defaults: { agent_id: 'agent-1' } },
+        ],
+      },
+    ),
+  ],
+  [
+    'an inline model alias on a built-in $ alias',
+    oneStep(
+      { uses: 'builtin/agent-prompt', with: { prompt: 'x', model: 'fast' } },
+      {
+        model_aliases: [
+          { id: 'fast', name: 'Fast', defaults: { base: '$opus' } },
+        ],
+      },
+    ),
+  ],
+  [
+    'an inline model alias on a model action the host takes none on',
+    oneStep(
+      { uses: 'builtin/router', with: { prompt: 'x', model: 'fast' } },
+      {
+        model_aliases: [
+          {
+            id: 'fast',
+            name: 'Fast',
+            defaults: { base: DEFAULT_CLAUDE_MODEL },
+          },
+        ],
+      },
+    ),
   ],
   [
     'message attachments',
@@ -276,6 +452,22 @@ it.each<[string, Pipeline]>([
   expect(preflightVerdict(pipeline)).toBe(hostVerdict(pipeline));
 });
 
+// The runner's host is case-sensitive Linux, where `builtin/Run-Pipeline`
+// names no bundled action. On a case-insensitive volume (macOS) the host
+// classifier here would find `run-pipeline`, so there it stands in for the
+// runner with a name no volume resolves (CAN-6409).
+const caseInsensitiveVolume = existsSync(
+  resolve(BUNDLED_ACTIONS, 'RUN-PIPELINE'),
+);
+
+it('refuses a bundled name in another case for the reason the host does', () => {
+  const pipeline = oneStep({ uses: 'builtin/Run-Pipeline' });
+  const runnerHost = caseInsensitiveVolume
+    ? oneStep({ uses: 'builtin/no-such-bundled-action' })
+    : pipeline;
+  expect(preflightVerdict(pipeline)).toBe(hostVerdict(runnerHost));
+});
+
 // CAN-6316: each pipeline host gap that cloud runs refuse tells the user
 // why and what to do instead, as the parity matrix's gap decisions say.
 it.each<[string, Pipeline, string, string]>([
@@ -284,18 +476,6 @@ it.each<[string, Pipeline, string, string]>([
     oneStep({ uses: 'builtin/run-pipeline', with: { pipeline: 'p' } }),
     'G2',
     'Copy its jobs into this workflow',
-  ],
-  [
-    'a commit',
-    oneStep({ uses: 'builtin/git-commit-push' }),
-    'G3',
-    "Cloud runs can't commit, push or open pull requests yet.",
-  ],
-  [
-    'a pull request',
-    oneStep({ uses: 'builtin/github-create-pr' }),
-    'G3',
-    "Cloud runs can't commit, push or open pull requests yet.",
   ],
   [
     'an agent-hinted run step',
@@ -328,13 +508,29 @@ it.each<[string, Pipeline, string, string]>([
     'Put the text in text or text_file',
   ],
   [
-    'a plugin collection',
-    oneStep({
-      uses: 'builtin/agent-prompt',
-      with: { prompt: 'x', plugin_collection_id: 'c' },
-    }),
+    'a plugin collection on a model action the host takes none on',
+    oneStep(
+      {
+        uses: 'builtin/condenser',
+        with: { prompt: 'x', plugin_collection_id: 'c' },
+      },
+      { plugin_collections: [{ id: 'c', name: 'C', defaults: [] }] },
+    ),
     'CP-25',
-    'Remove the plugin collection',
+    'only in agent-prompt and agent-resume steps',
+  ],
+  [
+    'an Agent model alias',
+    oneStep(
+      { uses: 'builtin/agent-prompt', with: { prompt: 'x', model: 'fast' } },
+      {
+        model_aliases: [
+          { id: 'fast', name: 'Fast', defaults: { agent_id: 'agent-1' } },
+        ],
+      },
+    ),
+    'CP-25',
+    'names an Agent',
   ],
 ])(
   'refuses %s with its gap and alternative',
@@ -345,6 +541,58 @@ it.each<[string, Pipeline, string, string]>([
   },
 );
 
+// CAN-6439: the host loads plugins in Claude steps only (CAN-6012), so a
+// step that loads a collection on a Codex model is refused there; the model
+// preflight lists it for a Claude replacement instead of refusing the run.
+it('lists a collection on a Codex model for a Claude model, as the host refuses it', () => {
+  const pipeline = oneStep(
+    {
+      uses: 'builtin/agent-prompt',
+      with: { prompt: 'x', model: 'gpt-6.1-terra', plugin_collection_id: 'c' },
+    },
+    { plugin_collections: [{ id: 'c', name: 'C', defaults: [] }] },
+  );
+  expect(hostVerdict(pipeline)).toBe('plugin_collections');
+  expect(preflightVerdict(pipeline)).toBe('portable');
+  const [item] = findCloudModelItems(pipeline, {
+    catalog: [
+      { modelId: 'openai/gpt-6.1-terra', harness: 'codex', label: 'Terra' },
+      {
+        modelId: 'anthropic/claude-opus-5.5',
+        harness: 'claude',
+        label: 'Opus',
+      },
+    ],
+    isBlocked: () => false,
+  });
+  expect(item).toMatchObject({
+    reason: 'action_harness',
+    parityId: 'CAN-6012',
+  });
+  expect(
+    item?.alternatives.every((option) => option.harness === 'claude'),
+  ).toBe(true);
+});
+
+// CAN-6439: the web core checks a builtin:app default against the skills
+// the runner stages from brand-templates/skills.
+it('names the builtin:app skills every brand ships', () => {
+  const templates = readdirSync(
+    resolve(__dirname, '../../../../../../brand-templates/skills'),
+    { withFileTypes: true },
+  )
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  expect([...BUILTIN_APP_SKILL_TEMPLATES].sort()).toEqual(templates);
+});
+
+it('takes aliases and step collections on the model actions the host does', () => {
+  expect([...CLOUD_RUN_ALIAS_MODEL_ACTIONS].sort()).toEqual(
+    [...DAEMON_ALIAS_MODEL_ACTIONS].sort(),
+  );
+});
+
 // CAN-6174 (plan CP-26): the cloud model preflight runs in the web core,
 // which can't read the desktop's model catalog, so it carries the host's
 // harnesses per model action, the default step model and the local-only
@@ -352,7 +600,10 @@ it.each<[string, Pipeline, string, string]>([
 describe('cloud model preflight', () => {
   it('offers each model action only the harnesses the host runs it on', () => {
     expect(CLOUD_MODEL_ACTION_HARNESSES).toEqual(
-      Object.fromEntries(DAEMON_PORTABLE_MODEL_ACTIONS),
+      Object.fromEntries([
+        ...DAEMON_PORTABLE_MODEL_ACTIONS,
+        ...DAEMON_BROKERED_REPOSITORY_MODEL_ACTIONS,
+      ]),
     );
   });
 
@@ -446,6 +697,86 @@ describe('cloud model preflight', () => {
     expect(
       findCloudModelItems(codexWithNone('builtin/coder'), context),
     ).toMatchObject([{ reason: 'action_harness', harness: 'codex' }]);
+  });
+
+  it("checks a repository action's own model input (CAN-6739)", () => {
+    const context = {
+      catalog: [
+        {
+          modelId: 'anthropic/claude-sonnet-5.5',
+          label: 'Sonnet',
+          harness: 'claude' as const,
+        },
+        {
+          modelId: 'anthropic/claude-haiku-5.5',
+          label: 'Haiku',
+          harness: 'claude' as const,
+        },
+        {
+          modelId: 'openai/gpt-6-luna',
+          label: 'Luna',
+          harness: 'codex' as const,
+        },
+      ],
+      isBlocked: (): boolean => false,
+    };
+    // Their defaults run as written.
+    for (const uses of ['builtin/git-commit-push', 'builtin/github-create-pr'])
+      expect(findCloudModelItems(oneStep({ uses }), context)).toEqual([]);
+    // A Codex PR model is listed against its own input, with Claude models.
+    const pipeline = oneStep({
+      uses: 'builtin/github-create-pr',
+      with: { pr_model: 'gpt-6-luna' },
+    });
+    const items = findCloudModelItems(pipeline, context);
+    expect(items).toMatchObject([
+      { reason: 'action_harness', model: 'gpt-6-luna', harness: 'codex' },
+    ]);
+    expect(
+      items[0]?.alternatives.every((option) => option.harness === 'claude'),
+    ).toBe(true);
+    const applied = applyCloudModelChoices(pipeline, items, [
+      {
+        itemKey: items[0]?.itemKey ?? '',
+        modelId: 'anthropic/claude-haiku-5.5',
+      },
+    ]);
+    expect(applied.ok && applied.pipeline.jobs.j?.steps[0]?.with).toEqual({
+      pr_model: 'anthropic/claude-haiku-5.5',
+    });
+    // In a worktree, preflight refuses what the host refuses: an expression
+    // model, an alias, a plugin collection; the rest runs.
+    const inWorktree = (step: Step, extra: Partial<Pipeline> = {}): string[] =>
+      preflightCloudRun(oneStep(step, { scope: 'worktree', ...extra }), {
+        scope: 'worktree',
+      }).map((refusal) => refusal.reason);
+    expect(inWorktree({ uses: 'builtin/git-commit-push' })).toEqual([]);
+    expect(inWorktree({ uses: 'builtin/github-create-pr' })).toEqual([]);
+    expect(
+      inWorktree({
+        uses: 'builtin/git-commit-push',
+        with: { commit_model: '${{ inputs.model }}' },
+      }),
+    ).toEqual(['dynamic_model']);
+    expect(
+      inWorktree(
+        { uses: 'builtin/git-commit-push', with: { commit_model: 'fast' } },
+        {
+          model_aliases: [
+            { id: 'fast', name: 'Fast', defaults: { base: 'sonnet' } },
+          ],
+        },
+      ),
+    ).toEqual(['model_alias']);
+    expect(
+      inWorktree(
+        {
+          uses: 'builtin/github-create-pr',
+          with: { plugin_collection_id: 'c' },
+        },
+        { plugin_collections: [{ id: 'c', name: 'C', defaults: [] }] },
+      ),
+    ).toEqual(['plugin_collections']);
   });
 
   it.each<[string, string]>([

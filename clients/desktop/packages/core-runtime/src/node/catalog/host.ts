@@ -63,7 +63,17 @@ export interface CatalogPublication {
   revision: string;
 }
 
-/** The package a person agreed to upload with a skill (CAN-6176). */
+/** What every publish carries besides its entry (CAN-6176). */
+export interface CatalogPublishOptions {
+  /**
+   * The cloud account the person consented under; the host refuses with
+   * `publish-account-mismatch`, before anything uploads, when it publishes
+   * for another.
+   */
+  expectedAccountId?: string;
+}
+
+/** The package a person agreed to upload with a skill or local plugin (CAN-6176). */
 export interface CatalogPublishPackage {
   analysisId: string;
   selectedOptionalResourceIds: readonly string[];
@@ -116,7 +126,10 @@ export interface CoreCatalogHost {
    * cloud marketplaces and confirms its first sync (CAN-6176). Absent on a
    * host with no cloud account, which then answers capability_unavailable.
    */
-  publishPlugin?(target: CatalogPluginTarget): Promise<CatalogPublication>;
+  publishPlugin?(
+    target: CatalogPluginTarget,
+    options?: CatalogPublishOptions,
+  ): Promise<CatalogPublication>;
   /**
    * Uploads a custom skill and its consented package as the signed-in
    * account's private cloud copy, or updates the copy it is linked to
@@ -125,6 +138,17 @@ export interface CoreCatalogHost {
   publishSkill?(
     entryId: string,
     pkg: CatalogPublishPackage,
+    options?: CatalogPublishOptions,
+  ): Promise<CatalogPublication>;
+  /**
+   * Uploads a local or private-marketplace plugin's consented package as the
+   * signed-in account's private cloud copy, or replaces it (CAN-6176 D13).
+   * Refuses a package analysed over other content.
+   */
+  publishPluginPackage?(
+    target: CatalogPluginTarget,
+    pkg: CatalogPublishPackage,
+    options?: CatalogPublishOptions,
   ): Promise<CatalogPublication>;
 }
 
@@ -173,6 +197,9 @@ export type CatalogHostRefusal =
   | 'publish-revision-moved'
   | 'publish-entry-not-found'
   | 'publish-package-stale'
+  | 'publish-package-blocked'
+  | 'publish-name-taken'
+  | 'publish-account-mismatch'
   | 'workspace-revision-conflict'
   | 'workspace-not-found'
   | 'workspace-unavailable'

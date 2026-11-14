@@ -1,18 +1,16 @@
 import type { JSX } from 'react';
 import { AvatarsSpecimen } from './componentsLabAvatars';
+import { ChartsSpecimen } from './componentsLabCharts';
 import { ButtonsSpecimen, ListRowSpecimen } from './componentsLabButtons';
 import { ChipSection, ContextSection } from './MarkersLabPage';
+import { FieldsSpecimen } from './FieldsLabPage';
 import {
   FailureSpecimen,
   NoticeSpecimen,
   ToastSpecimen,
 } from './componentsLabFeedback';
 import { IconScaleSpecimen } from './componentsLabIcons';
-import {
-  DialogsSpecimen,
-  FieldsSpecimen,
-  MarkersSpecimen,
-} from './componentsLabGroups';
+import { DialogsSpecimen, MarkersSpecimen } from './componentsLabGroups';
 import {
   FactsSpecimen,
   ReferenceChipsSpecimen,
@@ -28,10 +26,15 @@ import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
 import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
 import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
 import { AgentSentSpecimen } from './componentsLabAgentSent';
+import { ComposerActionsSpecimen } from './componentsLabComposerActions';
+import { AgentAliasModelSpecimen } from './componentsLabAgentAliasModel';
+import { AgentModelPickerSpecimen } from './componentsLabAgentModelPicker';
 import { DisclosuresSpecimen } from './componentsLabDisclosures';
 import { HeadingsSpecimen } from './componentsLabHeadings';
 import { LoadingSpecimen } from './componentsLabLoading';
+import { ColorSwatchesSpecimen } from './componentsLabColorSwatches';
 import { SurfacesSpecimen } from './componentsLabSurfaces';
+import { OverlayOptionsSpecimen } from './componentsLabOverlayOptions';
 import { SidebarPartsSpecimen } from './componentsLabSidebar';
 import { StatusPartsSpecimen } from './componentsLabStatus';
 import { UsagePartsSpecimen } from './componentsLabUsage';
@@ -42,8 +45,19 @@ import { SharedCSpecimen } from './componentsLabSharedC';
 import { CustomizePartsSpecimen } from './componentsLabCustomize';
 import { CuratedWorkflowsSpecimen } from './componentsLabCurated';
 import { CreditsNoticesSpecimen } from './componentsLabCredits';
+import {
+  CloudReachBackPromptSpecimen,
+  CloudReachBackSpecimen,
+} from './componentsLabCloudReachBack';
 import { W5RecoverySpecimen } from './componentsLabW5Recovery';
-import { SettingsAndAgentsSpecimen } from './componentsLabSettings';
+import {
+  CloudCopyGitUncheckedSpecimen,
+  CloudCopyPluginSpecimen,
+} from './componentsLabCloudCopy';
+import {
+  GoogleSubscriptionSpecimen,
+  SettingsAndAgentsSpecimen,
+} from './componentsLabSettings';
 import { TablesSpecimen } from './componentsLabTables';
 import { DetailHeaderSpecimen } from './componentsLabDetail';
 import { FilesAndDiffsSpecimen } from './componentsLabFilesAndDiffs';
@@ -56,6 +70,8 @@ import { KeysAndMarkdownSpecimen } from './componentsLabKeysAndMarkdown';
 import { ProvidersSpecimen } from './componentsLabProviders';
 import { ProgressSpecimen } from './componentsLabProgress';
 import { SegmentedControlSpecimen, TabBarSpecimen } from './componentsLabTabs';
+import { SliderSpecimen } from './componentsLabSlider';
+import { InlineCodeSpecimen } from './componentsLabInlineCode';
 import {
   ButtonStage,
   ChipStage,
@@ -170,6 +186,24 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: SegmentedControlSpecimen,
   },
   {
+    id: 'slider',
+    name: 'Slider',
+    group: 'Unified',
+    note: 'A stepped slider for a few ordered stops: drag or click to pick, arrow keys to step, Home and End for the ends. The composer effort panel uses it.',
+    source: 'packages/ui-shared/src/components/Slider.tsx',
+    prs: [],
+    View: SliderSpecimen,
+  },
+  {
+    id: 'inline-code',
+    name: 'InlineCode',
+    group: 'Unified',
+    note: 'A branch name or path inside a sentence: secondary fill, compact padding and mono type at the size and line height of the text around it.',
+    source: 'packages/ui-shared/src/components/InlineCode.tsx',
+    prs: [],
+    View: InlineCodeSpecimen,
+  },
+  {
     id: 'fields',
     name: 'Form fields',
     group: 'Unified',
@@ -179,6 +213,24 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     prs: [7214, 7219, 7220, 7221, 7222, 7223, 7224, 7255, 7257],
     Stage: FieldsStage,
     View: FieldsSpecimen,
+  },
+  {
+    id: 'agent-model-picker',
+    name: 'Agent and model picker',
+    group: 'Unified',
+    note: 'Independent Agent and Model controls: default and explicit models, unavailable agents, disabled and empty states, both sizes and the cloud capability gate.',
+    source: 'packages/ui-shared/src/components/AgentModelPicker.tsx',
+    prs: [],
+    View: AgentModelPickerSpecimen,
+  },
+  {
+    id: 'agent-alias-model',
+    name: 'Agent alias model fields',
+    group: 'Unified',
+    note: "An Agent alias inherits its agent's model or chooses a concrete model, with separate Agent and Model errors and a clear action.",
+    source: 'packages/ui-shared/src/components/AgentAliasModelFields.tsx',
+    prs: [],
+    View: AgentAliasModelSpecimen,
   },
   {
     id: 'icon-scale',
@@ -241,13 +293,32 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: LoadingSpecimen,
   },
   {
+    id: 'color-swatches',
+    name: 'Color swatches',
+    group: 'Unified',
+    note: 'ColorSwatchPicker: one row of fixed palette swatches as a radio group, each named by the color it renders in, never a free-form color.',
+    source: 'packages/ui-shared/src/components/ColorSwatchPicker.tsx',
+    prs: [],
+    View: ColorSwatchesSpecimen,
+  },
+  {
     id: 'progress',
     name: 'Progress',
     group: 'Unified',
-    note: 'ProgressBar (6px, label and value above it), ProgressRing (16px) inside a small control, and ProgressSteps as 12px status glyphs; tones, never colors.',
+    note: 'ProgressBar (6px, label and value above it), ProgressRing (16px) inside a small control, and ProgressSteps as 12px status glyphs; tones, never colors. SegmentsBar is the stacked share beside them: chart colors, for data, not for work in progress.',
     source: 'packages/ui-shared/src/components/Progress.tsx',
     prs: [7358, 7364, 7365],
     View: ProgressSpecimen,
+  },
+  {
+    id: 'charts',
+    name: 'Charts',
+    group: 'Unified',
+    note: 'One chart kit for desktop and web: the range and granularity controls, four charts, and the tooltip and empty box every chart shares.',
+    source:
+      'packages/ui-app/src/charts/{charts,chart-controls}.tsx, packages/ui-shared/src/components/ChartParts.tsx',
+    prs: [],
+    View: ChartsSpecimen,
   },
   {
     id: 'facts',
@@ -300,6 +371,24 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: CreditsNoticesSpecimen,
   },
   {
+    id: 'cloud-reach-back',
+    name: 'Cloud chats on a desktop MCP server',
+    group: 'Unified',
+    note: "The MCP server page's Cloud chats row, shown only where the cloudReachBack capability is on: off, and on with the tools chosen and recent calls. Allow… opens the opt-in. Rendered from fixtures.",
+    source: 'packages/ui-app/src/capability/CloudReachBackSection.tsx',
+    prs: [],
+    View: CloudReachBackSpecimen,
+  },
+  {
+    id: 'cloud-reach-back-prompt',
+    name: 'Cloud chat tool prompt',
+    group: 'Unified',
+    note: 'The prompt before a cloud chat runs a tool on this computer: the chat approval card with Allow once and Deny only. Rendered from a fixture.',
+    source: 'packages/ui-app/src/capability/ReachBackApprovalDialog.tsx',
+    prs: [],
+    View: CloudReachBackPromptSpecimen,
+  },
+  {
     id: 'agent-sent',
     name: 'Agent-sent messages and lifetime limit',
     group: 'Unified',
@@ -317,6 +406,24 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/W5RecoveryNotice.tsx',
     prs: [7548],
     View: W5RecoverySpecimen,
+  },
+  {
+    id: 'cloud-copy-plugin',
+    name: 'Add a skill or plugin to the cloud account',
+    group: 'Unified',
+    note: "The consent dialog before a desktop skill or plugin goes to the cloud account: the files that go, and the secret-looking, git-ignored and linked files that don't, each with its reason and never as a choice. Rendered from fixtures.",
+    source: 'packages/ui-app/src/capability/CloudCopyConsentDialog.tsx',
+    prs: [],
+    View: CloudCopyPluginSpecimen,
+  },
+  {
+    id: 'cloud-copy-git-unchecked',
+    name: 'Cloud copy when Git could not check the folder',
+    group: 'Unified',
+    note: "The same consent dialog for a skill whose folder Git couldn't check: it says so, and the other files left out still show.",
+    source: 'packages/ui-app/src/capability/CloudCopyConsentDialog.tsx',
+    prs: [],
+    View: CloudCopyGitUncheckedSpecimen,
   },
   {
     id: 'headings',
@@ -344,6 +451,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/Surface.tsx',
     prs: [],
     View: SurfacesSpecimen,
+  },
+  {
+    id: 'selection-pill',
+    name: 'Selection pill',
+    group: 'Unified',
+    note: 'The actions on a text selection in the file editor and the terminal: compact buttons with tooltips, Copy that shows Copied, placed in a pane or over the window.',
+    source: 'packages/ui-shared/src/components/SelectionActionPill.tsx',
+    prs: [],
+    View: OverlayOptionsSpecimen,
   },
   {
     id: 'detail-header',
@@ -461,6 +577,16 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   ...CHAT_TURN_LAB_ENTRIES,
   ...CHAT_SUBAGENTS_LAB_ENTRIES,
   {
+    id: 'google-subscription',
+    name: 'Google subscription',
+    group: 'Unified',
+    note: 'Connection, refresh and error states for personal Google subscriptions.',
+    source:
+      'packages/ui-shared/src/components/settings/GoogleSubscriptionRow.tsx',
+    prs: [8527],
+    View: GoogleSubscriptionSpecimen,
+  },
+  {
     id: 'settings-diff-agents',
     name: 'Settings pages, diff source and agent access',
     group: 'Unified',
@@ -541,10 +667,20 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     id: 'chat-look',
     name: 'Chat look',
     group: 'Unified',
-    note: 'The chat look, chat detail, app name and step tense providers with the transcript parts that read them, side by side, and a live readout of each hook.',
+    note: 'The chat detail, app name and step tense providers with the transcript parts that read them, and a live readout of each hook.',
     source: 'packages/ui-shared/src/components/chat-look.tsx',
     prs: [],
     View: ChatLookSpecimen,
+  },
+  {
+    id: 'composer-actions',
+    name: 'Composer actions',
+    group: 'Unified',
+    note: 'The trailing composer action sends, stops, or runs a terminal command. The terminal label shows the run location or the last error.',
+    source:
+      'packages/ui-shared/src/components/{ComposerSendButton,TerminalComposerMode}.tsx',
+    prs: [],
+    View: ComposerActionsSpecimen,
   },
   {
     id: 'composer-plan-chip',

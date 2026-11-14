@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../../lib/__tests__/fixtures/w5-routed-golden-store';
 import * as paths from 'node:path';
 import {
   createFilesystemScopeResolver,
@@ -72,9 +73,12 @@ const ROOTS: readonly CanopyWorkspaceScope[] = [
 ];
 
 let h: RouteHarness | undefined;
+let closeW5Store: (() => Promise<void>) | undefined;
 
 afterEach(async () => {
   try {
+    await closeW5Store?.();
+    closeW5Store = undefined;
     await h?.close();
   } finally {
     h = undefined;
@@ -256,6 +260,7 @@ it(
   'keeps explorer creates and text saves in process with zero daemon connection contact',
   async () => {
     h = await createRouteHarness();
+    closeW5Store = await installRoutedW5GoldenStore();
     const as = localCaller(new FakeSender(1));
     const caller: CanopyCallerDescriptor = {
       ...as,

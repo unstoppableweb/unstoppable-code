@@ -426,6 +426,7 @@ async function executeJobAttempt(
     // checkpoint never waits on it; and it never holds memory while the
     // drain holds it, so other runs' steps can still finish.
     let leaveCapacity: (() => void) | undefined;
+    let capacityStarted: (() => void) | undefined;
     const estimateBytes = options.capacity
       ? pipelineStepMemoryEstimate(step, stepActionFacts(options, step))
       : 0;
@@ -454,13 +455,14 @@ async function executeJobAttempt(
         leaveWait?.();
         if (!admitted) break;
         if (!options.stepDrain?.isDraining()) {
-          leaveCapacity = admitted;
+          leaveCapacity = admitted.release;
+          capacityStarted = admitted.started;
           leaveDrain = await options.stepDrain?.admit(options.signal, hostWait);
           break;
         }
         // The drain holds it: give the memory back while it waits there,
         // and ask again if the drain lets it go without stopping the run.
-        admitted();
+        admitted.release();
         const leaveHeld = await options.stepDrain.admit(
           options.signal,
           hostWait,
@@ -626,6 +628,7 @@ async function executeJobAttempt(
         modelAliases: options.modelAliases,
         modelAliasPreferences: options.modelAliasPreferences,
         onStepPostProcess: options.runtime.onStepPostProcess,
+        ...(capacityStarted ? { onProcessStart: capacityStarted } : {}),
         onLogMetadataResolved: async (
           metadata: StepLogMetadata,
         ): Promise<void> => {

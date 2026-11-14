@@ -2381,6 +2381,10 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
               "in": 0,
               "out": 0
             },
+            "antigravity": {
+              "in": 0,
+              "out": 0
+            },
             "opencode": {
               "in": 0,
               "out": 0
@@ -5864,6 +5868,10 @@ exports[`observability golden: chat turns: Codex serves the golden aggregates 1`
               "in": 0,
               "out": 0
             },
+            "antigravity": {
+              "in": 0,
+              "out": 0
+            },
             "opencode": {
               "in": 0,
               "out": 0
@@ -8612,6 +8620,10 @@ exports[`observability golden: chat turns: account proxy serves the golden aggre
               "out": 0
             },
             "copilot": {
+              "in": 0,
+              "out": 0
+            },
+            "antigravity": {
               "in": 0,
               "out": 0
             },
@@ -11720,6 +11732,10 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
               "out": 0
             },
             "copilot": {
+              "in": 0,
+              "out": 0
+            },
+            "antigravity": {
               "in": 0,
               "out": 0
             },
@@ -16000,6 +16016,10 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
               "in": 0,
               "out": 0
             },
+            "antigravity": {
+              "in": 0,
+              "out": 0
+            },
             "opencode": {
               "in": 0,
               "out": 0
@@ -19125,6 +19145,10 @@ exports[`observability golden: managed delegations serves the golden aggregates 
               "in": 0,
               "out": 0
             },
+            "antigravity": {
+              "in": 0,
+              "out": 0
+            },
             "opencode": {
               "in": 0,
               "out": 0
@@ -21707,6 +21731,10 @@ exports[`observability golden: observed helper tasks serves the golden aggregate
               "out": 0
             },
             "copilot": {
+              "in": 0,
+              "out": 0
+            },
+            "antigravity": {
               "in": 0,
               "out": 0
             },
@@ -24546,6 +24574,10 @@ exports[`observability golden: pipeline steps: Claude, Codex, account proxy and 
             "copilot": {
               "in": 450,
               "out": 70
+            },
+            "antigravity": {
+              "in": 0,
+              "out": 0
             },
             "opencode": {
               "in": 0,
@@ -28030,6 +28062,10 @@ exports[`observability golden: replay after restart serves the golden aggregates
               "in": 0,
               "out": 0
             },
+            "antigravity": {
+              "in": 0,
+              "out": 0
+            },
             "opencode": {
               "in": 0,
               "out": 0
@@ -31247,6 +31283,10 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
               "out": 0
             },
             "copilot": {
+              "in": 0,
+              "out": 0
+            },
+            "antigravity": {
               "in": 0,
               "out": 0
             },

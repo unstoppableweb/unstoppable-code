@@ -388,7 +388,12 @@ export function TeamMembersSection({
       <span id={`${roleLabelPrefix}-caption`} hidden>
         Role for
       </span>
-      <ErrorBanner className="" error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="team-members-section"
+        className=""
+        error={error?.copy}
+        details={error?.details}
+      />
 
       {/* One grid for the whole list, each row a subgrid of it: the role
           and action columns size to their widest entry across every row, so
@@ -424,28 +429,32 @@ export function TeamMembersSection({
               >
                 <MemberAvatar name={member.name} image={member.image} />
                 <div className={joinClassNames('min-w-0', blockClassName)}>
-                  <p className="flex items-center gap-2 truncate text-s font-medium fg-primary">
-                    <span id={`${roleLabelPrefix}-name-${member.id}`}>
-                      {member.name}
-                    </span>
-                    {isViewer && (
-                      <span className="text-xs font-normal fg-secondary">
-                        (you)
-                      </span>
-                    )}
-                  </p>
-                  <p className="truncate text-xs fg-secondary">
-                    {member.email}
-                  </p>
-                  {member.subTeamIds.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {member.subTeamIds.map((id) => (
-                        <Badge key={id}>
-                          {subTeamNameById.get(id) ?? 'Team'}
-                        </Badge>
-                      ))}
+                  <Stack gap="tight">
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-2 truncate text-s font-medium fg-primary">
+                        <span id={`${roleLabelPrefix}-name-${member.id}`}>
+                          {member.name}
+                        </span>
+                        {isViewer && (
+                          <span className="text-xs font-normal fg-secondary">
+                            (you)
+                          </span>
+                        )}
+                      </p>
+                      <p className="truncate text-xs fg-secondary">
+                        {member.email}
+                      </p>
                     </div>
-                  )}
+                    {member.subTeamIds.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {member.subTeamIds.map((id) => (
+                          <Badge key={id}>
+                            {subTeamNameById.get(id) ?? 'Team'}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </Stack>
                 </div>
               </SettingsLink>
 
@@ -512,16 +521,18 @@ export function TeamMembersSection({
       </ul>
 
       {manageMembers && pendingInvites.length > 0 && (
-        <div data-testid="team-pending-invites">
-          <Heading level={3} variant="title">
-            Pending invitations
-          </Heading>
-          <p className="mt-1 text-xs fg-secondary">
-            {detail.viewerRole === 'OWNER'
-              ? 'People invited to this organization who haven’t joined yet.'
-              : 'People you’ve invited who haven’t joined yet.'}
-          </p>
-          <ul className={`mt-3 ${SETTINGS_GROUP_CLASS}`}>
+        <Stack gap="item" data-testid="team-pending-invites">
+          <Stack gap="tight">
+            <Heading level={3} variant="title">
+              Pending invitations
+            </Heading>
+            <p className="text-xs fg-secondary">
+              {detail.viewerRole === 'OWNER'
+                ? 'People invited to this organization who haven’t joined yet.'
+                : 'People you’ve invited who haven’t joined yet.'}
+            </p>
+          </Stack>
+          <ul className={SETTINGS_GROUP_CLASS}>
             {pendingInvites.map((invite) => (
               <li
                 key={invite.externalId}
@@ -587,7 +598,7 @@ export function TeamMembersSection({
               </li>
             ))}
           </ul>
-        </div>
+        </Stack>
       )}
 
       {adding && (
@@ -1017,80 +1028,85 @@ function AddMemberDialog({
       {outcome ? (
         <div className="flex flex-col gap-4" data-testid="add-member-success">
           <Surface variant="group" size="small" padding="default">
-            <p className="text-s font-medium fg-primary">
-              {outcome.seatPaymentState === 'PROCESSING'
-                ? 'Payment processing'
-                : outcome.emailSuppressed
-                  ? 'Invitation requested recently'
-                  : outcome.emailQueued
-                    ? 'Invitation sent'
-                    : 'Invitation created'}
-            </p>
-            <p
-              className={joinClassNames(
-                'mt-1 text-s fg-secondary',
-                blockClassName,
-              )}
-            >
-              {outcome.seatPaymentState === 'PROCESSING' ? (
-                outcome.emailDeferred ? (
-                  <>
-                    We&apos;ll send the invitation email once payment confirms.
-                    The link will become available then.
-                  </>
-                ) : (
-                  <>
-                    Payment is still confirming, and we won&apos;t send an
-                    invitation email for this request. The link will become
-                    available after payment confirms.
-                  </>
-                )
-              ) : outcome.emailSuppressed ? (
-                <>
-                  This invitation was requested recently, so we didn&apos;t send
-                  another email. Copy the link below so {outcome.email} can join{' '}
-                  {teamName} as {titleCaseRole(outcome.role)}.
-                </>
-              ) : outcome.emailQueued ? (
-                <>
-                  We sent an invitation email to {outcome.email}. They&apos;ll
-                  join {teamName} as {titleCaseRole(outcome.role)}.
-                </>
-              ) : (
-                <>
-                  Invitation created, but we couldn&apos;t send the email. Copy
-                  the link below so {outcome.email} can join {teamName} as{' '}
-                  {titleCaseRole(outcome.role)}.
-                </>
-              )}
-            </p>
-            {outcome.seatPaymentState !== 'PROCESSING' &&
-              !outcome.emailDeferred && (
-                <div className="mt-3 flex items-center gap-2">
-                  <Surface
-                    variant="card"
-                    size="small"
-                    className="min-w-0 flex-1"
-                  >
-                    <code
-                      className={joinClassNames(
-                        'block truncate px-3 py-2 text-xs fg-secondary',
-                        blockClassName,
-                      )}
+            <Stack gap="item">
+              <Stack gap="tight">
+                <p className="text-s font-medium fg-primary">
+                  {outcome.seatPaymentState === 'PROCESSING'
+                    ? 'Payment processing'
+                    : outcome.emailSuppressed
+                      ? 'Invitation requested recently'
+                      : outcome.emailQueued
+                        ? 'Invitation sent'
+                        : 'Invitation created'}
+                </p>
+                <p
+                  className={joinClassNames(
+                    'text-s fg-secondary',
+                    blockClassName,
+                  )}
+                >
+                  {outcome.seatPaymentState === 'PROCESSING' ? (
+                    outcome.emailDeferred ? (
+                      <>
+                        We&apos;ll send the invitation email once payment
+                        confirms. The link will become available then.
+                      </>
+                    ) : (
+                      <>
+                        Payment is still confirming, and we won&apos;t send an
+                        invitation email for this request. The link will become
+                        available after payment confirms.
+                      </>
+                    )
+                  ) : outcome.emailSuppressed ? (
+                    <>
+                      This invitation was requested recently, so we didn&apos;t
+                      send another email. Copy the link below so {outcome.email}{' '}
+                      can join {teamName} as {titleCaseRole(outcome.role)}.
+                    </>
+                  ) : outcome.emailQueued ? (
+                    <>
+                      We sent an invitation email to {outcome.email}.
+                      They&apos;ll join {teamName} as{' '}
+                      {titleCaseRole(outcome.role)}.
+                    </>
+                  ) : (
+                    <>
+                      Invitation created, but we couldn&apos;t send the email.
+                      Copy the link below so {outcome.email} can join {teamName}{' '}
+                      as {titleCaseRole(outcome.role)}.
+                    </>
+                  )}
+                </p>
+              </Stack>
+              {outcome.seatPaymentState !== 'PROCESSING' &&
+                !outcome.emailDeferred && (
+                  <div className="flex items-center gap-2">
+                    <Surface
+                      variant="card"
+                      size="small"
+                      className="min-w-0 flex-1"
                     >
-                      {outcome.url}
-                    </code>
-                  </Surface>
-                  <CopyButton
-                    value={outcome.url}
-                    label="Copy"
-                    copiedLabel="Copied"
-                    ariaLabel="Copy invite link"
-                    variant="secondary"
-                    size="compact"
-                  />
-                </div>
-              )}
+                      <code
+                        className={joinClassNames(
+                          'block truncate px-3 py-2 text-xs fg-secondary',
+                          blockClassName,
+                        )}
+                      >
+                        {outcome.url}
+                      </code>
+                    </Surface>
+                    <CopyButton
+                      value={outcome.url}
+                      label="Copy"
+                      copiedLabel="Copied"
+                      ariaLabel="Copy invite link"
+                      variant="secondary"
+                      size="compact"
+                    />
+                  </div>
+                )}
+            </Stack>
           </Surface>
           <div className="flex items-center justify-end gap-2">
             <Button
@@ -1117,7 +1133,11 @@ function AddMemberDialog({
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <ErrorBanner error={error?.copy} details={error?.details} />
+          <ErrorBanner
+            errorSource="add-member-dialog"
+            error={error?.copy}
+            details={error?.details}
+          />
           <DialogFormField label="Email" htmlFor={`${fieldId}-email`}>
             <div className={joinClassNames('min-w-0 flex-1', blockClassName)}>
               <TextInput
@@ -1309,48 +1329,49 @@ function SeatChargeNotice({
       padding="compact"
       data-testid="seat-charge-notice"
     >
-      <p className="text-s font-medium fg-primary">This adds a paid seat</p>
-      <p className="mt-1 text-s fg-secondary">
-        {teamName} will be charged{' '}
-        <span className="font-medium fg-primary">
-          {formatUsd(quote.amountUsd)}
-        </span>{' '}
-        now for the {quote.daysRemaining}{' '}
-        {quote.daysRemaining === 1 ? 'day' : 'days'} left in this billing period
-        {through !== null ? ` (through ${through})` : ''}
-        {quote.minimumApplied
-          ? `, our ${formatUsd(quote.amountUsd)} minimum for adding a seat`
-          : ''}
-        . The seat then renews with the rest of your plan.
-      </p>
-      {needsCard ? (
-        <Stack
-          gap="inline"
-          className="mt-3"
-          data-testid="seat-charge-needs-card"
-        >
+      <Stack gap={needsCard ? 'item' : 'inline'}>
+        <Stack gap="tight">
+          <p className="text-s font-medium fg-primary">This adds a paid seat</p>
           <p className="text-s fg-secondary">
-            {canManageBilling && canAddCard
-              ? 'There is no payment method on file yet. Add a card to continue.'
-              : 'There is no payment method on file yet. An organization owner needs to add a card before you can add members.'}
+            {teamName} will be charged{' '}
+            <span className="font-medium fg-primary">
+              {formatUsd(quote.amountUsd)}
+            </span>{' '}
+            now for the {quote.daysRemaining}{' '}
+            {quote.daysRemaining === 1 ? 'day' : 'days'} left in this billing
+            period
+            {through !== null ? ` (through ${through})` : ''}
+            {quote.minimumApplied
+              ? `, our ${formatUsd(quote.amountUsd)} minimum for adding a seat`
+              : ''}
+            . The seat then renews with the rest of your plan.
           </p>
-          {canManageBilling && canAddCard ? (
-            <Button
-              size="compact"
-              variant="secondary"
-              className="self-start"
-              onClick={onAddCard}
-              data-testid="seat-charge-add-card"
-            >
-              Add card
-            </Button>
-          ) : null}
         </Stack>
-      ) : quote.card !== null ? (
-        <p className="mt-2 text-xs fg-secondary">
-          Charging {quote.card.brand} ending in {quote.card.last4}.
-        </p>
-      ) : null}
+        {needsCard ? (
+          <Stack gap="inline" data-testid="seat-charge-needs-card">
+            <p className="text-s fg-secondary">
+              {canManageBilling && canAddCard
+                ? 'There is no payment method on file yet. Add a card to continue.'
+                : 'There is no payment method on file yet. An organization owner needs to add a card before you can add members.'}
+            </p>
+            {canManageBilling && canAddCard ? (
+              <Button
+                size="compact"
+                variant="secondary"
+                className="self-start"
+                onClick={onAddCard}
+                data-testid="seat-charge-add-card"
+              >
+                Add card
+              </Button>
+            ) : null}
+          </Stack>
+        ) : quote.card !== null ? (
+          <p className="text-xs fg-secondary">
+            Charging {quote.card.brand} ending in {quote.card.last4}.
+          </p>
+        ) : null}
+      </Stack>
     </Surface>
   );
 }

@@ -1,3 +1,4 @@
+import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
 import { sourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import type { ScriptActionsAddMetadata } from '@canopy/protocol/script-actions';
 import { normalizeRepositoryCloneUrl } from '@canopy/protocol/portal';
@@ -121,7 +122,7 @@ import {
 } from '../lib/github-push-auth-failure';
 import {
   assertMutuallyExclusiveWorktreeBaseSources,
-  normalizeOptionalWorktreeBaseBranch,
+  validateOptionalWorktreeBaseBranch,
 } from './worktree-create-validation';
 import { assertNotSplitLocked } from '../services/split-lock-service';
 import { WORKTREE_LIST_STORAGE, withStorageAdmission } from '../lib/w5-storage';
@@ -1271,9 +1272,7 @@ export function registerWorkspaceHandlers(
     ): Promise<CreateWorkspaceWorktreeResponse> => {
       validateId(request.workspaceId, 'workspaceId');
       assertMutuallyExclusiveWorktreeBaseSources(request);
-      const baseBranch = normalizeOptionalWorktreeBaseBranch(
-        request.baseBranch,
-      );
+      const baseBranch = validateOptionalWorktreeBaseBranch(request.baseBranch);
       if (request.baseWorktreeId) {
         validateId(request.baseWorktreeId, 'baseWorktreeId');
       }
@@ -1704,27 +1703,29 @@ export function registerWorkspaceHandlers(
       }
 
       const lifecycle = lifecycleCommands(event);
-      const response = await withTypedArchiveRefusal(request, () =>
-        lifecycle.archiveWorktree(request, () =>
-          archiveWorktree(
-            {
-              workspaceId: request.workspaceId,
-              worktreeId: request.worktreeId,
-              source: 'multi_repo',
-              expectedKind: 'multi-repo',
-              expectedCreatedAt: request.expectedCreatedAt,
-              expectedBranchName: request.expectedBranchName,
-              deleteBranch: request.deleteBranch,
-              lockAfterArchive: request.lockAfterArchive,
-              deleteWithoutRetentionIfMissing:
-                request.deleteWithoutRetentionIfMissing,
-              remainingWorktreeOrder: request.remainingWorktreeOrder,
-              expectedRemainingWorktreeOrder:
-                request.expectedRemainingWorktreeOrder,
-            },
-            { telemetryParent: 'inherit' },
+      const response = await withTypedArchiveRefusal(
+        { ...request, intent: worktreeRemovalIntent(request.lockAfterArchive) },
+        () =>
+          lifecycle.archiveWorktree(request, () =>
+            archiveWorktree(
+              {
+                workspaceId: request.workspaceId,
+                worktreeId: request.worktreeId,
+                source: 'multi_repo',
+                expectedKind: 'multi-repo',
+                expectedCreatedAt: request.expectedCreatedAt,
+                expectedBranchName: request.expectedBranchName,
+                deleteBranch: request.deleteBranch,
+                lockAfterArchive: request.lockAfterArchive,
+                deleteWithoutRetentionIfMissing:
+                  request.deleteWithoutRetentionIfMissing,
+                remainingWorktreeOrder: request.remainingWorktreeOrder,
+                expectedRemainingWorktreeOrder:
+                  request.expectedRemainingWorktreeOrder,
+              },
+              { telemetryParent: 'inherit' },
+            ),
           ),
-        ),
       );
       if (!response.refusal)
         removeCachedWorktreeDiffStats(request.workspaceId, request.worktreeId);

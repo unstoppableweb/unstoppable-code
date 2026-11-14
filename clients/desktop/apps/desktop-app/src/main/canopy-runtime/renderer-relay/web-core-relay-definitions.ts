@@ -13,10 +13,18 @@ import {
   CORE_INSTRUCTION_DEFINITIONS,
   CORE_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
   CORE_PIPELINE_RUN_READ_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_INSTRUCTION_DEFINITIONS,
+  WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
+  WORKER_ARTIFACT_QUERY_DEFINITIONS,
+  WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
   WORKER_FILESYSTEM_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_STREAM_DEFINITIONS,
+  WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_QUERY_DEFINITIONS,
   composeCanopyInstructionRegistries,
@@ -53,8 +61,10 @@ export const WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS: ReadonlySet<string> =
 
 /**
  * What the renderer may call on the web core (CAN-4185 D5): cloud cowork
- * chats and reads of their sandbox's files (CAN-6175 R9), and cloud workflow
- * runs. No file writes, Git, terminals, scripts or pull requests.
+ * chats, reads and writes of their sandbox's files (CAN-6175 R9), durable
+ * terminals in it (R10; the web core serves those only with
+ * canopy-cloud-durable-terminals on) and cloud workflow runs. No entry
+ * copy (the web core serves none), Git, scripts or pull requests.
  */
 export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.workspace.list',
@@ -69,6 +79,8 @@ export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.chat.list',
   'core.chat.snapshot.get',
   'core.chat.transcript.page',
+  // Find in a cloud chat over pages not loaded (CAN-6175 R12).
+  'core.chat.transcript.search',
   'core.chat.events',
   'core.chat.live.events',
   'core.chat.create',
@@ -89,11 +101,37 @@ export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.catalog.selection.update',
   'core.artifact.list',
   'core.artifact.get',
+  // Deleting a cloud chat's attachment from the activity rail (CAN-6175
+  // R8d); its bytes download through main, never the relay.
+  'worker.artifact.delete',
+  // A sleeping sandbox's deliverable reads from its saved copy in the viewer
+  // (CAN-6587). Read only: downloads to disk go through main's own
+  // connection, and the web core checks the chat it is scoped to.
+  'worker.artifact.download.read',
   'worker.filesystem.roots.list',
   'worker.filesystem.directory.list',
   'worker.filesystem.file.read',
   'worker.filesystem.search',
   'worker.filesystem.link.resolve',
+  'worker.terminal.create',
+  'worker.terminal.get',
+  'worker.terminal.list',
+  'worker.terminal.attach',
+  'worker.terminal.write',
+  'worker.terminal.resize',
+  'worker.terminal.kill',
+  'worker.terminal.release',
+  'worker.filesystem.file.write',
+  'worker.filesystem.directory.create',
+  'worker.filesystem.entry.delete',
+  'worker.filesystem.entry.move',
+  // A cloud task's Cost (CAN-6180): the renderer offers it only while the
+  // manifest lists both reads as available. Behind the cloud chats flag, as
+  // the rest of a cloud task. The cost index refresh and pipeline run cost
+  // stay local.
+  'core.runtime.manifest.get',
+  'core.cost.scope.get',
+  'core.cost.chat.get',
   ...WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS,
 ]);
 
@@ -113,13 +151,17 @@ export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
   queries: allowed(
     composeCanopyQueryRegistries(
       CORE_QUERY_DEFINITIONS,
+      // Only the manifest, which offers a cloud task's Cost (CAN-6180).
+      CORE_TRANSPORT_QUERY_DEFINITIONS,
       CORE_CHAT_TASK_QUERY_DEFINITIONS,
       CORE_CATALOG_QUERY_DEFINITIONS,
       CORE_ARTIFACT_QUERY_DEFINITIONS,
       CORE_APPROVAL_QUERY_DEFINITIONS,
       CORE_PIPELINE_RUN_READ_QUERY_DEFINITIONS,
       WORKER_FILESYSTEM_QUERY_DEFINITIONS,
+      WORKER_TERMINAL_QUERY_DEFINITIONS,
       WORKER_PIPELINE_QUERY_DEFINITIONS,
+      WORKER_ARTIFACT_QUERY_DEFINITIONS,
     ),
   ),
   instructions: allowed(
@@ -130,7 +172,11 @@ export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
       CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
       CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
       CORE_WORKSPACE_METADATA_INSTRUCTION_DEFINITIONS,
+      WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
+      WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
+      WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
       WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
+      WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
     ),
   ),
   streams: allowed(
@@ -139,6 +185,7 @@ export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
       CORE_CHAT_TASK_STREAM_DEFINITIONS,
       CORE_CHAT_LIVE_STREAM_DEFINITIONS,
       CORE_APPROVAL_STREAM_DEFINITIONS,
+      WORKER_TERMINAL_STREAM_DEFINITIONS,
     ),
   ),
 };
@@ -166,6 +213,17 @@ export const WEB_CORE_HOST_DEFINITIONS: RelayDefinitions = {
   streams: {},
 };
 
+/**
+ * Ending a cloud terminal still reaches the web core after cloud chats are
+ * turned off. The renderer kills its open cloud shells when the flag turns
+ * off, after main's flag snapshot has already changed, and without this the
+ * shells would run on until the sandbox idles them (CAN-6175 R10). The web
+ * core still kills only the caller's own terminals.
+ */
+export const WEB_CORE_TEARDOWN_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
+  'worker.terminal.kill',
+]);
+
 const CLOUD_CHATS_UNAVAILABLE: CanopyErrorPayload = {
   kind: 'capability_unavailable',
   message: 'Cloud chats are not available.',
@@ -175,14 +233,16 @@ const CLOUD_CHATS_UNAVAILABLE: CanopyErrorPayload = {
 /**
  * The refusal for a web core call while its feature is off, or null. The
  * cloud chat operations need `canopyDesktopCloudChats`; the cloud run
- * operations don't (see `WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS`). Checked on
- * every call, so the one connection serves both while either is on.
+ * operations don't (see `WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS`), nor does
+ * ending a terminal (`WEB_CORE_TEARDOWN_RELAY_OPERATIONS`). Checked on every
+ * call, so the one connection serves both while either is on.
  */
 export function webCoreRelayRefuseCall(
   method: string,
   cloudChatsEnabled: () => boolean,
 ): CanopyErrorPayload | null {
   return WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS.has(method) ||
+    WEB_CORE_TEARDOWN_RELAY_OPERATIONS.has(method) ||
     cloudChatsEnabled()
     ? null
     : CLOUD_CHATS_UNAVAILABLE;
@@ -226,4 +286,31 @@ export function webCoreRelayRefuseParams(
   )
     ? null
     : "Only a cloud project's name and colour can be changed here.";
+}
+
+/** The file operations that take `wake` (CAN-6114). */
+const WEB_CORE_WAKING_FILE_OPERATIONS: ReadonlySet<string> = new Set([
+  'worker.filesystem.directory.list',
+  'worker.filesystem.file.read',
+  'worker.filesystem.file.write',
+  'worker.filesystem.directory.create',
+  'worker.filesystem.entry.delete',
+  'worker.filesystem.entry.move',
+]);
+
+/**
+ * The params a renderer's web core call is sent with: without `wake` on the
+ * file operations (CAN-6114). Main never carries the same-origin wake proof,
+ * so the web core would refuse a relayed wake; the call goes as a non-waking
+ * one, and a sleeping sandbox answers its `sandbox_sleeping` refusal.
+ */
+export function webCoreRelayNarrowParams(
+  method: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!WEB_CORE_WAKING_FILE_OPERATIONS.has(method) || !('wake' in params))
+    return params;
+  const rest = { ...params };
+  delete rest.wake;
+  return rest;
 }

@@ -7,6 +7,8 @@
  * it, because both share one burst coalescer.
  */
 import { execFileSync } from 'node:child_process';
+import { filesystemScopeError } from '@canopy/core-runtime/node/filesystem/scope-reader';
+import { toAppError } from '@canopy/protocol/app-errors';
 import {
   promises as fsPromises,
   existsSync,
@@ -527,6 +529,25 @@ describe('single-repository worktree', () => {
       'Invalid worktreeId: must be lowercase alphanumeric with hyphens',
     );
     expect(getFileBrowserRoots).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a vanished filesystem scope from a failed index', async () => {
+    mockedGetFileBrowserRoots.mockRejectedValueOnce(
+      filesystemScopeError('roots', 'notFound'),
+    );
+    await expect(
+      getIndex(target).catch((error: unknown) => toAppError(error)),
+    ).resolves.toMatchObject({
+      code: 'external.state_changed',
+    });
+    mockedGetFileBrowserRoots.mockRejectedValueOnce(
+      new Error('Index invariant failed'),
+    );
+    await expect(
+      getIndex(target).catch((error: unknown) => toAppError(error)),
+    ).resolves.toMatchObject({
+      code: 'app.unexpected',
+    });
   });
 
   const unprivileged = process.getuid?.() !== 0;

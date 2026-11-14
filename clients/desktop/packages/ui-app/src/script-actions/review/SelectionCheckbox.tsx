@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type JSX } from 'react';
+import type { JSX } from 'react';
 import { Checkbox } from '@canopy/ui-shared/components';
 import type { SelectAllState } from './review-model';
 
@@ -12,11 +12,7 @@ export interface SelectionCheckboxProps {
   readonly testId?: string;
 }
 
-/**
- * The shared `Checkbox` with a native mixed state for select-all controls.
- * `indeterminate` is a DOM property, so it is set on the input itself, which
- * exposes "mixed" to assistive technology; a dash draws the state.
- */
+/** The shared `Checkbox`, mixed while some rows are selected. */
 export function SelectionCheckbox({
   state,
   label,
@@ -24,27 +20,14 @@ export function SelectionCheckbox({
   onToggle,
   testId,
 }: SelectionCheckboxProps): JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null);
-  const mixed = state === 'some';
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = mixed;
-  }, [mixed]);
   return (
-    <span className="relative inline-flex">
-      <Checkbox
-        ref={ref}
-        checked={state === 'all'}
-        disabled={disabled}
-        aria-label={label}
-        onChange={onToggle}
-        data-testid={testId}
-      />
-      {mixed ? (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute left-1 right-1 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-fg-primary"
-        />
-      ) : null}
-    </span>
+    <Checkbox
+      checked={state === 'all'}
+      indeterminate={state === 'some'}
+      disabled={disabled}
+      aria-label={label}
+      onChange={onToggle}
+      data-testid={testId}
+    />
   );
 }

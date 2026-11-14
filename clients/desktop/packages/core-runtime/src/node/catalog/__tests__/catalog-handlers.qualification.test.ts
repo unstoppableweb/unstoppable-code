@@ -25,6 +25,7 @@ import {
   createCoreCatalogHandlers,
   type CatalogPluginInstallOutcome,
   type CatalogPublication,
+  type CatalogPublishOptions,
   type CatalogPublishPackage,
   type CatalogPluginTarget,
   type CatalogRefreshOutcome,
@@ -121,6 +122,11 @@ class MemoryCatalogHost implements CoreCatalogHost {
     installPlugin: 0,
     publishPlugin: 0,
     publishSkill: [] as { entryId: string; pkg: CatalogPublishPackage }[],
+    publishPluginPackage: [] as {
+      target: CatalogPluginTarget;
+      pkg: CatalogPublishPackage;
+      options?: CatalogPublishOptions;
+    }[],
   };
   publishOutcome: CatalogPublication | Error = {
     publicationId: 'mkt-1',
@@ -134,6 +140,16 @@ class MemoryCatalogHost implements CoreCatalogHost {
         ? Promise.reject(this.publishOutcome)
         : Promise.resolve(this.publishOutcome);
     };
+  publishPluginPackage?: (
+    target: CatalogPluginTarget,
+    pkg: CatalogPublishPackage,
+    options?: CatalogPublishOptions,
+  ) => Promise<CatalogPublication> = (target, pkg, options) => {
+    this.calls.publishPluginPackage.push({ target, pkg, options });
+    return this.publishOutcome instanceof Error
+      ? Promise.reject(this.publishOutcome)
+      : Promise.resolve(this.publishOutcome);
+  };
   publishSkill?: (
     entryId: string,
     pkg: CatalogPublishPackage,
@@ -345,6 +361,26 @@ describe('core.catalog handlers (CAN-4123)', () => {
     );
     expect(again.revision).toBe(available.revision);
     expect(again.generatedAt).not.toBe(available.generatedAt);
+  });
+
+  it("refuses revision 2's hosted model catalog before any read (CAN-6093)", async () => {
+    const dispatcher = compose();
+    // A read would fail on this instead of answering the refusal.
+    host.snapshotFailures = 1;
+    await expect(
+      dispatcher.query(
+        'core.catalog.snapshot.get',
+        { scope: {}, kinds: [], includeUnavailable: false, revision: 2 },
+        { caller: reader },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { unsupported: ['revision'], reason: 'unserved' },
+        retry: { kind: 'after_refresh', resource: 'core.runtime.manifest.get' },
+      },
+    });
+    expect(host.snapshotFailures).toBe(1);
   });
 
   it('reads selections with unavailable and tombstoned ids', async () => {
@@ -779,12 +815,14 @@ describe('core.catalog handlers (CAN-4123)', () => {
         code: 'core.catalog.visibilityInvalid',
       },
     });
+    host.publishPluginPackage = undefined;
     for (const [key, overrides, kind] of [
       ['p3', { kind: 'skill', entryId: 'skill:s/x' }, 'invalid_argument'],
       [
         'p3b',
         { package: { analysisId: 'a', selectedOptionalResourceIds: [] } },
-        'invalid_argument',
+        // Served below by a host that uploads a plugin's package.
+        'capability_unavailable',
       ],
       ['p3c', { kind: 'model', entryId: 'model:m' }, 'capability_unavailable'],
     ] as const)
@@ -827,6 +865,100 @@ describe('core.catalog handlers (CAN-4123)', () => {
     host.publishPlugin = undefined;
     await expect(publish('p6')).rejects.toMatchObject({
       payload: { kind: 'capability_unavailable' },
+    });
+  });
+
+  it("uploads a local plugin's consented package once per key (CAN-6176 D13)", async () => {
+    const dispatcher = compose();
+    const pkg = { analysisId: 'analysis-p', selectedOptionalResourceIds: [] };
+    const publish = (
+      key: string,
+      overrides: Record<string, unknown> = {},
+    ): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.entry.publish',
+        {
+          entryId: 'plugin:m/a',
+          kind: 'plugin',
+          expectedRevision: 0,
+          visibility: 'private',
+          teamId: null,
+          organizationId: null,
+          package: pkg,
+          ...overrides,
+          _meta: keyed(key),
+        },
+        { caller: writer, metadata: keyed(key) },
+      );
+    await expect(Promise.all([publish('u1'), publish('u1')])).resolves.toEqual([
+      host.publishOutcome,
+      host.publishOutcome,
+    ]);
+    // The package path takes the found plugin and never adds a public source.
+    expect(
+      host.calls.publishPluginPackage.map(({ target, pkg: sent }) => ({
+        entryId: target.entryId,
+        marketplaceId: target.marketplaceId,
+        pluginName: target.pluginName,
+        pkg: sent,
+      })),
+    ).toEqual([
+      { entryId: 'plugin:m/a', marketplaceId: 'm', pluginName: 'a', pkg },
+    ]);
+    expect(host.calls.publishPlugin).toBe(0);
+    await expect(publish('u2', { expectedRevision: 2 })).rejects.toMatchObject({
+      payload: { kind: 'conflict', code: 'core.catalog.revisionConflict' },
+    });
+    expect(host.calls.publishPluginPackage).toHaveLength(1);
+
+    // The account the person chose reaches the host, which refuses another.
+    await publish('u2b', { expectedAccountId: 'acct-1' });
+    expect(host.calls.publishPluginPackage.at(-1)?.options).toEqual({
+      expectedAccountId: 'acct-1',
+    });
+    host.publishOutcome = new CatalogHostRefusedError(
+      'publish-account-mismatch',
+    );
+    await expect(
+      publish('u2c', { expectedAccountId: 'acct-2' }),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'failed_precondition',
+        code: 'core.catalog.accountMismatch',
+      },
+    });
+
+    host.publishOutcome = new CatalogHostRefusedError('publish-package-stale');
+    await expect(publish('u3')).rejects.toMatchObject({
+      payload: {
+        kind: 'conflict',
+        code: 'core.catalog.packageStale',
+        message:
+          'This plugin changed after its files were checked. Check them again.',
+      },
+    });
+    const taken =
+      'A plugin named a from Team tools is already in your cloud marketplace. Remove it first or rename this one.';
+    host.publishOutcome = new CatalogHostRefusedError(
+      'publish-name-taken',
+      new Error(taken),
+    );
+    await expect(publish('u5')).rejects.toMatchObject({
+      payload: {
+        kind: 'already_exists',
+        code: 'core.catalog.entryNameTaken',
+        message: taken,
+      },
+    });
+    host.publishOutcome = new CatalogHostRefusedError(
+      'publish-source-unsupported',
+    );
+    await expect(publish('u4')).rejects.toMatchObject({
+      payload: {
+        kind: 'failed_precondition',
+        code: 'core.catalog.entryReadOnly',
+        message: "This plugin's files can't be added to the cloud.",
+      },
     });
   });
 
@@ -903,6 +1035,15 @@ describe('core.catalog handlers (CAN-4123)', () => {
           kind: 'conflict',
           code: 'core.catalog.packageStale',
           retry: { kind: 'after_refresh', resource: 'core.catalog.entry' },
+        },
+      ],
+      [
+        'publish-package-blocked',
+        {
+          kind: 'failed_precondition',
+          code: 'core.catalog.packageBlocked',
+          message:
+            "This skill has a file or dependency that can't be added to the cloud. Check its files again.",
         },
       ],
       [

@@ -227,7 +227,11 @@ export function AppAdvisorTab(): JSX.Element {
       </SettingsSection>
 
       <SettingsSection title="Project agents">
-        <ErrorBanner className="" error={projectAgentAccessSaveError} />
+        <ErrorBanner
+          errorSource="app-advisor-tab-project-agent-access-save"
+          className=""
+          error={projectAgentAccessSaveError}
+        />
         <SettingsGroup dataTestId="settings-app-advisor-project-agent-access">
           <AppAdvisorProjectAgentAccessControl
             value={projectAgentAccess}

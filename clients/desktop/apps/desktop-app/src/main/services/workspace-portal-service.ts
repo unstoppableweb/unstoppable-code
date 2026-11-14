@@ -507,6 +507,9 @@ export async function listWorkspacePortalEntities(
             }
           : {}),
         repos: [],
+        ...(item.archivedContainerCount === undefined
+          ? {}
+          : { archivedContainerCount: item.archivedContainerCount }),
         archiveRetentionDays: resolveArchiveRetentionDays(
           'cowork',
           item.archiveRetentionDays,

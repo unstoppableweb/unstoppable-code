@@ -142,7 +142,11 @@ function SkillSuggestionsRows(): JSX.Element {
           />
         }
       >
-        <ErrorBanner className="" error={saveError} />
+        <ErrorBanner
+          errorSource="skill-suggestions-rows-save"
+          className=""
+          error={saveError}
+        />
       </SettingsRow>
       <SettingsRow
         label={VIEW_LABEL}

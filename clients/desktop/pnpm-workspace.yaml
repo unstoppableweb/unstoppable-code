@@ -79,4 +79,4 @@ minimumReleaseAgeExclude:
   - '@better-auth/telemetry@1.7.16'
   - better-auth@1.7.16
   - better-call@1.4.5
-  - electron@45.2.2
+  - electron@45.3.0

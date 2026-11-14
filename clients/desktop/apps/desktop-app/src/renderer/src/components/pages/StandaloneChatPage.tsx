@@ -64,6 +64,7 @@ import {
   CHAT_STATE_REFRESH_RETRY_LABEL,
 } from '@/stores/chat/revisioned-copy';
 import { ensureCloudScopeLifecycle } from '@/cloud-chats/cloud-scope-lifecycle';
+import { useReportOpenCloudTask } from '@/cloud-chats/cloud-chat-ui-state';
 import { useCoworkProjectReachable } from '@/lib/cowork-directory';
 import { draftHasContent } from '@/lib/chat-draft-content';
 
@@ -86,6 +87,7 @@ export function StandaloneChatPage(): JSX.Element {
     (s) => s.activeChatProjectId,
   );
   const activeWorkEntryId = useStandaloneChatStore((s) => s.activeWorkEntryId);
+  useReportOpenCloudTask(activeChatProjectId, activeWorkEntryId);
   const orgDefaultChatsError = useStandaloneChatStore(
     (s) => s.orgDefaultChatsError,
   );
@@ -492,6 +494,7 @@ export function StandaloneChatPage(): JSX.Element {
         {orgDefaultChatsError?.projectId === activeChatProjectId && (
           <div className="px-4 pt-4">
             <DesktopErrorBanner
+              errorSource="org-default-chats-provision-error"
               className=""
               error={orgDefaultChatsError.message}
               testId="org-default-chats-provision-error"
@@ -518,6 +521,7 @@ export function StandaloneChatPage(): JSX.Element {
         ) : activeLoadFailure !== null && activeWorkEntryId !== null ? (
           <div className="p-4" data-testid="standalone-chat-load-error">
             <Notice
+              errorSource="standalone-chat-page-load-heading"
               intent="destructive"
               title={CHAT_STATE_LOAD_ERROR_HEADING}
               actions={

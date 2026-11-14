@@ -208,6 +208,7 @@ function InteractiveSkippedModRow({
                 {error ? (
                   <span id={errorId} className="block">
                     <ErrorBanner
+                      errorSource="claude-mods-skipped-error"
                       className=""
                       testId="claude-mods-skipped-error"
                       error={CLAUDE_MODS_UPDATE_ERROR_COPY[error]}

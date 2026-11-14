@@ -12,12 +12,20 @@ import type {
   WorkerScriptExecuteResult,
   WorkerScriptExecutionCancelParams,
   WorkerScriptExecutionCancelResult,
+  WorkerScriptExecutionClearParams,
+  WorkerScriptExecutionClearResult,
+  WorkerScriptExecutionStopParams,
+  WorkerScriptExecutionStopResult,
+  WorkerScriptExecutionGroupMembersParams,
+  WorkerScriptExecutionGroupMembersResult,
   WorkerScriptExecutionGetParams,
   WorkerScriptExecutionGetResult,
   WorkerScriptExecutionListParams,
   WorkerScriptExecutionListResult,
   WorkerScriptScope,
 } from '@canopy/protocol/canopy-core';
+import { WORKER_SCRIPT_GROUP_MAX_MEMBERS } from '@canopy/protocol/canopy-core';
+import { SCRIPT_RUN_MARKER_ENV } from './script-run-stop';
 
 import { KeyedOutcomes } from '../../operations/keyed-outcomes';
 
@@ -53,6 +61,9 @@ import {
   type ScriptRunLogRef,
   type ScriptRunWriterFence,
 } from './script-run-log';
+
+/** When a run's process is identified again, after its shell may have exec'd its command (CAN-6482). */
+const SCRIPT_CHILD_REFRESH_MS = 2_000;
 
 /** Where a run executes and the environment it gets, on this worker. */
 export interface ScriptExecutionPlace {
@@ -507,6 +518,20 @@ export class ScriptExecutionWorker {
       this.unstarted.delete(executionId);
       this.notify(executionId, (observer) => observer.onProcessStarted?.());
     };
+    // A restart can then prove the process is this run's before a reap
+    // (CAN-6482). The record is refreshed once the shell has had time to
+    // exec a lone command, which changes the executable the OS reports.
+    const onProcessPid = (pid: number): void => {
+      const logRef = ref;
+      if (logRef === null) return;
+      const record = (refresh: boolean): void => {
+        void this.logs
+          .recordChild({ ref: logRef, pid, refresh })
+          .catch(() => undefined);
+      };
+      record(false);
+      setTimeout(() => record(true), SCRIPT_CHILD_REFRESH_MS).unref();
+    };
     const tracking = logged
       ? {
           projectId,
@@ -518,12 +543,17 @@ export class ScriptExecutionWorker {
           ...(ref ? { logRef: ref } : {}),
         }
       : undefined;
+    // A recorded run's processes carry its id, so a later group Force stop
+    // can tie each one to it (CAN-6601).
+    const runEnv: NodeJS.ProcessEnv = logged
+      ? { ...place.env, [SCRIPT_RUN_MARKER_ENV]: executionId }
+      : place.env;
     try {
       outcome = params.terminal
         ? await this.runTerminal({
             script: params.command,
             cwd: place.cwd,
-            env: place.env,
+            env: runEnv,
             ...(params.shell ? { shell: params.shell } : {}),
             shellStartup: params.shellStartup,
             timeoutMs: params.timeoutMs,
@@ -539,7 +569,7 @@ export class ScriptExecutionWorker {
         : await this.runProcess({
             script: params.command,
             cwd: place.cwd,
-            env: place.env,
+            env: runEnv,
             ...(params.shell ? { shell: params.shell } : {}),
             shellStartup: params.shellStartup,
             timeoutMs: params.timeoutMs,
@@ -557,6 +587,7 @@ export class ScriptExecutionWorker {
               );
             },
             onProcessStarted,
+            onProcessPid,
             ...(tracking ? { tracking } : {}),
           });
     } catch (error) {
@@ -668,6 +699,127 @@ export class ScriptExecutionWorker {
     };
   }
 
+  async clear(
+    params: WorkerScriptExecutionClearParams,
+  ): Promise<WorkerScriptExecutionClearResult> {
+    this.assertServed(params.scope);
+    const outcome = await this.logs.clear({
+      projectId: params.scope.workspaceId,
+      worktreeId: params.scope.worktreeId,
+      scriptKey: params.scriptKey,
+      runId: params.executionId,
+    });
+    if (outcome === 'active')
+      throw new CanopyOperationError({
+        kind: 'conflict',
+        code: 'worker.script.executionInProgress',
+        message: 'This run is still running, so it cannot be cleared.',
+        retry: { kind: 'never' },
+      });
+    return { cleared: outcome === 'cleared' };
+  }
+
+  /**
+   * An orphaned run's live group members once its leader has exited, for the
+   * user's confirmation of a group Force stop (CAN-6601).
+   */
+  async groupMembers(
+    params: WorkerScriptExecutionGroupMembersParams,
+  ): Promise<WorkerScriptExecutionGroupMembersResult> {
+    this.assertServed(params.scope);
+    const listing = await this.logs.groupMembers({
+      projectId: params.scope.workspaceId,
+      worktreeId: params.scope.worktreeId,
+      scriptKey: params.scriptKey,
+      runId: params.executionId,
+    });
+    if (listing === 'absent' || listing === 'not_orphaned')
+      throw notOrphanedError();
+    if (listing.kind === 'unsupported') throw groupsUnavailableError();
+    if (listing.kind !== 'members')
+      return { state: listing.kind, offerable: false, members: [] };
+    // A group too large to show whole is never offered.
+    const shown = listing.members.slice(0, WORKER_SCRIPT_GROUP_MAX_MEMBERS);
+    return {
+      state: 'listed',
+      offerable: listing.offerable && shown.length === listing.members.length,
+      members: shown.map((member) => ({
+        pid: member.pid,
+        startIdentity: member.startIdentity,
+        startedAt: new Date(member.startedAtMs).toISOString(),
+        command: member.command.slice(0, 256),
+        carriesRunId: member.carriesRunId,
+      })),
+    };
+  }
+
+  async stopOrphan(
+    params: WorkerScriptExecutionStopParams,
+  ): Promise<WorkerScriptExecutionStopResult> {
+    this.assertServed(params.scope);
+    if (params.mode === 'force_group') return this.stopOrphanGroup(params);
+    const outcome = await this.logs.stopOrphan({
+      projectId: params.scope.workspaceId,
+      worktreeId: params.scope.worktreeId,
+      scriptKey: params.scriptKey,
+      runId: params.executionId,
+      mode: params.mode,
+      confirmed: params.confirmed === true,
+    });
+    switch (outcome) {
+      case 'absent':
+      case 'not_orphaned':
+        throw notOrphanedError();
+      case 'unconfirmed':
+        throw confirmationRequiredError();
+      case 'unsupported':
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'This host cannot stop a process a restart left running.',
+          retry: { kind: 'never' },
+        });
+      default:
+        return { outcome };
+    }
+  }
+
+  /**
+   * A user's confirmed group Force stop (CAN-6601): refused without the
+   * confirmation and the members the user saw, or when the group read again
+   * now isn't the one confirmed.
+   */
+  private async stopOrphanGroup(
+    params: WorkerScriptExecutionStopParams,
+  ): Promise<WorkerScriptExecutionStopResult> {
+    const outcome = await this.logs.stopOrphanGroup({
+      projectId: params.scope.workspaceId,
+      worktreeId: params.scope.worktreeId,
+      scriptKey: params.scriptKey,
+      runId: params.executionId,
+      confirmed: params.confirmed === true,
+      members: params.members ?? [],
+    });
+    if (outcome === 'absent' || outcome === 'not_orphaned')
+      throw notOrphanedError();
+    if (outcome === 'unconfirmed') throw confirmationRequiredError();
+    switch (outcome.kind) {
+      case 'done':
+        return { outcome: outcome.outcome, members: [...outcome.members] };
+      case 'unverifiable':
+        return { outcome: 'unverifiable' };
+      case 'unsupported':
+        throw groupsUnavailableError();
+      default:
+        throw new CanopyOperationError({
+          kind: 'conflict',
+          code: 'worker.script.groupChanged',
+          message:
+            "This run's processes changed since they were listed, so none was stopped.",
+          retry: { kind: 'never' },
+        });
+    }
+  }
+
   async get(
     params: WorkerScriptExecutionGetParams,
   ): Promise<WorkerScriptExecutionGetResult> {
@@ -707,6 +859,10 @@ export interface WorkerScriptHandlers {
       'worker.script.execution.get',
       CanopyHandlerContext
     >;
+    'worker.script.execution.groupMembers': CanopyQueryHandler<
+      'worker.script.execution.groupMembers',
+      CanopyHandlerContext
+    >;
     'worker.script.execution.list': CanopyQueryHandler<
       'worker.script.execution.list',
       CanopyHandlerContext
@@ -719,6 +875,14 @@ export interface WorkerScriptHandlers {
     >;
     'worker.script.execution.cancel': CanopyInstructionHandler<
       'worker.script.execution.cancel',
+      CanopyHandlerContext
+    >;
+    'worker.script.execution.clear': CanopyInstructionHandler<
+      'worker.script.execution.clear',
+      CanopyHandlerContext
+    >;
+    'worker.script.execution.stop': CanopyInstructionHandler<
+      'worker.script.execution.stop',
       CanopyHandlerContext
     >;
   };
@@ -735,9 +899,17 @@ export function createWorkerScriptHandlers(
   const cancellations = new KeyedOutcomes<WorkerScriptExecutionCancelResult>({
     reusedError: idempotencyKeyReusedError,
   });
+  const clears = new KeyedOutcomes<WorkerScriptExecutionClearResult>({
+    reusedError: idempotencyKeyReusedError,
+  });
+  const stops = new KeyedOutcomes<WorkerScriptExecutionStopResult>({
+    reusedError: idempotencyKeyReusedError,
+  });
   return {
     queries: {
       'worker.script.execution.get': (params) => worker.get(params),
+      'worker.script.execution.groupMembers': (params) =>
+        worker.groupMembers(params),
       'worker.script.execution.list': (params) => worker.list(params),
     },
     instructions: {
@@ -757,6 +929,37 @@ export function createWorkerScriptHandlers(
         ),
       'worker.script.execution.cancel': (params, context) =>
         cancellations.run(context, params, () => worker.cancel(params)),
+      'worker.script.execution.clear': (params, context) =>
+        clears.run(context, params, () => worker.clear(params)),
+      'worker.script.execution.stop': (params, context) =>
+        stops.run(context, params, () => worker.stopOrphan(params)),
     },
   };
+}
+
+function notOrphanedError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'conflict',
+    code: 'worker.script.notOrphaned',
+    message: 'This run is not an orphaned run, so it cannot be stopped.',
+    retry: { kind: 'never' },
+  });
+}
+
+function confirmationRequiredError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.script.confirmationRequired',
+    message:
+      "This process can't be verified as the run's own; stop it only after the user confirms.",
+    retry: { kind: 'never' },
+  });
+}
+
+function groupsUnavailableError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'capability_unavailable',
+    message: 'This host has no process groups to stop.',
+    retry: { kind: 'never' },
+  });
 }

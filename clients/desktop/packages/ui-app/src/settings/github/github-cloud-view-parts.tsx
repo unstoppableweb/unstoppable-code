@@ -497,6 +497,7 @@ export function ErrorView({
   const lastKnown = controller.stale && controllerFailure.source === 'verify';
   return (
     <Notice
+      errorSource="github-cloud"
       data-testid={
         rateLimited ? 'github-cloud-rate-limit' : 'github-cloud-error'
       }

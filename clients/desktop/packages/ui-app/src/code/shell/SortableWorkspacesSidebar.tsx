@@ -38,6 +38,8 @@ import { CSS } from '@dnd-kit/utilities';
 import { createPortal } from 'react-dom';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import {
+  SidebarDragPreview,
+  SidebarDropLine,
   WorkspaceSectionHeader,
   WorktreeRowDragCursorProvider,
 } from '@canopy/ui-shared/components';
@@ -421,11 +423,9 @@ function SortableWorktreeRow({
         className={`relative min-w-0 select-none ${isDragging ? 'touch-none opacity-60' : 'touch-pan-y pointer-fine:touch-none'}`}
       >
         {dropIndicator?.id === context.worktree.localId && (
-          <span
-            aria-hidden="true"
-            className={`pointer-events-none absolute inset-x-1.5 z-10 h-0.5 rounded-full bg-accent ${
-              dropIndicator.position === 'before' ? '-top-px' : '-bottom-px'
-            }`}
+          <SidebarDropLine
+            variant="worktree"
+            position={dropIndicator.position}
             data-testid="worktree-drop-indicator"
             data-drop-position={dropIndicator.position}
           />
@@ -583,13 +583,13 @@ function WorktreeSortableContext({
         : createPortal(
             <DragOverlay dropAnimation={null}>
               {activeWorktreeId ? (
-                <div
+                <SidebarDragPreview
                   aria-hidden="true"
-                  className="pointer-events-none translate-x-1 cursor-default rounded-row bg-popover shadow-lg"
+                  className="translate-x-1"
                   data-testid="worktree-drag-overlay"
                 >
                   {context.renderDragPreview(activeWorktreeId)}
-                </div>
+                </SidebarDragPreview>
               ) : null}
             </DragOverlay>,
             document.body,
@@ -715,9 +715,10 @@ function EnabledSortableWorkspacesSidebar({
         : createPortal(
             <DragOverlay dropAnimation={null}>
               {activeWorkspace ? (
-                <div
+                <SidebarDragPreview
                   aria-hidden="true"
-                  className="pointer-events-none flex h-8 w-full translate-x-1 cursor-default touch-none select-none rounded-row bg-popover shadow-lg"
+                  variant="workspace"
+                  className="translate-x-1"
                   data-sidebar-workspace-drag-overlay-id={
                     activeWorkspace.localId
                   }
@@ -761,7 +762,7 @@ function EnabledSortableWorkspacesSidebar({
                       </span>
                     }
                   />
-                </div>
+                </SidebarDragPreview>
               ) : null}
             </DragOverlay>,
             document.body,

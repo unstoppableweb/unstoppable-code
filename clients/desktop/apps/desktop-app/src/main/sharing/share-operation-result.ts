@@ -41,6 +41,22 @@ export class ShareOperationError extends Error {
   }
 }
 
+/**
+ * A blocked analysis: a file it can't take, or a dependency it can't
+ * resolve. Still `dependency-review` for shares; a cloud copy tells it apart
+ * from an analysis that went stale (CAN-6176).
+ */
+export class PackageAnalysisBlockedError extends ShareOperationError {
+  constructor() {
+    super(
+      'dependency-review',
+      'Dependencies are not ready to package. Resolve the listed problems first.',
+      'prepare',
+    );
+    this.name = 'PackageAnalysisBlockedError';
+  }
+}
+
 /** Tags an error with the share stage it escaped from. */
 export class ShareStageError extends Error {
   constructor(

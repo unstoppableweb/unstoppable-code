@@ -48,6 +48,25 @@ export interface CloudCapabilityRow {
   readonly state: CloudCapabilityState;
 }
 
+/** A desktop capability the cloud account lacks, and what adds it. */
+export type CloudCapabilityNeedsUpload = Extract<
+  CloudCapabilityState,
+  { readonly kind: 'needs_upload' }
+>;
+
+/** A row the cloud chat picker can offer to copy to the cloud (CAN-6176 R5d). */
+export type CloudCapabilityUploadRow = CloudCapabilityRow & {
+  readonly localEntry: CatalogEntry;
+  readonly state: CloudCapabilityNeedsUpload;
+};
+
+/** Whether a row needs its desktop capability copied to the cloud first. */
+export function needsCloudUpload(
+  row: CloudCapabilityRow,
+): row is CloudCapabilityUploadRow {
+  return row.localEntry !== null && row.state.kind === 'needs_upload';
+}
+
 export interface CloudCapabilityRowsInput {
   /** `core.catalog.snapshot.get` on the desktop core; empty on a host without one. */
   readonly local: readonly CatalogEntry[];

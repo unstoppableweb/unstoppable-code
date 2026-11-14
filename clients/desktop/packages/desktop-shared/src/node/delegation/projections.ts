@@ -250,7 +250,13 @@ function reportFeedError(
 
 /** Collision-free names are selected by the host's injected brand namespace. */
 export function createDelegationProjection(
-  harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
   namespace: string,
   broker: DelegationProjectionBroker,
   options: {
@@ -427,7 +433,7 @@ export function createDelegationProjection(
                 description: [
                   options.developmentProbe
                     ? 'Development probe: start a fresh read-only delegated task using a logical model. No provider process is launched.'
-                    : 'Start a delegated task using a logical model ID or configured Agent ID from List Delegates with includeModels: true. A configured Agent carries its model, system instructions and selected plugins, skills and MCP servers. Children start with your plugins, skills and MCP servers by default; set inherit_capabilities: false to start one without them (a configured Agent keeps its own). To give a child more, pass capabilities IDs from List Delegates with includeCapabilities: true. Grant writes explicitly with permissions.writePaths (relative files/directories, or a dot for the workspace); omitted grants allow read/search only. Parent approval settings always apply to commands and MCP tools too. isolation defaults to shared_worktree; choose worktree only when isolation is wanted. Supply a self-contained prompt with paths, scope and expected output. Every call returns a durable ID promptly. When the concurrency limit is reached, the task waits in a queue (phase queued, with its position) and starts automatically; set if_busy to reject to fail at once with capacity_exceeded instead. The lifetime limit refuses new tasks with lifetime_limit_reached instead of queueing. When a run finishes, its parent receives an automatic completion notice naming the delegate and status; use Get Delegate Output with the resultIndex from the notice to read the result. Reads share the live working tree and can observe parent edits; returned revision and dirty state describe launch-time observation, not an immutable snapshot.',
+                    : 'Start a delegated task using a model ID, bare Agent ID, or agent_model_<id>@<model-id> route from List Delegates with includeModels: true. Agents are listed separately with their runnable model routes. Pass the route in model to choose its model; a bare Agent ID uses its default. An Agent carries its system instructions and selected plugins, skills and MCP servers. Children start with your plugins, skills and MCP servers by default; set inherit_capabilities: false to start one without them (a configured Agent keeps its own). To give a child more, pass capabilities IDs from List Delegates with includeCapabilities: true. Grant writes explicitly with permissions.writePaths (relative files/directories, or a dot for the workspace); omitted grants allow read/search only. Parent approval settings always apply to commands and MCP tools too. isolation defaults to shared_worktree; choose worktree only when isolation is wanted. Supply a self-contained prompt with paths, scope and expected output. Every call returns a durable ID promptly. When the concurrency limit is reached, the task waits in a queue (phase queued, with its position) and starts automatically; set if_busy to reject to fail at once with capacity_exceeded instead. The lifetime limit refuses new tasks with lifetime_limit_reached instead of queueing. When a run finishes, its parent receives an automatic completion notice naming the delegate and status; use Get Delegate Output with the resultIndex from the notice to read the result. Reads share the live working tree and can observe parent edits; returned revision and dirty state describe launch-time observation, not an immutable snapshot.',
                   ...(options.includeFeed
                     ? [
                         `Before delegating, add the delegate’s tasks and subtasks under their operation in Feed and pass their task UUIDs as ${harness === 'codex' ? 'task_ids' : 'taskIds'}; the delegate receives those tasks when admitted. After a delegate settles, read its Feed summary and resolve anything it left open.`,
@@ -459,7 +465,7 @@ export function createDelegationProjection(
                 name: names.list,
                 description: [
                   options.discoverModels
-                    ? 'List owned children. Set includeModels to true before choosing a child target: returns current logical model and configured Agent IDs, supported thinking levels, recommended available model, auth state and disabled reasons. Pass the selected ID as model when spawning. Discovery is advisory; launch rechecks the exact route and selected capabilities.'
+                    ? 'List owned children. Set includeModels to true before choosing a child target: returns provider models and Agents separately, each Agent with runnable base model IDs. The top-level models list supplies supported thinking levels, recommended available model, auth state and disabled reasons. Combine agentId@modelId in model when spawning; truncated means some candidates were not checked; a bare Agent ID keeps its default model. Discovery is advisory; launch rechecks the exact route and selected capabilities.'
                     : 'List the children owned by this parent session.',
                   ...(options.discoverCapabilities
                     ? [

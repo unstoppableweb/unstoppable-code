@@ -1,3 +1,4 @@
+import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { agentModelRegistryContextCurrent } from '../lib/agent-models';
 import {
   AGENT_MODELS,
@@ -6,7 +7,9 @@ import {
   getConfiguredCursorModelId,
   getCursorModelEntries,
   getCopilotModelEntries,
+  getAntigravityModelEntries,
   getOpenCodeModelEntries,
+  hasDiscoveredAccountModelCatalog,
   initCursorModels,
   CODEX_MODELS,
   buildModelHarnessAssignmentSnapshot,
@@ -291,9 +294,18 @@ function buildSnapshotFromOllamaModels(
   const aiGatewayCatalogStatus = getAiGatewayCatalogStatus();
 
   return {
-    cursor: getCursorModelEntries(),
-    copilot: getCopilotModelEntries(),
-    opencode: getOpenCodeModelEntries(),
+    ...(hasDiscoveredAccountModelCatalog('cursor') && {
+      cursor: getCursorModelEntries(),
+    }),
+    ...(hasDiscoveredAccountModelCatalog('copilot') && {
+      copilot: getCopilotModelEntries(),
+    }),
+    ...(hasDiscoveredAccountModelCatalog('opencode') && {
+      opencode: getOpenCodeModelEntries(),
+    }),
+    antigravity: isAntigravityHarnessEnabled()
+      ? getAntigravityModelEntries()
+      : [],
     claude: claudeEntries,
     codex: codexEntries,
     ollama: ollamaModels,

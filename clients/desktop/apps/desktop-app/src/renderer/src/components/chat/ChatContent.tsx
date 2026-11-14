@@ -657,6 +657,7 @@ export function ChatContent({
               <Surface variant="section" boundary="top">
                 <div className="px-4 py-2">
                   <ErrorBanner
+                    errorSource="chat-scheduled-message-error"
                     error={scheduledMessageError}
                     className=""
                     testId="chat-scheduled-message-error"

@@ -1,9 +1,11 @@
 'use client';
 
 import { Component, type ErrorInfo, type JSX, type ReactNode } from 'react';
-import type {
-  AppError,
-  AppErrorPresentation,
+import {
+  getAppErrorThrownType,
+  type AppError,
+  type AppErrorPresentation,
+  type AppErrorThrownType,
 } from '@canopy/protocol/app-errors';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
 import {
@@ -27,6 +29,7 @@ export interface AppErrorBoundaryHost {
     error: unknown,
     info: ErrorInfo,
     context: AppErrorBoundaryContext | undefined,
+    thrownType?: AppErrorThrownType,
   ): AppErrorBoundaryCapture;
   /** Only what this build may show. A stable build gets no raw detail. */
   present(
@@ -158,7 +161,13 @@ export class AppErrorBoundary extends Component<
     if (!host) return;
     let captured: AppErrorBoundaryCapture | null = null;
     try {
-      captured = host.capture(normalizeThrown(error), info, context);
+      const thrownType = getAppErrorThrownType(error);
+      captured = host.capture(
+        normalizeThrown(error),
+        info,
+        context,
+        thrownType,
+      );
     } catch {
       // Never retried: a partial capture may already have recorded. The
       // fallback keeps its copy and recovery without Details or Report this.

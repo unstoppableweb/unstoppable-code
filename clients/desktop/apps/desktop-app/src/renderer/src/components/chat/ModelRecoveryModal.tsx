@@ -1682,6 +1682,7 @@ function ModelRecoveryAttempt({
           {unlockAttempt.status === 'adopted' &&
           unlockAttempt.newPurchaseFailed === true ? (
             <ErrorBanner
+              errorSource="model-recovery-unlock-failed"
               error="We couldn’t open your browser. Try again."
               className=""
               testId="model-recovery-unlock-failed"
@@ -1737,6 +1738,7 @@ function ModelRecoveryAttempt({
         <span>{MODEL_LIBRARY_UNLOCK_COPY.purchaseBody}</span>
         {unlockAttempt.status === 'failed' ? (
           <ErrorBanner
+            errorSource="model-recovery-unlock-failed"
             error="We couldn’t open your browser. Try again."
             className=""
             testId="model-recovery-unlock-failed"

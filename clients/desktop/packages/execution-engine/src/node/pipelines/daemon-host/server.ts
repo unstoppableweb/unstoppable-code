@@ -85,8 +85,10 @@ import {
 import {
   createDaemonPipelineOwnerPorts,
   createDaemonPipelinePlanPorts,
+  createDaemonPrecommitReporter,
 } from './owner-ports';
 import { createDaemonPipelineRuntime } from './runtime';
+import { codexServablePluginCollections } from './codex-plugin-mcp';
 import {
   createPipelineHostMemoryReader,
   isPipelineHostMemoryBudget,
@@ -99,6 +101,16 @@ export interface ServePipelineHostOptions {
 }
 
 const DRAIN_TIMEOUT_MS = 10_000;
+/** How long runs get to pause once the core is lost before their steps are killed (CAN-6481). */
+const CORE_LOSS_DRAIN_MS = 5_000;
+/** When a host that lost its core exits regardless (CAN-6481). */
+const CORE_LOSS_EXIT_MS = 15_000;
+/**
+ * How long a step's process group is kept after its leader exits, for
+ * descendants that outlive it, unless its run ends first (CAN-6481). Short,
+ * so a group id the system has since reused is never signalled.
+ */
+const RETIRED_PROCESS_GROUP_MS = 60_000;
 
 const TERMINAL: ReadonlySet<ExecutionState['status']> = new Set<
   ExecutionState['status']
@@ -318,6 +330,8 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
   const { channel } = options;
   let executionsDir: string | null = null;
   let admissionOpen = true;
+  /** Set once the core is lost (CAN-6481): step groups are kept for the kill pass. */
+  let coreLossStarted = false;
   let lastBundledActionsDir = '';
   const runs = new Map<string, LiveRun>();
   const exitRequests: number[] = [];
@@ -401,11 +415,27 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     });
   };
 
+  /**
+   * Each step process group, so a lost core leaves none behind (CAN-6481):
+   * kept while its leader runs, then briefly for descendants that outlive
+   * it, and dropped when its run ends.
+   */
+  const processGroups = new Map<
+    string,
+    { readonly group: number; readonly executionId: string | undefined }
+  >();
   const resourceMonitor: ExecutionResourceMonitor = {
     registerProcess(registration): ExecutionResourceRegistrationHandle {
       const processGroupId = registration.processGroupId ?? registration.pid;
       if (processGroupId === undefined)
         return { update(): void {}, unregister(): void {} };
+      processGroups.set(registration.id, {
+        group: processGroupId,
+        executionId:
+          registration.metadata?.type === 'pipeline'
+            ? registration.metadata.pipeline.executionId
+            : undefined,
+      });
       post({
         kind: 'process',
         state: 'started',
@@ -418,6 +448,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         unregister(): void {
           if (exited) return;
           exited = true;
+          setTimeout(() => {
+            if (!coreLossStarted) processGroups.delete(registration.id);
+          }, RETIRED_PROCESS_GROUP_MS).unref();
           post({ kind: 'process', state: 'exited', id: registration.id });
         },
       };
@@ -468,6 +501,11 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     if (runs.get(executionId)?.handle !== handle) return;
     runs.delete(executionId);
     ownerBound.delete(executionId);
+    // Once the core is lost every group stays for its kill pass, including
+    // those of runs that finish pausing first.
+    if (!coreLossStarted)
+      for (const [id, entry] of processGroups)
+        if (entry.executionId === executionId) processGroups.delete(id);
     settleExits();
   };
 
@@ -549,6 +587,19 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       resourceMonitor,
       ...(worktree && { worktree }),
       ...(isOwnerBound && hostSteps && { pipelineHostActions: hostSteps }),
+      // A brokered run's pre-commit failures go to its owner (CAN-6739).
+      ...(isOwnerBound &&
+        ownerRequests &&
+        launch.repositoryActions === 'brokered' && {
+          reportPrecommitFailures: createDaemonPrecommitReporter(
+            ownerRequests,
+            {
+              executionId: params.executionId,
+              owner: params.owner,
+              ...(runOwnerRequests && { signal: runOwnerRequests.signal }),
+            },
+          ),
+        }),
       // A plan or task run's plan writes go to its owner (CAN-6327).
       ...(isOwnerBound &&
         ownerRequests &&
@@ -568,6 +619,13 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
             executionId: params.executionId,
             owner: params.owner,
             ...(runOwnerRequests && { signal: runOwnerRequests.signal }),
+            // A remote owner (a cloud runner's web core, CAN-6422) arrives
+            // with a lease fence or an owner deadline: its Feed tools run
+            // here, over owner.ledger.operation.
+            ...((leaseFence !== null ||
+              ownerRequestDeadlineMs !== undefined) && {
+              remoteLedgerTools: true,
+            }),
             ...(launch.codexEnvironment && {
               codexEnvironment: launch.codexEnvironment,
             }),
@@ -607,6 +665,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
           }),
         ...(pluginCollections && {
           pluginCollections: new Set(Object.keys(pluginCollections)),
+          // Read here from the snapshots, as the core read them (CAN-6168).
+          codexPluginCollections:
+            codexServablePluginCollections(pluginCollections),
         }),
         // The run's inputs, resolved as its core and executor do (CAN-6012).
         ...(isOwnerBound && {
@@ -620,6 +681,12 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         commitHooks:
           isOwnerBound && launch.precommitHooks === 'owner'
             ? 'owner'
+            : 'refuse',
+        // A cloud runner's sandbox holds the run's GitHub credentials, and
+        // this host reports pre-commit failures itself (CAN-6739).
+        repositoryActions:
+          isOwnerBound && launch.repositoryActions === 'brokered'
+            ? 'brokered'
             : 'refuse',
         // The executor resolves a composite's inputs as the classifier does;
         // which runs reach the host is the dispatching core's choice (CAN-6316 G4).
@@ -900,6 +967,65 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     if (settled.some((result) => result.status === 'rejected'))
       return fail(id, 'checkpoint_failed');
     respond(id, { checkpointedCount: live.length });
+  };
+
+  /**
+   * Kills every step process group still known. A negative PID names a POSIX
+   * group; Windows refuses it, and its job objects end the trees instead.
+   */
+  const killProcessGroups = (): void => {
+    for (const group of new Set(
+      [...processGroups.values()].map((entry) => entry.group),
+    )) {
+      try {
+        process.kill(-group, 'SIGKILL');
+      } catch {
+        // Already gone, or a platform without process groups.
+      }
+    }
+  };
+
+  /**
+   * The core that launched this host is gone (CAN-6481), so no owner or
+   * stream can reach its runs. Each run pauses as `core_lost`, ending its
+   * steps; a step still alive after CORE_LOSS_DRAIN_MS is killed, and the
+   * host exits. A resume reruns the interrupted step.
+   */
+  const coreLost = async (): Promise<void> => {
+    coreLossStarted = true;
+    const deadline = setTimeout(() => {
+      killProcessGroups();
+      channel.exit(1);
+    }, CORE_LOSS_EXIT_MS);
+    admissionOpen = false;
+    await Promise.allSettled([...admitting]);
+    const pausing = [...runs.values()].flatMap(({ handle }) => {
+      const paused = handle.pauseForCoreLoss?.() ?? handle.pauseForShutdown?.();
+      return paused ? [paused] : [];
+    });
+    // After the pause is under way, so a withdrawn owner or host call stops
+    // its step as paused rather than failing it, as the checkpoint does.
+    hostSteps?.close();
+    ownerRequests?.close();
+    const settled = Promise.allSettled(pausing);
+    const within = async (ms: number): Promise<void> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        settled,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, ms);
+        }),
+      ]);
+      clearTimeout(timer);
+    };
+    await within(CORE_LOSS_DRAIN_MS);
+    // A step that ignored its stop, or a descendant that outlived its step,
+    // is killed; its run then records the pause.
+    killProcessGroups();
+    await within(CORE_LOSS_DRAIN_MS);
+    await shutdownDaemonPipelineCodexRuntime().catch(() => undefined);
+    clearTimeout(deadline);
+    channel.exit(0);
   };
 
   /** Pauses the owner-bound runs named: their owner is gone (CAN-5771). Admission stays open. */
@@ -1312,6 +1438,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     }
   };
 
+  channel.onDisconnect(() => {
+    void coreLost();
+  });
   channel.on('message', (event) => {
     const message = event.data;
     if (!isRequestMessage(message)) return;

@@ -62,7 +62,6 @@ import {
   ShareIcon,
   TrashIcon,
 } from '../icons/AppIcons';
-import { SIDEBAR_INDICATOR_BLUE } from '../lib/operational-status-colors';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import {
   resolveSelectionClick,
@@ -155,10 +154,20 @@ export interface WorkEntryRowMenuRenderProps extends WorkEntryRowMenuContext {
   open: boolean;
   /** The ••• button: the anchor, and the element that toggles the menu. */
   anchorRef: RefObject<HTMLButtonElement | null>;
-  /** The right-click position, or `null` to anchor under the ••• button. */
+  /**
+   * The right-click position or, opened from the keyboard, the row's
+   * bottom-left corner; `null` anchors under the ••• button.
+   */
   anchorPoint: WorkEntryRowPoint | null;
+  /** Where the menu returns focus: the row or button that opened it. */
+  returnFocusRef: RefObject<HTMLElement | null>;
   /** The automation id for the menu surface (`-menu-popover`). */
   popoverTestId: string;
+  /**
+   * Opened with the Context Menu key or Shift+F10: the menu should take focus
+   * so arrow keys and Enter operate it. Pointer opens keep focus in place.
+   */
+  openedFromKeyboard: boolean;
 }
 
 export interface WorkEntryRowProps {
@@ -440,16 +449,36 @@ function WorkEntryRowImpl({
   // Early access (pointer-placed menus): the row stays lit while its menu is
   // open, so it is clear which row the menu acts on.
   const marksRowWhileMenuOpen = useContextMenuPlacement() === 'cursor';
-  /** Right-click origin; null anchors the menu to the ••• button instead. */
+  /**
+   * Right-click or keyboard origin; null anchors the menu to the ••• button
+   * instead.
+   */
   const [menuAnchorPoint, setMenuAnchorPoint] =
     useState<WorkEntryRowPoint | null>(null);
+  const [menuOpenedFromKeyboard, setMenuOpenedFromKeyboard] = useState(false);
   /** The document body the right-click anchor portals into. */
   const [menuPortalBody, setMenuPortalBody] = useState<HTMLElement | null>(
     null,
   );
+  // Opened from the row, the menu cannot rely on the ••• button: on a compact
+  // row with a fine pointer it is display:none, so it has an all-zero rect and
+  // cannot take focus.
+  const menuReturnFocusRef = useRef<HTMLElement | null>(null);
+  const openMenuFromRow = (
+    row: HTMLElement,
+    anchorPoint: WorkEntryRowPoint,
+    fromKeyboard = false,
+  ): void => {
+    menuReturnFocusRef.current = row;
+    setMenuPortalBody(row.ownerDocument.body);
+    setMenuAnchorPoint(anchorPoint);
+    setMenuOpenedFromKeyboard(fromKeyboard);
+    setMenuOpen(true);
+  };
   const closeMenu = useCallback((): void => {
     setMenuOpen(false);
     setMenuAnchorPoint(null);
+    setMenuOpenedFromKeyboard(false);
   }, []);
 
   const [unreadAnchorRect, setUnreadAnchorRect] = useState<DOMRect | null>(
@@ -466,8 +495,10 @@ function WorkEntryRowImpl({
   const toggleMenuFromButton = useCallback(
     (event: MouseEvent<HTMLButtonElement>): void => {
       event.stopPropagation();
+      menuReturnFocusRef.current = event.currentTarget;
       setMenuPortalBody(event.currentTarget.ownerDocument.body);
       setMenuAnchorPoint(null);
+      setMenuOpenedFromKeyboard(false);
       setMenuOpen((open) => !open);
     },
     [],
@@ -488,6 +519,19 @@ function WorkEntryRowImpl({
     if (!isOwnTarget(event.target, event.currentTarget)) return;
     // Enter on the ••• or Delete button activates that button, not the row.
     if (isInteractiveTarget(event.target, event.currentTarget)) return;
+    if (
+      hasMenu &&
+      (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
+    ) {
+      event.preventDefault();
+      const bounds = event.currentTarget.getBoundingClientRect();
+      openMenuFromRow(
+        event.currentTarget,
+        { x: bounds.left, y: bounds.bottom },
+        true,
+      );
+      return;
+    }
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       if (multiSelect?.selectMode && multiSelect.selectable) {
@@ -556,9 +600,10 @@ function WorkEntryRowImpl({
     // Right-click opens the same menu the ••• button opens, anchored at the
     // pointer position.
     event.preventDefault();
-    setMenuPortalBody(event.currentTarget.ownerDocument.body);
-    setMenuAnchorPoint({ x: event.clientX, y: event.clientY });
-    setMenuOpen(true);
+    openMenuFromRow(event.currentTarget, {
+      x: event.clientX,
+      y: event.clientY,
+    });
   };
 
   const pinnedSuffix = isPinnedCopy ? `-${pinnedSurface}` : '';
@@ -802,7 +847,9 @@ function WorkEntryRowImpl({
             open: menuOpen,
             anchorRef: menuButtonRef,
             anchorPoint: menuAnchorPoint,
+            returnFocusRef: menuReturnFocusRef,
             popoverTestId: testIdFor('-menu-popover'),
+            openedFromKeyboard: menuOpenedFromKeyboard,
           })
         : renderMenuItems !== undefined &&
           menuOpen &&
@@ -810,6 +857,7 @@ function WorkEntryRowImpl({
             <WorkEntryRowFloatingMenu
               anchorPoint={menuAnchorPoint}
               menuButtonRef={menuButtonRef}
+              returnFocusRef={menuReturnFocusRef}
               portalBody={menuPortalBody}
               onClose={closeMenu}
               label={menuLabel}
@@ -940,15 +988,14 @@ function WorkEntryRowLeadingSlot({
             sizePx={12}
           />
         ) : (
-          <span
-            className={`rounded-full h-1.5 w-1.5 ${
+          <Dot
+            tone={
               status === 'needs-input'
-                ? 'bg-fg-warning'
+                ? 'attention'
                 : status === 'unread'
-                  ? SIDEBAR_INDICATOR_BLUE.background
-                  : 'bg-fg-quaternary/50'
-            }`}
-            aria-hidden="true"
+                  ? 'unread'
+                  : 'filter'
+            }
           />
         )}
       </span>
@@ -1116,8 +1163,8 @@ function WorkEntryRowActions({
     <span
       className={
         inline
-          ? 'pointer-events-none inline-flex shrink-0 items-center'
-          : 'pointer-events-none absolute inset-y-0 right-1 flex items-center'
+          ? 'pointer-events-none inline-flex shrink-0 items-center gap-0.5'
+          : 'pointer-events-none absolute inset-y-0 right-0.5 flex items-center gap-0.5'
       }
     >
       {onDelete && (
@@ -1260,6 +1307,7 @@ function WorkEntryRowCompactActions({
 interface WorkEntryRowFloatingMenuProps {
   anchorPoint: WorkEntryRowPoint | null;
   menuButtonRef: RefObject<HTMLButtonElement | null>;
+  returnFocusRef: RefObject<HTMLElement | null>;
   portalBody: HTMLElement;
   onClose: () => void;
   label?: string;
@@ -1268,14 +1316,15 @@ interface WorkEntryRowFloatingMenuProps {
 }
 
 /**
- * The shared menu surface, anchored under the ••• button or, for a
- * right-click, at a zero-size point portaled to the body (so a transformed
+ * The shared menu surface, anchored under the ••• button or, opened from the
+ * row, at a zero-size point portaled to the body (so a transformed
  * or clipped row cannot displace it). No entry motion: this is a
  * high-frequency context menu.
  */
 function WorkEntryRowFloatingMenu({
   anchorPoint,
   menuButtonRef,
+  returnFocusRef,
   portalBody,
   onClose,
   label,
@@ -1300,7 +1349,7 @@ function WorkEntryRowFloatingMenu({
           }
         : {})}
       anchorRef={anchorPoint ? pointAnchorRef : menuButtonRef}
-      returnFocusRef={menuButtonRef}
+      returnFocusRef={returnFocusRef}
       placement="bottom-left"
       motion="none"
       className="sidebar-instant-interactions w-45"

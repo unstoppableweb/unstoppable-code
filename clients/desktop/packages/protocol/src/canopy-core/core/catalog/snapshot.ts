@@ -1,11 +1,13 @@
 import { z } from 'zod';
 
+import { MODEL_LIBRARY_ACCESS_VALUES } from '../../../models/model-library-access';
 import { CanopyWorkspaceScopeSchema } from '../../common';
 import {
   CanopyErrorPayloadSchema,
   CanopyJsonValueSchema,
   CanopyQueryRetryDirectiveSchema,
 } from '../../errors';
+import { McpHostServingCauseSchema } from '../integration/mcp-host-requests';
 
 const IdSchema = z.string().min(1).max(512);
 const TimestampSchema = z.iso.datetime({ offset: true });
@@ -128,6 +130,21 @@ export const CatalogEntryContentSchema = z.discriminatedUnion('kind', [
     enabledTools: z.array(z.string().max(256)).nullable().optional(),
     /** The server configuration's own name, when the catalog lists one per configuration. */
     configName: z.string().max(512).optional(),
+    /**
+     * A server one of the account's desktops serves (CAN-6659), apart from
+     * its connection state: which desktop, and whether it can serve it now.
+     */
+    servedBy: z
+      .strictObject({
+        kind: z.literal('desktop'),
+        hostId: IdSchema,
+        label: z.string().max(256),
+        serving: z.enum(['ready', 'unreachable', 'unknown']),
+        cause: McpHostServingCauseSchema.optional(),
+        message: z.string().max(300).optional(),
+      })
+      // Only at `core.catalog.snapshot.get` revision 3.
+      .optional(),
     selectionRef: McpServerSelectionRefSchema.optional(),
   }),
   z.strictObject({
@@ -186,11 +203,62 @@ export const CatalogEntrySchema = z.strictObject({
 
 export type CatalogEntry = z.output<typeof CatalogEntrySchema>;
 
+/**
+ * `core.catalog.snapshot.get`'s minor schema revision (CAN-6093): a caller
+ * that sends it and asks for models also gets the hosted model catalog as
+ * `cloudModels`. Only the web core advertises it.
+ */
+export const CORE_CATALOG_SNAPSHOT_GET_SCHEMA_REVISION = 2;
+
+/**
+ * Revision 3 (CAN-6659): an `mcp_server` entry may also carry `servedBy`.
+ * Readers before it parse `mcp_server` strictly, so only a caller that sends
+ * revision 3 gets the field; revision 2 and below read as they did.
+ */
+export const CORE_CATALOG_SNAPSHOT_GET_SERVED_BY_REVISION = 3;
+
 export const CatalogSnapshotGetParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   kinds: z.array(CatalogEntryKindSchema),
   includeUnavailable: z.boolean(),
+  revision: z
+    .union([
+      z.literal(CORE_CATALOG_SNAPSHOT_GET_SCHEMA_REVISION),
+      z.literal(CORE_CATALOG_SNAPSHOT_GET_SERVED_BY_REVISION),
+    ])
+    .optional(),
 });
+
+/** One model row of the hosted catalog; its other fields pass as sent. */
+const CatalogCloudModelSchema = z
+  .object({
+    id: IdSchema,
+    label: z.string().max(512),
+    provider: z.string().max(512).nullable(),
+    family: z.string().max(512).nullable(),
+    familyLabel: z.string().max(512).nullable(),
+  })
+  .catchall(CanopyJsonValueSchema);
+
+/**
+ * The hosted model catalog at revision 2 (CAN-6093): exactly what
+ * `GET /api/cloud/models` sends for the same caller and owner scope, from the
+ * route's own loader: the models with their library, funding and fast-mode
+ * fields, and the owner's default model with its blocked, unavailable and
+ * fallback state.
+ */
+export const CatalogCloudModelsSchema = z
+  .object({
+    models: z.array(CatalogCloudModelSchema),
+    modelHarnesses: z.record(z.string(), z.string()),
+    defaultModelId: IdSchema.nullable(),
+    defaultModelBlocked: z.boolean(),
+    defaultModelUnavailable: z.literal(true).optional(),
+    defaultModelFallbackId: IdSchema.optional(),
+    modelLibrary: z.enum(MODEL_LIBRARY_ACCESS_VALUES).optional(),
+  })
+  .catchall(CanopyJsonValueSchema);
+export type CatalogCloudModels = z.output<typeof CatalogCloudModelsSchema>;
 
 export const CatalogSnapshotGetResultSchema = z.strictObject({
   /**
@@ -200,6 +268,8 @@ export const CatalogSnapshotGetResultSchema = z.strictObject({
   revision: z.number().int().min(0),
   entries: z.array(CatalogEntrySchema),
   generatedAt: TimestampSchema,
+  /** Only on revision 2 with models asked for, from the web core. */
+  cloudModels: CatalogCloudModelsSchema.optional(),
 });
 
 /** The snapshot declares no operation-specific codes. */

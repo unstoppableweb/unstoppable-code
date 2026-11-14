@@ -1,3 +1,5 @@
+import { createChatHistoryActionFamily } from '@canopy/agent-actions/families/chat-history';
+import { desktopChatHistoryPort } from '../agent-actions/desktop-chat-history-port';
 import {
   isTranscriptReadActionType,
   dispatchAdvisorTranscriptRead,
@@ -701,6 +703,53 @@ export function createAppAdvisorToolRuntime(
       requestId = randomUUID(),
       signal?: AbortSignal,
     ): Promise<AppAdvisorActionResponse> => {
+      if (
+        action.type === 'chat.history.search' ||
+        action.type === 'chat.history.excerpt'
+      ) {
+        // Its trusted root scope is the Orchestrator chat, outside a project.
+        const family = createChatHistoryActionFamily(desktopChatHistoryPort);
+        const parsed = family.parse(action);
+        if (!parsed?.ok)
+          return {
+            requestId,
+            ok: false,
+            error: {
+              code: 'invalid_payload',
+              message: 'Check the chat history action fields.',
+            },
+          };
+        const result = await parsed.dispatch({
+          host: runtime,
+          toolUseId: requestId,
+          signal,
+        });
+        if ('text' in result)
+          return {
+            requestId,
+            ok: false,
+            error: {
+              code: 'execution_failed',
+              message: 'Chat history retrieval failed.',
+            },
+          };
+        return {
+          requestId,
+          ok: result.ok,
+          result: result.result,
+          ...(result.error
+            ? {
+                error: {
+                  code:
+                    result.error.code === 'timeout'
+                      ? 'timeout'
+                      : 'execution_failed',
+                  message: result.error.message,
+                },
+              }
+            : {}),
+        };
+      }
       if (isTranscriptReadActionType(action)) {
         return dispatchAdvisorTranscriptRead(
           action,

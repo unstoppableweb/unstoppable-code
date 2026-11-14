@@ -80,7 +80,13 @@ export type DropdownMenuSurfaceShell =
   /** `model-picker` with the tinted selected row. */
   | 'model-picker-highlight'
   /** The older fixed-height harness browser. */
-  | 'model-browser';
+  | 'model-browser'
+  /**
+   * No surface of its own, for floating content that draws its own (a pill,
+   * a hover card): the floating layer only places it. Padding still applies,
+   * as the pointer bridge between a hover card and its trigger.
+   */
+  | 'bare';
 
 const SURFACE_SHELL_CLASS_NAMES: Record<DropdownMenuSurfaceShell, string> = {
   menu: '',
@@ -91,6 +97,7 @@ const SURFACE_SHELL_CLASS_NAMES: Record<DropdownMenuSurfaceShell, string> = {
   'model-picker-highlight':
     ' canopy-picker-menu canopy-model-picker-shell canopy-model-picker-highlight-selection relative flex flex-col w-92',
   'model-browser': ' h-76 max-h-[calc(100vh-16px)] w-92',
+  bare: '',
 };
 
 export interface DropdownMenuSurfaceProps extends HTMLAttributes<HTMLDivElement> {
@@ -172,7 +179,7 @@ export const DropdownMenuSurface = forwardRef<
       // as a container it draws no outline, which would otherwise be the
       // browser's default ring in the system accent colour. Its rows and
       // controls keep their own focus rings.
-      className={`rounded-lg bg-quaternary outline-none ${SURFACE_PADDING_CLASS_NAMES[padding]} shadow-xl${SURFACE_SHELL_CLASS_NAMES[shell]} ${className}`}
+      className={`${shell === 'bare' ? '' : 'rounded-lg bg-quaternary shadow-xl '}outline-none ${SURFACE_PADDING_CLASS_NAMES[padding]}${SURFACE_SHELL_CLASS_NAMES[shell]} ${className}`}
       {...props}
     />
   );

@@ -36,6 +36,7 @@ import {
   type ActivityWorkspaceType,
 } from '@canopy/app-state';
 import {
+  EmptyState,
   Stack,
   HeaderActionButton,
   ProgressBar,
@@ -951,6 +952,8 @@ export interface ActivitySectionPresenceInput {
    * narrows that set, host-owned extras included.
    */
   readonly activitySectionIds?: readonly string[];
+  /** The target has a task summary ({@link CanopyCapabilities.taskSummary}). */
+  readonly taskSummary?: boolean;
   readonly hydrating?: boolean;
   /** Host capability gating the observed-cost section (default-deny). */
   readonly costInsightsEnabled?: boolean;
@@ -1065,6 +1068,7 @@ function sectionPassesGate(
   // offered controls its client has no reader for (REG-3022).
   return isActivitySectionVisibleForTarget(id, presenceWorkspaceType(input), {
     activitySectionIds: input.activitySectionIds,
+    taskSummary: input.taskSummary,
   });
 }
 
@@ -1314,7 +1318,8 @@ export function ActivityPanel({
   const capabilities = useCapabilities();
   // Per target: a composite client reports a different section set per
   // workspace, which its union `capabilities` cannot say.
-  const { activitySectionIds } = useWorkspaceCapabilities(workspaceLocalId);
+  const { activitySectionIds, taskSummary } =
+    useWorkspaceCapabilities(workspaceLocalId);
   const snapshot = useActivityStore((state) => state.snapshot);
   const workspace = snapshot?.workspaces.find(
     (candidate) => candidate.localId === workspaceLocalId,
@@ -1385,6 +1390,7 @@ export function ActivityPanel({
     worktreeSummaries: effectiveWorktreeSummaries,
     todoLists: effectiveTodoLists,
     activitySectionIds,
+    taskSummary,
     hydrating,
     costInsightsEnabled: capabilities.costInsights === true,
     showTerminals,
@@ -1981,79 +1987,92 @@ export function ActivityPanel({
     );
   };
 
-  const renderActivityStack = (): JSX.Element => (
-    <OverlayScrollArea
-      className="min-h-0 flex-1"
-      contentClassName="p-3"
-      viewportProps={{ 'data-testid': 'activity-list' }}
-    >
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={handleDragEnd}
+  // A task whose scope serves no section with anything to show says so,
+  // rather than leaving the pane blank (CAN-6430).
+  const renderActivityStack = (): JSX.Element =>
+    visibleOrder.length === 0 ? (
+      <div className="flex min-h-0 flex-1" data-testid="activity-list-empty">
+        <EmptyState title="No activity yet" tone="quiet" titleWeight="normal" />
+      </div>
+    ) : (
+      <OverlayScrollArea
+        className="min-h-0 flex-1"
+        contentClassName="p-3"
+        viewportProps={{ 'data-testid': 'activity-list' }}
       >
-        <SortableContext
-          items={visibleOrder.filter(
-            (id) =>
-              !extraSections.find((section) => section.key === id)
-                ?.hiddenWhileMounted,
-          )}
-          strategy={verticalListSortingStrategy}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
         >
-          <Stack gap="inline">
-            {visibleOrder.map((id) => {
-              const extra = extraSections.find((section) => section.key === id);
-              const sectionOverride = sectionOverrides?.[id];
-              const descriptor = isActivitySectionId(id)
-                ? ACTIVITY_SECTION_DESCRIPTORS[id]
-                : undefined;
-              const chrome = resolveSectionChrome(id);
-              const hasExpandableContent =
-                sectionOverride?.hasContent ?? extra?.hasContent ?? true;
-              return (
-                <SortableSection
-                  key={id}
-                  id={id}
-                  hiddenWhileMounted={extra?.hiddenWhileMounted}
-                  title={chrome.title}
-                  icon={chrome.icon}
-                  subtitle={chrome.subtitle}
-                  subtitleInline={
-                    sectionOverride?.subtitleInline ?? extra?.subtitleInline
-                  }
-                  subtitleGap={
-                    sectionOverride?.subtitleGap ?? extra?.subtitleGap
-                  }
-                  headerAction={chrome.headerAction}
-                  collapsedIconColor={
-                    sectionOverride?.collapsedIconColor ??
-                    extra?.collapsedIconColor ??
-                    descriptor?.collapsedIconColor(sectionContext) ??
-                    'muted'
-                  }
-                  defaultCollapsed={
-                    sectionOverride?.defaultCollapsed ??
-                    extra?.defaultCollapsed ??
-                    id === 'terminals'
-                  }
-                  collapsible={hasExpandableContent}
-                  keepBodyMountedWhenCollapsed={
-                    sectionOverride?.keepBodyMountedWhenCollapsed ??
-                    extra?.keepBodyMountedWhenCollapsed
-                  }
-                  expandRequest={sectionOverride?.expandRequest}
-                  actionCard={sectionOverride?.actionCard ?? extra?.actionCard}
-                  dataTestId={sectionOverride?.dataTestId ?? extra?.dataTestId}
-                >
-                  {renderBody(id)}
-                </SortableSection>
-              );
-            })}
-          </Stack>
-        </SortableContext>
-      </DndContext>
-    </OverlayScrollArea>
-  );
+          <SortableContext
+            items={visibleOrder.filter(
+              (id) =>
+                !extraSections.find((section) => section.key === id)
+                  ?.hiddenWhileMounted,
+            )}
+            strategy={verticalListSortingStrategy}
+          >
+            <Stack gap="inline">
+              {visibleOrder.map((id) => {
+                const extra = extraSections.find(
+                  (section) => section.key === id,
+                );
+                const sectionOverride = sectionOverrides?.[id];
+                const descriptor = isActivitySectionId(id)
+                  ? ACTIVITY_SECTION_DESCRIPTORS[id]
+                  : undefined;
+                const chrome = resolveSectionChrome(id);
+                const hasExpandableContent =
+                  sectionOverride?.hasContent ?? extra?.hasContent ?? true;
+                return (
+                  <SortableSection
+                    key={id}
+                    id={id}
+                    hiddenWhileMounted={extra?.hiddenWhileMounted}
+                    title={chrome.title}
+                    icon={chrome.icon}
+                    subtitle={chrome.subtitle}
+                    subtitleInline={
+                      sectionOverride?.subtitleInline ?? extra?.subtitleInline
+                    }
+                    subtitleGap={
+                      sectionOverride?.subtitleGap ?? extra?.subtitleGap
+                    }
+                    headerAction={chrome.headerAction}
+                    collapsedIconColor={
+                      sectionOverride?.collapsedIconColor ??
+                      extra?.collapsedIconColor ??
+                      descriptor?.collapsedIconColor(sectionContext) ??
+                      'muted'
+                    }
+                    defaultCollapsed={
+                      sectionOverride?.defaultCollapsed ??
+                      extra?.defaultCollapsed ??
+                      id === 'terminals'
+                    }
+                    collapsible={hasExpandableContent}
+                    keepBodyMountedWhenCollapsed={
+                      sectionOverride?.keepBodyMountedWhenCollapsed ??
+                      extra?.keepBodyMountedWhenCollapsed
+                    }
+                    expandRequest={sectionOverride?.expandRequest}
+                    actionCard={
+                      sectionOverride?.actionCard ?? extra?.actionCard
+                    }
+                    dataTestId={
+                      sectionOverride?.dataTestId ?? extra?.dataTestId
+                    }
+                  >
+                    {renderBody(id)}
+                  </SortableSection>
+                );
+              })}
+            </Stack>
+          </SortableContext>
+        </DndContext>
+      </OverlayScrollArea>
+    );
 
   const tabs = testIds
     ? TABS.map((item) => ({

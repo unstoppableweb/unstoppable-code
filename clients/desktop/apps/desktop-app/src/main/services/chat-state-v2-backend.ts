@@ -166,7 +166,7 @@ import type {
   DelegationRunItems,
 } from '../lib/chat-delegation-log';
 import { delegationChildMessages } from '@canopy/agent-transcript';
-import { searchTranscriptMessages } from '../lib/chat-transcript-search';
+import { searchTranscriptMessages } from '@canopy/agent-transcript/lib/transcript-search';
 import {
   reportChatTranscriptFullRewrite,
   type ChatTranscriptFullRewrite,

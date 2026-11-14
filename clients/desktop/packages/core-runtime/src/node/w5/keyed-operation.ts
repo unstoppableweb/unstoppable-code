@@ -11,9 +11,20 @@ import { isRecord } from './commit-log/is-record';
 import type { W5CommitLogFileStore } from './commit-log-file-store';
 import type { W5CommitOptions } from './commit-scope';
 
+const preEffectRefusals = new WeakSet<object>();
+
+/** Confirmed pre-effect failure with a durably released reservation. */
+export function isW5PreEffectRefusal(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && preEffectRefusals.has(error)
+  );
+}
+
 /** Owned by one keyed attempt; no async-context state leaks into child operations. */
 export interface W5KeyedAttempt {
   beforeEffects(this: void): void;
+  /** Only after a closed effect is proved absent and its staged decision is removed. */
+  confirmEffectsAbsent(this: void, error: Error): Error;
   /** Capture only this boundary's synchronous, read-only validation errors. */
   validate(this: void, check: () => void): void;
   /** Tag an error created by a read-only branch/base validator; preserve identity/copy. */
@@ -239,6 +250,11 @@ export function createW5KeyedOperationRunner(
             throw error;
           }
         },
+        confirmEffectsAbsent: (error) => {
+          effectsStarted = false;
+          validationErrors.add(error);
+          return error;
+        },
         validationError: (error) => {
           validationErrors.add(error);
           return error;
@@ -261,6 +277,8 @@ export function createW5KeyedOperationRunner(
             (validationErrors.has(error) || input.isPreEffectRefusal(error))
           ) {
             await store.releaseReservation(reservationId);
+            if (typeof error === 'object' && error !== null)
+              preEffectRefusals.add(error);
           } else {
             await store.markReservationRecoveryRequired(
               reservationId,

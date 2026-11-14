@@ -1,3 +1,11 @@
+import type * as LegacyStorage from '../lib/__tests__/fixtures/w5-legacy-storage';
+jest.mock('@canopy/core-runtime/storage', () =>
+  jest
+    .requireActual<
+      typeof LegacyStorage
+    >('../lib/__tests__/fixtures/w5-legacy-storage')
+    .createLegacyW5StorageMock(),
+);
 // CAN-3329: a degraded read of the workspace index must never turn into a
 // destructive rewrite. The index cases run real sidebar/Cowork CRUD against
 // temporary storage; the cleanup cases also run the real commit-log worker.
@@ -436,7 +444,7 @@ describe('workspace cleanup persistence integrity', () => {
       dbPath: path.join(dir, 'w5/commit-log.sqlite'),
       workerEntry: path.join(
         __dirname,
-        '../w5-commit-log/commit-log-worker.ts',
+        '../lib/__tests__/fixtures/w5-commit-log-source-worker.ts',
       ),
     });
     commits = [];

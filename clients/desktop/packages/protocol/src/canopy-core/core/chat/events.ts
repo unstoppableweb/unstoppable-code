@@ -1,6 +1,10 @@
 import { approvalSafetyDeniedInfoSchema } from '../../approval-safety';
 import { z } from 'zod';
-import { CardStateV2Schema } from './transcript';
+import {
+  CardStateV2Schema,
+  CORE_CHAT_EVENTS_SCHEMA_REVISION,
+  CoreChatMessageMeterSchema,
+} from './transcript';
 import { mcpActivationRecordSchema } from '../../mcp-availability';
 import {
   CanopyStreamCursorSchema,
@@ -76,6 +80,8 @@ const message = z
     role: z.enum(['user', 'assistant', 'system']),
     blocks: z.array(portableBlock),
     timestamp: z.number(),
+    /** Revision 2: an assistant message's meter, when Core recorded one. */
+    meter: CoreChatMessageMeterSchema.optional(),
   })
   .catchall(extension);
 const tab = z
@@ -216,6 +222,8 @@ export const CoreChatEventsParamsSchema = z.strictObject({
     z.strictObject({ projectId: id, worktreeId: id }),
   ]),
   cursor: CanopyStreamCursorSchema.nullable().optional(),
+  /** Revision 2 output, sent only when the runtime advertises it. */
+  revision: z.literal(CORE_CHAT_EVENTS_SCHEMA_REVISION).optional(),
 });
 
 export const CoreChatEventsOpenResultSchema = z.strictObject({

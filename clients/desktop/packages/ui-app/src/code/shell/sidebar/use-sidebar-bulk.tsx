@@ -195,6 +195,16 @@ export interface SidebarBulk {
   readonly queuedRemovalFor: (
     key: string,
   ) => SidebarBatchRemovalMode | undefined;
+  /**
+   * Opens the batch confirm for rows the user did not select, such as every
+   * hidden worktree in a project. The rows go through the same checks,
+   * confirm, and background queue as a selection.
+   */
+  readonly removeRows: (
+    kind: SidebarRowKind,
+    keys: readonly string[],
+    mode: SidebarBatchRemovalMode,
+  ) => void;
   readonly dialog: ReactNode;
   /** The background progress/outcome notice; null when idle with nothing to report. */
   readonly notice: ReactNode;
@@ -591,18 +601,22 @@ export function useSidebarBulk(input: {
     }
   }, [requestKeys]);
 
-  const openBatch = (mode: SidebarBatchRemovalMode): void => {
-    const binding = selectionBinding;
+  const openBatchFor = (
+    binding: SidebarBulkBinding | undefined,
+    keys: readonly string[],
+    mode: SidebarBatchRemovalMode,
+  ): void => {
     const bindingKind = binding?.kinds[0];
     if (binding === undefined || bindingKind === undefined) return;
+    if (!binding.enabled || keys.length === 0) return;
     // A running queue takes more batches; a pending Stop briefly does not, so
     // a new confirm is never dropped as not started.
     if (batch.stopRequested) return;
-    if (!binding.availabilityFor(orderedSelectedKeys)[mode].enabled) return;
+    if (!binding.availabilityFor(keys)[mode].enabled) return;
     const included: SidebarBulkTarget[] = [];
     const excluded: SidebarBatchRemovalDialogExcludedRow[] = [];
     const resolved: SidebarBulkTarget[] = [];
-    for (const key of orderedSelectedKeys) {
+    for (const key of keys) {
       const target = binding.targetFor(key);
       if (target === undefined) continue;
       resolved.push(target);
@@ -627,6 +641,16 @@ export function useSidebarBulk(input: {
       included,
       excluded,
     });
+  };
+  const openBatch = (mode: SidebarBatchRemovalMode): void =>
+    openBatchFor(selectionBinding, orderedSelectedKeys, mode);
+  const removeRows = (
+    kind: SidebarRowKind,
+    keys: readonly string[],
+    mode: SidebarBatchRemovalMode,
+  ): void => {
+    preloadSidebarBatchRemovalDialog();
+    openBatchFor(bindingCovering(bindingsRef.current, kind), keys, mode);
   };
 
   const batchSeqRef = useRef(0);
@@ -1135,6 +1159,7 @@ export function useSidebarBulk(input: {
     bindingFor,
     isQueuedForRemoval,
     queuedRemovalFor,
+    removeRows,
     dialog: dialogNode,
     notice: noticeNode,
   };

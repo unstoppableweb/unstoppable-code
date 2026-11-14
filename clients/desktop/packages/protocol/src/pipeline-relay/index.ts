@@ -383,3 +383,4 @@ export function checkPipelineRelayRunnerMessage(
 }
 
 export * from './activation';
+export * from './capabilities';

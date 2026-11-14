@@ -9,8 +9,12 @@ import {
 } from '../lib/share-audience-label';
 import { DisplayAvatar } from './DisplayAvatar';
 import { SearchField } from './SearchField';
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from './SegmentedControl';
 import { ErrorBanner } from './StatusBlocks';
-import { Tooltip, type TooltipLink } from './Tooltip';
+import type { TooltipLink } from './Tooltip';
 
 export {
   type SelectableShareAudience,
@@ -49,26 +53,6 @@ export interface ShareTarget {
   readonly secondaryLabel?: string;
 }
 
-export interface ShareScopeOptionProps<T extends string> {
-  label: string;
-  value: T;
-  /** The selected option, or `null` when nothing is selected yet. */
-  current: T | null;
-  onSelect: (next: T) => void;
-  disabled: boolean;
-  dataTestId?: string;
-  /** Id of the sentence that explains this option, e.g. why it is disabled. */
-  describedBy?: string;
-  /**
-   * Why this option can't be picked yet. The option stays visible and
-   * focusable but unavailable (`aria-disabled`), and the reason shows in its
-   * tooltip.
-   */
-  unavailable?: ShareScopeUnavailableReason;
-  /** The option is fixed, e.g. an existing share's audience: a lock leads its label. */
-  locked?: boolean;
-}
-
 /** Tooltip content for an option the account can't use yet. */
 export interface ShareScopeUnavailableReason {
   readonly label: string;
@@ -79,72 +63,6 @@ export interface ShareScopeUnavailableReason {
   readonly action?: TooltipLink;
   /** Test id for the reason sentence. */
   readonly testId?: string;
-}
-
-export function ShareScopeOption<T extends string>({
-  label,
-  value,
-  current,
-  onSelect,
-  disabled,
-  dataTestId,
-  describedBy,
-  unavailable,
-  locked = false,
-}: ShareScopeOptionProps<T>): JSX.Element {
-  const active = value === current;
-  // `aria-disabled` rather than `disabled` when there is a reason to show: a
-  // disabled button swallows the pointer events its tooltip needs and leaves
-  // the tab order.
-  const explained = unavailable !== undefined && !disabled;
-  const option = (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={active}
-      disabled={disabled}
-      {...(explained ? { 'aria-disabled': true } : {})}
-      aria-describedby={describedBy}
-      onClick={() => {
-        if (!explained) {
-          onSelect(value);
-          return;
-        }
-        // The tooltip is portaled outside the dialog's focus trap and has no
-        // hover on touch, so activating the option runs its in-app next step.
-        const action = unavailable?.action;
-        if (action !== undefined && 'onClick' in action) action.onClick();
-      }}
-      data-testid={dataTestId}
-      className={`focus-ring rounded-md px-3 py-1.5 text-xs${locked ? ' inline-flex items-center gap-1' : ''} font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${
-        active
-          ? 'bg-accent-subtle fg-accent-strong ring-1 ring-line-accent/40'
-          : `fg-secondary ${explained ? '' : 'hover:bg-fg-primary/[0.06] hover:fg-primary'}`
-      }`}
-    >
-      {locked && (
-        <Lock
-          aria-hidden
-          className="size-3 shrink-0"
-          data-testid={
-            dataTestId === undefined ? undefined : `${dataTestId}-lock`
-          }
-        />
-      )}
-      {label}
-    </button>
-  );
-  if (!explained) return option;
-  return (
-    <Tooltip
-      label={<span data-testid={unavailable.testId}>{unavailable.label}</span>}
-      {...(unavailable.action !== undefined
-        ? { link: unavailable.action }
-        : {})}
-    >
-      {option}
-    </Tooltip>
-  );
 }
 
 export interface ShareScopeSelectorOption<T extends string> {
@@ -183,8 +101,64 @@ export interface ShareScopeSelectorProps<T extends string> {
 }
 
 /**
- * The share scope radio group: a legend over a segmented row of
- * `ShareScopeOption` pills, with helper copy underneath.
+ * An option the account can't use yet stays focusable with its reason in a
+ * tooltip. That tooltip is portaled outside a dialog's focus trap and has no
+ * hover on touch, so pressing the option runs its in-app next step. A fixed
+ * option (an existing share's audience) leads its label with a lock.
+ */
+function segmentForShareScope<T extends string>(
+  {
+    value,
+    label,
+    disabled,
+    describedBy,
+    unavailable,
+    locked,
+  }: ShareScopeSelectorOption<T>,
+  groupDisabled: boolean,
+  dataTestId: string | undefined,
+): SegmentedControlOption<T> {
+  const optionTestId =
+    dataTestId === undefined ? undefined : `${dataTestId}-${value}`;
+  const explained = disabled === true && !groupDisabled;
+  const action = explained ? unavailable?.action : undefined;
+  return {
+    value,
+    label,
+    describedBy,
+    dataTestId: optionTestId,
+    ...(locked === true
+      ? {
+          leading: (
+            <Lock
+              aria-hidden
+              className="size-3 shrink-0"
+              data-testid={
+                optionTestId === undefined ? undefined : `${optionTestId}-lock`
+              }
+            />
+          ),
+        }
+      : {}),
+    ...(explained && unavailable !== undefined
+      ? {
+          unavailable: true,
+          tooltip: (
+            <span data-testid={unavailable.testId}>{unavailable.label}</span>
+          ),
+          tooltipLink: action,
+          onUnavailablePress:
+            action !== undefined && 'onClick' in action
+              ? action.onClick
+              : undefined,
+        }
+      : { disabled }),
+  };
+}
+
+/**
+ * The share scope radio group: a legend over a `SegmentedControl`, with
+ * helper copy underneath.
  */
 export function ShareScopeSelector<T extends string>({
   legend,
@@ -197,37 +171,18 @@ export function ShareScopeSelector<T extends string>({
   contentGap,
 }: ShareScopeSelectorProps<T>): JSX.Element {
   const optionsRow = (
-    <div
-      className="inline-flex rounded-lg bg-base p-0.5 inset-ring-[length:var(--border-hairline)] inset-ring-line-base"
-      role="radiogroup"
-      aria-label={legend}
-    >
-      {options.map((option) => (
-        <ShareScopeOption
-          key={option.value}
-          label={option.label}
-          value={option.value}
-          current={value}
-          onSelect={onChange}
-          disabled={
-            disabled ||
-            (option.disabled === true && option.unavailable === undefined)
-          }
-          {...(option.describedBy !== undefined
-            ? { describedBy: option.describedBy }
-            : {})}
-          {...(option.locked === true ? { locked: true } : {})}
-          {...(option.disabled === true && option.unavailable !== undefined
-            ? { unavailable: option.unavailable }
-            : {})}
-          dataTestId={
-            dataTestId === undefined
-              ? undefined
-              : `${dataTestId}-${option.value}`
-          }
-        />
-      ))}
-    </div>
+    <SegmentedControl<T>
+      label={legend}
+      semantics="radio"
+      shape="capsule"
+      width="content"
+      value={value}
+      disabled={disabled}
+      onChange={onChange}
+      options={options.map((option) =>
+        segmentForShareScope(option, disabled, dataTestId),
+      )}
+    />
   );
   return (
     <fieldset className="block text-s" data-testid={dataTestId}>
@@ -494,7 +449,11 @@ export function SharedTargetPicker<T>({
         disabled={disabled}
       />
       {loading && <p className="text-xs fg-secondary">{loadingLabel}</p>}
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="shared-target-picker"
+        className=""
+        error={error}
+      />
       {!loading &&
         !error &&
         items.length === 0 &&

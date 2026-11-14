@@ -2,7 +2,7 @@ export { createIpcCanopyClient } from './client';
 export type {
   IpcCanopyClient,
   IpcCanopyClientPorts,
-  ScopedFileQueries,
+  ScopedFileOperations,
   StandaloneChatActiveWork,
   WorktreeStateForkRequest,
 } from './ports';

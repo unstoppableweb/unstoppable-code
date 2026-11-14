@@ -1,7 +1,10 @@
 import type { JSX } from 'react';
 import { Button } from '@canopy/ui-shared/components';
 import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
-import { localPlatform } from '@/lib/local-platform';
+import {
+  localPlatform,
+  needsPageTitlebarDragRegion,
+} from '@/lib/local-platform';
 import { CHAT_UNIT_LABEL, CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import { PlusIcon as AppCatalogPlusIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { EmptyState } from '@canopy/ui-shared/components';
@@ -30,10 +33,17 @@ export function StandaloneColdStartEmptyState({
       data-testid="cowork-empty-state"
       className="flex h-full flex-1 flex-col"
     >
-      {/* Preserve a draggable title-bar strip — the conversation header (which
-          normally owns it) is not rendered in the cold-start view. */}
+      {/* Keep the title-bar row the conversation header (not rendered in the
+          cold-start view) would take. It only drags the window where the
+          shell draws no title-bar strip of its own (CAN-5711). */}
       {!usesNativeWindowFrame(localPlatform()) && (
-        <div className="electron-drag h-10 shrink-0" />
+        <div
+          className={
+            needsPageTitlebarDragRegion(localPlatform())
+              ? 'electron-drag h-10 shrink-0'
+              : 'h-10 shrink-0'
+          }
+        />
       )}
       <div className="flex flex-1 flex-col items-center justify-center p-8">
         <EmptyState

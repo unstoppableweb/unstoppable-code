@@ -114,13 +114,18 @@ export function MemoryReportOverlay(): JSX.Element | null {
                 <p className="fg-secondary">{SHARING_NOTE}</p>
                 {flow.revealFailed ? (
                   <ErrorBanner
+                    errorSource="memory-report-reveal-folder"
                     className=""
                     error="Couldn't open the folder. The report may have been moved or deleted."
                   />
                 ) : null}
               </div>
             ) : (
-              <ErrorBanner className="" error={FAILURE_COPY[flow.reason]} />
+              <ErrorBanner
+                errorSource="memory-report-collect"
+                className=""
+                error={FAILURE_COPY[flow.reason]}
+              />
             )}
             {settled ? (
               <div className="flex items-center justify-end gap-2">

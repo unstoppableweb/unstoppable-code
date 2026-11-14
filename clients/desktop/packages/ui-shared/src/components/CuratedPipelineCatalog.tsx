@@ -118,7 +118,11 @@ export function CuratedPipelineCatalog(
           {curatedPipelineStaleMessage(props.cloudDisplayName)}
         </p>
       )}
-      <ErrorBanner className="" error={props.error} />
+      <ErrorBanner
+        errorSource="curated-pipeline-catalog"
+        className=""
+        error={props.error}
+      />
       {selectedKey ? (
         <div
           className="min-w-0 flex flex-col gap-4 rounded-lg ring-1 ring-inset ring-line-base bg-base p-4"
@@ -135,7 +139,11 @@ export function CuratedPipelineCatalog(
               Loading workflow preview…
             </p>
           )}
-          <ErrorBanner className="" error={props.detailError} />
+          <ErrorBanner
+            errorSource="curated-pipeline-catalog-detail"
+            className=""
+            error={props.detailError}
+          />
           {detail && (
             <>
               <Stack gap="inline" className="min-w-0">
@@ -244,7 +252,11 @@ export function CuratedPipelineCatalog(
                   {props.importDisabledReason}
                 </p>
               )}
-              <ErrorBanner className="" error={props.importError} />
+              <ErrorBanner
+                errorSource="curated-pipeline-catalog-import"
+                className=""
+                error={props.importError}
+              />
               {importedPipelineId ? (
                 <div
                   role="status"

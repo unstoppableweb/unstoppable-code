@@ -26,6 +26,7 @@ import {
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 import { chatDisplayLabel } from '@canopy/protocol';
 import type { ChatEventReplayLog } from './chat-event-replay-log';
+import { unservedRevision } from './core-chat-read-adapter';
 
 export interface ChatStateProjectionCapture {
   captureState(result: ChatStateSnapshot): void;
@@ -287,6 +288,8 @@ export function createCoreChatStateAdapter(
     'core.chat.snapshot.get': async (
       params,
     ): Promise<CoreChatSnapshotGetResult> => {
+      // A cloud chat's session (CAN-6509); desktop advertises no revision.
+      if (params.revision !== undefined) throw unservedRevision();
       requireLocalScope(params.scope);
       const port = getPort();
       if (!port) throw new Error('Chat state service is unavailable.');

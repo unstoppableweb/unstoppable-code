@@ -1,14 +1,17 @@
+import {
+  createW5RecordImageRepositories,
+  createW5RecordImageReaders,
+  type W5RecordImageStore,
+} from '@canopy/core-runtime/node/w5/record-image-repositories';
 import { getCanopyDataDir } from '../../canopy-paths';
 import { withW5ProcessFileLocks } from '@canopy/execution-engine/node/w5-host-cohort/process-file-lock';
 import type { W5FileStore } from '@canopy/core-runtime/node/w5/file-store';
 import { withW5RepositoryLocks } from '@canopy/core-runtime/node/w5/repository-locks';
-import {
-  createWorktreeListRepository,
-  WorktreeRegistryUnreadableError,
-} from '@canopy/core-runtime/node/w5/worktree-list-repository';
+import { WorktreeRegistryUnreadableError } from '@canopy/core-runtime/node/w5/worktree-list-repository';
 import type { WorktreeData } from '../../types';
 import type { WorktreeListRepository } from '@canopy/core-runtime/node/w5/worktree-list-repository';
 import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
+import { getWorkspacesRootDir } from './workspace-cli-reads';
 import {
   getSingleRepoWorktreeDir,
   getWorktreesFilePath,
@@ -17,12 +20,13 @@ import {
 
 /** Read/decide/replace under one list lock; Git never holds it. */
 function repositoryFor(
-  store: W5FileStore,
+  store: W5RecordImageStore,
 ): WorktreeListRepository<WorktreeData> {
-  return createWorktreeListRepository<WorktreeData>({
+  return createW5RecordImageRepositories({
+    root: getWorkspacesRootDir,
     store,
-    filePath: getWorktreesFilePath,
-    storage: { namespace: 'worktree_list', writer: 'desktop_cli' },
+  }).worktrees<WorktreeData>({
+    writer: 'desktop_cli',
     // Full rows, including fields this CLI cannot interpret, survive a save.
     knownRowFields: new Set([
       'creation',
@@ -35,10 +39,15 @@ function repositoryFor(
 }
 
 export async function readCliWorktreeList(
-  store: W5FileStore,
+  store: Pick<W5FileStore, 'read'>,
   workspaceId: string,
 ): Promise<WorktreeData[]> {
-  const read = await repositoryFor(store).read(workspaceId);
+  const read = await createW5RecordImageReaders({
+    root: getWorkspacesRootDir,
+    store,
+  })
+    .worktrees<WorktreeData>((row) => ({ ...row, ...normalizeWorktree(row) }))
+    .read(workspaceId);
   if (
     read.authority === 'unreadable' ||
     (read.authority === 'ok' && !read.complete)
@@ -50,11 +59,23 @@ export async function readCliWorktreeList(
 }
 
 export function updateCliWorktreeList<T>(
-  store: W5FileStore,
+  store: W5RecordImageStore,
   workspaceId: string,
   decide: (rows: WorktreeData[]) => { rows: WorktreeData[]; value: T },
 ): Promise<T> {
-  const worktreeListRepository = repositoryFor(store);
+  return updateCliWorktreeListRepository(
+    repositoryFor(store),
+    workspaceId,
+    decide,
+  );
+}
+
+/** Shared staging lock/admission policy over the routed image repository. */
+export function updateCliWorktreeListRepository<T>(
+  worktreeListRepository: WorktreeListRepository<WorktreeData>,
+  workspaceId: string,
+  decide: (rows: WorktreeData[]) => { rows: WorktreeData[]; value: T },
+): Promise<T> {
   return withStorageAdmission(
     [{ namespace: 'worktree_list', writer: 'desktop_cli' }],
     () =>
@@ -82,25 +103,6 @@ export function updateCliWorktreeList<T>(
       ),
   );
 }
-
-/** A failed create keeps its primary error and names effects needing cleanup. */
-export class WorktreeCreationConflictError extends Error {
-  constructor(
-    readonly worktreeId: string,
-    readonly remainingPaths: readonly string[],
-    cause?: unknown,
-  ) {
-    super(
-      cause instanceof Error
-        ? cause.message
-        : 'This worktree could not be saved safely. Its existing files have been kept.',
-    );
-    this.name = 'WorktreeCreationConflictError';
-    Object.defineProperty(this, 'cause', { value: cause, configurable: true });
-  }
-}
-
-export const ownedCliWorktreeCreations: Map<string, string> = new Map();
 
 /** CLI lifecycle order: checkout resource, then list. Git holds no list lock. */
 export function lockCheckout<T>(

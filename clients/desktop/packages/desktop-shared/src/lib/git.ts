@@ -99,7 +99,11 @@ function awaitRemoteDefaultBranchResolution(
 async function runGit(
   args: string[],
   cwd?: string,
-  options?: { signal?: AbortSignal; timeoutMs?: number },
+  options?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    preserveWhitespace?: boolean;
+  },
 ): Promise<string> {
   await assertWorkingDirectoryAvailable(cwd);
   const { stdout } = await execFileAsync(await resolveGitExecutable(), args, {
@@ -115,7 +119,7 @@ async function runGit(
     throw await workingDirectoryLaunchError(error, cwd);
   });
 
-  return stdout.trim();
+  return options?.preserveWhitespace ? stdout : stdout.trim();
 }
 
 async function runGitRaw(args: string[], cwd?: string): Promise<string> {
@@ -156,7 +160,9 @@ export async function getRemoteHeadBranch(
       timeoutMs: options.timeoutMs ?? REMOTE_DEFAULT_BRANCH_TIMEOUT_MS,
     },
   );
-  return output.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/m)?.[1] ?? null;
+  return (
+    output.match(/^ref: refs\/heads\/([^\t\r\n]+)\tHEAD\r?$/m)?.[1] ?? null
+  );
 }
 
 export async function getLocalRemoteHeadBranch(
@@ -170,9 +176,12 @@ export async function getLocalRemoteHeadBranch(
       {
         signal: options.signal,
         timeoutMs: options.timeoutMs ?? REMOTE_DEFAULT_BRANCH_TIMEOUT_MS,
+        preserveWhitespace: true,
       },
     );
-    const branch = ref.replace('refs/remotes/origin/', '');
+    const branch = ref
+      .replace(/\r?\n$/, '')
+      .replace('refs/remotes/origin/', '');
     return branch || null;
   } catch (error) {
     if (options.signal?.aborted === true) throw error;
@@ -200,6 +209,11 @@ export async function getRemoteDefaultBranch(
     signal: options.signal,
     timeoutMs: options.timeoutMs ?? REMOTE_DEFAULT_BRANCH_TIMEOUT_MS,
   };
+  // A cancellable local-only read owns its subprocesses. Sharing an
+  // in-flight resolution would leave those subprocesses running on abort.
+  if (options.allowNetwork === false && options.signal) {
+    return resolveRemoteDefaultBranch(repoPath, options, gitOptions);
+  }
   let commonDir = repoPath;
   try {
     commonDir =
@@ -277,9 +291,11 @@ async function resolveRemoteDefaultBranch(
     const ref = await runGit(
       ['symbolic-ref', 'refs/remotes/origin/HEAD'],
       repoPath,
-      gitOptions,
+      { ...gitOptions, preserveWhitespace: true },
     );
-    const branch = ref.replace('refs/remotes/origin/', '');
+    const branch = ref
+      .replace(/\r?\n$/, '')
+      .replace('refs/remotes/origin/', '');
     if (branch) return branch;
   } catch (error) {
     if (options.signal?.aborted === true) throw error;
@@ -293,7 +309,9 @@ async function resolveRemoteDefaultBranch(
         repoPath,
         gitOptions,
       );
-      const headMatch = output.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/m);
+      const headMatch = output.match(
+        /^ref: refs\/heads\/([^\t\r\n]+)\tHEAD\r?$/m,
+      );
       if (headMatch?.[1]) return headMatch[1];
     } catch (error) {
       if (options.signal?.aborted === true) throw error;
@@ -319,7 +337,22 @@ async function resolveRemoteDefaultBranch(
 }
 
 export async function getCurrentBranch(worktreePath: string): Promise<string> {
-  return runGit(['rev-parse', '--abbrev-ref', 'HEAD'], worktreePath);
+  const prefix = 'refs/heads/';
+  try {
+    const ref = (
+      await runGitRaw(['symbolic-ref', '--quiet', 'HEAD'], worktreePath)
+    ).replace(/\r?\n$/, '');
+    return ref.startsWith(prefix) ? ref.slice(prefix.length) : 'HEAD';
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 1
+    )
+      return 'HEAD';
+    throw error;
+  }
 }
 
 async function getRebaseHeadBranch(
@@ -329,7 +362,7 @@ async function getRebaseHeadBranch(
     try {
       const value = (
         await readFile(await getGitPath(worktreePath, path), 'utf8')
-      ).trim();
+      ).replace(/\r?\n$/, '');
       const branch = value.startsWith('refs/heads/')
         ? value.slice('refs/heads/'.length)
         : value;
@@ -355,10 +388,12 @@ export async function getCurrentBranchDisplayName(
 
 export async function getRepoRootFromWorktree(
   worktreePath: string,
+  options?: { signal?: AbortSignal },
 ): Promise<string> {
   const gitCommonDir = await runGit(
     ['rev-parse', '--git-common-dir'],
     worktreePath,
+    options,
   );
   const resolved = isAbsolute(gitCommonDir)
     ? gitCommonDir
@@ -373,7 +408,12 @@ export async function getFullDiff(
 ): Promise<string> {
   try {
     const output = await runGit(
-      ['diff', `origin/${baseBranch}...HEAD`],
+      [
+        '-c',
+        'core.warnAmbiguousRefs=false',
+        'diff',
+        `refs/remotes/origin/${baseBranch}...HEAD`,
+      ],
       repoPath,
     );
     return output.length > 50_000 ? output.slice(0, 50_000) : output;
@@ -388,7 +428,13 @@ export async function getCommitLog(
 ): Promise<string> {
   try {
     return await runGit(
-      ['log', `origin/${baseBranch}..HEAD`, '--oneline'],
+      [
+        '-c',
+        'core.warnAmbiguousRefs=false',
+        'log',
+        `refs/remotes/origin/${baseBranch}..HEAD`,
+        '--oneline',
+      ],
       repoPath,
     );
   } catch {
@@ -432,10 +478,7 @@ export async function readBranchPublication(
   repoPath: string,
 ): Promise<boolean | null> {
   try {
-    const branch = await runGit(
-      ['rev-parse', '--abbrev-ref', 'HEAD'],
-      repoPath,
-    );
+    const branch = await getCurrentBranch(repoPath);
     if (!branch || branch === 'HEAD') return null;
     try {
       await runGit(
@@ -470,10 +513,7 @@ export async function hasUnpushedCommits(repoPath: string): Promise<boolean> {
 
 export async function hasUnpulledCommits(repoPath: string): Promise<boolean> {
   try {
-    const branch = await runGit(
-      ['rev-parse', '--abbrev-ref', 'HEAD'],
-      repoPath,
-    );
+    const branch = await getCurrentBranch(repoPath);
     if (!branch || branch === 'HEAD') return false;
 
     // Only count commits against this branch's own remote-tracking ref, not

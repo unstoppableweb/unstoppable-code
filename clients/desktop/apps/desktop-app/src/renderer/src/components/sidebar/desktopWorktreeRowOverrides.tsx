@@ -14,6 +14,7 @@ import type { CoreCoworkTask } from '@canopy/app-state/core-cowork';
 import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
 import { retryCloudTask } from '@/cloud-chats/useCloudCoworkSidebar';
 import { markCloudTaskShown } from '@/cloud-chats/task-creation-timing';
+import { requestDeletedTaskDiscard } from '@/cloud-chats/cloud-task-deletion';
 import { webCoreLocalId } from '@/lib/chat-authority';
 import { createWithEqualityFn } from 'zustand/traditional';
 import {
@@ -457,6 +458,10 @@ function useCloudTaskCreationOverrides(
           (each) => each.worktreeId === taskId,
         );
   const creation = useStore(cloudCoworkStore, (state) => task(state)?.creation);
+  const deleted = useStore(
+    cloudCoworkStore,
+    (state) => task(state)?.deleted === true,
+  );
   const reason = useStore(
     cloudCoworkStore,
     (state) => task(state)?.creationError,
@@ -466,6 +471,18 @@ function useCloudTaskCreationOverrides(
       markCloudTaskShown(taskId, 'rowShown');
   }, [creation, taskId]);
   return useMemo((): WorktreeRowOverrides | undefined => {
+    // A task deleted on another device whose draft this window keeps
+    // (CAN-6614): the row says so and offers Discard; opening it shows the
+    // draft with Start new chat.
+    if (deleted)
+      return {
+        creationFailure: {
+          reason: 'Deleted',
+          onDiscard: (): void => {
+            requestDeletedTaskDiscard({ projectId, worktreeId });
+          },
+        },
+      };
     if (creation === 'pending') return { setupPhase: 'creating' };
     if (creation !== 'failed') return undefined;
     return {
@@ -476,7 +493,7 @@ function useCloudTaskCreationOverrides(
         },
       },
     };
-  }, [creation, reason, projectId, worktreeId]);
+  }, [creation, deleted, reason, projectId, worktreeId]);
 }
 
 function useLocalWorktreeRowOverrides(

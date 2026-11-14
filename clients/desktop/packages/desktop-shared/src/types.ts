@@ -1,9 +1,18 @@
+import type { AntigravityModelEntry } from '@canopy/execution-engine/lib/antigravity-models';
+import type { AssistantMode } from '@canopy/execution-engine/types/assistant-mode';
+import type { WorkspaceType } from '@canopy/execution-engine/types/workspace-type';
 import type {
   WorkEntryAutoDeleteWorkspaceSnapshot,
   WorkEntryAutoDeleteDisarmRequest,
   WorkEntryAutoDeleteResolveBranchRequest,
 } from '@canopy/protocol/work-entry-auto-delete';
 import type {
+  WorktreeRecoveryFinishParams,
+  WorktreeRecoveryFinishResult,
+  WorktreeRecoveryListParams,
+  WorktreeRecoveryListResult,
+  WorktreeRecoveryResolveParams,
+  WorktreeRecoveryResolveResult,
   CoworkFolderStatus,
   CoworkFolderMissing,
   CoworkUnstartedSend,
@@ -49,6 +58,7 @@ export {
   CODEX_ACCOUNT_MODELS,
   CODEX_MODELS,
   COPILOT_MODELS,
+  ANTIGRAVITY_MODELS,
   CURSOR_MODELS,
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
@@ -70,6 +80,7 @@ export {
   getConfiguredSupportedThinkingLevels,
   getConfiguredSupportedThinkingLevelsMap,
   getCopilotModelEntries,
+  getAntigravityModelEntries,
   getCurrentModelHarnessCatalog,
   getCursorModelEntries,
   getCursorModelMappings,
@@ -94,6 +105,7 @@ export {
   getProviderForModel,
   getRemovedGatewayOnlyModelHarness,
   hasGatewayModelRoutes,
+  hasDiscoveredAccountModelCatalog,
   hasHydratedGatewayCatalog,
   hasHydratedModelRegistry,
   hasRequiredOllamaCapabilities,
@@ -103,6 +115,7 @@ export {
   initClaudeModels,
   initCodexModels,
   initCopilotModels,
+  initAntigravityModels,
   initCursorModels,
   initModelAliases,
   initOllamaModels,
@@ -213,6 +226,11 @@ import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import type { ChatEvent } from '@canopy/agent-transcript/lib/chat-event-output';
 import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import type {
+  PersonalAiGatewayConfig,
+  PersonalAiGatewayUpdate,
+} from '@canopy/protocol/model-gateway';
+import type { AiGatewayConnectionResult } from '@canopy/protocol/model-gateway/discovery';
+import type {
   PortalChatCloudAttachmentRef,
   W5RecoveryApi,
 } from '@canopy/protocol/portal';
@@ -225,6 +243,7 @@ export type {
   ClaudeModAdmission,
   SkippedClaudeMod,
 } from '@canopy/execution-engine/types/claude-mod-admission';
+import type { WorktreeRecoveryRequest } from '@canopy/protocol/portal/worktree-recovery';
 import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 import type {
   SharedMultiRepoCreateCommand,
@@ -294,6 +313,7 @@ import type {
   RepoRulesScanResponse,
   RepoRulesApplyRequest,
   RepoRulesApplyResponse,
+  RepoRulesCheckResponse,
   RepoRulesStatus,
   RepoRulesPreviewRequest,
   RepoRulesPreviewResponse,
@@ -609,6 +629,7 @@ import type {
   CreateSharedContainerGrantResponse,
   ListSharedContainerRecipientsResponse,
   ListDismissedSharedContainersResponse,
+  ListSharedContainerOwnerDeparturesResponse,
   ListSharedContainersResponse,
   SearchSharedContainerMembersResponse,
   SharedContainerCapability,
@@ -1991,9 +2012,98 @@ export type CloudChatAttachmentUploadResult =
         | 'too_large'
         | 'rejected'
         | 'offline';
+      /** The web core's own words for a refusal it explained (CAN-6369). */
+      message?: string;
+    };
+
+/**
+ * One of a cloud chat's files to save to this computer: an attachment or a
+ * deliverable of the chat, or a shared file of its project (CAN-6587).
+ */
+export interface CloudChatFileDownloadRequest {
+  kind: 'attachment' | 'deliverable' | 'workspace-file';
+  id: string;
+  /** The save dialog's suggested name; the user picks the path. */
+  filename: string;
+}
+
+/** A cloud chat's file saved through main (CAN-6587). */
+export type CloudChatFileDownloadResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | 'canceled'
+        | 'disabled'
+        | 'unauthenticated'
+        | 'not_found'
+        | 'rejected'
+        | 'offline'
+        | 'write_failed';
     };
 
 /** Cloud cowork chats over the web core (CAN-4185). */
+/** A server this computer lets the account's cloud chats reach (CAN-6176). */
+export interface CloudReachBackServerView {
+  readonly serverId: string;
+  readonly configId: string;
+  readonly displayName: string;
+  /** The tools cloud chats may use; null allows every tool. */
+  readonly enabledTools: readonly string[] | null;
+  /** Of those, the tools that run without asking on this computer. */
+  readonly allowWithoutAsking: readonly string[];
+  readonly allowedAt: string;
+  /** Why its last cloud chat call couldn't reach it; null once one does. */
+  readonly unreachable: string | null;
+}
+
+/** One call a cloud chat made on this computer; never its arguments or result. */
+export interface CloudReachBackActivityView {
+  readonly at: string;
+  readonly chat: { readonly id: string; readonly title: string } | null;
+  readonly serverId: string;
+  readonly configId: string;
+  /** Null when the call started the server rather than a tool. */
+  readonly toolName: string | null;
+  readonly decision:
+    | 'server_not_allowed'
+    | 'tool_not_allowed'
+    | 'read_only'
+    | 'allowed_without_asking'
+    | 'asked_allowed'
+    | 'asked_denied'
+    | 'approval_timeout'
+    | 'no_window';
+  readonly status: number | null;
+}
+
+export interface CloudReachBackAllowRequest {
+  /** The account the person saw when they agreed; another one is refused. */
+  readonly expectedAccountId: string;
+  readonly serverId: string;
+  readonly configId: string;
+  readonly displayName: string;
+  readonly enabledTools: readonly string[] | null;
+  readonly allowWithoutAsking: readonly string[];
+}
+
+export type CloudReachBackResult =
+  | { readonly ok: true; readonly cloudRemoved?: boolean }
+  | {
+      readonly ok: false;
+      readonly reason: 'disabled' | 'signed_out' | 'rejected' | 'failed';
+    };
+
+/** Letting cloud chats reach this computer's MCP servers (CAN-6176). */
+export interface CloudReachBackApi {
+  list(): Promise<readonly CloudReachBackServerView[]>;
+  /** Newest first, at most 200. */
+  activity(): Promise<readonly CloudReachBackActivityView[]>;
+  allow(request: CloudReachBackAllowRequest): Promise<CloudReachBackResult>;
+  /** Stops serving the server at once, then removes its cloud connection. */
+  disallow(serverId: string, configId: string): Promise<CloudReachBackResult>;
+}
+
 export interface CloudChatsApi {
   /** The user's Reconnect: one remint of the cloud session in main, throttled there. */
   reconnect(): Promise<CloudChatsReconnectResult>;
@@ -2002,6 +2112,59 @@ export interface CloudChatsApi {
     target: CloudChatUploadTarget,
     file: CloudChatAttachmentUploadFile,
   ): Promise<CloudChatAttachmentUploadResult>;
+  /**
+   * Saves one of a cloud chat's files to a path the user picks in a save
+   * dialog, reading it over main's web core connection.
+   */
+  downloadFile(
+    target: CloudChatUploadTarget,
+    file: CloudChatFileDownloadRequest,
+  ): Promise<CloudChatFileDownloadResult>;
+}
+
+/**
+ * What a cloud copy of a desktop skill or plugin would send (CAN-6176 9c):
+ * the analysis the consent dialog shows, made in main from the local catalog
+ * entry alone.
+ */
+export interface CloudCopyAnalyzeRequest {
+  /** The desktop catalog entry: `skill:custom:app/<name>` or `plugin:<marketplace>/<name>`. */
+  entryId: string;
+  /** The cloud chat's account; the copy is refused for any other. */
+  expectedAccountId: string;
+}
+
+/**
+ * Who already sees the cloud copy an "Add to cloud" updates: a skill linked
+ * to a copy this account shares keeps that copy's audience (CAN-6176).
+ * `public_link` is a private copy with a public link.
+ */
+export type CloudCopyAudience =
+  | 'private'
+  | 'public_link'
+  | 'team'
+  | 'organization';
+
+export type CloudCopyAnalyzeResult =
+  | {
+      ok: true;
+      analysis: PipelinePackageAnalysisSummary;
+      /** Who sees the copy this adds or updates; the dialog says so. */
+      audience: CloudCopyAudience;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'disabled'
+        | 'signed-out'
+        | 'account-mismatch'
+        | 'unsupported'
+        | 'not-found';
+    };
+
+export interface CloudCopyApi {
+  /** The cloud-copy analysis of a custom skill or an installed plugin. */
+  analyze(request: CloudCopyAnalyzeRequest): Promise<CloudCopyAnalyzeResult>;
 }
 
 /** Linking a local workspace to its cloud project identity (CAN-5190). */
@@ -2209,6 +2372,12 @@ export const CODE_REVIEW_CHAT_PROJECT_ID = 'code-review-chat';
  * two sides must share this constant.
  */
 export const CURSOR_APPROVAL_CHECK_PROJECT_ID = 'cursor-approval-check';
+
+/**
+ * The approval scope of reach-back prompts (CAN-6176 Q3): main asks under it
+ * and the main window's prompt host shows only its requests.
+ */
+export const CLOUD_REACH_BACK_APPROVAL_PROJECT_ID = 'cloud-reach-back';
 
 /**
  * Reserved app-managed workspace id used to key view state (panel layout and
@@ -2488,6 +2657,25 @@ export interface LinearStatus {
   error: string | null;
 }
 
+/** The device AI gateway and the id its models and key are keyed by. */
+export interface LocalModelGatewayState {
+  organizationId: string;
+  /** Null until a gateway is first saved on this device. */
+  gateway: PersonalAiGatewayConfig | null;
+}
+
+export interface LocalModelGatewayConnectInput {
+  expectedOrganizationId: string;
+  baseUrl: string;
+  /** Omitted to reuse this device's stored key for the same endpoint. */
+  apiKey?: string;
+}
+
+/** Errors cross IPC as plain settings payloads, like hosted settings. */
+export type LocalModelGatewayResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: SettingsErrorPayload };
+
 export interface ModelGatewayCredentialState {
   secureStorageFailure?: SecureStorageFailure;
   organizationId: string;
@@ -2678,6 +2866,8 @@ export interface SecureStorageRecheckResult {
 export type CanopyCloudAccountReadStatus = 'ok' | 'unavailable' | 'error';
 
 export interface CanopyCloudAccountPublicState {
+  /** Only present in an on-demand refresh response after a fresh snapshot applies. */
+  accountProbeApplied?: true;
   /** Definitive rejection of the current non-guest credential; absent otherwise. */
   sessionExpired?: true;
   secureStorageStatus?: SecureStorageDiagnostic;
@@ -3838,7 +4028,7 @@ export interface WorktreeHealthCheckResponse {
   issue?: WorktreeHealthIssue;
 }
 
-export type WorkspaceType = 'single-repo' | 'multi-repo' | 'cowork';
+export type { WorkspaceType };
 
 export type ActivitySectionId =
   | 'plugins'
@@ -3858,7 +4048,9 @@ export type ActivitySectionId =
   | 'notes'
   | 'prompts'
   | 'attachments'
-  | 'memory';
+  | 'memory'
+  /** A cloud project's shared workspace files (CAN-6568). */
+  | 'workspace-files';
 
 /**
  * Which UX surface an activity section is available on. `'worktree'` is the
@@ -6340,6 +6532,7 @@ export interface ModelDefaultsByProvider {
   aiCredits?: ProviderModelSelection | null;
   cursor?: ProviderModelSelection | null;
   copilot?: ProviderModelSelection | null;
+  antigravity?: ProviderModelSelection | null;
   opencode?: ProviderModelSelection | null;
 }
 
@@ -6706,6 +6899,39 @@ export function isChatIngestionLagEventData(
   );
 }
 
+/**
+ * Raw session-event `data.type` a provider session emits when the provider
+ * predicts the person's next message after a completed turn (the
+ * `prompt-suggestions` Labs experiment). Sent over the existing
+ * `IPC_CHANNELS.chatEvent` pipeline, outside the admission and commit path,
+ * like {@link INGESTION_LAG_EVENT_TYPE}. Not persisted and not part of
+ * canonical chat state.
+ */
+export const PROMPT_SUGGESTION_EVENT_TYPE = 'canopy_prompt_suggestion';
+
+/** Payload shape for {@link PROMPT_SUGGESTION_EVENT_TYPE} events. */
+export interface PromptSuggestionEventData {
+  type: typeof PROMPT_SUGGESTION_EVENT_TYPE;
+  /** The predicted next message, trimmed and non-empty. */
+  text: string;
+  /** The user message that started the turn the suggestion follows. */
+  turnUserMessageId: string;
+}
+
+/** Narrow an emitted session-event payload to a prompt-suggestion event. */
+export function isPromptSuggestionEventData(
+  value: unknown,
+): value is PromptSuggestionEventData {
+  return (
+    isRecord(value) &&
+    value.type === PROMPT_SUGGESTION_EVENT_TYPE &&
+    typeof value.text === 'string' &&
+    value.text.trim().length > 0 &&
+    typeof value.turnUserMessageId === 'string' &&
+    value.turnUserMessageId.length > 0
+  );
+}
+
 /** A registry entry recorded when a chat hits a provider usage limit. */
 export interface UsageLimitedChatEntry extends UsageLimitedChatTarget {
   /** Exact owning turn captured by the trusted detector, absent on legacy entries. */
@@ -7052,6 +7278,8 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   orgProjectCloneProtocol?: 'https' | 'ssh';
   /** Opt-in to the app-managed pinned Cursor runtime. */
   cursorEnabled?: boolean;
+  /** App-local Google opt-out; leaves the native Google account signed in. */
+  googleSubscriptionDisconnected?: boolean;
   /** Written by the main process only; renderer saves drop it. */
   copilotEnabled?: boolean;
   opencodeEnabled?: boolean;
@@ -7613,6 +7841,12 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * `\(...\)`, `\[...\]`, `$$...$$` and math fences render either way.
    */
   singleDollarMath?: boolean;
+  /**
+   * Whether the empty composer offers the provider's predicted next message
+   * after a completed Claude or Codex turn, for Tab to fill in. Optional for
+   * compatibility; normalization supplies `true`.
+   */
+  promptSuggestionsEnabled?: boolean;
   /**
    * Chat transcript enrichment for Linear and GitHub references, set per
    * provider. Optional for compatibility; normalization supplies each
@@ -8340,12 +8574,21 @@ export interface CreateBranchRequest {
   newBranchName: string;
   baseBranch: string;
   baseBranchIsRemote: boolean;
+  /** Only an explicit catalogue selection; typed/tracked Git bases omit it. */
+  baseBranchSource?: 'catalog';
   repoId?: string;
 }
 
 export interface CreateBranchResponse {
   success: boolean;
   branchName: string;
+  /** On a failed create, whether Git observed the attempted local branch. */
+  branchExists?: boolean;
+  failureMessage?: string;
+  warning?: {
+    code: 'checkout-command-failed';
+    upstream: 'configured' | 'partial' | 'unset';
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -8599,6 +8842,7 @@ export interface ArchiveWorktreeResponse {
 
 /** `worktree:discard-describe`: read-only. */
 export interface WorktreeDiscardDescribeRequest {
+  recovery?: WorktreeRecoveryRequest;
   projectId: string;
   worktreeId: string;
   /** CAN-5338: also describe a retained archive of this id. */
@@ -8765,6 +9009,12 @@ export interface WorktreeGitReadyEvent {
  * `healthIssue` is included when the failed reservation remains visible as a
  * broken worktree.
  */
+/** Privacy-safe cause evidence for deferred setup's storage failure. */
+export type WorktreeSetupStorageFailure =
+  | 'overloaded'
+  | 'authority-unreachable'
+  | 'unreadable';
+
 export interface WorktreeGitFailedEvent {
   projectId: string;
   worktreeId: string;
@@ -8772,6 +9022,8 @@ export interface WorktreeGitFailedEvent {
   healthIssue?: WorktreeHealthIssue;
   /** Storage takes precedence. source-no-commits describes this source branch only. */
   failureReason?: 'storage-unavailable' | 'source-no-commits';
+  /** Absent on older hosts or when storage failed only while recording another failure. */
+  storageFailure?: WorktreeSetupStorageFailure;
   /** Failed child source, or absent for the workspace's source root. */
   sourceRepoId?: string;
 }
@@ -9404,7 +9656,7 @@ export interface WorktreeSelection {
  * `assistantMode === 'pipeline-editor'` comparison in `ipc/chat.ts` type-checks
  * against the widened union.
  */
-export type AssistantMode = 'default' | 'app-advisor' | 'pipeline-editor';
+export type { AssistantMode };
 
 export const GLOBAL_INSTRUCTIONS_SNAPSHOT_EVENT_TYPE =
   'global_instructions_snapshot';
@@ -9531,6 +9783,14 @@ export interface ChatSendMessageRequest {
   providerType?: AgentProviderType;
   /** Captured execution harness. Clients may echo this but cannot override main. */
   executionHarness?: ModelHarness;
+  /**
+   * The sender chose `executionHarness` for the fresh chat this send
+   * reserves, as a picker's harness choice does: the tab is pinned to it and
+   * the choice is checked against the model's chat harness options. Only an
+   * agent action sets this; every other sender echoes a captured harness,
+   * which pins nothing.
+   */
+  executionHarnessChoice?: true;
   /** @deprecated Use modelConfig.fastMode. */
   codexFastModeEnabled?: boolean;
   codexProposalMode?: 'optional' | 'required';
@@ -10162,14 +10422,19 @@ export interface ChatSessionImportedEvent {
 // ---------------------------------------------------------------------------
 // External project import (CAN-2439)
 //
-// Bulk-import of local Claude and Codex projects. Discovery is read-only over
+// Bulk-import of local Claude, Codex, T3 Code, and OpenCode projects. Discovery is read-only over
 // the provider stores; import registers Canopy projects (git roots become
 // single-repo projects, ordinary folders become external Cowork projects) and
 // optionally projects compatible local conversations into persisted chat tabs.
 // See docs/external-project-import.md.
 // ---------------------------------------------------------------------------
 
-export const EXTERNAL_PROJECT_PROVIDERS = ['claude', 'codex'] as const;
+export const EXTERNAL_PROJECT_PROVIDERS = [
+  'claude',
+  'codex',
+  't3code',
+  'opencode',
+] as const;
 
 export type ExternalProjectProvider =
   (typeof EXTERNAL_PROJECT_PROVIDERS)[number];
@@ -10180,6 +10445,8 @@ export type ExternalProjectSurface =
   | 'claude-desktop'
   | 'codex-cli'
   | 'codex-desktop'
+  | 't3-code'
+  | 'opencode'
   | 'custom-folder'
   | 'nested-repository';
 
@@ -10212,6 +10479,18 @@ export interface ExternalProjectSessionSummary {
   /** Set when an earlier import already brought this session in. */
   importedChatId?: string;
   sizeBytes: number;
+  /**
+   * Provider whose transcript backs the session when `provider` is a host
+   * that wraps another one (T3 Code threads run on Claude, Codex, or OpenCode).
+   */
+  backingProvider?: 'claude' | 'codex' | 'opencode';
+  /** The source marks the session archived. */
+  archived?: boolean;
+  /**
+   * `native` sessions carry a transcript Canopy can continue from; `history`
+   * sessions import as read-only history.
+   */
+  tier?: 'native' | 'history';
 }
 
 export interface ExternalProjectCandidate {
@@ -10321,6 +10600,12 @@ export interface ExternalProjectImportProgressEvent {
 /** Answer to "does this machine hold an external Claude or Codex store?". */
 export interface ExternalProjectProviderPresence {
   providerStoresPresent: boolean;
+  /**
+   * Per-provider detail behind `providerStoresPresent`. Optional on the wire:
+   * a host from before T3 Code and OpenCode support answers without it, and
+   * consumers then name no tool rather than fail.
+   */
+  providers?: Record<ExternalProjectProvider, boolean>;
 }
 
 export interface ExternalProjectImportInviteState {
@@ -10879,6 +11164,43 @@ export interface OrgMemoryUsedEventData extends AppliedOrgMemoryTurn {
   localMessageId: string;
 }
 
+/**
+ * Providers a started chat can switch between in place, carrying its history
+ * as a seed and parking each provider's session (CAN-6445). Ollama stays
+ * excluded (CAN-6449). OpenCode keeps its own harness and billing locks.
+ */
+export const IN_PLACE_SWITCH_PROVIDERS: readonly AgentProviderType[] = [
+  'claude',
+  'codex',
+  'cursor',
+  'copilot',
+];
+
+/** Whether a started chat may switch from one provider to the other in place. */
+export function canSwitchProviderInPlace(
+  from: AgentProviderType | undefined,
+  to: AgentProviderType | undefined,
+): boolean {
+  return (
+    from !== undefined &&
+    to !== undefined &&
+    from !== to &&
+    IN_PLACE_SWITCH_PROVIDERS.includes(from) &&
+    IN_PLACE_SWITCH_PROVIDERS.includes(to)
+  );
+}
+
+/** A provider's session parked by a provider switch (CAN-6445). */
+export interface ParkedProviderSession {
+  sdkSessionId: string;
+  globalInstructionsSnapshot?: string;
+  codexReconstructionSeedId?: string;
+  /** The session's next send must still fork it (a pending Claude fork). */
+  claudeForkSessionOnNextSend?: true;
+  /** User turns the chat had when the session was parked. */
+  userMessageCount?: number;
+}
+
 export interface PersistedChatTab {
   /** Main-owned activation recovery facts. Transfers and forks strip replay authority. */
   mcpActivation?: McpActivationRecord;
@@ -11056,6 +11378,19 @@ export interface PersistedChatTab {
    */
   codexReconstructionSeedId?: string;
   /**
+   * Main-owned: each provider's session from before the chat last switched
+   * away from it, keyed by provider (CAN-6445). A provider switch moves the
+   * active session here instead of deleting it, and switching back resumes it
+   * when the chat has had no user turn since. Never pruned by a switch.
+   */
+  providerSessions?: Partial<Record<AgentProviderType, ParkedProviderSession>>;
+  /**
+   * Main-owned: the chat switched provider and its next turn starts a fresh
+   * session, so that turn carries the conversation so far as a seed
+   * (CAN-6445). Cleared when the new provider's session is recorded.
+   */
+  providerSwitchSeedPending?: boolean;
+  /**
    * One-shot Claude continuity marker for a newly forked/branched chat.
    * The next resumed provider turn must create an independent session rather
    * than appending to the source chat's session.
@@ -11164,6 +11499,8 @@ export interface PersistedChatTab {
    */
   scheduledSendDraft?: { runAt: string };
   readOnly?: boolean;
+  /** The tool this chat was imported from by the external project import. */
+  importedFrom?: ExternalProjectProvider;
   staleSessionDetected?: StaleSessionInfo;
   /**
    * Sanitized record of the most recent provider usage-limit banner detected
@@ -13735,6 +14072,17 @@ export interface TrackedPlanShareState {
   lastSyncError?: string;
 }
 
+/**
+ * `tracked-plans:list-with-skipped`: a worktree's plans, and how many stored
+ * records weren't listed because they couldn't be read or typed (CAN-6666),
+ * so the Plans view can tell the person.
+ */
+export interface TrackedPlanListWithSkippedResult {
+  plans: TrackedPlanData[];
+  /** Absent when every stored record was listed. */
+  skipped?: number;
+}
+
 export interface TrackedPlanData {
   id: string;
   projectId: string;
@@ -14925,6 +15273,25 @@ export type ListDismissedSharedContainersResult =
   | { unsupported: true };
 
 /**
+ * Notices that a share ended because its owner left the organization.
+ * `unsupported` means notices are unavailable on the server or to the current
+ * credential. The renderer clears its cache on that result. A missing list
+ * endpoint also carries a backoff when the calling preload opts in.
+ */
+export type ListSharedContainerOwnerDeparturesResult =
+  | ListSharedContainerOwnerDeparturesResponse
+  | { unsupported: true; retryAfterMs?: number };
+
+export interface DismissSharedContainerOwnerDepartureRequest {
+  noticeId: string;
+}
+
+/** A notice the server no longer has is already dismissed. Unavailable access clears the cache. */
+export type DismissSharedContainerOwnerDepartureResult =
+  | { dismissed: true }
+  | { unsupported: true };
+
+/**
  * `not-restorable` covers every server 404: the owner revoked the removed
  * share, or it is no longer shared with this account. The server does not say
  * which, and neither does this.
@@ -15161,6 +15528,11 @@ export interface SharedContainersApi {
   listDismissed(
     request: ListDismissedSharedContainersRequest,
   ): Promise<ListDismissedSharedContainersResult>;
+  /** Notices that shares ended because their owners left (CAN-5120). */
+  listOwnerDepartures(): Promise<ListSharedContainerOwnerDeparturesResult>;
+  dismissOwnerDeparture(
+    request: DismissSharedContainerOwnerDepartureRequest,
+  ): Promise<DismissSharedContainerOwnerDepartureResult>;
   /** Returns a removed share to the inbox as a pending invitation. */
   restore(
     request: SharedContainerRecipientRequest,
@@ -16815,6 +17187,14 @@ export interface ScriptRunSnapshot extends ScriptStartedEvent {
   durationMs: number;
   startedAt: string;
   completedAt?: string;
+  /**
+   * A run a restart left running whose process could not be proven its own
+   * (CAN-6482): it reads `running`, and only a user's Stop ends it. `pid` is
+   * the recorded process; `identity` says whether a Stop can prove it first.
+   */
+  orphan?: { pid?: number; identity: 'recorded' | 'unverifiable' };
+  /** A lost run whose record names no process: it may still be running. */
+  lostFrom?: 'unrecorded';
 }
 
 // ---------------------------------------------------------------------------
@@ -17336,6 +17716,8 @@ export const AI_GATEWAY_CATALOG_STATUSES: readonly AiGatewayCatalogStatus[] = [
 ];
 
 export interface ModelRegistrySnapshot {
+  antigravity?: AntigravityModelEntry[];
+  /** Account catalogs are omitted before discovery; [] publishes an empty/revoked catalog. */
   cursor?: CursorModelEntry[];
   copilot?: CopilotModelEntry[];
   opencode?: OpenCodeModelEntry[];
@@ -17939,7 +18321,8 @@ export interface ScheduledActivity {
    * automation owns, as main validated its marker. While `chatEditable`,
    * `action` is the chat action the pipeline stands for, and a save of it
    * regenerates the pipeline; otherwise the pipeline was edited by hand.
-   * `storedAction` is the action main stores and runs, which sharing uses.
+   * `storedAction` is the action main stores and runs. Sharing uses it unless
+   * the validated chat projection carries an Agent or an installed package.
    */
   ownedPipeline?: {
     pipelineId: string;
@@ -19165,6 +19548,14 @@ export interface ManagedDelegationApi {
 export interface CanopyApi {
   reloadWindow: () => Promise<boolean>;
   restartApp: () => Promise<boolean>;
+  /** Local window boot barrier; does not route through a paired computer. */
+  waitForWorkspaceStartup: () => Promise<void>;
+  /**
+   * Shows the macOS dictionary for the selection in the focused window of
+   * this renderer (its own page or a panel pull-out). Does nothing on other
+   * platforms.
+   */
+  lookUpSelection: () => Promise<void>;
   notifyStartupUnlocked: () => Promise<void>;
   loadProjects: () => Promise<SidebarItemsFile>;
   getDesktopSessionSnapshot: (
@@ -19419,6 +19810,15 @@ export interface CanopyApi {
   checkWorktreeRemovalAdmission: (
     request: CheckWorktreeRemovalAdmissionRequest,
   ) => Promise<CheckWorktreeRemovalAdmissionResponse>;
+  resolveWorktreeRecovery: (
+    request: WorktreeRecoveryResolveParams,
+  ) => Promise<WorktreeRecoveryResolveResult>;
+  finishWorktreeRecovery: (
+    request: WorktreeRecoveryFinishParams,
+  ) => Promise<WorktreeRecoveryFinishResult>;
+  listWorktreeRecovery: (
+    request: WorktreeRecoveryListParams,
+  ) => Promise<WorktreeRecoveryListResult>;
   describeWorktreeDiscard: (
     request: WorktreeDiscardDescribeRequest,
   ) => Promise<WorktreeDiscardDescription>;
@@ -19770,7 +20170,9 @@ export interface CanopyApi {
     request: SetWorktreeBranchGroupingRequest,
   ) => Promise<void>;
   harnessAssignments: HarnessAssignmentsApi;
-  getModelRegistry: () => Promise<ModelRegistrySnapshot>;
+  getModelRegistry: (request?: {
+    probe?: boolean;
+  }) => Promise<ModelRegistrySnapshot>;
   onModelRegistryUpdated: (
     cb: (snapshot: ModelRegistrySnapshot) => void,
   ) => () => void;
@@ -19895,6 +20297,19 @@ export interface CanopyApi {
   onModelGatewayCredentialChanged?: (
     cb: (organizationId: string) => void,
   ) => () => void;
+  /** The device AI gateway, used while the account names no Personal org. */
+  localModelGateway: {
+    read: () => Promise<LocalModelGatewayState>;
+    update: (
+      input: PersonalAiGatewayUpdate,
+    ) => Promise<LocalModelGatewayResult<PersonalAiGatewayConfig>>;
+    connect: (
+      input: LocalModelGatewayConnectInput,
+    ) => Promise<LocalModelGatewayResult<AiGatewayConnectionResult>>;
+    onChanged: (cb: () => void) => () => void;
+    /** Sign-in kept the account's different gateway; fires once per revision. */
+    onMigrationConflict: (cb: () => void) => () => void;
+  };
   searchLinearIssues: (query: string) => Promise<LinearTicketSearchResult[]>;
   resolvePullRequest: (
     request: ResolvePullRequestRequest,
@@ -20434,6 +20849,9 @@ export interface CanopyApi {
   cloudProjects: CloudProjectsApi;
   /** Cloud cowork chats over the web core (CAN-4185). */
   cloudChats: CloudChatsApi;
+  /** A desktop skill's or plugin's cloud copy (CAN-6176). */
+  cloudCopy: CloudCopyApi;
+  cloudReachBack: CloudReachBackApi;
   /** Personal organization promotion and project bring-along (CAN-3706). */
   personalOrganizationUpgrade: PersonalOrganizationUpgradeApi;
   /** Hosted account and organization settings through the main bridge. */
@@ -20525,6 +20943,7 @@ export interface CanopyApi {
     scan(request: RepoRulesScanRequest): Promise<RepoRulesScanResponse>;
     apply(request: RepoRulesApplyRequest): Promise<RepoRulesApplyResponse>;
     status(request: { workspaceId: string }): Promise<RepoRulesStatus>;
+    check(request: { workspaceId: string }): Promise<RepoRulesCheckResponse>;
     preview(
       request: RepoRulesPreviewRequest,
     ): Promise<RepoRulesPreviewResponse>;
@@ -20855,7 +21274,11 @@ export type NavigationPage =
   | 'overview'
   | 'home'
   | 'chat'
-  /** One cloud cowork chat from the web core (CAN-4185), behind canopy-desktop-cloud-chats. */
+  /**
+   * Legacy id of the retired cloud chat page (CAN-4185), kept so older
+   * controllers and desktops still parse it. `navigate` opens the cowork
+   * page, where cloud tasks open since CAN-6175 R2b.
+   */
   | 'cloud-chat'
   | 'pipelines'
   | 'plugins'
@@ -25448,6 +25871,12 @@ export type AppAdvisorWatcherTarget =
       worktreeId: string;
       executionId?: string;
       pipelineId?: string;
+      /**
+       * Cloud runs (CAN-6391): the cloud run `executionId` names, or the
+       * cloud runs of the project's owner that start after the watcher is
+       * armed. Omitted: runs on this computer, in this worktree.
+       */
+      runOn?: 'cloud';
       workspaceName?: string;
       worktreeBranchName?: string;
       pipelineName?: string;
@@ -25728,6 +26157,12 @@ export interface AppAdvisorWatcher {
     consume: boolean;
     pipelineTransitionKey?: string;
     pipelineExecutionId?: string;
+    /**
+     * The owner a cloud run was recorded with when the queued notice was
+     * observed (CAN-6391): its delivery is authorized as that owner's, not
+     * as whoever owns the project when it is retried.
+     */
+    cloudRunOwner?: string;
     /**
      * Set when the queued message is an App Advisor prompt automation run, so
      * a retry stays gated by project-agent access even if the automation's
@@ -26881,7 +27316,12 @@ export interface ClaudeTerminalApi {
  * terminal in Settings → Accounts. The main process maps this discriminant to
  * the bundled binary + login subcommand to spawn.
  */
-export type AuthTerminalProvider = 'claude' | 'codex' | 'github' | 'opencode';
+export type AuthTerminalProvider =
+  | 'claude'
+  | 'codex'
+  | 'github'
+  | 'opencode'
+  | 'antigravity';
 
 export interface AuthTerminalStartRequest {
   provider: AuthTerminalProvider;
@@ -26969,10 +27409,12 @@ export const IPC_CHANNELS = {
   canopyCoreRelay: 'canopy-core:relay',
   appWindowReload: 'app-window:reload',
   appWindowRestart: 'app-window:restart',
+  appWindowLookUpSelection: 'app-window:look-up-selection', // renderer → main invoke
   appWindowSetUnsavedChanges: 'app-window:set-unsaved-changes', // renderer → main invoke
   appWindowConfirmClose: 'app-window:confirm-close', // main → renderer event
   appWindowConfirmCloseResponse: 'app-window:confirm-close-response', // renderer → main invoke
   appStartupUnlocked: 'app:startup-unlocked',
+  appWorkspaceStartupWait: 'app:workspace-startup-wait',
   globalFocusShortcutGetStatus: 'global-focus-shortcut:get-status',
   globalFocusShortcutUpdate: 'global-focus-shortcut:update',
   globalFocusShortcutStatusChanged: 'global-focus-shortcut:status-changed',
@@ -27090,6 +27532,7 @@ export const IPC_CHANNELS = {
   activityFileDiff: REMOTE_IPC_CHANNELS.activityFileDiff,
   activityTurnFileDiff: 'activity:turn-file-diff',
   trackedPlansList: 'tracked-plans:list',
+  trackedPlansListWithSkipped: 'tracked-plans:list-with-skipped',
   trackedPlansGet: REMOTE_IPC_CHANNELS.trackedPlansGet,
   trackedPlansCreate: 'tracked-plans:create',
   trackedPlansUpdate: REMOTE_IPC_CHANNELS.trackedPlansUpdate,
@@ -27147,6 +27590,10 @@ export const IPC_CHANNELS = {
   sharedContainersReadForkProvenance: 'shared-containers:read-fork-provenance',
   sharedContainersDismiss: 'shared-containers:dismiss',
   sharedContainersListDismissed: 'shared-containers:list-dismissed',
+  sharedContainersListOwnerDepartures:
+    'shared-containers:list-owner-departures',
+  sharedContainersDismissOwnerDeparture:
+    'shared-containers:dismiss-owner-departure',
   sharedContainersRestore: 'shared-containers:restore',
   sharedContainersRetry: 'shared-containers:retry',
   sharedContainersClose: 'shared-containers:close',
@@ -27203,6 +27650,9 @@ export const IPC_CHANNELS = {
   worktreeArchive: REMOTE_IPC_CHANNELS.worktreeArchive,
   worktreeActivityEntities: REMOTE_IPC_CHANNELS.worktreeActivityEntities,
   worktreeCheckRemovalAdmission: 'worktree:check-removal-admission',
+  worktreeRecoveryList: 'worktree:recovery-list',
+  worktreeRecoveryResolve: 'worktree:recovery-resolve',
+  worktreeRecoveryFinish: 'worktree:recovery-finish',
   worktreeDiscardDescribe: REMOTE_IPC_CHANNELS.worktreeDiscardDescribe,
   worktreeDiscard: REMOTE_IPC_CHANNELS.worktreeDiscard,
   workspaceDeleteDiscardDescribe:
@@ -27564,6 +28014,11 @@ export const IPC_CHANNELS = {
   modelGatewaySaveCredential: 'model-gateway:save-credential',
   modelGatewayValidateCredential: 'model-gateway:validate-credential',
   modelGatewayCredentialChanged: 'model-gateway:credential-changed',
+  localModelGatewayRead: 'local-model-gateway:read',
+  localModelGatewayUpdate: 'local-model-gateway:update',
+  localModelGatewayConnect: 'local-model-gateway:connect',
+  localModelGatewayChanged: 'local-model-gateway:changed',
+  localModelGatewayMigrationConflict: 'local-model-gateway:migration-conflict',
   settingsLoadCanopyCloudAccount: 'settings:load-canopy-cloud-account',
   settingsCanopyCloudSessionStatusChanged:
     'settings:canopy-cloud-session-status-changed',
@@ -28020,7 +28475,13 @@ export const IPC_CHANNELS = {
   cloudProjectsStartSetup: 'cloud-projects:start-setup',
   cloudProjectsSetupProgress: 'cloud-projects:setup-progress',
   cloudChatsReconnect: 'cloud-chats:reconnect',
+  cloudReachBackList: 'cloud-reach-back:list',
+  cloudReachBackActivity: 'cloud-reach-back:activity',
+  cloudReachBackAllow: 'cloud-reach-back:allow',
+  cloudReachBackDisallow: 'cloud-reach-back:disallow',
   cloudChatsUploadAttachment: 'cloud-chats:upload-attachment',
+  cloudChatsDownloadFile: 'cloud-chats:download-file',
+  cloudCopyAnalyze: 'cloud-copy:analyze',
   orgProjectsMoveBackToPersonal: 'org-projects:move-back-to-personal',
   orgProjectsOwnershipChanged: 'org-projects:ownership-changed',
   orgProjectsList: REMOTE_IPC_CHANNELS.orgProjectsList,
@@ -28195,6 +28656,7 @@ export const IPC_CHANNELS = {
   repoRulesScan: REMOTE_IPC_CHANNELS.repoRulesScan,
   repoRulesApply: REMOTE_IPC_CHANNELS.repoRulesApply,
   repoRulesStatus: REMOTE_IPC_CHANNELS.repoRulesStatus,
+  repoRulesCheck: REMOTE_IPC_CHANNELS.repoRulesCheck,
   repoRulesPreview: REMOTE_IPC_CHANNELS.repoRulesPreview,
   editorSetupPresence: REMOTE_IPC_CHANNELS.editorSetupPresence,
   // Read-only composer menus and the plugin picker catalog for controllers

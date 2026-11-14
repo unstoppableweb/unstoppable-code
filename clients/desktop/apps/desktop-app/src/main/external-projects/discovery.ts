@@ -1,23 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import { readGitHeadState } from '@canopy/core-runtime/node/git';
 import {
-  getBrandOwnedDataDirRoots,
-  getCanopySecureDataDir,
-} from '@canopy/execution-engine/canopy-paths';
-import type {
-  ExternalProjectCandidate,
-  ExternalProjectDetectedPlugin,
-  ExternalProjectDiscoverRequest,
-  ExternalProjectDiscoverResponse,
-  ExternalProjectProvider,
-  SidebarItem,
+  EXTERNAL_PROJECT_PROVIDERS,
+  type ExternalProjectCandidate,
+  type ExternalProjectDetectedPlugin,
+  type ExternalProjectDiscoverRequest,
+  type ExternalProjectDiscoverResponse,
+  type ExternalProjectProvider,
+  type SidebarItem,
 } from '@canopy/desktop-shared/types';
 import { getGitCommonDir, getWorktreeTopLevel } from '../lib/git';
-import { getDataDir } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { readWorkspaceConfigDetailed } from '../lib/workspace-persistence';
@@ -32,15 +28,23 @@ import {
 } from './ledger';
 import {
   normalizeDiscoveredRoots,
+  preferredSession,
   type ExistingWorkspaceIdentity,
   type NormalizeDeps,
 } from './normalize';
 import { findNestedRepositories } from './nested-repositories';
+import { collectExcludedRoots, safeRealpath } from './excluded-roots';
+import { discoverOpenCodeProjects } from './opencode-discovery';
+import { collectOwnOpenCodeSessionIds } from './own-opencode-sessions';
 import {
   resolveClaudeDesktopCoworkSessionsDir,
   resolveClaudeDesktopDataDir,
+  resolveOpenCodeDatabasePath,
 } from './provider-paths';
+import { StoreReadRunner } from './store-read-runner';
+import { discoverT3CodeProjects } from './t3code-discovery';
 import type {
+  AdapterResult,
   DiscoveredRoot,
   DiscoveredSession,
   DiscoveryDiagnostic,
@@ -75,49 +79,6 @@ export function getCachedExternalProjectScan(
   scanId: string,
 ): CachedScan | null {
   return scanCache.get(scanId) ?? null;
-}
-
-async function safeRealpath(candidate: string): Promise<string> {
-  try {
-    return await realpath(candidate);
-  } catch {
-    return path.resolve(candidate);
-  }
-}
-
-/**
- * Temporary directories never hold real projects, only tool and test
- * scratch. The UI-automation harness keeps every fixture under the OS temp
- * dir, so the E2E build alone may lift that rule through an explicit env
- * opt-in; production builds erase the branch at compile time.
- */
-function temporaryRootsExcluded(): boolean {
-  if (
-    __CANOPY_E2E__ &&
-    process.env.CANOPY_E2E_ALLOW_TEMP_PROJECT_IMPORT === '1'
-  ) {
-    return false;
-  }
-  return true;
-}
-
-async function collectExcludedRoots(): Promise<string[]> {
-  const roots = new Set<string>();
-  const candidates = [
-    getDataDir(),
-    getCanopySecureDataDir(),
-    ...getBrandOwnedDataDirRoots(),
-  ];
-  if (temporaryRootsExcluded()) {
-    candidates.push(tmpdir(), '/tmp', '/private/tmp', '/private/var/folders');
-  }
-  for (const candidate of candidates) {
-    roots.add(await safeRealpath(candidate));
-    // Provider stores record paths as the app passed them, which may be the
-    // unresolved spelling; the Claude adapter's slug rule needs both.
-    roots.add(path.resolve(candidate));
-  }
-  return Array.from(roots);
 }
 
 async function describeExistingWorkspaces(
@@ -235,13 +196,15 @@ export async function discoverExternalProjects(
   const providers = new Set<ExternalProjectProvider>(
     request.providers && request.providers.length > 0
       ? request.providers
-      : ['claude', 'codex'],
+      : EXTERNAL_PROJECT_PROVIDERS,
   );
   const diagnostics: DiscoveryDiagnostic[] = [];
   const roots: DiscoveredRoot[] = [];
   const providersDetected: Record<ExternalProjectProvider, boolean> = {
     claude: false,
     codex: false,
+    t3code: false,
+    opencode: false,
   };
 
   // Resolved once and shared with the normalizer below, so the folder tree
@@ -250,11 +213,44 @@ export async function discoverExternalProjects(
   const claudeDesktopDir = resolveClaudeDesktopDataDir();
   // Also resolved before the adapters run: the Claude adapter skips project
   // directories under these roots instead of reading transcripts the
-  // normalizer would only discard.
-  const excludedRoots = await collectExcludedRoots();
+  // normalizer would only discard, and the OpenCode adapter drops sessions
+  // run there (Canopy's own worktrees, and temp roots unless E2E lifts that).
+  const [excludedRoots, ownOpenCodeSessionIds] = await Promise.all([
+    collectExcludedRoots(),
+    providers.has('opencode')
+      ? collectOwnOpenCodeSessionIds({
+          onTruncated: (skipped) =>
+            diagnostics.push({
+              source: 'opencode',
+              message: `${skipped} OpenCode session ${skipped === 1 ? 'record' : 'records'} from this app ${skipped === 1 ? 'was' : 'were'} not read, so some chats it ran in OpenCode may be listed.`,
+            }),
+        })
+      : Promise.resolve(new Set<string>()),
+  ]);
   // The memory profile is rebuilt from the whole history, so only a scan
   // that read every provider may replace it.
-  let scannedWholeHistory = providers.has('claude') && providers.has('codex');
+  let scannedWholeHistory = EXTERNAL_PROJECT_PROVIDERS.every((provider) =>
+    providers.has(provider),
+  );
+  const record = (
+    provider: ExternalProjectProvider,
+    result: AdapterResult,
+  ): void => {
+    roots.push(...result.roots);
+    diagnostics.push(...result.diagnostics);
+    providersDetected[provider] = result.detected;
+  };
+  const recordFailure = (
+    provider: ExternalProjectProvider,
+    label: string,
+    error: unknown,
+  ): void => {
+    scannedWholeHistory = false;
+    diagnostics.push({
+      source: provider,
+      message: `${label} projects could not be scanned: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  };
 
   const adapters: Promise<void>[] = [];
   if (providers.has('claude')) {
@@ -262,39 +258,80 @@ export async function discoverExternalProjects(
       discoverClaudeProjects({
         desktopDataDir: claudeDesktopDir,
         excludedRoots,
-      })
-        .then((result) => {
-          roots.push(...result.roots);
-          diagnostics.push(...result.diagnostics);
-          providersDetected.claude = result.detected;
-        })
-        .catch((error: unknown) => {
-          scannedWholeHistory = false;
-          diagnostics.push({
-            source: 'claude',
-            message: `Claude projects could not be scanned: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        }),
+      }).then(
+        (result) => record('claude', result),
+        (error: unknown) => recordFailure('claude', 'Claude', error),
+      ),
     );
   }
   if (providers.has('codex')) {
     adapters.push(
-      discoverCodexProjects({ ownOriginators: [BRAND.id, 'canopy'] })
-        .then((result) => {
-          roots.push(...result.roots);
-          diagnostics.push(...result.diagnostics);
-          providersDetected.codex = result.detected;
-        })
-        .catch((error: unknown) => {
-          scannedWholeHistory = false;
-          diagnostics.push({
-            source: 'codex',
-            message: `Codex projects could not be scanned: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        }),
+      discoverCodexProjects({ ownOriginators: [BRAND.id, 'canopy'] }).then(
+        (result) => record('codex', result),
+        (error: unknown) => recordFailure('codex', 'Codex', error),
+      ),
     );
   }
-  await Promise.all(adapters);
+  // One store read worker serves both SQLite stores for the whole scan.
+  const storeRunner = new StoreReadRunner();
+  try {
+    // T3 threads backed by OpenCode resolve against the sessions the OpenCode
+    // scan found, so T3 waits for it; Claude and Codex never wait.
+    let openCodeSessionSizes: Promise<ReadonlyMap<string, number>> =
+      Promise.resolve(new Map<string, number>());
+    if (providers.has('opencode')) {
+      openCodeSessionSizes = discoverOpenCodeProjects({
+        runner: storeRunner,
+        excludedRoots,
+        ownSessionIds: ownOpenCodeSessionIds,
+      }).then(
+        (result) => {
+          record('opencode', result);
+          return new Map(
+            result.roots.flatMap((root) =>
+              root.sessions.map((session): [string, number] => [
+                session.id,
+                session.sizeBytes,
+              ]),
+            ),
+          );
+        },
+        (error: unknown) => {
+          recordFailure('opencode', 'OpenCode', error);
+          return new Map<string, number>();
+        },
+      );
+      adapters.push(openCodeSessionSizes.then(() => undefined));
+    }
+    if (providers.has('t3code')) {
+      adapters.push(
+        openCodeSessionSizes
+          .then((sizes) =>
+            discoverT3CodeProjects({
+              runner: storeRunner,
+              openCodeSessionSizes: sizes,
+              openCodeDbPath: resolveOpenCodeDatabasePath(),
+            }),
+          )
+          .then(
+            (result) => {
+              record('t3code', result);
+              const skipped = result.scratchThreadsSkipped;
+              if (skipped > 0) {
+                diagnostics.push({
+                  source: 't3code',
+                  message: `${skipped} "No project" ${skipped === 1 ? 'chat was' : 'chats were'} skipped.`,
+                });
+              }
+            },
+            (error: unknown) => recordFailure('t3code', 'T3 Code', error),
+          ),
+      );
+    }
+    await Promise.all(adapters);
+  } finally {
+    await storeRunner.close();
+  }
 
   for (const customRoot of request.customRoots ?? []) {
     if (typeof customRoot !== 'string' || !path.isAbsolute(customRoot)) {
@@ -453,16 +490,19 @@ export function collectSessionsForCandidate(
   roots: DiscoveredRoot[],
 ): DiscoveredSession[] {
   const wanted = new Set(sessionIds);
-  const out: DiscoveredSession[] = [];
-  const seen = new Set<string>();
+  // The same rule as the normalizer's, so the session imported is the row shown.
+  const byId = new Map<string, DiscoveredSession>();
   for (const root of roots) {
     for (const session of root.sessions) {
-      if (!wanted.has(session.id) || seen.has(session.id)) continue;
-      seen.add(session.id);
-      out.push(session);
+      if (!wanted.has(session.id)) continue;
+      const existing = byId.get(session.id);
+      byId.set(
+        session.id,
+        existing ? preferredSession(existing, session) : session,
+      );
     }
   }
-  return out;
+  return Array.from(byId.values());
 }
 
 export function resetExternalProjectScanCacheForTests(): void {

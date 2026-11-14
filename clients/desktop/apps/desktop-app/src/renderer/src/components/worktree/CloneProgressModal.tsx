@@ -168,6 +168,7 @@ function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
         )}
       </FactList>
       <DesktopErrorBanner
+        errorSource="clone-job-row"
         className=""
         error={error?.error}
         details={error?.details}

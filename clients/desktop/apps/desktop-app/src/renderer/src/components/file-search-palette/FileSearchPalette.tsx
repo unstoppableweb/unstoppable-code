@@ -21,6 +21,7 @@ import { shouldFetchFileSearchPaletteEntry } from './file-search-palette-state';
 import { HighlightedSegments, splitMatchSegments } from '@canopy/ui-shared';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
+  Surface,
   DelayedLoadingPlaceholder,
   DialogModal,
   ErrorState,
@@ -339,7 +340,7 @@ export function FileSearchPalette({
       {/* The palette's own keys: Escape closes from anywhere inside, even a
           focused result row, which the dialog's Escape leaves to the list. */}
       <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
-        <div className="border-b">
+        <Surface variant="section" boundary="bottom">
           <SearchField
             ref={inputRef}
             size="lg"
@@ -362,7 +363,7 @@ export function FileSearchPalette({
             data-testid="file-search-palette-input"
             disabled={!selectedWorktree}
           />
-        </div>
+        </Surface>
         <div
           ref={scrollRef}
           data-testid="file-search-palette-scroll"

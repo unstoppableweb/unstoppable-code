@@ -177,6 +177,7 @@ export function LabelField({
             </div>
             <div id={errorId}>
               <DesktopErrorBanner
+                errorSource="label-field"
                 className=""
                 error={error?.error}
                 details={error?.details}

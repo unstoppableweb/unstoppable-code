@@ -22,6 +22,7 @@ import type {
   RepoRulesScanResponse,
   RepoRulesApplyRequest,
   RepoRulesApplyResponse,
+  RepoRulesCheckResponse,
   RepoRulesStatus,
   RepoRulesPreviewRequest,
   RepoRulesPreviewResponse,
@@ -36,6 +37,8 @@ import type {
   SidebarItemGroupMoveRequest,
 } from '@canopy/protocol/sidebar';
 import type {
+  PortalWorktreeBranchesListPayload,
+  PortalWorktreeBranchesListResult,
   PortalChatInputDeliveryPayload,
   PortalProviderUsageRefreshPayload,
 } from '@canopy/protocol/portal';
@@ -53,6 +56,8 @@ import type {
   PortalWorktreeDiscardPayload,
   WorktreeDiscardDescription,
   WorktreeDiscardResult,
+  WorktreeArchiveResult,
+  WorktreeRemovalOutcome,
 } from '@canopy/protocol/portal/worktree-discard';
 import type {
   ManagedDelegationExtendLifetimeLimitResult,
@@ -241,6 +246,10 @@ export interface QueryMap
     SuggestionsQueryMap,
     ClaudeModsQueryMap,
     ShellQueryMap {
+  'worktree.baseBranches': {
+    args: PortalWorktreeBranchesListPayload;
+    result: PortalWorktreeBranchesListResult;
+  };
   /** Read the authoritative managed-delegation allowance for one worktree. */
   'delegation.lifetimeStatus': {
     args: { readonly projectId: string; readonly worktreeId: string };
@@ -253,6 +262,10 @@ export interface QueryMap
   'repoRules.status': {
     args: { workspaceId: string };
     result: RepoRulesStatus;
+  };
+  'repoRules.check': {
+    args: { workspaceId: string };
+    result: RepoRulesCheckResponse;
   };
   'repoRules.preview': {
     args: RepoRulesPreviewRequest;
@@ -685,7 +698,8 @@ export interface CommandMap
   };
   'worktree.archive': {
     args: PortalWorktreeArchivePayload;
-    result: void;
+    /** Legacy callers retain raw answers; recovery callers require a settled outcome. */
+    result: WorktreeArchiveResult | WorktreeRemovalOutcome;
   };
   'worktree.reorder': {
     args: PortalWorktreeReorderPayload;
@@ -885,6 +899,11 @@ export type CommandName = keyof CommandMap;
  * `as` casts so the public contract stays honest.
  */
 export interface CanopyClient {
+  /** Host-local, once-per-incident notification receipts; absent on unsupported hosts. */
+  readonly autoDeleteAttentionReceipts?: {
+    hasShown(incidentId: string): boolean;
+    markShown(incidentId: string): void;
+  };
   readonly feedback?: FeedbackReportClient;
   /** Open a web URL outside the app through the host's browser. */
   openExternalUrl?(url: string): void;

@@ -210,6 +210,7 @@ export function ManagedDelegationSettings({
       dataTestId="managed-delegation-settings"
     >
       <DesktopErrorBanner
+        errorSource="settings-managed-delegation-save-error"
         className=""
         error={error?.error}
         {...(error?.details === undefined ? {} : { details: error.details })}
@@ -217,6 +218,7 @@ export function ManagedDelegationSettings({
         testId="settings-managed-delegation-save-error"
       />
       <DesktopErrorBanner
+        errorSource="settings-managed-delegation-revocation-incomplete"
         className=""
         error={
           error === null && revocationIncomplete

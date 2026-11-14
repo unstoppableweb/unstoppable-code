@@ -1,18 +1,20 @@
 import path from 'node:path';
 import {
+  EXTERNAL_PROJECT_PROVIDERS,
   IPC_CHANNELS,
   type ExternalProjectDiscoverRequest,
   type ExternalProjectDiscoverResponse,
   type ExternalProjectImportInviteState,
   type ExternalProjectImportRequest,
   type ExternalProjectImportResponse,
+  type ExternalProjectProvider,
   type ExternalProjectProviderPresence,
 } from '@canopy/desktop-shared/types';
 import { discoverExternalProjects } from '../external-projects/discovery';
 import { importExternalProjects } from '../external-projects/import';
 import {
-  hasAnyProviderStore,
   readExternalProjectImportInvite,
+  readProviderPresenceByProvider,
 } from '../external-projects/invite';
 import { markExternalProjectInviteShown } from '../external-projects/ledger';
 import { chooseDirectoryForEvent } from '../lib/dialog-window';
@@ -36,8 +38,8 @@ function normalizeDiscoverRequest(
   if (!isRecord(request)) return {};
   const providers = Array.isArray(request.providers)
     ? request.providers.filter(
-        (provider): provider is 'claude' | 'codex' =>
-          provider === 'claude' || provider === 'codex',
+        (provider): provider is ExternalProjectProvider =>
+          EXTERNAL_PROJECT_PROVIDERS.some((known) => known === provider),
       )
     : undefined;
   const customRoots = Array.isArray(request.customRoots)
@@ -107,7 +109,13 @@ export function registerExternalProjectHandlers(): void {
 
   registerIpcHandler<[], ExternalProjectProviderPresence>(
     IPC_CHANNELS.externalProjectsProviderPresence,
-    async () => ({ providerStoresPresent: await hasAnyProviderStore() }),
+    async () => {
+      const providers = await readProviderPresenceByProvider();
+      return {
+        providerStoresPresent: Object.values(providers).some(Boolean),
+        providers,
+      };
+    },
   );
 
   registerIpcHandler<[], void>(

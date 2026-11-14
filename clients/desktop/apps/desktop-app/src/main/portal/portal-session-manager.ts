@@ -28,6 +28,7 @@ import { portalSnapshotWorkBudget } from './portal-snapshot-work-budget';
 import { portalFileReferences } from './portal-file-references';
 import { closePortalAssetTransfers } from '../services/portal-asset-service';
 import {
+  PORTAL_CAPABILITY_WORKTREE_BASE_BRANCH_V2,
   PORTAL_CAPABILITY_ITEM_GROUPING,
   PORTAL_CAPABILITY_QUEUE_EDIT_LOCK_OWNERSHIP,
   PORTAL_CAPABILITY_CHAT_MARK_READ,
@@ -70,6 +71,8 @@ import {
   PORTAL_CAPABILITY_TRANSCRIPT_READS_V2,
   PORTAL_CAPABILITY_CHAT_CREATE_TAB_SETTINGS,
   PORTAL_CAPABILITY_CHAT_PLAN_REVIEW,
+  PORTAL_CAPABILITY_ARCHIVED_WORK_ENTRIES,
+  PORTAL_CAPABILITY_STANDALONE_CHAT_ARCHIVE,
   PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE,
   PORTAL_CAPABILITY_WORKTREE_CREATE_FROM,
   PORTAL_CAPABILITY_WORK_ENTRY_COMMANDS,
@@ -80,6 +83,7 @@ import {
   PORTAL_CAPABILITY_PLUGIN_SHARE_PREFLIGHT,
   PORTAL_CAPABILITY_INSTALLED_ITEMS,
   PORTAL_CAPABILITY_WORKTREE_DISCARD,
+  PORTAL_CAPABILITY_WORKTREE_RECOVERY,
   PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD,
   PORTAL_CAPABILITY_MCP_MANAGEMENT,
   PORTAL_CAPABILITY_COLLECTION_MUTATIONS,
@@ -239,6 +243,8 @@ const PORTAL_SESSION_CAPABILITIES = {
   [MODEL_LIBRARY_PORTAL_CAPABILITY]: true,
   personal_organization_projects: true,
   'org-shared-multi-repo-setup-v1': true,
+  // Do not advertise v1: old pickers alias canonical local origin/* to remote *.
+  [PORTAL_CAPABILITY_WORKTREE_BASE_BRANCH_V2]: true,
   [PORTAL_CAPABILITY_ITEM_GROUPING]: true,
   [PORTAL_CAPABILITY_QUEUE_EDIT_LOCK_OWNERSHIP]: true,
   [PORTAL_CAPABILITY_PR_WORKTREE_ACTIONS]: true,
@@ -256,6 +262,7 @@ const PORTAL_SESSION_CAPABILITIES = {
   [PORTAL_CAPABILITY_INSTALLED_ITEMS]: true,
   [PORTAL_CAPABILITY_PLUGIN_SHARE_PREFLIGHT]: true,
   [PORTAL_CAPABILITY_WORKTREE_DISCARD]: true,
+  [PORTAL_CAPABILITY_WORKTREE_RECOVERY]: true,
   [PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD]: true,
   [PORTAL_CAPABILITY_MCP_MANAGEMENT]: true,
   // `portal.collections.save` (plugin-catalog-adapter, CAN-4847).
@@ -269,6 +276,8 @@ const PORTAL_SESSION_CAPABILITIES = {
   [PORTAL_CAPABILITY_TRANSCRIPT_READS]: true,
   [PORTAL_CAPABILITY_TRANSCRIPT_READS_V2]: true,
   // Announced with `portal.standalone_chat.create` (standalone-chat-adapter).
+  [PORTAL_CAPABILITY_STANDALONE_CHAT_ARCHIVE]: true,
+  [PORTAL_CAPABILITY_ARCHIVED_WORK_ENTRIES]: true,
   [PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE]: true,
   // Task commands for the Tasks tools: create from a branch, base or pull
   // request with a group and first chat (worktree-adapter); Work Entry
@@ -1888,6 +1897,18 @@ function isInactiveSessionResponse(error: unknown): boolean {
   );
 }
 
+function requestPortalSessionHeartbeat(
+  sessionId: string,
+): ReturnType<typeof sendPortalHeartbeat> {
+  const clientPlatform = resolvePortalClientPlatform();
+  return sendPortalHeartbeat({
+    sessionId,
+    capabilities: portalSessionCapabilities(),
+    clientVersion: app.getVersion(),
+    ...(clientPlatform === undefined ? {} : { clientPlatform }),
+  });
+}
+
 /**
  * Outcome of a one-shot heartbeat probe (CAN-2651).
  *
@@ -1915,13 +1936,7 @@ async function sendHeartbeatNow(
     return 'unavailable';
   }
   try {
-    const clientPlatform = resolvePortalClientPlatform();
-    const response = await sendPortalHeartbeat({
-      sessionId,
-      capabilities: portalSessionCapabilities(),
-      clientVersion: app.getVersion(),
-      ...(clientPlatform === undefined ? {} : { clientPlatform }),
-    });
+    const response = await requestPortalSessionHeartbeat(sessionId);
     if (pollAbort || state.sessionId !== sessionId) {
       return 'unavailable';
     }
@@ -2122,6 +2137,34 @@ async function transitionInactiveFromServer(): Promise<void> {
 }
 
 /**
+ * Get fresh server time at dequeue. Time sent in a poll frame can be stale
+ * before the desktop even reads its bytes. Include the whole round trip as
+ * an upper bound on the age of the heartbeat timestamp at dispatch.
+ */
+async function checkArchiveStart(
+  sessionId: string,
+  expiresAt: string | null | undefined,
+): Promise<'ready' | 'expired' | 'unavailable'> {
+  const startedAt = performance.now();
+  try {
+    const heartbeat = await requestPortalSessionHeartbeat(sessionId);
+    const serverNow = Date.parse(heartbeat.serverNow ?? '');
+    const deadline = Date.parse(expiresAt ?? '');
+    if (
+      heartbeat.status !== 'active' ||
+      !Number.isFinite(serverNow) ||
+      !Number.isFinite(deadline)
+    )
+      return 'unavailable';
+    return deadline <= serverNow + (performance.now() - startedAt)
+      ? 'expired'
+      : 'ready';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/**
  * Apply one command-poll response — from either transport (HTTP long-poll or the
  * SSE stream). Handles inactive-session teardown, connection-status updates, and
  * per-command processing (expired skip, completed-command replay, dispatch,
@@ -2131,7 +2174,11 @@ async function transitionInactiveFromServer(): Promise<void> {
  */
 async function applyPollResponse(
   response: PollPortalCommandsResponse,
+  batchGeneration: number,
 ): Promise<'ok' | 'stopped'> {
+  const isCurrentArchiveBatch = (): boolean =>
+    state.sessionId === response.session.id &&
+    portalSessionIdentityGeneration === batchGeneration;
   lastPollProgressAt = Date.now();
   if (response.session.status === 'inactive') {
     // CAN-2651: `status: 'inactive'` on its own is NOT terminal. The sweep
@@ -2172,9 +2219,8 @@ async function applyPollResponse(
   }
 
   for (const command of response.commands) {
-    if (pollAbort) {
-      return 'stopped';
-    }
+    const isArchive = command.type === 'portal.standalone_chat.archive';
+    if (pollAbort || (isArchive && !isCurrentArchiveBatch())) return 'stopped';
 
     const commandReceivedAt = performance.now();
     if (command.type === 'portal.state.request') {
@@ -2189,23 +2235,55 @@ async function applyPollResponse(
     const completed = await readCompletedPortalCommand(command.id).catch(
       () => null,
     );
-    if (completed) {
+    // The receipt read can overlap a pairing swap. An archive in this
+    // batch still belongs to the pairing that received it.
+    if (isArchive && (pollAbort || !isCurrentArchiveBatch())) return 'stopped';
+    if (
+      completed &&
+      (!isArchive || completed.events.some(isTerminalCommandEvent))
+    ) {
       for (const event of completed.events) {
-        enqueueEvent(event);
+        const queued = enqueueEvent(event);
+        if (isArchive && isTerminalCommandEvent(event) && !queued)
+          throw new Error('Archive receipt could not be queued');
       }
       await flushOutboxBeforeNextCommandBatch();
-      if (pollAbort) {
+      if (isArchive && !pollAbort && isCurrentArchiveBatch())
+        await persistOutboxNow();
+      if (pollAbort || (isArchive && !isCurrentArchiveBatch()))
         return 'stopped';
-      }
       commandCursor = Math.max(commandCursor, command.sequence);
       await persistPortalCommandCursor({
+        ...(isArchive ? { sessionId: response.session.id } : {}),
         commandCursor: commandCursorSafeToPersist(),
         lastSeenAt: response.session.lastSeenAt,
       }).catch(() => undefined);
       continue;
     }
 
-    if (command.status === 'expired' || command.status === 'failed') {
+    const commandSessionId = isArchive ? response.session.id : state.sessionId;
+    const commandSessionGeneration = isArchive
+      ? batchGeneration
+      : portalSessionIdentityGeneration;
+    const archiveStart =
+      command.type === 'portal.standalone_chat.archive' &&
+      command.status !== 'expired' &&
+      command.status !== 'failed'
+        ? commandSessionId
+          ? await checkArchiveStart(commandSessionId, command.expiresAt)
+          : 'unavailable'
+        : 'ready';
+    if (
+      pollAbort ||
+      state.sessionId !== commandSessionId ||
+      portalSessionIdentityGeneration !== commandSessionGeneration
+    )
+      return 'stopped';
+    if (
+      command.status === 'expired' ||
+      command.status === 'failed' ||
+      archiveStart !== 'ready'
+    ) {
       if (
         command.type === 'portal.worktree.create' ||
         command.type === 'portal.state.request' ||
@@ -2216,30 +2294,50 @@ async function applyPollResponse(
         command.type === 'portal.pipeline.cancel' ||
         command.type === 'portal.pipeline.resume' ||
         command.type === 'portal.pipeline.retry' ||
-        command.type === 'portal.pipeline.rerun'
+        command.type === 'portal.pipeline.rerun' ||
+        // Expired before it ran: report it so the Portal stops waiting and
+        // offers its inline retry instead of timing out.
+        command.type === 'portal.standalone_chat.archive'
       ) {
+        // Exact command receipts are replayed above. Expiry cannot turn a
+        // removed row into proof that a fresh Archive command succeeded.
         const failureEvent = createPortalCommandEvent(
           command,
           'portal.command.failed',
           createCommandFailedPayload(
             command,
             'execution_failed',
-            command.status === 'expired'
+            command.status === 'expired' || archiveStart === 'expired'
               ? 'The request expired before it completed. Check the current state, then try again.'
               : 'The request could not be delivered. Check the current state, then try again.',
             false,
           ),
         );
         const stampedFailureEvent = enqueueEvent(failureEvent);
+        if (isArchive && !stampedFailureEvent)
+          throw new Error('Archive receipt could not be queued');
         await persistCompletedPortalCommand({
           commandId: command.id,
           sequence: command.sequence,
           events: stampedFailureEvent ? [stampedFailureEvent] : [],
         });
+        if (isArchive) {
+          if (pollAbort || !isCurrentArchiveBatch()) return 'stopped';
+          // A joined network flush may omit this receipt. Save it locally
+          // before the cursor can prevent redelivery after a restart.
+          await persistOutboxNow();
+        }
         await flushOutbox();
+        if (
+          pollAbort ||
+          state.sessionId !== commandSessionId ||
+          (isArchive && !isCurrentArchiveBatch())
+        )
+          return 'stopped';
       }
       commandCursor = Math.max(commandCursor, command.sequence);
       await persistPortalCommandCursor({
+        ...(isArchive ? { sessionId: response.session.id } : {}),
         commandCursor: commandCursorSafeToPersist(),
         lastSeenAt: response.session.lastSeenAt,
       }).catch(() => undefined);
@@ -2286,8 +2384,6 @@ async function applyPollResponse(
     }
 
     const commandEvents: PortalEventEnvelope[] = [];
-    const commandSessionId = state.sessionId;
-    const commandSessionGeneration = portalSessionIdentityGeneration;
     let deferred = false;
     let finalizing = false;
     let acceptingCommandEvents = true;
@@ -2346,6 +2442,17 @@ async function applyPollResponse(
     await handlePortalCommand(command, {
       sessionId: commandSessionId ?? undefined,
       chatDispatcher: chatCommandDispatcher,
+      // Browser acceptance checks owned-session entitlement and the destructive
+      // kill switch. Only this same authenticated, active pairing may mutate.
+      canArchiveStandaloneChats: canReadSession,
+      // Server-confirmed pairing before an archive's destructive step: a
+      // heartbeat answers inactive for an ended pairing, and anything but a
+      // live answer fails closed.
+      confirmArchivePairing: async () =>
+        canReadSession() &&
+        commandSessionId !== null &&
+        (await sendHeartbeatNow(commandSessionId)) === 'active' &&
+        canReadSession(),
       canReadAssets: canReadSession,
       canMutateResources: canReadSession,
       canReadTranscripts: canReadSession,
@@ -2396,6 +2503,7 @@ async function applyPollResponse(
     // Its result and acknowledgement must never advance that session's cursor.
     if (pollAbort || state.sessionId !== commandSessionId) return 'stopped';
     await flushOutboxBeforeNextCommandBatch();
+    if (isArchive && (pollAbort || !isCurrentArchiveBatch())) return 'stopped';
     if (
       command.type === 'portal.state.request' &&
       (commandEvents.some((event) => event.type === 'portal.state.snapshot') ||
@@ -2447,12 +2555,25 @@ async function applyPollResponse(
       continue;
     }
     acceptingCommandEvents = false;
-    await persistCommandReceipt({
+    if (isArchive && !commandEvents.some(isTerminalCommandEvent))
+      throw new Error('Archive finished without a terminal receipt');
+    const receipt = persistCommandReceipt({
       commandId: command.id,
       sequence: command.sequence,
       events: commandEvents,
-    }).catch(() => undefined);
-    if (pollAbort || state.sessionId !== commandSessionId) return 'stopped';
+    });
+    // Redelivery is safe for Archive. A failed local write must leave both
+    // the live cursor and its persisted value behind the command.
+    if (isArchive) await receipt;
+    else await receipt.catch(() => undefined);
+    if (isArchive && !pollAbort && isCurrentArchiveBatch())
+      await persistOutboxNow();
+    if (
+      pollAbort ||
+      state.sessionId !== commandSessionId ||
+      (isArchive && !isCurrentArchiveBatch())
+    )
+      return 'stopped';
     commandCursor = Math.max(commandCursor, command.sequence);
     await persistPortalCommandCursor({
       sessionId: commandSessionId ?? undefined,
@@ -2533,18 +2654,11 @@ function classifyPortalSseErrorFrame(data: string): 'terminal' | 'transient' {
   return 'transient';
 }
 
-const portalCommandSseDeps: PortalCommandSseDeps = {
+const portalCommandSseDeps: Omit<PortalCommandSseDeps, 'onPollFrame'> = {
   isAborted: (): boolean => pollAbort,
   getSessionId: (): string | null => state.sessionId,
   getCursor: (): number => commandCursor,
   openStream: (input): Promise<Response> => openPortalCommandStream(input),
-  onPollFrame: async (data): Promise<'ok' | 'stopped'> => {
-    const response = parsePollCommandsResponse(data);
-    if (!response) {
-      return 'ok';
-    }
-    return applyPollResponse(response);
-  },
   classifyErrorFrame: (data): 'terminal' | 'transient' =>
     classifyPortalSseErrorFrame(data),
   flushOutbox: (): Promise<void> => flushOutbox(),
@@ -2562,6 +2676,7 @@ const portalCommandSseDeps: PortalCommandSseDeps = {
       setTimeout(resolve, ms);
     }),
   now: (): number => Date.now(),
+  // The same monotonic clock the server-anchored deadline subtracts from.
   connectTimeoutMs: SSE_COMMAND_CONNECT_TIMEOUT_MS,
   armTimeout: (ms, onFire): (() => void) => {
     const timer = setTimeout(onFire, ms);
@@ -2587,6 +2702,9 @@ async function pollLoop(): Promise<void> {
       if (pollAbort) {
         return;
       }
+      // Carry the epoch across the transport await. Reading it at dispatch
+      // time could authorize a response from an earlier pairing incarnation.
+      const batchGeneration = portalSessionIdentityGeneration;
 
       // Preferred transport: server→desktop command SSE stream (TS-02). On
       // fallback, drop to HTTP long-poll until the cooldown elapses, then
@@ -2600,8 +2718,15 @@ async function pollLoop(): Promise<void> {
           isSseCommandsEnabled(),
         )
       ) {
-        const outcome =
-          await runPortalCommandSseTransport(portalCommandSseDeps);
+        const outcome = await runPortalCommandSseTransport({
+          ...portalCommandSseDeps,
+          onPollFrame: async (data): Promise<'ok' | 'stopped'> => {
+            const response = parsePollCommandsResponse(data);
+            return response
+              ? applyPollResponse(response, batchGeneration)
+              : 'ok';
+          },
+        });
         pollAbortController = null;
         if (pollAbort) {
           return;
@@ -2634,7 +2759,7 @@ async function pollLoop(): Promise<void> {
         return;
       }
 
-      const applied = await applyPollResponse(response);
+      const applied = await applyPollResponse(response, batchGeneration);
       if (applied === 'stopped') {
         return;
       }

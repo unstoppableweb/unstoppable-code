@@ -1,3 +1,4 @@
+import { recordChatModelRecoverySettlement } from '@/lib/composerModelRecoveryTarget';
 import { resolveChatModelChangeHarness } from '@canopy/desktop-shared/lib/chat-model-selection';
 import {
   type AgentProviderType,
@@ -10,6 +11,7 @@ import {
   getProviderForModel,
   getProviderForChatModel,
   isOllamaModel,
+  isAgentModel,
   isSupportedOllamaModelEntry,
   modelConfigForProviderSupportsFastMode,
   type ModelRegistrySnapshot,
@@ -42,7 +44,11 @@ import {
   isTabAiCreditsRouted,
   resolveTabProviderType,
 } from '../tab-utils';
-import { getLockedHarness } from '@/lib/chatProviderLock';
+import {
+  canSwitchChatProvider,
+  getLockedHarness,
+} from '@/lib/chatProviderLock';
+import { hasPendingQuestionForChat } from '@/stores/chat/pending-questions';
 import {
   resolveFallbackModelForDeletedOllama,
   resolvePersistedDefaultChatInterfaceMode,
@@ -298,7 +304,9 @@ export const createModelsSlice: StateCreator<
     target,
     executionHarness,
     billingFramework,
+    options,
   ): Promise<boolean> => {
+    if (options?.isStillWanted?.() === false) return false;
     const pendingContext = getWorktreeChatContext(get(), target);
     if (!pendingContext) return false;
     const capturedTarget = {
@@ -307,12 +315,13 @@ export const createModelsSlice: StateCreator<
     };
     const requestKey = `${pendingContext.key}/${pendingContext.chatId}`;
     const requestId = nextMsgId();
+    const pendingRequest = { requestId, model: requestedModel };
     const isCurrentRequest = (): boolean =>
       get().pendingModelChanges[requestKey]?.requestId === requestId;
     set((state) => ({
       pendingModelChanges: {
         ...state.pendingModelChanges,
-        [requestKey]: { requestId, model: requestedModel },
+        [requestKey]: pendingRequest,
       },
     }));
     try {
@@ -340,7 +349,8 @@ export const createModelsSlice: StateCreator<
         pendingContext.chatId,
       );
       if (creation && (await creation) !== 'accepted') return false;
-      if (!isCurrentRequest()) return false;
+      if (!isCurrentRequest() || options?.isStillWanted?.(requestId) === false)
+        return false;
       const context = getWorktreeChatContext(get(), capturedTarget);
       if (!context?.activeTab) return false;
       const { selection: sel, key, chatId, activeTab: currentTab } = context;
@@ -462,14 +472,39 @@ export const createModelsSlice: StateCreator<
         currentTab !== undefined &&
         !currentTabHasContent;
 
+      // A switch is checked again as it is sent: a turn, queued message or
+      // question that arrived after the dialog opened (from another window or
+      // the Portal) keeps main from parking a running provider (CAN-6445).
+      if (
+        options?.switchesProvider === true &&
+        !canSwitchChatProvider(
+          {
+            ...currentTab,
+            hasUnansweredQuestion: hasPendingQuestionForChat(
+              get().pendingQuestions,
+              sel.projectId,
+              sel.worktreeId,
+              chatId,
+            ),
+          },
+          newProviderType,
+          sel.projectId,
+        ).ok
+      )
+        return false;
+
+      if (options?.isStillWanted?.(requestId) === false) return false;
       return await chatBackendFor(sel)
         .chat.changeModel({
           projectId: sel.projectId,
           worktreeId: sel.worktreeId,
           chatId,
           model,
-          lockedHarness: getLockedHarness(currentTab),
+          ...(options?.switchesProvider === true
+            ? {}
+            : { lockedHarness: getLockedHarness(currentTab) }),
           ...(executionHarness ? { executionHarness } : {}),
+          ...(options?.notice ? { notice: options.notice } : {}),
         })
         .then(async (accepted: boolean) => {
           // Main may commit a newer click before an older IPC reply reaches
@@ -649,6 +684,7 @@ export const createModelsSlice: StateCreator<
                 delete nextTab.claudeTerminal;
                 delete nextTab.lastTurnWasResumeAttempt;
               }
+              recordChatModelRecoverySettlement(pendingRequest, t, nextTab);
               return nextTab;
             }),
           );
@@ -711,6 +747,8 @@ export const createModelsSlice: StateCreator<
             // composer draft. Content-bearing tabs remain strict.
             const commandOptions = {
               acceptNotFound: !currentTabHasContent,
+              // The pick itself already applied: this only syncs its copy.
+              quietIfUnavailable: true,
             } as const;
             let disposition = await get().dispatchChatCommand(
               sel,
@@ -869,7 +907,14 @@ export const createModelsSlice: StateCreator<
     const resolveSnapshotHarness = (
       model: ChatModel,
       providerType: AgentProviderType,
-    ): 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | undefined =>
+    ):
+      | 'claude'
+      | 'codex'
+      | 'cursor'
+      | 'copilot'
+      | 'antigravity'
+      | 'opencode'
+      | undefined =>
       snapshot.harnessAssignments?.assignments.find(
         (assignment) => assignment.modelId === model,
       )?.harness ??
@@ -1226,6 +1271,15 @@ export const createModelsSlice: StateCreator<
     if (!context) return;
     const { activeTab } = context;
     if (!activeTab || activeTab.kind === 'file') return;
+    if (
+      mode === 'auto' &&
+      isAgentModel(
+        get().pendingModelChanges[`${context.key}/${context.chatId}`]?.model ??
+          activeTab.model ??
+          '',
+      )
+    )
+      return;
     if ((activeTab.modelSelectionMode === 'auto') === (mode === 'auto')) return;
 
     set((state) =>

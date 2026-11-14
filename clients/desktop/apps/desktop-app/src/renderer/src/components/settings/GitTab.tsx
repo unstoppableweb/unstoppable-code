@@ -408,6 +408,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
             </Stack>
           ) : null}
           <DesktopErrorBanner
+            errorSource="settings-git-executable-error"
             className=""
             error={failure?.error}
             {...(failure?.details === undefined
@@ -579,6 +580,7 @@ export function GitTab(): JSX.Element {
   return (
     <SettingsPage title="Git" dataTestId="settings-tab-git">
       <DesktopErrorBanner
+        errorSource="settings-git-load-error"
         className=""
         error={loadError?.error}
         {...(loadError?.details === undefined
@@ -587,6 +589,7 @@ export function GitTab(): JSX.Element {
         testId="settings-git-load-error"
       />
       <DesktopErrorBanner
+        errorSource="settings-git-save-error"
         className=""
         error={saveError?.error}
         {...(saveError?.details === undefined

@@ -243,6 +243,7 @@ function IssueBanner({
   const grouped = issuesByCode(filtered);
   return (
     <Notice
+      errorSource="split-plan-review-panel"
       intent={severity === 'error' ? 'destructive' : 'attention'}
       data-testid={`split-plan-${severity}-banner`}
       className=""

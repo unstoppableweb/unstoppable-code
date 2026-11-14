@@ -1051,6 +1051,7 @@ function GitHubPermissionsSection({
     permissions && permissions.tokenAvailable ? (
       <>
         <ErrorBanner
+          errorSource="git-hub-permissions-section"
           className=""
           error={githubPermissionsErrorCopy(permissions.error)}
         />

@@ -74,13 +74,17 @@ export function canopyRouteFixtures(): CanopyWorktreeSessionRoute[] {
     ...surfaces.flatMap((toolSurface) => [
       fixture(`${toolSurface}-full`, {
         toolSurface,
-        providerType: 'claude',
+        providerType: toolSurface.startsWith('antigravity-')
+          ? 'antigravity'
+          : 'claude',
         ledgerTools: ledgerTools(),
         codeGraphToolsAdvertised: true,
       }),
       fixture(`${toolSurface}-bare`, {
         toolSurface,
-        providerType: 'claude',
+        providerType: toolSurface.startsWith('antigravity-')
+          ? 'antigravity'
+          : 'claude',
         codeGraphToolsAdvertised: false,
       }),
     ]),

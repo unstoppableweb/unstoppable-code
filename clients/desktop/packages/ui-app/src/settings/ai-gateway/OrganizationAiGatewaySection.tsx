@@ -58,6 +58,7 @@ export function OrganizationAiGatewaySection({
   if (error)
     return (
       <ErrorBanner
+        errorSource="organization-ai-gateway-section"
         error={error.copy}
         details={error.details}
         onRetry={() => {

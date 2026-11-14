@@ -296,12 +296,14 @@ export function ApiKeysManager({
       </div>
 
       <ErrorBanner
+        errorSource="api-keys-manager-load"
         className="mb-3"
         error={loadError?.copy}
         details={loadError?.details}
         onRetry={() => void refresh()}
       />
       <ErrorBanner
+        errorSource="api-keys-manager"
         className="mb-3"
         error={error?.copy}
         details={error?.details}

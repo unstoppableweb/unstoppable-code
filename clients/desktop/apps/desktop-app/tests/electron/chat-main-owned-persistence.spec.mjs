@@ -32,6 +32,9 @@ import {
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { composerIdleAction } from './composerIdleAction.mjs';
+import { startCloudChatsWebCore } from './fixtures/cloudChatsWebCore.mjs';
+import { SEEDED_CLOUD_CHATS } from './fixtures/cloudChatsWorld.js';
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -681,3 +684,297 @@ for (const testCase of CASES) {
     }
   });
 }
+
+// CAN-5624: an unsent composer draft is kept per chat across a relaunch.
+const DRAFT_OTHER_WORKSPACE_ID = 'demo-ts-npm-next';
+const DRAFT_OTHER_CHAT_ID = 'scroll-restore-other-worktree';
+const DRAFT_FIRST_CHAT_ID = 'scroll-restore-first';
+const DRAFT_SECOND_CHAT_ID = 'scroll-restore-second';
+const DRAFT_SECOND_CHAT_TITLE = 'First visit background chat';
+
+function buildLongTranscript(turnCount = 48) {
+  const messages = [];
+  const startedAt = Date.parse('2026-04-10T12:00:00.000Z');
+  for (let index = 0; index < turnCount; index += 1) {
+    const turnStartedAt = startedAt + index * 60_000;
+    messages.push(
+      {
+        id: `scroll-user-${index + 1}`,
+        role: 'user',
+        blocks: [
+          {
+            type: 'text',
+            text: `First chat transcript request ${index + 1}`,
+          },
+        ],
+        timestamp: turnStartedAt,
+      },
+      {
+        id: `scroll-assistant-${index + 1}`,
+        role: 'assistant',
+        blocks: [
+          {
+            type: 'text',
+            text:
+              index === 0
+                ? 'Unique offscreen transcript marker'
+                : `First seeded transcript line ${index + 1}`,
+          },
+        ],
+        timestamp: turnStartedAt + 1_000,
+      },
+      {
+        id: `scroll-timer-${index + 1}`,
+        role: 'system',
+        blocks: [
+          {
+            type: 'turn_timer',
+            startedAt: turnStartedAt,
+            completedAt: turnStartedAt + 2_000,
+          },
+        ],
+        timestamp: turnStartedAt + 2_000,
+      },
+    );
+  }
+  return messages;
+}
+
+function distanceFromBottom(scroller) {
+  return scroller.evaluate(
+    (element) =>
+      element.scrollHeight - element.clientHeight - element.scrollTop,
+  );
+}
+
+/** Two demo workspaces: a shown chat and a long background chat, and one more. */
+function seedBackgroundDraftChats(userDataDir) {
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite', 'ts-npm-next'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    activeTabId: DRAFT_FIRST_CHAT_ID,
+    tabs: [
+      {
+        id: DRAFT_FIRST_CHAT_ID,
+        title: 'First visit shown chat',
+        blocks: [{ type: 'text', text: 'Shown chat transcript' }],
+      },
+      {
+        id: DRAFT_SECOND_CHAT_ID,
+        title: DRAFT_SECOND_CHAT_TITLE,
+        messages: buildLongTranscript(48),
+      },
+    ],
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: DRAFT_OTHER_WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    activeTabId: DRAFT_OTHER_CHAT_ID,
+    tabs: [
+      {
+        id: DRAFT_OTHER_CHAT_ID,
+        title: 'Other worktree chat',
+        blocks: [{ type: 'text', text: 'Other worktree transcript' }],
+      },
+    ],
+  });
+}
+
+function worktreeRowOf(window, workspaceId) {
+  return window.locator(
+    `[data-testid="worktree-row"][data-project-id="${workspaceId}"][data-worktree-id="${WORKTREE_ID}"]`,
+  );
+}
+
+function shownComposerOf(window) {
+  return window
+    .locator('[data-testid="panel-content-chat"]:visible')
+    .first()
+    .locator('[data-chat-composer-root]')
+    .getByRole('textbox')
+    .first();
+}
+
+/** Opens the first workspace's background chat and leaves `draft` in it. */
+async function typeBackgroundDraft(window, draft) {
+  await worktreeRowOf(window, WORKSPACE_ID).click();
+  await window
+    .getByTestId(`panel-tab-panel-chat-${DRAFT_SECOND_CHAT_ID}`)
+    .click();
+  await shownComposerOf(window).fill(draft);
+  await expect(shownComposerOf(window)).toHaveText(draft);
+}
+
+test('a background chat first shown after a worktree switch keeps its draft and opens at its latest message', async () => {
+  // Hidden chats may mount only once their tab is first shown. The first
+  // visit after a relaunch and a worktree switch must look exactly as when
+  // every hidden chat mounted with its worktree.
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-chat-first-visit-'),
+  );
+  const draft = 'Background chat draft survives its first visit';
+  seedBackgroundDraftChats(userDataDir);
+
+  // First launch: leave a draft in the background chat, then make the other
+  // chat the shown one so the next launch starts with the draft chat hidden.
+  const { electronApp: firstApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await firstApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await typeBackgroundDraft(window, draft);
+    await window
+      .getByTestId(`panel-tab-panel-chat-${DRAFT_FIRST_CHAT_ID}`)
+      .click();
+    await expect(
+      window.getByTestId(`panel-tab-panel-chat-${DRAFT_FIRST_CHAT_ID}`),
+    ).toHaveAttribute('aria-selected', 'true');
+  } finally {
+    await closeCanopy(firstApp, userDataDir, { keepUserData: true });
+  }
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await worktreeRowOf(window, WORKSPACE_ID).click();
+    await expect(
+      window.getByText('Shown chat transcript', { exact: true }),
+    ).toBeVisible();
+    await worktreeRowOf(window, DRAFT_OTHER_WORKSPACE_ID).click();
+    await expect(
+      window.getByText('Other worktree transcript', { exact: true }),
+    ).toBeVisible();
+    await worktreeRowOf(window, WORKSPACE_ID).click();
+
+    // The background chat's first showing in this launch.
+    const tab = window.getByTestId(
+      `panel-tab-panel-chat-${DRAFT_SECOND_CHAT_ID}`,
+    );
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expect(shownComposerOf(window)).toHaveText(draft);
+    const scroller = window.locator(
+      '[data-testid="chat-message-list-scroll"]:visible',
+    );
+    await expect
+      .poll(() => distanceFromBottom(scroller), { timeout: 10_000 })
+      .toBeLessThanOrEqual(1);
+    expect(
+      await scroller.evaluate((element) => element.scrollTop),
+    ).toBeGreaterThan(320);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('a draft left by switching worktrees comes back when the palette opens its chat after a relaunch', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-chat-palette-draft-'),
+  );
+  const draft =
+    'Go with full jitter and cap the delay at 30s. Also add a test that';
+  seedBackgroundDraftChats(userDataDir);
+
+  // First launch: type, then leave through the worktree list without
+  // switching tabs.
+  const { electronApp: firstApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await firstApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await typeBackgroundDraft(window, draft);
+    await worktreeRowOf(window, DRAFT_OTHER_WORKSPACE_ID).click();
+    await expect(
+      window.getByText('Other worktree transcript', { exact: true }),
+    ).toBeVisible();
+  } finally {
+    await closeCanopy(firstApp, userDataDir, { keepUserData: true });
+  }
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await window.keyboard.press(
+      `${process.platform === 'darwin' ? 'Meta' : 'Control'}+K`,
+    );
+    await expect(window.getByTestId('command-palette-input')).toBeVisible();
+    const recentChat = window
+      .getByTestId('command-palette')
+      .getByRole('group', { name: 'Recent' })
+      .getByRole('option', { name: new RegExp(DRAFT_SECOND_CHAT_TITLE) });
+    await recentChat.hover();
+    await expect(recentChat).toHaveAttribute('data-active', 'true');
+    await window.keyboard.press('Enter');
+    await expect(
+      window.getByTestId(`panel-tab-panel-chat-${DRAFT_SECOND_CHAT_ID}`),
+    ).toHaveAttribute('aria-selected', 'true');
+    await expect(shownComposerOf(window)).toHaveText(draft);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('a cloud chat draft typed just before quitting comes back after a relaunch', async () => {
+  const cloud = await startCloudChatsWebCore();
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-cloud-chat-draft-'),
+  );
+  const draft = 'Cloud chat draft typed right before quitting';
+  const env = {
+    CANOPY_E2E_CLOUD_BASE_URL: cloud.baseUrl,
+    CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+      'canopy-desktop-cloud-chats': true,
+    }),
+  };
+  const chatTabId = `panel-tab-panel-chat-web-core:${SEEDED_CLOUD_CHATS.secondChatId}`;
+  const openSecondChat = async (window) => {
+    await connectMockCloudAccount(window, 'csk_cloud_chats');
+    const task = window.locator(
+      `[data-worktree-id="web-core:${SEEDED_CLOUD_CHATS.taskId}"]`,
+    );
+    await expect(task.first()).toBeVisible({ timeout: 30_000 });
+    await task.first().click();
+    await window.getByTestId(chatTabId).click();
+    await expect(window.getByTestId(chatTabId)).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    return window.getByTestId('chat-panel').first().getByRole('textbox').last();
+  };
+  try {
+    const { electronApp: firstApp } = await launchCanopy({ userDataDir, env });
+    try {
+      const window = await firstApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      const composer = await openSecondChat(window);
+      await composer.click();
+      await composer.pressSequentially(draft);
+      await expect(composer).toHaveText(draft);
+    } finally {
+      await closeCanopy(firstApp, userDataDir, { keepUserData: true });
+    }
+
+    const { electronApp } = await launchCanopy({ userDataDir, env });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      const composer = await openSecondChat(window);
+      await expect(composer).toHaveText(draft);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  } finally {
+    await cloud.close();
+  }
+});

@@ -218,10 +218,23 @@ function orderRowsByTranscriptOrdinal(
   });
 }
 
+/**
+ * A tab with the turn ends its page names laid over its own (CAN-6560): a
+ * host that records none on its tabs names them on its pages instead.
+ */
+function withPageTurnEnds<T extends Pick<PersistedChatTab, 'turnEnds'>>(
+  tab: T,
+  page: TranscriptPage,
+): T {
+  return page.turnEnds === undefined
+    ? tab
+    : { ...tab, turnEnds: { ...tab.turnEnds, ...page.turnEnds } };
+}
+
 export function installTranscriptPage<
   T extends Pick<
     PersistedChatTab,
-    'messages' | 'transcriptWindow' | 'transcriptLoaded'
+    'messages' | 'transcriptWindow' | 'transcriptLoaded' | 'turnEnds'
   > & { pendingUserMessages?: ChatMessage[] },
 >(tab: T, page: TranscriptPage, older: boolean): T {
   const finishPerformanceStage = beginTranscriptPerformanceStage(
@@ -290,18 +303,21 @@ export function installTranscriptPage<
       page.messages,
     );
     finishPerformanceStage({ installedRows: preserved.messages.length });
-    return {
-      ...preserved,
-      transcriptLoaded: true,
-      transcriptWindow: {
-        view: 'turns',
-        before: page.turnId ? previous?.before : page.before,
-        turns: Array.from(turns.values()).sort((a, b) => a.start - b.start),
-        messageOrdinals: ordinals,
-        totalMessages: page.totalMessages,
-        transcriptRevision: page.transcriptRevision,
+    return withPageTurnEnds(
+      {
+        ...preserved,
+        transcriptLoaded: true,
+        transcriptWindow: {
+          view: 'turns',
+          before: page.turnId ? previous?.before : page.before,
+          turns: Array.from(turns.values()).sort((a, b) => a.start - b.start),
+          messageOrdinals: ordinals,
+          totalMessages: page.totalMessages,
+          transcriptRevision: page.transcriptRevision,
+        },
       },
-    };
+      page,
+    );
   }
   const supplementalId = tab.transcriptWindow?.latestHumanMessage?.id;
   const rawHuman =
@@ -336,16 +352,19 @@ export function installTranscriptPage<
   ];
   const preserved = preservePendingUserMessages(tab, messages, page.messages);
   finishPerformanceStage({ installedRows: preserved.messages.length });
-  return {
-    ...preserved,
-    transcriptLoaded: true,
-    transcriptWindow: {
-      before: page.before,
-      totalMessages: page.totalMessages,
-      transcriptRevision: page.transcriptRevision,
-      ...(supplement ? { latestHumanMessage: supplement } : {}),
+  return withPageTurnEnds(
+    {
+      ...preserved,
+      transcriptLoaded: true,
+      transcriptWindow: {
+        before: page.before,
+        totalMessages: page.totalMessages,
+        transcriptRevision: page.transcriptRevision,
+        ...(supplement ? { latestHumanMessage: supplement } : {}),
+      },
     },
-  };
+    page,
+  );
 }
 
 /** An in-flight read can never recreate a removed chat or overwrite a newer

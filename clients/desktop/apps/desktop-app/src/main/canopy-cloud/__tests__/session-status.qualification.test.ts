@@ -4,11 +4,15 @@ import * as platformCapabilities from '@canopy/desktop-shared/platform-capabilit
 import { getOllamaService } from '../../ollama/service';
 // CAN-3686 hosted account read/probe and invalidation contract.
 // Real encrypted account-store I/O; HTTP and unrelated enforcement are injected.
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import {
+  IPC_CHANNELS,
+  type CanopyServerAccountInfo,
+} from '@canopy/desktop-shared/types';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { createAppError, AppErrorSchema } from '@canopy/protocol/app-errors';
 import { registerIpcHandler } from '../../ipc/register';
 import {
+  refreshCanopyCloudEnforcedSettings,
   registerSettingsHandlers,
   reprobeAndApplyCanopyCloudEnforcedSettings,
 } from '../../ipc/settings';
@@ -256,7 +260,7 @@ const capabilities = [
   'organizations-v1',
   'teams-v1',
 ];
-const account = {
+const account: CanopyServerAccountInfo = {
   id: 'account-one',
   name: 'Test account',
   email: 'test@example.test',
@@ -271,6 +275,42 @@ function wellKnown(): Response {
 function authenticated(): Response {
   return Response.json({ account, capabilities, organizations: [], teams: [] });
 }
+
+it('distinguishes a fresh Personal organization read from a cached fallback', async () => {
+  const personalOrganizationId = '11111111-1111-4111-8111-111111111111';
+  await saveCanopyCloudAccount({ ...entry, account, personalOrganizationId });
+  let offline = true;
+  const fetchMock = jest
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation((url): Promise<Response> => {
+      if (offline) return Promise.reject(new TypeError('Network unavailable'));
+      if (isWellKnown(url)) return Promise.resolve(wellKnown());
+      return Promise.resolve(
+        Response.json({
+          account,
+          capabilities,
+          personalOrganizationId,
+          organizations: [],
+          teams: [],
+        }),
+      );
+    });
+  try {
+    const cached = await refreshCanopyCloudEnforcedSettings();
+    expect(cached.personalOrganizationId).toBe(personalOrganizationId);
+    expect(cached.accountProbeApplied).toBeUndefined();
+    offline = false;
+    expect(await refreshCanopyCloudEnforcedSettings()).toMatchObject({
+      personalOrganizationId,
+      accountProbeApplied: true,
+    });
+    expect(await loadCanopyCloudAccountPublicState()).not.toHaveProperty(
+      'accountProbeApplied',
+    );
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
 
 it.each([401, 403, 500])(
   'does not expire a session on well-known HTTP %i',

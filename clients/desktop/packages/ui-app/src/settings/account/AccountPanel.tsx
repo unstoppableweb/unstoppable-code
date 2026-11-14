@@ -231,6 +231,7 @@ export function ProfileSection({
       {editor.error ? (
         <div className="pb-3">
           <ErrorBanner
+            errorSource="profile-section-editor"
             className=""
             error={editor.error.copy}
             {...(editor.error.details !== undefined

@@ -80,6 +80,7 @@ import {
   REMOTE_IPC_CHANNELS as C,
   type RemoteIpcChannel,
 } from '@canopy/protocol/remote-control/channels';
+import { WorktreeArchiveResultSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import {
   isScriptActionsAddReceipt,
@@ -733,6 +734,12 @@ class PortableIpcCanopyClient implements CanopyClient {
   > {
     const channels = this.channels;
     return {
+      'worktree.baseBranches': (args) =>
+        channels.invoke(
+          C.homeListBranchTargets,
+          recordReply<QueryMap['worktree.baseBranches']['result']>(),
+          args,
+        ),
       'delegation.lifetimeStatus': (args) =>
         channels.invoke(
           C.managedDelegationLifetimeStatus,
@@ -767,6 +774,14 @@ class PortableIpcCanopyClient implements CanopyClient {
           channels.invoke(
             C.repoRulesStatus,
             recordReply<QueryMap['repoRules.status']['result']>(),
+            args,
+          ),
+        ),
+      'repoRules.check': (args) =>
+        unwrapIpcError(
+          channels.invoke(
+            C.repoRulesCheck,
+            recordReply<QueryMap['repoRules.check']['result']>(),
             args,
           ),
         ),
@@ -1291,6 +1306,8 @@ class PortableIpcCanopyClient implements CanopyClient {
       // Write through `file:save-content` (which owns containment and
       // conflict checks) and shape the stat into the re-read preview.
       'file.save': async (args) => {
+        const scoped = this.ports.scopedFiles?.(args.worktreeId);
+        if (scoped) return scoped['file.save'](args);
         const { root } = await this.resolveFileRoot(
           args.projectId,
           args.worktreeId,
@@ -1422,6 +1439,7 @@ class PortableIpcCanopyClient implements CanopyClient {
           {
             projectId: args.workspaceId,
             worktreeId: args.worktreeId,
+            ...(args.recovery ? { recovery: args.recovery } : {}),
             ...(args.retainedArchives === true
               ? { retainedArchives: true }
               : {}),
@@ -1463,9 +1481,14 @@ class PortableIpcCanopyClient implements CanopyClient {
         const existingWorktreeIds =
           args.existingWorktreeIds ??
           (item.worktrees ?? []).map((worktree) => worktree.id);
-        const base = args.baseWorktreeId
-          ? { baseWorktreeId: args.baseWorktreeId }
-          : {};
+        const base = {
+          ...(args.baseBranch === undefined
+            ? {}
+            : { baseBranch: args.baseBranch }),
+          ...(args.baseWorktreeId
+            ? { baseWorktreeId: args.baseWorktreeId }
+            : {}),
+        };
         const created =
           item.type === 'multi-repo'
             ? await channels.invoke(
@@ -1537,6 +1560,63 @@ class PortableIpcCanopyClient implements CanopyClient {
         }
       },
       'worktree.archive': async (args) => {
+        if (args.recovery) {
+          if (this.capabilities.worktreeRecovery !== true)
+            return { status: 'transport-failed' };
+          try {
+            const { worktreeRemovalOutcome } =
+              await import('@canopy/protocol/portal/worktree-discard-schemas');
+            const item = await this.loadWorkspace(args.workspaceId);
+            if (item.type === 'cowork' || !args.recovery.expectedCreatedAt)
+              return { status: 'transport-failed' };
+            const worktrees = item.worktrees ?? [];
+            const remainingWorktreeOrder = worktrees
+              .filter((row) => row.id !== args.worktreeId)
+              .map((row) => row.id);
+            const request = {
+              worktreeId: args.worktreeId,
+              expectedCreatedAt: args.recovery.expectedCreatedAt,
+              remainingWorktreeOrder,
+              expectedRemainingWorktreeOrder: remainingWorktreeOrder,
+              lockAfterArchive: args.recovery.intent === 'archive',
+              typedRefusal: true,
+              ...(args.expectedBranchName !== undefined
+                ? { expectedBranchName: args.expectedBranchName }
+                : {}),
+              ...(args.deleteBranch !== undefined
+                ? { deleteBranch: args.deleteBranch }
+                : {}),
+              ...(args.deleteWithoutRetentionIfMissing !== undefined
+                ? {
+                    deleteWithoutRetentionIfMissing:
+                      args.deleteWithoutRetentionIfMissing,
+                  }
+                : {}),
+            };
+            const answer =
+              item.type === 'multi-repo'
+                ? await channels.invoke(
+                    C.workspaceArchiveWorktree,
+                    anyReply<unknown>(),
+                    { ...request, workspaceId: args.workspaceId },
+                  )
+                : await channels.invoke(
+                    C.worktreeArchive,
+                    anyReply<unknown>(),
+                    {
+                      ...request,
+                      projectId: args.workspaceId,
+                      repoPath: item.repoPath,
+                    },
+                  );
+            const outcome = worktreeRemovalOutcome(answer);
+            if (outcome.status === 'completed')
+              await this.invalidateSessionSnapshot().catch(() => undefined);
+            return outcome;
+          } catch {
+            return { status: 'transport-failed' };
+          }
+        }
         const item = await this.loadWorkspace(args.workspaceId);
         if (item.type === 'cowork') {
           throw new Error('Cannot archive a worktree in a cowork project.');
@@ -1552,25 +1632,48 @@ class PortableIpcCanopyClient implements CanopyClient {
           .filter((worktree) => worktree.id !== args.worktreeId)
           .map((worktree) => worktree.id);
         const requestOrder = {
+          ...(args.mode !== undefined
+            ? { lockAfterArchive: args.mode === 'archive' }
+            : {}),
           remainingWorktreeOrder,
           expectedRemainingWorktreeOrder: remainingWorktreeOrder,
-          ...(target.createdAt ? { expectedCreatedAt: target.createdAt } : {}),
+          ...(args.mode !== undefined && args.mode !== 'delete'
+            ? { lockAfterArchive: true }
+            : {}),
+          ...(args.typedRefusal !== undefined
+            ? { typedRefusal: args.typedRefusal }
+            : {}),
+          ...(args.expectedCreatedAt !== undefined
+            ? { expectedCreatedAt: args.expectedCreatedAt }
+            : target.createdAt
+              ? { expectedCreatedAt: target.createdAt }
+              : {}),
         };
+        let result: unknown;
         if (item.type === 'multi-repo') {
-          await channels.invokeVoid(C.workspaceArchiveWorktree, {
-            workspaceId: args.workspaceId,
-            worktreeId: args.worktreeId,
-            ...requestOrder,
-          });
+          result = await channels.invoke(
+            C.workspaceArchiveWorktree,
+            anyReply<unknown>(),
+            {
+              workspaceId: args.workspaceId,
+              worktreeId: args.worktreeId,
+              ...requestOrder,
+            },
+          );
         } else {
-          await channels.invokeVoid(C.worktreeArchive, {
-            projectId: args.workspaceId,
-            worktreeId: args.worktreeId,
-            repoPath: item.repoPath,
-            ...requestOrder,
-          });
+          result = await channels.invoke(
+            C.worktreeArchive,
+            anyReply<unknown>(),
+            {
+              projectId: args.workspaceId,
+              worktreeId: args.worktreeId,
+              repoPath: item.repoPath,
+              ...requestOrder,
+            },
+          );
         }
         await this.invalidateSessionSnapshot();
+        return WorktreeArchiveResultSchema.parse(result);
       },
       'worktree.reorder': async (args) => {
         await channels.invokeVoid(C.worktreeReorder, args);

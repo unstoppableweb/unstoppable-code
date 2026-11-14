@@ -208,15 +208,14 @@ function requireTarget(
   return worktree.trackedRepoBaseBranches?.[request.repoId] ?? null;
 }
 
-function normalizeBaseBranch(baseBranch: string): string {
-  const normalized = baseBranch.trim();
-  if (!normalized || normalized.startsWith('-') || normalized === 'HEAD') {
+function validateBaseBranch(baseBranch: string): string {
+  if (!baseBranch || baseBranch.startsWith('-') || baseBranch === 'HEAD') {
     throw new WorktreeBaseBranchError(
       'validation_failed',
       'baseBranch must be a valid branch name and cannot be HEAD.',
     );
   }
-  return normalized;
+  return baseBranch;
 }
 
 async function resolvePresence(
@@ -288,7 +287,7 @@ function isSamePullRequest(
   if (current === null || current === 'unavailable') return false;
   return (
     current.status.prNumber === expected.status.prNumber &&
-    current.status.baseRefName?.trim() === expected.status.baseRefName?.trim()
+    current.status.baseRefName === expected.status.baseRefName
   );
 }
 
@@ -299,7 +298,7 @@ export async function setWorktreeBaseBranchInMain(
 ): Promise<WorktreeBaseBranchOutcome> {
   const { ports, signal } = deps;
   const previousBaseBranch = requireTarget(request, await ports.readItems());
-  const baseBranch = normalizeBaseBranch(request.baseBranch);
+  const baseBranch = validateBaseBranch(request.baseBranch);
   let presence = await resolvePresence(ports, request, baseBranch);
   const found = await findOpenPullRequest(ports, request);
   // Without the PR state the change could skip a question the user is owed.

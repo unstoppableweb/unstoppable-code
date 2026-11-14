@@ -135,6 +135,7 @@ export function MarketplaceSourceAddDialog({
 
         {visibleError && (
           <ErrorBanner
+            errorSource="cloud-marketplace-add-error"
             className=""
             error={visibleError}
             blockMessageFromReplay

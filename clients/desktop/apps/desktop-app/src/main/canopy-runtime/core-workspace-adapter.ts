@@ -1024,6 +1024,17 @@ export function createCoreWorkspaceAdapter(
     'core.workspace.get': async (
       params: CanopyQueryParams<'core.workspace.get'>,
     ): Promise<CanopyQueryResult<'core.workspace.get'>> => {
+      // A cloud project's settings revision (CAN-6093); desktop advertises none.
+      if (params.revision !== undefined)
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'Desktop workspaces do not serve this revision.',
+          details: { unsupported: ['revision'], reason: 'unserved' },
+          retry: {
+            kind: 'after_refresh',
+            resource: 'core.runtime.manifest.get',
+          },
+        });
       checkScope(params.scope);
       checkWorkspaceScope(params.scope);
       checkWorkspaceIdSpelling(params.workspaceId);

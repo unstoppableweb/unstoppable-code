@@ -63,6 +63,8 @@ export type CanopyInjectedToolKey =
   | 'get_git_preferences'
   | 'save_memory'
   | 'search_memory'
+  | 'search_chats'
+  | 'read_chat_excerpt'
   | 'read_memory'
   | 'read_pipeline_yaml'
   | 'show_files'
@@ -209,6 +211,8 @@ export type CanopyInjectedToolDisplayName =
   | 'GetGitPreferences'
   | 'SaveMemory'
   | 'SearchMemory'
+  | 'SearchChats'
+  | 'ReadChatExcerpt'
   | 'ReadMemory'
   | 'ReadPipelineYaml'
   | 'ShowFiles'
@@ -321,6 +325,8 @@ const HISTORICAL_CANOPY_NAMES: Readonly<
   ],
   save_memory: ['SaveMemory'],
   search_memory: ['SearchMemory'],
+  search_chats: ['SearchChats'],
+  read_chat_excerpt: ['ReadChatExcerpt'],
   read_memory: ['ReadMemory'],
   read_pipeline_yaml: [
     legacyMcpToolName('ReadPipelineYaml'),
@@ -467,6 +473,16 @@ function liveToolNamesFor(key: CanopyInjectedToolKey): readonly string[] {
       return [
         BRANDED_TOOL_NAMES.claude.searchMemory,
         BRANDED_TOOL_NAMES.codex.searchMemory,
+      ];
+    case 'search_chats':
+      return [
+        BRANDED_TOOL_NAMES.claude.searchChats,
+        BRANDED_TOOL_NAMES.codex.searchChats,
+      ];
+    case 'read_chat_excerpt':
+      return [
+        BRANDED_TOOL_NAMES.claude.readChatExcerpt,
+        BRANDED_TOOL_NAMES.codex.readChatExcerpt,
       ];
     case 'read_memory':
       return [
@@ -716,6 +732,8 @@ const CANOPY_INJECTED_TOOL_DISPLAY_NAMES: Readonly<
   get_git_preferences: 'GetGitPreferences',
   save_memory: 'SaveMemory',
   search_memory: 'SearchMemory',
+  search_chats: 'SearchChats',
+  read_chat_excerpt: 'ReadChatExcerpt',
   read_memory: 'ReadMemory',
   read_pipeline_yaml: 'ReadPipelineYaml',
   show_files: 'ShowFiles',
@@ -805,6 +823,22 @@ export const CANOPY_INJECTED_TOOL_REGISTRY: Record<
     claudeToolName: BRANDED_TOOL_NAMES.claude.searchMemory,
     codexToolName: BRANDED_TOOL_NAMES.codex.searchMemory,
     legacyToolNames: legacyAliasesFor('search_memory'),
+  },
+  search_chats: {
+    canonicalKey: 'search_chats',
+    displayName: 'SearchChats',
+    cursorToolName: cursorMcpToolTitle('SearchChats'),
+    claudeToolName: BRANDED_TOOL_NAMES.claude.searchChats,
+    codexToolName: BRANDED_TOOL_NAMES.codex.searchChats,
+    legacyToolNames: legacyAliasesFor('search_chats'),
+  },
+  read_chat_excerpt: {
+    canonicalKey: 'read_chat_excerpt',
+    displayName: 'ReadChatExcerpt',
+    cursorToolName: cursorMcpToolTitle('ReadChatExcerpt'),
+    claudeToolName: BRANDED_TOOL_NAMES.claude.readChatExcerpt,
+    codexToolName: BRANDED_TOOL_NAMES.codex.readChatExcerpt,
+    legacyToolNames: legacyAliasesFor('read_chat_excerpt'),
   },
   read_memory: {
     canonicalKey: 'read_memory',
@@ -1168,6 +1202,8 @@ export const CANOPY_INJECTED_TOOL_ENTRIES: readonly CanopyInjectedToolExposure[]
     CANOPY_INJECTED_TOOL_REGISTRY.get_git_preferences,
     CANOPY_INJECTED_TOOL_REGISTRY.save_memory,
     CANOPY_INJECTED_TOOL_REGISTRY.search_memory,
+    CANOPY_INJECTED_TOOL_REGISTRY.search_chats,
+    CANOPY_INJECTED_TOOL_REGISTRY.read_chat_excerpt,
     CANOPY_INJECTED_TOOL_REGISTRY.read_memory,
     CANOPY_INJECTED_TOOL_REGISTRY.read_pipeline_yaml,
     CANOPY_INJECTED_TOOL_REGISTRY.show_files,
@@ -1229,6 +1265,8 @@ const BRANDED_CODEX_SUFFIX_TO_KEY: ReadonlyMap<string, CanopyInjectedToolKey> =
     ['get_git_preferences', 'get_git_preferences'],
     ['save_memory', 'save_memory'],
     ['search_memory', 'search_memory'],
+    ['search_chats', 'search_chats'],
+    ['read_chat_excerpt', 'read_chat_excerpt'],
     ['read_memory', 'read_memory'],
     ['read_pipeline_yaml', 'read_pipeline_yaml'],
     ['show_files', 'show_files'],
@@ -1301,7 +1339,7 @@ function getBrandedAppToolKey(toolName: string): CanopyInjectedToolKey | null {
   }
 
   const codexMatch = toolName.match(
-    /^(.+?)_(ask_user_question|get_script_output|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|set_auto_archive|set_chat_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|search_deferred_tools|load_deferred_tools|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry|spawn_delegate|get_delegate_output|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate)$/,
+    /^(.+?)_(ask_user_question|get_script_output|get_git_preferences|save_memory|search_memory|search_chats|read_chat_excerpt|read_memory|read_pipeline_yaml|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|set_auto_archive|set_chat_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|search_deferred_tools|load_deferred_tools|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry|spawn_delegate|get_delegate_output|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate)$/,
   );
   if (codexMatch) {
     const namespace = codexMatch[1];
@@ -1397,6 +1435,8 @@ export type CanopyInjectedToolSurface =
   | 'cursor-acp'
   | 'copilot-sdk'
   | 'opencode-acp'
+  | 'antigravity-acp'
+  | 'antigravity-acp-standalone'
   | 'opencode-acp-standalone'
   | 'copilot-sdk-standalone'
   | 'cursor-acp-standalone'
@@ -1409,6 +1449,8 @@ const ACP_STANDALONE_INJECTED_TOOL_KEYS: readonly CanopyInjectedToolKey[] = [
   'delete_watchers',
   'save_memory',
   'search_memory',
+  'search_chats',
+  'read_chat_excerpt',
   'read_memory',
   'read_pipeline_yaml',
   'show_files',
@@ -1432,6 +1474,8 @@ const ACP_WORKTREE_INJECTED_TOOL_KEYS: readonly CanopyInjectedToolKey[] = [
   'get_git_preferences',
   'save_memory',
   'search_memory',
+  'search_chats',
+  'read_chat_excerpt',
   'read_memory',
   'read_pipeline_yaml',
   'show_files',
@@ -1470,6 +1514,8 @@ const DIRECTORY_SCOPED_ACCOUNT_TOOLS = [
   'delete_watchers',
   'save_memory',
   'search_memory',
+  'search_chats',
+  'read_chat_excerpt',
   'read_memory',
   'read_pipeline_yaml',
   'show_files',
@@ -1494,6 +1540,8 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'get_git_preferences',
     'save_memory',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'read_pipeline_yaml',
     'show_files',
@@ -1539,6 +1587,8 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'delete_watchers',
     'save_memory',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'read_pipeline_yaml',
     'show_files',
@@ -1569,6 +1619,8 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'get_git_preferences',
     'save_memory',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'read_pipeline_yaml',
     'show_files',
@@ -1603,12 +1655,19 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
   'claude-worker': [
     'save_memory',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'add_ledger_entry',
     'search_ledger_entries',
     'update_ledger_entry',
   ],
   'cursor-acp': ACP_WORKTREE_INJECTED_TOOL_KEYS,
+  // Feed and graph need their own qualified host bindings before exposure.
+  'antigravity-acp': ACP_WORKTREE_INJECTED_TOOL_KEYS.filter(
+    (key) => !isLedgerInjectedToolKey(key),
+  ),
+  'antigravity-acp-standalone': ACP_STANDALONE_INJECTED_TOOL_KEYS,
   'opencode-acp': [
     ...ACP_WORKTREE_INJECTED_TOOL_KEYS,
     ...CODE_GRAPH_INJECTED_TOOL_KEYS,
@@ -1626,6 +1685,8 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'get_git_preferences',
     'save_memory',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'read_pipeline_yaml',
     'show_files',
@@ -1672,6 +1733,8 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'get_git_preferences',
     'save_memory',
     'search_memory',
+    'search_chats',
+    'read_chat_excerpt',
     'read_memory',
     'read_pipeline_yaml',
     'get_file_comments',

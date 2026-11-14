@@ -50,6 +50,9 @@ import {
   createGitBranch,
   deleteGitBranch,
   GIT_BRANCH_LIST_REF_ARGS,
+  GIT_BRANCH_TRACKING_CONFIG_PATTERN,
+  createAndVerifyGitCheckout,
+  GIT_EXACT_CATALOGUE_REF_ARGS,
   gitChangeSetReadArgs,
   hasGitBranchRefConflict,
   listGitBranches,
@@ -542,19 +545,26 @@ function resolveGitPath(repoPath: string, gitPath: string): string {
   return isAbsolute(gitPath) ? gitPath : resolve(repoPath, gitPath);
 }
 
-async function resolveGitCommonDir(repoPath: string): Promise<string> {
+async function resolveGitCommonDir(
+  repoPath: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const gitCommonDir = await runGit(
     ['rev-parse', '--git-common-dir'],
     repoPath,
+    { signal },
   );
   return resolveGitPath(repoPath, gitCommonDir);
 }
 
-export async function getGitCommonDir(repoPath: string): Promise<string> {
+export async function getGitCommonDir(
+  repoPath: string,
+  signal?: AbortSignal,
+): Promise<string> {
   // macOS exposes /var through the /private/var symlink. Electron launches can
   // therefore observe two spellings for the same repository across processes,
   // which would split any durable state keyed by the common Git directory.
-  return realpath(await resolveGitCommonDir(repoPath));
+  return realpath(await resolveGitCommonDir(repoPath, signal));
 }
 
 export async function getGitPath(
@@ -576,27 +586,11 @@ export interface GitHeadWatchState {
 async function getGitHeadWatchStateWithGit(
   repoPath: string,
 ): Promise<GitHeadWatchState> {
-  const output = await runGit(
-    ['rev-parse', '--git-path', 'HEAD', '--abbrev-ref', 'HEAD'],
-    repoPath,
-  );
-  const separatorIndex = output.lastIndexOf('\n');
-  if (separatorIndex < 0) {
-    throw new Error('Git did not return HEAD path and branch state');
-  }
-  const gitHeadPath = output.slice(0, separatorIndex).trim();
-  const abbreviatedBranch = output.slice(separatorIndex + 1).trim();
-  if (!gitHeadPath || !abbreviatedBranch) {
-    throw new Error('Git returned incomplete HEAD path and branch state');
-  }
-
-  return {
-    headPath: resolveGitPath(repoPath, gitHeadPath),
-    branchName:
-      abbreviatedBranch === 'HEAD'
-        ? await getCurrentBranchDisplayName(repoPath).catch(() => null)
-        : abbreviatedBranch,
-  };
+  const [gitHeadPath, branchName] = await Promise.all([
+    runGit(['rev-parse', '--git-path', 'HEAD'], repoPath),
+    getCurrentBranchDisplayName(repoPath).catch(() => null),
+  ]);
+  return { headPath: resolveGitPath(repoPath, gitHeadPath), branchName };
 }
 
 async function getGitHeadWatchStateFromFilesystem(
@@ -617,7 +611,7 @@ async function getGitHeadWatchStateFromFilesystem(
   }
 
   const headPath = join(gitDirectory, 'HEAD');
-  const head = (await readFile(headPath, 'utf8')).trim();
+  const head = (await readFile(headPath, 'utf8')).replace(/\r?\n$/, '');
   const branchPrefix = 'ref: refs/heads/';
   if (head.startsWith(branchPrefix) && head.length > branchPrefix.length) {
     return {
@@ -1274,10 +1268,10 @@ export async function getLiveOriginBranchSha(
   const output = await runGit(
     ['ls-remote', '--heads', 'origin', refName],
     repoPath,
-    { signal, nonInteractive: true },
+    { signal, nonInteractive: true, preserveWhitespace: true },
   );
-  for (const line of output.split('\n')) {
-    const [sha, resolvedRefName] = line.trim().split(/\s+/, 2);
+  for (const line of output.split(/\r?\n/)) {
+    const [sha, resolvedRefName] = line.split('\t', 2);
     if (
       resolvedRefName === refName &&
       typeof sha === 'string' &&
@@ -1357,22 +1351,16 @@ export async function doesOriginBranchExist(
   );
 }
 
-function normalizeBranchName(
-  branchName: string | null | undefined,
-): string | null {
-  const trimmed = branchName?.trim();
-  return trimmed ? trimmed : null;
-}
-
 async function listLocalBranchNames(repoPath: string): Promise<string[]> {
   const output = await runGit(
-    ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'],
+    ['for-each-ref', '--format=%(refname)', 'refs/heads/'],
     repoPath,
+    { preserveWhitespace: true },
   );
   return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && line !== 'HEAD');
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('refs/heads/'))
+    .map((line) => line.slice('refs/heads/'.length));
 }
 
 function getLocalDefaultBranchCandidateRank(branchName: string): number {
@@ -1409,11 +1397,11 @@ async function resolveExistingBranchRef(
   branchName: string,
 ): Promise<string | null> {
   if (await doesRemoteBranchExist(repoPath, branchName)) {
-    return `origin/${branchName}`;
+    return `refs/remotes/origin/${branchName}`;
   }
 
   if (await doesLocalBranchExist(repoPath, branchName)) {
-    return branchName;
+    return `refs/heads/${branchName}`;
   }
 
   return null;
@@ -1423,19 +1411,15 @@ async function resolveComparisonBaseRef(
   repoPath: string,
   baseBranch?: string,
 ): Promise<string | null> {
-  const normalizedBaseBranch = normalizeBranchName(baseBranch);
-  if (normalizedBaseBranch) {
-    const explicitRef = await resolveExistingBranchRef(
-      repoPath,
-      normalizedBaseBranch,
-    );
+  if (baseBranch) {
+    const explicitRef = await resolveExistingBranchRef(repoPath, baseBranch);
     if (explicitRef) {
       return explicitRef;
     }
   }
 
-  const defaultBranch = normalizeBranchName(
-    await getRemoteDefaultBranch(repoPath).catch(() => null),
+  const defaultBranch = await getRemoteDefaultBranch(repoPath).catch(
+    () => null,
   );
   if (!defaultBranch) {
     return null;
@@ -1458,7 +1442,12 @@ export async function getMergeBaseForBranch(
 
   try {
     const mergeBase = await runGit(
-      ['merge-base', comparisonBaseRef, 'HEAD'],
+      [
+        ...GIT_EXACT_CATALOGUE_REF_ARGS,
+        'merge-base',
+        comparisonBaseRef,
+        'HEAD',
+      ],
       repoPath,
     );
     return mergeBase.trim() || null;
@@ -1475,26 +1464,29 @@ export async function listRemoteTrackingCandidates(
   const candidates: string[] = [];
   if (branch) {
     const upstream = await runGit(
-      ['for-each-ref', '--format=%(upstream:short)', `refs/heads/${branch}`],
+      ['for-each-ref', '--format=%(upstream)', `refs/heads/${branch}`],
       repoPath,
-    ).catch(() => '');
+      { preserveWhitespace: true },
+    ).then(
+      (value) => value.replace(/\r?\n$/, ''),
+      () => '',
+    );
     if (upstream) candidates.push(upstream);
-    candidates.push(`origin/${branch}`);
+    candidates.push(`refs/remotes/origin/${branch}`);
   }
   if (effectiveBaseBranch) {
     candidates.push(
-      effectiveBaseBranch.startsWith('origin/')
+      effectiveBaseBranch.startsWith('refs/remotes/')
         ? effectiveBaseBranch
-        : `origin/${effectiveBaseBranch}`,
+        : `refs/remotes/origin/${effectiveBaseBranch}`,
     );
   }
-  candidates.push('origin/HEAD');
+  candidates.push('refs/remotes/origin/HEAD');
   const existing: string[] = [];
   for (const candidate of Array.from(new Set(candidates))) {
-    const resolved = await runGit(
-      ['rev-parse', '--verify', `${candidate}^{commit}`],
-      repoPath,
-    ).catch(() => '');
+    const resolved = await resolveExactRefSha(repoPath, candidate).catch(
+      () => '',
+    );
     if (/^[a-fA-F0-9]{40}$/.test(resolved)) existing.push(candidate);
   }
   return existing;
@@ -1513,14 +1505,15 @@ export async function getRemoteTrackingCommitSha(
   const branch = await getCurrentBranch(repoPath).catch(() => null);
   if (!branch || branch === 'HEAD') return null;
   const upstream = await runGit(
-    ['for-each-ref', '--format=%(upstream:short)', `refs/heads/${branch}`],
+    ['for-each-ref', '--format=%(upstream)', `refs/heads/${branch}`],
     repoPath,
-  ).catch(() => '');
-  const ref = upstream || `origin/${branch}`;
-  const sha = await runGit(
-    ['rev-parse', '--verify', `${ref}^{commit}`],
-    repoPath,
-  ).catch(() => '');
+    { preserveWhitespace: true },
+  ).then(
+    (value) => value.replace(/\r?\n$/, ''),
+    () => '',
+  );
+  const ref = upstream || `refs/remotes/origin/${branch}`;
+  const sha = await resolveExactRefSha(repoPath, ref).catch(() => '');
   return /^[a-fA-F0-9]{40}$/.test(sha) ? sha : null;
 }
 
@@ -1529,7 +1522,17 @@ export async function mergeBase(
   a: string,
   b: string,
 ): Promise<string | null> {
-  const result = await runGit(['merge-base', a, b], repoPath).catch(() => '');
+  const result = await runGit(
+    [
+      ...([a, b].some((ref) => ref.startsWith('refs/'))
+        ? GIT_EXACT_CATALOGUE_REF_ARGS
+        : []),
+      'merge-base',
+      a,
+      b,
+    ],
+    repoPath,
+  ).catch(() => '');
   return /^[a-fA-F0-9]{40}$/.test(result) ? result : null;
 }
 
@@ -2695,12 +2698,20 @@ export async function checkoutLocalOrRemoteBranch(
   branchName: string,
 ): Promise<void> {
   if (await doesLocalBranchExist(repoPath, branchName)) {
-    await runGit(['checkout', branchName], repoPath);
+    await runGit(['switch', '--no-guess', '--', branchName], repoPath);
     return;
   }
 
   await runGit(
-    ['checkout', '-b', branchName, '--track', `origin/${branchName}`],
+    [
+      ...GIT_EXACT_CATALOGUE_REF_ARGS,
+      'checkout',
+      '-b',
+      branchName,
+      '--track',
+      `refs/remotes/origin/${branchName}`,
+      '--',
+    ],
     repoPath,
   );
 }
@@ -2826,7 +2837,9 @@ function safeBranchName(repoPath: string, branchName: string): Promise<string> {
 export async function listRegisteredWorktreePaths(
   repoPath: string,
 ): Promise<Set<string>> {
-  const output = await runGit(['worktree', 'list', '--porcelain'], repoPath);
+  const output = await runGit(['worktree', 'list', '--porcelain'], repoPath, {
+    preserveWhitespace: true,
+  });
   const registeredPaths = new Set<string>();
 
   for (const rawLine of output.split('\n')) {
@@ -2869,7 +2882,9 @@ async function findExistingWorktreePathForBranch(
   repoRoot: string,
   branchName: string,
 ): Promise<string | null> {
-  const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot);
+  const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot, {
+    preserveWhitespace: true,
+  });
   const worktreeEntry = parseGitWorktreeListPorcelain(output).find(
     (entry) => entry.branchName === branchName,
   );
@@ -2878,9 +2893,13 @@ async function findExistingWorktreePathForBranch(
 
 async function readBranchListWorktrees(
   worktreePath: string,
+  signal?: AbortSignal,
 ): Promise<{ output: string; checkoutPath: string }> {
-  const repoRoot = await getRepoRootFromWorktree(worktreePath);
-  const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot);
+  const repoRoot = await getRepoRootFromWorktree(worktreePath, { signal });
+  const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot, {
+    signal,
+    preserveWhitespace: true,
+  });
   return { output, checkoutPath: worktreePath };
 }
 
@@ -2925,22 +2944,30 @@ export async function readLocalBranchMergeState(
 }
 
 /** The Git reads `worker.git.branch.list` runs in one checkout. */
-export function gitBranchListReads(worktreePath: string): {
+export function gitBranchListReads(
+  worktreePath: string,
+  signal?: AbortSignal,
+): {
   readBranchRefs(): Promise<string>;
   readWorktreeList(): Promise<{ output: string; checkoutPath: string }>;
   readHeadUnborn(): Promise<boolean | undefined>;
 } {
   return {
-    readBranchRefs: () => runGit([...GIT_BRANCH_LIST_REF_ARGS], worktreePath),
-    readWorktreeList: () => readBranchListWorktrees(worktreePath),
+    readBranchRefs: () =>
+      runGit([...GIT_BRANCH_LIST_REF_ARGS], worktreePath, {
+        signal,
+        preserveWhitespace: true,
+      }),
+    readWorktreeList: () => readBranchListWorktrees(worktreePath, signal),
     readHeadUnborn: async () =>
       (
         await readGitHeadState(worktreePath, {
+          signal,
           verifyCommit: () =>
             runGit(
               ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
               worktreePath,
-              { timeoutMs: 2000, maxBuffer: 4096 },
+              { timeoutMs: 2000, maxBuffer: 4096, signal },
             ),
         })
       ).headUnborn,
@@ -2951,6 +2978,7 @@ export async function listBranches(
   worktreePath: string,
   options: {
     resolveDefaultBranch?: (repoPath: string) => Promise<string | null>;
+    exactWorktreeBaseBranch?: boolean;
   } = {},
 ): Promise<ListBranchesResponse> {
   return listGitBranches(
@@ -2962,6 +2990,7 @@ export async function listBranches(
           : getRemoteDefaultBranch(worktreePath),
     },
     (defaultBranch) => defaultBranch,
+    options.exactWorktreeBaseBranch,
   );
 }
 
@@ -2970,10 +2999,14 @@ export async function listBranches(
  * in one checkout: today's runners and environments. Status and the current
  * branch use the desktop-shared runner (with the user's Canopy environment);
  * the rest use this module's runner, and only the single-branch fetch is
- * non-interactive. No effect takes a signal.
+ * non-interactive. Exact creation checks the signal before its first effect.
  */
-export function gitBranchWritePort(worktreePath: string): GitBranchWritePort {
+export function gitBranchWritePort(
+  worktreePath: string,
+  signal?: AbortSignal,
+): GitBranchWritePort {
   return {
+    signal,
     hasUncommittedChanges: () => hasUncommittedChanges(worktreePath),
     readWorktreeList: () => readBranchListWorktrees(worktreePath),
     remoteBranchExists: (branch) => doesRemoteBranchExist(worktreePath, branch),
@@ -2981,11 +3014,36 @@ export function gitBranchWritePort(worktreePath: string): GitBranchWritePort {
     isValidBranchName: (name) => validateBranchName(worktreePath, name),
     ...gitBranchNameReads(worktreePath),
     currentBranch: () => getCurrentBranch(worktreePath),
+    readHeadRef: () => readGitSymbolicHead(worktreePath),
     checkout: async (branch) => {
-      await runGit(['checkout', branch], worktreePath);
+      await runGit(['switch', '--no-guess', '--', branch], worktreePath);
     },
+    resolveCatalogBranch: (branch, remote) =>
+      readGitCatalogBranch(
+        worktreePath,
+        `${remote ? 'refs/remotes/origin/' : 'refs/heads/'}${branch}`,
+      ),
+    readTrackingConfig: () => readGitBranchTrackingConfig(worktreePath),
     checkoutNewBranch: async (name, startPoint) => {
-      await runGit(['checkout', '-b', name, startPoint], worktreePath);
+      await runGit(
+        [
+          ...(startPoint.startsWith('refs/')
+            ? GIT_EXACT_CATALOGUE_REF_ARGS
+            : []),
+          'checkout',
+          '-b',
+          name,
+          startPoint,
+          ...(startPoint.startsWith('refs/') ? ['--'] : []),
+        ],
+        worktreePath,
+      );
+    },
+    createBranch: async (name, startPoint) => {
+      await runGit(
+        [...GIT_EXACT_CATALOGUE_REF_ARGS, 'branch', name, startPoint],
+        worktreePath,
+      );
     },
     renameCurrentBranch: (name) => renameBranch(worktreePath, name),
   };
@@ -2995,14 +3053,21 @@ export function gitBranchWritePort(worktreePath: string): GitBranchWritePort {
  * The `worker.git.branch.delete` port over one repository: today's
  * main-process runner for the listing and both effects.
  */
-export function gitBranchDeletePort(repoPath: string): GitBranchDeletePort {
+export function gitBranchDeletePort(
+  repoPath: string,
+  options: { backgroundPriority?: boolean } = {},
+): GitBranchDeletePort {
   return {
     listCheckedOutBranches: () => listCheckedOutBranches(repoPath),
     deleteBranch: async (branch, force) => {
       await runGit(['branch', force ? '-D' : '-d', branch], repoPath);
     },
     deleteBranchRef: async (branch, tip) => {
-      await runGit(['update-ref', '-d', `refs/heads/${branch}`, tip], repoPath);
+      await runGit(
+        ['update-ref', '-d', `refs/heads/${branch}`, tip],
+        repoPath,
+        options,
+      );
     },
   };
 }
@@ -3010,15 +3075,18 @@ export function gitBranchDeletePort(repoPath: string): GitBranchDeletePort {
 export function checkoutBranch(
   worktreePath: string,
   branchName: string,
+  remote?: boolean,
 ): Promise<void> {
-  return checkoutGitBranch(gitBranchWritePort(worktreePath), branchName);
+  return checkoutGitBranch(gitBranchWritePort(worktreePath), branchName, {
+    remote,
+  });
 }
 
 export function createBranchAndCheckout(
   worktreePath: string,
   newBranchName: string,
   startPoint: string,
-): Promise<string> {
+): ReturnType<typeof createGitBranch> {
   return createGitBranch(
     gitBranchWritePort(worktreePath),
     newBranchName,
@@ -3045,6 +3113,9 @@ export async function createWorktree(
       add: async (branch, startPoint, create) => {
         await runWorktreeAdd(
           disableGitHooks([
+            ...(startPoint?.startsWith('refs/')
+              ? GIT_EXACT_CATALOGUE_REF_ARGS
+              : []),
             'worktree',
             'add',
             ...(create ? ['-b', branch, worktreePath] : [worktreePath, branch]),
@@ -3100,11 +3171,56 @@ export async function createWorktreeAvoidingCheckedOutBranch(
       repoPath,
       worktreePath,
       seedBranch,
-      seedBranch,
+      `refs/heads/${seedBranch}`,
       options,
     );
   }
   return createWorktree(repoPath, worktreePath, seedBranch, options);
+}
+
+function readGitBranchTrackingConfig(
+  repoPath: string,
+  options: { backgroundPriority?: boolean } = {},
+): Promise<string> {
+  return runGit(
+    [
+      'config',
+      '--local',
+      '--null',
+      '--get-regexp',
+      GIT_BRANCH_TRACKING_CONFIG_PATTERN,
+    ],
+    repoPath,
+    { ...options, preserveWhitespace: true },
+  ).catch((error: unknown) => {
+    if (getErrorExitCode(error) === 1) return '';
+    throw error;
+  });
+}
+
+function readGitSymbolicHead(
+  path: string,
+  options: { backgroundPriority?: boolean } = {},
+): Promise<string | null> {
+  return runGit(['symbolic-ref', '--quiet', 'HEAD'], path, {
+    ...options,
+    preserveWhitespace: true,
+  })
+    .then((ref) => ref.replace(/\r?\n$/, ''))
+    .catch((error: unknown) => {
+      if (getErrorExitCode(error) === 1) return null;
+      throw error;
+    });
+}
+
+function readGitCatalogBranch(
+  path: string,
+  ref: string,
+): Promise<string | undefined> {
+  return resolveExactRefSha(path, ref).catch((error: unknown) => {
+    if (getErrorExitCode(error) === 128) return undefined;
+    throw error;
+  });
 }
 
 export async function createWorktreeFromStartPoint(
@@ -3112,21 +3228,67 @@ export async function createWorktreeFromStartPoint(
   worktreePath: string,
   branchName: string,
   startPoint: string,
-  options: { backgroundPriority?: boolean } = {},
+  options: { backgroundPriority?: boolean; trackingRef?: string } = {},
 ): Promise<string> {
   const resolvedName = await safeBranchName(repoPath, branchName);
-  await runWorktreeAdd(
-    disableGitHooks([
-      'worktree',
-      'add',
-      '-b',
-      resolvedName,
-      worktreePath,
+  const trackingRef = options.trackingRef;
+  const add = (): Promise<void> =>
+    runWorktreeAdd(
+      disableGitHooks([
+        ...((trackingRef ?? startPoint).startsWith('refs/')
+          ? GIT_EXACT_CATALOGUE_REF_ARGS
+          : []),
+        'worktree',
+        'add',
+        '-b',
+        resolvedName,
+        worktreePath,
+        trackingRef ?? startPoint,
+      ]),
+      repoPath,
       startPoint,
-    ]),
-    repoPath,
-    startPoint,
-    options,
+      options,
+    );
+  if (!trackingRef) {
+    await add();
+    return resolvedName;
+  }
+
+  const expectedTip = startPoint.replace(/\^\{commit\}$/, '');
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(expectedTip))
+    throw new Error('Worktree tracking requires a pinned commit.');
+  await createAndVerifyGitCheckout(
+    {
+      readHeadRef: () => readGitSymbolicHead(worktreePath, options),
+      branchExists: () => doesLocalBranchExist(repoPath, resolvedName),
+      readBranchTip: () =>
+        readGitCatalogBranch(repoPath, `refs/heads/${resolvedName}`),
+      readSourceTip: () => readGitCatalogBranch(repoPath, trackingRef),
+      readTrackingConfig: () => readGitBranchTrackingConfig(repoPath, options),
+      worktreeExists: async () => {
+        // A directory alone is not a Git worktree. Check its registration
+        // and metadata before reporting that the checkout survived.
+        if (!(await isRegisteredWorktreePath(repoPath, worktreePath)))
+          return false;
+        try {
+          await stat(join(worktreePath, '.git'));
+          return true;
+        } catch (error) {
+          if (
+            typeof error === 'object' &&
+            error !== null &&
+            Reflect.get(error, 'code') === 'ENOENT'
+          )
+            return false;
+          throw error;
+        }
+      },
+    },
+    {
+      branch: resolvedName,
+      expectedTip,
+      create: add,
+    },
   );
   return resolvedName;
 }
@@ -3160,7 +3322,9 @@ export function parseWorktreeListPorcelain(
 export async function listCheckedOutBranches(
   repoPath: string,
 ): Promise<Map<string, string>> {
-  const output = await runGit(['worktree', 'list', '--porcelain'], repoPath);
+  const output = await runGit(['worktree', 'list', '--porcelain'], repoPath, {
+    preserveWhitespace: true,
+  });
   return parseWorktreeListPorcelain(output);
 }
 
@@ -3200,13 +3364,14 @@ export async function createWorktreeForExistingBranch(
   if (await doesRemoteBranchExist(repoPath, branchName)) {
     await runGit(
       disableGitHooks([
+        ...GIT_EXACT_CATALOGUE_REF_ARGS,
         'worktree',
         'add',
         '--track',
         '-b',
         branchName,
         worktreePath,
-        `origin/${branchName}`,
+        `refs/remotes/origin/${branchName}`,
       ]),
       repoPath,
       { backgroundPriority: options.backgroundPriority },
@@ -3763,9 +3928,12 @@ export async function commitWithLocalIdentity(
   return runGit(['rev-parse', 'HEAD'], repoPath);
 }
 
-export async function getRemoteUrl(repoPath: string): Promise<string | null> {
+export async function getRemoteUrl(
+  repoPath: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
   try {
-    return await runGit(['remote', 'get-url', 'origin'], repoPath);
+    return await runGit(['remote', 'get-url', 'origin'], repoPath, { signal });
   } catch {
     return null;
   }
@@ -3782,6 +3950,9 @@ export async function getRemoteUrlStrict(
   try {
     return await runGit(['remote', 'get-url', 'origin'], repoPath);
   } catch (error) {
+    // Git remote get-url exits 2 for an unknown remote. Spawn, signal and
+    // other Git failures do not establish that origin is absent.
+    if (getErrorExitCode(error) !== 2) throw error;
     const remotes = (await runGit(['remote'], repoPath))
       .split('\n')
       .map((remote) => remote.trim());
@@ -3836,10 +4007,13 @@ export async function getLocalDefaultBranch(
     return currentRootBranch;
   }
 
-  const configuredDefaultBranch = normalizeBranchName(
-    await runGit(['config', '--get', 'init.defaultBranch'], repoRoot).catch(
-      () => null,
-    ),
+  const configuredDefaultBranch = await runGit(
+    ['config', '--get', 'init.defaultBranch'],
+    repoRoot,
+    { preserveWhitespace: true },
+  ).then(
+    (value) => value.replace(/\r?\n$/, ''),
+    () => null,
   );
   if (
     configuredDefaultBranch &&
@@ -3953,7 +4127,12 @@ export async function hasCommitsAhead(
       return false;
     }
     const output = await runGit(
-      ['rev-list', `${comparisonBaseRef}..HEAD`, '--count'],
+      [
+        ...GIT_EXACT_CATALOGUE_REF_ARGS,
+        'rev-list',
+        `${comparisonBaseRef}..HEAD`,
+        '--count',
+      ],
       repoPath,
     );
     return Number.parseInt(output, 10) > 0;
@@ -4861,6 +5040,14 @@ export async function isAncestor(
   }
 }
 
+/** Read one full ref without Git's revision or short-name fallback. */
+export async function resolveExactRefSha(
+  repoPath: string,
+  ref: string,
+): Promise<string> {
+  return runGit(['show-ref', '--verify', '--hash', ref], repoPath);
+}
+
 /**
  * Resolve `ref` to a full commit SHA.
  */
@@ -4869,6 +5056,31 @@ export async function resolveRefSha(
   ref: string,
 ): Promise<string> {
   return runGit(['rev-parse', ref], repoPath);
+}
+
+/**
+ * Keep an unambiguous full ref as a start point so Git applies its normal
+ * upstream policy. If the name is shadowed, use the exact ref's object ID.
+ */
+export async function resolveExactRefStartPoint(
+  repoPath: string,
+  ref: string,
+): Promise<string> {
+  const symbolicName = await runGit(
+    [
+      '-c',
+      'core.warnAmbiguousRefs=true',
+      'rev-parse',
+      '--symbolic-full-name',
+      '--verify',
+      '--end-of-options',
+      ref,
+    ],
+    repoPath,
+  ).catch(() => undefined);
+  if (symbolicName === ref) return ref;
+  const tip = await resolveExactRefSha(repoPath, ref);
+  return `${tip}^{commit}`;
 }
 
 /**
@@ -4954,15 +5166,8 @@ export async function cleanUntrackedFiles(
 export async function getCheckedOutBranch(
   worktreePath: string,
 ): Promise<string | null> {
-  try {
-    const name = await runGit(
-      ['symbolic-ref', '--quiet', '--short', 'HEAD'],
-      worktreePath,
-    );
-    return name.length > 0 ? name : null;
-  } catch {
-    return null;
-  }
+  const name = await getCurrentBranch(worktreePath).catch(() => 'HEAD');
+  return name === 'HEAD' ? null : name;
 }
 
 /**

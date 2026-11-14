@@ -223,7 +223,11 @@ function FactFeedbackControls({
         ) : null}
       </div>
       {status === 'error' ? (
-        <ErrorBanner error="Couldn’t submit. Try again." className="" />
+        <ErrorBanner
+          errorSource="fact-feedback-controls"
+          error="Couldn’t submit. Try again."
+          className=""
+        />
       ) : null}
       {commentOpen ? (
         <div className="flex items-end gap-2">

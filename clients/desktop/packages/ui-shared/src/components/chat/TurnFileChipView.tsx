@@ -1,9 +1,7 @@
 import { memo, useId, type JSX } from 'react';
-import { FileIcon } from '../../icons';
 import { FolderIcon } from '../../icons/AppIcons';
 import { TitlebarIconButton } from '../TitlebarIconButton';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
-import { useCleanChatLook } from '../chat-look';
 import { TOOL_APPROVAL_WAITING_LABEL } from './tool-approval-wait';
 import { TURN_FILE_ROW_CLASS_NAME } from './turn-file-styles';
 
@@ -58,42 +56,24 @@ function FileReveal({
 }
 
 function FileLabel({ filename }: { filename: string }): JSX.Element {
-  const clean = useCleanChatLook();
   const characters = Array.from(
     filenameSegments.segment(filename),
     ({ segment }) => segment,
   );
   const middle = Math.ceil(characters.length / 2);
   return (
-    <span
-      className={clean ? 'flex w-full min-w-0 items-center gap-3' : 'contents'}
-    >
-      <span
-        className={
-          clean
-            ? 'flex min-w-0 flex-1 items-center gap-1.5'
-            : 'flex min-w-0 items-center gap-1.5'
-        }
-      >
-        {!clean && (
-          <span className="flex h-3 w-3 shrink-0 items-center justify-center fg-secondary">
-            <FileIcon size="sm" aria-hidden="true" />
+    <span className="flex w-full min-w-0 items-center gap-3">
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className={`${REPLAY_MASK_CLASS} flex min-w-0 fg-primary`}>
+          <span className="min-w-0 truncate whitespace-pre">
+            {characters.slice(0, middle).join('')}
           </span>
-        )}
-        {clean ? (
-          <span className={`${REPLAY_MASK_CLASS} flex min-w-0 fg-primary`}>
-            <span className="min-w-0 truncate whitespace-pre">
-              {characters.slice(0, middle).join('')}
-            </span>
-            <span className="flex min-w-0 shrink justify-end overflow-hidden">
-              <span className="whitespace-pre">
-                {characters.slice(middle).join('')}
-              </span>
+          <span className="flex min-w-0 shrink justify-end overflow-hidden">
+            <span className="whitespace-pre">
+              {characters.slice(middle).join('')}
             </span>
           </span>
-        ) : (
-          <span className="min-w-0 truncate fg-primary">{filename}</span>
-        )}
+        </span>
       </span>
     </span>
   );
@@ -121,7 +101,6 @@ export const TurnFileChipView = memo(function TurnFileChipView({
   reveal,
   presentation = 'row',
 }: TurnFileChipViewProps): JSX.Element {
-  const clean = useCleanChatLook();
   const id = useId();
   const locationId = `${id}-location`;
   const statusId = `${id}-status`;
@@ -145,11 +124,9 @@ export const TurnFileChipView = memo(function TurnFileChipView({
       data-file-change={change ?? 'created'}
       data-file-approval={isWaiting ? 'waiting' : undefined}
       className={
-        clean
-          ? presentation === 'summary'
-            ? '@container/turn-file group/turn-file flex min-w-0 flex-1 cursor-default select-none items-center gap-3 text-s'
-            : `@container/turn-file group/turn-file relative cursor-default select-none ${TURN_FILE_ROW_CLASS_NAME}`
-          : 'relative flex min-w-0 max-w-full cursor-default select-none items-start rounded-md border bg-fg-primary/[0.02] text-xs transition-colors hover:bg-fg-primary/[0.04]'
+        presentation === 'summary'
+          ? '@container/turn-file group/turn-file flex min-w-0 flex-1 cursor-default select-none items-center gap-3 text-s'
+          : `@container/turn-file group/turn-file relative cursor-default select-none ${TURN_FILE_ROW_CLASS_NAME}`
       }
     >
       <button
@@ -166,11 +143,7 @@ export const TurnFileChipView = memo(function TurnFileChipView({
         aria-busy={busy}
         aria-disabled={disabled}
         {...(describedBy ? { 'aria-describedby': describedBy } : {})}
-        className={
-          clean
-            ? `focus-ring focus-ring-stretched inline-flex min-h-8 min-w-0 max-w-3/5 shrink items-center rounded-sm text-left before:absolute ${presentation === 'summary' ? 'before:inset-1 before:rounded-lg' : 'focus-ring-inset before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)]'} aria-disabled:cursor-default pointer-coarse:min-h-11`
-            : 'focus-ring focus-ring-stretched min-w-0 max-w-3/5 rounded-md px-2 py-1.5 text-left before:absolute before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)] aria-disabled:cursor-default'
-        }
+        className={`focus-ring focus-ring-stretched inline-flex min-h-8 min-w-0 max-w-3/5 shrink items-center rounded-sm text-left before:absolute ${presentation === 'summary' ? 'before:inset-1 before:rounded-lg' : 'focus-ring-inset before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)]'} aria-disabled:cursor-default pointer-coarse:min-h-11`}
       >
         <FileLabel filename={filename} />
       </button>
@@ -179,11 +152,7 @@ export const TurnFileChipView = memo(function TurnFileChipView({
           id={statusId}
           role="status"
           data-testid="turn-file-chip-status"
-          className={
-            clean
-              ? 'relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate whitespace-nowrap text-xs fg-tertiary'
-              : 'relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate whitespace-nowrap text-xs fg-secondary'
-          }
+          className="relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate whitespace-nowrap text-xs fg-tertiary"
         >
           {status}
         </span>
@@ -192,14 +161,14 @@ export const TurnFileChipView = memo(function TurnFileChipView({
         <span
           id={locationId}
           data-testid="turn-file-chip-location"
-          className={`${REPLAY_MASK_CLASS} ${clean ? 'relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate text-xs fg-secondary' : 'relative z-10 block min-w-0 max-w-2/5 truncate text-3xs fg-secondary'}`}
+          className={`${REPLAY_MASK_CLASS} relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate text-xs fg-secondary`}
         >
           {shownLocation}
         </span>
       )}
       {reveal && !pending && (
         <span
-          className={`relative z-10 ml-auto inline-flex shrink-0 p-1 ${clean && presentation === 'summary' ? '' : '-mr-2'}`}
+          className={`relative z-10 ml-auto inline-flex shrink-0 p-1 ${presentation === 'summary' ? '' : '-mr-2'}`}
         >
           <FileReveal reveal={reveal} describedBy={describedBy} />
         </span>

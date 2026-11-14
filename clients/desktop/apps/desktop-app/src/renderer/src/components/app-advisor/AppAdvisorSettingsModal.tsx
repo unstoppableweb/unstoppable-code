@@ -17,7 +17,13 @@
  * tab remains available in the main window.
  */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { Stack, Heading, Surface, TabBar } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Heading,
+  Surface,
+  TabBar,
+  OrchestratorSettingsFooter,
+} from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   AppAdvisorWorkspaceSettingsFile,
@@ -25,8 +31,13 @@ import type {
   PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import type { InlineFailure } from '@/lib/inline-app-error';
+import { appAdvisorSaveFailure } from './appAdvisorSaveFailure';
 import { AutoArchiveSettingsControl } from '@canopy/ui-shared';
-import { Button, TextArea, TextInput } from '@canopy/ui-shared/components';
+import { TextArea, TextInput } from '@canopy/ui-shared/components';
 import {
   ORCHESTRATOR_PLUGINS_LABEL,
   ORCHESTRATOR_PLUGINS_SELECTION_COPY,
@@ -76,7 +87,7 @@ export function AppAdvisorSettingsModal({
   );
 
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,9 +205,10 @@ export function AppAdvisorSettingsModal({
         );
       }
     } catch (error) {
-      setSaveError(
-        error instanceof Error ? error.message : 'Failed to save settings.',
+      const failure = appAdvisorSaveFailure(
+        toAppError(resolveClientAppError(error)),
       );
+      if (failure) setSaveError(failure);
     } finally {
       setSaving(false);
     }
@@ -379,22 +391,23 @@ export function AppAdvisorSettingsModal({
       </div>
 
       {(isDirty || saveError) && (
-        <div className="flex items-center justify-end gap-3 border-t px-6 py-3">
-          {saveError && (
-            <span className="min-w-0 flex-1 truncate text-xs text-destructive">
-              {saveError}
-            </span>
-          )}
-          <Button
-            variant="primary"
-            size="compact"
-            onClick={() => void handleSave()}
-            disabled={saving || !isDirty}
-            data-testid="app-advisor-settings-save"
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </Button>
-        </div>
+        <OrchestratorSettingsFooter
+          disabled={saving || !isDirty}
+          label={saving ? 'Saving...' : 'Save'}
+          onSave={() => void handleSave()}
+          testId="app-advisor-settings-save"
+          error={
+            <DesktopErrorBanner
+              errorSource="app-advisor-settings-save-error"
+              className=""
+              error={saveError?.error}
+              {...(saveError?.details === undefined
+                ? {}
+                : { details: saveError.details })}
+              testId="app-advisor-settings-save-error"
+            />
+          }
+        />
       )}
     </DialogModal>
   );

@@ -13,12 +13,17 @@ import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { worktreeSourceFailure } from '@canopy/core-runtime/node/git';
 import { isNativeError } from 'node:util/types';
 import {
+  decodeWorktreeBaseBranch,
+  isExplicitWorktreeBaseBranch,
+} from '@canopy/protocol/portal';
+import {
   consumeW5Metadata,
   prepareW5Metadata,
   readPreparedW5Worktrees,
   type PreparedW5Metadata,
 } from './w5-metadata-preparation';
 import { WorktreeArchiveRefusedError } from './worktree-archive-refusal';
+import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import {
   withDestructiveLifecycle,
   readDestructiveRecovery,
@@ -30,6 +35,10 @@ import {
   assertNoLegacyArchiveRecovery,
   hasDestructiveLifecycle,
   markDestructiveCleanupRequired,
+  settleDestructiveCleanupDebt,
+  destructiveTurnDiffCleanupRepair,
+  readDirectoryStatIdentity,
+  type ExactArchiveJournal,
   acknowledgeArchiveCaptureRefusal,
   protectDestructivePath,
   destructiveArchiveOutcomeSchema,
@@ -40,19 +49,24 @@ import {
 } from './w5-destructive-recovery';
 import { currentW5CommitScope } from './w5-commit-scope';
 import { WorktreeRegistryUnreadableError } from './worktree-list-repository';
-import { w5NamedUnreadable } from './w5-file-store';
+import {
+  w5NamedUnreadable,
+  W5RecordOverloadedError,
+  W5AuthorityUnreachableError,
+} from './w5-file-store';
 import {
   commitW5BoundaryStep,
   w5CompositionLocks,
 } from './w5-composition-operation';
 import { w5ResourceKey } from './w5-commit-log-file-store';
 import { withW5Commit, type W5CommitOptions } from './w5-commit-log-file-store';
-import { getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import type { W5KeyedAttempt } from './w5-keyed-operation';
 import {
   isWorktreeArchiveSourceUnavailable,
   prepareArchivedContainerRecovery,
   readArchivedContainerRecovery,
+  readArchivedContainerRecoveryJournal,
   finishArchivedContainerRecovery,
 } from './archived-container-recovery';
 import { isFilesOnlyRestoreGitless } from './files-only-restore-git';
@@ -75,6 +89,8 @@ import {
   WORKSPACE_ROOT_REPO_NAME,
   type ArchiveWorktreeResponse,
   type ArchivedContainerManifest,
+  type ArchivedContainerManifestV2,
+  type ArchivedContainerRecoveryManifest,
   type CreateWorkspaceWorktreeResponse,
   type CreateWorktreeResponse,
   type DiffStats,
@@ -83,6 +99,7 @@ import {
   type RepoBranchInfo,
   type SingleRepoSidebarItem,
   type WorktreeGitFailedEvent,
+  type WorktreeSetupStorageFailure,
   type WorktreeGitReadyEvent,
   type WorktreeStatsRequestSource,
   type WorktreeNeedsRepairEvent,
@@ -138,6 +155,8 @@ import {
   listCheckedOutBranches,
   pruneWorktrees,
   removeWindowsWorktreeReparsePoints,
+  resolveExactRefSha,
+  resolveExactRefStartPoint,
   resolveRefSha,
   resolveSharedAvailableBranchName,
   validateBranchName,
@@ -347,6 +366,10 @@ export interface CreateWorktreeServiceOptions extends WorktreeSelectionFields {
   defaultBranchNaming?: 'worktree-id';
   /** Defaults to true; archive restore validates local refs and disables fetch. */
   allowBaseBranchNetwork?: boolean;
+  /** Portal picker intent: only the selected local/origin branch may supply the base. */
+  baseBranchResolution?: 'exact-branch';
+  /** The Portal New Task catalogue selected a full ref in the base field. */
+  baseBranchIsQualified?: true;
   /** Restrict multi-repo creation to these child repository ids. */
   includedRepoIds?: readonly string[];
   repairWorkspaceRoot?: boolean;
@@ -558,6 +581,9 @@ async function settleLatePreparedBrowserRetirement(
   await settleFailedTaskBrowserRetirement(operationId);
 }
 
+const DEFERRED_BROWSER_RETIREMENT_WARNING =
+  'Browser data for this worktree will be cleared the next time the app starts.';
+
 /** Retires a deferred browser profile once its worktree record is removed. */
 async function retireDeferredArchiveBrowserProfile(
   workspaceId: string,
@@ -596,9 +622,7 @@ async function retireDeferredArchiveBrowserProfile(
     // and whose late commit retires the profile. Startup reconciliation
     // retires profiles whose owner no longer exists, whatever is left.
     if (error instanceof BrowserRetirementTimeoutError) return [];
-    return [
-      'Browser data for this worktree will be cleared the next time the app starts.',
-    ];
+    return [DEFERRED_BROWSER_RETIREMENT_WARNING];
   }
 }
 
@@ -620,6 +644,7 @@ interface MultiRepoDiffResult {
 interface BaseBranchResolution {
   trackedBranch: string;
   startPoint: string;
+  trackingRef?: string;
 }
 
 interface PreparedWorktreeArchiveContainer {
@@ -746,7 +771,19 @@ function createWorktreeFromStartPointWithPriority(
   branchName: string,
   startPoint: string,
   options?: { backgroundPriority?: boolean },
+  trackingRef?: string,
 ): Promise<string> {
+  if (trackingRef)
+    return createWorktreeFromStartPoint(
+      repoPath,
+      worktreePath,
+      branchName,
+      startPoint,
+      {
+        ...options,
+        trackingRef,
+      },
+    );
   return options
     ? createWorktreeFromStartPoint(
         repoPath,
@@ -1012,18 +1049,18 @@ function enqueueProjectGitSetup(
   runPhaseB: () => Promise<void>,
 ): void {
   const previous = projectGitSetupQueues.get(projectId) ?? Promise.resolve();
-  const current = previous.catch(() => undefined).then(runPhaseB);
-  const settled = current.catch(() => undefined);
-  projectGitSetupQueues.set(projectId, settled);
-  // Queued Phase B admits itself; the enqueuing create must not hold its
-  // admission through the queue.
-  detachedWorkCallback(() =>
-    settled.finally(() => {
+  // Register the continuation outside creation's authority, not just its observer.
+  // Phase B takes its own routed admission after the queue releases it.
+  detachedWorkCallback(() => {
+    const current = previous.catch(() => undefined).then(runPhaseB);
+    const settled = current.catch(() => undefined);
+    projectGitSetupQueues.set(projectId, settled);
+    return settled.finally(() => {
       if (projectGitSetupQueues.get(projectId) === settled) {
         projectGitSetupQueues.delete(projectId);
       }
-    }),
-  )();
+    });
+  })();
 }
 
 function startProjectPostCreateSetupSafely(
@@ -1737,7 +1774,30 @@ async function findPersistedWorktree(
   return worktrees.find((worktree) => worktree.id === worktreeId) ?? null;
 }
 
-class ReservedWorktreeStorageError extends Error {}
+class ReservedWorktreeStorageError extends Error {
+  public constructor(
+    message: string,
+    readonly storageFailure: WorktreeSetupStorageFailure,
+  ) {
+    super(message);
+  }
+}
+
+function setupStorageFailure(
+  error: unknown,
+): WorktreeSetupStorageFailure | undefined {
+  if (error instanceof ReservedWorktreeStorageError)
+    return error.storageFailure;
+  const cause =
+    error instanceof WorktreeRegistryUnreadableError ? error.cause : error;
+  const named = w5NamedUnreadable(cause);
+  if (named instanceof W5RecordOverloadedError) return 'overloaded';
+  if (named instanceof W5AuthorityUnreachableError)
+    return 'authority-unreachable';
+  return named || error instanceof WorktreeRegistryUnreadableError
+    ? 'unreadable'
+    : undefined;
+}
 
 function isSetupStorageUnavailable(error: unknown): boolean {
   return (
@@ -1758,6 +1818,7 @@ async function readReservedWorktree(
       `Worktree setup failed: worktree storage is ${list.authority}.${
         list.unserved ? ` ${list.unserved.message}` : ''
       }`,
+      setupStorageFailure(list.unserved) ?? 'unreadable',
     );
   }
   return (
@@ -2277,11 +2338,10 @@ function normalizeRequestedBranch(
   if (branchName === undefined) {
     return null;
   }
-  const trimmed = branchName.trim();
-  if (!trimmed || trimmed.startsWith('-')) {
+  if (!branchName || branchName.startsWith('-')) {
     throw new Error('Branch name must be a non-empty value');
   }
-  return trimmed;
+  return branchName;
 }
 
 const GIT_OBJECT_ID_RE = /^[0-9a-f]{40,64}$/;
@@ -2305,7 +2365,7 @@ async function normalizePendingArchiveBranchDeletion(
       ? value.repositoryIdentity.trim()
       : '';
   const branchName =
-    typeof value.branchName === 'string' ? value.branchName.trim() : '';
+    typeof value.branchName === 'string' ? value.branchName : '';
   const expectedTip =
     typeof value.expectedTip === 'string'
       ? value.expectedTip.trim().toLowerCase()
@@ -2479,14 +2539,57 @@ async function isBranchNameAvailableInAllRepos(
   return results.every(Boolean);
 }
 
+function usesExactBaseBranch(options: CreateWorktreeServiceOptions): boolean {
+  return (
+    options.baseBranchResolution === 'exact-branch' ||
+    (options.baseBranch !== undefined &&
+      isExplicitWorktreeBaseBranch(options.baseBranch))
+  );
+}
+
+async function resolveExactBaseBranch(
+  repoPath: string,
+  baseBranch: string,
+  allowNetwork: boolean,
+  attempt?: W5KeyedAttempt,
+): Promise<BaseBranchResolution> {
+  const target = decodeWorktreeBaseBranch(baseBranch);
+  if (target) {
+    if (target.isRemote && allowNetwork) {
+      attempt?.beforeEffects();
+      await fetchOrigin(repoPath);
+    }
+    const trackedBranch = target.branchName;
+    const ref = target.isRemote
+      ? `refs/remotes/origin/${trackedBranch}`
+      : `refs/heads/${trackedBranch}`;
+    const commit = await resolveExactRefSha(repoPath, ref).catch(
+      () => undefined,
+    );
+    if (commit && GIT_OBJECT_ID_RE.test(commit)) {
+      // The suffix makes Git parse a commit instead of preferring a branch
+      // whose name happens to be the same hexadecimal object ID.
+      return {
+        trackedBranch,
+        startPoint: `${commit}^{commit}`,
+        trackingRef: ref,
+      };
+    }
+  }
+  throw worktreeValidationError(
+    'base-not-found',
+    `Base branch "${baseBranch}" was not found`,
+    attempt,
+  );
+}
+
 async function resolveBaseBranch(
   repoPath: string,
   baseBranch: string,
   allowNetwork = true,
   attempt?: W5KeyedAttempt,
 ): Promise<BaseBranchResolution> {
-  const trimmed = baseBranch.trim();
-  if (!trimmed) {
+  if (!baseBranch) {
     throw worktreeValidationError(
       'base-not-found',
       'Base branch must be a non-empty value',
@@ -2499,21 +2602,21 @@ async function resolveBaseBranch(
   // with a replica; existing workspaces get one ordinary origin fetch before
   // falling back to branch resolution for valid 40-hex branch names.
   let fetchedOrigin = false;
-  if (/^[a-fA-F0-9]{40}$/.test(trimmed)) {
-    let available = await hasLocalCommit(repoPath, trimmed);
+  if (/^[a-fA-F0-9]{40}$/.test(baseBranch)) {
+    let available = await hasLocalCommit(repoPath, baseBranch);
     if (!available && allowNetwork) {
       attempt?.beforeEffects();
       await fetchOrigin(repoPath);
       fetchedOrigin = true;
-      available = await hasLocalCommit(repoPath, trimmed);
+      available = await hasLocalCommit(repoPath, baseBranch);
     }
     if (available) {
-      return { trackedBranch: trimmed, startPoint: trimmed };
+      return { trackedBranch: baseBranch, startPoint: baseBranch };
     }
   }
 
-  if (trimmed.startsWith('origin/')) {
-    const trackedBranch = trimmed.slice('origin/'.length);
+  if (baseBranch.startsWith('origin/')) {
+    const trackedBranch = baseBranch.slice('origin/'.length);
     if (allowNetwork && !fetchedOrigin) {
       attempt?.beforeEffects();
       await fetchOrigin(repoPath);
@@ -2521,37 +2624,89 @@ async function resolveBaseBranch(
     if (!(await doesRemoteBranchExist(repoPath, trackedBranch))) {
       throw worktreeValidationError(
         'base-not-found',
-        `Base branch "${trimmed}" was not found`,
+        `Base branch "${baseBranch}" was not found`,
         attempt,
       );
     }
-    return { trackedBranch, startPoint: trimmed };
+    return {
+      trackedBranch,
+      startPoint: `refs/remotes/origin/${trackedBranch}`,
+    };
   }
 
-  if (await doesLocalBranchExist(repoPath, trimmed)) {
-    return { trackedBranch: trimmed, startPoint: trimmed };
+  if (baseBranch.startsWith('refs/')) {
+    // Legacy callers can name a local branch whose name itself starts with
+    // refs/. Resolve the actual local ref before treating the input as a revision.
+    const startPoint = await resolveExactRefStartPoint(
+      repoPath,
+      `refs/heads/${baseBranch}`,
+    ).catch(() => undefined);
+    if (startPoint) {
+      return { trackedBranch: baseBranch, startPoint };
+    }
+  } else if (await doesLocalBranchExist(repoPath, baseBranch)) {
+    return {
+      trackedBranch: baseBranch,
+      startPoint: `refs/heads/${baseBranch}`,
+    };
   }
   if (allowNetwork && !fetchedOrigin) {
     attempt?.beforeEffects();
     await fetchOrigin(repoPath);
   }
-  if (await doesRemoteBranchExist(repoPath, trimmed)) {
-    return { trackedBranch: trimmed, startPoint: `origin/${trimmed}` };
+  if (await doesRemoteBranchExist(repoPath, baseBranch)) {
+    return {
+      trackedBranch: baseBranch,
+      startPoint: `refs/remotes/origin/${baseBranch}`,
+    };
   }
   // A tag or abbreviated commit, which `git worktree add` accepts as a start
   // point. Peeled to its commit so the start point can't move; a leading `-`
   // would be read as an option.
-  if (!trimmed.startsWith('-')) {
-    const commit = await resolveRefSha(repoPath, `${trimmed}^{commit}`).catch(
-      () => undefined,
-    );
+  if (!baseBranch.startsWith('-')) {
+    const commit = await resolveRefSha(
+      repoPath,
+      `${baseBranch}^{commit}`,
+    ).catch(() => undefined);
     if (commit && GIT_OBJECT_ID_RE.test(commit)) {
-      return { trackedBranch: trimmed, startPoint: commit };
+      return { trackedBranch: baseBranch, startPoint: commit };
     }
   }
   throw worktreeValidationError(
     'base-not-found',
-    `Base branch "${trimmed}" was not found`,
+    `Base branch "${baseBranch}" was not found`,
+    attempt,
+  );
+}
+
+async function resolveQualifiedBaseBranch(
+  repoPath: string,
+  ref: string,
+  allowNetwork: boolean,
+  attempt?: W5KeyedAttempt,
+): Promise<BaseBranchResolution> {
+  const localPrefix = 'refs/heads/';
+  const remotePrefix = 'refs/remotes/origin/';
+  const prefix = ref.startsWith(localPrefix)
+    ? localPrefix
+    : ref.startsWith(remotePrefix)
+      ? remotePrefix
+      : undefined;
+  if (prefix) {
+    if (prefix === remotePrefix && allowNetwork) {
+      attempt?.beforeEffects();
+      await fetchOrigin(repoPath);
+    }
+    const startPoint = await resolveExactRefStartPoint(repoPath, ref).catch(
+      () => undefined,
+    );
+    if (startPoint) {
+      return { trackedBranch: ref.slice(prefix.length), startPoint };
+    }
+  }
+  throw worktreeValidationError(
+    'base-not-found',
+    `Base branch "${ref}" was not found`,
     attempt,
   );
 }
@@ -2561,8 +2716,7 @@ function requireUsableBranchName(
   context: string,
   attempt?: W5KeyedAttempt,
 ): string {
-  const normalizedBranchName = branchName.trim();
-  if (!normalizedBranchName || normalizedBranchName === 'HEAD') {
+  if (!branchName || branchName === 'HEAD') {
     throw worktreeValidationError(
       'base-task-detached',
       `Cannot determine a branch name for ${context}`,
@@ -2570,7 +2724,7 @@ function requireUsableBranchName(
     );
   }
 
-  return normalizedBranchName;
+  return branchName;
 }
 
 async function resolveCreateWorktreeScripts(
@@ -3023,7 +3177,12 @@ async function createAdmittedSingleRepoWorktree(
     );
   }
   if (options.baseBranch) {
-    baseResolution = await resolveBaseBranch(
+    const resolveBranch = usesExactBaseBranch(options)
+      ? resolveExactBaseBranch
+      : options.baseBranchIsQualified
+        ? resolveQualifiedBaseBranch
+        : resolveBaseBranch;
+    baseResolution = await resolveBranch(
       referenceRepoPath,
       options.baseBranch,
       options.allowBaseBranchNetwork !== false,
@@ -3041,7 +3200,7 @@ async function createAdmittedSingleRepoWorktree(
     );
     baseResolution = {
       trackedBranch,
-      startPoint: trackedBranch,
+      startPoint: `refs/heads/${trackedBranch}`,
     };
   }
 
@@ -3202,6 +3361,18 @@ async function createAdmittedSingleRepoWorktree(
       }
       const branchToReuse = existingBranch ?? suggestedBranch;
 
+      // The picker ref may disappear while the reservation waits for Git setup.
+      // Resolve again here. Git uses the full ref for tracking and setup verifies
+      // the resulting checkout against the observed commit.
+      if (options.baseBranch && usesExactBaseBranch(options)) {
+        baseResolution = await resolveExactBaseBranch(
+          referenceRepoPath,
+          options.baseBranch,
+          false,
+          attempt,
+        );
+      }
+
       createdBranchName =
         shouldUseExistingBranch && branchToReuse
           ? await createWorktreeForExistingBranchWithPriority(
@@ -3217,6 +3388,7 @@ async function createAdmittedSingleRepoWorktree(
                 reservation.worktree.branchName,
                 baseResolution.startPoint,
                 worktreeGitOptions,
+                baseResolution.trackingRef,
               )
             : await createWorktreeWithPriority(
                 referenceRepoPath,
@@ -3395,6 +3567,7 @@ async function createAdmittedSingleRepoWorktree(
 
       return createdBranchName;
     } catch (error) {
+      const initialStorageFailure = setupStorageFailure(error);
       if (!isSetupStorageUnavailable(error)) {
         try {
           if (!(await shouldContinuePhaseB())) {
@@ -3419,6 +3592,7 @@ async function createAdmittedSingleRepoWorktree(
         normalizedError,
       );
       let storageUnavailable = isSetupStorageUnavailable(error);
+      let storageFailure = initialStorageFailure;
       // A thrown write cannot prove staleness; false confirms the reservation is gone.
       const marked = await recordCreationPhase(
         setupRef,
@@ -3427,6 +3601,14 @@ async function createAdmittedSingleRepoWorktree(
         healthIssue,
       ).catch((phaseError) => {
         storageUnavailable ||= isSetupStorageUnavailable(phaseError);
+        // A failed recovery write cannot promote an unrelated Git defect to
+        // an external overload, or hide unreadable records behind one.
+        if (storageFailure !== undefined) {
+          const secondary = setupStorageFailure(phaseError);
+          if (secondary === undefined || secondary === 'unreadable')
+            storageFailure = 'unreadable';
+          else if (storageFailure === 'overloaded') storageFailure = secondary;
+        }
         return undefined;
       });
       if (marked === false && shouldEnforceSetupRef) return null;
@@ -3437,6 +3619,7 @@ async function createAdmittedSingleRepoWorktree(
         failureReason: storageUnavailable
           ? 'storage-unavailable'
           : worktreeSourceFailure(normalizedError)?.failureReason,
+        ...(storageFailure === undefined ? {} : { storageFailure }),
         healthIssue,
       });
       throw normalizedError;
@@ -3931,6 +4114,7 @@ async function createAdmittedMultiRepoWorktree(
               sharedBranchName,
               rootStartPoint,
               worktreeGitOptions,
+              baseResolutions?.[WORKSPACE_ROOT_REPO_ID]?.trackingRef,
             );
           } else {
             nextBranchName = await createWorktreeWithPriority(
@@ -4156,6 +4340,7 @@ async function createAdmittedMultiRepoWorktree(
                   branchName,
                   startPoint,
                   worktreeGitOptions,
+                  baseResolutions?.[repo.id]?.trackingRef,
                 )
               : await createWorktreeWithPriority(
                   repo.repoPath,
@@ -4319,6 +4504,7 @@ async function createAdmittedMultiRepoWorktree(
 
       return branchName;
     } catch (error) {
+      const initialStorageFailure = setupStorageFailure(error);
       if (!isSetupStorageUnavailable(error)) {
         try {
           if (!(await shouldContinuePhaseB())) {
@@ -4341,6 +4527,7 @@ async function createAdmittedMultiRepoWorktree(
         )?.id,
       );
       let storageUnavailable = isSetupStorageUnavailable(error);
+      let storageFailure = initialStorageFailure;
       // A thrown write cannot prove staleness; false confirms the reservation is gone.
       const marked = await recordCreationPhase(
         setupRef,
@@ -4349,6 +4536,14 @@ async function createAdmittedMultiRepoWorktree(
         healthIssue,
       ).catch((phaseError) => {
         storageUnavailable ||= isSetupStorageUnavailable(phaseError);
+        // A failed recovery write cannot promote an unrelated Git defect to
+        // an external overload, or hide unreadable records behind one.
+        if (storageFailure !== undefined) {
+          const secondary = setupStorageFailure(phaseError);
+          if (secondary === undefined || secondary === 'unreadable')
+            storageFailure = 'unreadable';
+          else if (storageFailure === 'overloaded') storageFailure = secondary;
+        }
         return undefined;
       });
       if (marked === false && shouldEnforceSetupRef) return null;
@@ -4359,6 +4554,7 @@ async function createAdmittedMultiRepoWorktree(
         failureReason: storageUnavailable
           ? 'storage-unavailable'
           : worktreeSourceFailure(normalizedError)?.failureReason,
+        ...(storageFailure === undefined ? {} : { storageFailure }),
         ...(storageUnavailable || !healthIssue.sourceRepoId
           ? {}
           : { sourceRepoId: healthIssue.sourceRepoId }),
@@ -4958,9 +5154,7 @@ async function updateArchiveJournalRow(
   const result = await withW5Commit(
     {
       operation: 'internal.worktree.archive.journal',
-      locks: [
-        { kind: 'list', path: getWorkspaceWorktreesFilePath(workspaceId) },
-      ],
+      locks: [{ kind: 'list', path: w5RecordReadPaths.worktrees(workspaceId) }],
       expectedRevisions: expected,
     },
     async () => {
@@ -5199,7 +5393,7 @@ async function finalizeArchiveCleanup(options: {
               locks: [
                 {
                   kind: 'list',
-                  path: getWorkspaceWorktreesFilePath(options.workspaceId),
+                  path: w5RecordReadPaths.worktrees(options.workspaceId),
                 },
               ],
             },
@@ -5864,12 +6058,110 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
   return { success: true, ...cleanup };
 }
 
+function archiveTurnDiffRefusal(
+  check:
+    | 'turn-diff-identity-unverified'
+    | 'turn-diff-evidence-unavailable'
+    | 'turn-diff-repository-replaced'
+    | 'turn-diff-repositories-unknown',
+): W5CommitRefusedError {
+  return new W5CommitRefusedError(
+    'recovery-required',
+    'Archived turn diff repository evidence needs recovery.',
+    { phase: 'archive-journal', check },
+  );
+}
+
+/** Never target mutable project configuration when repairing historical Git debt. */
+async function repairArchiveTurnDiffRefs(
+  workspaceId: string,
+  worktreeId: string,
+  manifest: ArchivedContainerManifestV2 | ArchivedContainerRecoveryManifest,
+): Promise<void> {
+  const repositories: string[] = [];
+  if (manifest.version === 2) {
+    const { inspectArchivedContainerSnapshotRef } =
+      await import('./archived-container-git');
+    for (const repository of manifest.gitState.repositories) {
+      const witness = await inspectArchivedContainerSnapshotRef({
+        repoPath: repository.referenceRepoPath,
+        refName: repository.snapshotRef,
+        expectedCommit: repository.worktreeSnapshotCommit,
+      }).catch(() => {
+        throw archiveTurnDiffRefusal('turn-diff-identity-unverified');
+      });
+      if (witness.ref !== 'expected' || !witness.commitPresent)
+        throw archiveTurnDiffRefusal('turn-diff-identity-unverified');
+      repositories.push(repository.referenceRepoPath);
+    }
+  } else {
+    const journal = await readArchivedContainerRecoveryJournal(
+      workspaceId,
+      worktreeId,
+    ).catch(() => {
+      throw archiveTurnDiffRefusal('turn-diff-evidence-unavailable');
+    });
+    if (
+      !journal ||
+      journal.createdAt !== manifest.createdAt ||
+      journal.phase !== 'removed' ||
+      journal.recovery.payloadId !== manifest.recovery.payloadId ||
+      journal.recovery.digest !== manifest.recovery.digest ||
+      journal.recovery.source !== manifest.recovery.source
+    )
+      throw archiveTurnDiffRefusal('turn-diff-evidence-unavailable');
+    for (const repository of journal.repositories) {
+      const identity = repository.repositoryIdentity;
+      if (!identity)
+        throw archiveTurnDiffRefusal('turn-diff-identity-unverified');
+      const { getGitCommonDir } = await import('./git');
+      const commonDir = await getGitCommonDir(
+        repository.referenceRepoPath,
+      ).catch(() => null);
+      if (!commonDir)
+        throw archiveTurnDiffRefusal('turn-diff-identity-unverified');
+      if (commonDir !== identity)
+        throw archiveTurnDiffRefusal('turn-diff-repository-replaced');
+      if (
+        !repository.repositoryStatIdentity ||
+        (await readDirectoryStatIdentity(identity)) !==
+          repository.repositoryStatIdentity
+      )
+        throw archiveTurnDiffRefusal('turn-diff-repository-replaced');
+      repositories.push(repository.referenceRepoPath);
+    }
+  }
+  if (repositories.length === 0)
+    throw archiveTurnDiffRefusal('turn-diff-repositories-unknown');
+  for (const repository of new Set(repositories))
+    await cleanupPersistedTurnDiffTreeRefs(repository, workspaceId, worktreeId);
+}
+
+async function repairArchiveBrowserRetirement(
+  workspaceId: string,
+  worktreeId: string,
+): Promise<void> {
+  await destructiveStep('deferred-browser-retirement', async () => {
+    try {
+      const { retireRemovedBrowserTask } =
+        await import('../browser/browser-profile-lifecycle');
+      await withBrowserRetirementDeadline(() =>
+        retireRemovedBrowserTask(workspaceId, worktreeId),
+      );
+    } catch (error) {
+      markDestructiveCleanupRequired();
+      throw error;
+    }
+  });
+}
+
 /** Called only under the existing worktree deletion and archive locks. */
-async function finishInterruptedArchiveCleanup(
+export async function finishInterruptedArchiveCleanup(
   options: {
     workspaceId: string;
     worktreeId: string;
     expectedCreatedAt?: string;
+    exactJournal?: ExactArchiveJournal;
     w5Commit?: W5CommitOptions;
     observabilityMode?: 'persisted-only' | 'live-service';
     liveServices?: WorktreeArchiveLiveServices;
@@ -5879,15 +6171,16 @@ async function finishInterruptedArchiveCleanup(
   onLiveSessionsDestroyed: () => void,
   onArchiveDeletionCommitted: () => void,
 ): Promise<ArchiveWorktreeResponse | null> {
-  const record = await readDestructiveRecovery(
-    options.workspaceId,
-    options.worktreeId,
-  );
+  const record =
+    options.exactJournal?.record ??
+    (await readDestructiveRecovery(options.workspaceId, options.worktreeId));
   if (
     !record ||
-    record.state === 'completed' ||
-    canResumeFailedChildArchive(record) ||
-    canResumeInterruptedArchive(record)
+    (!options.exactJournal &&
+      (record.state === 'completed' ||
+        record.cleanupRepair !== undefined ||
+        canResumeFailedChildArchive(record) ||
+        canResumeInterruptedArchive(record)))
   )
     return null;
   let manifestCheck = 'manifest-absent';
@@ -5944,11 +6237,17 @@ async function finishInterruptedArchiveCleanup(
       [
         'row-removal-not-journaled',
         !target &&
+          !options.exactJournal &&
           !record.steps.some((step) => step.phase === 'canonical-row-removal'),
       ],
     ] as const
   ).find(([, failed]) => failed)?.[0];
-  if (!manifest || archiveManifestVersion === undefined || failedCheck) {
+  if (
+    !manifest ||
+    manifest.version === 1 ||
+    archiveManifestVersion === undefined ||
+    failedCheck
+  ) {
     await refuseInterruptedArchiveJournal(
       options.workspaceId,
       options.worktreeId,
@@ -5956,6 +6255,15 @@ async function finishInterruptedArchiveCleanup(
     );
     return null;
   }
+  const wasCompleted =
+    record.state === 'completed' ||
+    record.cleanupRepair?.kind === 'completed-cleanup';
+  if (wasCompleted && target)
+    await refuseInterruptedArchiveJournal(
+      options.workspaceId,
+      options.worktreeId,
+      'completed-repair-row-listed',
+    );
   return withDestructiveLifecycle(
     {
       operation: 'worktree-archive',
@@ -5964,12 +6272,56 @@ async function finishInterruptedArchiveCleanup(
       createdAt: manifest.createdAt,
       allowMissingRow: !target,
       resumeArchiveCleanup: true,
+      exactJournal: options.exactJournal,
       archiveManifestVersion,
       readCreatedAt: async () => (await readTarget())?.createdAt ?? null,
       beforeEffects: options.w5Commit?.beforeDecision,
     },
     async () => {
+      setArchivePhase('commit-cleanup');
       const mode = options.observabilityMode ?? 'persisted-only';
+      if (wasCompleted && options.exactJournal)
+        record.cleanupRepair = { kind: 'completed-cleanup' };
+      const hadCleanupMarker = record.cleanupRequired === true;
+      const identifiedDebt = record.steps.some(
+        (step) =>
+          (step.phase === 'turn-diff-cleanup' && step.state !== 'done') ||
+          step.phase === 'deferred-browser-retirement',
+      );
+      if (
+        record.steps.some(
+          (step) => step.phase === 'turn-diff-cleanup' && step.state !== 'done',
+        )
+      ) {
+        await destructiveTurnDiffCleanupRepair(() =>
+          repairArchiveTurnDiffRefs(
+            options.workspaceId,
+            options.worktreeId,
+            manifest,
+          ),
+        );
+      }
+
+      if (wasCompleted && options.exactJournal) {
+        await repairArchiveBrowserRetirement(
+          options.workspaceId,
+          options.worktreeId,
+        );
+        if (identifiedDebt) await settleDestructiveCleanupDebt();
+        const previousOutcome = destructiveArchiveOutcomeSchema.safeParse(
+          record.outcome,
+        );
+        return {
+          success: true,
+          warnings: previousOutcome.success
+            ? previousOutcome.data.warnings.filter(
+                (warning) =>
+                  !warningRequiresDestructiveCleanup(warning) &&
+                  warning !== DEFERRED_BROWSER_RETIREMENT_WARNING,
+              )
+            : [],
+        };
+      }
       await destructiveCall(
         'live-state-teardown',
         cleanupLiveStateIfNeeded,
@@ -5999,6 +6351,15 @@ async function finishInterruptedArchiveCleanup(
         teardownResult: { status: 'fulfilled', value: [] },
         onArchiveDeletionCommitted,
       });
+      if (options.exactJournal) {
+        // The transient deferred wrapper is not evidence of owner-level settlement.
+        await repairArchiveBrowserRetirement(
+          options.workspaceId,
+          options.worktreeId,
+        );
+        if (!hadCleanupMarker || identifiedDebt)
+          await settleDestructiveCleanupDebt();
+      }
       return { success: true, ...response };
     },
   );

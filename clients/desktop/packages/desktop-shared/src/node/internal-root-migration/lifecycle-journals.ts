@@ -134,7 +134,7 @@ async function directoryStatIdentity(path: string): Promise<string | null> {
   return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
 }
 
-async function projectJournal(
+export async function projectInternalRootJournal(
   transition: RelocationTransition,
   workingRoot: string,
   evidence: InternalRootLifecycleJournalEvidence,
@@ -241,7 +241,11 @@ export async function relocateInternalRootJournals(
     const { name } = entry;
     const record = evidenceRecord(entry);
     if (entry.abandoned) continue;
-    const projected = await projectJournal(transition, workingRoot, entry);
+    const projected = await projectInternalRootJournal(
+      transition,
+      workingRoot,
+      entry,
+    );
     const current = copied.records.find((entry) => entry.name === name)?.record;
     if (verify) {
       if (!isDeepStrictEqual(current, projected))

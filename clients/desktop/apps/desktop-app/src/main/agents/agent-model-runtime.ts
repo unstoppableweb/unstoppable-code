@@ -1,3 +1,8 @@
+import { isSelectableAgentOverrideModel } from '@canopy/execution-engine/model-catalog';
+import {
+  AgentModelSelectionError,
+  resolveAgentBaseModel,
+} from '@canopy/execution-engine/lib/agent-model-selection';
 import {
   getExecutionHarnessForModel,
   isAgentModel,
@@ -46,6 +51,7 @@ export async function resolveAgentModelRuntime(options: {
   systemPromptAppend?: string;
   pluginSelections?: ChatTabPluginSelections;
   providerType?: AgentProviderType;
+  executionHarness?: ModelHarness;
   /**
    * Opt-in for callers that retain their own route (delegation, discovery):
    * the workspace whose default a bare inheriting Agent runs on. Chats pin a
@@ -72,13 +78,13 @@ export async function resolveAgentModelRuntime(options: {
     };
   }
 
-  // A chat route id carries the base its chat resolved for an inheriting
-  // Agent; later Settings changes must not reroute that chat.
+  // Keep the requested route for identity and persistence; only execution uses its concrete base.
   const route = parseAgentRouteModelId(options.model);
   const agentId = route?.agentId ?? options.model;
   const agent = await getAgentModel(agentId, options.projectId);
   if (!agent) {
-    throw new Error(
+    throw new AgentModelSelectionError(
+      'agent_unavailable',
       `Agent model "${agentId}" is not defined. Open Agents to create or import it, or choose another model.`,
     );
   }
@@ -88,31 +94,55 @@ export async function resolveAgentModelRuntime(options: {
       `Agent "${agent.name}" uses the default model, but this chat has no model yet. Choose the Agent again or choose another model.`,
     );
   }
-  // A route only supplies the base of an inheriting Agent; a pinned Agent keeps
-  // its own base whatever route id names it.
-  const selectedBaseModel = !inheritsDefault
-    ? agent.baseModel
-    : (route?.baseModel ??
-      (await resolveAgentDestinationDefaultModel(
-        options.inheritDefaultFrom?.projectId,
-      )));
-  const baseModel = resolveModelAlias(selectedBaseModel);
-  if (isAgentModel(baseModel)) {
-    throw new Error(
-      `Agent "${agent.name}" uses the default model, but the default model is an Agent. Choose a provider model as the default in Settings, or choose a base model for this Agent.`,
+  let choice = resolveAgentBaseModel(
+    { explicitModel: route?.baseModel, agentDefaultModel: agent.baseModel },
+    resolveModelAlias,
+  );
+  if (choice.kind === 'needs-destination-default') {
+    choice = resolveAgentBaseModel(
+      {
+        agentDefaultModel: agent.baseModel,
+        destinationDefaultModel: await resolveAgentDestinationDefaultModel(
+          options.inheritDefaultFrom?.projectId,
+        ),
+      },
+      resolveModelAlias,
     );
   }
-  if (!isBaseModelSelectableForAgent(baseModel)) {
-    throw new Error(
-      `Agent "${agent.name}" uses unavailable base model "${String(baseModel)}". Edit the Agent or choose another model.`,
+  if (
+    choice.kind !== 'resolved' ||
+    !(route
+      ? isSelectableAgentOverrideModel(choice.model)
+      : isBaseModelSelectableForAgent(choice.model))
+  ) {
+    throw new AgentModelSelectionError(
+      'model_unavailable',
+      `Agent "${agent.name}" cannot run on model "${route?.baseModel ?? agent.baseModel}" because that model is not selectable. Choose another model.`,
+    );
+  }
+  const baseModel = choice.model;
+  const executionHarness =
+    options.executionHarness ?? getExecutionHarnessForModel(baseModel);
+  if (!executionHarness) {
+    throw new AgentModelSelectionError(
+      'harness_unavailable',
+      `The execution harness for model "${baseModel}" is not available here.`,
     );
   }
 
-  const executionHarness = getExecutionHarnessForModel(baseModel);
-  if (!executionHarness) {
-    throw new Error(
-      `No execution harness is available for Agent base model "${String(baseModel)}".`,
+  if (route) {
+    const { agentModelPluginIncompatibility } =
+      await import('../plugins/agent-model-compatibility');
+    const reason = await agentModelPluginIncompatibility(
+      agent.pluginSelections,
+      executionHarness,
+      options.projectId,
     );
+    if (reason)
+      throw new AgentModelSelectionError(
+        'plugins_incompatible',
+        `Agent "${agent.name}" cannot run on model "${baseModel}": ${reason} Choose another model or edit the Agent.`,
+      );
   }
 
   return {
@@ -125,9 +155,8 @@ export async function resolveAgentModelRuntime(options: {
       options.systemPromptAppend,
       agent.instructions,
     ),
-    pluginSelections: mergePluginSelections(
-      options.pluginSelections,
-      agent.pluginSelections,
-    ),
+    pluginSelections: agent.pluginSelections
+      ? mergePluginSelections(options.pluginSelections, agent.pluginSelections)
+      : options.pluginSelections,
   };
 }

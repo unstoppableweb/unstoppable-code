@@ -62,7 +62,11 @@ export function EditGatewayModelDialog({
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
-        <ErrorBanner error={error?.copy} details={error?.details} />
+        <ErrorBanner
+          errorSource="edit-gateway-model-dialog"
+          error={error?.copy}
+          details={error?.details}
+        />
         <FormField label="Harness">
           {(control) => (
             <SettingsSelect

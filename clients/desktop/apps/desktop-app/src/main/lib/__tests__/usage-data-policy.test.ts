@@ -1,4 +1,7 @@
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import {
+  IPC_CHANNELS,
+  type UsageDataPolicySnapshot,
+} from '@canopy/desktop-shared/types';
 import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import {
   __resetUsageDataPolicyForTests,
@@ -133,6 +136,37 @@ describe('usage-data policy resolution', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(policy.getEffectiveUsageDataPolicy().activeUseSignal).toBe(true);
     expect(policy.getEffectiveUsageDataPolicy().productAnalytics).toBe(false);
+  });
+
+  it('observes Error reports opt-out and re-enable while organization policy is unreadable', () => {
+    const policy = createUsageDataPolicy({ prohibitions: 'unreadable' });
+    policy.setWorkspaceContext({ kind: 'personal' });
+    const effectivePolicyListener = jest.fn();
+    const crashPolicyListener = jest.fn<void, [UsageDataPolicySnapshot]>();
+    policy.subscribe(effectivePolicyListener);
+    policy.subscribe(crashPolicyListener, {
+      includeErrorReportsPreference: true,
+    });
+
+    const defaults = defaultUsageDataPreferences();
+    policy.setPreferences({ ...defaults, errorReports: false });
+    policy.setPreferences(defaults);
+
+    expect(
+      crashPolicyListener.mock.calls.map(([snapshot]) => [
+        snapshot.preferences.errorReports,
+        snapshot.effective.errorReports,
+      ]),
+    ).toEqual([
+      [false, false],
+      [true, false],
+    ]);
+    expect(effectivePolicyListener).not.toHaveBeenCalled();
+
+    expect(policy.setProhibitionsByOrganization(new Map())).toBe(true);
+    expect(crashPolicyListener).toHaveBeenCalledTimes(3);
+    expect(effectivePolicyListener).toHaveBeenCalledTimes(1);
+    expect(policy.getEffectiveUsageDataPolicy().errorReports).toBe(true);
   });
 
   it('narrows a per-turn report by the organization that owns the work', () => {

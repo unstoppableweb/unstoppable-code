@@ -111,6 +111,10 @@ const ORCHESTRATOR_QUESTION_PUSHES: readonly RemoteIpcChannel[] = [
 ];
 
 export const REMOTE_QUERY_CHANNELS = {
+  'worktree.baseBranches': {
+    requires: ['worktreeBaseBranch'],
+    invoke: [C.homeListBranchTargets],
+  },
   'delegation.lifetimeStatus': {
     requires: ['delegationLifetimeStatusReads'],
     invoke: [C.managedDelegationLifetimeStatus],
@@ -122,6 +126,10 @@ export const REMOTE_QUERY_CHANNELS = {
   'repoRules.status': {
     requires: ['repoRulesImport'],
     invoke: [C.repoRulesStatus],
+  },
+  'repoRules.check': {
+    requires: ['repoRulesImport'],
+    invoke: [C.repoRulesCheck],
   },
   'repoRules.preview': {
     requires: ['repoRulesImport'],

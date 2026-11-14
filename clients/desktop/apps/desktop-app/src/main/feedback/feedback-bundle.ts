@@ -89,12 +89,10 @@ import {
   getWorkspaceChatHistoryRootDir,
   getWorkspaceChatHistorySummaryFilePath,
   getWorkspaceChatTabsFilePath,
-  getWorkspaceConfigPath,
-  getWorkspaceIndexFilePath,
   getWorkspaceTrackedPlansFilePath,
-  getWorkspaceWorktreesFilePath,
   getWorktreeSummaryFilePath,
   getWorkspaceScriptRunDir,
+  w5RecordReadPaths,
 } from '../lib/paths';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
@@ -594,8 +592,8 @@ async function includeCoreDiagnostics(
     { sourceRoot: dataDir },
   );
   await builder.addFileIfSafe(
-    getWorkspaceIndexFilePath(),
-    dataRelativeZipPath(getWorkspaceIndexFilePath()),
+    w5RecordReadPaths.index(),
+    dataRelativeZipPath(w5RecordReadPaths.index()),
     { sourceRoot: dataDir },
   );
 }
@@ -1252,16 +1250,14 @@ async function includeWorkspaceDiagnostics(
   await Promise.all(
     selections.map(async (selection) => {
       await builder.addFileIfSafe(
-        getWorkspaceConfigPath(selection.workspaceId),
-        dataRelativeZipPath(getWorkspaceConfigPath(selection.workspaceId)),
+        w5RecordReadPaths.manifest(selection.workspaceId),
+        dataRelativeZipPath(w5RecordReadPaths.manifest(selection.workspaceId)),
         { sourceRoot: dataDir },
       );
       await addWorkspaceWorktreesDiagnostics(
         builder,
-        getWorkspaceWorktreesFilePath(selection.workspaceId),
-        dataRelativeZipPath(
-          getWorkspaceWorktreesFilePath(selection.workspaceId),
-        ),
+        w5RecordReadPaths.worktrees(selection.workspaceId),
+        dataRelativeZipPath(w5RecordReadPaths.worktrees(selection.workspaceId)),
         includeChatDetails,
       );
       await Promise.all(

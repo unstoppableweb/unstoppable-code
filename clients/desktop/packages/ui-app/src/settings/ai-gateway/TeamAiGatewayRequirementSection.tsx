@@ -96,6 +96,7 @@ export function TeamAiGatewayRequirementSection({
       data-testid="team-ai-gateway-requirement"
     >
       <ErrorBanner
+        errorSource="team-ai-gateway-requirement-section"
         error={error?.copy}
         details={error?.details}
         onRetry={

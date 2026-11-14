@@ -1,23 +1,10 @@
-import { selectW5WritePath } from '../../node/w5-routed-writes/selector';
 import { setOutput } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
-import { getCanopyDataDir } from '../../canopy-paths';
-import {
-  registerW5Host,
-  W5HostCohortRefusedError,
-} from '@canopy/execution-engine/node/w5-host-cohort';
-import { getWorkspaceItem } from '../../node/lib/workspace-service';
-import {
-  createMultiRepoWorktree,
-  createSingleRepoWorktree,
-  getWorktreeCliRecord,
-} from '../../node/lib/worktree-service';
 import {
   PIPELINE_HOST_FAILURE_REASON_OUTPUT,
   type PipelineHostFailureReason,
 } from '../../pipelines/host-actions';
 import {
-  createWorktreeIdentifierOutputs,
   emptyCreateWorktreeOutputs,
   parseCreateWorktreeInputs,
   type CreateWorktreeInputs,
@@ -86,7 +73,7 @@ function firstDesktopOnlyInput(
 export async function runCreateWorktreeAction(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  await runWithActionEnvironment(env, async () => {
+  await runWithActionEnvironment(env, () => {
     const inputs = readInputs(env);
     const parsed = parseCreateWorktreeInputs(inputs);
     if (!parsed.ok) {
@@ -99,61 +86,9 @@ export async function runCreateWorktreeAction(
         `create-worktree "${desktopOnly}" needs the desktop app.`,
       );
     }
-    if (selectW5WritePath() === 'routed') {
-      refuse(
-        'target_not_ready',
-        'create-worktree needs the CLI host adapter to save through the core daemon.',
-      );
-    }
-    const { projectId: workspaceId, branch, baseBranch, repair } = parsed.value;
-    const branchName = branch.kind === 'new' ? branch.name : undefined;
-
-    // TRANSITIONAL (CAN-3797): this detached child writes W5 through the shared
-    // writers, so it joins the host cohort before its first read. Remove when
-    // the W5 rows move to `daemon` and those writers are deleted (CAN-3802).
-    try {
-      await registerW5Host({
-        dataRoot: getCanopyDataDir(),
-        hostKind: 'create-worktree',
-      });
-    } catch (error) {
-      if (!(error instanceof W5HostCohortRefusedError)) throw error;
-      refuse('target_not_ready', error.message);
-    }
-
-    const workspace = await getWorkspaceItem(workspaceId);
-    if (workspace.type === 'cowork') {
-      refuse(
-        'unsupported_action',
-        `Project \`${workspaceId}\` doesn't support worktrees. Use create-project-entry.`,
-      );
-    }
-    const created =
-      workspace.type === 'multi-repo'
-        ? await createMultiRepoWorktree({
-            workspaceId,
-            branchName,
-            baseBranch,
-            repairWorkspaceRoot: repair,
-            restoreClaudeMd: parsed.value.restoreClaudeMd,
-            startPostCreateSetup: false,
-          })
-        : await createSingleRepoWorktree({
-            workspaceId,
-            branchName,
-            baseBranch,
-            startPostCreateSetup: false,
-          });
-
-    const record = await getWorktreeCliRecord(workspaceId, created.id);
-    writeOutputs({
-      ...emptyCreateWorktreeOutputs(),
-      ...createWorktreeIdentifierOutputs(workspaceId, record.id),
-      path: record.path,
-      branch_name: record.branchName,
-      created_at: record.createdAt,
-      setup_state: 'skipped',
-      [PIPELINE_HOST_FAILURE_REASON_OUTPUT]: '',
-    });
+    refuse(
+      'target_not_ready',
+      'create-worktree needs the CLI host adapter to save through the core daemon.',
+    );
   });
 }

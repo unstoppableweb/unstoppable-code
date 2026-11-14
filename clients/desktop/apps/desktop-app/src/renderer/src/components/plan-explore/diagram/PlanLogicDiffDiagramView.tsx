@@ -21,6 +21,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
+  Surface,
   Stack,
   Badge,
   type BadgeTone,
@@ -763,7 +764,11 @@ export const PlanLogicDiffDiagram = forwardRef<
 
         {primaryView === 'diff' && presentation === 'split' && (
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="relative flex min-h-0 flex-1 flex-col border-b">
+            <Surface
+              variant="section"
+              boundary="bottom"
+              className="relative flex min-h-0 flex-1 flex-col"
+            >
               <Badge
                 size="compact"
                 className="pointer-events-none absolute left-3 top-2 z-10"
@@ -777,7 +782,7 @@ export const PlanLogicDiffDiagram = forwardRef<
                 onPaneClick={handlePaneClick}
                 onInstance={registerInstance}
               />
-            </div>
+            </Surface>
             <div className="relative flex min-h-0 flex-1 flex-col">
               <Badge
                 size="compact"

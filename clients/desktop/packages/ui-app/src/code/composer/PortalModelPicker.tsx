@@ -6,19 +6,27 @@ import {
   MODEL_PICKER_AUTO_REASONS,
   managedOpenCodeAutoUnavailableReason,
   ModelPickerMenu,
+  changeSelectedModel,
+  selectedAgentId,
   modelLibraryUnlockHint,
   Notice,
   noticeButtonClassName,
   modelLibraryUnlockLabel,
+  preferredGatewayTabId,
   resolveModelPickerRowCue,
   type ModelCatalog,
   type ModelCatalogOption,
   type ModelCatalogProvider,
   type ModelPickerAutoOption,
+  type ModelPickerGatewayTab,
   type ModelPickerOptionState,
   type ModelPickerRowFact,
   type ModelPickerSelectionContext,
 } from '@canopy/ui-shared';
+import {
+  AgentModelPicker,
+  type AgentPickerOption,
+} from '@canopy/ui-shared/components';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import {
   resolveModelCatalogHarnessChoice,
@@ -28,6 +36,13 @@ import {
 import type { PortalChatProviderAvailability } from '@canopy/protocol/portal';
 
 export interface PortalModelPickerProps {
+  /** Existing paired hosts keep their combined Agent rows until default metadata is wired. */
+  readonly allowLegacyAgentRows?: boolean;
+  /** Only a local-route host can supply Agent defaults; cloud definitions cannot. */
+  readonly agentSelection?: {
+    readonly agents: readonly AgentPickerOption[];
+    readonly effectiveModel: string | undefined;
+  };
   /** Opt in only in the shared composer status row; other consumers keep their current trigger. */
   readonly statusRow?: boolean;
   readonly compact?: boolean;
@@ -105,6 +120,16 @@ const CODEX_SORT_ORDER = 200;
 const OWN_GATEWAY_SORT_ORDER = 250;
 /** Section for rows served by the user's or organization's own gateway. */
 const OWN_GATEWAY_VENDOR = 'org-gateway';
+/** A desktop gateway row's vendor: `org-gateway:<organization id>`. */
+const ORG_GATEWAY_VENDOR_PREFIX = 'org-gateway:';
+
+/** A row served by the owner's or an organization's own AI gateway. */
+function isOwnGatewayRow(option: ModelCatalogOption): boolean {
+  return (
+    option.funding === 'org-gateway' ||
+    option.vendor?.startsWith(ORG_GATEWAY_VENDOR_PREFIX) === true
+  );
+}
 const OWN_GATEWAY_LABEL = 'AI gateway';
 const ZAI_SORT_ORDER = 300;
 const OTHER_SORT_ORDER = 400;
@@ -142,6 +167,7 @@ function optionHarness(
     option.source === 'claude' ||
     option.source === 'codex' ||
     option.source === 'cursor' ||
+    option.source === 'antigravity' ||
     option.source === 'copilot' ||
     option.source === 'opencode'
   ) {
@@ -151,6 +177,7 @@ function optionHarness(
     if (
       option.provider === 'claude' ||
       option.provider === 'cursor' ||
+      option.provider === 'antigravity' ||
       option.provider === 'copilot' ||
       option.provider === 'opencode'
     )
@@ -163,7 +190,61 @@ function optionHarness(
 }
 
 /** Portal wiring for the browser-safe shared model picker. */
-export function PortalModelPicker({
+export function PortalModelPicker(props: PortalModelPickerProps): JSX.Element {
+  const capability = props.agentSelection;
+  const agentId = selectedAgentId(props.currentModel);
+  const selectModel = (
+    model: string,
+    harness?: AgentExecutionHarness,
+  ): void => {
+    props.onSelect(
+      capability
+        ? (changeSelectedModel(props.currentModel, model) ?? model)
+        : model,
+      harness,
+    );
+  };
+  return (
+    <AgentModelPicker
+      agentRoutesSupported={capability !== undefined}
+      selection={props.currentModel}
+      effectiveModel={capability?.effectiveModel}
+      agents={capability?.agents ?? []}
+      onAgentChange={(selection): void => {
+        if (selection) props.onSelect(selection);
+      }}
+      disabled={props.disabled}
+    >
+      <PortalConcreteModelPicker
+        {...props}
+        catalog={
+          capability || props.allowLegacyAgentRows === false
+            ? props.catalog.filter((option) => option.kind !== 'agent')
+            : props.catalog
+        }
+        {...(capability
+          ? {
+              currentModel: capability.effectiveModel,
+              currentModelLabel: undefined,
+              ...(props.autoOption && agentId
+                ? {
+                    autoOption: {
+                      ...props.autoOption,
+                      unavailableReason: 'Remove the agent to use Auto',
+                      unavailableAction: undefined,
+                      onSelect: (): void => undefined,
+                    },
+                  }
+                : {}),
+            }
+          : {})}
+        onSelect={selectModel}
+      />
+    </AgentModelPicker>
+  );
+}
+
+function PortalConcreteModelPicker({
   openSignal,
   disabled,
   statusRow = false,
@@ -200,6 +281,7 @@ export function PortalModelPicker({
       const id =
         option.kind === 'model' &&
         (option.source === 'cursor' ||
+          option.source === 'antigravity' ||
           option.source === 'copilot' ||
           option.source === 'opencode') &&
         canonical?.kind === 'model' &&
@@ -220,6 +302,7 @@ export function PortalModelPicker({
         else if (
           route.kind === 'model' &&
           (route.source === 'cursor' ||
+            route.source === 'antigravity' ||
             route.source === 'copilot' ||
             route.source === 'opencode') &&
           route.canonicalModelId &&
@@ -248,6 +331,35 @@ export function PortalModelPicker({
       }
     }
     return supported;
+  }, [modelRoutes]);
+  /**
+   * One rail tab per connected AI gateway (CAN-6444), keyed by its desktop
+   * organization when the row says so, else by its name: cloud rows carry
+   * only the gateway's name, and a cloud chat has at most one gateway.
+   */
+  const gatewayTabs = useMemo<readonly ModelPickerGatewayTab[]>(() => {
+    const tabs = new Map<
+      string,
+      { label: string; iconProvider?: string; modelIds: string[] }
+    >();
+    for (const [id, routes] of modelRoutes) {
+      const row = routes.find(isOwnGatewayRow);
+      if (!row) continue;
+      const key = row.vendor?.startsWith(ORG_GATEWAY_VENDOR_PREFIX)
+        ? row.vendor.slice(ORG_GATEWAY_VENDOR_PREFIX.length)
+        : (row.familyLabel ?? OWN_GATEWAY_VENDOR);
+      const tab = tabs.get(key) ?? {
+        label: row.familyLabel ?? OWN_GATEWAY_LABEL,
+        ...(row.gatewayPresetId ? { iconProvider: row.gatewayPresetId } : {}),
+        modelIds: [],
+      };
+      tab.modelIds.push(id);
+      tabs.set(key, tab);
+    }
+    return Array.from(tabs, ([key, tab]) => ({
+      id: `gateway:${key}` as const,
+      ...tab,
+    }));
   }, [modelRoutes]);
   const rawSelectedModelId =
     currentModel === undefined
@@ -388,6 +500,17 @@ export function PortalModelPicker({
       // ahead of the generic provider check below, whose "not signed in"
       // wording does not describe a runtime that is simply not connected.
       if (
+        (option.provider === 'antigravity' ||
+          option.harness === 'antigravity') &&
+        providerAvailability?.antigravity !== true
+      ) {
+        return {
+          disabled: true,
+          unavailableReason:
+            'Connect your personal Google account on the paired computer.',
+        };
+      }
+      if (
         (option.provider === 'cursor' ||
           option.harness === 'cursor' ||
           option.source === 'cursor') &&
@@ -511,6 +634,22 @@ export function PortalModelPicker({
       getRouteState(resolveRoute(option, selection), selection),
     [getRouteState, resolveRoute],
   );
+  // Whether anything outside the user's own gateways can run here; when not,
+  // the picker opens on the gateway (CAN-6444).
+  const builtInRunnable = useMemo(
+    () =>
+      menuCatalog.some((option) => {
+        if (isOwnGatewayRow(option) || option.kind === 'agent') return false;
+        const state = getOptionState(option);
+        return !state.disabled && !state.locked;
+      }),
+    [getOptionState, menuCatalog],
+  );
+  const preferredGatewayTab = preferredGatewayTabId({
+    gatewayTabs,
+    currentModel: selectedModelId,
+    builtInRunnable,
+  });
   const effectiveAutoOption = useMemo<ModelPickerAutoOption | undefined>(() => {
     if (!autoOption || autoOption.unavailableReason) return autoOption;
     if (
@@ -601,7 +740,15 @@ export function PortalModelPicker({
     (option) => option.harnessChoices?.length,
   );
   const runnable = (
-    ['claude', 'codex', 'cursor', 'copilot', 'opencode', 'ollama'] as const
+    [
+      'claude',
+      'codex',
+      'cursor',
+      'copilot',
+      'antigravity',
+      'opencode',
+      'ollama',
+    ] as const
   )
     .filter((id) =>
       menuCatalog.some(
@@ -615,7 +762,10 @@ export function PortalModelPicker({
       id,
       connected:
         id === 'ollama' ||
-        (id === 'opencode' || id === 'cursor' || id === 'copilot'
+        (id === 'antigravity' ||
+        id === 'opencode' ||
+        id === 'cursor' ||
+        id === 'copilot'
           ? providerAvailability?.[id] === true
           : providerAvailability?.[id] !== false),
     }));
@@ -641,12 +791,16 @@ export function PortalModelPicker({
         leadingFavorites: true,
         brandIcon: null,
         brandLabel: brandDisplayName ?? 'AI Credits',
+        // The user's own gateway leads when it holds the only runnable
+        // models; otherwise the chat's harness, else All.
         initialTab:
-          selectedHarness === 'claude' ||
+          preferredGatewayTab ??
+          (selectedHarness === 'claude' ||
           selectedHarness === 'codex' ||
           (selectedHarness && supportedModelIds[selectedHarness]?.length)
             ? selectedHarness
-            : 'all',
+            : 'all'),
+        ...(gatewayTabs.length > 0 ? { gatewayTabs } : {}),
         ...(supportsChoices ? { runnableHarnesses: runnable } : {}),
         supportedModelIds,
         favoriteModelAliases,

@@ -9,6 +9,7 @@ export const mcpActivationProviderSchema = z.enum([
   'ollama',
   'cursor',
   'copilot',
+  'antigravity',
   'opencode',
 ]);
 export type McpActivationProvider = z.infer<typeof mcpActivationProviderSchema>;

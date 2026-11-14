@@ -64,6 +64,16 @@ function isMissingVisualSource(error: unknown, chatId: string): boolean {
   );
 }
 
+/** A revision this host does not advertise, refused before any read. */
+export function unservedRevision(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'capability_unavailable',
+    message: 'Desktop chats do not serve this revision.',
+    details: { unsupported: ['revision'], reason: 'unserved' },
+    retry: { kind: 'after_refresh', resource: 'core.runtime.manifest.get' },
+  });
+}
+
 function visualOperationError(
   kind: 'not_found' | 'failed_precondition' | 'invalid_argument' | 'cancelled',
   message: string,
@@ -391,6 +401,8 @@ export function createCoreChatReadAdapter(
     'core.chat.transcript.page': async (
       params,
     ): Promise<CoreChatTranscriptPageResult> => {
+      // A cloud chat's meters (CAN-6509); desktop advertises no revision.
+      if (params.revision !== undefined) throw unservedRevision();
       try {
         const chatScope = requireScope(params.scope);
         const result = await requirePort(services).getTranscriptPage({

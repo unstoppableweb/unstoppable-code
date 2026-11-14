@@ -70,6 +70,7 @@ export function FirstSendFailedNotice({
 
   return (
     <Notice
+      errorSource="first-send-failed-title"
       intent="destructive"
       title={title}
       aria-busy={busy || undefined}

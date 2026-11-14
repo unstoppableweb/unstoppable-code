@@ -85,9 +85,53 @@ export interface CapabilityGcResult {
  * where a test is asserting on this contract. Depending on this interface lets
  * callers inject a real store or a checked test double without casting.
  */
+/**
+ * A thread's lease, for a resume that asks for `snapshotId`. A lease from
+ * before fingerprint v2 that names `legacySnapshotId`, this host's v1 id for
+ * the same capabilities, moves to `snapshotId` first (CAN-6168). Any other
+ * lease comes back as it is, so the caller refuses or rebuilds the thread.
+ */
+export async function readResumeLease(
+  store: Pick<CodexCapabilityLeaseStore, 'readLease' | 'upgradeLeaseSnapshot'>,
+  threadId: string,
+  ids: { snapshotId: string; legacySnapshotId?: string },
+): Promise<CodexCapabilityLeaseFile | null> {
+  const lease = await store.readLease(threadId);
+  if (
+    !lease ||
+    lease.snapshotId === ids.snapshotId ||
+    lease.fingerprint !== undefined ||
+    ids.legacySnapshotId === undefined ||
+    lease.snapshotId !== ids.legacySnapshotId
+  )
+    return lease;
+  await store.upgradeLeaseSnapshot(
+    threadId,
+    ids.legacySnapshotId,
+    ids.snapshotId,
+  );
+  return store.readLease(threadId);
+}
+
+/**
+ * The fingerprint a fork's lease records. A fork keeps its source's snapshot,
+ * so it keeps the source's fingerprint too: a fork of a lease from before v2
+ * still moves to v2 on resume. A fork with no source lease is v2.
+ */
+export function forkedLeaseFingerprint(
+  sourceLease: CodexCapabilityLeaseFile | null,
+): CodexCapabilityLeaseFile['fingerprint'] {
+  return sourceLease ? sourceLease.fingerprint : 2;
+}
+
 export interface CodexCapabilityLeaseStore {
   readLease(threadId: string): Promise<CodexCapabilityLeaseFile | null>;
   writeLease(lease: CodexCapabilityLeaseFile): Promise<void>;
+  upgradeLeaseSnapshot(
+    threadId: string,
+    from: string,
+    to: string,
+  ): Promise<boolean>;
   releaseLease(threadId: string): Promise<void>;
   acquireOperationPin(
     rootContentIds: string[],
@@ -136,6 +180,7 @@ function isCodexCapabilityLeaseFile(
     value.version === 1 &&
     typeof value.threadId === 'string' &&
     typeof value.snapshotId === 'string' &&
+    (value.fingerprint === undefined || value.fingerprint === 2) &&
     isStringArray(value.rootContentIds) &&
     (value.kind === 'persisted-chat' ||
       value.kind === 'persisted-helper' ||
@@ -580,6 +625,34 @@ export class CodexCapabilityStore implements CodexCapabilityLeaseStore {
           );
         },
       );
+    });
+  }
+
+  /**
+   * Moves a thread's fingerprint v1 lease to the host-neutral snapshot id
+   * (CAN-6168), only while its stored id is still `from`, the v1 id this
+   * host computed for the same capabilities. False when the lease is gone
+   * or names any other snapshot, so a lease never moves to another
+   * session's capabilities.
+   */
+  async upgradeLeaseSnapshot(
+    threadId: string,
+    from: string,
+    to: string,
+  ): Promise<boolean> {
+    if (!threadId || !from || !to) return false;
+    return this.withRecordLock(this.leasesDirectory, threadId, async () => {
+      const existing = await this.readLease(threadId);
+      if (!existing || existing.snapshotId !== from) return false;
+      // A v2 lease never moves: only a lease from before v2 does.
+      if (existing.fingerprint !== undefined) return from === to;
+      await atomicWriteJson(recordPath(this.leasesDirectory, threadId), {
+        ...existing,
+        snapshotId: to,
+        fingerprint: 2,
+        updatedAt: new Date().toISOString(),
+      } satisfies CodexCapabilityLeaseFile);
+      return true;
     });
   }
 

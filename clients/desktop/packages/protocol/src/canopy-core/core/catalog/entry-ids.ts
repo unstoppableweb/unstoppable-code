@@ -12,6 +12,12 @@ export interface CatalogSelectionRefs {
 /** The web core's source of the account's own and shared custom skills. */
 export const CLOUD_CUSTOM_SKILL_SOURCE_ID = 'cloud-custom';
 
+/**
+ * The web core's source of curated skills. A curated skill is a member of a
+ * curated plugin, which its catalog lists as well.
+ */
+export const CLOUD_CURATED_SKILL_SOURCE_ID = 'cloud-curated';
+
 export const modelEntryId = (id: string): string => `model:${id}`;
 export const skillEntryId = (ref: {
   sourceId: string;

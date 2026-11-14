@@ -17,7 +17,7 @@ import {
   bindHookContextsWithCapturedContext,
   captureBackgroundExecutionContext,
 } from '../services/background-execution-context';
-import { getWorkspaceConfigPath, getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import { isWritableScope, READ_ONLY_SCOPE_ERROR } from './read-only-scope';
 import { validateId } from './validation';
 import {
@@ -149,7 +149,9 @@ function manifestCommit(
 ): W5CommitOptions {
   return {
     ...options,
-    locks: [{ kind: 'manifest', path: getWorkspaceConfigPath(workspaceId) }],
+    locks: [
+      { kind: 'manifest', path: w5RecordReadPaths.manifest(workspaceId) },
+    ],
     expectedRevisions: w5ExpectedRevision(
       workspaceResource(workspaceId),
       expectedRevision,
@@ -526,7 +528,7 @@ export async function setWorktreeHooksPaused(
         {
           ...options,
           locks: [
-            { kind: 'list', path: getWorkspaceWorktreesFilePath(workspaceId) },
+            { kind: 'list', path: w5RecordReadPaths.worktrees(workspaceId) },
           ],
           expectedRevisions: w5ExpectedRevision(resource, expectedRevision),
         },

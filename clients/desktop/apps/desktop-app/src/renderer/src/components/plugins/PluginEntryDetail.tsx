@@ -974,6 +974,7 @@ function PluginEntryDetailContent({
     const loadError =
       localAgentsError && !localAgentsLoading ? (
         <Notice
+          errorSource="local-agent-detail-error"
           intent="destructive"
           data-testid="local-agent-detail-error"
           actions={

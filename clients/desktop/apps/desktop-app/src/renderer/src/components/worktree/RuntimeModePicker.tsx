@@ -1,6 +1,6 @@
 import { useId, type JSX } from 'react';
 import { TerminalBorderedIcon, TerminalIcon } from '@canopy/ui-shared/icons';
-import { SECONDARY_SURFACE_SHELL_CLASS } from '@canopy/ui-shared';
+import { SegmentedControl } from '@canopy/ui-shared';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
 
 /**
@@ -67,45 +67,27 @@ export function RuntimeModePicker({
     showLabel && !disabled && mode === 'interactive';
 
   const group = (
-    <div
-      role="radiogroup"
-      aria-label={ariaLabel}
-      aria-describedby={
+    <SegmentedControl<CommandRuntimeMode>
+      label={ariaLabel}
+      semantics="radio"
+      shape="capsule"
+      width="content"
+      value={mode}
+      disabled={disabled}
+      describedBy={
         lockedReason || showInteractiveDescription ? descriptionId : undefined
       }
-      data-testid={testId}
-      className={`inline-flex h-7 shrink-0 items-stretch gap-0.5 rounded-full bg-depth p-0.5 ${
-        disabled ? 'opacity-80' : ''
-      }`}
-    >
-      {OPTIONS.map(({ value, label, Icon }) => {
-        const isActive = mode === value;
-        return (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={isActive}
-            disabled={disabled}
-            data-testid={`${testId}-${value}`}
-            onClick={() => {
-              if (disabled || mode === value) {
-                return;
-              }
-              onChange(value);
-            }}
-            className={`focus-ring flex items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors ${
-              isActive
-                ? `fg-primary ${SECONDARY_SURFACE_SHELL_CLASS}`
-                : 'fg-secondary hover:fg-primary'
-            } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
-          >
-            <Icon size="sm" aria-hidden="true" />
-            {label}
-          </button>
-        );
-      })}
-    </div>
+      dataTestId={testId}
+      options={OPTIONS.map(({ value, label, Icon }) => ({
+        value,
+        label,
+        dataTestId: `${testId}-${value}`,
+        leading: <Icon size="sm" aria-hidden="true" />,
+      }))}
+      onChange={(next) => {
+        if (next !== mode) onChange(next);
+      }}
+    />
   );
 
   return (

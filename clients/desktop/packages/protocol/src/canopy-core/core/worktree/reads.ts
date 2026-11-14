@@ -50,6 +50,8 @@ const HOST_PATH_EXEMPT: ReadonlySet<string> = new Set([
   'setup',
   'firstMessage',
   'activeCombine',
+  // The web core's get only: its chat summary's title is free text.
+  'creation',
 ]);
 
 export const CoreWorktreeSchema = z
@@ -96,7 +98,22 @@ export const CoreWorktreeListResultSchema = z
     collectionRevision: z.number().int().nonnegative().optional(),
   })
   .catchall(CanopyJsonValueSchema);
-export const CoreWorktreeGetResultSchema = CoreWorktreeSchema;
+export const CoreWorktreeGetResultSchema = CoreWorktreeSchema.safeExtend({
+  /**
+   * The web core's cloud worktree only (CAN-6110), as `GET
+   * /api/cloud/worktrees/[id]` answers it: whether its first chat is still
+   * being made, and that chat's summary, unchanged, once it is ready.
+   */
+  creation: z
+    .strictObject({
+      pending: z.boolean(),
+      chat: CoreCloudRecordSchema.nullable(),
+    })
+    .optional(),
+});
+export type CoreWorktreeGetResult = z.output<
+  typeof CoreWorktreeGetResultSchema
+>;
 export const CoreWorktreeErrorSchema = CanopyErrorPayloadSchema.extend({
   code: z
     .enum([

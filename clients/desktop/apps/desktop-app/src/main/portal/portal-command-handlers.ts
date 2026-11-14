@@ -72,6 +72,8 @@ import {
 } from './adapters/chat-adapter';
 import {
   handlePortalStandaloneChatCancel,
+  handlePortalStandaloneChatArchive,
+  handlePortalArchivedWorkEntriesList,
   handlePortalStandaloneChatCreate,
   handlePortalStandaloneChatSend,
   handlePortalStandaloneChatSetModel,
@@ -165,6 +167,7 @@ import {
   handlePortalSetViewMode,
 } from './adapters/session-adapter';
 import {
+  handlePortalWorktreeBranchesList,
   handlePortalWorktreeArchive,
   handlePortalWorktreeCreate,
   handlePortalWorktreeDiscard,
@@ -267,6 +270,9 @@ import {
 export interface PortalCommandHandlerContext {
   sessionId?: string | null;
   chatDispatcher?: DesktopCanopyDispatcher;
+  /** Trusted active paired-session authority; asset-read access is insufficient. */
+  canArchiveStandaloneChats?: () => boolean;
+  confirmArchivePairing?: () => Promise<boolean>;
   canReadAssets?: () => boolean;
   canMutateResources?: () => boolean;
   canReadTranscripts?: () => boolean;
@@ -601,6 +607,9 @@ const FEATURE_ADAPTERS: Partial<
   'portal.standalone_chat.send':
     handlePortalStandaloneChatSend as PortalCommandAdapter<unknown>,
   /* oxlint-enable typescript/no-unnecessary-type-assertion */
+  'portal.standalone_chat.archive': handlePortalStandaloneChatArchive,
+  'portal.workspace.archived_work_entries.list':
+    handlePortalArchivedWorkEntriesList,
   'portal.standalone_chat.create': handlePortalStandaloneChatCreate,
   'portal.standalone_chat.cancel':
     handlePortalStandaloneChatCancel as PortalCommandAdapter<unknown>,
@@ -701,6 +710,7 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalPersonalOrganizationProjects,
   'portal.personal_organization.projects.status':
     handlePortalPersonalOrganizationProjects,
+  'portal.worktree.branches.list': handlePortalWorktreeBranchesList,
   'portal.worktree.create':
     handlePortalWorktreeCreate as PortalCommandAdapter<unknown>,
   'portal.worktree.archive':
@@ -808,6 +818,10 @@ function createAdapterContext(
   const adapter: PortalAdapterContext = {
     sessionId: context.sessionId,
     ...(origin ? { origin } : {}),
+    canArchiveStandaloneChats: context.canArchiveStandaloneChats,
+    ...(context.confirmArchivePairing
+      ? { confirmArchivePairing: context.confirmArchivePairing }
+      : {}),
     canReadAssets: context.canReadAssets,
     canMutateResources: context.canMutateResources,
     canReadTranscripts: context.canReadTranscripts,

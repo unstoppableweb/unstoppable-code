@@ -17,6 +17,8 @@ import type { PluginReadParams } from '@canopy/execution-engine/node/codex-runti
 import type { PluginReadResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginReadResponse';
 import type { PluginSource } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSource';
 import type { PluginSummary } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSummary';
+import { curatedCodexRefreshHash } from './curated-plugin-display';
+import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
 
 export interface CodexMarketplaceOperationResult {
   accepted: boolean;
@@ -362,6 +364,133 @@ export async function installCodexPlugin(
   return withConnection((connection) =>
     connection.request('plugin/install', params),
   );
+}
+
+/** plugin/read describes the marketplace, not the installed revision.
+ * Locate only cache roots the runtime skills inventory actually executes.
+ * A plugin without usable runtime evidence stays unresolved (no artwork).
+ */
+export async function readCuratedCodexInstalledRoots(
+  marketplaceName: string,
+  plugins: ReadonlyArray<Pick<PluginSummary, 'id' | 'name'>>,
+): Promise<Map<string, string>> {
+  const roots = new Map<string, string>();
+  if (!plugins.length || path.basename(marketplaceName) !== marketplaceName)
+    return roots;
+  const { codexHome } = await getCodexRuntimeService().getCanonicalState();
+  const result = await withConnection((connection) =>
+    connection.request('skills/list', {
+      cwds: [codexHome],
+      forceReload: true,
+    }),
+  );
+  if (result.data.some((entry) => entry.errors.length > 0)) return roots;
+  const canonicalHome = await fs.promises.realpath(codexHome);
+  const cacheRoot = path.join(canonicalHome, 'plugins', 'cache');
+  const skills = result.data.flatMap((entry) => entry.skills);
+  for (const plugin of plugins) {
+    if (!isCuratedCatalogKey(plugin.name)) continue;
+    const parent = await fs.promises
+      .realpath(
+        path.join(codexHome, 'plugins', 'cache', marketplaceName, plugin.name),
+      )
+      .catch(() => null);
+    if (!parent || !isPathInside(cacheRoot, parent)) continue;
+    const candidates = new Set<string>();
+    let invalid = false;
+    for (const skill of skills.filter(
+      (entry) => entry.pluginId === plugin.id,
+    )) {
+      const file = await fs.promises.realpath(skill.path).catch(() => null);
+      if (!file || !isPathInside(parent, file)) {
+        invalid = true;
+        break;
+      }
+      const segments = path.relative(parent, file).split(path.sep);
+      if (segments.length < 2 || !segments[0]) {
+        invalid = true;
+        break;
+      }
+      candidates.add(path.join(parent, segments[0]));
+    }
+    if (!invalid && candidates.size === 1) {
+      const [candidate] = candidates;
+      if (candidate) roots.set(plugin.name, candidate);
+    }
+  }
+  return roots;
+}
+
+// One bounded attempt per revision per process. Failed installs are retried on
+// app restart or a subsequent catalog revision, never by a rescan loop.
+const curatedRefreshAttempts = new Map<string, string>();
+
+/** Called only by curated sync, under the catalog mutation lock. No settings
+ * restore can make plugin/install atomic for disabled plugins, so leave them
+ * untouched. Reinstalling an enabled copy preserves its current enabled state.
+ */
+export async function refreshCuratedCodexPlugins(
+  marketplaceName: string,
+  sourceRoot: string,
+): Promise<boolean> {
+  let refreshed = false;
+  const { codexHome } = await getCodexRuntimeService().getCanonicalState();
+  const listing = await listCodexPlugins();
+  if (listing.marketplaceLoadErrors.length) return false;
+  const marketplaces = listing.marketplaces.filter(
+    (row) => row.name === marketplaceName,
+  );
+  if (marketplaces.length !== 1) return false;
+  const marketplace = marketplaces[0];
+  if (!marketplace) return false;
+  const listedRoot = codexMarketplaceRootFromPath(marketplace.path);
+  const expectedRoot = await fs.promises.realpath(sourceRoot);
+  if (!listedRoot || (await fs.promises.realpath(listedRoot)) !== expectedRoot)
+    return false;
+  const plugins = marketplace.plugins.filter(
+    (plugin) =>
+      plugin.installed &&
+      plugin.enabled &&
+      isCuratedCatalogKey(plugin.name) &&
+      plugin.id === `${plugin.name}@${marketplaceName}`,
+  );
+  const roots = await readCuratedCodexInstalledRoots(marketplaceName, plugins);
+  for (const plugin of plugins) {
+    const installedRoot = roots.get(plugin.name);
+    if (!installedRoot || plugin.source.type !== 'local') continue;
+    const stagedRoot = path.join(expectedRoot, plugin.name);
+    const actualSource = await fs.promises
+      .realpath(path.resolve(expectedRoot, plugin.source.path))
+      .catch(() => null);
+    if (actualSource !== stagedRoot) continue;
+    const hash = await curatedCodexRefreshHash(
+      stagedRoot,
+      installedRoot,
+      plugin.name,
+    );
+    const attemptKey = `${codexHome}:${plugin.id}`;
+    if (!hash || curatedRefreshAttempts.get(attemptKey) === hash) continue;
+    // Bound memory without evicting failures into a retry loop.
+    if (
+      !curatedRefreshAttempts.has(attemptKey) &&
+      curatedRefreshAttempts.size >= 256
+    )
+      continue;
+    curatedRefreshAttempts.set(attemptKey, hash);
+    try {
+      await installCodexPlugin({
+        marketplacePath: codexMarketplaceManifestPath(expectedRoot),
+        remoteMarketplaceName: null,
+        pluginName: plugin.name,
+      });
+      refreshed = true;
+    } catch (error) {
+      process.stderr.write(
+        `[plugins] Curated Codex refresh failed for ${plugin.name}: ${errorMessage(error)}\n`,
+      );
+    }
+  }
+  return refreshed;
 }
 
 export async function uninstallCodexPlugin(pluginId: string): Promise<void> {

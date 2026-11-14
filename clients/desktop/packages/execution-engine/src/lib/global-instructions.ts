@@ -191,6 +191,7 @@ const HARNESS_LABELS: Record<GlobalInstructionHarness, string> = {
   ollama: 'Ollama',
   cursor: 'Cursor',
   copilot: 'GitHub Copilot',
+  antigravity: 'Google',
   opencode: 'OpenCode',
 };
 

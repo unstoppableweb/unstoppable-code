@@ -205,6 +205,17 @@ function DisclosureToggleSection(): JSX.Element {
             </span>
           </ToggleCell>
         ))}
+        {[false, true].map((open) => (
+          <ToggleCell
+            key={`usage-section-${String(open)}`}
+            label={`usage-section, ${open ? 'open' : 'closed'}`}
+            variant="usage-section"
+            open={open}
+            frameClassName="relative flex w-64 items-center text-xs"
+          >
+            <span className="whitespace-nowrap fg-primary">Usage limits</span>
+          </ToggleCell>
+        ))}
         {(['summary', 'summary-wrapping'] as const).map((variant) => (
           <ToggleCell
             key={variant}

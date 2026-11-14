@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import type {
   ChildStreamCompatibilityPageReply,
   ChildStreamCompatibilityPageRequest,
@@ -211,6 +212,20 @@ export interface ChatStateV2RepositoryOptions extends Omit<
  * Node file-system errors carry a string errno `code`; storage integrity and
  * migration failures do not. Only the former can clear without intervention.
  */
+/**
+ * A read or write that reaches a scope while it is drained or deleted, as
+ * archiving a standalone chat deletes its scope while the renderer and the
+ * search index still reach it (CAN-6556). The caller's state changed under
+ * it; that is no defect.
+ */
+function scopeDrainingError(): Error {
+  return classifyError(
+    new Error('Chat scope is draining'),
+    'external.state_changed',
+    { source: 'chat-state' },
+  );
+}
+
 function isOperatingSystemFailure(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
@@ -1702,7 +1717,7 @@ export class ChatStateV2Repository {
   }
   private async load(scope: ChatScopeKey, entry: ScopeEntry): Promise<void> {
     if (entry.lifecycle === 'disposed' || entry.lifecycle === 'draining')
-      throw new Error('Chat scope is draining');
+      throw scopeDrainingError();
     if (entry.lifecycle === 'ready') return;
     // A failed recovery is sticky: re-running migration on every access would
     // repeat the same expensive, failing work. releaseScope is the retry.
@@ -1721,8 +1736,9 @@ export class ChatStateV2Repository {
             (await this.options.hasLiveDependency?.(scope))
           ) {
             transient = true;
-            throw new Error(
-              'Chat migration is waiting for active turns to settle',
+            throw classifyError(
+              new Error('Chat migration is waiting for active turns to settle'),
+              'external.service_unavailable',
             );
           }
           const migration = ['v3', 'v4'].includes(await entry.store.format())
@@ -3358,7 +3374,7 @@ export class ChatStateV2Repository {
         entry.lifecycle === 'draining' ||
         entry.lifecycle === 'disposed'
       )
-        throw new Error('Chat scope is draining');
+        throw scopeDrainingError();
       await this.load(scope, entry);
       assertCurrent();
       const preview = await entry.backend.captureTranscriptPreview(chatId);
@@ -3379,7 +3395,7 @@ export class ChatStateV2Repository {
           throw error;
         }
         entry.previewReaders.delete(preview);
-        throw new Error('Chat scope is draining');
+        throw scopeDrainingError();
       }
       return preview;
     });

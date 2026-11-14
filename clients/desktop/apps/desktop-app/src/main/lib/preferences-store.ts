@@ -12,6 +12,7 @@ import {
 } from '../approvals/rule-revisions';
 import { resolveAvailableModel } from './model-availability';
 import { readFile, stat } from 'node:fs/promises';
+import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import { dirname } from 'node:path';
 import {
   type PreferencesData,
@@ -204,6 +205,24 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
     markPreferencesAuthorityConfirmed();
   },
   afterSave: async ({ previous, next }): Promise<void> => {
+    if (
+      previous.googleSubscriptionDisconnected !==
+      next.googleSubscriptionDisconnected
+    ) {
+      // All admitted writers invalidate in serialized commit order. A late
+      // discovery or sign-in cannot restore a disconnected model catalog.
+      const { invalidateAntigravityModels } =
+        await import('../antigravity/models');
+      invalidateAntigravityModels();
+      const { broadcastModelRegistryUpdated } =
+        await import('../models/model-registry');
+      const { notifyPortalModelCatalogChanged } =
+        await import('../portal/portal-event-bus');
+      broadcastModelRegistryUpdated();
+      // Catalog projection may read preferences. Do not await it while this
+      // serialized preferences commit still owns the write queue.
+      trackDetachedWork(() => notifyPortalModelCatalogChanged());
+    }
     if (previous.opencodeEnabled !== next.opencodeEnabled)
       openCodeEnabledRevision++;
     rendererPreferencesCache = next;

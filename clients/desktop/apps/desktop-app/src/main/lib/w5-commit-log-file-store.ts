@@ -1,3 +1,4 @@
+import type { W5RecordImageStore } from '@canopy/core-runtime/node/w5/record-image-repositories';
 import {
   W5AuthorityUnreachableError,
   w5NamedUnreadable,
@@ -25,7 +26,7 @@ import { markE2eStartup } from './e2e-startup-marks';
 import { admitStorageWrite } from '@canopy/execution-engine/node/lib/storage-admission';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { readWorkspaceIndex } from '@canopy/core-runtime/node';
-import { countingW5HostPort, w5RecordFileClass } from './w5-work-counters';
+import { w5RecordFileClass } from './w5-work-counters';
 import {
   isW5CaptureWorkspaceId,
   type W5CaptureRequest,
@@ -41,7 +42,10 @@ import {
   type W5ReadViewUncapturedReason,
 } from './w5-read-view';
 import { nodeW5FileStore, type W5FileStore } from './w5-file-store';
-import { W5DaemonHandoffError } from './w5-handoff-store';
+import {
+  createW5DegradedStore,
+  W5DaemonHandoffError,
+} from './w5-handoff-store';
 import { noteW5CommitScopeOpened } from './w5-pre-effect-retry';
 
 export {
@@ -79,14 +83,6 @@ function noteW5ReadServed(): void {
   markE2eStartup('w5FirstReadServed');
 }
 
-// Over the counted view of the app's host (one per host, sharing its queue).
-const productionStore = createW5CommitLogFileStore(
-  async (): Promise<W5CommitLogHostPort> => {
-    const { getW5CommitLogHost } =
-      await import('../w5-commit-log/commit-log-host');
-    return countingW5HostPort(getW5CommitLogHost());
-  },
-);
 let testStore: W5FileStore | undefined;
 let installedStore: W5CommitLogFileStore | undefined;
 
@@ -106,10 +102,18 @@ export function installDesktopW5FileStore(store: W5CommitLogFileStore): void {
   installedStore = store;
 }
 
-const currentStore = (): W5FileStore =>
-  testStore ?? installedStore ?? productionStore;
+const uninitializedDaemonStore = createW5DegradedStore(
+  new W5DaemonHandoffError('daemon_unavailable', 'handoff-not-started'),
+);
 
-export const desktopW5FileStore: W5FileStore = {
+const currentStore = (): W5FileStore =>
+  testStore ??
+  installedStore ??
+  // Import-time and failed-startup callers get only degraded reads, never a local writer.
+  uninitializedDaemonStore;
+
+export const desktopW5FileStore: W5RecordImageStore = {
+  withCommit: (options, work) => withW5Commit(options, work),
   read: async (path) => {
     const captured = readFromW5ReadView(path);
     recordW5Work(
@@ -178,9 +182,10 @@ const loggedLiveReasons = new Set<W5ReadViewUncapturedReason>();
 function runUncaptured<T>(
   reason: W5ReadViewUncapturedReason,
   work: (view: W5ReadViewOutcome) => Promise<T>,
+  error?: Error,
 ): Promise<T> {
   recordW5Work(`readView.uncaptured.${reason}`);
-  return runInW5UncapturedView(reason, work);
+  return runInW5UncapturedView(reason, work, error);
 }
 
 /** A query the capture cannot serve reads live, recorded in its outcome and logged once. */
@@ -236,7 +241,11 @@ export async function runW5ReadView<T>(
       reason,
       error: error instanceof Error ? error.message : String(error),
     });
-    return runUncaptured(reason, work);
+    return runUncaptured(
+      reason,
+      work,
+      error instanceof Error ? error : undefined,
+    );
   }
   const skipped = discoverySkippedReads(captured.capture);
   if (skipped) return runLive(skipped, work);

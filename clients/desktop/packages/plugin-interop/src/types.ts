@@ -102,6 +102,7 @@ export interface PluginMemberCodexNames {
 export interface BuildPluginMemberInventoryInput {
   files: ReadonlyMap<string, PluginFileContent>;
   manifest: ClaudePluginManifest | null;
+  skillRootMode?: 'direct-or-children' | 'children-only';
 }
 
 export interface PluginMcpEnvironmentInput {

@@ -94,28 +94,25 @@ export function refuseWorktreeCreation(
   throw new WorktreeCreationRefusedError(reason, message);
 }
 
-function normalizeRequestedBranch(
-  branchName: string | undefined,
-): string | null {
+function requestedBranchName(branchName: string | undefined): string | null {
   if (branchName === undefined) {
     return null;
   }
-  const trimmed = branchName.trim();
-  if (!trimmed || trimmed.startsWith('-')) {
+  if (!branchName || branchName.startsWith('-')) {
     refuseWorktreeCreation(
       'invalid-selection',
       'Branch name must be a non-empty value',
     );
   }
-  return trimmed;
+  return branchName;
 }
 
 function resolveBranchSelection(
   fields: WorktreeSelectionFields,
 ): WorktreeBranchSelection {
-  const explicitBranch = normalizeRequestedBranch(fields.branchName);
-  const existingBranch = normalizeRequestedBranch(fields.existingBranch);
-  const suggestedBranch = normalizeRequestedBranch(fields.suggestedBranch);
+  const explicitBranch = requestedBranchName(fields.branchName?.trim());
+  const existingBranch = requestedBranchName(fields.existingBranch);
+  const suggestedBranch = requestedBranchName(fields.suggestedBranch);
   const intents = [explicitBranch, existingBranch, suggestedBranch].filter(
     (branch) => branch !== null,
   );

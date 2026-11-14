@@ -167,15 +167,26 @@ export function registerModelRegistryHandlers(
     void buildModelRegistrySnapshot();
   });
 
-  registerIpcHandler(IPC_CHANNELS.modelRegistryGet, async (event) => {
-    if (agentResourceContextEnabled()) await refreshAgentModelsFromStore();
-    // worker.agent.provider.list; the synchronous bootstrap listener above
-    // keeps the direct snapshot (CAN-4121 D13).
-    return getModelRegistryThroughWorker(
-      runtime.dispatcher,
-      runtime.resolveCaller(event),
-    );
-  });
+  registerIpcHandler(
+    IPC_CHANNELS.modelRegistryGet,
+    async (event, request?: { probe?: boolean }) => {
+      if (agentResourceContextEnabled()) await refreshAgentModelsFromStore();
+      // worker.agent.provider.list; the synchronous bootstrap listener above
+      // keeps the direct snapshot (CAN-4121 D13).
+      const snapshot = await getModelRegistryThroughWorker(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request?.probe === true,
+      );
+      if (request?.probe === true) {
+        const { notifyPortalModelCatalogChanged } =
+          await import('../portal/portal-event-bus');
+        broadcastSharedModelRegistryUpdated();
+        await notifyPortalModelCatalogChanged();
+      }
+      return snapshot;
+    },
+  );
 
   // The outcome reaches the renderer through the registry broadcast that the
   // catalog status change triggers; this resolves once the attempt finishes.

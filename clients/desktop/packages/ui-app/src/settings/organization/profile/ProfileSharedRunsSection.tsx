@@ -144,6 +144,7 @@ export function ProfileSharedRunsSection({
       <div className="flex flex-col gap-3">
         {error ? (
           <ErrorBanner
+            errorSource="profile-shared-runs-section"
             error={error?.copy}
             details={error?.details}
             onRetry={retry}
@@ -171,6 +172,7 @@ export function ProfileSharedRunsSection({
 
       {error && (
         <ErrorBanner
+          errorSource="profile-shared-runs-section"
           error={error?.copy}
           details={error?.details}
           onRetry={retry}

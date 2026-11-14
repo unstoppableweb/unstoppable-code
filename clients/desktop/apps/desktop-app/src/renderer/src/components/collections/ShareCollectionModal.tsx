@@ -86,6 +86,7 @@ export function ShareCollectionModal({
           status: 'blocked',
           body: (
             <ErrorBanner
+              errorSource="share-collection-modal"
               className=""
               error="Collections containing MCP servers cannot be shared."
             />

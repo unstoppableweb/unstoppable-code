@@ -18,6 +18,8 @@
 import { execFileSync } from 'node:child_process';
 import {
   existsSync,
+  cpSync,
+  lstatSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -160,13 +162,34 @@ test.describe('daemon scripts (CAN-5087)', () => {
     launched = await launchCanopyApp({ userDataDir });
   });
 
-  test.afterEach(async () => {
+  test.afterEach(async ({}, testInfo) => {
+    // A failed run keeps its data root, with Electron main's log and
+    // runtime/, for the test-results artifact; the seeded worktrees are left
+    // out (CAN-6078).
+    const failed = testInfo.status !== testInfo.expectedStatus;
     if (launched)
-      await closeCanopy(launched.electronApp, launched.userDataDir).catch(
-        () => undefined,
-      );
-    cleanupDemoWorkspaces(seeded);
-    if (owner) rmSync(owner, { recursive: true, force: true });
+      await closeCanopy(launched.electronApp, launched.userDataDir, {
+        keepUserData: failed,
+      }).catch(() => undefined);
+    try {
+      // Sockets and FIFOs, such as a killed daemon's runtime/core.sock,
+      // can't be copied, and the daemon's token stays out of the artifact.
+      if (owner && failed)
+        cpSync(owner, testInfo.outputPath('data-root'), {
+          recursive: true,
+          filter: (from) => {
+            if (from.includes(`${path.sep}worktrees${path.sep}`)) return false;
+            if (from.endsWith('.token')) return false;
+            const entry = lstatSync(from);
+            return !entry.isSocket() && !entry.isFIFO();
+          },
+        });
+    } catch (error) {
+      console.warn('Could not keep the failed run’s data root.', error);
+    } finally {
+      cleanupDemoWorkspaces(seeded);
+      if (owner) rmSync(owner, { recursive: true, force: true });
+    }
   });
 
   function request(scriptName) {

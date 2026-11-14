@@ -482,7 +482,7 @@ export function CollectionModal({
           }
         >
           <div className="flex flex-col gap-4">
-            <ErrorBanner error={error} />
+            <ErrorBanner errorSource="collection-modal" error={error} />
             {loading ? (
               <DelayedLoadingPlaceholder slowNote="Still loading collection…">
                 <CollectionReadDetailSkeleton
@@ -980,7 +980,10 @@ export function SharedCollectionDetailModal({
                 : 'flex-1 overflow-y-auto px-6 pb-3 flex flex-col gap-4'
             }
           >
-            <ErrorBanner error={error} />
+            <ErrorBanner
+              errorSource="shared-collection-detail-modal"
+              error={error}
+            />
             {loading || !editable ? (
               <DelayedLoadingPlaceholder slowNote="Still loading shared collection…">
                 {isEdit ? (
@@ -998,7 +1001,10 @@ export function SharedCollectionDetailModal({
             ) : (
               <>
                 {warnings.length > 0 && (
-                  <Notice intent="destructive">
+                  <Notice
+                    errorSource="shared-collection-detail-modal"
+                    intent="destructive"
+                  >
                     {warnings.map((warning) => (
                       <span
                         key={`${warning.index}-${warning.message}`}

@@ -13,7 +13,6 @@ import {
   TurnFilesSummaryView,
   formatTurnFilesHeading,
   useToolApprovalWait,
-  useCleanChatLook,
 } from '@canopy/ui-shared/components';
 import { useTranscriptFileLinkInteraction } from './TranscriptFileLinks';
 
@@ -115,8 +114,8 @@ export function TurnFiles({
     unresolvedPending: LocatedFile[];
     unresolvedMutation: boolean;
   }>();
-  const clean = useCleanChatLook();
-  const [expanded, setExpanded] = useState(!clean && latest);
+
+  const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (!latest) setExpanded(false);
   }, [latest]);

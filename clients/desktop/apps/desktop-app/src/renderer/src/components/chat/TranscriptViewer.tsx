@@ -85,7 +85,6 @@ export function TranscriptViewer({
                   isLastForkableTurnGroup={index === lastForkableTurnGroupIndex}
                   // No per-turn `group/turn` wrapper here, so the completed
                   // footer must not hide behind its hover reveal (CAN-4278).
-                  footerAlwaysVisible
                 />
               ) : (
                 <ChatMessageItem

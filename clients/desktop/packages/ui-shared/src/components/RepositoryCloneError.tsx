@@ -44,6 +44,7 @@ export function RepositoryCloneError({
   return (
     <div id={id}>
       <ErrorBanner
+        errorSource="repository-clone"
         className=""
         error={
           prefix && typeof message === 'string'

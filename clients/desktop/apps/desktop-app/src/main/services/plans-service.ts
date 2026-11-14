@@ -10,6 +10,7 @@ import type {
   TrackedPlanData,
   TrackedPlanGetRequest,
   TrackedPlanListRequest,
+  TrackedPlanListWithSkippedResult,
   TrackedPlanSource,
   UpdateTrackedPlanRequest,
 } from '@canopy/desktop-shared/types';
@@ -24,6 +25,7 @@ import {
   deleteTrackedPlan,
   getTrackedPlan,
   listTrackedPlans,
+  listTrackedPlansWithSkipped,
   saveTrackedPlanComments,
   updateTrackedPlan,
 } from '../lib/plan-persistence';
@@ -265,6 +267,17 @@ export async function listTrackedPlanData(
     return listViewerPlans(request);
   }
   return listTrackedPlans(request.projectId, request.worktreeId);
+}
+
+/** `listTrackedPlanData`, with the stored records it left out (CAN-6666). */
+export async function listTrackedPlanDataWithSkipped(
+  request: TrackedPlanListRequest,
+): Promise<TrackedPlanListWithSkippedResult> {
+  validateWorktreeIds(request);
+  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+    return { plans: await listViewerPlans(request) };
+  }
+  return listTrackedPlansWithSkipped(request.projectId, request.worktreeId);
 }
 
 export async function readPlan(

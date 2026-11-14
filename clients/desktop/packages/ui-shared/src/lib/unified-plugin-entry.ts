@@ -157,6 +157,67 @@ export interface UnifiedEntryAlternative {
   /** The other copy's source, worded to follow "Also available from". */
   readonly label: string;
   readonly ref: UnifiedEntryRef;
+  readonly marketplaceVariant?: {
+    readonly provider: 'Claude' | 'Codex';
+    readonly currentVersion?: string;
+    readonly version?: string;
+  };
+}
+
+/** Only first-party marketplace listings participate in cross-provider grouping. */
+export function officialMarketplaceProvider(
+  marketplaceId: string,
+): 'Claude' | 'Codex' | undefined {
+  if (marketplaceId === 'claude-plugins-official') return 'Claude';
+  if (
+    marketplaceId === 'openai-curated' ||
+    marketplaceId === 'openai-curated-remote'
+  )
+    return 'Codex';
+  return undefined;
+}
+
+export function marketplacePackageGroup(
+  manifestName: string,
+  sourceUrl: string | undefined,
+): string | undefined {
+  let source: string | undefined;
+  if (sourceUrl) {
+    try {
+      const url = new URL(sourceUrl);
+      if (url.protocol === 'https:' || url.protocol === 'http:') {
+        // Public catalogs link to GitHub trees pinned to an ingested commit.
+        // Compare the package path across revisions, keeping its subdirectory.
+        const path =
+          url.hostname === 'github.com'
+            ? url.pathname.replace(
+                /^(\/[^/]+\/[^/]+?)(?:\.git)?(?:\/tree\/[a-f0-9]{40})?(?=\/|$)/i,
+                (repository: string, path: string) => path.toLowerCase(),
+              )
+            : url.pathname;
+        source = `${url.origin.toLowerCase()}${path}`
+          .replace(/\/+$/, '')
+          .replace(/\.git$/, '');
+      }
+    } catch {
+      // Some manifests refer to a local package and publish no source URL.
+    }
+  }
+  return source === undefined
+    ? undefined
+    : JSON.stringify([manifestName.toLowerCase(), source]);
+}
+
+export function describeMarketplaceVariant(
+  provider: 'Claude' | 'Codex',
+  currentVersion: string | null | undefined,
+  version: string | null | undefined,
+): NonNullable<UnifiedEntryAlternative['marketplaceVariant']> {
+  return {
+    provider,
+    currentVersion: currentVersion || undefined,
+    version: version || undefined,
+  };
 }
 
 /** The share a local collection was added from, as last seen by the viewer. */
@@ -265,6 +326,15 @@ export interface UnifiedPluginEntry {
     plugins?: number;
   };
   providerSupport: { claude: boolean; codex: boolean };
+  /** Display grouping for official marketplace listings of the same package. */
+  marketplaceGroup?: string;
+  marketplaceProvider?: 'Claude' | 'Codex';
+  marketplaceProviders?: readonly ('Claude' | 'Codex')[];
+  /** Original listings behind a grouped display row, including its representative. */
+  marketplaceListings?: readonly UnifiedPluginEntry[];
+  marketplaceVersion?: string;
+  /** False when the host cannot install this listing from Browse. */
+  browseInstallAvailable?: boolean;
   state: UnifiedEntryState;
   /**
    * The source this installed entry came from has changed since it was

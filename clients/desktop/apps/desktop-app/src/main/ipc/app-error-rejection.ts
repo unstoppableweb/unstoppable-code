@@ -1,9 +1,15 @@
+import { isNativeError } from 'node:util/types';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import { W5RecordOverloadedError } from '@canopy/core-runtime/node/w5/file-store';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import {
   AppErrorSchema,
   classifyError,
   getAppErrorDefinition,
+  getAppErrorThrownType,
   isAppCancellation,
+  rememberAppErrorNativeFrames,
   toAppError,
   type AppError,
 } from '@canopy/protocol/app-errors';
@@ -50,6 +56,21 @@ function wireError(error: AppError, raw: boolean): AppError {
     copy: raw ? error.copy : getAppErrorDefinition(error.code).copy,
     detail: raw ? detail : { message: error.code },
   });
+}
+
+/** Only a named W5 admission refusal qualifies on these read surfaces. */
+function workspaceReadOverload(
+  channel: string,
+  thrown: unknown,
+): W5RecordOverloadedError | undefined {
+  if (
+    channel !== IPC_CHANNELS.projectsLoad &&
+    channel !== IPC_CHANNELS.desktopSessionSnapshot
+  )
+    return undefined;
+  const cause =
+    thrown instanceof CanopyOperationError ? thrown.runtimeCause : thrown;
+  return cause instanceof W5RecordOverloadedError ? cause : undefined;
 }
 
 /** Rejection conversion must never replace an application failure with a
@@ -109,8 +130,19 @@ export function toIpcRejection(
       );
     // CAN-4405 owns mapping daemon failures to catalog codes. Until then no
     // nested transport evidence may present one as a generic Try again.
-    if (operationFailure) classifyError(thrown, 'app.unexpected');
-    let error = toAppError(thrown);
+    const overload = workspaceReadOverload(channel, thrown);
+    if (operationFailure && !overload) classifyError(thrown, 'app.unexpected');
+    // W5's error carries a `kind` and isn't an AppError payload. Project it
+    // into the shared shape while retaining the original operation metadata.
+    const classified = overload
+      ? classifyError(
+          new Error(overload.message),
+          'external.service_unavailable',
+        )
+      : thrown;
+    const nativeError = isNativeError(thrown) ? thrown : undefined;
+    if (nativeError) rememberAppErrorNativeFrames(nativeError);
+    let error = toAppError(classified);
     if (!error)
       return new IpcAppErrorRejection(
         legacy,
@@ -129,7 +161,13 @@ export function toIpcRejection(
     if (error.recordedBy === undefined)
       error = { ...error, source: error.source ?? ipcSource(channel) };
     try {
-      error = reportMainAppError(error)?.error ?? error;
+      error =
+        reportMainAppError(
+          error,
+          nativeError
+            ? { nativeError }
+            : { thrownType: getAppErrorThrownType(thrown) },
+        )?.error ?? error;
     } catch {
       /* Leave shape unrecorded. */
     }

@@ -455,6 +455,31 @@ describe('core chat read adapter', () => {
     );
   });
 
+  it('refuses revision 2 of a transcript page before any read (CAN-6509)', async () => {
+    const port = portFixture();
+    const pageRead = jest.spyOn(port, 'getTranscriptPage');
+    const dispatcher = createDesktopRuntime({
+      chatServices: { getPort: () => port },
+    });
+    try {
+      await expect(
+        dispatcher.query(
+          'core.chat.transcript.page',
+          { scope, revision: 2 },
+          { caller },
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'capability_unavailable',
+          details: { unsupported: ['revision'], reason: 'unserved' },
+        },
+      });
+      expect(pageRead).not.toHaveBeenCalled();
+    } finally {
+      await dispatcher.shutdown();
+    }
+  });
+
   it('forwards transcript targets and stream cursors without changing unscoped requests', async () => {
     const port = portFixture();
     const pageRead = jest.spyOn(port, 'getTranscriptPage');

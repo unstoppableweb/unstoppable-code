@@ -14,6 +14,9 @@ import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type * as GitExecutableModule from '../lib/git-executable';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 
+// Each case re-evaluates the isolated dispatcher graph, even with warm transforms.
+jest.setTimeout(20_000);
+
 // The dispatcher imports terminal support, but Git detection never uses a PTY.
 // Platform simulations must not load a native binary for the simulated host.
 jest.mock('node-pty', () => ({
@@ -133,6 +136,7 @@ let loginPath: string;
 let commands: string[];
 /** `--version` probes held until the test opens them, by executable. */
 let probeGates: Map<string, Gate>;
+let probeStarts: Map<string, Gate>;
 
 const originalPlatform = process.platform;
 const originalArch = process.arch;
@@ -174,6 +178,7 @@ beforeEach(() => {
   loginPath = '/usr/bin:/bin';
   commands = [];
   probeGates = new Map();
+  probeStarts = new Map();
   mockReadPreferences.mockImplementation(() =>
     Promise.resolve({ ...preferences }),
   );
@@ -212,7 +217,10 @@ beforeEach(() => {
   mockExecFile.mockImplementation((file, args, _options, callback) => {
     commands.push([file, ...args].join(' '));
     void (async (): Promise<void> => {
-      if (args[0] === '--version') await probeGates.get(file)?.promise;
+      if (args[0] === '--version') {
+        probeStarts.get(file)?.open();
+        await probeGates.get(file)?.promise;
+      }
       if (file === 'where.exe') {
         const lines = whereResults[args[0]];
         if (lines) callback(null, `${lines.join('\r\n')}\r\n`, '');
@@ -390,7 +398,9 @@ async function redetectThenFollow(
   publications: string[];
 }> {
   const held = gate();
+  const started = gate();
   probeGates.set(gatedPath, held);
+  probeStarts.set(gatedPath, started);
   const lib = await register();
   const publications = recordPublications();
 
@@ -401,9 +411,18 @@ async function redetectThenFollow(
       : follower === 'status'
         ? invoke('status')
         : lib.detectGitExecutable();
-  await flush();
-  held.open();
-  const settled = await Promise.all([redetect, followed]);
+  const completion = Promise.all([redetect, followed]);
+  try {
+    await Promise.race([
+      started.promise,
+      completion.then(() => {
+        throw new Error(`Git detection settled without probing ${gatedPath}`);
+      }),
+    ]);
+  } finally {
+    held.open();
+  }
+  const settled = await completion;
   return { redetect: settled[0], followed: settled[1], publications };
 }
 

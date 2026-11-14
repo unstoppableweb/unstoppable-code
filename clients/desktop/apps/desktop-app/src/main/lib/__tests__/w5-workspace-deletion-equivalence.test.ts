@@ -1,3 +1,18 @@
+import './fixtures/w5-boundary-daemon-cleanup';
+import type * as LegacyStorage from './fixtures/w5-legacy-storage';
+jest.mock('@canopy/core-runtime/storage', () =>
+  jest
+    .requireActual<typeof LegacyStorage>('./fixtures/w5-legacy-storage')
+    .createLegacyW5StorageMock(),
+);
+import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import type {
+  ArchiveRecoveryReceipt,
+  ArchiveRecoveryStore,
+} from '@canopy/desktop-shared/node/archive-recovery-store';
+import type { ArchiveRecoverySettlementPorts } from '../archive-recovery-settlement';
+import type { WorktreeRecoveryResolveParams } from '@canopy/protocol/canopy-core';
+import { journalSchema } from '@canopy/desktop-shared/node/w5-destructive-journal';
 // CAN-5598: W5 deletion boundary equivalence through the real worker.
 // Preserves the CAN-4961/CAN-4975 admission and atomic-removal contracts.
 import type * as CostLifecycle from '../../cost-index/lifecycle';
@@ -124,7 +139,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import fsPromises from 'node:fs/promises';
 import {
   DEFAULT_COWORK_WORKSPACE_ID,
@@ -204,7 +219,7 @@ const decisions = jest.mocked(applyWorkspaceIndexRemoval);
 const DELETE_INDEX = { kind: 'workspace.delete.index' } as const;
 
 function startHost(
-  workerEntry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+  workerEntry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
 ): void {
   host = new W5CommitLogHost({
     dbPath: join(dir, 'w5', 'commit-log.sqlite'),
@@ -2028,5 +2043,1823 @@ describe('Cowork deletion admission compatibility', () => {
     expect(decisionCalls()).toEqual([['o', DELETE_INDEX]]);
     expect(indexIds()).toEqual(['a', 'b', 'c']);
     expect(existsSync(join(root, 'o'))).toBe(false);
+  });
+});
+
+describe('CAN-6478 lifecycle retention', () => {
+  it('limits deleting-hold exemptions to same-project child lifecycle ancestry', async () => {
+    let receipt = await cancelledResolutionForOne('project-delete', true);
+    const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+    const store = archiveRecoveryStore();
+    receipt = await store.restartCancelled(receipt);
+    receipt = await store.publishRetention(receipt);
+    receipt = await store.resetStaging(receipt);
+    receipt = await store.withdrawJournals(receipt);
+    receipt = await store.writeStage(receipt, 'completed');
+    receipt = await store.beginDeletion(receipt);
+    const {
+      assertNoDestructiveRecovery,
+      runStepFreeChildLifecycles,
+      withDestructiveLifecycle,
+    } = await import('../w5-destructive-recovery');
+    await withDestructiveLifecycle(
+      { operation: 'workspace-delete', workspaceId: 'b' },
+      () =>
+        runStepFreeChildLifecycles(() =>
+          expect(assertNoDestructiveRecovery('a', 'one')).rejects.toThrow(
+            receipt.operationId,
+          ),
+        ),
+    );
+    await withDestructiveLifecycle(
+      { operation: 'workspace-delete', workspaceId: 'a' },
+      async () => {
+        await expect(assertNoDestructiveRecovery('a', 'one')).rejects.toThrow(
+          receipt.operationId,
+        );
+        await runStepFreeChildLifecycles(() =>
+          withDestructiveLifecycle(
+            {
+              operation: 'worktree-archive',
+              workspaceId: 'a',
+              worktreeId: 'two',
+              createdAt: receipt.createdAt,
+            },
+            () => assertNoDestructiveRecovery('a', 'one'),
+          ),
+        );
+      },
+    );
+    await expect(assertNoDestructiveRecovery('a', 'one')).rejects.toThrow(
+      receipt.operationId,
+    );
+    expect(await store.read('a', receipt.operationId)).toEqual(receipt);
+  });
+
+  it.each([
+    'completed',
+    'deleting',
+    'partially-deleted',
+    'deleted',
+    'cancelled',
+    'effect-free',
+    'effects',
+    'conflicted',
+  ] as const)(
+    'portal project deletion with a listed Keep hold and sibling: %s',
+    async (shape) => {
+      const git = (...args: string[]): string =>
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+      const extraRef = 'refs/app/archived-containers/a/one/extra';
+      git('update-ref', extraRef, git('rev-parse', 'HEAD'));
+      let receipt = await cancelledResolutionForOne('project-delete', true);
+      const { archiveRecoveryStore, assertNoArchiveResolution } =
+        await import('../archive-recovery-refs');
+      const store = archiveRecoveryStore();
+      if (shape !== 'cancelled')
+        receipt = await store.restartCancelled(receipt);
+      const completed = [
+        'completed',
+        'deleting',
+        'partially-deleted',
+        'deleted',
+      ].includes(shape);
+      if (completed || shape === 'effects') {
+        receipt = await store.publishRetention(receipt);
+        receipt = await store.resetStaging(receipt);
+      }
+      if (completed) {
+        receipt = await store.withdrawJournals(receipt);
+        receipt = await store.writeStage(receipt, 'completed');
+      }
+      if (['deleting', 'partially-deleted', 'deleted'].includes(shape)) {
+        receipt = await store.beginDeletion(receipt);
+        if (shape !== 'deleting') git('update-ref', '-d', extraRef);
+        if (shape === 'deleted') {
+          for (const repository of receipt.repositories)
+            for (const ref of repository.refs)
+              git('update-ref', '-d', ref.name);
+          receipt = await store.deletePayload(receipt);
+        }
+      }
+      if (shape === 'conflicted')
+        writeFileSync(join(store.stagingPath(receipt), 'unique'), 'changed');
+      const { readWorkspaceWorktrees } =
+        await import('../workspace-persistence');
+      expect((await readWorkspaceWorktrees('a')).map((row) => row.id)).toEqual([
+        'one',
+        'two',
+      ]);
+      if (shape === 'deleting' || shape === 'partially-deleted') {
+        await expect(assertNoArchiveResolution('a', 'one')).rejects.toThrow(
+          receipt.operationId,
+        );
+        const { assertNoDestructiveRecovery, withDestructiveLifecycle } =
+          await import('../w5-destructive-recovery');
+        await expect(assertNoDestructiveRecovery('a', 'one')).rejects.toThrow(
+          receipt.operationId,
+        );
+        for (const operation of [
+          'worktree-archive',
+          'worktree-delete',
+        ] as const)
+          await expect(
+            withDestructiveLifecycle(
+              {
+                workspaceId: 'a',
+                worktreeId: 'one',
+                operation,
+                trigger: 'project-deletion',
+                createdAt: receipt.createdAt,
+              },
+              () =>
+                Promise.reject(new Error('A trigger is not a parent lease')),
+            ),
+          ).rejects.toThrow(receipt.operationId);
+      }
+      const remainingRefs = receipt.repositories
+        .flatMap((repository) => repository.refs)
+        .filter(
+          (ref) => git('for-each-ref', '--format=%(refname)', ref.name) !== '',
+        );
+      if (completed && shape !== 'deleted') {
+        writeFileSync(
+          join(root, 'a/worktrees/one/new-work.txt'),
+          'new live work',
+        );
+        decisions.mockImplementation(async (...args) => {
+          // Child archives must leave the original hold intact for parent settlement.
+          for (const repository of receipt.repositories)
+            for (const ref of repository.refs)
+              if (remainingRefs.includes(ref))
+                expect(git('rev-parse', ref.name)).toBe(ref.objectId);
+              else
+                expect(
+                  git('for-each-ref', '--format=%(refname)', ref.name),
+                ).toBe('');
+          expect(
+            readFileSync(join(store.payloadPath(receipt), 'unique'), 'utf8'),
+          ).toBe('discarded staging');
+          expect(
+            git(
+              'for-each-ref',
+              '--format=%(refname)',
+              'refs/app/archived-containers/a/one/__generations__/',
+            ),
+          ).not.toBe('');
+          expect(await readWorkspaceWorktrees('a')).toEqual([]);
+          return actualPort.applyWorkspaceIndexRemoval(...args);
+        });
+      }
+      const deletion = deleteWorkspace({ workspaceId: 'a', source: 'portal' });
+      if (shape === 'effects' || shape === 'conflicted') {
+        await expect(deletion).rejects.toMatchObject({
+          name: 'ArchiveRecoveryRefusedError',
+        });
+        await expect(deletion).rejects.toThrow(receipt.operationId);
+        expect(
+          (await readWorkspaceWorktrees('a')).map((row) => row.id),
+        ).toEqual(['one', 'two']);
+        expect(existsSync(join(root, 'a/worktrees/one'))).toBe(true);
+        expect(git('rev-parse', extraRef)).toBe(git('rev-parse', 'HEAD'));
+        return;
+      }
+      await expect(deletion).resolves.toMatchObject({
+        removed: 'code',
+        cleanup: { archivedGitRefs: { status: 'done' } },
+      });
+      expect(existsSync(getWorkspaceDir('a'))).toBe(false);
+      if (completed) {
+        expect(
+          git(
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/app/archived-containers/a/',
+          ),
+        ).toBe('');
+        expect((await store.read('a', receipt.operationId))?.retention).toBe(
+          'deleted',
+        );
+        expect(existsSync(store.payloadPath(receipt))).toBe(false);
+        if (shape !== 'deleted')
+          expect(
+            (await readDestructiveRecovery('a'))?.archiveRecoveryCleanup,
+          ).toContainEqual({
+            operationId: receipt.operationId,
+            revision: receipt.revision,
+            done: true,
+          });
+      } else expect(await store.read('a', receipt.operationId)).toBeNull();
+    },
+  );
+
+  async function cancelledResolutionForOne(
+    owner?: 'archive' | 'delete' | 'project-delete',
+    withRef = false,
+  ): Promise<ArchiveRecoveryReceipt> {
+    const { randomUUID, createHash } = await import('node:crypto');
+    const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+    const { readArchiveJournalOperations } =
+      await import('../stranded-archive-journals');
+    const { readWorkspaceWorktrees } = await import('../workspace-persistence');
+    const row = (await readWorkspaceWorktrees('a')).find(
+      (entry) => entry.id === 'one',
+    );
+    if (!row) throw new Error('Missing row');
+    const checkout = join(root, 'a/worktrees/one');
+    const identity = (path: string): string => {
+      const info = lstatSync(path);
+      return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+    };
+    const record = {
+      version: 1,
+      operationId: randomUUID(),
+      operation: 'worktree-archive',
+      workspaceId: 'a',
+      worktreeId: 'one',
+      createdAt: row.createdAt,
+      state: 'recovery-required',
+      directoryIdentity: identity(getWorkspaceDir('a')),
+      ...(owner === 'project-delete'
+        ? { parentOperation: 'workspace-delete' }
+        : {}),
+      steps:
+        owner === 'archive' || owner === 'delete'
+          ? [{ phase: 'retained-payload-capture', state: 'pending' }]
+          : [{ phase: 'git-capture', state: 'failed' }],
+      ownedPaths: [{ path: checkout, identity: identity(checkout) }],
+    };
+    const name = `${createHash('sha256')
+      .update(JSON.stringify(['a', 'one']))
+      .digest('hex')}.json`;
+    mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+    writeFileSync(
+      join(getW5DestructiveLifecycleDir(), name),
+      JSON.stringify(record),
+    );
+    const operation = (await readArchiveJournalOperations('a')).operations.find(
+      (entry) => entry.record.operationId === record.operationId,
+    );
+    if (!operation) throw new Error('Missing source');
+    const store = archiveRecoveryStore();
+    if (withRef) {
+      const oid = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
+      execFileSync('git', [
+        '-C',
+        repo,
+        'update-ref',
+        'refs/app/archived-containers/a/one/__single_repo__',
+        oid,
+      ]);
+    }
+    mkdirSync(store.stagingPath({ workspaceId: 'a', worktreeId: 'one' }), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(
+        store.stagingPath({ workspaceId: 'a', worktreeId: 'one' }),
+        'unique',
+      ),
+      'discarded staging',
+    );
+    return store.cancel(
+      await store.prepare({
+        workspaceId: 'a',
+        worktreeId: 'one',
+        operationId: record.operationId,
+        action: 'keep-worktree',
+        createdAt: row.createdAt,
+        revision: operation.revision,
+        sourceRecord: operation.record,
+        copies: operation.sources,
+        repositories: await (
+          await import('../archived-container-git')
+        ).inspectArchiveRecoveryRepositories({
+          workspaceId: 'a',
+          containerId: 'one',
+          workspaceType: 'single-repo',
+        }),
+        capture: withRef ? 'unpublished' : 'none',
+      }),
+    );
+  }
+
+  it.each([
+    'prepared',
+    'retention-intent',
+    'retained',
+    'reset-intent',
+    'moved',
+    'changed-ref',
+  ] as const)(
+    'explicit project deletion cancels only proven effect-free resolution: %s',
+    async (shape) => {
+      const cancelled = await cancelledResolutionForOne('project-delete', true);
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const store = archiveRecoveryStore();
+      let receipt = await store.restartCancelled(cancelled);
+      if (shape === 'retention-intent')
+        receipt = await store.writeStage(receipt, shape);
+      if (['retained', 'reset-intent', 'moved'].includes(shape))
+        receipt = await store.publishRetention(receipt);
+      if (shape === 'reset-intent' || shape === 'moved')
+        receipt = await store.writeStage(receipt, 'reset-intent');
+      if (shape === 'moved')
+        renameSync(store.stagingPath(receipt), store.payloadPath(receipt));
+      if (shape === 'changed-ref') {
+        execFileSync('git', [
+          '-C',
+          repo,
+          'update-ref',
+          '-d',
+          'refs/app/archived-containers/a/one/__single_repo__',
+        ]);
+      }
+      const deletion = deleteWorkspace({ workspaceId: 'a', source: 'portal' });
+      if (shape === 'moved' || shape === 'changed-ref') {
+        await expect(deletion).rejects.toMatchObject({
+          name: 'ArchiveRecoveryRefusedError',
+        });
+        await expect(deletion).rejects.toThrow(receipt.operationId);
+        await expect(store.read('a', receipt.operationId)).resolves.toEqual(
+          receipt,
+        );
+        expect(existsSync(join(getWorkspaceDir('a'), 'workspace.json'))).toBe(
+          true,
+        );
+      } else {
+        await expect(deletion).resolves.toMatchObject({ removed: 'code' });
+        expect(await store.read('a', receipt.operationId)).toBeNull();
+        expect(existsSync(getWorkspaceDir('a'))).toBe(false);
+      }
+    },
+  );
+
+  it('project deletion stops on lost cancellation acknowledgement and retries the durable cancellation', async () => {
+    const cancelled = await cancelledResolutionForOne('project-delete', true);
+    const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+    const store = archiveRecoveryStore();
+    const receipt = await store.restartCancelled(cancelled);
+    const { ArchiveRecoveryStore } =
+      await import('@canopy/desktop-shared/node/archive-recovery-store');
+    const fault = jest.spyOn(ArchiveRecoveryStore.prototype, 'cancel');
+    const cancel = fault.getMockImplementation();
+    if (!cancel) throw new Error('Missing cancellation implementation');
+    fault.mockImplementationOnce(async function (
+      this: ArchiveRecoveryStore,
+      selected,
+    ) {
+      await cancel.call(this, selected);
+      throw new Error('lost cancellation acknowledgement');
+    });
+    try {
+      const deletion = deleteWorkspace({
+        workspaceId: 'a',
+        source: 'portal',
+        idempotencyKey: 'q26-cancellation-retry',
+      });
+      await expect(deletion).rejects.toMatchObject({
+        name: 'ArchiveRecoveryRefusedError',
+      });
+      await expect(deletion).rejects.toThrow(receipt.operationId);
+    } finally {
+      fault.mockRestore();
+    }
+    expect(existsSync(join(getWorkspaceDir('a'), 'workspace.json'))).toBe(true);
+    expect((await store.read('a', receipt.operationId))?.cancelled).toBe(true);
+    await expect(
+      deleteWorkspace({
+        workspaceId: 'a',
+        source: 'portal',
+        idempotencyKey: 'q26-cancellation-retry',
+      }),
+    ).resolves.toMatchObject({ removed: 'code' });
+    expect(await store.read('a', receipt.operationId)).toBeNull();
+  });
+
+  it.each(['archive', 'delete', 'project-delete'] as const)(
+    '%s completion settles cancelled predecessor receipts through the lifecycle writer',
+    async (owner) => {
+      const receipt = await cancelledResolutionForOne(owner);
+      if (owner === 'archive') {
+        await (
+          await import('../worktree-service')
+        ).archiveSingleRepoWorktree({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          repoPath: repo,
+        });
+      } else if (owner === 'delete') {
+        await (
+          await import('../worktree-archive')
+        ).deleteWorktree({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          source: 'single_repo',
+          repoPath: repo,
+        });
+      } else {
+        await deleteWorkspace({ workspaceId: 'a', source: 'portal' });
+      }
+      expect(
+        await (await import('../archive-recovery-refs'))
+          .archiveRecoveryStore()
+          .read('a', receipt.operationId),
+      ).toBeNull();
+    },
+  );
+
+  it.each(['archive', 'delete', 'discard'] as const)(
+    '%s settles cancellation after repeated interrupted Delete takeovers',
+    async (owner) => {
+      const receipt = await cancelledResolutionForOne('delete', true);
+      const { withDestructiveLifecycle, destructiveStep } =
+        await import('../w5-destructive-recovery');
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(
+          withDestructiveLifecycle(
+            {
+              operation: 'worktree-delete',
+              workspaceId: 'a',
+              worktreeId: 'one',
+              createdAt: receipt.createdAt,
+              readCreatedAt: () => Promise.resolve(receipt.createdAt),
+            },
+            () =>
+              destructiveStep('checkout-removal', () =>
+                Promise.reject(new Error('interrupted checkout removal')),
+              ),
+          ),
+        ).rejects.toThrow('interrupted checkout removal');
+        expect(
+          (await readDestructiveRecovery('a', 'one'))?.supersedesArchives,
+        ).toContain(receipt.operationId);
+      }
+      if (owner === 'discard') {
+        await expect(
+          withDestructiveLifecycle(
+            {
+              operation: 'worktree-delete',
+              workspaceId: 'a',
+              worktreeId: 'one',
+              createdAt: receipt.createdAt,
+              readCreatedAt: () => Promise.resolve(receipt.createdAt),
+            },
+            async () => {
+              await destructiveStep('checkout-removal', () => {
+                execFileSync('git', [
+                  '-C',
+                  repo,
+                  'worktree',
+                  'remove',
+                  join(root, 'a/worktrees/one'),
+                ]);
+                return Promise.resolve();
+              });
+              await destructiveStep('branch-deletion', () =>
+                Promise.reject(new Error('interrupted after checkout removal')),
+              );
+            },
+          ),
+        ).rejects.toThrow('interrupted after checkout removal');
+        const { describeWorktreeDiscard, discardWorktree } =
+          await import('../worktree-discard');
+        const description = await describeWorktreeDiscard('a', 'one');
+        const result = await discardWorktree({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          confirmation: description.confirmation,
+          source: 'desktop-ui',
+        });
+        expect(result).toMatchObject({ status: 'discarded' });
+      } else if (owner === 'archive') {
+        await (
+          await import('../worktree-service')
+        ).archiveSingleRepoWorktree({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          repoPath: repo,
+        });
+      } else {
+        await (
+          await import('../worktree-archive')
+        ).deleteWorktree({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          source: 'single_repo',
+          repoPath: repo,
+        });
+      }
+      const { archiveRecoveryStore, isArchiveRecoveryRefHeld } =
+        await import('../archive-recovery-refs');
+      expect(
+        await archiveRecoveryStore().read('a', receipt.operationId),
+      ).toBeNull();
+      expect(
+        await isArchiveRecoveryRefHeld(
+          repo,
+          'refs/app/archived-containers/a/one/__single_repo__',
+        ),
+      ).toBe(false);
+      const { freezeInternalRootArchiveRecovery } =
+        await import('@canopy/desktop-shared/node/internal-root-migration/archive-recovery');
+      await expect(
+        freezeInternalRootArchiveRecovery(getCanopyDataDir()),
+      ).resolves.toBeDefined();
+    },
+  );
+
+  it.each([2, 3] as const)(
+    'v%s Finish settles cancellation after archive progress consumed its sources',
+    async (version) => {
+      const receipt = await cancelledResolutionForOne();
+      const manifest = archivedManifest('a', 'one');
+      manifest.createdAt = receipt.createdAt;
+      const oid = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
+      manifest.gitState.repositories.push({
+        repoId: '__single_repo__',
+        repoName: 'repo',
+        relativePath: '.',
+        referenceRepoPath: repo,
+        comparisonBaseCommit: oid,
+        headCommit: oid,
+        indexSnapshotCommit: oid,
+        worktreeSnapshotCommit: oid,
+        snapshotRef: 'refs/app/archived-containers/a/one/__single_repo__',
+      });
+      if (
+        manifest.gitChanges.status !== 'complete' ||
+        !manifest.pullRequestMetadata
+      )
+        throw new Error('Missing capture metadata');
+      manifest.gitChanges.repositories.push({
+        repoId: '__single_repo__',
+        repoName: 'repo',
+        fileCount: 0,
+        insertions: 0,
+        deletions: 0,
+      });
+      manifest.pullRequestMetadata.repositories.push({
+        repoId: '__single_repo__',
+        repoName: 'repo',
+        status: 'complete',
+        pullRequest: null,
+      });
+      if (!manifest.originalWorktree) throw new Error('Missing original row');
+      manifest.originalWorktree.createdAt = receipt.createdAt;
+      if (version === 2) await commitArchivedContainer(manifest);
+      else {
+        const payloadId = '00000000-0000-4000-8000-000000000003';
+        const payload = join(
+          getArchivedContainerDir('a', 'one'),
+          'recovery-files',
+          payloadId,
+        );
+        mkdirSync(payload, { recursive: true });
+        writeFileSync(join(payload, 'kept.txt'), 'preserved by Finish');
+        const digest = await workspaceRootPayloadDigest({ rootPath: payload });
+        if (!digest) throw new Error('Missing payload digest');
+        await commitArchivedContainer({
+          ...archivedManifestFields('a', 'one'),
+          createdAt: receipt.createdAt,
+          originalWorktree: manifest.originalWorktree,
+          version: 3,
+          recovery: {
+            kind: 'files-only',
+            source: 'partial',
+            digest,
+            payloadId,
+            gitCleanupPending: false,
+          },
+        });
+      }
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'remove',
+        join(root, 'a/worktrees/one'),
+      ]);
+      const phases =
+        version === 2
+          ? [
+              'git-worktree-removal',
+              'quarantine-directory-removal',
+              'pipeline-cleanup',
+              'retained-manifest-commit',
+              'git-capture-completion',
+            ]
+          : [
+              'retained-git-cleanup',
+              'pipeline-cleanup',
+              'retained-manifest-commit',
+            ];
+      const progressed = {
+        ...receipt.sourceRecord,
+        steps: phases.map((phase) => ({ phase, state: 'done' })),
+      };
+      for (const copy of receipt.copies)
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), copy.name),
+          JSON.stringify(progressed),
+        );
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const diagnosis = (
+        await listWorktreeRecovery({
+          workspaceId: 'a',
+          operationId: receipt.operationId,
+        })
+      ).entries[0]?.diagnosis;
+      expect(diagnosis?.verdict).toBe('finish-tail');
+      if (!diagnosis) throw new Error('Missing Finish diagnosis');
+      expect(
+        await (
+          await import('../worktree-recovery-finish')
+        ).finishWorktreeRecovery({
+          workspaceId: 'a',
+          operationId: receipt.operationId,
+          revision: diagnosis.revision,
+        }),
+      ).toMatchObject({ status: 'finished' });
+      expect(
+        await (await import('../archive-recovery-refs'))
+          .archiveRecoveryStore()
+          .read('a', receipt.operationId),
+      ).toBeNull();
+      expect(
+        existsSync(join(getArchivedContainerDir('a', 'one'), 'container.json')),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['keep-worktree', 'release'] as const)(
+    'Discard settles cancellation before relocation and a later %s on the recreated slot',
+    async (action) => {
+      const { archiveRecoveryStore, isArchiveRecoveryRefHeld } =
+        await import('../archive-recovery-refs');
+      const { describeWorktreeDiscard, discardWorktree } =
+        await import('../worktree-discard');
+      const { freezeInternalRootArchiveRecovery } =
+        await import('@canopy/desktop-shared/node/internal-root-migration/archive-recovery');
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      const receipt = await cancelledResolutionForOne(undefined, true);
+      const description = await describeWorktreeDiscard('a', 'one');
+      const result = await discardWorktree({
+        workspaceId: 'a',
+        worktreeId: 'one',
+        confirmation: description.confirmation,
+        source: 'desktop-ui',
+      });
+      expect(result).toMatchObject({ status: 'discarded' });
+      const store = archiveRecoveryStore();
+      expect(await store.read('a', receipt.operationId)).toBeNull();
+      await expect(
+        freezeInternalRootArchiveRecovery(getCanopyDataDir()),
+      ).resolves.toBeDefined();
+      expect(
+        await isArchiveRecoveryRefHeld(
+          repo,
+          'refs/app/archived-containers/a/one/__single_repo__',
+        ),
+      ).toBe(false);
+      await (
+        await import('../archived-container-git')
+      ).reconcileArchivedGitRefsForWorkspace('a');
+      expect(
+        execFileSync(
+          'git',
+          [
+            '-C',
+            repo,
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/app/archived-containers/a/one',
+          ],
+          { encoding: 'utf8' },
+        ).trim(),
+      ).toBe('');
+      const checkout = join(root, 'a/worktrees/one');
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'add',
+        '-b',
+        'recreated',
+        checkout,
+        'HEAD',
+      ]);
+      const rows = await workspacePersistence.readWorkspaceWorktrees('a');
+      await workspacePersistence.writeWorkspaceWorktrees('a', [
+        ...rows,
+        {
+          id: 'one',
+          branchName: 'recreated',
+          createdAt: '2026-11-13T10:00:00.000Z',
+        },
+      ]);
+      const next = await cancelledResolutionForOne();
+      if (action === 'release') {
+        execFileSync('git', ['-C', repo, 'worktree', 'remove', checkout]);
+        await workspacePersistence.removeWorkspaceWorktrees(
+          'a',
+          (entry) => entry.id === 'one',
+        );
+      }
+      const diagnosis = (
+        await listWorktreeRecovery({
+          workspaceId: 'a',
+          operationId: next.operationId,
+        })
+      ).entries[0]?.diagnosis;
+      if (!diagnosis) throw new Error('Missing recreated diagnosis');
+      expect(
+        await resolveWorktreeArchive({
+          workspaceId: 'a',
+          operationId: next.operationId,
+          revision: diagnosis.revision,
+          action,
+        }),
+      ).toMatchObject({
+        status: action === 'release' ? 'attempt-withdrawn' : 'worktree-kept',
+      });
+    },
+  );
+
+  it.each([false, true])(
+    'retained refs survive absent-archive-root reconciliation and release (aliased common directory: %s), even after the saved checkout is gone',
+    async (aliased) => {
+      const { randomUUID } = await import('node:crypto');
+      const { archiveRecoveryStore, archiveRecoveryRepositoryIdentity } =
+        await import('../archive-recovery-refs');
+      const { getGitCommonDir } = await import('../git');
+      const {
+        reconcileArchivedGitRefsForWorkspace,
+        deleteArchivedContainerSnapshotRef,
+      } = await import('../archived-container-git');
+      const checkout = join(root, 'a', 'worktrees', 'one');
+      const git = (...args: string[]): string =>
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+      const canonicalCommonDir = await getGitCommonDir(checkout);
+      const commonDir = aliased
+        ? join(root, 'common-dir-alias')
+        : canonicalCommonDir;
+      if (aliased) {
+        const { symlink } = await import('node:fs/promises');
+        await symlink(canonicalCommonDir, commonDir, 'junction');
+      }
+      const oid = git('rev-parse', 'HEAD');
+      const ref = 'refs/app/archived-containers/a/one/__single_repo__';
+      const orphan = 'refs/app/archived-containers/a/orphan/__single_repo__';
+      git('update-ref', ref, oid);
+      git('update-ref', orphan, oid);
+      await archiveRecoveryStore().prepare({
+        workspaceId: 'a',
+        worktreeId: 'one',
+        operationId: randomUUID(),
+        action: 'release',
+        createdAt: '2026-11-01T00:00:00.000Z',
+        revision: 'a'.repeat(64),
+        sourceRecord: {},
+        copies: [],
+        capture: 'unpublished',
+        repositories: [
+          {
+            repoId: '__single_repo__',
+            referenceRepoPath: checkout,
+            commonDir,
+            identity: await archiveRecoveryRepositoryIdentity(commonDir),
+            refs: [{ name: ref, objectId: oid }],
+          },
+        ],
+      });
+      expect(existsSync(getArchivedContainersRootDir('a'))).toBe(false);
+      await deleteArchivedContainerSnapshotRef({
+        repoPath: repo,
+        refName: ref,
+        expectedCommit: oid,
+      });
+      expect(git('rev-parse', ref)).toBe(oid);
+      await reconcileArchivedGitRefsForWorkspace('a');
+      expect(git('for-each-ref', '--format=%(objectname)', ref)).toBe(oid);
+      expect(git('for-each-ref', '--format=%(refname)', orphan)).toBe('');
+      git('worktree', 'remove', checkout);
+      await reconcileArchivedGitRefsForWorkspace('a');
+      expect(git('rev-parse', ref)).toBe(oid);
+    },
+  );
+
+  it('Keep then edit then ordinary Archive does not resurrect or release old refs', async () => {
+    const { randomUUID, createHash } = await import('node:crypto');
+    const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+    const { resolveWorktreeArchive } =
+      await import('../worktree-archive-resolution');
+    const { listWorktreeRecovery } =
+      await import('../worktree-recovery-description');
+    const { archiveSingleRepoWorktree } = await import('../worktree-service');
+    const { reconcileArchivedGitRefsForWorkspace } =
+      await import('../archived-container-git');
+    const { readWorkspaceWorktrees } = await import('../workspace-persistence');
+    const row = (await readWorkspaceWorktrees('a')).find(
+      (entry) => entry.id === 'one',
+    );
+    if (!row) throw new Error('Missing row');
+    const checkout = join(root, 'a', 'worktrees', 'one');
+    const identity = (path: string): string => {
+      const info = lstatSync(path);
+      return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+    };
+    const operationId = randomUUID();
+    const record = {
+      version: 1,
+      operationId,
+      operation: 'worktree-archive',
+      workspaceId: 'a',
+      worktreeId: 'one',
+      createdAt: row.createdAt,
+      state: 'recovery-required',
+      directoryIdentity: identity(getWorkspaceDir('a')),
+      steps: [{ phase: 'git-capture', state: 'failed' }],
+      ownedPaths: [{ path: checkout, identity: identity(checkout) }],
+    };
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    const oldRef = 'refs/app/archived-containers/a/one/__single_repo__';
+    const oid = git('rev-parse', 'HEAD');
+    git('update-ref', oldRef, oid);
+    mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+    const copies = [
+      `${createHash('sha256')
+        .update(JSON.stringify(['a', 'one']))
+        .digest('hex')}.json`,
+      `${operationId}.json`,
+    ];
+    for (const copy of copies)
+      writeFileSync(
+        join(getW5DestructiveLifecycleDir(), copy),
+        JSON.stringify(record),
+      );
+    const diagnosis = (
+      await listWorktreeRecovery({ workspaceId: 'a', operationId })
+    ).entries[0]?.diagnosis;
+    expect(diagnosis?.verdict).toBe('keep-worktree');
+    if (!diagnosis) throw new Error('Missing diagnosis');
+    expect(
+      await resolveWorktreeArchive({
+        workspaceId: 'a',
+        operationId,
+        revision: diagnosis.revision,
+        action: 'keep-worktree',
+      }),
+    ).toMatchObject({ status: 'worktree-kept' });
+    writeFileSync(join(checkout, 'after-keep.txt'), 'new unique file');
+    await archiveSingleRepoWorktree({
+      workspaceId: 'a',
+      worktreeId: 'one',
+      repoPath: repo,
+    });
+    expect(
+      (await readWorkspaceWorktrees('a')).some((entry) => entry.id === 'one'),
+    ).toBe(false);
+    expect(existsSync(checkout)).toBe(false);
+    const { isArchivedContainerManifest } =
+      await import('@canopy/desktop-shared/lib/archived-container-contracts');
+    const manifest: unknown = JSON.parse(
+      readFileSync(
+        join(getArchivedContainerDir('a', 'one'), 'container.json'),
+        'utf8',
+      ),
+    );
+    if (!isArchivedContainerManifest(manifest) || manifest.version !== 2)
+      throw new Error('Missing valid v2 archive');
+    expect(manifest.gitState.repositories[0]?.snapshotRef).not.toBe(oldRef);
+    expect(git('rev-parse', oldRef)).toBe(oid);
+    await reconcileArchivedGitRefsForWorkspace('a');
+    expect(git('rev-parse', oldRef)).toBe(oid);
+    expect((await archiveRecoveryStore().read('a', operationId))?.stage).toBe(
+      'completed',
+    );
+    for (const copy of copies)
+      if (existsSync(join(getW5DestructiveLifecycleDir(), copy)))
+        expect(
+          journalSchema.parse(
+            JSON.parse(
+              readFileSync(join(getW5DestructiveLifecycleDir(), copy), 'utf8'),
+            ),
+          ).operationId,
+        ).not.toBe(operationId);
+  });
+  it.each(['none', 'before-publication', 'after-publication'] as const)(
+    'cancelled Keep is atomically replaced by Release after %s interruption',
+    async (interruption) => {
+      const { randomUUID, createHash } = await import('node:crypto');
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { readWorkspaceWorktrees } =
+        await import('../workspace-persistence');
+      const row = (await readWorkspaceWorktrees('a')).find(
+        (entry) => entry.id === 'one',
+      );
+      if (!row) throw new Error('Missing row');
+      const checkout = join(root, 'a', 'worktrees', 'one');
+      const identity = (path: string): string => {
+        const info = lstatSync(path);
+        return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+      };
+      const operationId = randomUUID();
+      const record = {
+        version: 1,
+        operationId,
+        operation: 'worktree-archive',
+        workspaceId: 'a',
+        worktreeId: 'one',
+        createdAt: row.createdAt,
+        state: 'recovery-required',
+        directoryIdentity: identity(getWorkspaceDir('a')),
+        steps: [{ phase: 'git-capture', state: 'failed' }],
+        ownedPaths: [{ path: checkout, identity: identity(checkout) }],
+      };
+      const git = (...args: string[]): string =>
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+      const oldRef = 'refs/app/archived-containers/a/one/__single_repo__';
+      const oid = git('rev-parse', 'HEAD');
+      git('update-ref', oldRef, oid);
+      mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+      const copies = [
+        `${createHash('sha256')
+          .update(JSON.stringify(['a', 'one']))
+          .digest('hex')}.json`,
+        `${operationId}.json`,
+      ];
+      for (const copy of copies)
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), copy),
+          JSON.stringify(record),
+        );
+      const diagnosis = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      expect(diagnosis?.verdict).toBe('keep-worktree');
+      if (!diagnosis) throw new Error('Missing diagnosis');
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const { inspectArchiveRecoveryRepositories } =
+        await import('../archived-container-git');
+      const operation = (
+        await readArchiveJournalOperations('a')
+      ).operations.find((entry) => entry.record.operationId === operationId);
+      if (!operation) throw new Error('No operation');
+      const store = archiveRecoveryStore();
+      mkdirSync(store.stagingPath({ workspaceId: 'a', worktreeId: 'one' }), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(
+          store.stagingPath({ workspaceId: 'a', worktreeId: 'one' }),
+          'unique',
+        ),
+        'retained',
+      );
+      const receipt = await store.prepare({
+        workspaceId: 'a',
+        worktreeId: 'one',
+        operationId,
+        action: 'keep-worktree',
+        revision: diagnosis.revision,
+        createdAt: row.createdAt,
+        copies: operation.sources,
+        sourceRecord: operation.record,
+        repositories: await inspectArchiveRecoveryRepositories({
+          workspaceId: 'a',
+          containerId: 'one',
+          workspaceType: 'single-repo',
+        }),
+        capture: 'unpublished',
+      });
+      const cancelled = await store.cancel(receipt);
+      expect(
+        await resolveWorktreeArchive({
+          workspaceId: 'a',
+          operationId,
+          revision: diagnosis.revision,
+          action: 'release',
+        }),
+      ).toMatchObject({ status: 'refused' });
+      expect(await store.read('a', operationId)).toEqual(cancelled);
+      expect(git('rev-parse', oldRef)).toBe(oid);
+      git('worktree', 'remove', checkout);
+      await workspacePersistence.removeWorkspaceWorktrees(
+        'a',
+        (entry) => entry.id === 'one',
+      );
+      const release = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      expect(release?.verdict).toBe('release');
+      if (!release) throw new Error('No release diagnosis');
+      const request: WorktreeRecoveryResolveParams = {
+        workspaceId: 'a',
+        operationId,
+        revision: release.revision,
+        action: 'release',
+      };
+      if (interruption !== 'none') {
+        const durability =
+          await import('@canopy/execution-engine/node/lib/atomic-file');
+        const original = durability.writeFileAtomically;
+        const path = join(store.directory(cancelled), 'receipt.json');
+        let injected = false;
+        const publication = jest
+          .spyOn(durability, 'writeFileAtomically')
+          .mockImplementation(async (target, contents, options) => {
+            if (target === path && !injected) {
+              injected = true;
+              if (interruption === 'after-publication')
+                await original(target, contents, options);
+              throw new Error('interrupted replacement');
+            }
+            return original(target, contents, options);
+          });
+        try {
+          expect(await resolveWorktreeArchive(request)).toMatchObject({
+            status:
+              interruption === 'before-publication' ? 'refused' : 'interrupted',
+          });
+          expect(injected).toBe(true);
+        } finally {
+          publication.mockRestore();
+        }
+        const saved = await store.read('a', operationId);
+        if (interruption === 'before-publication')
+          expect(saved).toEqual(cancelled);
+        else {
+          expect(saved).toMatchObject({ action: 'release', stage: 'prepared' });
+          expect(saved?.cancelled).toBeUndefined();
+        }
+        const { isArchiveRecoveryRefHeld } =
+          await import('../archive-recovery-refs');
+        expect(await isArchiveRecoveryRefHeld(repo, oldRef)).toBe(true);
+        expect(git('rev-parse', oldRef)).toBe(oid);
+        expect(
+          readFileSync(join(store.stagingPath(cancelled), 'unique'), 'utf8'),
+        ).toBe('retained');
+        for (const copy of copies)
+          expect(
+            readFileSync(join(getW5DestructiveLifecycleDir(), copy), 'utf8'),
+          ).toBe(JSON.stringify(record));
+      }
+      expect(await resolveWorktreeArchive(request)).toMatchObject({
+        status: 'attempt-withdrawn',
+      });
+      expect((await store.read('a', operationId))?.action).toBe('release');
+      expect(git('rev-parse', oldRef)).toBe(oid);
+      expect(
+        readFileSync(join(store.payloadPath(receipt), 'unique'), 'utf8'),
+      ).toBe('retained');
+    },
+  );
+  async function completedRecoveryHold(
+    name = 'held',
+    withRef = true,
+  ): Promise<{
+    store: ArchiveRecoveryStore;
+    receipt: ArchiveRecoveryReceipt;
+    deletion: WorktreeRecoveryResolveParams;
+    git: (...args: string[]) => string;
+    ref: string;
+    oid: string;
+    commonDir: string;
+  }> {
+    const { randomUUID } = await import('node:crypto');
+    const { archiveRecoveryStore, archiveRecoveryRepositoryIdentity } =
+      await import('../archive-recovery-refs');
+    const store = archiveRecoveryStore();
+    const operationId = randomUUID();
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    const commonDir = git('rev-parse', '--absolute-git-dir');
+    const ref = `refs/app/archived-containers/a/${name}/__single_repo__`;
+    const oid = git('rev-parse', 'HEAD');
+    if (withRef) git('update-ref', ref, oid);
+    const record = {
+      version: 1,
+      operationId,
+      operation: 'worktree-archive',
+      workspaceId: 'a',
+      worktreeId: name,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      directoryIdentity: null,
+      state: 'recovery-required',
+      steps: [],
+      ownedPaths: [],
+    };
+    const contents = JSON.stringify(record);
+    const copy = {
+      name: operationId + '.json',
+      contents,
+      digest: (await import('node:crypto'))
+        .createHash('sha256')
+        .update(contents)
+        .digest('hex'),
+    };
+    mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+    writeFileSync(join(getW5DestructiveLifecycleDir(), copy.name), contents);
+    const input = {
+      workspaceId: 'a',
+      worktreeId: name,
+      operationId,
+      action: 'release' as const,
+      revision: 'a'.repeat(64),
+      createdAt: record.createdAt,
+      sourceRecord: record,
+      copies: [copy],
+      repositories: [
+        {
+          repoId: '__single_repo__',
+          referenceRepoPath: repo,
+          commonDir,
+          identity: await archiveRecoveryRepositoryIdentity(commonDir),
+          refs: withRef ? [{ name: ref, objectId: oid }] : [],
+        },
+      ],
+      capture: 'unpublished' as const,
+    };
+    mkdirSync(store.stagingPath(input), { recursive: true });
+    writeFileSync(join(store.stagingPath(input), 'unique'), 'retained');
+    let receipt = await store.prepare(input);
+    receipt = await store.publishRetention(receipt);
+    receipt = await store.resetStaging(receipt);
+    receipt = await store.withdrawJournals(receipt);
+    receipt = await store.writeStage(receipt, 'completed');
+    const deletion = {
+      workspaceId: 'a',
+      operationId,
+      revision: input.revision,
+      action: 'delete-hold' as const,
+    };
+    return { store, receipt, deletion, git, ref, oid, commonDir };
+  }
+
+  it.each([
+    'retention-intent',
+    'retained',
+    'reset-intent',
+    'staging-reset',
+    'withdrawal-intent',
+    'withdrawn',
+    'completed',
+  ] as const)(
+    'settles from published evidence around every %s intent or acknowledgement',
+    async (stage) => {
+      for (const timing of ['before', 'after']) {
+        const { store, receipt } = await completedRecoveryHold(
+          `held-${timing}`,
+        );
+        const { renameSync } = await import('node:fs');
+        renameSync(store.payloadPath(receipt), store.stagingPath(receipt));
+        for (const copy of receipt.copies)
+          renameSync(
+            join(store.directory(receipt), 'journals', copy.name),
+            join(getW5DestructiveLifecycleDir(), copy.name),
+          );
+        const prepared = { ...receipt, stage: 'prepared' as const };
+        writeFileSync(
+          join(store.directory(receipt), 'receipt.json'),
+          JSON.stringify(prepared),
+        );
+        const { settleArchiveRecovery } =
+          await import('../archive-recovery-settlement');
+        const ports: ArchiveRecoverySettlementPorts = {
+          store,
+          admitResolution: jest.fn(async () => {}),
+          admitDeletion: async () => {},
+          qualifyRefs: async () => {},
+          deleteRefs: async () => {},
+          withdraw: (selected: typeof receipt) =>
+            store.withdrawJournals(selected),
+        };
+        const original = store.writeStage.bind(store);
+        let interrupted = false;
+        const fault = jest
+          .spyOn(store, 'writeStage')
+          .mockImplementation(async (selected, target) => {
+            if (target === stage && !interrupted && timing === 'before') {
+              interrupted = true;
+              throw new Error('before intent/ack');
+            }
+            const updated = await original(selected, target);
+            if (target === stage && !interrupted && timing === 'after') {
+              interrupted = true;
+              throw new Error('after intent/ack');
+            }
+            return updated;
+          });
+        try {
+          await expect(
+            settleArchiveRecovery(prepared, 'resolve', ports),
+          ).rejects.toThrow();
+        } finally {
+          fault.mockRestore();
+        }
+        const saved = await store.read('a', receipt.operationId);
+        if (!saved) throw new Error('Missing recovery intent');
+        const completed = await settleArchiveRecovery(saved, 'resolve', ports);
+        expect(completed.stage).toBe('completed');
+        expect((await store.inspect(completed)).copies).toEqual(['retired']);
+        expect(
+          readFileSync(join(store.payloadPath(completed), 'unique'), 'utf8'),
+        ).toBe('retained');
+        expect(
+          await settleArchiveRecovery(completed, 'resolve', ports),
+        ).toEqual(completed);
+      }
+    },
+  );
+
+  it('cancellation clears only the resolution fence, scopes same-slot fences, and preserves source-journal admission', async () => {
+    const { store, receipt, git, ref, oid } = await completedRecoveryHold();
+    const { assertNoArchiveResolution } =
+      await import('../archive-recovery-refs');
+    const { assertNoDestructiveRecovery } =
+      await import('../w5-destructive-recovery');
+    const { renameSync } = await import('node:fs');
+    renameSync(store.payloadPath(receipt), store.stagingPath(receipt));
+    const copy = receipt.copies[0];
+    if (!copy) throw new Error('No source copy');
+    renameSync(
+      join(store.directory(receipt), 'journals', copy.name),
+      join(getW5DestructiveLifecycleDir(), copy.name),
+    );
+    const retained = { ...receipt, stage: 'retained' as const };
+    writeFileSync(
+      join(store.directory(receipt), 'receipt.json'),
+      JSON.stringify(retained),
+    );
+    await expect(assertNoArchiveResolution('a', 'held')).rejects.toThrow(
+      receipt.operationId,
+    );
+    await expect(
+      assertNoArchiveResolution('a', 'sibling'),
+    ).resolves.toBeUndefined();
+    await expect(assertNoArchiveResolution('a')).rejects.toThrow(
+      receipt.operationId,
+    );
+    await (
+      await import('../archived-container-git')
+    ).qualifyArchiveRecoveryRefDeletion(retained);
+    await store.cancel(retained);
+    const { deleteArchivedContainerSnapshotRef } =
+      await import('../archived-container-git');
+    await deleteArchivedContainerSnapshotRef({
+      repoPath: repo,
+      refName: ref,
+      expectedCommit: oid,
+    });
+    expect(git('rev-parse', ref)).toBe(oid);
+    await expect(
+      assertNoArchiveResolution('a', 'held'),
+    ).resolves.toBeUndefined();
+    await expect(assertNoArchiveResolution('a')).resolves.toBeUndefined();
+    expect(
+      readFileSync(join(getW5DestructiveLifecycleDir(), copy.name), 'utf8'),
+    ).toBe(copy.contents);
+    await expect(
+      assertNoDestructiveRecovery('a', 'held'),
+    ).rejects.toMatchObject({ reason: 'recovery-required' });
+    writeFileSync(
+      join(getW5DestructiveLifecycleDir(), copy.name),
+      JSON.stringify({ ...receipt.sourceRecord, state: 'completed' }),
+    );
+    await deleteArchivedContainerSnapshotRef({
+      repoPath: repo,
+      refName: ref,
+      expectedCommit: oid,
+    });
+    expect(git('for-each-ref', '--format=%(refname)', ref)).toBe('');
+  });
+
+  it.each([
+    'missing-checkout',
+    'zero-refs',
+    'moved-ref',
+    'changed-common-dir',
+    'corrupt-co-owner',
+    'lock-failure',
+  ])(
+    'delete-hold qualifies before intent and replays by common directory: %s',
+    async (shape) => {
+      const { store, receipt, deletion, git, ref, oid, commonDir } =
+        await completedRecoveryHold('held', shape !== 'zero-refs');
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      if (
+        shape === 'missing-checkout' ||
+        shape === 'zero-refs' ||
+        shape === 'changed-common-dir'
+      ) {
+        const projected = {
+          ...receipt,
+          repositories: receipt.repositories.map((repository) => ({
+            ...repository,
+            referenceRepoPath: join(root, 'missing-checkout'),
+            ...(shape === 'zero-refs'
+              ? { commonDir: join(root, 'missing-git') }
+              : {}),
+            ...(shape === 'changed-common-dir'
+              ? { identity: 'previous-incarnation' }
+              : {}),
+          })),
+        };
+        writeFileSync(
+          join(store.directory(receipt), 'receipt.json'),
+          JSON.stringify(projected),
+        );
+      }
+      if (shape === 'moved-ref') {
+        git(
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'moved',
+        );
+        git('update-ref', ref, git('rev-parse', 'HEAD'));
+      }
+      if (shape === 'corrupt-co-owner') {
+        const coOwner = await completedRecoveryHold('held');
+        writeFileSync(
+          join(store.directory(coOwner.receipt), 'receipt.json'),
+          JSON.stringify({
+            ...coOwner.receipt,
+            repositories: coOwner.receipt.repositories.map((repository) => ({
+              ...repository,
+              identity: 'replaced-co-owner',
+            })),
+          }),
+        );
+      }
+      const lock = join(commonDir, ref + '.lock');
+      if (shape === 'lock-failure') {
+        mkdirSync(dirname(lock), { recursive: true });
+        writeFileSync(lock, 'locked');
+      }
+      const result = await resolveWorktreeArchive(deletion);
+      if (
+        shape === 'moved-ref' ||
+        shape === 'changed-common-dir' ||
+        shape === 'corrupt-co-owner'
+      ) {
+        expect(result).toMatchObject({ status: 'refused' });
+        expect(
+          (await store.read('a', receipt.operationId))?.retention,
+        ).toBeUndefined();
+        await expect(
+          deleteWorkspace({
+            workspaceId: 'a',
+            source: 'shared_container_fork',
+          }),
+        ).resolves.toMatchObject({ removed: 'code' });
+        expect(
+          (await store.read('a', receipt.operationId))?.retention,
+        ).not.toBe('deleted');
+      } else if (shape === 'lock-failure') {
+        expect(result).toMatchObject({ status: 'interrupted' });
+        expect((await store.read('a', receipt.operationId))?.retention).toBe(
+          'deleting',
+        );
+        expect(git('rev-parse', ref)).toBe(oid);
+        rmSync(lock);
+        expect(await resolveWorktreeArchive(deletion)).toMatchObject({
+          status: 'hold-deleted',
+        });
+      } else expect(result).toMatchObject({ status: 'hold-deleted' });
+    },
+  );
+
+  it('delete-hold preserves co-owners and resumes partial ref and payload deletion', async () => {
+    const owner = await completedRecoveryHold('held-shared');
+    const coOwner = await completedRecoveryHold('held-shared');
+    const { resolveWorktreeArchive } =
+      await import('../worktree-archive-resolution');
+    expect(await resolveWorktreeArchive(owner.deletion)).toMatchObject({
+      status: 'hold-deleted',
+    });
+    expect(owner.git('rev-parse', owner.ref)).toBe(owner.oid);
+    const { qualifyArchiveRecoveryRefDeletion } =
+      await import('../archived-container-git');
+    await qualifyArchiveRecoveryRefDeletion(coOwner.receipt);
+    const intent = await coOwner.store.beginDeletion(coOwner.receipt);
+    coOwner.git('update-ref', '-d', coOwner.ref, coOwner.oid);
+    rmSync(join(coOwner.store.payloadPath(intent), 'unique'));
+    expect(await resolveWorktreeArchive(coOwner.deletion)).toMatchObject({
+      status: 'hold-deleted',
+    });
+    expect(owner.git('for-each-ref', '--format=%(refname)', owner.ref)).toBe(
+      '',
+    );
+    expect(existsSync(coOwner.store.payloadPath(intent))).toBe(false);
+  });
+
+  it('completed-hold handoff survives committed parent removal and cleanup acknowledgement loss for multiple holds', async () => {
+    const first = await completedRecoveryHold('held-one');
+    const second = await completedRecoveryHold('held-two');
+    const { ArchiveRecoveryStore } =
+      await import('@canopy/desktop-shared/node/archive-recovery-store');
+    const original = jest.spyOn(
+      ArchiveRecoveryStore.prototype,
+      'deletePayload',
+    );
+    const deletePayload = original.getMockImplementation();
+    if (!deletePayload)
+      throw new Error('Missing payload deletion implementation');
+    const fault = original.mockImplementationOnce(async function (
+      this: InstanceType<typeof ArchiveRecoveryStore>,
+      receipt,
+    ) {
+      await deletePayload.call(this, receipt);
+      throw new Error('lost tombstone acknowledgement');
+    });
+    try {
+      await expect(
+        deleteWorkspace({ workspaceId: 'a', source: 'shared_container_fork' }),
+      ).resolves.toMatchObject({ removed: 'code' });
+    } finally {
+      fault.mockRestore();
+    }
+    expect(existsSync(join(getWorkspaceDir('a'), 'workspace.json'))).toBe(
+      false,
+    );
+    const parent = await readDestructiveRecovery('a');
+    if (!parent) throw new Error('No durable cleanup handoff');
+    expect(parent.archiveRecoveryCleanup).toHaveLength(2);
+    expect(parent.archiveRecoveryCleanup?.every((entry) => entry.done)).toBe(
+      false,
+    );
+    const { settleWorkspaceArchiveRecoveryCleanup } =
+      await import('../workspace-deletion');
+    await settleWorkspaceArchiveRecoveryCleanup(parent);
+    await settleWorkspaceArchiveRecoveryCleanup(parent);
+    for (const hold of [first, second]) {
+      expect(
+        (await hold.store.read('a', hold.receipt.operationId))?.retention,
+      ).toBe('deleted');
+      expect(hold.git('for-each-ref', '--format=%(refname)', hold.ref)).toBe(
+        '',
+      );
+    }
+    expect(
+      (await readDestructiveRecovery('a'))?.archiveRecoveryCleanup?.every(
+        (entry) => entry.done,
+      ),
+    ).toBe(true);
+    expect((await readDestructiveRecovery('a'))?.cleanupRequired).toBe(false);
+  });
+
+  it('parent cleanup settles independent holds despite a conflicting earlier member', async () => {
+    const holds = [
+      await completedRecoveryHold('held-first'),
+      await completedRecoveryHold('held-second'),
+    ].sort((a, b) =>
+      a.receipt.operationId.localeCompare(b.receipt.operationId),
+    );
+    const [conflict, safe] = holds;
+    if (!conflict || !safe) throw new Error('Missing holds');
+    writeFileSync(
+      join(conflict.store.directory(conflict.receipt), 'receipt.json'),
+      JSON.stringify({
+        ...conflict.receipt,
+        repositories: conflict.receipt.repositories.map((repo) => ({
+          ...repo,
+          identity: 'replaced',
+        })),
+      }),
+    );
+    await expect(
+      deleteWorkspace({ workspaceId: 'a', source: 'shared_container_fork' }),
+    ).resolves.toMatchObject({ removed: 'code' });
+    expect(
+      (await safe.store.read('a', safe.receipt.operationId))?.retention,
+    ).toBe('deleted');
+    expect(
+      (await conflict.store.read('a', conflict.receipt.operationId))?.retention,
+    ).toBeUndefined();
+    expect((await readDestructiveRecovery('a'))?.cleanupRequired).toBe(true);
+  });
+
+  it('replays parent cleanup after interruption between redundant cleanup acknowledgements', async () => {
+    const hold = await completedRecoveryHold();
+    const { ArchiveRecoveryStore } =
+      await import('@canopy/desktop-shared/node/archive-recovery-store');
+    const pause = jest
+      .spyOn(ArchiveRecoveryStore.prototype, 'deletePayload')
+      .mockRejectedValueOnce(new Error('cleanup paused'));
+    try {
+      await deleteWorkspace({
+        workspaceId: 'a',
+        source: 'shared_container_fork',
+      });
+    } finally {
+      pause.mockRestore();
+    }
+    const parent = await readDestructiveRecovery('a');
+    if (!parent) throw new Error('No parent');
+    const duplicate = join(
+      getW5DestructiveLifecycleDir(),
+      parent.operationId + '.json',
+    );
+    writeFileSync(duplicate, JSON.stringify(parent));
+    const atomic =
+      await import('@canopy/execution-engine/node/lib/atomic-file');
+    const write = atomic.writeFileAtomically;
+    let injected = false;
+    const fault = jest
+      .spyOn(atomic, 'writeFileAtomically')
+      .mockImplementation(async (path, data, options) => {
+        await write(path, data, options);
+        if (
+          !injected &&
+          dirname(path) === getW5DestructiveLifecycleDir() &&
+          String(data).includes('"done":true')
+        ) {
+          injected = true;
+          throw new Error('lost redundant acknowledgement');
+        }
+      });
+    const { settleWorkspaceArchiveRecoveryCleanup } =
+      await import('../workspace-deletion');
+    try {
+      await expect(
+        settleWorkspaceArchiveRecoveryCleanup(parent),
+      ).rejects.toMatchObject({
+        failures: [
+          {
+            operationId: hold.receipt.operationId,
+            error: new Error('lost redundant acknowledgement'),
+          },
+        ],
+      });
+    } finally {
+      fault.mockRestore();
+    }
+    expect(injected).toBe(true);
+    await settleWorkspaceArchiveRecoveryCleanup(parent);
+    await settleWorkspaceArchiveRecoveryCleanup(parent);
+    expect(
+      (await hold.store.read('a', hold.receipt.operationId))?.retention,
+    ).toBe('deleted');
+    const { readdirSync } = await import('node:fs');
+    for (const name of readdirSync(getW5DestructiveLifecycleDir()).map((name) =>
+      join(getW5DestructiveLifecycleDir(), name),
+    )) {
+      const record = journalSchema.parse(
+        JSON.parse(readFileSync(name, 'utf8')),
+      );
+      if (record.operationId === parent.operationId)
+        expect(
+          record.archiveRecoveryCleanup?.every((member) => member.done),
+        ).toBe(true);
+    }
+  });
+
+  it.each([false, true])(
+    'new resolution diagnosis uses authoritative parent pending classification: %s',
+    async (pending) => {
+      const { store, receipt, git, ref, oid } = await completedRecoveryHold();
+      const { renameSync } = await import('node:fs');
+      const { randomUUID } = await import('node:crypto');
+      const { readDirectoryStatIdentity, readBlockingDestructiveRecoveries } =
+        await import('../w5-destructive-recovery');
+      const identity = await readDirectoryStatIdentity(getWorkspaceDir('a'));
+      const source = { ...receipt.sourceRecord, directoryIdentity: identity };
+      renameSync(store.payloadPath(receipt), store.stagingPath(receipt));
+      for (const copy of receipt.copies)
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), copy.name),
+          JSON.stringify(source),
+        );
+      rmSync(store.directory(receipt), { recursive: true });
+      const parentId = randomUUID();
+      writeFileSync(
+        join(getW5DestructiveLifecycleDir(), parentId + '.json'),
+        JSON.stringify({
+          version: 1,
+          operationId: parentId,
+          operation: 'workspace-delete',
+          workspaceId: 'a',
+          state: 'recovery-required',
+          directoryIdentity: identity,
+          ownedPaths: [],
+          steps: pending
+            ? [{ phase: 'workspace-directory-removal', state: 'pending' }]
+            : [],
+        }),
+      );
+      expect(
+        (await readBlockingDestructiveRecoveries('a')).some(
+          (record) => record.operationId === parentId,
+        ),
+      ).toBe(pending);
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const diagnosis = (
+        await listWorktreeRecovery({
+          workspaceId: 'a',
+          operationId: receipt.operationId,
+        })
+      ).entries[0]?.diagnosis;
+      expect(diagnosis?.verdict).toBe(pending ? 'refused' : 'release');
+      if (!diagnosis) throw new Error('No diagnosis');
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      expect(
+        await resolveWorktreeArchive({
+          workspaceId: 'a',
+          operationId: receipt.operationId,
+          revision: diagnosis.revision,
+          action: 'release',
+        }),
+      ).toMatchObject({ status: pending ? 'refused' : 'attempt-withdrawn' });
+      expect(git('rev-parse', ref)).toBe(oid);
+    },
+  );
+
+  it.each(['before', 'after'] as const)(
+    'adopted hold preserves or settles across canonical-removal %s effect',
+    async (timing) => {
+      const hold = await completedRecoveryHold();
+      const atomic =
+        await import('@canopy/execution-engine/node/lib/atomic-file');
+      const original = atomic.writeFileAtomically;
+      let injected = false;
+      const fault = jest
+        .spyOn(atomic, 'writeFileAtomically')
+        .mockImplementation(async (path, data, options) => {
+          const record =
+            dirname(path) === getW5DestructiveLifecycleDir()
+              ? journalSchema.safeParse(JSON.parse(String(data)))
+              : null;
+          const removal = record?.success
+            ? record.data.steps.find(
+                (step) => step.phase === 'canonical-index-removal',
+              )
+            : null;
+          const hit =
+            !injected &&
+            removal?.state === (timing === 'before' ? 'pending' : 'done');
+          if (hit && timing === 'before') {
+            injected = true;
+            throw new Error('canonical fault');
+          }
+          await original(path, data, options);
+          if (hit) {
+            injected = true;
+            throw new Error('canonical fault');
+          }
+        });
+      try {
+        await expect(
+          deleteWorkspace({
+            workspaceId: 'a',
+            source: 'shared_container_fork',
+          }),
+        ).rejects.toThrow();
+      } finally {
+        fault.mockRestore();
+      }
+      expect(injected).toBe(true);
+      const parent = await readDestructiveRecovery('a');
+      if (!parent) throw new Error('No handoff');
+      const { settleWorkspaceArchiveRecoveryCleanup } =
+        await import('../workspace-deletion');
+      await settleWorkspaceArchiveRecoveryCleanup(parent);
+      await settleWorkspaceArchiveRecoveryCleanup(parent);
+      const saved = await hold.store.read('a', hold.receipt.operationId);
+      expect(saved?.retention).toBe(
+        timing === 'before' ? undefined : 'deleted',
+      );
+      expect(indexIds().includes('a')).toBe(timing === 'before');
+      if (timing === 'before')
+        expect(hold.git('rev-parse', hold.ref)).toBe(hold.oid);
+    },
+  );
+
+  it('terminal receipt acknowledgement and tombstone replay need no original project resources', async () => {
+    const { store, receipt, deletion } = await completedRecoveryHold();
+    const { settleArchiveRecovery } =
+      await import('../archive-recovery-settlement');
+    const impossible = jest.fn(() => {
+      throw new Error('obsolete admission');
+    });
+    const ports = {
+      store,
+      admitResolution: impossible,
+      admitDeletion: impossible,
+      qualifyRefs: impossible,
+      deleteRefs: impossible,
+      withdraw: impossible,
+    };
+    const withdrawn = { ...receipt, stage: 'withdrawn' as const };
+    writeFileSync(
+      join(store.directory(receipt), 'receipt.json'),
+      JSON.stringify(withdrawn),
+    );
+    rmSync(store.payloadPath(receipt), { recursive: true });
+    expect(
+      (await settleArchiveRecovery(withdrawn, 'resolve', ports)).stage,
+    ).toBe('completed');
+    const deleted = { ...receipt, retention: 'deleted' as const };
+    writeFileSync(
+      join(store.directory(receipt), 'receipt.json'),
+      JSON.stringify(deleted),
+    );
+    const { resolveWorktreeArchive } =
+      await import('../worktree-archive-resolution');
+    mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+    writeFileSync(join(getW5DestructiveLifecycleDir(), 'bad.json'), '{bad');
+    expect(await resolveWorktreeArchive(deletion)).toMatchObject({
+      status: 'hold-deleted',
+    });
+    expect(impossible).not.toHaveBeenCalled();
+  });
+
+  it('project deletion discards completed holds after commit without a new fence', async () => {
+    const { randomUUID, createHash } = await import('node:crypto');
+    const { archiveRecoveryStore, archiveRecoveryRepositoryIdentity } =
+      await import('../archive-recovery-refs');
+    const store = archiveRecoveryStore();
+    const operationId = randomUUID();
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    const oid = git('rev-parse', 'HEAD');
+    const ref = 'refs/app/archived-containers/a/held/__single_repo__';
+    git('update-ref', ref, oid);
+    const commonDir = git('rev-parse', '--absolute-git-dir');
+    const record = {
+      version: 1,
+      operationId,
+      operation: 'worktree-archive',
+      workspaceId: 'a',
+      worktreeId: 'held',
+      createdAt: '2026-11-01T00:00:00.000Z',
+      directoryIdentity: null,
+      state: 'recovery-required',
+      steps: [],
+      ownedPaths: [],
+    };
+    const contents = JSON.stringify(record);
+    const copy = {
+      name: operationId + '.json',
+      contents,
+      digest: createHash('sha256').update(contents).digest('hex'),
+    };
+    mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+    writeFileSync(join(getW5DestructiveLifecycleDir(), copy.name), contents);
+    const input = {
+      workspaceId: 'a',
+      worktreeId: 'held',
+      operationId,
+      action: 'release' as const,
+      revision: 'a'.repeat(64),
+      createdAt: record.createdAt,
+      sourceRecord: record,
+      copies: [copy],
+      repositories: [
+        {
+          repoId: '__single_repo__',
+          referenceRepoPath: repo,
+          commonDir,
+          identity: await archiveRecoveryRepositoryIdentity(commonDir),
+          refs: [{ name: ref, objectId: oid }],
+        },
+      ],
+      capture: 'unpublished' as const,
+    };
+    mkdirSync(store.stagingPath(input), { recursive: true });
+    writeFileSync(join(store.stagingPath(input), 'unique'), 'retained');
+    let receipt = await store.prepare(input);
+    receipt = await store.publishRetention(receipt);
+    receipt = await store.resetStaging(receipt);
+    receipt = await store.withdrawJournals(receipt);
+    receipt = await store.writeStage(receipt, 'completed');
+    await expect(
+      deleteWorkspace({ workspaceId: 'a', source: 'shared_container_fork' }),
+    ).resolves.toMatchObject({ removed: 'code' });
+    expect((await store.read('a', operationId))?.retention).toBe('deleted');
+    expect(existsSync(store.payloadPath(receipt))).toBe(false);
+    expect(git('for-each-ref', '--format=%(refname)', ref)).toBe('');
   });
 });

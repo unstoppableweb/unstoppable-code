@@ -1,4 +1,10 @@
-import { Fieldset } from '@canopy/ui-shared/components';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { Fieldset, CodeBlock } from '@canopy/ui-shared/components';
+import {
+  resolveAutomationSharedAgent,
+  type ResolvedAutomationAgent,
+} from '@canopy/desktop-shared/lib/automation-agent';
 import {
   type JSX,
   useCallback,
@@ -16,7 +22,6 @@ import {
   TextArea,
   Heading,
 } from '@canopy/ui-shared/components';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { AutomationTargetRequirementLine } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { CHAT_LABEL } from '@canopy/protocol';
 import type { AutomationSessionTargetKind } from '@canopy/desktop-shared/lib/automation-target';
@@ -80,7 +85,10 @@ import {
 } from '@canopy/ui-app/sharing';
 import { DesktopShareResourceDialog } from '@/components/shared/share/DesktopShareResourceDialog';
 import { useUnifiedTableData } from '@/hooks/useUnifiedTableData';
-import { deriveShareablePluginsLenient } from '@/lib/agentSharing';
+import {
+  automationAgentPluginsMatch,
+  deriveShareablePluginsLenient,
+} from '@/lib/agentSharing';
 import {
   hashPipelineDocumentYaml,
   loadAutomationPipelineDocument,
@@ -172,8 +180,7 @@ export function ShareAutomationModal({
   onOpenAccountSettings,
   onShared,
 }: ShareAutomationModalProps): JSX.Element {
-  // A converted chat automation shares the workflow it runs (CAN-4551); a
-  // converted package install shares the chat action it shows (CAN-5479).
+  // The shared projection preserves Agent routes and installed chat packages.
   const activity = useMemo(() => sharedAutomationActivity(listed), [listed]);
   useCurrentUiStateReporter('sharing.automationDialog', {
     open: true,
@@ -227,6 +234,42 @@ export function ShareAutomationModal({
     includeCollections: true,
     includeMcp: false,
   });
+  const selectedModel =
+    'model' in activity.action ? activity.action.model : undefined;
+  const [sharedAgent, setSharedAgent] = useState<ResolvedAutomationAgent>();
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentError, setAgentError] = useState<string>();
+  useEffect(() => {
+    let cancelled = false;
+    setSharedAgent(undefined);
+    setAgentError(undefined);
+    setAgentLoading(true);
+    if (catalogLoading) return;
+    void resolveAutomationSharedAgent(selectedModel, {
+      ...window.agents,
+      pluginsMatch: (local, detail) =>
+        automationAgentPluginsMatch(local, detail, rows),
+    })
+      .then((agent) => {
+        if (!cancelled) setSharedAgent(agent);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const failure = toAppError(resolveClientAppError(error));
+        if (failure)
+          setAgentError(
+            error instanceof Error
+              ? error.message
+              : 'Couldn’t check the shared Agent. Refresh it from Agents before sharing this automation.',
+          );
+      })
+      .finally(() => {
+        if (!cancelled) setAgentLoading(false);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [selectedModel, rows, catalogLoading]);
 
   const pluginSelections =
     'pluginSelections' in activity.action
@@ -611,6 +654,7 @@ export function ShareAutomationModal({
   }, [activity.action, resolvedPipelineWorktree]);
 
   const waitingOnData =
+    agentLoading ||
     descriptionLoading ||
     (needsPluginResolution && catalogLoading) ||
     !pipelineIndexLoaded ||
@@ -629,6 +673,7 @@ export function ShareAutomationModal({
   const baseBuildOptions = useMemo((): BuildSharedAutomationDocumentOptions => {
     return {
       description,
+      resolvedAgent: sharedAgent,
       includeRunCondition: includesRunCondition,
       ...(sessionTargetKind ? { sessionTargetKind } : {}),
       ...(declaredTargetContexts ? { declaredTargetContexts } : {}),
@@ -648,6 +693,7 @@ export function ShareAutomationModal({
     curatedPipelineKey,
     declaredTargetContexts,
     description,
+    sharedAgent,
     includesRunCondition,
     pipelineScopes,
     resolvedPlugins,
@@ -673,10 +719,10 @@ export function ShareAutomationModal({
           firstRunConditionWarning
         ]
       : null;
-  const buildResult = useMemo(
-    () => buildSharedAutomationDocument(activity, baseBuildOptions),
-    [activity, baseBuildOptions],
-  );
+  const buildResult = useMemo(() => {
+    const built = buildSharedAutomationDocument(activity, baseBuildOptions);
+    return !built.ok && agentError ? { ...built, detail: agentError } : built;
+  }, [activity, baseBuildOptions, agentError]);
   const descriptionError =
     new TextEncoder().encode(description).length >
     MAX_SHARED_AUTOMATION_DESCRIPTION_BYTES
@@ -1032,7 +1078,11 @@ export function ShareAutomationModal({
           )}
         </FormField>
         {sharedPipelinePinError && (
-          <Notice intent="destructive" data-testid="share-automation-blockers">
+          <Notice
+            errorSource="share-automation-blockers-shared-pipeline-pin"
+            intent="destructive"
+            data-testid="share-automation-blockers"
+          >
             {sharedPipelinePinError}
           </Notice>
         )}
@@ -1044,6 +1094,7 @@ export function ShareAutomationModal({
             )
           ) && (
             <Notice
+              errorSource="share-automation-blockers-modal"
               intent="destructive"
               data-testid="share-automation-blockers"
             >
@@ -1201,12 +1252,13 @@ export function ShareAutomationModal({
                     This command has hidden characters, so it can't be shared.
                   </p>
                 )}
-                <pre
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-secondary p-3 text-xs fg-secondary`}
+                <CodeBlock
                   data-testid="share-automation-run-condition-command"
+                  variant="panel"
+                  className="max-h-32"
                 >
                   {runConditionCommand}
-                </pre>
+                </CodeBlock>
                 {!includesRunCondition &&
                   serverAcceptsRunCondition &&
                   runConditionShareable &&
@@ -1245,11 +1297,9 @@ export function ShareAutomationModal({
                 <Heading level={3} variant="title">
                   Shared document
                 </Heading>
-                <pre
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-52 overflow-auto rounded-lg bg-secondary p-3 text-xs fg-secondary`}
-                >
+                <CodeBlock variant="panel" wrap="none" className="max-h-52">
                   {JSON.stringify(buildResult.document, null, 2)}
-                </pre>
+                </CodeBlock>
               </div>
             )}
           </Disclosure>

@@ -1359,7 +1359,7 @@ function operationWindow(timer, entry) {
 }
 
 /**
- * Delete permanently from "Archived and deleted": the purge route. The
+ * Delete permanently from the More page's archived worktree: the purge route. The
  * viewer closes only after the purge IPC resolves, and the purge awaits the
  * registry removals, so the user-visible measure includes them.
  */
@@ -1370,9 +1370,11 @@ async function measurePurge(run, id, iteration) {
   );
   await expect(archivedLink).toBeVisible({ timeout: 30_000 });
   await archivedLink.click();
-  const open = page.getByTestId(`archived-overview-open-${id}`);
-  await expect(open).toBeVisible({ timeout: 30_000 });
-  await open.click();
+  // The More page opens an archived worktree from its card's ⋯ menu.
+  const actions = page.getByTestId(`more-worktrees-actions-${id}`);
+  await expect(actions).toBeVisible({ timeout: 30_000 });
+  await actions.click();
+  await page.getByTestId(`more-worktrees-open-action-${id}`).click();
   const viewer = page.getByTestId('archived-container-view');
   await expect(viewer).toBeVisible({ timeout: 30_000 });
   await dismissToasts(page);

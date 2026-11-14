@@ -24,6 +24,7 @@ import type {
 } from '@canopy/protocol/models';
 import type { BuildModelCatalogOptionInput } from '../types/model-catalog';
 import { getModelFamilyMetadata } from '../model-config';
+import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
 import { getManagedModelVendor } from './managed-model-vendor';
 import {
   getCanonicalPickerModel,
@@ -73,6 +74,7 @@ function normalizedModelSource(
   id: string,
 ): ModelCatalogOption['source'] | undefined {
   const modelSource = getModelSource(id);
+  if (modelSource === 'antigravity-managed') return 'antigravity';
   if (modelSource === 'copilot-managed') return 'copilot';
   if (modelSource === 'opencode-managed') return 'opencode';
   return modelSource === 'claude-managed'
@@ -120,10 +122,17 @@ function harnessChoiceFields(
  * surface bills or labels it as hosted AI Credits. Hosted rows stay unset;
  * their source already says where they run.
  */
-function gatewayFundingField(id: string): Pick<ModelCatalogOption, 'funding'> {
-  return resolveGatewayModelEntry(id)?.origin === 'org-gateway'
-    ? { funding: 'org-gateway' }
-    : {};
+function gatewayFundingField(
+  id: string,
+): Pick<ModelCatalogOption, 'funding' | 'gatewayPresetId'> {
+  const entry = resolveGatewayModelEntry(id);
+  if (entry?.origin !== 'org-gateway') return {};
+  // CAN-6444: which preset gateway serves it, for the picker's gateway tab.
+  const presetId = matchAiGatewayPreset(entry.baseUrl)?.id;
+  return {
+    funding: 'org-gateway',
+    ...(presetId ? { gatewayPresetId: presetId } : {}),
+  };
 }
 
 function providerModelOption(
@@ -179,6 +188,9 @@ function providerModelOption(
       resolvedProvider,
     ),
     thinkingLevels: projectedThinkingLevels(id, resolvedProvider),
+    ...(effectiveHarness === 'antigravity'
+      ? { vendor: 'google', supportsImages: false, supportsFastMode: false }
+      : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(vendor ? { vendor } : {}),
     ...(family ?? {}),

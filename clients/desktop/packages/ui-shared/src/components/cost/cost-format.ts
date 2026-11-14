@@ -5,6 +5,7 @@ import {
   type CostSource,
   type CostTotals,
 } from '@canopy/protocol/cost-view';
+import { formatCredits } from '../../lib/billing-format';
 import { formatCost } from '../../lib/format-usage';
 import {
   COST_BILLING_COLORS,
@@ -71,6 +72,111 @@ export function unpricedCostItemLabel(item: {
 export function formatCostAmount(usd: number): string {
   if (!Number.isFinite(usd) || usd <= 0) return '$0.00';
   return formatCost(usd);
+}
+
+/**
+ * The units a host shows cost in (CAN-6180). `usd` is every amount in US
+ * dollars. `credits` shows AI Credits work as credits at the ledger's burn
+ * rate, with USD alongside; a credits-only account (CAN-5028) sees credits
+ * for every amount and never USD.
+ */
+export type CostCurrency =
+  | { readonly kind: 'usd' }
+  | {
+      readonly kind: 'credits';
+      /** US dollars per AI Credit, as the ledger debits them. */
+      readonly usdPerCredit: number;
+      readonly creditsOnly: boolean;
+    };
+
+export const USD_COST_CURRENCY: CostCurrency = { kind: 'usd' };
+
+/**
+ * `4 credits`, `1 credit`, up to two decimals. A nonzero amount under 0.01
+ * credits keeps two significant digits (`0.002 credits`), so real spend
+ * never reads as zero, as formatCost keeps sub-cent dollars.
+ */
+export function formatCostCredits(usd: number, usdPerCredit: number): string {
+  const credits =
+    Number.isFinite(usd) && usd > 0 && usdPerCredit > 0
+      ? usd / usdPerCredit
+      : 0;
+  const label =
+    credits > 0 && credits < 0.01
+      ? credits.toLocaleString(undefined, { maximumSignificantDigits: 2 })
+      : formatCredits(credits);
+  return `${label} ${label === '1' ? 'credit' : 'credits'}`;
+}
+
+/**
+ * An amount in the host's units. When `billedOnlyToAiCredits`, it reads in
+ * credits with USD alongside (`4 credits · $0.60`); otherwise in USD. A
+ * credits-only account reads every amount in credits.
+ *
+ * Whether an amount is all AI Credits is a fact about its billing, never a
+ * comparison of amounts: a total and its billing buckets are rounded
+ * separately, so comparing them reads float noise as other spend. Decide it
+ * from a billing split with `billedOnlyToAiCredits`, or from an item's own
+ * billing basis.
+ */
+export function formatCostAmountIn(
+  usd: number,
+  currency: CostCurrency,
+  billedOnlyToAiCredits = false,
+): string {
+  if (currency.kind === 'usd') return formatCostAmount(usd);
+  if (currency.creditsOnly)
+    return formatCostCredits(usd, currency.usdPerCredit);
+  return billedOnlyToAiCredits && usd > 0
+    ? `${formatCostCredits(usd, currency.usdPerCredit)} · ${formatCostAmount(usd)}`
+    : formatCostAmount(usd);
+}
+
+/** A legend or bar part in the host's units: the AI Credits part reads in credits. */
+export function formatCostSegmentIn(
+  segment: Pick<CostSegment, 'key' | 'value'>,
+  currency: CostCurrency,
+): string {
+  return formatCostAmountIn(
+    segment.value,
+    currency,
+    segment.key === 'ai_credits',
+  );
+}
+
+/**
+ * formatCostTotal in the host's units; `Not priced` stays as it is. A row
+ * without a billing split (a model row) reads in USD, or in credits for a
+ * credits-only account.
+ */
+export function formatCostTotalIn(
+  totals: Pick<CostTotals, 'usd' | 'notPricedCount'> & {
+    readonly byBilling?: CostTotals['byBilling'];
+  },
+  currency: CostCurrency,
+): string {
+  if (totals.usd === 0 && totals.notPricedCount > 0)
+    return COST_NOT_PRICED_LABEL;
+  return formatCostAmountIn(
+    totals.usd,
+    currency,
+    totals.byBilling !== undefined && billedOnlyToAiCredits(totals.byBilling),
+  );
+}
+
+/**
+ * Whether a billing split is all AI Credits: AI Credits has spend and no
+ * other billing does. The one place a split decides credits versus USD.
+ */
+export function billedOnlyToAiCredits(
+  byBilling: CostTotals['byBilling'],
+): boolean {
+  return (
+    byBilling.ai_credits > 0 &&
+    Object.entries(byBilling).every(
+      ([billing, amount]) => billing === 'ai_credits' || amount <= 0,
+    )
+  );
 }
 
 /** A total for display: `Not priced` when usd is 0 and notPricedCount > 0; otherwise formatCostAmount(usd). */

@@ -21,6 +21,7 @@ import {
   removeCodeReviewDiagramArtifact,
   setCodeReviewArmed,
   setCodeReviewArtifact,
+  skippedCommentThreadsField,
 } from './code-review-persistence';
 import {
   buildReviewDiffBundle,
@@ -164,6 +165,7 @@ function emitReviewUpdated(
     worktreeId: scope.worktreeId,
     fingerprint,
     review,
+    ...skippedCommentThreadsField(scope.projectId, scope.worktreeId),
   };
   sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
 }

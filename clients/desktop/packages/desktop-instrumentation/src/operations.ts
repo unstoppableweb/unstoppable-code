@@ -470,6 +470,35 @@ export const DESKTOP_OPERATIONS = {
       'format4_duration_bucket',
     ],
   },
+  // The chat automation migration (CAN-5479): one event per run with
+  // candidates, counts only; never an automation's name, prompt, ID or error.
+  'canopy.chat_automation_migration': {
+    kind: 'product',
+    posthogEvent: 'automation:chat_migration_end',
+    contextKeys: [
+      'converted_count',
+      'failed_count',
+      'skipped_count',
+      'failed_activity_running_count',
+      'failed_not_found_count',
+      'failed_not_a_chat_action_count',
+      'failed_native_send_count',
+      'failed_agent_route_count',
+      'failed_agent_settings_count',
+      'failed_target_requirement_count',
+      'failed_pipeline_save_count',
+      'failed_owner_not_recorded_count',
+      'failed_settings_not_recorded_count',
+      'failed_plugins_not_recorded_count',
+      'failed_automations_write_count',
+      'failed_unknown_count',
+      'remaining_native_count',
+      'remaining_native_send_count',
+      'remaining_agent_route_count',
+      'remaining_agent_settings_count',
+      'remaining_target_requirement_count',
+    ],
+  },
 } as const satisfies Record<string, ProductOperationPolicy>;
 
 export type DesktopOperationName = keyof typeof DESKTOP_OPERATIONS;

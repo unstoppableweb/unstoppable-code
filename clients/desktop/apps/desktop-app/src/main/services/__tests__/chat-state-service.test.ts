@@ -66,11 +66,13 @@ import type {
   PersistedHostQueuedMessage,
 } from '@canopy/desktop-shared/types';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import { readErrorClassification } from '@canopy/protocol/app-errors';
 import type { PersistedVisualReference } from '@canopy/agent-transcript/types';
 import {
   APP_ADVISOR_PROJECT_ID,
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   initAgentModels,
+  initAiGatewayModels,
   initModelAliases,
   initModelHarnessAssignments,
   initOllamaModels,
@@ -1191,6 +1193,7 @@ describe('chat state service', () => {
   let tempDir: string;
   let paths: { tabs: string; archives: string; journal: string };
   let repositories: ChatStateRepository[];
+  let services: ChatStateService[];
   let dispatched: ChatSendMessageRequest[];
 
   it('does not publish a new tab when paired authorization is revoked at the final commit boundary', async () => {
@@ -1237,6 +1240,7 @@ describe('chat state service', () => {
       journal: join(tempDir, 'journal.jsonl'),
     };
     repositories = [];
+    services = [];
     dispatched = [];
     queueEdit.mockReset();
     queueCancel.mockReset();
@@ -1268,6 +1272,8 @@ describe('chat state service', () => {
     setChatTabsWriteObserver(null);
     setChatTabsRequiredDurabilityObserver(null);
     chatStateServiceModule.resetChatStateServiceForTests();
+    // These fixtures are not the singleton; stop their handoffs before draining.
+    for (const target of services) target.disposeTurnHandoff();
     // Hydration can arm queue timers; no host work may outlive its repository.
     getChatQueueService().resetForTests();
     await Promise.all(
@@ -1288,6 +1294,12 @@ describe('chat state service', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  function trackedService(options: ChatStateServiceOptions): ChatStateService {
+    const target = new ChatStateService(options);
+    services.push(target);
+    return target;
+  }
+
   function serviceWithRepository(
     overrides: Partial<ChatStateServiceOptions> = {},
     storagePaths = paths,
@@ -1301,7 +1313,7 @@ describe('chat state service', () => {
       ...repositoryOptions,
     });
     repositories.push(repository);
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -1362,6 +1374,44 @@ describe('chat state service', () => {
           }),
     );
   }
+
+  it.each(['claude', 'codex'] as const)(
+    'clears the credit warning on confirmed %s user-turn start',
+    async (provider) => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      const chatId = 'chat-1';
+      const userMessageId = 'new-prompt';
+      const refusal = { provider, detectedAt: 2 };
+      await repository.transact(
+        SCOPE,
+        [
+          {
+            type: 'message.upserted',
+            chatId,
+            message: {
+              id: userMessageId,
+              role: 'user',
+              timestamp: 3,
+              blocks: [{ type: 'text', text: 'A new prompt' }],
+            },
+          },
+          {
+            type: 'tab.metadata_patched',
+            tabId: chatId,
+            patch: { aiCreditsNoBillingSource: refusal },
+          },
+        ],
+        { source: 'automation' },
+      );
+      const readWarning = async () =>
+        (await repository.getState(SCOPE)).tabsFile.tabs[0]
+          ?.aiCreditsNoBillingSource;
+      expect(await readWarning()).toEqual(refusal);
+      await reportTurn(target, 'start', userMessageId, { provider });
+      expect(await readWarning()).toBeUndefined();
+    },
+  );
 
   function service(): ChatStateService {
     return serviceWithRepository().target;
@@ -3826,7 +3876,7 @@ describe('chat state service', () => {
       });
 
       expect(resolveSendModel).toHaveBeenCalledWith(
-        SCOPE,
+        { ...SCOPE, chatId: 'chat-1', executionHarness: undefined },
         'agent_model_inherit',
         undefined,
       );
@@ -19924,7 +19974,7 @@ describe('chat state service', () => {
         cleanupSession: async (): Promise<void> => undefined,
         authorizeSend,
       };
-      const target = new ChatStateService(options);
+      const target = trackedService(options);
       await createChat(target);
 
       await expect(
@@ -21249,7 +21299,7 @@ describe('chat state service', () => {
   it('preserves portal origin when a stable-id send reaches the queue host', async () => {
     const repository = new ChatStateRepository({ resolvePaths: () => paths });
     repositories.push(repository);
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -23766,6 +23816,37 @@ describe('chat state service', () => {
         reason: 'agent_send:owner_boundary',
       });
       expect(queueConsumeRestoredInput).not.toHaveBeenCalled();
+    } finally {
+      validation.mockRestore();
+    }
+  });
+
+  it('resending a message its sender can no longer reach returns the refusal, not a fault', async () => {
+    const refusal =
+      'Chat chat-1 can run in Full Access, but this chat is limited to Auto now, so this chat cannot message it.';
+    const validation = jest
+      .spyOn(senderContext, 'revalidateAgentSenderRequest')
+      .mockResolvedValue(undefined);
+    try {
+      const f = await deliveryFixture({
+        ...reviewAgentRequest('row-1'),
+        attachmentPaths: undefined,
+      });
+      await f.steer();
+      await f.action('cancel');
+      expect((await f.getRow()).state).toBe('cancelled');
+      validation.mockRejectedValue(
+        new senderContext.AgentSenderContextError(
+          'authorization_conflict',
+          refusal,
+        ),
+      );
+      await expect(f.action('resend')).resolves.toMatchObject({
+        outcome: 'rejected',
+        reason: refusal,
+      });
+      expect(f.submission).toHaveBeenCalledTimes(1);
+      expect((await f.getRow()).state).toBe('cancelled');
     } finally {
       validation.mockRestore();
     }
@@ -27590,6 +27671,12 @@ describe('chat state service', () => {
       { type: 'result', is_error: true, result: 'Provider failed' },
       'failed',
     ],
+    [
+      // `/clear` runs in the Claude CLI and prints nothing (CAN-6416).
+      'a silent local command',
+      { type: 'result', is_error: false, result: '', local_command: 'clear' },
+      'completed',
+    ],
   ])(
     'does not reclassify %s as an empty completion',
     async (_label, data, status) => {
@@ -28007,7 +28094,7 @@ describe('chat state service', () => {
           enableFormat4: true,
         });
         repositories.push(repository);
-        const target = new ChatStateService({
+        const target = trackedService({
           repository,
           now: () => 1_786_104_000_000,
           createId: () => 'event-id',
@@ -29713,7 +29800,7 @@ describe('chat state service', () => {
     const dispatchStarted = new Promise<void>((resolve) => {
       markDispatchStarted = resolve;
     });
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       dispatch: async () => {
@@ -30163,7 +30250,7 @@ describe('chat state service', () => {
       ],
       { source: 'migration' },
     );
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       cleanupSession: async () => undefined,
@@ -33850,6 +33937,30 @@ describe('chat state service', () => {
     });
   });
 
+  it('refuses a read while its scope is being deleted as a changed state, not a defect (CAN-6556)', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // As archiving a standalone chat deletes its scope while the renderer
+    // and the search index still read it.
+    const deletion = repository.runWithScopeDeletion(SCOPE, () => held);
+
+    const error: unknown = await repository
+      .consumeTranscriptPreview(SCOPE, 'chat-1', async () => undefined)
+      .then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(readErrorClassification(error)?.code).toBe('external.state_changed');
+    release();
+    await deletion;
+  });
+
   it('commits semantic scope deletion before removing every chat-state sidecar', async () => {
     const target = service();
     await createChat(target);
@@ -34246,8 +34357,45 @@ describe('chat state service', () => {
     );
   });
 
+  it.each([false, true])(
+    'reopens scope admission only after the outer lifecycle settles (inner failure=%s)',
+    async (failInner) => {
+      const target = service();
+      await createChat(target);
+      await target.runWithScopeDeletionLifecycle(SCOPE, async () => {
+        const inner = target.runWithScopeDeletionLifecycle(SCOPE, async () => {
+          if (failInner) throw new Error('retirement preparation failed');
+        });
+        if (failInner)
+          await expect(inner).rejects.toThrow('retirement preparation failed');
+        else await inner;
+        await expect(
+          target.command(
+            envelope('still-fenced', {
+              type: 'chat.create_tab',
+              tabId: 'replacement-chat',
+              title: 'Replacement',
+            }),
+          ),
+        ).resolves.toMatchObject({
+          outcome: 'rejected',
+          reason: 'Chat scope is being deleted',
+        });
+      });
+      await expect(
+        target.command(
+          envelope('after-lifecycle', {
+            type: 'chat.create_tab',
+            tabId: 'replacement-chat',
+            title: 'Replacement',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+    },
+  );
+
   it('migrates a new scope from inside its own admitted operation', async () => {
-    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
+    const target = trackedService({ recordDiagnostic: jest.fn() });
     const scope: ChatScopeKey = {
       projectId: SCOPE.projectId,
       worktreeId: 'admitted-first-load',
@@ -34265,7 +34413,7 @@ describe('chat state service', () => {
   });
 
   it('keeps an admitted scope from idle unload until its operation finishes', async () => {
-    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
+    const target = trackedService({ recordDiagnostic: jest.fn() });
     const admitted: unknown = hostRepositoryOption(
       target,
       'hasAdmittedOperation',
@@ -34318,7 +34466,7 @@ describe('chat state service', () => {
   });
 
   it('installs, replaces and safely uninstalls the live scope pin provider', async () => {
-    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
+    const target = trackedService({ recordDiagnostic: jest.fn() });
     let replacementIsPinned = false;
     const firstProvider = (scope: ChatScopeKey): boolean =>
       scope.projectId === SCOPE.projectId;
@@ -34390,7 +34538,7 @@ describe('chat state service', () => {
       process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = '42000';
       e2eBuild.mockReturnValue(false);
       process.env.NODE_ENV = 'production';
-      const productionTarget = new ChatStateService({
+      const productionTarget = trackedService({
         recordDiagnostic: jest.fn(),
       });
       targets.push(productionTarget);
@@ -34401,17 +34549,17 @@ describe('chat state service', () => {
       process.env.NODE_ENV = originalNodeEnv;
 
       // Under Jest an undrained service never arms the idle timer.
-      const jestTarget = new ChatStateService({ recordDiagnostic: jest.fn() });
+      const jestTarget = trackedService({ recordDiagnostic: jest.fn() });
       targets.push(jestTarget);
       expect(hostRepositoryOption(jestTarget, 'idleScopeUnloadMs')).toBe(0);
 
       e2eBuild.mockReturnValue(true);
-      const e2eTarget = new ChatStateService({ recordDiagnostic: jest.fn() });
+      const e2eTarget = trackedService({ recordDiagnostic: jest.fn() });
       targets.push(e2eTarget);
       expect(hostRepositoryOption(e2eTarget, 'idleScopeUnloadMs')).toBe(42000);
 
       process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = '9007199254740992';
-      const invalidTarget = new ChatStateService({
+      const invalidTarget = trackedService({
         recordDiagnostic: jest.fn(),
       });
       targets.push(invalidTarget);
@@ -34637,7 +34785,7 @@ describe('chat state service', () => {
       authorizationStarted = resolve;
     });
     const dispatch = jest.fn(() => Promise.resolve());
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -34837,7 +34985,7 @@ describe('chat state service', () => {
       .fn<Promise<void>, []>()
       .mockRejectedValueOnce(new Error('provider still busy'))
       .mockResolvedValue(undefined);
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -37576,6 +37724,299 @@ describe('chat state service', () => {
     expect(switched).not.toHaveProperty('claudeForkSessionOnNextSend');
     expect(switched).not.toHaveProperty('codexReconstructionSeedId');
     expect(switched).not.toHaveProperty('claudeTerminal');
+    // CAN-6445: the outgoing session is parked, never deleted.
+    expect(switched.providerSessions).toEqual({
+      claude: {
+        sdkSessionId: 'claude-session',
+        globalInstructionsSnapshot: 'claude-only instructions',
+        claudeForkSessionOnNextSend: true,
+        userMessageCount: 0,
+      },
+    });
+  });
+
+  describe('provider switch sessions (CAN-6445)', () => {
+    async function withClaudeSession(
+      target: ChatStateService,
+      turns: number,
+    ): Promise<void> {
+      await createChat(target);
+      for (let turn = 1; turn <= turns; turn += 1) {
+        await target.command(
+          envelope(`send-${String(turn)}`, {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: `user-${String(turn)}`,
+            text: `Turn ${String(turn)}`,
+          }),
+        );
+      }
+      const tabs = await target.getCompatibilityTabs(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      await target.replaceCompatibilityTabs(SCOPE, {
+        ...tabs,
+        tabs: tabs.tabs.map((candidate) =>
+          candidate.id === 'chat-1'
+            ? {
+                ...candidate,
+                sdkSessionId: 'claude-session',
+                globalInstructionsSnapshot: 'claude instructions',
+              }
+            : candidate,
+        ),
+      });
+    }
+
+    async function switchTo(
+      target: ChatStateService,
+      id: string,
+      providerType: 'claude' | 'codex',
+    ): Promise<PersistedChatTab> {
+      await expect(
+        target.command(
+          envelope(id, {
+            type: 'chat.set_model',
+            tabId: 'chat-1',
+            model: providerType === 'codex' ? 'gpt-6-sol' : 'claude-opus-4-6',
+            providerType,
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      const tab = (await target.getState(SCOPE)).tabsFile.tabs.find(
+        (candidate) => candidate.id === 'chat-1',
+      );
+      if (!tab) throw new Error('chat-1 is missing');
+      return tab;
+    }
+
+    it('owes the conversation to a fresh session on the new provider', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+
+      const codex = await switchTo(target, 'to-codex', 'codex');
+
+      expect(codex).not.toHaveProperty('sdkSessionId');
+      expect(codex.providerSwitchSeedPending).toBe(true);
+      expect(codex.providerSessions?.claude).toEqual({
+        sdkSessionId: 'claude-session',
+        globalInstructionsSnapshot: 'claude instructions',
+        userMessageCount: 1,
+      });
+    });
+
+    it('switches in place to a gateway model whose pick names its harness', async () => {
+      initAiGatewayModels(
+        [
+          {
+            id: 'gateway-gpt',
+            label: 'Gateway GPT',
+            recommendedHarness: 'codex',
+            contextWindow: 128_000,
+            supportsPromptCaching: false,
+            supportedThinkingLevels: ['medium'],
+            toolSchemaProfile: 'standard',
+          },
+        ],
+        [],
+      );
+      try {
+        const target = service();
+        await withClaudeSession(target, 1);
+
+        await expect(
+          target.command(
+            envelope('to-gateway-codex', {
+              type: 'chat.set_model',
+              tabId: 'chat-1',
+              model: 'gateway-gpt',
+              providerType: 'codex',
+              executionHarness: 'codex',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        const codex = (await target.getState(SCOPE)).tabsFile.tabs.find(
+          (candidate) => candidate.id === 'chat-1',
+        );
+
+        expect(codex).toMatchObject({
+          model: 'gateway-gpt',
+          providerType: 'codex',
+          executionHarness: 'codex',
+          providerSwitchSeedPending: true,
+        });
+        expect(codex?.providerSessions?.claude?.sdkSessionId).toBe(
+          'claude-session',
+        );
+      } finally {
+        initAiGatewayModels([], []);
+      }
+    });
+
+    it('resumes the parked session when switching back with no turn since', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+      await switchTo(target, 'to-codex', 'codex');
+
+      const claude = await switchTo(target, 'back-to-claude', 'claude');
+
+      expect(claude).toMatchObject({
+        sdkSessionId: 'claude-session',
+        globalInstructionsSnapshot: 'claude instructions',
+      });
+      expect(claude).not.toHaveProperty('providerSwitchSeedPending');
+      expect(claude).not.toHaveProperty('providerSessions');
+    });
+
+    it('keeps a pending Claude fork forking when its session is resumed', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+      const tabs = await target.getCompatibilityTabs(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      await target.replaceCompatibilityTabs(SCOPE, {
+        ...tabs,
+        tabs: tabs.tabs.map((candidate) =>
+          candidate.id === 'chat-1'
+            ? { ...candidate, claudeForkSessionOnNextSend: true }
+            : candidate,
+        ),
+      });
+      await switchTo(target, 'to-codex', 'codex');
+
+      const claude = await switchTo(target, 'back-to-claude', 'claude');
+
+      expect(claude).toMatchObject({
+        sdkSessionId: 'claude-session',
+        claudeForkSessionOnNextSend: true,
+      });
+    });
+
+    it('keeps the seed owed when the new session records its id, until the seeded turn is accepted', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+      await switchTo(target, 'to-codex', 'codex');
+
+      await target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'init',
+        turnUserMessageId: 'user-1',
+        data: { type: 'system', subtype: 'init', session_id: 'new-session' },
+      });
+      const afterInit = (await target.getState(SCOPE)).tabsFile.tabs.find(
+        (candidate) => candidate.id === 'chat-1',
+      );
+      expect(afterInit?.providerSwitchSeedPending).toBe(true);
+
+      await target.consumeProviderSwitchSeed(SCOPE, 'chat-1');
+      const consumed = (await target.getState(SCOPE)).tabsFile.tabs.find(
+        (candidate) => candidate.id === 'chat-1',
+      );
+      expect(consumed).not.toHaveProperty('providerSwitchSeedPending');
+    });
+
+    it('never resumes a parked session after the other provider continued the turn', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+      await switchTo(target, 'to-codex', 'codex');
+
+      // A stopped turn's Resume on Codex adds output but no user turn.
+      await target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'codex-continuation',
+        turnUserMessageId: 'user-1',
+        data: {
+          type: 'assistant',
+          message: {
+            id: 'codex-continuation',
+            content: [{ type: 'text', text: 'Continued on Codex' }],
+          },
+        },
+      });
+
+      const claude = await switchTo(target, 'back-to-claude', 'claude');
+
+      expect(claude).not.toHaveProperty('sdkSessionId');
+      expect(claude).not.toHaveProperty('providerSessions');
+      expect(claude.providerSwitchSeedPending).toBe(true);
+    });
+
+    it('never resumes a parked session after a reset rewrote its history', async () => {
+      const target = service();
+      await withClaudeSession(target, 2);
+      await switchTo(target, 'to-codex', 'codex');
+      await expect(
+        target.command(
+          envelope('reset', {
+            type: 'chat.reset_to_point',
+            chatId: 'chat-1',
+            userMessageId: 'user-1',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      await target.command(
+        envelope('replacement', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'user-replacement',
+          text: 'A different second turn',
+        }),
+      );
+
+      const claude = await switchTo(target, 'back-to-claude', 'claude');
+
+      expect(claude).not.toHaveProperty('sdkSessionId');
+      expect(claude).not.toHaveProperty('providerSessions');
+      expect(claude.providerSwitchSeedPending).toBe(true);
+    });
+
+    it('keeps the session parked and owes a seed after a turn on the other provider', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+      await switchTo(target, 'to-codex', 'codex');
+      await target.command(
+        envelope('send-on-codex', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'user-on-codex',
+          text: 'Asked on Codex',
+        }),
+      );
+
+      const claude = await switchTo(target, 'back-to-claude', 'claude');
+
+      expect(claude).not.toHaveProperty('sdkSessionId');
+      expect(claude.providerSwitchSeedPending).toBe(true);
+      expect(claude.providerSessions?.claude?.sdkSessionId).toBe(
+        'claude-session',
+      );
+    });
+
+    it('never gives a fork the source chat’s parked sessions', async () => {
+      const target = service();
+      await withClaudeSession(target, 1);
+      await switchTo(target, 'to-codex', 'codex');
+
+      await expect(
+        target.command(
+          envelope('fork', {
+            type: 'chat.fork_tab',
+            sourceTabId: 'chat-1',
+            targetTabId: 'fork-1',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+
+      const fork = (await target.getState(SCOPE)).tabsFile.tabs.find(
+        (candidate) => candidate.id === 'fork-1',
+      );
+      expect(fork).toBeDefined();
+      expect(fork).not.toHaveProperty('providerSessions');
+    });
   });
 
   it('records the model Auto picked for each routed turn', async () => {
@@ -39222,7 +39663,7 @@ describe('chat state service', () => {
       })
       .mockImplementation(() => undefined);
     setChatTabsWriteObserver(projection);
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
@@ -39256,7 +39697,7 @@ describe('chat state service', () => {
       })
       .mockImplementation(() => undefined);
     setChatTabsWriteObserver(projection);
-    const target = new ChatStateService({
+    const target = trackedService({
       repository,
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',

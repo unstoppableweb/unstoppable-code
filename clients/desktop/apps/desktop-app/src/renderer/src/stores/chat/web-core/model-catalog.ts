@@ -22,63 +22,159 @@ export interface WebCoreModelCatalogState {
   readonly byProject: Readonly<
     Record<string, ReadonlyMap<string, ModelCatalogOption>>
   >;
+  /** Workspaces whose catalog every read failed for, until Try again. */
+  readonly failed: Readonly<Record<string, true>>;
 }
 
 export const useWebCoreModelCatalogStore = create<WebCoreModelCatalogState>(
-  () => ({ byProject: {} }),
+  () => ({ byProject: {}, failed: {} }),
 );
+
+/** Waits before the second and third read of a catalog that failed. */
+const RETRY_DELAYS_MS: readonly number[] = [1_000, 4_000];
+
+/** The longest a Retry-After may hold a read back, so retrying stays bounded. */
+const MAX_RETRY_DELAY_MS = 30_000;
+
+interface CatalogReadOptions {
+  /** Waits between reads; a test passes its own. */
+  readonly wait?: (ms: number) => Promise<void>;
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/** A catalog read that failed, and whether reading again may help. */
+class CatalogReadError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    /** How long the web core asked to wait (its Retry-After), if it did. */
+    readonly delayMs?: number,
+  ) {
+    super(message);
+    this.name = 'CatalogReadError';
+  }
+}
 
 const reads = new Map<string, Promise<void>>();
 /** Moves when the connection goes offline: an older read publishes nothing. */
 let generation = 0;
 
+async function readCatalog(
+  connection: CoreCoworkInvoker,
+  workspaceId: string,
+): Promise<Map<string, ModelCatalogOption>> {
+  const reply = await connection.request('core.catalog.snapshot.get', {
+    scope: { workspaceId },
+    kinds: ['model'],
+    includeUnavailable: false,
+  });
+  if (!reply.ok)
+    throw new CatalogReadError(
+      reply.error.message,
+      reply.error.retry?.kind !== 'never',
+      reply.error.retry === undefined || reply.error.retry.kind === 'never'
+        ? undefined
+        : reply.error.retry.delayMs,
+    );
+  const parsed = CatalogSnapshotGetResultSchema.safeParse(reply.value);
+  if (!parsed.success)
+    throw new CatalogReadError(
+      'The web core returned an invalid catalog.',
+      false,
+    );
+  return new Map(
+    mapCloudChatCatalog(parsed.data.entries).models.map((model) => [
+      model.id,
+      model,
+    ]),
+  );
+}
+
 /**
  * Reads a web core workspace's models once; a later call reuses the read in
- * flight or its result. A failed read is reported and read again next time.
+ * flight or its result. A read that fails retryably, as a 503 does, is read
+ * again after a wait, three reads in all (CAN-6615). One that still fails is
+ * reported and marks the workspace failed, so the composer says so with Try
+ * again; a later call reads nothing until Try again.
  */
 export function loadWebCoreModelCatalog(
   projectId: string,
   invoker: () => CoreCoworkInvoker | null,
+  options: CatalogReadOptions = {},
 ): Promise<void> {
   const workspaceId = webCoreLocalId(projectId);
   if (workspaceId === null) return Promise.resolve();
-  if (projectId in useWebCoreModelCatalogStore.getState().byProject)
+  const state = useWebCoreModelCatalogStore.getState();
+  if (projectId in state.byProject || projectId in state.failed)
     return Promise.resolve();
   const inFlight = reads.get(projectId);
   if (inFlight !== undefined) return inFlight;
-  const connection = invoker();
-  if (connection === null) return Promise.resolve();
+  if (invoker() === null) return Promise.resolve();
+  const wait = options.wait ?? sleep;
   const readGeneration = generation;
-  const read: Promise<void> = connection
-    .request('core.catalog.snapshot.get', {
-      scope: { workspaceId },
-      kinds: ['model'],
-      includeUnavailable: false,
-    })
-    .then((reply) => {
-      if (!reply.ok) throw new Error(reply.error.message);
-      const parsed = CatalogSnapshotGetResultSchema.safeParse(reply.value);
-      if (!parsed.success)
-        throw new Error('The web core returned an invalid catalog.');
-      const models = new Map(
-        mapCloudChatCatalog(parsed.data.entries).models.map((model) => [
-          model.id,
-          model,
-        ]),
-      );
-      if (readGeneration !== generation) return;
-      useWebCoreModelCatalogStore.setState((state) => ({
-        byProject: { ...state.byProject, [projectId]: models },
-      }));
-    })
-    .catch((error: unknown) => {
-      reportClientAppError(error);
-    })
-    .finally(() => {
-      if (reads.get(projectId) === read) reads.delete(projectId);
-    });
+  const current = (): boolean => readGeneration === generation;
+  const read: Promise<void> = (async (): Promise<void> => {
+    for (let attempt = 0; ; attempt += 1) {
+      const connection = invoker();
+      if (connection === null || !current()) return;
+      try {
+        const models = await readCatalog(connection, workspaceId);
+        if (!current()) return;
+        useWebCoreModelCatalogStore.setState((before) => ({
+          byProject: { ...before.byProject, [projectId]: models },
+          failed: withoutKey(before.failed, projectId),
+        }));
+        return;
+      } catch (error) {
+        const backoff = RETRY_DELAYS_MS[attempt];
+        const retryable =
+          !(error instanceof CatalogReadError) || error.retryable;
+        if (retryable && backoff !== undefined) {
+          // At least as long as the web core asked, within the bound.
+          const asked =
+            error instanceof CatalogReadError ? (error.delayMs ?? 0) : 0;
+          await wait(Math.min(Math.max(backoff, asked), MAX_RETRY_DELAY_MS));
+          continue;
+        }
+        reportClientAppError(error);
+        if (!current()) return;
+        useWebCoreModelCatalogStore.setState((before) => ({
+          failed: { ...before.failed, [projectId]: true },
+        }));
+        return;
+      }
+    }
+  })().finally(() => {
+    if (reads.get(projectId) === read) reads.delete(projectId);
+  });
   reads.set(projectId, read);
   return read;
+}
+
+/** Try again on a workspace whose catalog could not be read. */
+export function retryWebCoreModelCatalog(
+  projectId: string,
+  invoker: () => CoreCoworkInvoker | null,
+  options: CatalogReadOptions = {},
+): Promise<void> {
+  useWebCoreModelCatalogStore.setState((before) => ({
+    failed: withoutKey(before.failed, projectId),
+  }));
+  return loadWebCoreModelCatalog(projectId, invoker, options);
+}
+
+function withoutKey(
+  record: Readonly<Record<string, true>>,
+  key: string,
+): Readonly<Record<string, true>> {
+  if (!(key in record)) return record;
+  return Object.fromEntries(
+    Object.entries(record).filter(([each]) => each !== key),
+  );
 }
 
 /** A web core chat's model as its workspace's catalog lists it. */
@@ -160,5 +256,5 @@ export function webCoreModelProvider(
 export function clearWebCoreModelCatalog(): void {
   generation += 1;
   reads.clear();
-  useWebCoreModelCatalogStore.setState({ byProject: {} });
+  useWebCoreModelCatalogStore.setState({ byProject: {}, failed: {} });
 }

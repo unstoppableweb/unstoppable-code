@@ -1,6 +1,11 @@
 import { z } from 'zod';
-import { createAppError, toAppError } from './create';
-import type { AppErrorHandler, AppErrorReport } from './handler';
+import type { AppErrorCode } from './catalog';
+import { createAppError } from './create';
+import type {
+  AppErrorHandler,
+  AppErrorReport,
+  AppErrorThrownType,
+} from './handler';
 import { AppErrorTimestampSchema, type AppErrorSurface } from './primitives';
 
 const ChokePointSchema = z.enum(['toast', 'notice', 'banner', 'boundary']);
@@ -12,10 +17,13 @@ export interface SurfacedErrorInput {
   identifier?: string;
   surface?: AppErrorSurface;
   text?: string;
+  /** An existing classification supported by the display call site. */
+  displayErrorCode?: AppErrorCode;
   /** Missing or uncertain sensitivity fails closed. */
   textIsSensitive?: boolean;
   /** Presence selects caught-value classification, even for null/undefined. */
   error?: unknown;
+  thrownType?: AppErrorThrownType | undefined;
 }
 
 export interface SurfacedErrorRecorderOptions {
@@ -83,17 +91,25 @@ export function createSurfacedErrorRecorder(
       const presentation =
         input.surface === undefined ? {} : { surface: input.surface };
       if (Object.prototype.hasOwnProperty.call(input, 'error')) {
-        const error = toAppError(input.error);
-        if (!error) return undefined;
-        return report(
-          error.source === undefined ? { ...error, source } : error,
-          presentation,
-        );
+        return report(input.error, {
+          ...presentation,
+          source,
+          ...(input.thrownType === undefined
+            ? {}
+            : { thrownType: input.thrownType }),
+        });
       }
 
       const text = (input.text ?? '').replace(/\s+/g, ' ').trim();
-      // Namespace keys: an empty-text source must not collide with visible text.
-      const key = text ? `text:${text}` : `source:${source}`;
+      const code = input.displayErrorCode ?? 'app.unexpected';
+      // Notices and banners can share copy across distinct operations.
+      const textSource =
+        input.chokePoint === 'notice' || input.chokePoint === 'banner'
+          ? source
+          : null;
+      const key = JSON.stringify(
+        text ? [code, 'text', textSource, text] : [code, 'source', source],
+      );
       const now = AppErrorTimestampSchema.parse(clock());
       for (const [existingKey, sighting] of sightings) {
         if (now - sighting.acceptedAt >= config.windowMs)
@@ -107,7 +123,7 @@ export function createSurfacedErrorRecorder(
       const claim = { acceptedAt: now };
       sightings.set(key, claim);
       try {
-        const error = createAppError('app.unexpected', {
+        const error = createAppError(code, {
           source,
           ...(config.recordsMessageText &&
           input.textIsSensitive === false &&

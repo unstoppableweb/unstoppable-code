@@ -1011,7 +1011,12 @@ export function persistedMessageToPortalMessage(
     ...(input.message.role === 'user' && !isRootUserTurnBoundary(input.message)
       ? { continuesTurn: true }
       : {}),
-    status: hasInFlightTimer ? 'streaming' : 'complete',
+    status:
+      input.message.cancelled === true
+        ? 'cancelled'
+        : hasInFlightTimer
+          ? 'streaming'
+          : 'complete',
     text: truncateText(text, limits.textMaxChars ?? PORTAL_CHAT_TEXT_MAX_CHARS),
     ...(parts.length > 0 ? { parts } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),

@@ -201,6 +201,7 @@ import {
   listPendingAppAdvisorAskUserQuestions,
 } from '../ipc/app-advisor';
 import { getChatQueueService } from './chat-queue-service';
+import { applyProviderSwitchToSession } from './chat-provider-sessions';
 import { projectPortalQuestionStates } from '../lib/portal-question-states';
 import { projectPortalLastTurnEnd } from '../lib/portal-turn-end';
 import { assertNotSplitLocked } from './split-lock-service';
@@ -2372,6 +2373,14 @@ function chatSummaryEntity(input: {
     description: input.tab.description,
     turnActive,
     ...(turnElapsedMs !== undefined ? { turnElapsedMs } : {}),
+    // A session that applies setters only from its next turn says so, with
+    // the running turn's settings, so a composer can show a change as pending.
+    ...(activeTurnSession?.settingApplication
+      ? { settingApplication: { ...activeTurnSession.settingApplication } }
+      : {}),
+    ...(turnActive && activeTurnSession?.turnSettings
+      ? { turnSettings: { ...activeTurnSession.turnSettings } }
+      : {}),
     ...(canonicalTurn ? { turnPhase: canonicalTurn.phase } : {}),
     ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
     ...(canonicalTurn
@@ -2411,6 +2420,14 @@ function chatSummaryEntity(input: {
             model: input.tab.model,
             opencodeReportedUsage:
               input.tab.usage?.opencodeReportedUsage ?? null,
+          },
+        }
+      : {}),
+    ...(input.tab.usage?.reportedTurnUsage !== undefined
+      ? {
+          usage: {
+            model: input.tab.model,
+            reportedTurnUsage: input.tab.usage.reportedTurnUsage,
           },
         }
       : {}),
@@ -2493,6 +2510,8 @@ function chatSummaryEntity(input: {
     availableModels: isCanopyPortalActive()
       ? buildProjectedModelCatalog(undefined, {
           cursor: true,
+          // Antigravity cannot execute App Advisor turns.
+          antigravity: surface === 'worktree',
           copilot: true,
           opencode: true,
           owner: input.owner,
@@ -3191,6 +3210,14 @@ async function sendWorktreeChatMessageNow(
     request.projectId,
     existingTab?.model ?? undefined,
     request.model ?? undefined,
+    {
+      worktreeId: request.worktreeId,
+      chatId,
+      executionHarness:
+        request.model && request.model !== existingTab?.model
+          ? getExecutionHarnessForModel(request.model)
+          : existingTab?.executionHarness,
+    },
   );
   if (sendModelPin !== undefined) {
     request = {
@@ -3905,7 +3932,22 @@ async function sendWorktreeChatMessageNow(
   // provider can change without changing harness (for example Codex to an
   // Ollama model served through the Codex harness), but its session id and
   // reconstruction metadata are still provider-owned.
-  if (switchesHarness || switchesProvider || clearStaleUnroutableTabModel) {
+  if (
+    switchesProvider &&
+    existingTab &&
+    existingProviderType !== undefined &&
+    requestedProviderType !== undefined
+  ) {
+    // Parked, never deleted: switching back can resume it (CAN-6445).
+    // This send drops the caller's session id below, so it only parks.
+    applyProviderSwitchToSession(
+      existingTab,
+      selectedTab,
+      existingProviderType,
+      requestedProviderType,
+      { resume: false },
+    );
+  } else if (switchesHarness || clearStaleUnroutableTabModel) {
     delete selectedTab.sdkSessionId;
     delete selectedTab.claudeForkSessionOnNextSend;
     delete selectedTab.codexReconstructionSeedId;

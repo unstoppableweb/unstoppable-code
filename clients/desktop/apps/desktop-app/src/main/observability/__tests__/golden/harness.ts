@@ -40,6 +40,7 @@ export interface GoldenChatTurnStart {
   planMode: boolean;
   isStandalone: boolean;
   model?: string;
+  requestedModel?: string;
   sdkSessionId?: string;
   userMessageId?: string;
   assistantMode?: AssistantMode;

@@ -39,9 +39,32 @@ import {
 } from '@canopy/execution-engine/types/pipeline';
 import {
   readPipelineLocalMetadata,
+  setUserPipelineAgentAuthor,
+  setUserPipelineNativeGrant,
   setUserPipelineOwnerAutomation,
 } from '../../pipelines/pipeline-local-metadata-store';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import {
+  IPC_CHANNELS,
+  type ScheduledActivity,
+} from '@canopy/desktop-shared/types';
+import {
+  scheduledUserPipelineId,
+  inheritedInstallOwner,
+  scheduleInstall,
+  targetsAgentHiddenPipeline,
+} from '../../automations/workflow-schedules';
+import {
+  nativeGrantContentHash,
+  resolvePipelineNativeGrant,
+} from '../../automations/chat-automation-native-grant';
+import { getAutomationsService } from '../../automations/service';
+import { getStoredPipelineBySource } from '../../pipelines/pipeline-service';
+import {
+  findCapabilityPackageInstallByOwner,
+  upsertCapabilityPackageInstall,
+} from '../../pipelines/pipeline-package-install-store';
+import { getPipelinePackageInstallStorePath } from '../../lib/paths';
+import * as advisorAccess from '../../lib/app-advisor-project-agent-access';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import {
@@ -1324,7 +1347,7 @@ describe('workflow schedules (CAN-5782)', () => {
     });
   });
 
-  it('keeps a pipeline its other schedules run and refuses a second Orchestrator schedule', async () => {
+  it('keeps a pipeline its other schedules run and hides every Orchestrator schedule', async () => {
     const pipelineId = await savedId();
     const orchestratorId = await savedId();
     try {
@@ -1349,14 +1372,82 @@ describe('workflow schedules (CAN-5782)', () => {
         ),
       );
       setUserPipelineOwnerAutomation(orchestratorId, orchestratorOwner);
-      expect({
-        created: [owner, second, orchestratorOwner].every(Boolean),
-        sharedPage: await workflowPage(pipelineId),
-        orchestratorPage: await workflowPage(orchestratorId),
-        orchestratorSecond: await invokeIpc(
+      // CAN-6065: an Orchestrator workflow takes a second schedule too.
+      const orchestratorSecond = createdId(
+        await invokeIpc(
           IPC_CHANNELS.automationsCreate,
           schedule(orchestratorId, { bot_id: 'app_advisor', prompt: 'Hi' }),
         ),
+      );
+      const orchestratorHidden = (): boolean =>
+        readPipelineLocalMetadata({
+          type: 'stored',
+          source: 'user',
+          value: orchestratorId,
+        }).agentHidden === true;
+      const secondRecord = async (): Promise<ScheduledActivity | null> => {
+        const listed = (await invokeIpc(IPC_CHANNELS.automationsList)) as {
+          activities?: ScheduledActivity[];
+        };
+        return (
+          (listed.activities ?? []).find(
+            (activity) => activity.id === orchestratorSecond,
+          ) ?? null
+        );
+      };
+      // Hidden from agents through the pipeline, not one owner record.
+      const secondHidden = async (): Promise<boolean> => {
+        const record = await secondRecord();
+        return record !== null && targetsAgentHiddenPipeline(record);
+      };
+      // An agent denied the Orchestrator can't add a schedule to it by id.
+      const deniedAgentSchedule = async (): Promise<unknown> => {
+        const denied = jest
+          .spyOn(advisorAccess, 'decideAppAdvisorAccessForCaller')
+          .mockResolvedValue({
+            allowed: false,
+            reason: 'advisor_access_disabled',
+          });
+        try {
+          const scheduled = schedule(orchestratorId, {
+            bot_id: 'app_advisor',
+            prompt: 'Hi',
+          });
+          const response = await dispatchAgentAction(
+            {
+              type: 'automation.create',
+              input: {
+                name: scheduled.name,
+                schedule: scheduled.schedule,
+                action: scheduled.action,
+                enabled: false,
+              },
+            },
+            goldenWorktreeActionRuntime(world.worktreePath),
+          );
+          return world.normalize(response);
+        } finally {
+          denied.mockRestore();
+        }
+      };
+      expect({
+        created: [owner, second, orchestratorOwner, orchestratorSecond].every(
+          Boolean,
+        ),
+        sharedPage: await workflowPage(pipelineId),
+        orchestratorPage: await workflowPage(orchestratorId),
+        orchestratorHidden: orchestratorHidden(),
+        orchestratorSecondHidden: await secondHidden(),
+        deniedAgentSchedule: await deniedAgentSchedule(),
+        schedulesAfterAgent: (
+          (
+            (await invokeIpc(IPC_CHANNELS.automationsList)) as {
+              activities?: ScheduledActivity[];
+            }
+          ).activities ?? []
+        ).filter(
+          (activity) => scheduledUserPipelineId(activity) === orchestratorId,
+        ).length,
         // Deleting the owner keeps the pipeline its other schedule runs.
         ownerDeleted: (
           (await invokeIpc(IPC_CHANNELS.automationsDelete, {
@@ -1379,21 +1470,42 @@ describe('workflow schedules (CAN-5782)', () => {
         ).ok,
         keptAfterLast: getStoredPipeline(pipelineId).success,
         emptyPage: await workflowPage(pipelineId),
-        // Without keepPipeline, the last schedule takes its pipeline along.
-        orchestratorDeleted: (
+        // Deleting the Orchestrator owner keeps every schedule left hidden.
+        orchestratorOwnerDeleted: (
           (await invokeIpc(IPC_CHANNELS.automationsDelete, {
             id: orchestratorOwner,
+          })) as { ok?: unknown }
+        ).ok,
+        orchestratorKeptAfterOwner: getStoredPipeline(orchestratorId).success,
+        orchestratorHiddenAfterOwner: orchestratorHidden(),
+        orchestratorSecondHiddenAfterOwner: await secondHidden(),
+        // Delete on the workflow takes the pipeline along.
+        orchestratorDeleted: (
+          (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+            id: orchestratorSecond,
+            workflow: true,
           })) as { ok?: unknown }
         ).ok,
         orchestratorKept: getStoredPipeline(orchestratorId).success,
       }).toEqual({
         created: true,
         sharedPage: {},
-        orchestratorPage: { singleSchedule: { reason: 'orchestrator_prompt' } },
-        orchestratorSecond: {
-          ok: false,
-          error: 'Orchestrator workflows can have one schedule.',
+        orchestratorPage: {},
+        orchestratorHidden: true,
+        orchestratorSecondHidden: true,
+        deniedAgentSchedule: {
+          isError: true,
+          result: {
+            requestId: '',
+            ok: false,
+            error: {
+              code: 'not_found',
+              message: 'Pipeline <uuid> was not found.',
+              retryable: false,
+            },
+          },
         },
+        schedulesAfterAgent: 2,
         ownerDeleted: true,
         keptAfterOwner: true,
         markerAfterOwner: null,
@@ -1405,11 +1517,325 @@ describe('workflow schedules (CAN-5782)', () => {
             target: { kind: 'global' },
           },
         },
+        orchestratorOwnerDeleted: true,
+        orchestratorKeptAfterOwner: true,
+        orchestratorHiddenAfterOwner: true,
+        orchestratorSecondHiddenAfterOwner: true,
         orchestratorDeleted: true,
         orchestratorKept: false,
       });
     } finally {
       for (const id of [pipelineId, orchestratorId])
+        if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
+  });
+
+  it('lets an agent-created and an installed workflow take more schedules, run each as the first, and keep them on Remove', async () => {
+    const grantedId = await savedId();
+    const installedId = await savedId();
+    const author = {
+      chat: {
+        projectId: 'golden-agent-project',
+        worktreeId: 'golden-agent-worktree',
+        chatId: 'golden-agent-chat',
+      },
+      recordedAt: '2026-11-09T00:00:00.000Z',
+    };
+    const metadata = (
+      pipelineId: string,
+    ): ReturnType<typeof readPipelineLocalMetadata> =>
+      readPipelineLocalMetadata({
+        type: 'stored',
+        source: 'user',
+        value: pipelineId,
+      });
+    const listedSchedules = async (
+      pipelineId: string,
+    ): Promise<ScheduledActivity[]> =>
+      (
+        (
+          (await invokeIpc(IPC_CHANNELS.automationsList)) as {
+            activities?: ScheduledActivity[];
+          }
+        ).activities ?? []
+      ).filter((activity) => scheduledUserPipelineId(activity) === pipelineId);
+    // The grant a top-level run of the stored definition, started by
+    // `automationId`, would get; only the executed snapshot is stood in.
+    const granted = async (automationId: string): Promise<boolean> =>
+      (await resolvePipelineNativeGrant(
+        {
+          executionId: 'golden-granted-run',
+          pipelineId: grantedId,
+          agentOrigin: author.chat,
+          initiator: {
+            kind: 'automation',
+            automationId,
+            automationName: 'Golden schedule',
+          },
+        },
+        {
+          execution: () =>
+            Promise.resolve({ pipelineId: grantedId, snapshot: 'stored' }),
+          normalize: () => 'stored',
+        },
+      )) !== undefined;
+    const agentCreate = async (pipelineId: string): Promise<unknown> => {
+      const scheduled = schedule(pipelineId, { topic: 'agent' });
+      return world.normalize(
+        await dispatchAgentAction(
+          {
+            type: 'automation.create',
+            input: {
+              name: scheduled.name,
+              schedule: scheduled.schedule,
+              action: scheduled.action,
+              enabled: false,
+            },
+          },
+          goldenWorktreeActionRuntime(world.worktreePath),
+        ),
+      );
+    };
+    const deleted = async (
+      id: string,
+      keepPipeline?: true,
+    ): Promise<unknown> => {
+      const response = (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+        id,
+        ...(keepPipeline ? { keepPipeline } : {}),
+      })) as { ok?: unknown; error?: unknown };
+      return response.ok === true ? true : response.error;
+    };
+    const agentRefused = {
+      isError: true,
+      result: {
+        requestId: '',
+        ok: false,
+        error: {
+          code: 'validation_failed',
+          message:
+            "Agents can't add schedules to a workflow someone installed or another agent created.",
+          retryable: false,
+        },
+      },
+    };
+    const digest = `pp:v1:${'a'.repeat(43)}`;
+    const installOf = async (automationId: string): Promise<unknown> =>
+      (
+        await findCapabilityPackageInstallByOwner(
+          getPipelinePackageInstallStorePath(),
+          { kind: 'automation', localAutomationId: automationId },
+        )
+      )?.packageDigest ?? null;
+    try {
+      // An agent's converted automation: its grant is bound to the
+      // pipeline's revision and content as stored.
+      const agentOwner = await getAutomationsService().create(
+        {
+          name: 'Golden schedule',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * 1-5',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: grantedId,
+            pipelineSource: 'user',
+            pipelineName: 'Golden workflow page',
+            inputs: { topic: 'first' },
+          },
+          enabled: false,
+          executionContext: 'personal',
+        },
+        { agentAuthor: author },
+      );
+      const grantedOwner = agentOwner.ok ? (agentOwner.activity?.id ?? '') : '';
+      setUserPipelineOwnerAutomation(grantedId, grantedOwner);
+      setUserPipelineAgentAuthor(grantedId, author);
+      const stored = getStoredPipelineBySource('user', grantedId);
+      setUserPipelineNativeGrant(grantedId, {
+        automationId: grantedOwner,
+        pipelineRevision: stored.data?.info.revision ?? 0,
+        contentHash: nativeGrantContentHash(stored.data?.content),
+        model: 'golden-model',
+      });
+      const grantedSecond = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(grantedId, { topic: 'second' }),
+        ),
+      );
+
+      // An installed automation's converted workflow, with its package.
+      const installedOwner = createdId(
+        await invokeIpc(IPC_CHANNELS.automationsCreate, {
+          ...schedule(installedId, { topic: 'first' }),
+          installedFrom: {
+            remoteId: 'golden-installed-workflow',
+            contentHash: 'c'.repeat(64),
+            installedAt: '2026-11-09T00:00:00.000Z',
+            sourceKind: 'curated',
+            capabilityPackage: { version: 1, digest },
+          },
+        }),
+      );
+      setUserPipelineOwnerAutomation(installedId, installedOwner);
+      await upsertCapabilityPackageInstall(
+        getPipelinePackageInstallStorePath(),
+        {
+          owner: { kind: 'automation', localAutomationId: installedOwner },
+          pipelineContentHash: 'b'.repeat(64),
+          packageDigest: digest,
+          installedAt: '2026-11-09T00:00:00.000Z',
+        },
+      );
+      // An action with no `pipelineSource` runs the stored pipeline too.
+      const unsourced = schedule(installedId, { topic: 'second' });
+      const installedSecond = createdId(
+        await invokeIpc(IPC_CHANNELS.automationsCreate, {
+          ...unsourced,
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: installedId,
+            pipelineName: 'Golden workflow page',
+            inputs: { topic: 'second' },
+          },
+        }),
+      );
+      const secondInstall = async (): Promise<unknown> => {
+        const all = await getAutomationsService().allActivities();
+        const second = all.find((activity) => activity.id === installedSecond);
+        const install =
+          second === undefined ? undefined : scheduleInstall(all, second);
+        // Whose install a background run of it is also authorized as.
+        const authorizedAs =
+          second === undefined
+            ? undefined
+            : inheritedInstallOwner(all, second)?.id;
+        return install === undefined
+          ? null
+          : {
+              holder:
+                install.holder.id === installedOwner
+                  ? 'owner'
+                  : install.holder.id === installedSecond
+                    ? 'second'
+                    : 'other',
+              digest: install.required.digest,
+              authorizedAsOwner: authorizedAs === installedOwner,
+            };
+      };
+
+      expect({
+        created: [
+          grantedOwner,
+          grantedSecond,
+          installedOwner,
+          installedSecond,
+        ].every(Boolean),
+        grantedPage: await workflowPage(grantedId),
+        installedPage: await workflowPage(installedId),
+        // Every schedule runs with the grant and the install.
+        grantedOwnerRun: await granted(grantedOwner),
+        grantedSecondRun: await granted(grantedSecond),
+        installedSecondRunsWith: await secondInstall(),
+        // Another agent takes neither.
+        otherAgentOnGranted: await agentCreate(grantedId),
+        otherAgentOnInstalled: await agentCreate(installedId),
+        grantedSchedulesAfterAgent: (await listedSchedules(grantedId)).length,
+        installedSchedulesAfterAgent: (await listedSchedules(installedId))
+          .length,
+        // Removing the first schedule drops neither.
+        grantedOwnerDeleted: await deleted(grantedOwner),
+        grantedSecondRunAfterOwner: await granted(grantedSecond),
+        installedOwnerDeleted: await deleted(installedOwner),
+        installedOwnerAfter:
+          metadata(installedId).ownerAutomationId === installedSecond
+            ? 'second'
+            : (metadata(installedId).ownerAutomationId ?? null),
+        installedSecondInstalledFrom:
+          (await listedSchedules(installedId))[0]?.installedFrom?.remoteId ??
+          null,
+        // It names its source, so its own removal can hand the install on.
+        installedSecondSource: await (async (): Promise<unknown> => {
+          const second = (await getAutomationsService().allActivities()).find(
+            (activity) => activity.id === installedSecond,
+          );
+          return second?.action.type === 'worktree_pipeline'
+            ? (second.action.pipelineSource ?? null)
+            : null;
+        })(),
+        installedSecondPackage: await installOf(installedSecond),
+        installedOwnerPackage: await installOf(installedOwner),
+        installedSecondRunsWithAfterOwner: await secondInstall(),
+        // The last schedule's Remove keeps a granted workflow, and refuses to
+        // keep an installed one, whose page deletes it instead.
+        grantedLastDeleted: await deleted(grantedSecond, true),
+        grantedKept: getStoredPipeline(grantedId).success,
+        grantedEmptyPage: await workflowPage(grantedId),
+        installedLastKept: await deleted(installedSecond, true),
+        // What the page's Delete sends instead: the workflow, with its last
+        // schedule and that schedule's install.
+        installedWorkflowDeleted: (
+          (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+            id: installedSecond,
+            workflow: true,
+          })) as { ok?: unknown }
+        ).ok,
+        installedSchedulesAfterDelete: (
+          await getAutomationsService().allActivities()
+        ).filter((activity) => activity.id === installedSecond).length,
+        installedPackageAfterDelete: await installOf(installedSecond),
+        installedPipelineAfterDelete: getStoredPipeline(installedId).success,
+      }).toEqual({
+        created: true,
+        grantedPage: { agentGranted: true },
+        installedPage: {},
+        grantedOwnerRun: true,
+        grantedSecondRun: true,
+        installedSecondRunsWith: {
+          holder: 'owner',
+          digest,
+          authorizedAsOwner: true,
+        },
+        otherAgentOnGranted: agentRefused,
+        otherAgentOnInstalled: agentRefused,
+        grantedSchedulesAfterAgent: 2,
+        installedSchedulesAfterAgent: 2,
+        grantedOwnerDeleted: true,
+        grantedSecondRunAfterOwner: true,
+        installedOwnerDeleted: true,
+        installedOwnerAfter: 'second',
+        installedSecondSource: 'user',
+        installedSecondInstalledFrom: 'golden-installed-workflow',
+        installedSecondPackage: digest,
+        installedOwnerPackage: null,
+        installedSecondRunsWithAfterOwner: {
+          holder: 'second',
+          digest,
+          authorizedAsOwner: false,
+        },
+        grantedLastDeleted: true,
+        grantedKept: true,
+        grantedEmptyPage: {
+          agentGranted: true,
+          lastScheduleValues: {
+            inputs: { topic: 'second' },
+            target: { kind: 'global' },
+          },
+        },
+        installedLastKept:
+          "This workflow can't stay without its schedule. Delete the workflow instead.",
+        installedWorkflowDeleted: true,
+        installedSchedulesAfterDelete: 0,
+        installedPackageAfterDelete: null,
+        installedPipelineAfterDelete: false,
+      });
+    } finally {
+      for (const id of [grantedId, installedId])
         if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
     }
   });

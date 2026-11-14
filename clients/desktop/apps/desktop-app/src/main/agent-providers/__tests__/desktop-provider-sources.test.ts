@@ -31,6 +31,9 @@ jest.mock('../../cursor/runtime-availability', () => ({
   isCursorRuntimeAvailable: jest.fn(() => Promise.resolve(true)),
   peekCursorRuntimeAvailability: jest.fn(() => true),
 }));
+jest.mock('../../antigravity/feature-flag', () => ({
+  isAntigravityHarnessEnabled: jest.fn(() => true),
+}));
 jest.mock('../../cursor/feature-flag', () => ({
   isCursorHarnessEnabled: jest.fn(() => true),
 }));
@@ -193,6 +196,7 @@ it("a workspace's own credential counts for Claude and Codex", async () => {
 
 it('a platform without the runtime artifact omits Cursor, Copilot and OpenCode', async () => {
   expect(await desktopProviderSources.supported()).toEqual({
+    antigravity: process.platform === 'darwin',
     claude: true,
     codex: true,
     ollama: true,
@@ -218,6 +222,7 @@ it('a platform without the runtime artifact omits Cursor, Copilot and OpenCode',
       .requireMock<Record<string, jest.Mock>>(path)
       [name]?.mockReturnValueOnce(undefined);
   expect(await desktopProviderSources.supported()).toEqual({
+    antigravity: process.platform === 'darwin',
     claude: true,
     codex: true,
     ollama: true,

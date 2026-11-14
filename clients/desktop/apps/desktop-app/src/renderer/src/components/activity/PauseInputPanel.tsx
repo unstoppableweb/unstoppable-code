@@ -368,7 +368,11 @@ export function PauseInputPanel({
             ) : null}
           </Stack>
           {serverError ? (
-            <ErrorBanner error={serverError} className="" />
+            <ErrorBanner
+              errorSource="pause-input-panel-server"
+              error={serverError}
+              className=""
+            />
           ) : null}
         </Stack>
         <div className="flex items-center gap-2">

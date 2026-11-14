@@ -10,6 +10,7 @@ import { queuedMessageForceKind } from '@canopy/ui-shared/lib/queued-message-for
 import {
   reconcilePendingQueueMessages,
   restoreDispatchedQueueRow,
+  withdrawQueuedSends,
 } from './optimistic-presentation';
 import type { LocalTurnActivity } from './turn-activity';
 import type { ChatTab, QueuedChatMessage } from './types';
@@ -217,7 +218,10 @@ export function attachHostQueueMirror(
   return tabs.map((tab) => {
     const mirrored = queuedByChatId.get(tab.id);
     if (!mirrored || mirrored.length === 0) return tab;
-    tab = restoreDispatchedQueueRow(tab, mirrored);
+    tab = withdrawQueuedSends(
+      restoreDispatchedQueueRow(tab, mirrored),
+      mirrored,
+    );
     // Preserve renderer-local rows (hook placeholders, git-pending) that main
     // does not own, then append the host-owned mirror rows.
     const localRows = tab.queuedMessages.filter(

@@ -16,6 +16,7 @@ import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway
 import { CANOPY_DELEGATION_EVENT_TYPE } from '@canopy/protocol/delegation';
 import { claudeSessionWritesLostMessage } from './claude-session-writes-lost';
 import { parseCursorReportedUsage } from './cursor-usage';
+import { parseAntigravityTurnUsage } from './antigravity-usage';
 import { LAYOUT_BLOCK_TYPES } from './transcript-fingerprint';
 import { applyAssistantPatches } from './assistant-snapshot';
 import { normalizeCodexNeutralItem } from './codex-neutral-item';
@@ -1807,6 +1808,21 @@ export function applyClaudeTranscriptEvent(
   data: Record<string, unknown>,
   options: TranscriptReducerOptions,
 ): TranscriptReducerState {
+  const provider = data.provider;
+  if (
+    state.usage?.reportedTurnUsage !== undefined &&
+    (provider === 'claude' ||
+      provider === 'codex' ||
+      provider === 'cursor' ||
+      provider === 'copilot' ||
+      provider === 'opencode' ||
+      provider === 'ollama')
+  ) {
+    state = {
+      ...state,
+      usage: { ...state.usage, reportedTurnUsage: undefined },
+    };
+  }
   const next = reduceClaudeTranscriptEvent(state, data, options);
   return options.rootTurnMode === 'canonical-content-only'
     ? keepCanonicalRootTurn(state, next)
@@ -1818,6 +1834,22 @@ function reduceClaudeTranscriptEvent(
   data: Record<string, unknown>,
   options: TranscriptReducerOptions,
 ): TranscriptReducerState {
+  if (
+    data.type === 'canopy_turn_usage' &&
+    data.provider === 'antigravity' &&
+    data.usage === null
+  ) {
+    return {
+      ...state,
+      providerType: 'antigravity',
+      usage: {
+        ...defaultUsage(),
+        contextWindow: 0,
+        model: state.usage?.model ?? state.model ?? '',
+        reportedTurnUsage: null,
+      },
+    };
+  }
   if (data.type === CHILD_TOOLS_ENDED_EVENT_TYPE)
     return applyChildToolsEndedEvent(state, data, options);
   if (data.type === CANOPY_DELEGATION_EVENT_TYPE)
@@ -1854,6 +1886,7 @@ function reduceClaudeTranscriptEvent(
     data.type === 'canopy_assistant_patch' &&
     (data.provider === 'cursor' ||
       data.provider === 'copilot' ||
+      data.provider === 'antigravity' ||
       data.provider === 'opencode')
   ) {
     const previous = state.messages.find(
@@ -1946,6 +1979,7 @@ function reduceClaudeTranscriptEvent(
         provider === 'codex' ||
         provider === 'cursor' ||
         provider === 'copilot' ||
+        provider === 'antigravity' ||
         provider === 'opencode'
           ? provider
           : state.providerType,
@@ -3037,8 +3071,12 @@ function handleClaudeResultEvent(
 ): TranscriptReducerState {
   const usage = isRecord(data.usage) ? data.usage : undefined;
   const previous = state.usage ?? defaultUsage();
+  // Antigravity usage is a per-turn measurement, not a model-selection event.
+  // Its retained model may predate the user's next-turn selection.
   const rawDetectedModel =
-    typeof previous.model === 'string' && previous.model.length > 0
+    data.provider !== 'antigravity' &&
+    typeof previous.model === 'string' &&
+    previous.model.length > 0
       ? previous.model
       : undefined;
   const detectedModel = rawDetectedModel
@@ -3293,6 +3331,16 @@ function handleClaudeResultEvent(
         modelUsage && typeof modelUsage.maxOutputTokens === 'number'
           ? modelUsage.maxOutputTokens
           : previous.maxOutputTokens,
+      // ACP reports are per prompt. Never inherit an earlier turn's counters
+      // or use the cumulative fields to represent missing measurements.
+      ...(data.provider === 'antigravity'
+        ? {
+            ...defaultUsage(),
+            contextWindow: 0,
+            model: previous.model,
+            reportedTurnUsage: parseAntigravityTurnUsage(data.usage),
+          }
+        : {}),
     },
     ...(usageLimitBanner
       ? { llmProviderUsageLimitBanner: usageLimitBanner }
@@ -5223,6 +5271,12 @@ export function applyCodexTranscriptEvent(
   event: Record<string, unknown>,
   options: TranscriptReducerOptions,
 ): TranscriptReducerState {
+  if (state.usage?.reportedTurnUsage !== undefined) {
+    state = {
+      ...state,
+      usage: { ...state.usage, reportedTurnUsage: undefined },
+    };
+  }
   const next = reduceCodexTranscriptEvent(state, event, options);
   return options.rootTurnMode === 'canonical-content-only'
     ? keepCanonicalRootTurn(state, next)
@@ -5304,6 +5358,7 @@ function reduceCodexTranscriptEvent(
         provider === 'codex' ||
         provider === 'cursor' ||
         provider === 'copilot' ||
+        provider === 'antigravity' ||
         provider === 'opencode'
           ? provider
           : state.providerType,
@@ -5464,6 +5519,7 @@ export function parseAgentTranscriptLines(
     if (
       parsed.provider === 'cursor' ||
       parsed.provider === 'copilot' ||
+      parsed.provider === 'antigravity' ||
       parsed.provider === 'opencode'
     ) {
       detectedProvider = parsed.provider;
@@ -5506,6 +5562,7 @@ export function parseAgentTranscriptLines(
           provider === 'codex' ||
           provider === 'cursor' ||
           provider === 'copilot' ||
+          provider === 'antigravity' ||
           provider === 'opencode'
         ) {
           detectedProvider = detectedProvider ?? provider;
@@ -5518,6 +5575,7 @@ export function parseAgentTranscriptLines(
           provider === 'codex' ||
           provider === 'cursor' ||
           provider === 'copilot' ||
+          provider === 'antigravity' ||
           provider === 'opencode'
         ) {
           detectedProvider = detectedProvider ?? provider;

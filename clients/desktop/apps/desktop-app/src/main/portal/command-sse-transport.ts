@@ -11,6 +11,10 @@
 // isolation without Electron or a live server.
 // ---------------------------------------------------------------------------
 
+// At most one bounded chunk of complete frames waits behind a handler.
+const SSE_READ_AHEAD_MAX_FRAMES = 64;
+const SSE_READ_AHEAD_MAX_BYTES = 8 * 1024 * 1024;
+
 /** A parsed SSE frame (`id:` / `event:` / joined `data:` lines). */
 export interface SseFrame {
   id: string | null;
@@ -24,10 +28,10 @@ export interface SseFrame {
  * lines (`: keepalive`) and blank lines are ignored per the SSE spec, including
  * the single optional leading space after each field colon.
  */
-export function parseSseFrames(buffer: string): {
+function parseSseFrames(buffer: string): {
   frames: SseFrame[];
   remainder: string;
-} {
+} | null {
   const frames: SseFrame[] = [];
   // Normalize CRLF → LF so `\r\n\r\n` frame separators are handled uniformly.
   // Our payloads are JSON (raw CR/LF are escaped), so this never corrupts data.
@@ -66,6 +70,7 @@ export function parseSseFrames(buffer: string): {
     }
 
     if (dataLines.length > 0 || event !== null || id !== null) {
+      if (frames.length === SSE_READ_AHEAD_MAX_FRAMES) return null;
       frames.push({ id, event, data: dataLines.join('\n') });
     }
   }
@@ -212,44 +217,38 @@ async function consumeStream(
 
   armWatchdog();
   try {
-    for (;;) {
-      if (deps.isAborted()) {
-        await cancelReader(reader);
-        return 'stopped';
-      }
+    while (!deps.isAborted()) {
       const { value, done } = await reader.read();
-      if (done) {
-        return 'ended';
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const { frames, remainder } = parseSseFrames(buffer);
-      buffer = remainder;
-      if (frames.length > 0) {
-        resetWatchdog();
-      }
-
-      for (const frame of frames) {
+      // Bound the partial frame as well as a read containing multiple frames.
+      // HTTP polling resumes from the last applied cursor if either cap is hit.
+      if (
+        value &&
+        value.byteLength + Buffer.byteLength(buffer) > SSE_READ_AHEAD_MAX_BYTES
+      )
+        return 'fallback';
+      buffer += decoder.decode(value, { stream: !done });
+      const parsed = parseSseFrames(buffer);
+      if (!parsed) return 'fallback';
+      buffer = parsed.remainder;
+      if (parsed.frames.length > 0) resetWatchdog();
+      for (const frame of parsed.frames) {
+        if (deps.isAborted()) return 'stopped';
         if (frame.event === 'poll') {
           const outcome = await deps.onPollFrame(frame.data);
-          // Applying the frame advances/persists the command cursor. A frame is
-          // not delivered merely because its bytes arrived: an apply failure
-          // must consume the reconnect failure budget and back off.
           markDelivered();
-          if (outcome === 'stopped' || deps.isAborted()) {
-            await cancelReader(reader);
-            return 'stopped';
-          }
+          if (outcome === 'stopped') return 'stopped';
         } else if (frame.event === 'error') {
-          const kind = deps.classifyErrorFrame(frame.data);
-          await cancelReader(reader);
-          // A terminal error (auth/not-found) falls back to long-poll, which
-          // owns the stop decision; a transient one just reconnects.
-          return kind === 'terminal' ? 'fallback' : 'ended';
+          return deps.classifyErrorFrame(frame.data) === 'terminal'
+            ? 'fallback'
+            : 'ended';
         }
       }
+      if (done) return 'ended';
     }
+    return 'stopped';
   } finally {
     cancelWatchdog();
+    await cancelReader(reader);
     try {
       reader.releaseLock();
     } catch {

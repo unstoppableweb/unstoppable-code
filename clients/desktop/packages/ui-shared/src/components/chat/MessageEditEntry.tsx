@@ -299,6 +299,7 @@ export function MessageEditNotice({
 }: MessageEditNoticeProps): JSX.Element {
   return (
     <Notice
+      errorSource="message-edit-notice"
       intent="destructive"
       data-testid="message-edit-notice"
       onDismiss={onDismiss}

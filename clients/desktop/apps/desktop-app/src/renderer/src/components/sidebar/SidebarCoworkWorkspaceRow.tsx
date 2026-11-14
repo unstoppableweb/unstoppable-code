@@ -385,8 +385,9 @@ function SidebarWorkEntryUnreadPreview({
 
 /**
  * A Work Entry's menu surface: the shared `FloatingMenu` under the ••• button
- * or, for a right-click, at the pointer. Opening leaves focus on the trigger,
- * as every desktop row menu does; the arrow keys move into the rows.
+ * or, for a right-click, at the pointer. A pointer open leaves focus on the
+ * trigger, as every desktop row menu does; a keyboard open (Context Menu or
+ * Shift+F10) focuses the first item so the arrow keys and Enter operate it.
  */
 function SidebarWorkEntryMenuSurface({
   menu,
@@ -418,10 +419,12 @@ function SidebarWorkEntryMenuSurface({
         {...(point !== null
           ? { anchorPoint: point, closeOnWindowChange: true }
           : {})}
-        returnFocusRef={menu.anchorRef}
+        returnFocusRef={menu.returnFocusRef}
         placement="bottom-left"
         interaction="menu"
-        focusOnOpen={false}
+        // Keyboard opens take focus so arrow keys and Enter operate the menu;
+        // pointer opens leave focus where it was.
+        focusOnOpen={menu.openedFromKeyboard}
         motion="none"
         // Sized to the widest label instead of a fixed w-40, which wrapped
         // longer actions such as "Invite a teammate" onto a second line
@@ -1783,7 +1786,7 @@ function SidebarCoworkWorkspaceRowImpl({
       commands={groupCommands}
       unitLabel={unitLabel}
       rowGap="hairline"
-      itemGap={compactDisclosure ? 'hairline' : undefined}
+      itemGap="hairline"
       // A drag of a selected entry carries the whole selection.
       selectionCount={workEntryMultiSelect?.selection.count}
       isItemSelected={
@@ -1981,7 +1984,7 @@ function SidebarCoworkWorkspaceRowImpl({
             put them while extending the hit area to the row edge. */}
         <div
           data-workspace-header-actions="true"
-          className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 pr-1 group-hover/sidebar-item:pointer-events-auto group-focus-within/sidebar-item:pointer-events-auto"
+          className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 pr-0.5 group-hover/sidebar-item:pointer-events-auto group-focus-within/sidebar-item:pointer-events-auto"
         >
           <RailIconButton
             icon={SettingsIcon}

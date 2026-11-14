@@ -109,7 +109,7 @@ function dedupeById(messages: PersistedChatMessage[]): PersistedChatMessage[] {
   return out;
 }
 
-function firstUserText(messages: PersistedChatMessage[]): string | null {
+export function firstUserText(messages: PersistedChatMessage[]): string | null {
   for (const message of messages) {
     if (message.role !== 'user') continue;
     for (const block of message.blocks) {
@@ -181,6 +181,36 @@ async function extractAttachments(
     attachmentPaths,
     hadAttachments: attachmentPaths.length > 0 || event !== record,
   };
+}
+
+/**
+ * Writes one inline base64 payload into `attachmentsDir` through the same
+ * extractor the Claude path uses, so every imported attachment is named and
+ * deduplicated the same way. Returns the written path, or `null` (with a
+ * warning) when it could not be written.
+ */
+export async function writeInlineAttachment(
+  mediaType: string,
+  base64: string,
+  attachmentsDir: string,
+  warnings: string[],
+): Promise<string | null> {
+  const event = {
+    message: {
+      content: [
+        {
+          type: mediaType.startsWith('image/') ? 'image' : 'document',
+          source: { type: 'base64', media_type: mediaType, data: base64 },
+        },
+      ],
+    },
+  };
+  const { attachmentPaths } = await extractClaudeTranscriptEventAttachments(
+    event,
+    attachmentsDir,
+    warnings,
+  );
+  return attachmentPaths[0] ?? null;
 }
 
 // Without an attachments directory a text-free image turn still projects as
@@ -269,7 +299,8 @@ function recordTimestamp(
   return fallback;
 }
 
-function messageId(seed: string, index: number): string {
+/** Stable message id for the `index`th message projected from `seed`. */
+export function messageId(seed: string, index: number): string {
   return createHash('sha256')
     .update(`${seed}\n${index}`)
     .digest('hex')

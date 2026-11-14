@@ -9,6 +9,11 @@
   },
   "packageManager": "pnpm@12.11.2",
   "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.22.1",
+      "onFail": "error"
+    },
     "packageManager": {
       "name": "pnpm",
       "version": "12.11.2",
@@ -96,7 +101,7 @@
     "@types/js-yaml": "^4.0.9",
     "builder-util-runtime": "9.5.1",
     "colorjs.io": "^0.6.1",
-    "electron": "^45.2.2",
+    "electron": "^45.3.0",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.25.12",
     "micromark": "^4.0.2",

@@ -17,10 +17,12 @@
     "./internal-migration-filesystem": "./src/internal-migration-filesystem.ts",
     "./directory-flush": "./src/directory-flush.ts",
     "./windows-shells": "./src/windows-shells.ts",
+    "./w5-root-presence": "./src/w5-root-presence.ts",
     "./w5-process-file-lock": "./src/w5-process-file-lock.ts",
     "./w5-confined-read": "./src/w5-confined-read.ts",
     "./codex-mcp-launcher": "./src/codex-mcp-launcher/index.ts",
-    "./execution-host/*": "./src/execution-host/*.ts"
+    "./execution-host/*": "./src/execution-host/*.ts",
+    "./w5-maintenance-exclusion": "./src/w5-maintenance-exclusion.ts"
   },
   "dependencies": {
     "@canopy/core-runtime": "workspace:*"

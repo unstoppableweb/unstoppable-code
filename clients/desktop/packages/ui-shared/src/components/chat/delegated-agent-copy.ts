@@ -233,14 +233,18 @@ export function delegatedAgentCapabilityCountsLabel(
 }
 
 /**
- * Optional detail under `Queued`: `App limit reached`, `Up next`, or
- * `N task(s) ahead`. Undefined when the snapshot carries no live fields.
+ * Optional detail under `Queued`: `App limit reached`, `Waiting for a slot`,
+ * `Up next`, or `N task(s) ahead`. Undefined when the snapshot carries no
+ * live fields.
  */
 export function delegatedAgentQueueDetail(
   queue: AgentDelegationQueueState | undefined,
 ): string | undefined {
   if (!queue) return undefined;
   if (queue.waitingFor === 'app') return 'App limit reached';
+  // A cloud delegate whose machine has no free turn slot yet: it starts when
+  // one frees up, so no position is shown.
+  if (queue.waitingFor === 'slot') return 'Waiting for a slot';
   const position = queue.position;
   if (position === undefined || !Number.isSafeInteger(position) || position < 1)
     return undefined;

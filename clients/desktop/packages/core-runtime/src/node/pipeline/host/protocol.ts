@@ -101,7 +101,7 @@ export type PipelineOwnerLeaseObservation =
 export interface PipelineHostMemoryBudget {
   /** What the host's steps may take together. */
   readonly budgetBytes: number;
-  /** Kept free for chats sharing the sandbox; worktree runs leave it alone. */
+  /** Kept free for chats sharing the sandbox; the host's runs leave it alone. */
   readonly chatReserveBytes?: number;
 }
 

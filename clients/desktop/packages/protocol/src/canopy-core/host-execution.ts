@@ -199,6 +199,8 @@ export const WorkerPipelineModelAliasResolutionsSchema = z
     z.strictObject({
       base: z.string().min(1).max(512),
       plugins: z.boolean(),
+      /** The daemon can serve a Codex step those plugins' MCP servers (CAN-6168). */
+      codexPlugins: z.literal(true).optional(),
     }),
   )
   .refine((aliases) => Object.keys(aliases).length <= 256);
@@ -355,9 +357,16 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
   /**
    * The owner runs `git-commit-push`'s precommit-failure hook from the stored
    * outputs, so the host admits that action (CAN-6012 D3). Cloud runners
-   * leave it out until CP-30.
+   * leave it out: their hosts report the failure instead (`repositoryActions`).
    */
   precommitHooks: z.literal('owner').optional(),
+  /**
+   * The run's GitHub access is brokered into its runner's sandbox (CAN-6739),
+   * so the host admits `git-commit-push` and `github-create-pr`, and reports
+   * a top-level `git-commit-push` step's pre-commit failures to its owner
+   * (`owner.precommit.failure`). Cloud runners in a folder or worktree.
+   */
+  repositoryActions: z.literal('brokered').optional(),
   /** The run's Codex app-server environment, when it has a Codex step (CAN-5095 D20). */
   codexEnvironment: z
     .strictObject({
@@ -458,6 +467,14 @@ export const WorkerPipelineOwnerValuesSchema = z.strictObject({
       allowedTools: z.array(z.string().min(1).max(512)).max(256),
       secretValues: z.array(z.string().min(1).max(4096)).max(64),
     })
+    .optional(),
+  /**
+   * One `owner.mcp.authorize` answer's `Authorization` header (CAN-6168),
+   * for one upstream request: the worker writes it once and keeps it no
+   * longer than MCP_AUTHORIZATION_TTL_MS.
+   */
+  mcpAuthorization: z
+    .strictObject({ authorization: z.string().min(1).max(16_384) })
     .optional(),
 });
 export type WorkerPipelineOwnerValues = z.output<

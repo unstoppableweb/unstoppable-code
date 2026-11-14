@@ -21,6 +21,12 @@ export interface ModelPickerTriggerControlProps extends ButtonHTMLAttributes<HTM
   hideChevron?: boolean;
   foldIcon?: boolean;
   iconFolded?: boolean;
+  /**
+   * The model can't run for this account (CAN-6444). The label takes the
+   * warning ink; the caller swaps the icon for a warning glyph and says why in
+   * the tooltip, so color never carries the state alone.
+   */
+  unavailable?: boolean;
 }
 
 /** The shared model capsule, including read-only/managed projections without a catalog. */
@@ -39,6 +45,7 @@ export const ModelPickerTriggerControl = forwardRef<
     hideChevron = false,
     foldIcon = false,
     iconFolded = false,
+    unavailable = false,
     ...props
   },
   ref,
@@ -47,7 +54,10 @@ export const ModelPickerTriggerControl = forwardRef<
     <button
       ref={ref}
       type="button"
-      className={`flex min-w-0 max-w-full items-center whitespace-nowrap fg-primary transition-colors hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
+      data-unavailable={unavailable ? 'true' : undefined}
+      className={`flex min-w-0 max-w-full items-center whitespace-nowrap ${
+        unavailable ? 'fg-warning-strong' : 'fg-primary'
+      } transition-colors hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
         variant === 'capsule'
           ? compact
             ? // 32px is desktop's capsule contract; a coarse pointer (phone,

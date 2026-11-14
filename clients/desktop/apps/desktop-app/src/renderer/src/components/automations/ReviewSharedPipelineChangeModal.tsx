@@ -177,6 +177,7 @@ export function ReviewSharedPipelineChangeModal({
 
         {resolveState.status === 'error' && (
           <ErrorBanner
+            errorSource="shared-pipeline-review-load-error"
             className=""
             error={resolveState.message}
             testId="shared-pipeline-review-load-error"
@@ -187,17 +188,19 @@ export function ReviewSharedPipelineChangeModal({
           <InlinePipelineYamlPreview
             rawPipeline={resolveState.resolved.rawPipeline}
             testId="shared-pipeline-review-yaml"
-            maxHeightClassName="max-h-80"
+            tall
           />
         )}
 
         <ErrorBanner
+          errorSource="shared-pipeline-review-error"
           className=""
           error={error}
           testId="shared-pipeline-review-error"
         />
 
         <ErrorBanner
+          errorSource="shared-pipeline-review-approved-run-error"
           className=""
           error={approvedRunError}
           testId="shared-pipeline-review-approved-run-error"

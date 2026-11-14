@@ -1,5 +1,3 @@
-import { cloudChatsUseStandalonePage } from '@/cloud-chats/cloud-chat-routing';
-import { openCloudChat } from '@/cloud-chats/cloud-chat-selection';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -20,19 +18,14 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
  * failure never reaches `agent-observability/diagnostics/app-events` and a
  * report of "the row does nothing" has nothing behind it to triage.
  *
- * Cloud rows call it too, with web-core qualified ids (CAN-6099). They open
- * on the cloud chat page until `cloudChatsUseStandalonePage` moves them to
- * the cowork page (CAN-6175).
+ * Cloud rows call it too, with web-core qualified ids (CAN-6099), and open
+ * on the cowork page like local tasks (CAN-6175).
  */
 export function openCoworkWorkEntryFromSidebar(
   projectId: string,
   entryId: string,
 ): void {
   if (isWebCoreScope(projectId)) {
-    if (!cloudChatsUseStandalonePage) {
-      openCloudChat(entryId);
-      return;
-    }
     // A cloud row is a worktree row, whose selection leaves navigation to
     // whoever opens it; local cowork rows navigate in the sidebar.
     useNavigationStore.getState().navigate('chat');

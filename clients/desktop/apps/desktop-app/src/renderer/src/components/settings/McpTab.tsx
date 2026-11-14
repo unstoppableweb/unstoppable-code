@@ -28,7 +28,7 @@ import {
   MCP_HTTP_AUTH_PROVIDER_DESCRIPTION,
   MCP_HTTP_AUTH_PROVIDER_LABEL,
   MCP_PORT_VALIDATION_ERROR,
-  MCP_PROXY_ERROR_COPY,
+  mcpProxyErrorBanner,
   MCP_SAVE_ERROR_FALLBACK,
   MCP_SAVED_TEXT,
   parseMcpProxyPort,
@@ -304,15 +304,10 @@ export function McpTab(): JSX.Element {
     !portLocked &&
     (appliedPort !== DEFAULT_MCP_PROXY_PORT ||
       inputPort !== DEFAULT_MCP_PROXY_PORT);
-  const proxyStateError =
-    proxyState?.status === 'error' && proxyState.error
-      ? proxyState.error
-      : null;
-  const proxyError =
-    applyError?.error ??
-    (proxyStateError !== null ? MCP_PROXY_ERROR_COPY : null);
-  const proxyErrorDetails =
-    applyError !== null ? applyError.details : (proxyStateError ?? undefined);
+  const { error: proxyError, details: proxyErrorDetails } = mcpProxyErrorBanner(
+    applyError,
+    proxyState,
+  );
 
   return (
     <SettingsPage title="MCP servers" dataTestId="settings-tab-mcp">
@@ -322,6 +317,7 @@ export function McpTab(): JSX.Element {
         </span>
       )}
       <DesktopErrorBanner
+        errorSource="settings-mcp-load-error"
         className=""
         error={loadError?.error}
         {...(loadError?.details === undefined
@@ -493,6 +489,7 @@ export function McpTab(): JSX.Element {
               </FieldError>
             )}
             <DesktopErrorBanner
+              errorSource="settings-mcp-error"
               className=""
               error={proxyError}
               testId="settings-mcp-error"

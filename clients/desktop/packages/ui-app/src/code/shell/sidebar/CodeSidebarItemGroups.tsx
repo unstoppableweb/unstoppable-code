@@ -27,6 +27,9 @@ import type {
   SidebarItemGroupUpdateRequest,
 } from '@canopy/protocol/sidebar';
 import {
+  SidebarDragPreview,
+  SidebarDropLine,
+  SidebarNestingRail,
   SidebarItemGroup,
   SidebarItemGroupEditor,
   SidebarItemGroupHeader,
@@ -104,8 +107,9 @@ function DropZone({
       className={`absolute inset-x-0 ${active ? 'pointer-events-auto' : 'pointer-events-none'} ${position === 'inside' ? 'inset-y-0 z-10' : position === 'before' ? 'top-0 z-20 h-1/2' : 'bottom-0 z-20 h-1/2'}`}
     >
       {selected && position !== 'inside' && (
-        <span
-          className={`absolute inset-x-1 h-0.5 rounded-full bg-accent ${position === 'before' ? 'top-0' : 'bottom-0'}`}
+        <SidebarDropLine
+          variant="group"
+          position={position}
           data-testid="sidebar-item-group-drop-indicator"
         />
       )}
@@ -952,9 +956,11 @@ export function CodeSidebarItemGroups({
           onKeyboard={keyboard}
         >
           {child && (
-            <span
-              aria-hidden="true"
-              className={`pointer-events-none absolute left-8 w-px bg-line-base/80 ${id === childIds[0] ? 'top-1.5' : stackGap ? '-top-px' : 'top-0'} ${id === childIds[childIds.length - 1] ? 'bottom-1.5' : 'bottom-0'}`}
+            <SidebarNestingRail
+              first={id === childIds[0]}
+              last={id === childIds[childIds.length - 1]}
+              bridgeGap={stackGap}
+              rounded={false}
               data-testid="worktree-nesting-rail"
             />
           )}
@@ -1191,8 +1197,9 @@ export function CodeSidebarItemGroups({
       {source &&
         createPortal(
           <DragOverlay style={{ pointerEvents: 'none' }}>
-            <div
-              className="pointer-events-none w-64 cursor-default rounded-md bg-secondary shadow-lg"
+            <SidebarDragPreview
+              variant="group"
+              className="w-64"
               data-testid="sidebar-item-group-drag-overlay"
             >
               {source.kind === 'group'
@@ -1226,7 +1233,7 @@ export function CodeSidebarItemGroups({
                   {`+${carriedCount - CARRIED_PREVIEW_LIMIT} more`}
                 </div>
               )}
-            </div>
+            </SidebarDragPreview>
           </DragOverlay>,
           document.body,
         )}

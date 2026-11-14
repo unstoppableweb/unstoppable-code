@@ -1,4 +1,7 @@
-import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
+import {
+  getShareablePluginRefKey,
+  officialMarketplaceRelativePackageUrl,
+} from '@canopy/protocol/plugins';
 import { listAdvertisedProviderConnectors } from '../mcp/provider-connectors';
 import {
   McpConfigNotFoundError,
@@ -471,6 +474,7 @@ function toPluginRow(
   shareResolver?: MarketplaceShareResolver,
 ): PortalMarketplacePluginRow {
   const installed = isPluginInstalled(plugin);
+  const logoUrl = sanitizePortalArtworkUrl(plugin.logoUrl);
   return {
     name: plugin.name,
     marketplaceId: plugin.marketplaceId,
@@ -488,6 +492,7 @@ function toPluginRow(
     ...(plugin.version !== undefined ? { version: plugin.version } : {}),
     ...(plugin.author !== undefined ? { author: plugin.author } : {}),
     ...(plugin.category !== undefined ? { category: plugin.category } : {}),
+    ...(logoUrl !== undefined ? { logoUrl } : {}),
     ...(plugin.builtIn !== undefined ? { builtIn: plugin.builtIn } : {}),
     ...(plugin.curated !== undefined ? { curated: plugin.curated } : {}),
     ...(plugin.recommended !== undefined
@@ -498,7 +503,7 @@ function toPluginRow(
     ...shareFields(plugin, marketplace, shareResolver),
     // CAN-3653: provenance the browser needs to join a plugin to the MCP
     // server it bundles and to name the plugin's publisher.
-    ...provenanceFields(plugin, installed),
+    ...provenanceFields(plugin, installed, marketplace),
   };
 }
 
@@ -513,14 +518,19 @@ function toPluginRow(
 function provenanceFields(
   plugin: PluginInfo,
   installed: boolean,
+  marketplace: MarketplaceInfo | undefined,
 ): Pick<
   PortalMarketplacePluginRow,
-  'externalSourceUrl' | 'mcpServers' | 'skills'
+  'externalSourceUrl' | 'marketplacePackageSourceUrl' | 'mcpServers' | 'skills'
 > {
   const sourceUrl = sanitizePortalUrl(plugin.externalSource?.url);
   const externalSourceUrl =
     sourceUrl !== undefined && /^https?:\/\//i.test(sourceUrl)
       ? sourceUrl
+      : undefined;
+  const marketplacePackageSourceUrl =
+    marketplace && !plugin.externalSource?.url
+      ? officialMarketplaceRelativePackageUrl(marketplace, plugin.sourcePath)
       : undefined;
   const mcpServers: PortalMarketplacePluginMcpServer[] = [];
   for (const server of plugin.details?.mcpServers ?? []) {
@@ -538,6 +548,7 @@ function provenanceFields(
   ).map((skill) => ({ name: skill.name, description: skill.description }));
   return {
     ...(externalSourceUrl !== undefined ? { externalSourceUrl } : {}),
+    ...(marketplacePackageSourceUrl ? { marketplacePackageSourceUrl } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     ...(skills.length > 0 ? { skills } : {}),
   };
@@ -1603,6 +1614,21 @@ function toPortalAccountMcpServer(
  * input returns undefined so the field is omitted entirely rather than
  * forwarded raw.
  */
+/** Artwork revisions may live in the query. Credentials and fragments do not. */
+function sanitizePortalArtworkUrl(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:') return undefined;
+    parsed.username = '';
+    parsed.password = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 function sanitizePortalUrl(raw: string | undefined): string | undefined {
   if (typeof raw !== 'string' || raw.length === 0) {
     return undefined;

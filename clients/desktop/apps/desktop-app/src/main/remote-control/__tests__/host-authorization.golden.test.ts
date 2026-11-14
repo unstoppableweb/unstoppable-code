@@ -19,11 +19,18 @@ import {
   REMOTE_EVENTS,
   REMOTE_METHODS,
   REMOTE_PROTOCOL_VERSION,
+  WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
   hostedDelegationSigningBytes,
   parsePairingFragment,
   type HelloParams,
+  type HelloResult,
   type HostedDelegation,
 } from '@canopy/protocol/remote-control';
+import {
+  HostUnsupportedError,
+  assertHostSupportsController,
+  webControllerProfile,
+} from '@canopy/remote-session';
 import {
   BROWSER_CONTROLLER_CHANNELS,
   HOSTED_CONTROLLER_CHANNELS,
@@ -254,6 +261,8 @@ interface HostOptions {
   portalEnabled?: boolean;
   pairingWindowMs?: number;
   dir?: string;
+  /** This host's version; the current protocol by default. */
+  version?: { protocolVersion: number; appVersion: string };
 }
 
 interface Host {
@@ -420,7 +429,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     ...(options.hostedChat === false ? {} : { dispatchHostedChatCommand }),
     deviceName: (): string => 'Host',
     platform: 'darwin',
-    version: VERSION,
+    version: options.version ?? VERSION,
     createBridge: (): Promise<HostBridge> =>
       Promise.resolve({
         getChatInterest: (): undefined => undefined,
@@ -949,6 +958,49 @@ describe('controller profiles', () => {
       'remote_protocol_mismatch',
     );
     expect(host.bridge.invokes).toEqual([]);
+  });
+
+  it('serves the web controller from a host at its floor and refuses one below it', async () => {
+    // The web deploys ahead of desktops: a host on an older protocol, down to
+    // the web's floor, must stay controllable from the web.
+    const web = webControllerProfile('browser', 'web');
+    expect(web.minVersion).toBe(WEB_CONTROLLER_MIN_PROTOCOL_VERSION);
+    const helloFrom = async (
+      protocolVersion: number,
+    ): Promise<{ host: Host; rpc: RpcPeer; answer: HelloResult }> => {
+      const hub = new Hub();
+      const browser = addController(hub, 'browser');
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(browser, 'browser')] },
+        version: { protocolVersion, appVersion: '1.0.0' },
+      });
+      const { rpc } = await control(host, browser);
+      const answer = HelloResultSchema.parse(
+        await hello(rpc, {
+          version: web.version,
+          controller: { kind: web.kind, minVersion: web.minVersion },
+        }),
+      );
+      return { host, rpc, answer };
+    };
+    const atFloor = await helloFrom(WEB_CONTROLLER_MIN_PROTOCOL_VERSION);
+    expect(() =>
+      assertHostSupportsController(atFloor.answer, web, { pairingProof: true }),
+    ).not.toThrow();
+    expect(await invokeCode(atFloor.rpc, MOBILE_CHANNEL)).toBe('ok');
+    expect(atFloor.host.bridge.invokes).toEqual([MOBILE_CHANNEL]);
+    // Below the floor the host serves nothing and the web names the update.
+    const below = await helloFrom(WEB_CONTROLLER_MIN_PROTOCOL_VERSION - 1);
+    expect(below.answer.version?.protocolVersion).toBe(
+      WEB_CONTROLLER_MIN_PROTOCOL_VERSION - 1,
+    );
+    expect(() =>
+      assertHostSupportsController(below.answer, web, { pairingProof: true }),
+    ).toThrow(HostUnsupportedError);
+    expect(await invokeCode(below.rpc, MOBILE_CHANNEL)).toBe(
+      'remote_protocol_mismatch',
+    );
+    expect(below.host.bridge.invokes).toEqual([]);
   });
 });
 

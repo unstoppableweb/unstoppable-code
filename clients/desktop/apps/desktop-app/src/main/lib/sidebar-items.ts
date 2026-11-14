@@ -1,3 +1,4 @@
+import { createW5RecordImageRepositories } from '@canopy/core-runtime/node/w5/record-image-repositories';
 import {
   consumeW5Metadata,
   prepareW5Metadata,
@@ -42,14 +43,14 @@ import { validateId } from './validation';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
 import type { W5NamedUnreadableError } from './w5-file-store';
 import {
-  createWorkspaceIndexRepository,
+  normalizeActivitySectionOrder,
   type StoredWorkspaceIndexFields,
   type StoredWorkspaceIndexRepository,
   type WorkspaceIndexAuthority,
   type WorkspaceIndexRepository,
 } from './workspace-index-repository';
 import {
-  getWorkspaceIndexFilePath,
+  getWorkspacesRootDir,
   getWorkspaceWorktreeDir,
   getWorkspaceWorktreeRepoDir,
 } from './paths';
@@ -112,10 +113,12 @@ function recordWorkspaceIndexWriteRefused(): void {
 }
 
 function createDesktopWorkspaceIndexRepository(): StoredWorkspaceIndexRepository {
-  const repository = createWorkspaceIndexRepository({
+  const repository = createW5RecordImageRepositories({
+    root: getWorkspacesRootDir,
     store: desktopW5FileStore,
-    filePath: () => getWorkspaceIndexFilePath(),
-    storage: WORKSPACE_INDEX_STORAGE,
+  }).index({
+    writer: WORKSPACE_INDEX_STORAGE.writer,
+    normalizeActivitySectionOrder,
     // Every durable workspace-index mutation (create/update/reorder/section
     // order, desktop- or portal-initiated) commits through this repository,
     // so this keeps a connected portal session current (CAN-1304). Workspace
@@ -353,9 +356,7 @@ async function writeWorkspaceIndex(
         return [toWorkspaceIndexEntry(item)];
       }
       const persisted = currentById.get(item.id);
-      if (!persisted) {
-        return [];
-      }
+      if (!persisted) throw new WorkspaceConfigUnreadableError();
       return [
         replaceWorkspaceOrder ? { ...persisted, order: item.order } : persisted,
       ];

@@ -10,11 +10,24 @@ import { appendUniquePendingAttachments } from '../attachments';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatComposerSlice } from '../state';
 import { isScopeRevisionedLive } from './revisioned';
+import { saveTryItDraft, clearTryItDraft } from '@/lib/tryItDraftStorage';
 import {
-  readTryItDraft,
-  saveTryItDraft,
-  clearTryItDraft,
-} from '@/lib/tryItDraftStorage';
+  cancelChatDraftWrite,
+  claimChatDraftSaveFailureReport,
+  readStoredTabDraft,
+  removeChatDraft,
+  scheduleChatDraftWrite,
+  writeChatDraft,
+} from '@/lib/chatDraftStorage';
+
+type ComposerSet = Parameters<
+  StateCreator<ChatState, [], [], ChatComposerSlice>
+>[0];
+
+// Typing goes on: a draft that couldn't be stored stays in memory.
+function reportDraftSaveFailure(set: ComposerSet, tabId: string): void {
+  if (claimChatDraftSaveFailureReport()) set({ tabDraftSaveFailure: tabId });
+}
 
 export const createComposerSlice: StateCreator<
   ChatState,
@@ -23,6 +36,27 @@ export const createComposerSlice: StateCreator<
   ChatComposerSlice
 > = (set, get) => ({
   tabDrafts: {},
+
+  tabDraftRestoreFailures: {},
+
+  dismissTabDraftRestoreFailure: (tabId): void => {
+    set((state) => {
+      if (!(tabId in state.tabDraftRestoreFailures)) return state;
+      const next = { ...state.tabDraftRestoreFailures };
+      delete next[tabId];
+      return { tabDraftRestoreFailures: next };
+    });
+  },
+
+  tabDraftSaveFailure: null,
+
+  dismissTabDraftSaveFailure: (): void => {
+    set((state) =>
+      state.tabDraftSaveFailure === null
+        ? state
+        : { tabDraftSaveFailure: null },
+    );
+  },
 
   composerTextPresent: {},
 
@@ -41,27 +75,50 @@ export const createComposerSlice: StateCreator<
   },
 
   saveTabDraft: (tabId, content): void => {
+    cancelChatDraftWrite(tabId);
+    let stagedTryIt = true;
     try {
-      saveTryItDraft(tabId, content);
+      stagedTryIt = saveTryItDraft(tabId, content);
     } catch {
       /* Keep edits in memory if browser storage becomes unavailable. */
+    }
+    if (stagedTryIt) {
+      removeChatDraft(tabId);
+    } else if (writeChatDraft(tabId, content) === 'failed') {
+      reportDraftSaveFailure(set, tabId);
     }
     set((state) => ({
       tabDrafts: { ...state.tabDrafts, [tabId]: content },
     }));
   },
 
+  scheduleTabDraftWrite: (tabId, content): void => {
+    scheduleChatDraftWrite(tabId, content, () =>
+      reportDraftSaveFailure(set, tabId),
+    );
+  },
+
   getTabDraft: (tabId): Descendant[] | undefined => {
-    return get().tabDrafts[tabId] ?? readTryItDraft(tabId)?.content;
+    const inMemory = get().tabDrafts[tabId];
+    if (inMemory) return inMemory;
+    const stored = readStoredTabDraft(tabId);
+    return stored.kind === 'draft' ? stored.content : undefined;
   },
 
   clearTabDraft: (tabId): void => {
     clearTryItDraft(tabId);
+    removeChatDraft(tabId);
     set((state) => {
-      if (!(tabId in state.tabDrafts)) return state;
+      if (
+        !(tabId in state.tabDrafts) &&
+        !(tabId in state.tabDraftRestoreFailures)
+      )
+        return state;
       const next = { ...state.tabDrafts };
       delete next[tabId];
-      return { tabDrafts: next };
+      const failures = { ...state.tabDraftRestoreFailures };
+      delete failures[tabId];
+      return { tabDrafts: next, tabDraftRestoreFailures: failures };
     });
   },
 

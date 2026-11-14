@@ -23,6 +23,10 @@
  */
 /* eslint-disable react-refresh/only-export-components */
 import { ChatPluginsSection } from './ChatPluginsSection';
+import {
+  CloudWorkspaceFilesSection,
+  useCloudWorkspaceFilesHeaderChrome,
+} from './CloudWorkspaceFilesSection';
 import { lazy, Suspense, type JSX, useCallback } from 'react';
 import {
   AttachmentIcon,
@@ -95,6 +99,8 @@ import { SummarySection, useSummaryHeaderChrome } from './SummarySection';
 import { TodoSection, useTodoHeaderChrome } from './TodoSection';
 import { useMcpServersHeaderChrome } from '@/components/mcp/McpServersPanelCard';
 import { useDispatchPipelineModal } from './useDispatchPipelineModal';
+import { CloudMcpServersSectionBody } from './CloudMcpServersSection';
+import { useCloudMcpServersModel } from './cloud-mcp-servers-model';
 
 /** Worktree binding threaded into every section render. */
 export interface ActivitySectionRenderProps {
@@ -120,6 +126,7 @@ const LazyCostActivitySection = lazy(() =>
 
 export {
   useAttachmentsHeaderChrome,
+  useCloudWorkspaceFilesHeaderChrome,
   useBackgroundProcessesHeaderChrome,
   useHooksHeaderChrome,
   useMcpServersHeaderChrome,
@@ -336,11 +343,26 @@ export function McpServersActivitySectionBody({
   );
 }
 
-function McpServersActivitySection(
+function LocalMcpServersActivitySection(
   props: ActivitySectionRenderProps,
 ): JSX.Element {
   const detectedMcp = useMcpServersActivityModel(props);
   return <McpServersActivitySectionBody model={detectedMcp} />;
+}
+
+/**
+ * The MCP servers card on its own: a cloud task's from its web core catalog
+ * (CAN-6608), never this computer's detection; a local scope's as before.
+ */
+function McpServersActivitySection(
+  props: ActivitySectionRenderProps,
+): JSX.Element {
+  const cloudMcp = useCloudMcpServersModel(props);
+  return cloudMcp.active ? (
+    <CloudMcpServersSectionBody model={cloudMcp} />
+  ) : (
+    <LocalMcpServersActivitySection {...props} />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +498,14 @@ export const ACTIVITY_SECTIONS: readonly ActivitySectionDefinition[] = [
     icon: <AttachmentIcon />,
     render: (props: ActivitySectionRenderProps): JSX.Element => (
       <AttachmentsSection {...props} />
+    ),
+  },
+  {
+    id: 'workspace-files',
+    title: 'Workspace files',
+    icon: <AttachmentIcon />,
+    render: (props: ActivitySectionRenderProps): JSX.Element => (
+      <CloudWorkspaceFilesSection {...props} />
     ),
   },
 ];

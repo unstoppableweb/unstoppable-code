@@ -15,6 +15,7 @@ import { resolveTabProviderType } from './tab-utils';
 import { blockedPersistenceKeys } from './persistence';
 import { chatStoreApi } from './store-ref';
 import { chatBackendFor } from './backend';
+import { isCloudTaskDeleted } from './web-core/task-deletions';
 
 export function mergeHydratedWorktreeChatState(
   hydratedState: WorktreeChatState,
@@ -438,6 +439,10 @@ export function shouldKeepWorktreeChatHydrated(
   key: string,
   chatState: WorktreeChatState,
 ): boolean {
+  // A cloud task deleted elsewhere can't be read again: its kept chat stays
+  // until the person starts a new chat with it or discards it (CAN-6614).
+  const scope = parseWorktreeChatKey(key);
+  if (scope !== null && isCloudTaskDeleted(scope)) return true;
   if (
     state.selectedWorktree !== null &&
     worktreeKey(state.selectedWorktree) === key

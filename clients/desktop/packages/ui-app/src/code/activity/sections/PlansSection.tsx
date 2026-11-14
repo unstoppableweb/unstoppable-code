@@ -19,6 +19,7 @@ import {
 import { ChatIcon, DocumentIcon, PipelineIcon } from '@canopy/ui-shared/icons';
 import { resolvePlanDisplayStatus } from '@canopy/ui-shared/lib';
 import { PlansEmptyMessage } from '../plans/PlansEmptyMessage';
+import { SkippedPlansNotice } from '../plans/SkippedPlansNotice';
 import {
   INLINE_PLAN_MARKDOWN_OPTIONS,
   PLAN_MARKDOWN_OPTIONS,
@@ -40,6 +41,12 @@ export interface PlansSectionProps {
    * where plans come from; no web host can import yet.
    */
   readonly onImportPlan?: () => void;
+  /**
+   * Stored plans the host's read left out because they couldn't be read
+   * (CAN-6695). The Portal's plan list carries no count yet, so web hosts
+   * leave it out until the Plans view reads core.plan.list.
+   */
+  readonly skippedPlans?: number;
 }
 
 function PlanCard({
@@ -160,6 +167,7 @@ export function PlansSection(props: PlansSectionProps): JSX.Element {
     const { onImportPlan } = props;
     return (
       <Stack gap="inline" data-testid="activity-plans-empty">
+        <SkippedPlansNotice count={props.skippedPlans} />
         <PlansEmptyMessage canImport={onImportPlan !== undefined} />
         {onImportPlan && (
           <Button
@@ -180,6 +188,7 @@ export function PlansSection(props: PlansSectionProps): JSX.Element {
       className="grid grid-cols-1 content-start max-h-76 overflow-y-auto gap-2"
       data-testid="activity-plans"
     >
+      <SkippedPlansNotice count={props.skippedPlans} />
       {props.plans.map((plan) => (
         <PlanCard key={plan.localId ?? plan.title} {...props} plan={plan} />
       ))}

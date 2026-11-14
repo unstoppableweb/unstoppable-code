@@ -784,12 +784,13 @@ export function AutomationsPage({
           {(error || mutationError) && (
             <div className="flex flex-col gap-3 pt-3">
               {error && (
-                <Notice intent="destructive">
+                <Notice errorSource="automations-page" intent="destructive">
                   Could not load automations.
                 </Notice>
               )}
               {mutationError && (
                 <Notice
+                  errorSource="automations-mutation-error"
                   intent="destructive"
                   data-testid="automations-mutation-error"
                 >

@@ -53,6 +53,7 @@ export * from './LayoutDashboardIcon';
 export * from './LinearLogo';
 export * from './LinearStatusIcons';
 export * from './LinkedInLogo';
+export * from './LinuxPlatformIcon';
 export * from './LoginIcon';
 export * from './MagnifyingGlassIcon';
 export * from './McpIcon';

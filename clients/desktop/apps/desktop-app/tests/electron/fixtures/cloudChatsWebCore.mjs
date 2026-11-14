@@ -44,14 +44,58 @@ const ERROR_CODES = {
  * connection that opened its subscription, numbered so a reopened stream
  * resumes after the last event id it received.
  */
-export async function startCloudChatsWebCore() {
+/**
+ * @param {object} [options]
+ * @param {{ scopeView: object, chatView?: object }} [options.cost] Serve
+ *   `core.runtime.manifest.get` and a cloud task's `core.cost.scope.get` and
+ *   `core.cost.chat.get` with these views, for CAN-6180's captures. The scope
+ *   echoes each request's. Off by default: the fake then serves no cost, as a
+ *   web core before CAN-6180, and the desktop offers no Cost.
+ */
+export async function startCloudChatsWebCore({ cost } = {}) {
   const world = createCloudChatsWorld({ accountId: CLOUD_ACCOUNT.id });
+  const costMethods =
+    cost === undefined
+      ? []
+      : [
+          'core.runtime.manifest.get',
+          'core.cost.scope.get',
+          'core.cost.chat.get',
+        ];
+  /** The cost option's answer for `method`, or undefined to ask the world. */
+  const costAnswer = (method, params) => {
+    if (cost === undefined) return undefined;
+    if (method === 'core.runtime.manifest.get')
+      return {
+        result: {
+          runtime: initialize().runtime,
+          operations: ['core.cost.scope.get', 'core.cost.chat.get'].map(
+            (name) => ({
+              name,
+              kind: 'query',
+              version: 1,
+              placement: 'core-only',
+              requiredGrants: ['core.cost.read'],
+              available: true,
+            }),
+          ),
+          generatedAt: new Date().toISOString(),
+        },
+      };
+    if (method === 'core.cost.scope.get')
+      return { result: { ...cost.scopeView, scope: params?.scope } };
+    if (method === 'core.cost.chat.get' && cost.chatView !== undefined)
+      return { result: cost.chatView };
+    return undefined;
+  };
   /**
    * @type {Map<string, { events: { id: number, data: string }[], streams: Set<import('node:http').ServerResponse> }>}
    */
   const connections = new Map();
   /** Which connection opened each subscription. */
   const subscriptionOwners = new Map();
+  /** POSTs the gateway answers 503 before the web core sees them, by method. */
+  const gatewayFailures = new Map();
 
   const push = (connectionId, message) => {
     const connection = connections.get(connectionId);
@@ -97,9 +141,10 @@ export async function startCloudChatsWebCore() {
     },
     selectedProtocolVersion: 1,
     capabilities: {
-      operations: world.served(),
+      operations: [...world.served(), ...costMethods],
       events: [],
       streams: world.streams(),
+      schemaRevisions: world.schemaRevisions(),
     },
     limits: {},
     authentication: {
@@ -190,6 +235,14 @@ export async function startCloudChatsWebCore() {
       return;
     }
     const message = await readBody(request);
+    // As staging's load balancer answers a request whose pod a deploy
+    // closed mid-request: 503, no JSON-RPC body (CAN-6394).
+    const failures = gatewayFailures.get(message?.method) ?? 0;
+    if (failures > 0) {
+      gatewayFailures.set(message.method, failures - 1);
+      send(response, 503, { error: 'backend_connection_closed' });
+      return;
+    }
     if (message === null || message.id === undefined) {
       response.writeHead(202).end();
       return;
@@ -199,7 +252,8 @@ export async function startCloudChatsWebCore() {
     const answer =
       message.method === INITIALIZE
         ? { result: initialize() }
-        : await world.call(message.method, params);
+        : (costAnswer(message.method, params) ??
+          (await world.call(message.method, params)));
     const subscriptionId = answer?.result?.subscriptionId;
     if (world.streams().includes(message.method) && subscriptionId)
       subscriptionOwners.set(subscriptionId, connectionId);
@@ -223,6 +277,9 @@ export async function startCloudChatsWebCore() {
     baseUrl: `http://127.0.0.1:${server.address().port}`,
     /** The seeded world: its `state` records sends and answers. */
     world,
+    /** The gateway answers the next `count` POSTs of `method` 503. */
+    failWithGateway: (method, count = 1) =>
+      gatewayFailures.set(method, (gatewayFailures.get(method) ?? 0) + count),
     close: () =>
       new Promise((resolve) => {
         for (const connection of connections.values())

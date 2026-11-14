@@ -1427,6 +1427,10 @@ export function getModelProviderInput(
     throw new Error('Cursor is not available in this action.');
   if (provider === 'opencode')
     throw new Error('OpenCode is not available in this action.');
+  if (provider === 'antigravity')
+    throw new Error(
+      'Google subscription models are not available for pipeline steps.',
+    );
   if (provider === 'copilot')
     throw new Error('Copilot is not available in this action.');
   return provider;

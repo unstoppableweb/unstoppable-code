@@ -83,14 +83,21 @@ export async function exportExecutionHandoff(
  * admission, all under the execution's write lock, so a state file is
  * present only once everything it names is. A store that already holds the
  * execution keeps it, directory and all (`already_present`). A runner whose
- * lease ended restores nothing.
+ * lease ended restores nothing. A process that restores without the
+ * runner's lease fence installed, as the runner process does for its host,
+ * passes `leaseHeld`: the restore is refused `owner_fenced` when it answers
+ * false before the copy, after it or as the state is installed, and leaves
+ * nothing it copied behind.
  */
 export async function restoreExecutionHandoff(
   source: string,
   executionsDir: string,
   executionId: string,
+  options: { readonly leaseHeld?: () => boolean } = {},
 ): Promise<RestoredExecutionStateInstall> {
-  if (pipelineOwnerFence().fenced.aborted)
+  const fenced = (): boolean =>
+    pipelineOwnerFence().fenced.aborted || options.leaseHeld?.() === false;
+  if (fenced())
     throw new ExecutionStateWriteRefusedError(executionId, 'owner_fenced');
   const from = executionStoreEntries(executionId, source);
   const to = executionStoreEntries(executionId, executionsDir);
@@ -107,7 +114,12 @@ export async function restoreExecutionHandoff(
         if (!(await exists(to.cancellation))) copied.push(to.cancellation);
         await fs.copyFile(from.cancellation, to.cancellation);
       }
+      // The lease may have ended while the directory was copied.
+      if (fenced())
+        throw new ExecutionStateWriteRefusedError(executionId, 'owner_fenced');
     },
+    // Asked again as the state is installed, after its durable write.
+    ...(options.leaseHeld && { leaseHeld: options.leaseHeld }),
     // A restore refused after its copy leaves nothing it copied behind.
     rollback: async (error) => {
       if (!isExecutionStateWriteRefusal(error, 'owner_fenced')) return;

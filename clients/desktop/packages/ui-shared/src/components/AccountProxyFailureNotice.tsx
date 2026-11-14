@@ -22,6 +22,7 @@ export function AccountProxyFailureNotice({
 }: AccountProxyFailureNoticeProps): JSX.Element {
   return (
     <Notice
+      errorSource="account-proxy-failure"
       intent="destructive"
       role="none"
       data-chat-notice=""

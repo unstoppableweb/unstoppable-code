@@ -1,3 +1,9 @@
+import {
+  createW5RecordImagePaths,
+  w5IndexImagePath,
+  w5ManifestImagePath,
+  w5WorktreesImagePath,
+} from '@canopy/core-runtime/node/w5/record-image-repositories';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'path';
@@ -37,6 +43,10 @@ import { validateId } from './validation';
 
 export function getDataDir(): string {
   return getCanopyDataDir();
+}
+
+export function getRootMigrationChatNoticesDir(): string {
+  return join(getDataDir(), 'migration-chat-notices');
 }
 
 export function getPipelinePackagesDir(): string {
@@ -149,8 +159,10 @@ export function getAppManagedChatWorkspaceDir(workspaceId: string): string {
   return join(getAppWorkspacesRootDir(), workspaceId);
 }
 
+export const w5RecordReadPaths = createW5RecordImagePaths(getWorkspacesRootDir);
+
 export function getWorkspaceIndexFilePath(): string {
-  return join(getWorkspacesRootDir(), 'index.json');
+  return w5IndexImagePath(getWorkspacesRootDir());
 }
 
 export function getRepoShadowsRootDir(): string {
@@ -335,6 +347,24 @@ export function getExternalProjectImportsFilePath(): string {
  */
 export function getActivationJourneyFilePath(): string {
   return join(getDataDir(), 'activation-journey.json');
+}
+
+/**
+ * The MCP servers each signed-in account allowed in its cloud chats
+ * (CAN-6176 reach-back): main-owned, written only by
+ * `mcp/cloud-reach-back/allow-list.ts`, never part of MCP config.
+ */
+export function getCloudReachBackFilePath(): string {
+  return join(getDataDir(), 'cloud-reach-back.json');
+}
+
+/**
+ * What cloud chats called on this computer through reach-back (CAN-6176):
+ * the last 200 calls per account, never their arguments or results. Written
+ * only by `mcp/cloud-reach-back/activity-log.ts`.
+ */
+export function getCloudReachBackActivityFilePath(): string {
+  return join(getDataDir(), 'cloud-reach-back-activity.json');
 }
 
 /**
@@ -1176,6 +1206,14 @@ export function getModelGatewayCredentialStorePath(): string {
   return join(getSecureStorageDir(), 'model-gateway-credentials.json');
 }
 
+/**
+ * The device AI gateway used while no account names a Personal organization:
+ * its non-secret config and its encrypted key, as one endpoint-bound record.
+ */
+export function getLocalModelGatewayStorePath(): string {
+  return join(getSecureStorageDir(), 'local-model-gateway.json');
+}
+
 export function getInternalLegacySharedModelGatewayCredentialStorePath():
   | string
   | null {
@@ -1531,7 +1569,7 @@ export function getPipelineEditorHomeDir(): string {
 }
 
 export function getWorkspaceConfigPath(workspaceId: string): string {
-  return join(getWorkspaceDir(workspaceId), 'workspace.json');
+  return w5ManifestImagePath(getWorkspacesRootDir(), workspaceId);
 }
 
 /** User-scoped local memory store. */
@@ -1577,7 +1615,7 @@ export function getWorkspaceClaudeMdPath(workspaceId: string): string {
 }
 
 export function getWorkspaceWorktreesFilePath(workspaceId: string): string {
-  return join(getWorkspaceDir(workspaceId), 'worktrees.json');
+  return w5WorktreesImagePath(getWorkspacesRootDir(), workspaceId);
 }
 
 /** Membership sidecar; item order stays in the owning registry. */
@@ -1665,6 +1703,11 @@ export function getWorkspaceWorkEntryAutoDeleteFilePath(
     getChatWorkspaceRootDir(workspaceId),
     'work-entry-auto-delete.json',
   );
+}
+
+/** Attention is app metadata, never stored in a checkout. */
+export function getAutoDeleteAttentionFilePath(): string {
+  return join(getDataDir(), 'auto-delete-attention.json');
 }
 
 export function getWorkspaceChatTabsFilePath(

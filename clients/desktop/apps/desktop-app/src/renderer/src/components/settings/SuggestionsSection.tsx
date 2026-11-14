@@ -78,6 +78,7 @@ function SuggestionsRow(): JSX.Element {
       }
     >
       <ErrorBanner
+        errorSource="suggestions-row-save-failed"
         className=""
         error={saveFailed ? SAVE_ERROR_MESSAGE : null}
       />
@@ -86,7 +87,11 @@ function SuggestionsRow(): JSX.Element {
           className="flex items-center gap-2"
           data-testid="settings-suggestions-dismiss-error"
         >
-          <ErrorBanner className="" error={DISMISS_ERROR_MESSAGE} />
+          <ErrorBanner
+            errorSource="suggestions-row-dismiss"
+            className=""
+            error={DISMISS_ERROR_MESSAGE}
+          />
           <NoticeButton
             variant="secondary"
             onClick={retryDismissals}

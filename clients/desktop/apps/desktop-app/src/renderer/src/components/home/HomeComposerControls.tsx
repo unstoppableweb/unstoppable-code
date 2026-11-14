@@ -1,3 +1,4 @@
+import { homeModelRecoveryTarget } from '@/lib/composerModelRecoveryTarget';
 import { useSuggestionsClaimApi } from '@canopy/ui-app/suggestions';
 import { isPlanModeReadOnly } from '@canopy/ui-shared/lib/plan-mode-suggestion';
 import {
@@ -340,7 +341,6 @@ export function HomeComposerControls({
     modelSelectionMode,
     setModelSelectionMode,
     executionHarness,
-    setExecutionHarness,
     thinkingLevel,
     speed,
     fastMode,
@@ -374,7 +374,6 @@ export function HomeComposerControls({
       modelSelectionMode: s.modelSelectionMode,
       setModelSelectionMode: s.setModelSelectionMode,
       executionHarness: s.executionHarness,
-      setExecutionHarness: s.setExecutionHarness,
       thinkingLevel: s.thinkingLevel,
       speed: s.speed,
       fastMode: s.fastMode,
@@ -493,7 +492,9 @@ export function HomeComposerControls({
       ...(workspaceId ? { projectId: workspaceId } : {}),
       billingFramework: nextChatBilling,
       executionHarness:
-        executionHarness === 'copilot' || executionHarness === 'opencode'
+        executionHarness === 'antigravity' ||
+        executionHarness === 'copilot' ||
+        executionHarness === 'opencode'
           ? undefined
           : executionHarness,
     },
@@ -986,20 +987,28 @@ export function HomeComposerControls({
                 >
                   <ModelPicker
                     key={draftGeneration}
+                    recoveryTarget={homeModelRecoveryTarget(
+                      useHomeComposerStore.getState,
+                    )}
+                    separateAgents
+                    selectionModel={autoSelected ? undefined : model}
                     browserLayout="harnesses"
+                    allowAntigravity={Boolean(workspaceId)}
                     allowCursor={Boolean(workspaceId)}
                     allowCopilot={Boolean(workspaceId)}
                     allowOpenCode={Boolean(workspaceId)}
                     currentModel={effectiveModel}
                     inheritedDefaultModel={inheritedDefaultModel}
                     executionHarness={executionHarness}
+                    executionHarnessExplicitlyChosen={
+                      executionHarness !== undefined
+                    }
                     onModelChange={(
                       selectedModel,
                       billingFramework,
                       harness,
                     ): void => {
-                      setModel(selectedModel, billingFramework);
-                      if (harness) setExecutionHarness(harness);
+                      setModel(selectedModel, billingFramework, harness);
                     }}
                     billing={{
                       value: billingResolution.framework ?? nextChatBilling,

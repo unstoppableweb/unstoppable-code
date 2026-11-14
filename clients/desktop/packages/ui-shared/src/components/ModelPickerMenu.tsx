@@ -42,6 +42,8 @@ import {
   Lock,
   MoreHorizontalIcon,
   ExperimentIcon,
+  Network as GatewayIcon,
+  WarningIcon,
   PeopleIdCardIcon,
   CheckIcon as AppCatalogCheckIcon,
   StarIcon as AppCatalogStarIcon,
@@ -289,11 +291,14 @@ export interface ModelBillingPreference {
 }
 
 export interface ModelPickerMenuProps {
+  readonly triggerControlProps?: {
+    readonly id: string;
+    readonly 'aria-describedby': string | undefined;
+    readonly 'aria-invalid': true | undefined;
+  };
   readonly catalog: ModelCatalog;
   readonly currentModel?: string;
   readonly currentModelLabel?: string;
-  /** Prefer a host-composed trigger label over the selected catalog row. */
-  readonly preferCurrentModelLabel?: boolean;
   readonly providerType?: string;
   /** Explicit trigger glyph override for hosts with a captured execution lane. */
   readonly triggerProvider?: string;
@@ -342,6 +347,12 @@ export interface ModelPickerMenuProps {
    * label is hidden or clipped.
    */
   readonly triggerTooltip?: string | null;
+  /**
+   * Why the current model can't run for this account, such as a signed-out
+   * harness with no AI Credits to pay (CAN-6444). The chip then shows a
+   * warning glyph and ink, and its tooltip gives this reason, before send.
+   */
+  readonly currentModelUnavailableReason?: string;
   readonly variant?: ModelPickerTriggerVariant;
   readonly hideLabel?: boolean;
   readonly disabled?: boolean;
@@ -455,6 +466,18 @@ export interface ModelPickerMenuProps {
      */
     readonly initialTab?: string;
     /**
+     * A tab to open on in place of the remembered one, such as the user's own
+     * AI gateway when it holds the only models they can run (CAN-6444).
+     * `initialTab` still wins when both are set.
+     */
+    readonly preferredTab?: string;
+    /**
+     * One rail tab per connected AI gateway, after the harness tabs. Each
+     * lists only that gateway's models, laid out like All. Shown only with
+     * `allModelsTab`.
+     */
+    readonly gatewayTabs?: readonly ModelPickerGatewayTab[];
+    /**
      * Native models that will run on AI Credits for this chat, such as when
      * their harness is not signed in but credits can pay. Their rows carry the
      * AI credits label like hosted-only models.
@@ -509,6 +532,7 @@ export interface ModelPickerMenuProps {
         | 'cursor'
         | 'opencode'
         | 'copilot'
+        | 'antigravity'
         | 'ollama';
       readonly connected: boolean;
       /**
@@ -528,6 +552,7 @@ export interface ModelPickerMenuProps {
         | 'cursor'
         | 'opencode'
         | 'copilot'
+        | 'antigravity'
         | 'ollama',
     ) => void;
     /**
@@ -552,6 +577,45 @@ export interface ModelPickerMenuProps {
   };
 }
 
+/** A connected AI gateway's rail tab; see `harnessTabs.gatewayTabs`. */
+export interface ModelPickerGatewayTab {
+  /** `gateway:` and a stable id for the gateway, such as its organization. */
+  readonly id: `gateway:${string}`;
+  /** The gateway's name, for the tab's tooltip and accessible name. */
+  readonly label: string;
+  /**
+   * A preset gateway's provider icon (`openrouter`, `vercel`, …). Omit for a
+   * custom gateway, which shows the generic gateway glyph.
+   */
+  readonly iconProvider?: string;
+  /** Catalog ids of the models this gateway serves. */
+  readonly modelIds: readonly string[];
+}
+
+/**
+ * The gateway tab to open on when no built-in model can run, so the user
+ * isn't sent hunting for their own models each time (CAN-6444): the tab
+ * holding the current model, else the first. `undefined` while a built-in
+ * lane can run, which leaves the remembered tab alone.
+ */
+export function preferredGatewayTabId({
+  gatewayTabs,
+  currentModel,
+  builtInRunnable,
+}: {
+  readonly gatewayTabs: readonly ModelPickerGatewayTab[];
+  readonly currentModel: string | undefined;
+  readonly builtInRunnable: boolean;
+}): string | undefined {
+  if (builtInRunnable) return undefined;
+  return (
+    gatewayTabs.find(
+      (tab) =>
+        currentModel !== undefined && tab.modelIds.includes(currentModel),
+    )?.id ?? gatewayTabs[0]?.id
+  );
+}
+
 type ModelHarnessTab =
   | 'favorites'
   | 'unstoppable'
@@ -560,6 +624,7 @@ type ModelHarnessTab =
   | 'cursor'
   | 'opencode'
   | 'copilot'
+  | 'antigravity'
   | 'ollama'
   | 'other';
 
@@ -577,6 +642,7 @@ function runnableHarnessLabel(harness: string): string | undefined {
     case 'codex':
     case 'cursor':
     case 'opencode':
+    case 'antigravity':
     case 'copilot':
     case 'ollama':
       return getModelCatalogProviderLabel(harness);
@@ -731,6 +797,7 @@ function harnessIconId(value: string | undefined): string | undefined {
   return value === 'claude' ||
     value === 'codex' ||
     value === 'cursor' ||
+    value === 'antigravity' ||
     value === 'copilot' ||
     value === 'opencode'
     ? value
@@ -834,6 +901,11 @@ function sectionKeyFor(option: ModelCatalogOption): string {
  * making in the icon the very guess the heading refuses to make.
  */
 function sectionIconProvider(option: ModelCatalogOption): string {
+  // A preset AI gateway's section shows that gateway's icon, as its rail tab
+  // does (CAN-6444).
+  if (option.funding === 'org-gateway' && option.gatewayPresetId) {
+    return option.gatewayPresetId;
+  }
   const provider = sectionProvider(option);
   if (provider) return provider;
   const vendor = normalizedVendor(option);
@@ -874,6 +946,7 @@ function coerceProvider(
     provider === 'codex' ||
     provider === 'ollama' ||
     provider === 'cursor' ||
+    provider === 'antigravity' ||
     provider === 'copilot' ||
     provider === 'opencode'
   ) {
@@ -883,10 +956,10 @@ function coerceProvider(
 }
 
 export function ModelPickerMenu({
+  triggerControlProps,
   catalog,
   currentModel,
   currentModelLabel,
-  preferCurrentModelLabel = false,
   providerType,
   triggerProvider,
   providerAvailability,
@@ -895,7 +968,8 @@ export function ModelPickerMenu({
   getOptionPresentation,
   vendorLabels,
   cursorExperimental = true,
-  triggerTooltip = 'Model for this chat',
+  triggerTooltip: triggerTooltipProp = 'Model for this chat',
+  currentModelUnavailableReason,
   variant = 'capsule',
   hideLabel = false,
   disabled = false,
@@ -953,6 +1027,14 @@ export function ModelPickerMenu({
     harnessTabs?.initialTab ?? (harnessTabs?.allModelsTab ? 'all' : 'claude'),
   );
   const initialHarnessTab = harnessTabs?.initialTab;
+  // Like the preferred tab, the open tab is read when the picker opens: a host
+  // whose initial tab tracks live catalog facts must not move an open menu.
+  const initialHarnessTabRef = useRef(initialHarnessTab);
+  initialHarnessTabRef.current = initialHarnessTab;
+  // Read when the picker opens, never mid-browse: a probe settling while the
+  // menu is open must not yank the user off the tab they are on.
+  const preferredHarnessTabRef = useRef(harnessTabs?.preferredTab);
+  preferredHarnessTabRef.current = harnessTabs?.preferredTab;
   const harnessTabStorageKey = harnessTabs
     ? `${harnessTabs.favoritesStorageKey ?? 'canopy:model-picker-favorites'}:last-tab`
     : undefined;
@@ -974,8 +1056,16 @@ export function ModelPickerMenu({
   // Before paint, so a locked chat never flashes the previous tab on open.
   useLayoutEffect(() => {
     if (!open) return;
-    if (initialHarnessTab) {
-      setActiveHarnessTab(initialHarnessTab);
+    const openingTab = initialHarnessTabRef.current;
+    if (openingTab) {
+      setActiveHarnessTab(openingTab);
+      return;
+    }
+    // Ahead of the remembered tabs: the host only prefers a tab when the
+    // remembered one would make the user hunt for the models they can run.
+    const preferredHarnessTab = preferredHarnessTabRef.current;
+    if (preferredHarnessTab) {
+      setActiveHarnessTab(preferredHarnessTab);
       return;
     }
     if (!harnessTabStorageKey) return;
@@ -1001,13 +1091,7 @@ export function ModelPickerMenu({
     } catch {
       // Keep the in-memory selection when browser storage is unavailable.
     }
-  }, [
-    open,
-    initialHarnessTab,
-    harnessTabStorageKey,
-    selectionTabStorageKey,
-    currentModel,
-  ]);
+  }, [open, harnessTabStorageKey, selectionTabStorageKey, currentModel]);
   const autoSelected = autoOption?.selected === true;
   /*
    * An unavailable Auto row is hidden outright in compact/quick pickers and
@@ -1317,12 +1401,25 @@ export function ModelPickerMenu({
   );
   const extraHarnessTabs = useMemo(
     () =>
-      (['cursor', 'copilot', 'opencode', 'ollama', 'other'] as const).filter(
+      (
+        [
+          'cursor',
+          'copilot',
+          'antigravity',
+          'opencode',
+          'ollama',
+          'other',
+        ] as const
+      ).filter(
         (harness) =>
           rows.some((option) => modelHarnessTab(option) === harness) ||
           Boolean(harnessTabs?.supportedModelIds?.[harness]?.length),
       ),
     [harnessTabs?.supportedModelIds, rows],
+  );
+  const gatewayTabs = useMemo(
+    () => (harnessTabs?.allModelsTab ? (harnessTabs.gatewayTabs ?? []) : []),
+    [harnessTabs?.allModelsTab, harnessTabs?.gatewayTabs],
   );
   const railTabIds = new Set<string>([
     'favorites',
@@ -1331,10 +1428,32 @@ export function ModelPickerMenu({
     'codex',
     ...extraHarnessTabs,
     ...(harnessTabs?.runnableHarnesses ?? []).map((harness) => harness.id),
+    ...gatewayTabs.map((tab) => tab.id),
   ]);
   const activeHarnessTab = railTabIds.has(selectedHarnessTab)
     ? selectedHarnessTab
     : 'favorites';
+  // A gateway tab is All narrowed to one gateway's models, so its rows keep
+  // All's harness, favorite and billing behavior.
+  const activeGatewayTab = gatewayTabs.find(
+    (tab) => tab.id === activeHarnessTab,
+  );
+  const allLayoutActive =
+    activeHarnessTab === 'all' || activeGatewayTab !== undefined;
+  const allLayoutSections = useMemo(
+    () =>
+      activeGatewayTab
+        ? sections
+            .map((section) => ({
+              ...section,
+              options: section.options.filter((option) =>
+                activeGatewayTab.modelIds.includes(option.id),
+              ),
+            }))
+            .filter((section) => section.options.length > 0)
+        : sections,
+    [activeGatewayTab, sections],
+  );
   useEffect(() => {
     setBillingMenuKey(null);
   }, [activeHarnessTab, modelSearch, open]);
@@ -1494,6 +1613,7 @@ export function ModelPickerMenu({
           harness === 'claude' ||
           harness === 'codex' ||
           harness === 'cursor' ||
+          harness === 'antigravity' ||
           harness === 'copilot' ||
           harness === 'opencode'
             ? { ...option, harness }
@@ -1627,8 +1747,8 @@ export function ModelPickerMenu({
    */
   const triggerLabel = autoSelected
     ? MODEL_PICKER_AUTO_LABEL
-    : ((preferCurrentModelLabel ? currentModelLabel : selectedOption?.label) ??
-      (preferCurrentModelLabel ? selectedOption?.label : currentModelLabel) ??
+    : (selectedOption?.label ??
+      currentModelLabel ??
       placeholderLabel ??
       (allowWorkspaceDefault
         ? workspaceDefaultLabel
@@ -1650,6 +1770,7 @@ export function ModelPickerMenu({
       const harness = selection?.harness;
       if (
         (harness === 'cursor' ||
+          harness === 'antigravity' ||
           harness === 'copilot' ||
           harness === 'opencode') &&
         !optionBelongsToHarness(option, harness)
@@ -1858,6 +1979,13 @@ export function ModelPickerMenu({
    * exactly the redundancy this change removes.
    */
   const triggerLabelObscured = hideLabel || triggerLabelClipped;
+  // An unavailable model's reason replaces the description: it is the one
+  // thing the user needs to know about this chip right now.
+  const currentModelUnavailable =
+    !autoSelected && currentModelUnavailableReason !== undefined;
+  const triggerTooltip = currentModelUnavailable
+    ? currentModelUnavailableReason
+    : triggerTooltipProp;
   const triggerTooltipLabel = triggerLabelObscured ? (
     triggerTooltip === null ? (
       triggerLabel
@@ -1875,7 +2003,19 @@ export function ModelPickerMenu({
   );
 
   const foldTriggerIcon = foldIconWhenTight;
-  const triggerIcon = autoSelected ? (
+  const triggerIcon = currentModelUnavailable ? (
+    <WarningIcon
+      size="sm"
+      className={
+        foldTriggerIcon
+          ? 'shrink-0 fg-warning-strong'
+          : variant === 'capsule'
+            ? 'mr-0.5 shrink-0 fg-warning-strong'
+            : 'shrink-0 fg-warning-strong'
+      }
+      data-testid={`${testIdPrefix}-picker-unavailable-icon`}
+    />
+  ) : autoSelected ? (
     <AutoModelIcon
       size="sm"
       className={
@@ -1920,10 +2060,12 @@ export function ModelPickerMenu({
 
   const triggerControl = (
     <ModelPickerTriggerControl
+      {...triggerControlProps}
       ref={triggerRef}
       type="button"
       data-testid={`${testIdPrefix}-picker`}
       data-icon-folded={foldTriggerIcon ? triggerIconFolded : undefined}
+      unavailable={currentModelUnavailable}
       disabled={disabled}
       onClick={(): void => setOpen((previous) => !previous)}
       onKeyDown={(event): void => {
@@ -2311,8 +2453,7 @@ export function ModelPickerMenu({
     inFlyout = false,
     resultHarness?: string,
   ): JSX.Element => {
-    const inAll =
-      harnessTabs?.allModelsTab && activeHarnessTab === 'all' && !modelSearch;
+    const inAll = harnessTabs?.allModelsTab && allLayoutActive && !modelSearch;
     const chosenHarness = inAll ? allHarnessChoices[option.id] : undefined;
     const availableHarnesses =
       option.id !== autoModeOption?.id
@@ -2678,6 +2819,8 @@ export function ModelPickerMenu({
     label: string;
     icon: ReactNode;
     connected: boolean;
+    /** Name the tab on hover: a gateway's glyph doesn't say which it is. */
+    tooltip?: boolean;
   }[] = harnessTabs
     ? [
         {
@@ -2720,6 +2863,22 @@ export function ModelPickerMenu({
             />
           ),
           connected: harness.connected,
+        })),
+        ...gatewayTabs.map((tab) => ({
+          id: tab.id,
+          label: tab.label,
+          icon: tab.iconProvider ? (
+            <ModelProviderIcon
+              provider={tab.iconProvider}
+              central={pickerChrome}
+              size="lg"
+              exactSize
+            />
+          ) : (
+            <GatewayIcon size={railIconSize} exactSize />
+          ),
+          connected: true,
+          tooltip: true,
         })),
         ...extraHarnessTabs
           .filter(
@@ -2974,14 +3133,25 @@ export function ModelPickerMenu({
                       {pickerChrome ? null : indicator}
                     </button>
                   );
-                  if (!pickerChrome) return tabButton;
+                  const labelledTabButton = tab.tooltip ? (
+                    <Tooltip
+                      key={pickerChrome ? undefined : tab.id}
+                      label={tab.label}
+                      placement="right"
+                    >
+                      {tabButton}
+                    </Tooltip>
+                  ) : (
+                    tabButton
+                  );
+                  if (!pickerChrome) return labelledTabButton;
                   return (
                     <Fragment key={tab.id}>
                       <div
                         hidden={Boolean(modelSearch)}
                         className="relative flex h-9 shrink-0"
                       >
-                        {tabButton}
+                        {labelledTabButton}
                         {indicator}
                       </div>
                       {index === 0 ? (
@@ -3274,10 +3444,8 @@ export function ModelPickerMenu({
                   {autoInList && autoModeOption
                     ? renderAutoModeBlock(autoModeOption)
                     : null}
-                  {!modelSearch &&
-                  harnessTabs.allModelsTab &&
-                  activeHarnessTab === 'all'
-                    ? sections.map((section) => {
+                  {!modelSearch && harnessTabs.allModelsTab && allLayoutActive
+                    ? allLayoutSections.map((section) => {
                         const label =
                           section.key === 'openai' ? 'OpenAI' : section.label;
                         return (
@@ -3412,7 +3580,7 @@ export function ModelPickerMenu({
                     : null}
                   {!modelSearch &&
                   !showConnectPrompt &&
-                  !(harnessTabs.allModelsTab && activeHarnessTab === 'all')
+                  !(harnessTabs.allModelsTab && allLayoutActive)
                     ? harnessPanelIds.map((harness) => (
                         <div
                           key={harness}

@@ -1,12 +1,9 @@
-import { Badge } from '../Badge';
 import {
   THINKING_LEVEL_LABELS,
   isThinkingLevel,
 } from '@canopy/protocol/thinking';
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
-import { AgentIcon, MinusIcon, PlusIcon } from '../../icons';
-import { useCleanChatLook } from '../chat-look';
-import { Inline } from '../Stack';
+import { AgentIcon } from '../../icons';
 import { StepRow } from './StepRow';
 import { formatDuration, formatTokenCount } from '../../lib/format-usage';
 import { AgentCardOpenChatAction } from './AgentCardOpenChatAction';
@@ -65,10 +62,8 @@ export interface AgentBlockCardProps {
    * does not need to import either runtime's chat-block renderer.
    */
   subBlocks?: ReactNode;
-  /** True when the agent is still running. Drives the spinner state. */
+  /** True when the agent is still running. Drives the running step state. */
   isRunning?: boolean;
-  /** Optional spinner slot supplied by the host. */
-  pendingSpinner?: ReactNode;
   /** Test ID hook for automation. */
   dataTestId?: string;
   /**
@@ -103,6 +98,8 @@ export interface AgentBlockCardProps {
   headerAction?: ReactNode;
   expandLabel?: string;
   collapseLabel?: string;
+  /** Holds the card open, as for the find bar's selected match. */
+  forceExpanded?: boolean;
 }
 
 /** Window assumed when a host reports context fill without the model's window. */
@@ -188,7 +185,6 @@ export function AgentBlockCard({
   isError = false,
   subBlocks,
   isRunning = false,
-  pendingSpinner,
   dataTestId,
   toolUseId,
   usageOverride,
@@ -200,9 +196,12 @@ export function AgentBlockCard({
   headerAction,
   expandLabel,
   collapseLabel,
+  forceExpanded = false,
 }: AgentBlockCardProps): JSX.Element {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [showResult, setShowResult] = useState(false);
+  const [open, setIsExpanded] = useState(false);
+  const isExpanded = forceExpanded || open;
+  const [resultOpen, setShowResult] = useState(false);
+  const showResult = forceExpanded || resultOpen;
   const [showPrompt, setShowPrompt] = useState(false);
   const onExpandedChangeRef = useRef(onExpandedChange);
   const lastReportedExpansion = useRef(false);
@@ -236,8 +235,7 @@ export function AgentBlockCard({
   const usageCells = usage ? (usageOverride ?? defaultUsageCells(usage)) : null;
   const shouldShowSubagentType = subagentType.trim().toLowerCase() !== 'agent';
 
-  // Clean chat look: the helper agent reads like any other step row.
-  const clean = useCleanChatLook();
+  // The helper agent reads like any other step row.
   const displayResult =
     result === undefined
       ? null
@@ -250,14 +248,14 @@ export function AgentBlockCard({
       <ToolCallCard
         toolName="Agent"
         toolFamily="agent"
-        label={`${clean ? 'Didn’t run ' : ''}${agentLabel}${description ? ` · ${description}` : ''}`}
+        label={`Didn’t run ${agentLabel}${description ? ` · ${description}` : ''}`}
         input={prompt}
         result={displayResult}
         dataTestId={dataTestId}
       />
     );
   }
-  const cleanHeader = (
+  const header = (
     <StepRow
       step
       icon={<AgentIcon />}
@@ -283,56 +281,9 @@ export function AgentBlockCard({
       className={headerAction != null ? 'flex-1' : undefined}
     />
   );
-  const header = clean ? (
-    cleanHeader
-  ) : (
-    <button
-      type="button"
-      onClick={(): void => setIsExpanded((prev) => !prev)}
-      aria-expanded={isExpanded}
-      aria-label={isExpanded ? collapseLabel : expandLabel}
-      className={`group flex ${headerAction != null ? 'min-w-0 flex-1' : 'w-full'} items-center gap-2 py-1 text-xs fg-accent/80 transition-colors`}
-    >
-      <span className="flex-shrink-0">
-        <span className="block group-hover:hidden">
-          <AgentIcon />
-        </span>
-        <span className="hidden group-hover:block">
-          {isExpanded ? <MinusIcon /> : <PlusIcon />}
-        </span>
-      </span>
-      {headerStatus}
-      <Inline as="span" gap="item" className="min-w-0">
-        <span className="min-w-0 truncate">
-          Agent
-          {shouldShowSubagentType ? <> &middot; {subagentType}</> : ' '}
-          {runInBackground && (
-            <span className="inline-flex pl-1.5 align-middle">
-              <Badge data-testid="agent-block-background-badge">
-                background
-              </Badge>
-            </span>
-          )}
-          {(!isExpanded || !prompt) && preview && (
-            <span
-              className={`${REPLAY_BLOCK_CLASS} ml-2 text-2xs fg-secondary`}
-            >
-              {preview}
-            </span>
-          )}
-        </span>
-        {isRunning && pendingSpinner != null && (
-          <span className="flex-shrink-0 fg-accent">{pendingSpinner}</span>
-        )}
-        {isError && <span className="text-3xs fg-destructive/80">error</span>}
-      </Inline>
-      {headerTrailing}
-    </button>
-  );
-
   return (
     <div
-      className={`flex flex-col items-start gap-1${clean ? '' : ' border-l-2 border-line-accent/30 pl-2'}`}
+      className="flex flex-col items-start gap-1"
       data-testid={dataTestId}
       data-tool-use-id={toolUseId}
     >
@@ -347,13 +298,7 @@ export function AgentBlockCard({
 
       {isExpanded && (
         <div className="self-stretch pl-5.5">
-          <div
-            className={
-              clean
-                ? 'overflow-hidden rounded-md bg-fg-primary/[0.03] text-s'
-                : 'overflow-hidden rounded border bg-fg-primary/[0.02]'
-            }
-          >
+          <div className="overflow-hidden rounded-md bg-fg-primary/[0.03] text-s">
             {onOpenChat ? (
               <div className="border-b px-2.5 py-2">
                 <AgentCardOpenChatAction onOpenChat={onOpenChat} />

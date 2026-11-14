@@ -138,6 +138,7 @@ export function SplitPreflightModal({
 
         {blocked && (
           <Notice
+            errorSource="split-preflight-blockers"
             role="none"
             intent="destructive"
             data-testid="split-preflight-blockers"

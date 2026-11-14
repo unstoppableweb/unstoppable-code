@@ -81,20 +81,21 @@ function lastWordBoundary(text: string): number {
  * The part of a streaming `text` to show now. While `pacing`, it starts empty,
  * trails the stream on a steady beat and drains the rest once streaming
  * stops; otherwise it is `text` itself. Text that is already there at mount is
- * paced too: on desktop a Claude or Codex text block mounts with its whole
- * text. So a chat reopened mid-turn types its live turn in again, within
- * MAX_CATCH_UP_SECONDS. Text that was on screen before pacing turned on (the
- * Labs switch flipped mid-turn) stays on screen. Only the caller re-renders
- * per beat.
+ * paced too, since on desktop a Claude or Codex text block mounts with its
+ * whole text, unless `alreadyShown` says the reader had it before (a return to
+ * a running chat). Text that was on screen before pacing turned on (the Labs
+ * switch flipped mid-turn) stays on screen. Only the caller re-renders per
+ * beat.
  */
 export function useSmoothStreamingText(
   text: string,
   streaming: boolean,
   pacing: boolean,
+  alreadyShown = false,
 ): string {
-  const [shown, setShown] = useState(0);
+  const [shown, setShown] = useState(alreadyShown ? text.length : 0);
   const state = useRef({
-    revealed: 0,
+    revealed: alreadyShown ? text.length : 0,
     text,
     streaming,
     /** When the text last changed; 0 until the first commit. */
@@ -228,6 +229,9 @@ export class StreamingWordFade {
   private cursor = 0;
   private renderAt = 0;
 
+  /** `firstCommitSettled`: the first commit's text is already on screen, so it never fades. */
+  constructor(private firstCommitSettled = false) {}
+
   /** Call before each compile of the document. */
   beginRender(now: number): void {
     this.cursor = 0;
@@ -243,6 +247,11 @@ export class StreamingWordFade {
 
   /** Call after the compiled document commits. */
   commit(): void {
+    if (this.firstCommitSettled) {
+      this.firstCommitSettled = false;
+      this.settledEnd = this.cursor;
+      return;
+    }
     const start = this.stretches.at(-1)?.end ?? this.settledEnd;
     if (this.cursor > start) {
       this.stretches.push({ start, end: this.cursor, at: this.renderAt });
@@ -259,7 +268,7 @@ export class StreamingWordFade {
     const start = this.cursor;
     const end = start + text.length;
     this.cursor = end;
-    if (end <= this.settledEnd) return text;
+    if (this.firstCommitSettled || end <= this.settledEnd) return text;
     const parts: ReactNode[] = [];
     let offset = Math.max(start, this.settledEnd);
     if (offset > start) parts.push(text.slice(0, offset - start));

@@ -39,6 +39,11 @@ function canonical(directory: string): string {
  * The root is one short hashed name, because the core daemon's socket lives
  * in the data root (CAN-5685). Under a temporary directory too long for that
  * socket, as agents' scratch directories can be, it goes under `/tmp`.
+ *
+ * In a run Jest's globalSetup prepared, the root goes inside the run's
+ * directory (`CANOPY_JEST_RUN_DATA_ROOT`) instead, which globalTeardown
+ * removes with every worker's root (CAN-6669). The run directory already has
+ * room for the socket.
  */
 export function configureJestDataDirIsolation(
   env: NodeJS.ProcessEnv = process.env,
@@ -47,15 +52,10 @@ export function configureJestDataDirIsolation(
   temporaryDirectory: string = tmpdir(),
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const name = `canopy-jest-${createHash('sha256')
-    .update(`${cwd}\0${process.pid}\0${workerId}`)
-    .digest('hex')
-    .slice(0, 16)}`;
-  const preferred = join(canonical(temporaryDirectory), name);
-  const root =
-    platform === 'win32' || socketFits(preferred)
-      ? preferred
-      : join(canonical('/tmp'), name);
+  const runRoot = env.CANOPY_JEST_RUN_DATA_ROOT?.trim();
+  const root = runRoot
+    ? join(runRoot, `w${workerId}-${process.pid}`)
+    : standaloneRoot(cwd, workerId, temporaryDirectory, platform);
   if (!env.CANOPY_DATA_DIR?.trim()) {
     env.CANOPY_DATA_DIR = join(root, 'data');
   }
@@ -63,6 +63,23 @@ export function configureJestDataDirIsolation(
     env.CANOPY_SECURE_DATA_DIR = join(root, 'secure');
   }
   return root;
+}
+
+/** A worker's root when no globalSetup prepared a run directory. */
+function standaloneRoot(
+  cwd: string,
+  workerId: string,
+  temporaryDirectory: string,
+  platform: NodeJS.Platform,
+): string {
+  const name = `canopy-jest-${createHash('sha256')
+    .update(`${cwd}\0${process.pid}\0${workerId}`)
+    .digest('hex')
+    .slice(0, 16)}`;
+  const preferred = join(canonical(temporaryDirectory), name);
+  return platform === 'win32' || socketFits(preferred)
+    ? preferred
+    : join(canonical('/tmp'), name);
 }
 
 configureJestDataDirIsolation();

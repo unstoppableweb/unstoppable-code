@@ -66,6 +66,13 @@ export const WorkerPipelinePortableLaunchSchema = z.strictObject({
   /** The run needs its owner (host and model steps): the runner holds it to the owner timers. */
   ownerBound: z.boolean().optional(),
   /**
+   * The runner's sandbox holds the run's brokered GitHub credentials
+   * (CAN-6739): the host admits `git-commit-push` and `github-create-pr` and
+   * reports pre-commit failures to the owner. Set for folder and worktree
+   * runs.
+   */
+  repositoryActions: z.literal('brokered').optional(),
+  /**
    * The model registry the primary built for this run (CAN-5095). Without
    * it the host refuses every model step with `model_provider`.
    */
@@ -135,5 +142,5 @@ export const WORKER_PIPELINE_PORTABLE_LAUNCH_HOST_MEMBERS = Object.freeze({
   codexEnvironment:
     "The primary's Codex app-server environment; the runner builds its own.",
   precommitHooks:
-    'Electron main runs the precommit-failure hook; a cloud run refuses git-commit-push until CP-30.',
+    "Electron main runs the precommit-failure hook; a cloud run's host reports it to its owner under repositoryActions instead (CAN-6739).",
 } as const satisfies Record<WorkerPipelineHostOnlyLaunchMember, string>);

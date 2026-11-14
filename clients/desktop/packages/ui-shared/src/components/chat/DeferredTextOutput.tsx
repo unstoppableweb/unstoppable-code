@@ -4,7 +4,6 @@ import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
 import { Notice, NoticeButton } from '../Notice';
 import { TRY_AGAIN_LABEL } from '../useRetry';
-import { useCleanChatLook } from '../chat-look';
 
 interface DeferredTextOutputProps {
   preview: string;
@@ -22,11 +21,6 @@ interface DeferredTextOutputProps {
   /** Field-specific copy; tool output keeps the defaults. */
   openLabel?: string;
   loadingLabel?: string;
-  /**
-   * `error` draws the text in the error tint, like an inline error result.
-   * The clean look keeps it colorless.
-   */
-  tone?: 'default' | 'error';
 }
 
 /** Host-owned reads keep this shared viewer independent of disk/network APIs. */
@@ -45,19 +39,14 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
   onClose,
   openLabel = 'View full output',
   loadingLabel = 'Loading output…',
-  tone = 'default',
 }: DeferredTextOutputProps): JSX.Element {
-  const clean = useCleanChatLook();
-  const errorTint = tone === 'error' && !clean;
   return (
     <div className="text-xs fg-secondary" data-testid="chat-deferred-output">
       {/* A host that already shows the bounded output passes an empty
           preview; only the controls render until the full output opens. */}
       {(opened || preview) && (
         <pre
-          className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 ${
-            errorTint ? 'fg-destructive/80 ' : ''
-          }${REPLAY_BLOCK_CLASS}`}
+          className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 ${REPLAY_BLOCK_CLASS}`}
           data-testid="chat-tool-output-text"
         >
           {opened ? text : preview}
@@ -120,6 +109,7 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
         // The output's 10px side inset, as the text and controls use.
         <div className="px-2.5 py-2">
           <Notice
+            errorSource="deferred-text-output"
             intent="destructive"
             liveRegionScope="content"
             actions={

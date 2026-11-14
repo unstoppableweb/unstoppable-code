@@ -13,6 +13,7 @@ import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
 import { Heading } from './Heading';
+import { Tooltip } from './Tooltip';
 
 export interface PipelineTemplatesSectionProps {
   catalog: CuratedPipelineCatalogProps;
@@ -25,6 +26,7 @@ function CatalogStatus({
 }): JSX.Element {
   return catalog.error ? (
     <Notice
+      errorSource="catalog-status"
       intent="destructive"
       liveRegionScope="content"
       actions={
@@ -143,12 +145,11 @@ export function PipelineTemplatesSection({
                   <Heading level={3} variant="title" truncate title={row.name}>
                     {row.name}
                   </Heading>
-                  <p
-                    className="truncate text-xs fg-secondary"
-                    title={row.shortDescription}
-                  >
-                    {row.shortDescription}
-                  </p>
+                  <Tooltip label={row.shortDescription} clamp allowShrink>
+                    <span className="min-w-0 truncate text-xs fg-secondary">
+                      {row.shortDescription}
+                    </span>
+                  </Tooltip>
                 </Stack>
                 <Button
                   size="compact"

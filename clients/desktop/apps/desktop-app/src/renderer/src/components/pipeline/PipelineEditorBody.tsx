@@ -67,6 +67,7 @@ function ValidationIssuesNotice({
 }): JSX.Element {
   return (
     <Notice
+      errorSource="validation-issues"
       intent={intent}
       title={`${String(issues.length)} validation ${
         issues.length === 1 ? 'issue' : 'issues'
@@ -126,6 +127,7 @@ export function PipelineEditorNotices({
     ) : undefined;
   const duplicateErrorNotice = session.duplicateError !== null && (
     <Notice
+      errorSource="pipeline-editor-duplicate-error"
       intent="destructive"
       className={EDITOR_NOTICE_PLACEMENT}
       data-testid="pipeline-editor-duplicate-error"
@@ -145,7 +147,11 @@ export function PipelineEditorNotices({
       />
     ) : null;
   const errorNotice = session.error && (
-    <Notice intent="destructive" className={EDITOR_NOTICE_PLACEMENT}>
+    <Notice
+      errorSource="pipeline-editor-notices-session"
+      intent="destructive"
+      className={EDITOR_NOTICE_PLACEMENT}
+    >
       {session.error}
     </Notice>
   );

@@ -81,7 +81,9 @@ export function MetricsTab({
           </Disclosure>
         </div>
       )}
-      {error && <ErrorBanner className="" error={error} />}
+      {error && (
+        <ErrorBanner errorSource="metrics-tab" className="" error={error} />
+      )}
       {summary === null ? (
         <Surface variant="group">
           <div className="flex items-center gap-2 px-4 py-3 text-s fg-secondary">

@@ -1,4 +1,5 @@
 import type { CSSProperties, JSX } from 'react';
+import { Tooltip } from './Tooltip';
 
 export interface PrLabelBadgeProps {
   /** Label text. */
@@ -140,26 +141,15 @@ export function PrLabelBadge({
   dataTestId,
 }: PrLabelBadgeProps): JSX.Element {
   const rgb = parseHex(color);
-  if (!rgb) {
-    return (
+  return (
+    <Tooltip label={description} clamp disabled={!description} replayBlock>
       <span
         data-testid={dataTestId}
-        title={description ?? undefined}
-        className={`${PILL_BASE} border bg-muted fg-secondary`}
+        style={rgb ? computeLabelColors(rgb) : undefined}
+        className={`${PILL_BASE} ${rgb ? 'canopy-pr-label' : 'border bg-muted fg-secondary'}`}
       >
         {name}
       </span>
-    );
-  }
-  const style: CSSProperties = computeLabelColors(rgb);
-  return (
-    <span
-      data-testid={dataTestId}
-      title={description ?? undefined}
-      style={style}
-      className={`canopy-pr-label ${PILL_BASE}`}
-    >
-      {name}
-    </span>
+    </Tooltip>
   );
 }

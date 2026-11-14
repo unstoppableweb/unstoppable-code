@@ -11,7 +11,7 @@ import {
   type WorktreeData,
   type WorktreesFileChangedEvent,
 } from '@canopy/desktop-shared/types';
-import { getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import {
   clearWorktreesSelfWriteTracking,
   isWorktreesSelfWriteContent,
@@ -56,7 +56,7 @@ async function readContent(
   if (worktreesFileWatchers.get(workspaceId) !== entry) return null;
   if (!entry.readInFlight) {
     entry.readInFlight = readFile(
-      getWorkspaceWorktreesFilePath(workspaceId),
+      w5RecordReadPaths.worktrees(workspaceId),
       'utf8',
     )
       .catch(() => null)
@@ -144,7 +144,7 @@ function startWatcher(
     worktrees: readonly WorktreeData[],
   ) => void,
 ): void {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   const filenameToWatch = basename(filePath);
   const entry: WorktreesFileWatcherEntry = {
     watcher: null,

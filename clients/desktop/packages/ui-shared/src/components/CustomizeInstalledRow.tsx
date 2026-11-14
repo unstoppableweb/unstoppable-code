@@ -1,9 +1,12 @@
 import type { ComponentType, JSX, MouseEvent, ReactNode } from 'react';
-import type { UnifiedEntryPlacement } from '../lib/unified-plugin-entry';
-import { mcpPlacementLabel } from '../lib/mcp-row-health';
+import {
+  sourceLabelProvider,
+  type UnifiedEntryPlacement,
+} from '../lib/unified-plugin-entry';
+import { mcpPlacementLabel, mcpRowHealthModel } from '../lib/mcp-row-health';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
-import { AlertTriangle, PersonIcon, RefreshIcon } from '../icons/AppIcons';
+import { PersonIcon, RefreshIcon } from '../icons/AppIcons';
 import { curatedLogoKey } from '../lib/curated-logo-key';
 import { createdByViewer, pendingSignInLabel } from '../lib/customize-row-copy';
 import { displayVersion } from '../lib/display-version';
@@ -15,7 +18,7 @@ import {
   type CustomizeRowMenuItem,
 } from './CustomizeRowMenu';
 import { EntrySurfaceIcon } from './EntrySurfaceIcon';
-import { McpConnectionStatusBadge } from './McpConnectionStatusBadge';
+import { McpRowAttention, McpRowHealth } from './McpRowHealth';
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
 import {
   EntrySourceProviderMark,
@@ -54,11 +57,11 @@ function compactMetadata(entry: UnifiedPluginEntry): {
         : entry.sharedSource?.sharedBy?.trim() ||
           entry.installedFrom?.sharedByName?.trim() ||
           entry.installedFrom?.ownerName?.trim() ||
-          (entry.origin === 'marketplace' ? catalog : undefined) ||
           owner ||
           entry.workflow?.sourceText?.replace(/^Shared by /, '') ||
           entry.ownershipLabel?.trim() ||
-          (catalog &&
+          (!entry.marketplaceProviders &&
+          catalog &&
           !['Curated', 'Local', 'Shared', 'Project'].includes(catalog)
             ? catalog
             : undefined);
@@ -128,9 +131,13 @@ function compactMetadata(entry: UnifiedPluginEntry): {
 function CompactMetadata({
   entry,
   metadata,
+  health,
+  attentionLabel,
 }: {
   entry: UnifiedPluginEntry;
   metadata: ReturnType<typeof compactMetadata>;
+  health?: ReactNode;
+  attentionLabel?: string;
 }): JSX.Element | null {
   const { version, tooltip, visibleCounts, triggerSummary } = metadata;
   const source = metadata.source
@@ -139,37 +146,118 @@ function CompactMetadata({
   const hasHarnessIcons =
     entry.installedHarnesses?.claude === true ||
     entry.installedHarnesses?.codex === true;
-  // With nothing to say, the row drops the line so its name centers.
-  if (
-    !hasHarnessIcons &&
-    !source &&
-    !version &&
-    visibleCounts.length === 0 &&
-    !triggerSummary &&
-    !entry.bundledBy &&
-    !entry.sharedSourceProvider &&
-    !(entry.origin === 'marketplace' && entry.kind === 'plugin')
-  )
+  const hasSourceMark =
+    !entry.marketplaceProviders &&
+    entry.kind === 'plugin' &&
+    (entry.origin === 'marketplace'
+      ? Boolean(sourceLabelProvider(entry.sourceLabel))
+      : entry.origin === 'shared' && Boolean(entry.sharedSourceProvider));
+  const healthConnection = entry.connection ?? entry.aggregateConnection;
+  const fallbackHealth =
+    !health &&
+    healthConnection &&
+    (healthConnection.status !== 'unknown' ||
+      healthConnection.signIn ||
+      healthConnection.disabled)
+      ? mcpRowHealthModel(healthConnection)
+      : undefined;
+  const hasSubtitle = Boolean(
+    hasHarnessIcons ||
+    source ||
+    version ||
+    visibleCounts.length > 0 ||
+    triggerSummary ||
+    entry.bundledBy ||
+    hasSourceMark ||
+    entry.marketplaceProviders?.length ||
+    entry.shareUpdateAvailable,
+  );
+  // An unreachable check and a pending sign-in can describe separate bindings.
+  const hasIndependentSignIn =
+    (entry.pendingSignIns ?? 0) > 0 &&
+    healthConnection?.status === 'unreachable' &&
+    !healthConnection.signIn &&
+    !healthConnection.disabled;
+  const warning =
+    hasIndependentSignIn || (!health && !fallbackHealth)
+      ? attentionLabel
+      : undefined;
+  const warningTestId =
+    attentionLabel === undefined
+      ? `plugins-connection-status-${entry.id}`
+      : `customize-row-sign-in-${entry.id}`;
+  if (!hasSubtitle && !health && !fallbackHealth && warning === undefined)
     return null;
   return (
     <span
       data-testid={`customize-row-subtitle-${entry.id}`}
-      className={`mt-0.5 flex h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${entry.origin === 'shared' || entry.installedFrom || entry.sharedSource || entry.collectionProvenanceUnknown ? REPLAY_BLOCK_CLASS : entry.workflow?.sourceIsPerson ? REPLAY_MASK_CLASS : ''}`}
+      className={`pointer-events-none relative z-10 mt-0.5 flex min-h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${entry.origin === 'shared' || entry.installedFrom || entry.sharedSource || entry.collectionProvenanceUnknown ? REPLAY_BLOCK_CLASS : entry.workflow?.sourceIsPerson ? REPLAY_MASK_CLASS : ''}`}
     >
+      {health}
+      {fallbackHealth && (
+        <McpRowHealth
+          name={entry.name}
+          model={fallbackHealth}
+          testId={
+            fallbackHealth.tone === 'attention'
+              ? warningTestId
+              : `plugins-connection-status-${entry.id}`
+          }
+        />
+      )}
+      {fallbackHealth && healthConnection?.provider === true && (
+        <span
+          className="text-3xs fg-secondary"
+          data-testid={`plugins-connection-provider-${entry.id}`}
+        >
+          Agent provider
+        </span>
+      )}
+      {warning !== undefined && (
+        <McpRowAttention
+          name={entry.name}
+          label={warning}
+          action={(entry.pendingSignIns ?? 0) > 0 ? 'connect' : null}
+          testId={warningTestId}
+        />
+      )}
+      {entry.marketplaceProviders?.map((provider) => (
+        <Tooltip
+          key={provider}
+          label={`Available from the ${provider} marketplace`}
+        >
+          <Badge>{provider}</Badge>
+        </Tooltip>
+      ))}
+      {entry.shareUpdateAvailable === true && (
+        <Badge
+          tone="info"
+          icon={RefreshIcon}
+          className="shrink-0"
+          data-testid={`customize-row-update-available-${entry.id}`}
+        >
+          {INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL}
+        </Badge>
+      )}
       {/* Where it's installed says more than the marketplace's mark, and one
           row of logos reads better than two. */}
       {hasHarnessIcons ? (
         <HarnessIcons entry={entry} />
       ) : (
+        hasSourceMark &&
         entry.origin !== 'shared' && <EntrySourceProviderMark entry={entry} />
       )}
       {source && (
         <Tooltip
           label={
             <span className={REPLAY_BLOCK_CLASS}>
-              {tooltip || entry.description || entry.name}
+              {tooltip.includes(source)
+                ? tooltip
+                : [source, tooltip].filter(Boolean).join(' · ')}
             </span>
           }
+          allowShrink
+          className="pointer-events-auto"
         >
           <span
             data-testid={`customize-row-source-${entry.id}`}
@@ -208,6 +296,7 @@ function CompactMetadata({
           {visibleCounts.map(([count, kind, label]) => (
             <Tooltip
               key={kind}
+              className="pointer-events-auto"
               label={`${count} ${count === 1 ? (label === 'MCP servers' ? 'MCP server' : label.slice(0, -1)) : label}`}
             >
               <span>
@@ -229,6 +318,8 @@ function CompactMetadata({
               {tooltip || triggerSummary}
             </span>
           }
+          clamp={false}
+          className="pointer-events-auto"
         >
           <span
             data-testid={`customize-row-trigger-${entry.id}`}
@@ -254,7 +345,7 @@ function CustomItemBadge({
   const label = creator ? `Custom ${kind} by ${creator}` : `Custom ${kind}`;
   return (
     <span
-      className={`absolute ${entry.kind === 'collection' ? '-bottom-1.5 -right-1.5' : '-bottom-1 -right-1'} z-10 inline-flex overflow-visible`}
+      className={`pointer-events-auto absolute ${entry.kind === 'collection' ? '-bottom-1.5 -right-1.5' : '-bottom-1 -right-1'} z-10 inline-flex overflow-visible`}
     >
       <Tooltip
         label={
@@ -421,14 +512,108 @@ export function CustomizeInstalledRow({
           },
         ]
       : menuItems;
+  const primaryProps = {
+    id: domId,
+    'aria-describedby': `${domId}-description`,
+    'data-marketplace-entry': 'true',
+    'data-testid': primaryTestId ?? `customize-row-${entry.id}`,
+    'data-selected': selected ? 'true' : 'false',
+    className:
+      'block min-w-0 text-left outline-none after:absolute after:inset-0',
+  };
+  const onLinkClick = (event: MouseEvent<HTMLAnchorElement>): void => {
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      event.button !== 0
+    )
+      return;
+    event.preventDefault();
+    onSelect(entry);
+  };
+  function onMetadataClick(event: MouseEvent<HTMLSpanElement>): void {
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      !target.closest('a, button, [tabindex="0"], [role="tooltip"]') &&
+      !event.defaultPrevented &&
+      event.button === 0 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey
+    ) {
+      onSelect(entry);
+    }
+  }
+  // The native action stretches across the row while focusable warning
+  // controls in the subtitle remain its siblings.
+  const title = (
+    <span
+      data-testid={`customize-row-name-line-${entry.id}`}
+      className="relative z-10 flex min-w-0 items-center gap-x-1.5 overflow-hidden"
+    >
+      {/* The line clips rather than spilling into the row's controls.
+              The name truncates as space runs out;
+              the kind and surface icon stay whole. */}
+      <Tooltip
+        label={
+          entry.description
+            ? `${entry.name} · ${entry.description}`
+            : entry.name
+        }
+        clamp={Boolean(entry.description)}
+        delay="long"
+        allowShrink
+        replayBlock
+      >
+        <span className="min-w-0 truncate text-s font-medium fg-primary">
+          {entry.name}
+        </span>
+      </Tooltip>
+      {showEntryType && entry.typeLabel && (
+        <MarketplaceTypeLabel
+          kind={entry.kind}
+          label={entry.typeLabel}
+          dataTestId={`customize-row-type-${entry.id}`}
+        />
+      )}
+      {placement !== undefined && placement !== 'account' && (
+        <EntrySurfaceIcon
+          surface="desktop"
+          label={mcpPlacementLabel('desktop')}
+          testId={`customize-row-placement-${entry.id}`}
+        />
+      )}
+      {placement !== undefined && placement !== 'desktop' && (
+        <EntrySurfaceIcon
+          surface="cloud"
+          label={mcpPlacementLabel('account')}
+          testId={`customize-row-placement-cloud-${entry.id}`}
+        />
+      )}
+      {placement === undefined && entry.surface && (
+        <EntrySurfaceIcon
+          surface={entry.surface}
+          testId={`plugins-surface-${entry.id}`}
+        />
+      )}
+    </span>
+  );
   // Opacity on the control itself would dim its focus ring, so the content
   // wrapper carries it.
   const content = (
     <span
+      role="presentation"
       data-testid={`customize-row-content-${entry.id}`}
-      className={`flex min-w-0 flex-1 items-center gap-3${dimmed ? ' opacity-60' : ''}`}
+      className={`relative isolate flex flex-1 items-center gap-3 rounded-xl py-2.5 outline-offset-2 has-[[data-marketplace-entry]:focus-visible]:outline-2 has-[[data-marketplace-entry]:focus-visible]:outline-line-focus pointer-coarse:min-h-11 ${compactMcp ? 'min-w-0 pl-4 pr-0' : 'min-w-32 px-4'} ${selected ? 'bg-selected' : ''}`}
+      onClick={onMetadataClick}
     >
-      <span className="relative inline-flex shrink-0 overflow-visible">
+      <span
+        className={`pointer-events-none relative inline-flex shrink-0 overflow-visible${dimmed ? ' opacity-60' : ''}`}
+      >
         <McpServerLogoComponent
           curatedKey={curatedLogoKey(entry)}
           logoUrl={entry.logoUrl}
@@ -444,123 +629,36 @@ export function CustomizeInstalledRow({
           <CustomItemBadge entry={entry} selected={selected} />
         )}
       </span>
-      <span className="min-w-0 flex-1">
-        {/* The name and its labels stay on one line: a long name truncates
-            instead of pushing the type label onto a line of its own. */}
-        <span
-          data-testid={`customize-row-name-line-${entry.id}`}
-          className="flex min-w-0 items-center gap-x-1.5 overflow-hidden"
-        >
-          {/* The line clips rather than spilling into the row's controls.
-              The name truncates as space runs out;
-              the kind and surface icon stay whole. */}
-          <span
-            title={[entry.name, entry.description].filter(Boolean).join(' · ')}
-            className="min-w-0 truncate text-s font-medium fg-primary"
-          >
-            {entry.name}
-          </span>
-          {showEntryType && entry.typeLabel && (
-            <MarketplaceTypeLabel
-              kind={entry.kind}
-              label={entry.typeLabel}
-              dataTestId={`customize-row-type-${entry.id}`}
-            />
-          )}
-          {placement !== undefined && placement !== 'account' && (
-            <EntrySurfaceIcon
-              surface="desktop"
-              label={mcpPlacementLabel('desktop')}
-              testId={`customize-row-placement-${entry.id}`}
-            />
-          )}
-          {placement !== undefined && placement !== 'desktop' && (
-            <EntrySurfaceIcon
-              surface="cloud"
-              label={mcpPlacementLabel('account')}
-              testId={`customize-row-placement-cloud-${entry.id}`}
-            />
-          )}
-          {placement === undefined && entry.surface && (
-            <EntrySurfaceIcon
-              surface={entry.surface}
-              testId={`plugins-surface-${entry.id}`}
-            />
-          )}
-          {health === undefined && attentionLabel !== undefined && (
-            <Tooltip label={`${attentionLabel}. Open details to fix it.`}>
-              <span
-                data-testid={`customize-row-sign-in-${entry.id}`}
-                aria-label={attentionLabel}
-                role="img"
-                className="inline-flex shrink-0 fg-warning"
-              >
-                <AlertTriangle width={13} height={13} aria-hidden="true" />
-              </span>
-            </Tooltip>
-          )}
-          {/* A shared copy whose source changed (CAN-5309): the detail's
-              marker, never shrunk; its text is part of the row's name. The
-              Update action stays on the detail. */}
-          {entry.shareUpdateAvailable === true && (
-            <Badge
-              tone="info"
-              icon={RefreshIcon}
-              className="shrink-0 whitespace-nowrap"
-              data-testid={`customize-row-update-available-${entry.id}`}
-            >
-              {INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL}
-            </Badge>
-          )}
-        </span>
-        {health !== undefined ? (
-          <span className="mt-0.5 flex h-4 min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-xs fg-tertiary">
-            {health}
-          </span>
+      <span className={`min-w-0 flex-1${dimmed ? ' opacity-60' : ''}`}>
+        {href !== undefined ? (
+          <a {...primaryProps} href={href} onClick={onLinkClick}>
+            {title}
+          </a>
         ) : (
-          <CompactMetadata entry={entry} metadata={metadata} />
+          <button
+            {...primaryProps}
+            type="button"
+            onClick={() => onSelect(entry)}
+          >
+            {title}
+          </button>
         )}
+        <CompactMetadata
+          entry={entry}
+          metadata={metadata}
+          health={health}
+          attentionLabel={attentionLabel}
+        />
       </span>
     </span>
   );
-  const primaryProps = {
-    id: domId,
-    'aria-describedby': `${domId}-description`,
-    'data-marketplace-entry': 'true',
-    'data-testid': primaryTestId ?? `customize-row-${entry.id}`,
-    'data-selected': selected ? 'true' : 'false',
-    // MCP names yield width to the controls rather than moving them below.
-    className: `focus-ring flex flex-1 items-center gap-3 rounded-xl py-2.5 text-left pointer-coarse:min-h-11 ${compactMcp ? 'min-w-0 pl-4 pr-0' : 'min-w-32 px-4'} ${
-      selected ? 'bg-selected' : ''
-    }`,
-  };
-  const onLinkClick = (event: MouseEvent<HTMLAnchorElement>): void => {
-    if (
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.altKey ||
-      event.button !== 0
-    )
-      return;
-    event.preventDefault();
-    onSelect(entry);
-  };
   return (
     <li
       data-testid={`customize-${sectionId}-row-${entry.id}`}
       data-dimmed={dimmed ? 'true' : undefined}
       className={`group/skill-row relative -ml-4 flex min-w-0 ${compactMcp ? 'flex-nowrap' : 'flex-wrap'} items-center gap-2 rounded-xl pr-4 transition-colors hover:bg-subtle`}
     >
-      {href !== undefined ? (
-        <a {...primaryProps} href={href} onClick={onLinkClick}>
-          {content}
-        </a>
-      ) : (
-        <button {...primaryProps} type="button" onClick={() => onSelect(entry)}>
-          {content}
-        </button>
-      )}
+      {content}
       <span
         id={`${domId}-description`}
         className={`sr-only ${REPLAY_BLOCK_CLASS}`}
@@ -576,36 +674,23 @@ export function CustomizeInstalledRow({
           attention marker already says a sign-in is missing, so Auth
           required is not repeated beside it. */}
         {inlineAction}
-        {health === undefined &&
-          entry.connection &&
-          entry.connection.status !== 'unknown' &&
-          !(
-            attentionLabel !== undefined &&
-            entry.connection.status === 'auth_required'
-          ) && (
-            <McpConnectionStatusBadge
-              badge={{
-                status: entry.connection.status,
-                isProvider: entry.connection.provider === true,
-              }}
-              dataTestId={`plugins-connection-status-${entry.id}`}
-              providerTestId={`plugins-connection-provider-${entry.id}`}
-            />
-          )}
         {values}
-        {status ??
-          (!compactMcp && <span className="w-36 shrink-0" aria-hidden />)}
-        <span className="flex w-7 shrink-0 items-center justify-end pointer-coarse:w-11">
-          {actions}
-        </span>
-        <span className="flex w-7 shrink-0 justify-end pointer-coarse:w-11">
-          <CustomizeRowMenu
-            entryName={entry.name}
-            idPrefix={domId}
-            items={rowMenuItems}
-            testId={menuTestId ?? `customize-row-menu-${entry.id}`}
-          />
-        </span>
+        {status}
+        {actions && (
+          <span className="flex shrink-0 items-center justify-end">
+            {actions}
+          </span>
+        )}
+        {rowMenuItems.length > 0 && (
+          <span className="flex w-7 shrink-0 justify-end pointer-coarse:w-11">
+            <CustomizeRowMenu
+              entryName={entry.name}
+              idPrefix={domId}
+              items={rowMenuItems}
+              testId={menuTestId ?? `customize-row-menu-${entry.id}`}
+            />
+          </span>
+        )}
       </div>
     </li>
   );

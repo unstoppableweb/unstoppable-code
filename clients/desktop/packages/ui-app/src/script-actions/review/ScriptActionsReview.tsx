@@ -415,6 +415,7 @@ function ScriptActionsReviewBody({
     body =
       scripts.status === 'error' ? (
         <ErrorBanner
+          errorSource="script-actions-review-body-load"
           className=""
           error={loadError ?? "Couldn't load scripts."}
           onRetry={(): void => {
@@ -445,6 +446,7 @@ function ScriptActionsReviewBody({
         {loadError !== null ? (
           <div data-testid="script-actions-scan-error">
             <ErrorBanner
+              errorSource="script-actions-load-review"
               className=""
               error={`${loadError} Showing the last results.`}
               onRetry={runRescan}
@@ -504,7 +506,11 @@ function ScriptActionsReviewBody({
                 </Button>
               ) : null}
               {rowErrors[action.id] ? (
-                <ErrorBanner className="" error={rowErrors[action.id]} />
+                <ErrorBanner
+                  errorSource="script-action-apply-review"
+                  className=""
+                  error={rowErrors[action.id]}
+                />
               ) : null}
             </div>
           )}
@@ -547,7 +553,11 @@ function ScriptActionsReviewBody({
                 ~/.bashrc. Files are read, never run, and each alias still needs
                 your approval. Rescans include them from then on.
               </p>
-              <ErrorBanner className="" error={aliasState.error} />
+              <ErrorBanner
+                errorSource="script-actions-review-body-alias"
+                className=""
+                error={aliasState.error}
+              />
               <Button
                 className="self-start"
                 size="compact"
@@ -605,7 +615,11 @@ function ScriptActionsReviewBody({
           {header}
           {body}
         </div>
-        {footer ? <div className="border-t px-6 py-3">{footer}</div> : null}
+        {footer ? (
+          <Surface variant="section" boundary="top" padding="dialog-footer">
+            {footer}
+          </Surface>
+        ) : null}
       </div>
     );
 
@@ -1020,7 +1034,11 @@ function ApprovedSection({
                       </p>
                     ) : null}
                     {errors[action.id] ? (
-                      <ErrorBanner className="" error={errors[action.id]} />
+                      <ErrorBanner
+                        errorSource="approved-section"
+                        className=""
+                        error={errors[action.id]}
+                      />
                     ) : null}
                   </li>
                 ))}
@@ -1089,7 +1107,11 @@ function DismissedSection({
                   </Button>
                 </div>
                 {errors[action.id] ? (
-                  <ErrorBanner className="" error={errors[action.id]} />
+                  <ErrorBanner
+                    errorSource="dismissed-section"
+                    className=""
+                    error={errors[action.id]}
+                  />
                 ) : null}
               </li>
             ))}
@@ -1107,7 +1129,11 @@ function FeedbackLine({
 }): JSX.Element {
   if (feedback.tone === 'error') {
     return (
-      <Notice intent="destructive" data-testid="script-actions-feedback">
+      <Notice
+        errorSource="script-actions-feedback"
+        intent="destructive"
+        data-testid="script-actions-feedback"
+      >
         {feedback.message}
       </Notice>
     );

@@ -11,10 +11,9 @@ import {
 } from '@canopy/ui-shared/lib/w5-recovery-copy';
 import { writeFileAtomically } from './atomic-file';
 import {
-  runW5Maintenance,
   type W5MaintenanceDecision,
   type W5MaintenanceDecisionResult,
-} from './w5-maintenance';
+} from '@canopy/core-runtime/node/w5/maintenance-types';
 import type { W5Diagnosis } from './w5-maintenance-diagnosis';
 import {
   isW5RecoveryAvailable,
@@ -25,7 +24,7 @@ import {
   runW5RecoveryLaunch,
   w5RecoveryFailureReason,
 } from './w5-recovery-launch';
-import { createW5RecoveryMaintenanceContext } from './w5-recovery-maintenance';
+import { runElectronW5Maintenance } from '../canopy-runtime/electron-w5-recovery';
 import {
   consumeW5RecoveryRequest,
   requirePrivateW5RecoveryRuntime,
@@ -210,12 +209,7 @@ export async function runDesktopW5RecoveryLaunch(
           request.mode === 'reopen'
             ? 'Inspecting workspace records'
             : 'Recovering workspace records',
-          (signal) =>
-            runW5Maintenance(
-              createW5RecoveryMaintenanceContext(dataRoot),
-              request,
-              signal,
-            ),
+          (signal) => runElectronW5Maintenance(dataRoot, request, signal),
           onCancelled,
         ),
       choose: (diagnosis) =>

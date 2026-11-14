@@ -136,6 +136,7 @@ function agentSteps(data: Record<string, unknown>): BackgroundTrayAgentStep[] {
 function delegateRow(
   delegation: AgentDelegationCardData,
   data: Record<string, unknown>,
+  canStop: boolean,
 ): BackgroundTrayAgent | null {
   if (
     delegation.executionMode !== 'background' ||
@@ -155,8 +156,8 @@ function delegateRow(
     prompt: delegation.prompt || null,
     meta: delegateAgentMeta(delegation),
     taskId: null,
-    // The Portal has no delegate Stop command.
-    canStop: false,
+    // Only a host that stops delegates itself (`delegationStop`) offers Stop.
+    canStop,
     target: { kind: 'managed', id: delegation.delegationId, title },
   };
 }
@@ -238,11 +239,16 @@ function taskAgentRow(task: BackgroundTask): BackgroundTrayAgent | null {
  * Claude background agents (from their agent parts, else their background
  * task), running Codex children with agent parts, and background delegates
  * that are queued or running. A later part for the same agent replaces an
- * earlier one; the Portal offers Open chat, never Stop.
+ * earlier one. Rows offer Open chat; delegates offer Stop too when the host
+ * says it stops them.
  */
 export function portalBackgroundTrayAgents(
   messages: readonly PortalChatMessage[],
   tasks: readonly BackgroundTask[],
+  options: {
+    /** The host stops delegates through `onStopAgent` (`delegationStop`). */
+    readonly canStopDelegates?: boolean;
+  } = {},
 ): BackgroundTrayAgent[] {
   const latest = new Map<string, BackgroundTrayAgent | null>();
   const visit = (part: unknown): void => {
@@ -254,7 +260,7 @@ export function portalBackgroundTrayAgents(
     if (isAgentDelegationCardData(delegation)) {
       latest.set(
         `managed:${delegation.delegationId}`,
-        delegateRow(delegation, data),
+        delegateRow(delegation, data, options.canStopDelegates === true),
       );
     } else {
       const toolUseId = text(data, 'toolUseId');

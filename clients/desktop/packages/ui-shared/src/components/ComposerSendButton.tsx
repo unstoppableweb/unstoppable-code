@@ -3,6 +3,10 @@ import { ArrowUp, StopFilledIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from './LoadingSpinner';
 import { TerminalRunButton } from './TerminalComposerMode';
 import { Tooltip } from './Tooltip';
+import {
+  COMPOSER_STOPPING_LABEL,
+  COMPOSER_STOPPING_WAITING_FOR_WAKE_LABEL,
+} from './composer-send-button-copy';
 
 /**
  * How large the control's hit area is. `compact` is the 32px pointer control;
@@ -17,7 +21,8 @@ export type ComposerSendButtonTapTarget = 'compact' | 'touch';
  *    runs in a new PTY and bypasses the chat queue).
  * 2. Streaming: stop the turn. Typing still queues a follow-up via Enter.
  * 3. Idle: send.
- * A pending model change disables stop and send and shows a spinner.
+ * A pending model change disables stop and send and shows a spinner, as a
+ * stop already sent does until its turn ends.
  */
 export type ComposerSendButtonProps =
   | {
@@ -41,6 +46,18 @@ export type ComposerSendButtonProps =
       shortcutReady?: boolean;
       /** The host cannot stop this turn right now. */
       disabled?: boolean;
+      /** The stop was sent; the turn hasn't ended yet. */
+      stopping?: boolean;
+      /**
+       * Stopping for a while: still reads Stopping…, and can be pressed to
+       * send the stop again.
+       */
+      stopRetryable?: boolean;
+      /**
+       * The stop waits for the turn's project to wake before the turn can
+       * end: Stopping… says so (CAN-6721).
+       */
+      stopWaitsForWake?: boolean;
       dataTestId?: string;
       tapTarget?: ComposerSendButtonTapTarget;
     }
@@ -95,51 +112,8 @@ export function ComposerSendButton(
     );
   }
 
-  if (props.kind === 'stop') {
-    const pending = props.pending ?? false;
-    const armed = props.armed ?? false;
-    const shortcutReady = props.shortcutReady ?? false;
-    // A pending model change outranks the armed Esc: the spinner replaces the
-    // label and the control reads as a plain stop until the change lands.
-    const showArmed = armed && !pending;
-    return (
-      <Tooltip
-        label={
-          pending
-            ? 'Updating model'
-            : showArmed
-              ? 'Press Esc again to stop'
-              : 'Stop generation'
-        }
-      >
-        <button
-          type="button"
-          onClick={props.onStop}
-          data-testid={props.dataTestId}
-          disabled={pending || (props.disabled ?? false)}
-          aria-busy={pending}
-          data-cancel-shortcut-ready={shortcutReady || undefined}
-          data-cancel-armed={armed || undefined}
-          // The primary action while a turn runs, in send's own recipe.
-          className={`${BASE} ${
-            showArmed ? CAPSULE_SIZE[tapTarget] : ROUND_SIZE[tapTarget]
-          } bg-accent enabled:hover:bg-accent/90 disabled:opacity-40`}
-          aria-label={showArmed ? 'Press Esc again to stop' : 'Stop generation'}
-        >
-          {pending ? (
-            <LoadingSpinner dataTestId="chat-model-change-pending" decorative />
-          ) : (
-            <>
-              <StopFilledIcon size={16} aria-hidden />
-              {showArmed && (
-                <span className="text-s font-medium leading-none">Esc</span>
-              )}
-            </>
-          )}
-        </button>
-      </Tooltip>
-    );
-  }
+  if (props.kind === 'stop')
+    return <ComposerStopButton {...props} tapTarget={tapTarget} />;
 
   const { onSend, disabled, pending, blockedReason, dataTestId } = props;
   return (
@@ -162,6 +136,66 @@ export function ComposerSendButton(
           <LoadingSpinner dataTestId="chat-model-change-pending" decorative />
         ) : (
           <ArrowUp width={16} height={16} aria-hidden />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+type ComposerStopButtonProps = Extract<
+  ComposerSendButtonProps,
+  { kind: 'stop' }
+> & { readonly tapTarget: ComposerSendButtonTapTarget };
+
+/** The composer's Stop while a turn runs; see ComposerSendButton. */
+function ComposerStopButton(props: ComposerStopButtonProps): JSX.Element {
+  const { tapTarget } = props;
+  const pending = props.pending ?? false;
+  const stopping = !pending && (props.stopping ?? false);
+  const waiting = stopping && !(props.stopRetryable ?? false);
+  const armed = props.armed ?? false;
+  const shortcutReady = props.shortcutReady ?? false;
+  // A pending model change outranks the armed Esc: the spinner replaces the
+  // label and the control reads as a plain stop until the change lands.
+  // A stop already sent reads Stopping… and can't be sent twice until the
+  // host says it may be sent again.
+  const showArmed = armed && !pending && !stopping;
+  const label = pending
+    ? 'Updating model'
+    : stopping
+      ? props.stopWaitsForWake === true
+        ? COMPOSER_STOPPING_WAITING_FOR_WAKE_LABEL
+        : COMPOSER_STOPPING_LABEL
+      : showArmed
+        ? 'Press Esc again to stop'
+        : 'Stop generation';
+  return (
+    <Tooltip label={label}>
+      <button
+        type="button"
+        onClick={props.onStop}
+        data-testid={props.dataTestId}
+        disabled={pending || waiting || (props.disabled ?? false)}
+        aria-busy={pending || stopping}
+        data-cancel-shortcut-ready={shortcutReady || undefined}
+        data-cancel-armed={armed || undefined}
+        // The primary action while a turn runs, in send's own recipe.
+        className={`${BASE} ${
+          showArmed ? CAPSULE_SIZE[tapTarget] : ROUND_SIZE[tapTarget]
+        } bg-accent enabled:hover:bg-accent/90 disabled:opacity-40`}
+        aria-label={pending ? 'Stop generation' : label}
+      >
+        {pending ? (
+          <LoadingSpinner dataTestId="chat-model-change-pending" decorative />
+        ) : waiting ? (
+          <LoadingSpinner dataTestId="chat-stop-pending" decorative />
+        ) : (
+          <>
+            <StopFilledIcon size={16} aria-hidden />
+            {showArmed && (
+              <span className="text-s font-medium leading-none">Esc</span>
+            )}
+          </>
         )}
       </button>
     </Tooltip>

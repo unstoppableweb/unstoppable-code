@@ -1,3 +1,5 @@
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import { projectAutoDeleteAttention } from '../lib/auto-delete-attention';
 import { W5_UNREACHABLE_READ_MESSAGE } from '@canopy/core-runtime/node/w5/file-store';
 import { projectRemoteW5Recovery } from '@canopy/protocol/portal';
 import { getDesktopW5RecoveryController } from '../canopy-runtime/desktop-w5-recovery';
@@ -581,9 +583,17 @@ export async function buildPortalSnapshot(
   const visibleCoworkProjectIds: string[] = [];
   const visibleWorkspaceIds = new Set<string>();
   const projectedWorktrees: PortalSessionShellState['worktrees'] = [];
+  const attentionWorkspaceIds = new Set<string>();
+  let attentionParentsRead = false;
+  const attentionIncarnations: {
+    workspaceId: string;
+    worktreeId: string;
+    createdAt: string;
+  }[] = [];
   const captureWorkspace = (
     workspace: PortalSessionShellState['workspaces'][number],
   ): void => {
+    attentionWorkspaceIds.add(workspace.localId);
     if (
       request.includeChatSummaries !== true ||
       workspace.hidden ||
@@ -598,6 +608,12 @@ export async function buildPortalSnapshot(
   const captureWorktree = (
     worktree: PortalSessionShellState['worktrees'][number],
   ): void => {
+    if (worktree.createdAt)
+      attentionIncarnations.push({
+        workspaceId: worktree.workspaceLocalId,
+        worktreeId: worktree.localId,
+        createdAt: worktree.createdAt,
+      });
     if (request.includeChatSummaries === true)
       projectedWorktrees.push(worktree);
   };
@@ -663,6 +679,7 @@ export async function buildPortalSnapshot(
         },
       },
     );
+    attentionParentsRead = true;
     recordSection(
       'workspaces_list',
       sectionDurations.get('workspaces_list') ?? 0,
@@ -1007,12 +1024,14 @@ export async function buildPortalSnapshot(
     if (request.includeChatSummaries === true) {
       // Overview already captured these exact parents; do not re-list and
       // combine one parent revision with a different chat inventory.
-      if (request.scope === 'worktree_chat_summaries')
+      if (request.scope === 'worktree_chat_summaries') {
         await listWorkspacePortalEntities(request.target, {
           includeDiffStats: false,
           onWorkspace: captureWorkspace,
           onWorktree: captureWorktree,
         });
+        attentionParentsRead = true;
+      }
       const allowed = new Set(
         projectedWorktrees
           .filter(
@@ -1325,6 +1344,22 @@ export async function buildPortalSnapshot(
           ? activitySummary.payload
           : {}),
         ...(viewMode ? { viewMode } : {}),
+        // Only a complete parent inventory can replace the global attention list.
+        // Partial snapshots preserve it without another workspace read.
+        ...(attentionParentsRead && !request.target?.workspaceLocalId
+          ? {
+              autoDeleteAttention: await projectAutoDeleteAttention(
+                [...attentionWorkspaceIds],
+                attentionIncarnations,
+              ).catch((error: unknown) => {
+                logMainProcessWarn(
+                  'Could not project Auto Delete attention',
+                  error,
+                );
+                return [];
+              }),
+            }
+          : {}),
         w5Recovery: projectRemoteW5Recovery(
           getDesktopW5RecoveryController().peek(),
         ),

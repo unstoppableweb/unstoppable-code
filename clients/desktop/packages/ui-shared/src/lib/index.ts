@@ -10,6 +10,7 @@ export * from './brand-logo';
 export * from './card-display';
 export * from './chat-attention-copy';
 export * from './chat-thinking';
+export * from './credit-notice-visibility';
 export * from './condensedCount';
 export * from './dag-tiers';
 export * from './data-sharing-features';
@@ -115,6 +116,7 @@ export * from './useSidebarHeaderRest';
 export * from './plan-proposal-markdown';
 export * from './useDelayedFlag';
 export * from './composer-placeholder';
+export * from './prompt-suggestion';
 
 export {
   pluginNeedsInstall,
@@ -124,3 +126,4 @@ export * from './sidebar-row-selection-gestures';
 export * from './mcp-selected-sign-in';
 export * from './group-runs';
 export * from './download-blob';
+export * from './agent-model-selection';

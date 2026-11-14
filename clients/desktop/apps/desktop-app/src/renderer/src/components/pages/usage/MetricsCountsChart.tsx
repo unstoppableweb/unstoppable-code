@@ -17,7 +17,14 @@ import {
   CHART_HEIGHT_PX,
   formatBucketLabel,
   formatCompactNumber,
-} from './chart-primitives';
+} from '@canopy/ui-app/charts/chart-controls';
+import {
+  CHART_GRID_DASH,
+  CHART_LINE,
+  CHART_TICK_FONT_SIZE,
+  CHART_TICK_INK,
+} from '@canopy/ui-app/charts/chart-theme';
+import { ChartTooltip } from '@canopy/ui-shared/components';
 import { formatCompactCurrencyUsd, formatCurrencyUsd } from './format';
 
 // Stable palette for series. Picked to cover up to ~22 categories.
@@ -70,63 +77,6 @@ interface CountsDatum {
   [key: string]: number | string;
 }
 
-interface TooltipPayloadEntry {
-  dataKey?: unknown;
-  name?: unknown;
-  value?: unknown;
-  color?: unknown;
-}
-
-interface CountsTooltipProps {
-  active?: boolean;
-  label?: unknown;
-  payload?: ReadonlyArray<unknown>;
-  valueFormat?: 'number' | 'currency';
-}
-
-function CountsTooltipContent({
-  active,
-  label,
-  payload,
-  valueFormat = 'number',
-}: CountsTooltipProps): JSX.Element {
-  if (!active || !payload || payload.length === 0) return <></>;
-  const labelStr =
-    typeof label === 'string'
-      ? label
-      : typeof label === 'number'
-        ? String(label)
-        : '';
-  return (
-    <div className="flex flex-col rounded bg-popover fg-primary p-2 shadow-md text-xs gap-1">
-      {labelStr ? <div className="font-semibold">{labelStr}</div> : null}
-      {payload.map((raw, i) => {
-        const entry = raw as TooltipPayloadEntry;
-        const name = typeof entry.name === 'string' ? entry.name : '';
-        const value = typeof entry.value === 'number' ? entry.value : 0;
-        const color = typeof entry.color === 'string' ? entry.color : undefined;
-        return (
-          <div key={i} className="flex items-center gap-2 whitespace-nowrap">
-            {color ? (
-              <span
-                aria-hidden="true"
-                className="inline-block h-2 w-2 rounded-sm"
-                style={{ backgroundColor: color }}
-              />
-            ) : null}
-            <span className="fg-secondary">{name}</span>
-            <span className="ml-auto tabular-nums">
-              {valueFormat === 'currency'
-                ? formatCurrencyUsd(value)
-                : formatCompactNumber(value)}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export function MetricsCountsChart({
   buckets,
   visibleSeries,
@@ -152,20 +102,23 @@ export function MetricsCountsChart({
     });
   }, [buckets, seriesOptions, visibleSeries, bucket]);
 
+  const formatValue =
+    valueFormat === 'currency' ? formatCurrencyUsd : formatCompactNumber;
+
   return (
     <ResponsiveContainer width="100%" height={CHART_HEIGHT_PX}>
       <BarChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--line-base)" />
+        <CartesianGrid strokeDasharray={CHART_GRID_DASH} stroke={CHART_LINE} />
         <XAxis
           dataKey="label"
-          stroke="var(--fg-secondary)"
-          fontSize={11}
+          stroke={CHART_TICK_INK}
+          fontSize={CHART_TICK_FONT_SIZE}
           tickLine={false}
           axisLine={false}
         />
         <YAxis
-          stroke="var(--fg-secondary)"
-          fontSize={11}
+          stroke={CHART_TICK_INK}
+          fontSize={CHART_TICK_FONT_SIZE}
           tickFormatter={(v: number) =>
             valueFormat === 'currency'
               ? formatCompactCurrencyUsd(v)
@@ -177,7 +130,13 @@ export function MetricsCountsChart({
         <Tooltip
           cursor={{ fill: 'var(--bg-secondary)', fillOpacity: 0.4 }}
           content={(props) => (
-            <CountsTooltipContent {...props} valueFormat={valueFormat} />
+            <ChartTooltip
+              active={props.active}
+              label={props.label}
+              payload={props.payload}
+              accessibilityLayer={props.accessibilityLayer}
+              formatValue={formatValue}
+            />
           )}
         />
         {seriesOptions

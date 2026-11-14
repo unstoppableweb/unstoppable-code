@@ -39,6 +39,8 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
+  /** Locked Work Entry archive. Unconfigured or unavailable hosts default-deny. */
+  readonly standaloneChatArchive?: boolean;
   /** Host can disarm agent-armed work entry removal and answer branch questions. Default-deny. */
   readonly workEntryAutoDelete?: 'manage';
   /** Error reports; absent means false. Enable only with a complete adapter. */
@@ -64,6 +66,12 @@ export interface CanopyCapabilities {
    * web denies.
    */
   readonly cloudCapabilityLinks?: boolean;
+  /**
+   * Host can let its own MCP servers be reached from the person's cloud
+   * chats, ask before each call, and show what reached them (CAN-6176).
+   * Default-deny; web denies.
+   */
+  readonly cloudReachBack?: boolean;
   /**
    * Host can embed account OAuth in its local browser pane. Default-deny for
    * both unconfigured and configured-but-unavailable hosts. Remote Control
@@ -125,6 +133,23 @@ export interface CanopyCapabilities {
    * Remote Control requires a live leg and host inventory; cloud has neither.
    */
   readonly sidebarActivityMode?: boolean;
+  /**
+   * Search palette scopes beyond chats and worktrees, which every host lists
+   * from what its sidebar already holds. Optional and default-deny: unset is
+   * the confirmed default for unconfigured and configured-but-unavailable
+   * hosts, and the palette shows those scope tabs as unavailable. Desktop
+   * serves all three from its own stores and transcript index; the Portal
+   * leaves it unset because the paired desktop projects no command catalog,
+   * workflow list or transcript search to the browser.
+   */
+  readonly searchPalette?: {
+    /** Commands and settings (the Actions scope). */
+    readonly actions?: boolean;
+    /** Pipelines, scheduled workflows and watchers (the Workflows scope). */
+    readonly workflows?: boolean;
+    /** Text inside chats and plans (the Content scope). */
+    readonly content?: boolean;
+  };
   /** Host can read unsent composer drafts. Optional, default-deny; desktop only. */
   readonly chatDrafts?: boolean;
   /**
@@ -225,10 +250,25 @@ export interface CanopyCapabilities {
    * it once its backend serves `core.chat.archive` (CAN-6175 R3).
    */
   readonly chatArchives?: boolean;
+  /**
+   * The target has a task summary its Summary section shows and its Refresh
+   * regenerates. Optional and default-deny: without it, the Summary section
+   * and its Refresh are hidden. Desktop reports `true` for local scopes and
+   * the web for a paired desktop; a cloud scope has no summary yet, and
+   * reports it once its web core serves `core.summary.get` (CAN-6568,
+   * CAN-6573).
+   */
+  readonly taskSummary?: boolean;
   /** Host can run interactive GitHub sign-in locally. Missing means unavailable. */
   readonly githubConnection?: boolean;
   /** Browser checkout only; absent is default-deny. Desktop never embeds Stripe. */
   readonly inlineCheckout?: boolean;
+  /**
+   * Host can link to the desktop app's download page; absent is
+   * default-deny. Desktop leaves it unset because the person already has
+   * the app.
+   */
+  readonly desktopDownload?: boolean;
   /** Paired host can approve an app-owned proposal with its message. Default-deny. */
   readonly planProposalReview?: boolean;
   /**
@@ -438,6 +478,8 @@ export interface CanopyCapabilities {
    * both. Desktop and Remote Control report `true`.
    */
   readonly worktreeBranching?: boolean;
+  /** Lists and accepts branch bases; Portal requires canonical v2 support. Absent means unsupported. */
+  readonly worktreeBaseBranch?: boolean;
   /**
    * Host persists label and visibility edits through `worktree.update` for
    * this target. Optional and default-deny: unset is treated as `false`. A
@@ -656,6 +698,8 @@ export interface CanopyCapabilities {
    * only its message.
    */
   readonly worktreeDiscard?: boolean;
+  /** Incarnation-bound, settled recovery actions; description support alone is insufficient. */
+  readonly worktreeRecovery?: boolean;
   /**
    * Host can list what keeps a project's deletion from finishing that a
    * person can discard, and supersede an interrupted deletion on request

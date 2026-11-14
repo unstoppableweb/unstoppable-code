@@ -104,9 +104,15 @@ const WORKER_GIT_DIFF_RESULT_BYTES = 8 * 1024 * 1024 - 64 * 1024;
  * unserved: the desktop is given resolved merge bases.
  */
 export function workerGitDiffRange(
-  base: string,
+  base: string | undefined,
   head: string,
 ): GitChangeSetRange {
+  // The web core's recorded base; this host records none.
+  if (base === undefined)
+    throw refusal(
+      'capability_unavailable',
+      'This host compares from a base the caller names.',
+    );
   const headIsObject = isObjectId(head);
   if (head !== 'WORKTREE' && head !== 'HEAD' && !headIsObject)
     throw refusal(
@@ -146,6 +152,17 @@ export function createWorkerGitDiffHandlers<Repository>(
       params,
       context,
     ): Promise<WorkerGitDiffGetResult> => {
+      // The web core's revision (CAN-6093); this host advertises none.
+      if (params.revision !== undefined)
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'This worker does not serve this revision.',
+          details: { unsupported: ['revision'], reason: 'unserved' },
+          retry: {
+            kind: 'after_refresh',
+            resource: 'core.runtime.manifest.get',
+          },
+        });
       assertWorkerGitServedSelection(params.scope, host);
       if (
         params.scope.repoId !== undefined &&

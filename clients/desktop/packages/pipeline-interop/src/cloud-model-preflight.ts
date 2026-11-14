@@ -6,7 +6,11 @@ import {
   type CloudModelPreflightItem,
   type CloudModelPreflightReason,
 } from '@canopy/protocol/canopy-core';
-import { CLOUD_RUN_COMPOSITE_MODEL_ACTIONS } from './cloud-preflight';
+import {
+  CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
+  CLOUD_RUN_REPOSITORY_MODEL_INPUTS,
+  cloudModelAliasOf,
+} from './cloud-preflight';
 import type { Pipeline, Step } from './document';
 import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 
@@ -22,9 +26,12 @@ import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases
  * alternative for every item. The local definition is never edited: the
  * result is the snapshot the cloud run pins.
  *
- * Steps that `preflightCloudRun` refuses outright (expression models,
- * unresolved model aliases, plugin collections) are left to it; this module
- * skips them so one step is never listed twice.
+ * Steps that `preflightCloudRun` refuses outright (expression models and
+ * model aliases a cloud run can't resolve) are left to it; this module skips
+ * them so one step is never listed twice. A step on an inline model alias is
+ * judged by the alias's base model (CAN-6439). A step that loads a plugin
+ * collection, its own or its alias's, runs only Claude models: the host
+ * loads plugins in Claude steps only (CAN-6012).
  */
 
 /**
@@ -50,6 +57,9 @@ export const CLOUD_MODEL_ACTION_HARNESSES: Readonly<
   router: ['claude'],
   condenser: ['claude'],
   'parallel-agents': ['claude'],
+  // CAN-6739: their commit and PR text, in folder and worktree runs.
+  'git-commit-push': ['claude'],
+  'github-create-pr': ['claude'],
 };
 
 /** The cloud catalog and the run owner's model policy, as preflight sees them. */
@@ -69,6 +79,10 @@ const MESSAGES: Readonly<Record<CloudModelPreflightReason, string>> = {
   blocked_model: "Your organization's model policy doesn't allow this model.",
   action_harness: 'In cloud runs, this step only runs Claude models.',
 };
+
+/** Why a step that loads a plugin collection needs a Claude model (CAN-6012). */
+const COLLECTION_HARNESS_MESSAGE =
+  'In cloud runs, a step that loads a plugin collection only runs Claude models.';
 
 const HARNESS_NAMES = {
   cursor: 'Cursor',
@@ -98,6 +112,10 @@ interface StepModelAction {
   readonly composite: boolean;
   /** The step's own `permission_preset` reaches the model step. */
   readonly ownPermissionPreset: boolean;
+  /** The input that names the model (`model` unless the action says). */
+  readonly input: string;
+  /** What runs when the input is empty. */
+  readonly defaultModel: string;
 }
 
 /** The bundled model action a step's model runs on, or null. */
@@ -109,8 +127,24 @@ function modelActionOf(step: Step): StepModelAction | null {
     .split('/')
     .filter((segment) => segment !== '' && segment !== '.')
     .join('/');
-  if (Object.prototype.hasOwnProperty.call(CLOUD_MODEL_ACTION_HARNESSES, name))
-    return { action: name, composite: false, ownPermissionPreset: true };
+  if (
+    Object.prototype.hasOwnProperty.call(CLOUD_MODEL_ACTION_HARNESSES, name)
+  ) {
+    // A repository action names its model in an input of its own (CAN-6739).
+    const own = Object.prototype.hasOwnProperty.call(
+      CLOUD_RUN_REPOSITORY_MODEL_INPUTS,
+      name,
+    )
+      ? CLOUD_RUN_REPOSITORY_MODEL_INPUTS[name]
+      : undefined;
+    return {
+      action: name,
+      composite: false,
+      ownPermissionPreset: true,
+      input: own?.input ?? 'model',
+      defaultModel: own?.runnerDefault ?? CLOUD_DEFAULT_STEP_MODEL,
+    };
+  }
   const inner = Object.prototype.hasOwnProperty.call(
     CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
     name,
@@ -123,6 +157,8 @@ function modelActionOf(step: Step): StepModelAction | null {
         action: inner.action,
         composite: true,
         ownPermissionPreset: inner.forwardsPermissionPreset,
+        input: 'model',
+        defaultModel: CLOUD_DEFAULT_STEP_MODEL,
       };
 }
 
@@ -138,37 +174,43 @@ function localHarnessOf(model: string): LocalHarness | 'ollama' | null {
   return null;
 }
 
-/** Whether `preflightCloudRun` already refuses the step's model or plugins. */
-function refusedOutright(
-  pipeline: Pipeline,
+/** Whether `preflightCloudRun` already refuses the step's model. */
+function refusedOutright(pipeline: Pipeline, model: string): boolean {
+  return model.includes('${{') || cloudModelAliasOf(pipeline, model) === null;
+}
+
+/**
+ * The plugin collection a model step loads: its own (a composite's own
+ * reaches none of its steps), else its inline alias's.
+ */
+function loadedCollectionOf(
   step: Step,
   composite: boolean,
-  model: string,
-): boolean {
-  return (
-    model.includes('${{') ||
-    (pipeline.plugin_collections?.length ?? 0) > 0 ||
-    // A composite's own plugin collection reaches none of its steps.
-    (!composite && step.with?.plugin_collection_id !== undefined) ||
-    (pipeline.model_aliases?.some((alias) => alias.id === model) ?? false)
-  );
+  alias: { readonly pluginCollectionId?: string } | undefined,
+): string | undefined {
+  const own = composite ? undefined : step.with?.plugin_collection_id;
+  return own !== undefined ? String(own) : alias?.pluginCollectionId;
 }
 
 /**
  * The harnesses `step` runs on in the cloud: its action's, without Codex
  * when the model step runs with `permission_preset: none`, which the step
  * runner refuses on the Codex harness because Codex can't disable its native
- * tools. A composite that fixes its model step's preset ignores the step's.
+ * tools, or when it loads a plugin collection, whose plugins the host loads
+ * in Claude steps only (CAN-6012). A composite that fixes its model step's
+ * preset ignores the step's.
  */
 function harnessesFor(
   step: Step,
   runs: StepModelAction,
+  loadsCollection: boolean,
 ): readonly CloudModelHarness[] {
   const harnesses = CLOUD_MODEL_ACTION_HARNESSES[runs.action] ?? [];
   const preset = runs.ownPermissionPreset
     ? step.with?.permission_preset
     : undefined;
-  return preset !== undefined && String(preset).trim() === 'none'
+  return loadsCollection ||
+    (preset !== undefined && String(preset).trim() === 'none')
     ? harnesses.filter((harness) => harness !== 'codex')
     : harnesses;
 }
@@ -232,17 +274,28 @@ function itemFor(
   const { jobId, stepIndex, step } = at;
   const runs = modelActionOf(step);
   if (runs === null) return null;
-  const written =
-    step.with?.model === undefined ? '' : String(step.with.model).trim();
-  if (refusedOutright(pipeline, step, runs.composite, written)) return null;
+  const value = step.with?.[runs.input];
+  const written = value === undefined ? '' : String(value).trim();
+  if (refusedOutright(pipeline, written)) return null;
+  // A repository action takes no alias at all; preflight refuses one.
+  if (
+    runs.input !== 'model' &&
+    cloudModelAliasOf(pipeline, written) !== undefined
+  )
+    return null;
+  // An inline alias runs its base model (CAN-6439).
+  const alias = cloudModelAliasOf(pipeline, written) ?? undefined;
+  const named = alias?.base ?? written;
   const model =
-    ownValue(STATIC_MODEL_REFERENCE_ALIASES, written) ??
-    (written === '' ? CLOUD_DEFAULT_STEP_MODEL : written);
+    ownValue(STATIC_MODEL_REFERENCE_ALIASES, named) ??
+    (named === '' ? runs.defaultModel : named);
   const local = localHarnessOf(model);
+  const loadsCollection =
+    loadedCollectionOf(step, runs.composite, alias) !== undefined;
   const judged: StepModel = {
     local,
-    cloud: local === null ? byId.get(gatewayIdOf(model)) : undefined,
-    runs: harnessesFor(step, runs),
+    cloud: local === null ? byId.get(cloudModelGatewayIdOf(model)) : undefined,
+    runs: harnessesFor(step, runs, loadsCollection),
   };
   const reason = reasonFor(judged, context);
   if (reason === null) return null;
@@ -251,11 +304,19 @@ function itemFor(
   return {
     itemKey: cloudModelItemKey(jobId, stepIndex),
     reason,
-    parityId: PARITY_IDS[reason],
-    message: MESSAGES[reason].replace(
-      '{harness}',
-      local !== null && local !== 'ollama' ? HARNESS_NAMES[local] : '',
-    ),
+    parityId:
+      loadsCollection && reason === 'action_harness'
+        ? 'CAN-6012'
+        : PARITY_IDS[reason],
+    message:
+      loadsCollection &&
+      reason === 'action_harness' &&
+      (CLOUD_MODEL_ACTION_HARNESSES[runs.action] ?? []).includes('codex')
+        ? COLLECTION_HARNESS_MESSAGE
+        : MESSAGES[reason].replace(
+            '{harness}',
+            local !== null && local !== 'ollama' ? HARNESS_NAMES[local] : '',
+          ),
     jobId,
     stepIndex,
     ...(stepName === undefined ? {} : { stepName }),
@@ -355,8 +416,9 @@ function ownValue(
 /**
  * The cloud catalog id a desktop model id or alias names: its pinned AI
  * Gateway id, or the id itself (a gateway id such as `anthropic/claude-opus-5.5`).
+ * The web core routes a cloud run's model steps by it too (CP-68).
  */
-function gatewayIdOf(model: string): string {
+export function cloudModelGatewayIdOf(model: string): string {
   const resolved = ownValue(CLOUD_NATIVE_MODEL_ALIASES, model) ?? model;
   return ownValue(CLOUD_NATIVE_MODEL_GATEWAY_IDS, resolved) ?? resolved;
 }
@@ -413,6 +475,7 @@ export function applyCloudModelChoices(
   if (items.length === 0) return { ok: true, pipeline, applied: [] };
 
   const jobs: Pipeline['jobs'] = { ...pipeline.jobs };
+  const aliases = [...(pipeline.model_aliases ?? [])];
   const applied: (CloudModelChoice & { from: string })[] = [];
   for (const item of items) {
     const modelId = chosen.get(item.itemKey)?.[0];
@@ -420,10 +483,57 @@ export function applyCloudModelChoices(
     const step = job?.steps[item.stepIndex];
     if (modelId === undefined || job === undefined || step === undefined)
       return { ok: false, unconfirmed: [item.itemKey], unknown: [] };
+    // A replaced inline alias keeps everything but its base model: the step
+    // runs a copy of the alias with the confirmed model, which the executor
+    // resolves as it resolves the original, inside a composite too
+    // (CAN-6439).
+    const alias = pipeline.model_aliases?.find(
+      (candidate) => candidate.id.trim() === item.model.trim(),
+    );
+    let model = modelId;
+    if (
+      alias?.defaults !== undefined &&
+      !('agent_id' in alias.defaults) &&
+      cloudModelAliasOf(pipeline, alias.id)
+    ) {
+      model = uniqueAliasId(alias.id.trim(), aliases);
+      aliases.push({
+        ...alias,
+        id: model,
+        defaults: { ...alias.defaults, base: modelId },
+      });
+    }
     const steps = [...job.steps];
-    steps[item.stepIndex] = { ...step, with: { ...step.with, model: modelId } };
+    steps[item.stepIndex] = {
+      ...step,
+      with: { ...step.with, [modelInputOf(step)]: model },
+    };
     jobs[item.jobId] = { ...job, steps };
     applied.push({ itemKey: item.itemKey, modelId, from: item.model });
   }
-  return { ok: true, pipeline: { ...pipeline, jobs }, applied };
+  return {
+    ok: true,
+    pipeline: {
+      ...pipeline,
+      jobs,
+      ...(aliases.length > 0 && { model_aliases: aliases }),
+    },
+    applied,
+  };
+}
+
+/** The input a step names its model in: `model`, or a repository action's own. */
+function modelInputOf(step: Step): string {
+  return modelActionOf(step)?.input ?? 'model';
+}
+
+/** `<alias>-cloud-<n>`: the first id no alias of the workflow uses. */
+function uniqueAliasId(
+  base: string,
+  aliases: readonly { readonly id: string }[],
+): string {
+  for (let n = 1; ; n += 1) {
+    const id = `${base}-cloud-${String(n)}`;
+    if (!aliases.some((alias) => alias.id.trim() === id)) return id;
+  }
 }

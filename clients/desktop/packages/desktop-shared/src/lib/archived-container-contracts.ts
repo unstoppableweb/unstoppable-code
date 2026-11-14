@@ -54,6 +54,26 @@ function hasOwn(value: UnknownRecord, key: string): boolean {
 const GIT_OBJECT_ID_RE = /^[0-9a-f]{40,64}$/;
 const ARCHIVED_GIT_REF_PREFIX = 'refs/app/archived-containers';
 
+/** Both pre-generation archives and isolated captures remain readable. */
+export function isArchivedGitSnapshotRef(
+  workspaceId: string,
+  containerId: string,
+  repoId: string,
+  ref: string,
+): boolean {
+  const prefix = `${ARCHIVED_GIT_REF_PREFIX}/${workspaceId}/${containerId}/`;
+  if (ref === `${prefix}${repoId}`) return true;
+  if (!ref.startsWith(`${prefix}__generations__/`)) return false;
+  const suffix = ref.slice(`${prefix}__generations__/`.length).split('/');
+  return (
+    suffix.length === 2 &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+      suffix[0] ?? '',
+    ) &&
+    suffix[1] === repoId
+  );
+}
+
 function isArchivedContainerKind(
   value: unknown,
 ): value is 'worktree' | 'work-entry' {
@@ -358,8 +378,12 @@ export function isArchivedContainerManifest(
         : `repos/${repository.repoId}`;
     if (
       repository.relativePath !== expectedRelativePath ||
-      repository.snapshotRef !==
-        `${ARCHIVED_GIT_REF_PREFIX}/${String(value.projectId)}/${String(value.id)}/${repository.repoId}`
+      !isArchivedGitSnapshotRef(
+        String(value.projectId),
+        String(value.id),
+        repository.repoId,
+        repository.snapshotRef,
+      )
     ) {
       return false;
     }

@@ -97,7 +97,29 @@ export const REMOTE_EVENTS = {
  * Version 1 is every release before this check. After a bump, run
  * `pnpm run remote-control:contract:write`; see docs/remote-control-protocol.md.
  */
-export const REMOTE_PROTOCOL_VERSION = 19;
+export const REMOTE_PROTOCOL_VERSION = 20;
+
+/**
+ * The oldest host protocol the web's browser and hosted controllers accept,
+ * sent as `session.hello.controller.minVersion`. It is separate from
+ * `REMOTE_PROTOCOL_VERSION` because the web deploys ahead of the desktops it
+ * controls: many bumps change only what a desktop controller reads, such as
+ * a Labs snapshot key, and holding the web to its own version locked it out
+ * of every desktop one release behind.
+ *
+ * What pins it, so a bump's author can tell whether the floor must move:
+ * - 19 (CAN-6187): `pipelines:execute`, a browser channel, takes `targetId`.
+ *   An older host ignores it and would run a cloud run on that computer.
+ * - 17: controller profiles. Host features (`controllerProfiles`,
+ *   `pairingProof`, `hostedDelegation`) are checked separately.
+ *
+ * Raise it only when a host below the new floor would misread or mishandle
+ * what the web sends or relies on, and add the reason above; never just
+ * because `REMOTE_PROTOCOL_VERSION` went up. It never exceeds
+ * `REMOTE_PROTOCOL_VERSION` (docs/remote-control-protocol.md, "The web
+ * controller floor").
+ */
+export const WEB_CONTROLLER_MIN_PROTOCOL_VERSION = 19;
 
 /** What a computer runs, as the other computer of a session sees it. */
 export const RemoteVersionSchema = z.object({
@@ -131,6 +153,8 @@ export const HelloParamsSchema = z.object({
     })
     .optional(),
   transport: RemoteTransportFeaturesSchema.optional(),
+  /** This controller understands the exact worktree-base catalogue. */
+  exactWorktreeBaseBranch: z.boolean().optional(),
 });
 export type HelloParams = z.infer<typeof HelloParamsSchema>;
 
@@ -249,6 +273,8 @@ export const HelloResultSchema = z.object({
       hostedDelegation: z.boolean(),
       /** The host serves `pair.revoke`. Absent means unsupported. */
       pairRevoke: z.boolean().optional(),
+      /** Both peers support explicit local:/remote: worktree base refs. */
+      exactWorktreeBaseBranch: z.boolean().optional(),
     })
     .optional(),
   /** The transport features the host accepted from the hello's offer. */

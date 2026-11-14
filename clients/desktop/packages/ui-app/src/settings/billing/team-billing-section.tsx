@@ -272,6 +272,7 @@ export function TeamBillingSection({
             on top of the wrapper's `gap-6` and leave a lopsided gutter under the
             banner. */}
         <ErrorBanner
+          errorSource="team-billing-load"
           className=""
           error={error?.copy}
           details={error?.details}
@@ -909,6 +910,7 @@ function BillingHistoryCard({
     >
       <div className="flex flex-col gap-4">
         <ErrorBanner
+          errorSource="billing-history-card"
           className=""
           error={error?.copy}
           details={error?.details}
@@ -1106,6 +1108,7 @@ function AiCreditPoolCard({
             owns the gutter below itself, since the card body wrapper already
             supplies the gutter above. */}
         <ErrorBanner
+          errorSource="team-billing-change-payment"
           error={error?.copy}
           details={error?.details}
           onRetry={() => void load()}

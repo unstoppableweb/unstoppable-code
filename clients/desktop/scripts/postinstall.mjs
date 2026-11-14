@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import { clearDemoGitIdentity } from './lib/clear-demo-git-identity.mjs';
 
 function shouldSkipElectronRebuild() {
   return (
@@ -30,6 +31,12 @@ function runElectronRebuild() {
       `electron-rebuild failed for node-pty (exit ${result.status ?? 'unknown'})`,
     );
   }
+}
+
+if (clearDemoGitIdentity()) {
+  process.stdout.write(
+    "Removed the demo apps' git identity from this checkout's local config; commits use your own identity again.\n",
+  );
 }
 
 if (shouldSkipElectronRebuild()) {

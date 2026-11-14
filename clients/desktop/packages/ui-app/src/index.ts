@@ -151,6 +151,7 @@ export {
   type ChatPartViewProps,
   AskUserQuestionInteractionProvider,
   DeliverableInteractionProvider,
+  ManagedDelegationLiveContext,
   ModelAccessRecoveryInteractionProvider,
   TurnWorkingStatusProvider,
   useAskUserQuestionInteraction,
@@ -161,6 +162,7 @@ export {
   type AskUserQuestionRequestStatus,
   type DeliverableInteraction,
   type DeliverableRef,
+  type ManagedDelegationLiveState,
 } from './code/ChatPartView';
 export {
   DeferredToolOutput,
@@ -181,6 +183,7 @@ export {
 } from './code/DelegationChildPages';
 export {
   overlayManagedDelegationProgress,
+  overlayManagedDelegationSnapshot,
   type ManagedDelegationProgress,
   type ManagedDelegationProgressOverlay,
 } from './code/managed-delegation-progress';
@@ -374,7 +377,12 @@ export {
   type ScriptsSectionBodyProps,
   type ScriptsSectionEntry,
   type ScriptsSectionLifecycle,
+  type ScriptsSectionOrphanGroup,
+  type ScriptsSectionOrphanGroupMember,
+  type ScriptsSectionOrphanGroupStop,
+  type ScriptsSectionOrphanStopOutcome,
   type ScriptsSectionRun,
+  type ScriptsSectionRunOrphan,
   type ScriptsSectionRunStatus,
   type ScriptsSectionScript,
   type ScriptsSectionTarget,
@@ -591,12 +599,6 @@ export {
   type SidebarAccountRowProps,
 } from './code/shell/SidebarAccountFooter';
 export {
-  SidebarRemoteControlSubtitle,
-  sidebarRemoteControlSubtitleLabel,
-  type SidebarRemoteControlStatus,
-  type SidebarRemoteControlSubtitleProps,
-} from './code/shell/SidebarAccountSubtitle';
-export {
   getSidebarNavItemDefs,
   type SidebarNavItemDef,
   type SidebarNavItemKey,
@@ -613,6 +615,26 @@ export {
   type CreateWorkspaceDialogProps,
   type CreateWorkspaceDialogTestIds,
 } from './code/shell/CreateWorkspaceDialog';
+export {
+  publishSidebarMoreWorkspaces,
+  registerSidebarHiddenWorktreeHandler,
+  requestSidebarHiddenWorktreeAction,
+  useSidebarHiddenWorktreeRemovalAvailable,
+  useSidebarHiddenWorktrees,
+  useSidebarMoreWorkspace,
+  type SidebarHiddenWorktreeAbilities,
+  type SidebarHiddenWorktreeEntry,
+  type SidebarHiddenWorktreeRequest,
+  type SidebarMoreWorkspace,
+} from './code/shell/sidebar-more-bridge';
+export {
+  archivedMoreWorktreeItem,
+  formatMoreWorktreeDate,
+  formatRestoreNote,
+  useHiddenMoreWorktreeItems,
+  type ArchivedMoreWorktreeItemInput,
+  type MoreHiddenWorktreeOptions,
+} from './code/shell/more-worktree-items';
 export {
   firstVisibleWorkspaceId,
   visibleWorkspaceCount,
@@ -956,6 +978,21 @@ export {
 } from './code/composer/ComposerEditorMenu';
 export { DirectoryPickerHeading } from './code/composer/DirectoryPickerHeading';
 export {
+  BaseBranchPicker,
+  baseBranchRef,
+  baseBranchTargetKey,
+  type BaseBranchPickerBranchState,
+  type BaseBranchPickerProps,
+  type BaseBranchPickerPullRequest,
+  type BaseBranchPickerPullRequests,
+  type BaseBranchPickerWorktree,
+  type BaseBranchTarget,
+} from './code/composer/BaseBranchPicker';
+export {
+  useWorktreeBaseBranches,
+  type WorktreeBaseBranches,
+} from './code/composer/useWorktreeBaseBranches';
+export {
   PortalDirectoryPicker,
   type DirectoryPickerOption,
 } from './code/composer/PortalDirectoryPicker';
@@ -978,6 +1015,8 @@ export {
   type AddMarketplaceConfirmation,
   type AddMarketplaceDialogComponent,
   type AddMarketplaceSeam,
+  type PortalPluginsLocalItem,
+  type PortalPluginsLocalItemsSeam,
   type PortalPluginsPickerProps,
 } from './code/composer/PortalPluginsPicker';
 export {

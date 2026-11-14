@@ -5,16 +5,24 @@ import type {
   FileIndexResponse,
   FileTreeDirectoryRequest,
   FileTreeDirectoryResponse,
+  FileTreeMutationRequest,
+  FileTreeMutationResponse,
   FileTreeRootsRequest,
   FileTreeRootsResponse,
 } from '@canopy/desktop-shared/types';
-import type { ScopedFileQueries } from '@canopy/ipc-canopy-client';
+import type { ScopedFileOperations } from '@canopy/ipc-canopy-client';
 import { isWebCoreScope } from '../chat-authority';
-import { createWebCoreFileQueries } from './web-core-file-queries';
+import { createWebCoreFileOperations } from './web-core-file-operations';
 import { createWebCoreFileSource } from './web-core-file-source';
 
-/** The file reads the explorer and viewer make for one work entry (CAN-6175 D2). */
+/** The file reads and writes the explorer and viewer make for one work entry (CAN-6175 D2). */
 export interface WorkspaceFileSource {
+  /**
+   * The files are on this computer: the OS can open, reveal, watch and trash
+   * them, and main copies them. A cloud chat's sandbox files are none of
+   * these, so the explorer hides those actions.
+   */
+  readonly onThisComputer: boolean;
   getFileIndex(request: FileIndexRequest): Promise<FileIndexResponse>;
   getFileTreeRoots(
     request: FileTreeRootsRequest,
@@ -22,14 +30,19 @@ export interface WorkspaceFileSource {
   getFileTreeDirectory(
     request: FileTreeDirectoryRequest,
   ): Promise<FileTreeDirectoryResponse>;
+  mutateFileTree(
+    request: FileTreeMutationRequest,
+  ): Promise<FileTreeMutationResponse>;
   readFileContent(request: FileContentRequest): Promise<FileContentResponse>;
 }
 
 /** The local IPC reads, unchanged; `window.api` is read at call time. */
 export const localWorkspaceFileSource: WorkspaceFileSource = {
+  onThisComputer: true,
   getFileIndex: (request) => window.api.getFileIndex(request),
   getFileTreeRoots: (request) => window.api.getFileTreeRoots(request),
   getFileTreeDirectory: (request) => window.api.getFileTreeDirectory(request),
+  mutateFileTree: (request) => window.api.mutateFileTree(request),
   readFileContent: (request) => window.api.readFileContent(request),
 };
 
@@ -44,13 +57,13 @@ export function workspaceFileSourceFor(
   return webCoreFileSource;
 }
 
-let webCoreFileQueries: ScopedFileQueries | null = null;
+let webCoreFileOperations: ScopedFileOperations | null = null;
 
-/** The shared viewer's file queries for a cloud chat; undefined keeps IPC. */
-export function scopedFileQueriesFor(
+/** The shared viewer's file operations for a cloud chat; undefined keeps IPC. */
+export function scopedFileOperationsFor(
   worktreeId: string,
-): ScopedFileQueries | undefined {
+): ScopedFileOperations | undefined {
   if (!isWebCoreScope(worktreeId)) return undefined;
-  webCoreFileQueries ??= createWebCoreFileQueries(window.canopyCore);
-  return webCoreFileQueries;
+  webCoreFileOperations ??= createWebCoreFileOperations(window.canopyCore);
+  return webCoreFileOperations;
 }

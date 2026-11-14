@@ -1,18 +1,10 @@
 /**
- * Early access: compact tool calls. Back-to-back assistant messages that only
- * call tools (and think) fold into one transcript row that reads like
- * "Searched 3 times, read 4 files". Anything the user may need to see or act
- * on keeps its own row: agent text, questions, plans, skills, sub-agents and
- * failed calls (which can carry a sign-in recovery card).
- *
- * The live step window (CAN-4274, its own opt-in setting) builds on the same
- * runs: thinking counts as a step, one step is enough to fold, and the run a
- * turn is still adding to shows only its newest steps under the summary row.
+ * Transcript segmentation for the graduated chat presentation: shared step
+ * roles split work from replies, and each run describes its completed work.
+ * Recent detail keeps the newest steps visible; hosts own disclosure state.
  */
 import {
   describeCleanRun,
-  describeStepCounts,
-  describeStepKinds,
   getToolFamilyFromName,
   groupCleanSteps,
   stepKindOfToolCall,
@@ -48,36 +40,6 @@ const STANDALONE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Skill',
 ]);
 
-/** A run needs at least this many tool calls to fold; one call shows as is. */
-const MIN_FOLDED_TOOL_CALLS = 2;
-
-function isFoldableToolUse(block: ToolUseBlock): boolean {
-  if (STANDALONE_TOOL_NAMES.has(block.toolName)) return false;
-  if (isAskUserQuestionToolName(block.toolName)) return false;
-  if (
-    block.result?.visualRef ||
-    SHOW_VISUAL_TOOL_ALIASES.includes(block.toolName)
-  ) {
-    return false;
-  }
-  return block.result?.isError !== true;
-}
-
-/** Whether a block is a tool call or thinking that may fold. */
-function isFoldableStepBlock(block: DisplayBlock): boolean {
-  if (block.isSystemMessage === true) return false;
-  if (block.type === 'thinking') return true;
-  return block.type === 'tool_use' && isFoldableToolUse(block);
-}
-
-/** Whether a message holds only tool calls and thinking that may fold. */
-export function isFoldableToolMessage(message: DisplayMessage): boolean {
-  if (message.role !== 'assistant' || message.blocks.length === 0) {
-    return false;
-  }
-  return message.blocks.every(isFoldableStepBlock);
-}
-
 /**
  * Where a transcript row came from. The live step window can show one
  * message as several rows; each keeps the message's id (search, memory and
@@ -111,60 +73,8 @@ export function stepPieceOf(message: DisplayMessage): StepPiece {
   );
 }
 
-const splitMessages = new WeakMap<DisplayMessage, DisplayMessage[]>();
-
-/**
- * One assistant message can hold text between its steps (a Claude event's
- * content array, an OpenCode patch stream). The live step window splits it at
- * block boundaries into runs of foldable steps and runs of everything else,
- * so text keeps its own row in order and the steps around it can fold. The
- * blocks themselves are shared, so results and running state are untouched.
- */
-function splitAtSteps(message: DisplayMessage): DisplayMessage[] {
-  if (message.role !== 'assistant') return [message];
-  const cached = splitMessages.get(message);
-  if (cached) return cached;
-  const starts: number[] = [];
-  message.blocks.forEach((block, index) => {
-    if (
-      index === 0 ||
-      isFoldableStepBlock(block) !==
-        isFoldableStepBlock(message.blocks[index - 1])
-    ) {
-      starts.push(index);
-    }
-  });
-  if (starts.length < 2) return [message];
-  const pieces = starts.map((start, index) => {
-    const end = starts[index + 1] ?? message.blocks.length;
-    const piece = { ...message, blocks: message.blocks.slice(start, end) };
-    stepPieces.set(piece, {
-      source: message,
-      key: start === 0 ? message.id : `${message.id}#${String(start)}`,
-      endsSource: end === message.blocks.length,
-      blockOffset: start,
-    });
-    return piece;
-  });
-  splitMessages.set(message, pieces);
-  return pieces;
-}
-
-function toolUsesOf(messages: readonly DisplayMessage[]): ToolUseBlock[] {
-  return messages.flatMap((message) =>
-    message.blocks.filter(
-      (block): block is ToolUseBlock => block.type === 'tool_use',
-    ),
-  );
-}
-
 /** Steps the live step window shows while a turn is still running. */
 export const LIVE_STEP_WINDOW_SIZE = 3;
-
-export interface SegmentToolStepsOptions {
-  /** Live step window: thinking counts as a step and one step folds. */
-  liveStepWindow?: boolean;
-}
 
 /** Thinking counts as a step once it has text; an empty shell does not. */
 function isThinkingStep(block: DisplayBlock): block is ThinkingBlock {
@@ -191,69 +101,6 @@ function stepsOf(messages: readonly DisplayMessage[]): ToolStepBlock[] {
         block.type === 'tool_use' || isThinkingStep(block),
     ),
   );
-}
-
-export type ToolStepSegment =
-  | { kind: 'message'; message: DisplayMessage }
-  | {
-      kind: 'steps';
-      /** Stable while the run grows: the render key of its first row. */
-      key: string;
-      messages: DisplayMessage[];
-      toolUses: ToolUseBlock[];
-      /**
-       * What the summary counts. Without the live step window this is
-       * `toolUses` itself; with it, thinking is included in order.
-       */
-      steps: ToolStepBlock[];
-    };
-
-/**
- * Splits a turn's visible messages into single messages and folded runs of
- * tool calls. Order is preserved; a run with fewer than two tool calls is
- * returned as its individual messages. With `liveStepWindow`, any run with at
- * least one step (a tool call or a thought) folds, and a message with text
- * between its steps is first split around that text (see `stepPieceOf`).
- */
-export function segmentToolSteps(
-  messages: readonly DisplayMessage[],
-  options?: SegmentToolStepsOptions,
-): ToolStepSegment[] {
-  const liveWindow = options?.liveStepWindow === true;
-  const segments: ToolStepSegment[] = [];
-  let run: DisplayMessage[] = [];
-  const flush = (): void => {
-    const toolUses = toolUsesOf(run);
-    const steps = liveWindow ? stepsOf(run) : toolUses;
-    const first = run[0];
-    const folds = liveWindow
-      ? steps.length > 0
-      : toolUses.length >= MIN_FOLDED_TOOL_CALLS;
-    if (first && folds) {
-      segments.push({
-        kind: 'steps',
-        key: stepPieceOf(first).key,
-        messages: run,
-        toolUses,
-        steps,
-      });
-    } else {
-      for (const message of run) segments.push({ kind: 'message', message });
-    }
-    run = [];
-  };
-  for (const message of liveWindow
-    ? messages.flatMap(splitAtSteps)
-    : messages) {
-    if (isFoldableToolMessage(message)) {
-      run.push(message);
-      continue;
-    }
-    flush();
-    segments.push({ kind: 'message', message });
-  }
-  flush();
-  return segments;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,48 +450,6 @@ function hasStep(message: DisplayMessage): boolean {
   return message.blocks.some(isWindowStep);
 }
 
-/**
- * Plain-words summary of a run, kinds in the order they first appear:
- * "Searched 3 times, read 4 files, checked the code graph". Thinking, which
- * only the live step window counts, reads "Thought 2 times".
- */
-export function summarizeSteps(
-  steps: readonly ToolStepBlock[],
-  scope?: ToolDisplayScope,
-): string {
-  return describeStepCounts(
-    steps.map(
-      (block) =>
-        [stepKindOfBlock(block, scope), 1, planWriteStatusOf(block)] as const,
-    ),
-  );
-}
-
-/**
- * The clean chat look's words for a run, without counting it: "Ran commands,
- * read files, searched the code".
- */
-export function describeSteps(
-  steps: readonly ToolStepBlock[],
-  scope?: ToolDisplayScope,
-): string {
-  return describeStepKinds(
-    steps.map(
-      (block) =>
-        [stepKindOfBlock(block, scope), 1, planWriteStatusOf(block)] as const,
-    ),
-  );
-}
-
-function planWriteStatusOf(
-  block: ToolStepBlock,
-): 'pending' | 'failed' | 'interrupted' | undefined {
-  if (block.type !== 'tool_use') return undefined;
-  if (!block.result) return 'pending';
-  if (block.result.interruption) return 'interrupted';
-  return block.result.isError ? 'failed' : undefined;
-}
-
 function stepKindOfBlock(
   block: ToolStepBlock,
   scope?: ToolDisplayScope,
@@ -656,15 +461,6 @@ function stepKindOfBlock(
         family: getToolFamilyFromName(block.toolName, scope, block.input),
         input: block.input,
       });
-}
-
-/** The kind of a run's first step, which its row leads with. */
-export function firstStepKind(
-  steps: readonly ToolStepBlock[],
-  scope?: ToolDisplayScope,
-): StepKind | undefined {
-  const first = steps[0];
-  return first ? stepKindOfBlock(first, scope) : undefined;
 }
 
 /** Each counted step of a finished turn and the kind it reads as. */
@@ -753,20 +549,4 @@ export function turnStepCounts(
     if (counts[key] > 0) result.push([TURN_COUNT_KINDS[key], counts[key]]);
   }
   return result;
-}
-
-/** Summary of a run's tool calls; see `summarizeSteps`. */
-export function summarizeToolSteps(
-  toolUses: readonly ToolUseBlock[],
-  scope?: ToolDisplayScope,
-): string {
-  return summarizeSteps(toolUses, scope);
-}
-
-/** The call still running at the end of a run, if any. */
-export function runningToolUse(
-  toolUses: readonly ToolUseBlock[],
-): ToolUseBlock | undefined {
-  const last = toolUses[toolUses.length - 1];
-  return last && last.result === undefined ? last : undefined;
 }

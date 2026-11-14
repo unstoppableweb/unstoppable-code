@@ -210,6 +210,7 @@ export function MarketplaceSourcesList({
       {header}
       {sources !== null && (
         <ErrorBanner
+          errorSource="marketplace-sources-refresh-error"
           className=""
           error={listError}
           blockMessageFromReplay
@@ -372,6 +373,7 @@ function MarketplaceSourceRow({
       )}
       {(error || warning) && (
         <Notice
+          errorSource="marketplace-source-message"
           intent={error ? 'destructive' : 'attention'}
           data-testid="marketplace-source-message"
         >

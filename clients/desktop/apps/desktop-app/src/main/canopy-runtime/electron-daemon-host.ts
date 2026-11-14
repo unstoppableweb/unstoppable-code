@@ -34,6 +34,7 @@ import {
   createCanopyStartupClaimPort,
   type CanopyStartupClaimPort,
 } from '@canopy/core-transport/node';
+import { recoverStaleCanopyDaemonEndpoint } from '@canopy/core-runtime/node';
 import { daemonName, type CanopyRuntimeMode } from '@canopy/protocol/brand';
 import {
   CanopyRuntimeDescriptorSchema,
@@ -361,6 +362,7 @@ export async function createElectronDaemonHost(
   const migration = createElectronMigrationLaunch({
     enabled: ELECTRON_MIGRATION_ROLE.enabled,
   });
+  const beforeSpawn = inputs.w5?.beforeSpawn;
   const launch = createCanopyDaemonHostLaunch({
     secureStorageLayout: 'nested-v1',
     ...(migration && { migration }),
@@ -382,7 +384,35 @@ export async function createElectronDaemonHost(
             )),
     }),
     ...(inputs.w5 && { w5Host: true }),
-    ...(inputs.w5?.beforeSpawn && { beforeSpawn: inputs.w5.beforeSpawn }),
+    ...(beforeSpawn && {
+      beforeSpawn: {
+        timeoutMs: beforeSpawn.timeoutMs,
+        run: async (signal, protection): Promise<void> => {
+          await protection.assertHeld();
+          const claims = await claimPort();
+          await recoverStaleCanopyDaemonEndpoint({
+            dataRoot,
+            claims,
+            claimHandle: protection.claimHandle,
+            recoveredEndpointBind: protection.recoveredEndpointBind,
+            signal,
+            platform: {
+              ...platform,
+              endpoints: createPlatformEndpointServices(os, {
+                validateStartupClaim: async (claim): Promise<boolean> => {
+                  signal.throwIfAborted();
+                  const held = await claims.verify(claim);
+                  signal.throwIfAborted();
+                  return held;
+                },
+              }),
+            },
+          });
+          await protection.assertHeld();
+          await beforeSpawn.run(signal, protection);
+        },
+      },
+    }),
     environmentSource: getEnhancedEnv({
       includeCanopySecrets: false,
       environment: false,

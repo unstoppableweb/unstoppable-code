@@ -17,10 +17,7 @@ import {
 } from '../lib/plugins-discovery-sections';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
-import type {
-  MarketplaceEntryShareState,
-  MarketplaceEntryShareStates,
-} from '../lib/marketplace-share';
+import type { MarketplaceEntryShareStates } from '../lib/marketplace-share';
 import type { InstalledEntryStatusStates } from '../lib/installed-item-status';
 import {
   InstalledItemStatusControl,
@@ -29,7 +26,11 @@ import {
 } from './InstalledItemStatusRow';
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
 import { CustomizeInstalledRow } from './CustomizeInstalledRow';
-import type { CustomizeRowMenuItem } from './CustomizeRowMenu';
+import { MarketplaceInstallButton } from './MarketplaceInstallButton';
+import {
+  marketplaceShareMenuItems,
+  type CustomizeRowMenuItem,
+} from './CustomizeRowMenu';
 import { Heading } from './Heading';
 
 /**
@@ -117,7 +118,7 @@ interface PluginsEntryCardProps {
   selected: boolean;
   onSelect: (entry: UnifiedPluginEntry) => void;
   onAdd?: (entry: UnifiedPluginEntry) => void;
-  shareState: MarketplaceEntryShareState | undefined;
+  entryShareStates?: MarketplaceEntryShareStates;
   onShare?: (entry: UnifiedPluginEntry) => void;
   onConnect?: (entry: UnifiedPluginEntry) => void;
   onOpenEntryId?: (entryId: string) => void;
@@ -137,7 +138,7 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
   selected,
   onSelect,
   onAdd,
-  shareState,
+  entryShareStates,
   onShare,
   onConnect,
   onOpenEntryId,
@@ -163,15 +164,9 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
       label: 'Connect',
       onSelect: () => onConnect(entry),
     });
-  if (shareState && onShare)
-    menuItems.push({
-      id: 'share',
-      label: 'Share…',
-      disabled: shareState.status === 'blocked',
-      disabledReason:
-        shareState.status === 'blocked' ? shareState.reason : undefined,
-      onSelect: () => onShare(entry),
-    });
+  menuItems.push(
+    ...marketplaceShareMenuItems(entry, entryShareStates, onShare),
+  );
   for (const requirement of onOpenEntryId ? (entry.requirements ?? []) : []) {
     menuItems.push({
       id: `requirement-${requirement.key}`,
@@ -218,15 +213,7 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
               />
             ) : null
           ) : onAdd ? (
-            <Button
-              size="compact"
-              type="button"
-              data-testid={`plugins-entry-add-${entry.id}`}
-              aria-label={`${entry.kind === 'collection' ? 'Add' : 'Install'} ${entry.name}`}
-              onClick={() => onAdd(entry)}
-            >
-              {entry.kind === 'collection' ? 'Add' : 'Install'}
-            </Button>
+            <MarketplaceInstallButton entry={entry} onAdd={onAdd} />
           ) : null}
         </span>
       }
@@ -377,7 +364,7 @@ function PluginsDiscoverySectionView({
               selected={entry.id === selectedEntryId}
               onSelect={onSelectEntry}
               onAdd={onAddEntry}
-              shareState={entryShareStates?.get(entry.id)}
+              entryShareStates={entryShareStates}
               onShare={onShareEntry}
               onConnect={onConnectEntry}
               onOpenEntryId={onOpenEntryId}

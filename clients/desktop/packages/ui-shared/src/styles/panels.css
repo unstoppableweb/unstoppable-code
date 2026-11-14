@@ -671,7 +671,7 @@
 .canopy-scroll-thumb {
   /* Same overlay scrollbar the sidebar uses (see `OverlayScrollArea`): a
      rounded thumb inset 2px from the edge, painted with the quaternary
-     foreground, revealed by direct scroll input and pinned while hovered or
+     foreground at half strength, revealed by direct scroll input and pinned while hovered or
      dragged. Geometry comes from the shared mode-switched variables so the
      thumb matches the vertical scrollbars in both scroller styles. */
   position: absolute;
@@ -679,7 +679,7 @@
   bottom: var(--canopy-scrollbar-thumb-inset, 2px);
   height: var(--canopy-scrollbar-thumb-size, 6px);
   border-radius: 9999px;
-  background: var(--fg-quaternary);
+  background: color-mix(in srgb, var(--fg-quaternary) 50%, transparent);
   touch-action: none;
   pointer-events: none;
   opacity: 0;

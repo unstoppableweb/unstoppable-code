@@ -60,10 +60,16 @@ export interface AgentMcpRouteRegistration extends Omit<
   'routeId' | 'reauthRequired'
 > {
   routeKey?: string;
+  /**
+   * The host-neutral key the capability snapshot names a plugin server's
+   * route by (CAN-6168); `routeKey` names it otherwise.
+   */
+  snapshotKey?: string;
 }
 
 interface InternalMcpProxyRoute extends AgentMcpRoute {
   routeKey?: string;
+  snapshotKey?: string;
   parsedUpstream: URL;
 }
 
@@ -222,6 +228,7 @@ export class AgentMcpConnections {
       ...(route.credential ? { credential: route.credential } : {}),
       ...(route.requireToolCallGate ? { requireToolCallGate: true } : {}),
       ...(route.routeKey ? { routeKey: route.routeKey } : {}),
+      ...(route.snapshotKey ? { snapshotKey: route.snapshotKey } : {}),
       parsedUpstream,
     };
     this.routes.set(routeId, fullRoute);
@@ -324,7 +331,16 @@ export class AgentMcpConnections {
     return undefined;
   }
 
-  codexCapabilityAuthorityIds(mcpServers: Record<string, unknown>): string[] {
+  /**
+   * The authority ids the capability snapshot names proxied servers by:
+   * a plugin route by its host-neutral key (fingerprint v2, CAN-6168),
+   * any other by its route key. `legacy` gives fingerprint v1's, by route
+   * key alone, to recognize a lease written before v2.
+   */
+  codexCapabilityAuthorityIds(
+    mcpServers: Record<string, unknown>,
+    legacy = false,
+  ): string[] {
     if (!this.options.listening()) {
       return [];
     }
@@ -339,7 +355,10 @@ export class AgentMcpConnections {
       }
       for (const [routeId, route] of Array.from(this.routes.entries())) {
         if (route.routeKey && this.options.proxyUrl(routeId) === url) {
-          authorityIds.push(`${serverName}:${route.routeKey}`);
+          const key = legacy
+            ? route.routeKey
+            : (route.snapshotKey ?? route.routeKey);
+          authorityIds.push(`${serverName}:${key}`);
           break;
         }
       }

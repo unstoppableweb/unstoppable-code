@@ -143,11 +143,13 @@ function buildCloudPath(baseUrl: string, pathname: string): string {
   return `${baseUrl}${pathname}`;
 }
 
-async function resolveCloudCredentials(): Promise<
-  Awaited<ReturnType<typeof getCanopyCloudCredentials>>
-> {
+async function resolveCloudCredentials(
+  options?: Parameters<typeof getCanopyCloudCredentials>[0],
+): Promise<Awaited<ReturnType<typeof getCanopyCloudCredentials>>> {
   try {
-    return await getCanopyCloudCredentials();
+    return await (options
+      ? getCanopyCloudCredentials(options)
+      : getCanopyCloudCredentials());
   } catch (error) {
     if (error instanceof CanopyCloudConfigError) {
       throw new CanopyCloudClientError(
@@ -161,8 +163,10 @@ async function resolveCloudCredentials(): Promise<
   }
 }
 
-export async function resolveCanopyCloudCredentialContext(): Promise<CanopyCloudCredentialContext> {
-  return resolveCloudCredentials();
+export async function resolveCanopyCloudCredentialContext(
+  options?: Parameters<typeof getCanopyCloudCredentials>[0],
+): Promise<CanopyCloudCredentialContext> {
+  return resolveCloudCredentials(options);
 }
 
 interface CloudResponseErrorDetail {
@@ -614,10 +618,13 @@ export async function requestCanopyCloudJson<T>(
           return await response.json();
         } catch (error) {
           if (isAbortError(error)) throw error;
-          throw new CanopyCloudClientError(
-            'invalid-response',
-            `${CLOUD_DISPLAY_NAME} returned invalid JSON.`,
-            response.status,
+          throw classifyFetchFailure(
+            error,
+            new CanopyCloudClientError(
+              'invalid-response',
+              `${CLOUD_DISPLAY_NAME} returned invalid JSON.`,
+              response.status,
+            ),
           );
         }
       } catch (error) {
@@ -1054,6 +1061,26 @@ export async function assertCanopyCloudCapability(
   signal?: AbortSignal,
 ): Promise<void> {
   const credentialContext = credentials ?? (await resolveCloudCredentials());
+  await checkCapability(capability, credentialContext, !credentials, signal);
+}
+
+/** A read using one account for capability discovery and the request itself. */
+export async function resolveCanopyCloudCredentialContextWithCapability(
+  capability: string,
+): Promise<CanopyCloudCredentialContext> {
+  const credentials = await resolveCloudCredentials({
+    preserveAccountReadErrors: true,
+  });
+  await checkCapability(capability, credentials, true);
+  return credentials;
+}
+
+async function checkCapability(
+  capability: string,
+  credentialContext: CanopyCloudCredentialContext,
+  cacheDiscoveredCapabilities: boolean,
+  signal?: AbortSignal,
+): Promise<void> {
   if (credentialContext.capabilities?.includes(capability)) {
     return;
   }
@@ -1063,7 +1090,7 @@ export async function assertCanopyCloudCapability(
     signal,
   );
   if (liveCapabilities.includes(capability)) {
-    if (!credentials) {
+    if (cacheDiscoveredCapabilities) {
       void mergeCanopyCloudAccountCapabilities(
         liveCapabilities,
         credentialContext.apiKey,

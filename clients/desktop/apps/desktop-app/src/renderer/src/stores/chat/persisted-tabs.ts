@@ -14,6 +14,7 @@ import {
 import { persistableProvisionalFirstSendView } from './provisional-first-send';
 import { hasAnyTombstones } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
+  EXTERNAL_PROJECT_PROVIDERS,
   getProviderForModel,
   inferLegacyExecutionHarness,
   hasAnySelections,
@@ -24,6 +25,7 @@ import {
   type AgentModelConfig,
   type AgentProviderType,
   type ChatTabsFile,
+  type ExternalProjectProvider,
   type FileTabViewMode,
   type PersistedChatMessage,
   type PersistedChatTab,
@@ -70,6 +72,13 @@ import {
 } from '@canopy/desktop-shared/lib/approval-engine';
 import { parseAgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 
+/** A persisted `importedFrom` is kept only when it names a known import source. */
+function isExternalProjectProvider(
+  value: unknown,
+): value is ExternalProjectProvider {
+  return EXTERNAL_PROJECT_PROVIDERS.some((provider) => provider === value);
+}
+
 export function isFileTabViewMode(value: unknown): value is FileTabViewMode {
   return (
     value === 'raw' ||
@@ -93,6 +102,8 @@ export function toPersistedMessage(msg: ChatMessage): PersistedChatMessage {
     id: msg.id,
     role: msg.role,
     ...(msg.hidden ? { hidden: true } : {}),
+    // A prompt deleted from a cloud chat's queue reads Cancelled (CAN-6689).
+    ...(msg.cancelled ? { cancelled: true } : {}),
     blocks: msg.blocks,
     timestamp: msg.timestamp,
     ...(msg.parentToolUseId ? { parentToolUseId: msg.parentToolUseId } : {}),
@@ -272,6 +283,7 @@ export function toPersistedTab(tab: ChatTab): PersistedChatTab {
       ? { scheduledSendDraft: { runAt: tab.scheduledSendDraft.runAt } }
       : {}),
     ...(tab.readOnly ? { readOnly: true } : {}),
+    ...(tab.importedFrom ? { importedFrom: tab.importedFrom } : {}),
     ...(tab.staleSessionDetected
       ? { staleSessionDetected: tab.staleSessionDetected }
       : {}),
@@ -749,6 +761,10 @@ export function fromPersistedTab(
       ? { scheduledSendDraft: { runAt: pt.scheduledSendDraft.runAt } }
       : {}),
     ...(pt.readOnly ? { readOnly: true } : {}),
+    // Read from disk unchecked; an unknown source would name no provider.
+    ...(isExternalProjectProvider(pt.importedFrom)
+      ? { importedFrom: pt.importedFrom }
+      : {}),
     ...(pt.staleSessionDetected
       ? { staleSessionDetected: pt.staleSessionDetected }
       : {}),

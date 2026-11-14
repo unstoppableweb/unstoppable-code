@@ -538,6 +538,8 @@ export interface W5MaintenanceExclusionOptions {
   /** Offline migration only: coordination plus repeated native cold snapshots. */
   readonly offlineMigration?: () => Promise<void>;
   readonly signal?: AbortSignal;
+  /** Trusted bootstrap only: this process has no running W5 worker yet. */
+  readonly allowCurrentHost?: boolean;
 }
 
 export interface W5MaintenanceExclusion {
@@ -687,6 +689,7 @@ async function anyMemberMayLive(
     const text = MEMBER.test(name) ? await readRecord(path) : '';
     if (text === null) continue;
     const record = decodeMemberRecord(text);
+    if (record?.pid === process.pid && options.allowCurrentHost) continue;
     const inspection = record
       ? await inspectSafely(options.inspect, record.pid, options.signal)
       : null;
@@ -713,8 +716,8 @@ export async function acquireW5MaintenanceExclusion(
   await options.offlineMigration?.();
   const { dataRoot, owner, signal } = options;
   if (
-    byCanonical.has(dataRoot) ||
-    (isWindows() && byRequested.has(dataRoot)) ||
+    (byCanonical.has(dataRoot) && !options.allowCurrentHost) ||
+    (isWindows() && byRequested.has(dataRoot) && !options.allowCurrentHost) ||
     registering.size > 0 ||
     readOnlyRoots.size > 0
   )

@@ -211,6 +211,7 @@ function DisconnectDialog({
           <p>{DISCONNECT_MESSAGE}</p>
           {/* Fixed local copy from the controller, never server text. */}
           <ErrorBanner
+            errorSource="github-cloud-disconnect-error"
             className=""
             error={disconnectFailure?.message}
             testId="github-cloud-disconnect-error"

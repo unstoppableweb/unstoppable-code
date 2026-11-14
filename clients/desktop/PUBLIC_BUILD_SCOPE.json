@@ -40,6 +40,7 @@
     "Windows Phase 3 manual qualification requiring apps/core-daemon and private build helpers",
     "W5 recovery golden and crash child requiring apps/core-daemon",
     "Copilot grant authority production-selection golden requiring apps/core-daemon",
+    "Copilot vault pilot caller golden requiring apps/core-daemon",
     "omitted daemon/VM peer-identity consumer audit rows",
     "daemon workspace record-port fixture requiring apps/core-daemon",
     "admitted storage path census cross-check requiring planning docs",

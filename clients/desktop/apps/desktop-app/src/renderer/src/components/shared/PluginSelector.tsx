@@ -72,6 +72,7 @@ const PROVIDER_SCOPE_LABELS: Record<PluginSelectorProviderScope, string> = {
   codex: 'Codex',
   ollama: 'Ollama',
   cursor: 'Cursor',
+  antigravity: 'Antigravity',
   copilot: 'GitHub Copilot',
   opencode: 'OpenCode',
   mixed: 'All supported providers',

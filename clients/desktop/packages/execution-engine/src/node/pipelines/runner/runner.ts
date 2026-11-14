@@ -29,10 +29,20 @@ import {
   normalizePipelineAssets,
   normalizePipelineLocalState,
 } from '@canopy/pipeline-interop/assets';
+import { PIPELINE_HOST_RUN_TEMP_DIR } from '../daemon-host/run-temp';
+import {
+  PipelineRunnerHandoffStore,
+  type PipelineRunnerProviderStores,
+} from './execution-handoff';
+import { PipelineRunnerTranscriptStore } from './transcripts';
 import {
   PipelineRunnerDataStore,
   type PipelineRunnerDataFolders,
 } from './pipeline-data';
+import {
+  PipelineRunnerCapabilityStore,
+  type PipelineRunnerMcpProxy,
+} from './capabilities';
 
 /*
  * The cloud runner's composition (CAN-6173, cloud pipelines CP-07, decision
@@ -76,6 +86,21 @@ export interface PipelineRunnerLayout {
   readonly codexEnvironment?: WorkerPipelineHostLaunch['codexEnvironment'];
   /** The runner's base environment for each run's steps. */
   readonly processEnvironment: Readonly<Record<string, string>>;
+  /**
+   * Where the provider CLIs its steps start keep their sessions (CAN-6376):
+   * a run's handoff carries the sessions its agent steps recorded, so an
+   * agent step resumes its session on another incarnation. Without it a
+   * handoff carries the run alone.
+   */
+  readonly providerStores?: PipelineRunnerProviderStores;
+  /**
+   * The pipeline host's run temporary root (`<tmp>/canopy-exec`), where each
+   * run keeps the files its step outputs name, such as an agent step's
+   * `text_response_file` (CAN-6376). A run's handoff carries its folder there.
+   * Without it a handoff carries none, and a step after a resume that reads
+   * one of those files finds it missing.
+   */
+  readonly runTempRoot?: string;
 }
 
 async function realOrRefuse(value: string): Promise<string> {
@@ -156,11 +181,18 @@ async function pipelineDataMembers(
  * global run, the workspace kept from its last run. A start the runner
  * cannot serve is refused with `worker.pipeline.launchRefused`, as is one
  * whose definition lists `local_state`: those files stay on the computer
- * that owns them (parity R8).
+ * that owns them (parity R8). A start of a run whose handoff `handoffs` is
+ * still restoring (CAN-6376) fails with `worker.pipeline.startFailed`, and
+ * one it resolves takes the run from any later handoff of it. So does a
+ * start whose plugin collection snapshots name a capability bundle
+ * `capabilities` does not hold (CAN-6439): its steps would run without the
+ * skills, plugins and MCP servers its collections name.
  */
 export function createPipelineRunnerLaunchResolver(
   layout: PipelineRunnerLayout,
   data: PipelineRunnerDataStore = new PipelineRunnerDataStore(layout.dataRoot),
+  handoffs?: Pick<PipelineRunnerHandoffStore, 'restoring' | 'noteLaunch'>,
+  capabilities?: Pick<PipelineRunnerCapabilityStore, 'assertDelivered'>,
 ): (
   params: WorkerPipelineExecutionStartParams & {
     portableLaunch: WorkerPipelinePortableLaunch;
@@ -170,6 +202,17 @@ export function createPipelineRunnerLaunchResolver(
   return async (params, secrets): Promise<PipelineHostLaunch> => {
     const { portableLaunch: portable, secrets: _bindings, ...rest } = params;
     void _bindings;
+    // A run whose handoff is still arriving starts once it is restored, as
+    // the run it was (CAN-6376).
+    if (handoffs?.restoring(params.executionId))
+      throw pipelineStartFailedError(
+        new Error('This workflow run is still being restored.'),
+      );
+    // Its collections' bundles arrive before its start, on every
+    // incarnation, at the same paths (CAN-6439).
+    capabilities?.assertDelivered(portable.pluginCollectionSnapshots);
+    // From here the run is this incarnation's: no handoff restores over it.
+    handoffs?.noteLaunch(params.executionId);
     // A pinned package is fetched by digest at bootstrap (CP-11); until a
     // runner can, a run that needs one is refused rather than run without it.
     if (portable.definition.pin.packageDigest !== null)
@@ -316,6 +359,9 @@ export function pipelineRunnerLayout(options: {
   readonly providerBinaries?: boolean;
 }): PipelineRunnerLayout {
   const at = (member: string): string => path.join(options.bundleRoot, member);
+  const providerStores = pipelineRunnerProviderStoresOf(
+    options.processEnvironment,
+  );
   return {
     dataRoot: options.dataRoot,
     checkout: options.checkout,
@@ -330,6 +376,43 @@ export function pipelineRunnerLayout(options: {
       },
     }),
     processEnvironment: { ...options.processEnvironment },
+    ...(providerStores && { providerStores }),
+    runTempRoot: pipelineRunnerRunTempRootOf(options.processEnvironment),
+  };
+}
+
+/**
+ * The pipeline host's run temporary root for a host that runs in
+ * `environment`, as the host resolves it: under `TMPDIR`, or `/tmp`
+ * (CAN-6376). The runner gives its host and its steps one environment.
+ */
+export function pipelineRunnerRunTempRootOf(
+  environment: Readonly<Record<string, string>>,
+): string {
+  const tmp = environment.TMPDIR;
+  return path.join(
+    tmp !== undefined && path.isAbsolute(tmp) ? tmp : '/tmp',
+    PIPELINE_HOST_RUN_TEMP_DIR,
+  );
+}
+
+/**
+ * Where the provider CLIs keep their sessions for steps that run in
+ * `environment` (CAN-6376): `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, each
+ * defaulting under `HOME`, as the CLIs resolve them. Undefined without an
+ * absolute `HOME`. A pipeline that sets its own `CLAUDE_CONFIG_DIR` keeps its
+ * sessions there, which a handoff does not carry.
+ */
+export function pipelineRunnerProviderStoresOf(
+  environment: Readonly<Record<string, string>>,
+): PipelineRunnerProviderStores | undefined {
+  const home = environment.HOME;
+  if (home === undefined || !path.isAbsolute(home)) return undefined;
+  const absolute = (value: string | undefined, fallback: string): string =>
+    value !== undefined && path.isAbsolute(value) ? value : fallback;
+  return {
+    claude: absolute(environment.CLAUDE_CONFIG_DIR, path.join(home, '.claude')),
+    codex: absolute(environment.CODEX_HOME, path.join(home, '.codex')),
   };
 }
 
@@ -433,6 +516,12 @@ export interface PipelineRunnerOptions {
    * `killPipelineStepGroup`.
    */
   readonly killProcessGroup?: (processGroupId: number) => void;
+  /**
+   * The MCP proxy credential a run's capabilities use (CAN-6439): the
+   * activation's AI Credits session. Without it a delivered bundle that
+   * names an MCP server is refused.
+   */
+  readonly mcpProxy?: PipelineRunnerMcpProxy;
   /** Observes each host that ended under its executions. */
   readonly onHostLost?: (report: {
     readonly code: number;
@@ -444,8 +533,12 @@ export interface PipelineRunnerOptions {
  * The cloud runner: `worker.pipeline.*` over the daemon's pipeline host, for
  * portable starts only, with its own operations (`runnerHandlers`): one
  * run's graceful checkpoint (CAN-6199), resume and retry for its runs
- * (CAN-6103) and its pipeline data import and export (CAN-6317), bound
- * beside `handlers` under `PIPELINE_RUNNER_DEFINITIONS`. Host-local
+ * (CAN-6103), its pipeline data import and export (CAN-6317), one run's
+ * handoff export and import (CAN-6376), an agent step's transcript
+ * export (CAN-6421) and the capability import (CAN-6439), bound beside
+ * `handlers` under
+ * `PIPELINE_RUNNER_DEFINITIONS`. A run handed off from another incarnation
+ * is this one's once its portable start arrives again. Host-local
  * launches are refused; nothing on a runner stages one. Events streams
  * resume after a cursor from its journal. It refuses to start as PID 1:
  * run it under an init process.
@@ -456,6 +549,19 @@ export function createPipelineRunner(
   assertPipelineRunnerNotInit();
   const dataRoot = path.resolve(options.layout.dataRoot);
   const pipelineData = new PipelineRunnerDataStore(dataRoot);
+  const handoffs = new PipelineRunnerHandoffStore(dataRoot, {
+    ...(options.layout.providerStores && {
+      providers: options.layout.providerStores,
+    }),
+    ...(options.layout.runTempRoot !== undefined && {
+      runTempRoot: options.layout.runTempRoot,
+    }),
+  });
+  const transcripts = new PipelineRunnerTranscriptStore(dataRoot);
+  const capabilities = new PipelineRunnerCapabilityStore(
+    dataRoot,
+    options.mcpProxy,
+  );
   return createPipelineHostModule({
     supervisor: {
       launch: options.launchHost,
@@ -471,6 +577,8 @@ export function createPipelineRunner(
       resolvePortableLaunch: createPipelineRunnerLaunchResolver(
         options.layout,
         pipelineData,
+        handoffs,
+        capabilities,
       ),
       killProcessGroup: options.killProcessGroup ?? killPipelineStepGroup,
       ...(options.onHostLost && { onHostLost: options.onHostLost }),
@@ -482,8 +590,11 @@ export function createPipelineRunner(
     journal: new PipelineEventJournal(PIPELINE_RUNNER_EVENT_JOURNAL),
     ...(options.stopHosts && { stopHosts: options.stopHosts }),
     // Its owner checkpoints one run to roll the sandbox over (CAN-6199),
-    // with no other executor its paused runs resume here (CAN-6103, P8), and
-    // its owner keeps each pipeline's data between runs (CAN-6317).
-    runnerOperations: { pipelineData },
+    // with no other executor its paused runs resume here (CAN-6103, P8), its
+    // owner keeps each pipeline's data between runs (CAN-6317), and it moves
+    // a paused run to the next incarnation (CAN-6376), and it keeps each
+    // agent step's transcript (CAN-6421), and it installs the capabilities
+    // a run's plugin collections name before the run starts (CAN-6439).
+    runnerOperations: { pipelineData, handoffs, transcripts, capabilities },
   });
 }

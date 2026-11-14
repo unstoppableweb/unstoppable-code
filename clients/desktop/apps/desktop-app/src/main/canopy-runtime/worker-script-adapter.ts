@@ -47,6 +47,13 @@ export function createWorkerScriptAdapter(
           params,
           context,
         ),
+      // Read from the shared run logs and the host's process table, like
+      // Stop, so it needs no route (CAN-6601).
+      'worker.script.execution.groupMembers': async (params, context) =>
+        (await handlers()).queries['worker.script.execution.groupMembers'](
+          params,
+          context,
+        ),
     },
     instructions: {
       // The daemon branch needs no keyed replay: LocalWorkerExecution never
@@ -76,6 +83,18 @@ export function createWorkerScriptAdapter(
       },
       'worker.script.execution.cancel': async (params, context) =>
         (await handlers()).instructions['worker.script.execution.cancel'](
+          params,
+          context,
+        ),
+      // Electron main and the daemon keep the same run logs (CAN-5087), so a
+      // clear needs no route (CAN-6482).
+      'worker.script.execution.clear': async (params, context) =>
+        (await handlers()).instructions['worker.script.execution.clear'](
+          params,
+          context,
+        ),
+      'worker.script.execution.stop': async (params, context) =>
+        (await handlers()).instructions['worker.script.execution.stop'](
           params,
           context,
         ),

@@ -677,6 +677,7 @@ export function FileLabelsSection({
       dataTestId="settings-files-labels-section"
     >
       <DesktopErrorBanner
+        errorSource="settings-files-labels-error"
         className=""
         error={
           expanded && saveStatus === 'error'

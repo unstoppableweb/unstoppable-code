@@ -45,6 +45,8 @@ export type UsageDataPreferencesState = UsageDataPreferences | 'unreadable';
 export interface UsageDataPolicy {
   getEffectiveUsageDataPolicy(): UsageDataPreferences;
   getUsageDataPolicySnapshot(): UsageDataPolicySnapshot;
+  /** True once the selected Personal or organization context is known. */
+  hasWorkspaceContext(): boolean;
   /**
    * The effective value of `key`, also narrowed by the prohibition of the
    * organization that owns the work, when one is known. For per-item reports
@@ -55,8 +57,11 @@ export interface UsageDataPolicy {
     key: OrgProhibitableUsageDataKey,
     ownerOrganizationId: string | undefined,
   ): boolean;
-  /** Fires only when `effective` or `prohibitedBy` actually changes. */
-  subscribe(listener: (snapshot: UsageDataPolicySnapshot) => void): () => void;
+  /** Fires on effective policy changes and optionally on stored Error reports changes. */
+  subscribe(
+    listener: (snapshot: UsageDataPolicySnapshot) => void,
+    options?: { includeErrorReportsPreference?: boolean },
+  ): () => void;
   /** Replace the stored preferences with the full normalized object. */
   setPreferences(preferences: UsageDataPreferencesState): void;
   /**
@@ -182,7 +187,10 @@ export function createUsageDataPolicy(options?: {
     options?.prohibitions ?? new Map();
   let context: WorkspaceContext | null = null;
   let snapshot = buildSnapshot(preferences, prohibitions, context);
-  const listeners = new Set<(snapshot: UsageDataPolicySnapshot) => void>();
+  const listeners = new Map<
+    (snapshot: UsageDataPolicySnapshot) => void,
+    boolean
+  >();
 
   let resolveSettled: () => void = () => undefined;
   const settled = new Promise<void>((resolve) => {
@@ -201,20 +209,26 @@ export function createUsageDataPolicy(options?: {
   const recompute = (): boolean => {
     const next = buildSnapshot(preferences, prohibitions, context);
     const changed = !sameSnapshotPolicy(snapshot, next);
+    const errorReportsPreferenceChanged =
+      snapshot.preferences.errorReports !== next.preferences.errorReports;
     snapshot = next;
-    if (!changed) return false;
-    for (const listener of Array.from(listeners)) {
+    if (!changed && !errorReportsPreferenceChanged) return false;
+    for (const [listener, includeErrorReportsPreference] of Array.from(
+      listeners,
+    )) {
+      if (!changed && !includeErrorReportsPreference) continue;
       try {
         listener(next);
       } catch {
         // A failing consumer cannot block the others.
       }
     }
-    return true;
+    return changed;
   };
 
   return {
     getEffectiveUsageDataPolicy: () => ({ ...snapshot.effective }),
+    hasWorkspaceContext: () => context !== null,
     allowsForOrganization(key, ownerOrganizationId): boolean {
       if (!snapshot.effective[key]) return false;
       if (prohibitions === 'unreadable') return false;
@@ -229,8 +243,8 @@ export function createUsageDataPolicy(options?: {
       effective: { ...snapshot.effective },
       prohibitedBy: { ...snapshot.prohibitedBy },
     }),
-    subscribe(listener): () => void {
-      listeners.add(listener);
+    subscribe(listener, options): () => void {
+      listeners.set(listener, options?.includeErrorReportsPreference === true);
       return (): void => {
         listeners.delete(listener);
       };

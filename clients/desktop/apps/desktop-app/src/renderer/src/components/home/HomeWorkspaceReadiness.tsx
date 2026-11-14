@@ -217,7 +217,11 @@ export function HomeWorkspaceReadiness({
           );
         })}
       </ul>
-      <ErrorBanner error={error} className="" />
+      <ErrorBanner
+        errorSource="home-workspace-readiness"
+        error={error}
+        className=""
+      />
     </HomeSection>
   );
 }

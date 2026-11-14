@@ -1329,13 +1329,15 @@ export interface PipelinePackageReferenceDismissal {
   token: string;
 }
 
-/** Why a file under a declared asset was left out of the package. */
+/** Why a file under a declared asset, or a cloud copy's member, was left out. */
 export type PipelinePackageWithheldReason =
   | 'denied_name'
   | 'git_directory'
   | 'symlink'
   | 'suspected_secret'
-  | 'missing_optional_asset';
+  | 'missing_optional_asset'
+  /** Ignored by the folder's git repository; cloud copies only (CAN-6176). */
+  | 'git_ignored';
 
 export interface PipelinePackageWithheldFile {
   pipelineKey: string;
@@ -1343,6 +1345,19 @@ export interface PipelinePackageWithheldFile {
   /** Relative to the asset root; empty for a missing optional asset. */
   relativePath: string;
   reason: PipelinePackageWithheldReason;
+}
+
+/**
+ * A skill's or plugin's file left out of its cloud copy (CAN-6176). Cloud
+ * copies withhold what a share would block on, so the rest still goes; the
+ * consent dialog lists each one with its reason, never as a choice.
+ */
+export interface CapabilityPackageWithheldMemberFile {
+  /** The skill or plugin the file belongs to. */
+  rootName: string;
+  /** Relative to that skill's or plugin's folder. */
+  relativePath: string;
+  reason: Exclude<PipelinePackageWithheldReason, 'missing_optional_asset'>;
 }
 
 /** UTF-16 code-unit span of a pipeline UUID in the canonical prompt. */
@@ -1393,6 +1408,14 @@ export interface PipelinePackageAnalysisSummary {
   packagedPipelines?: PipelinePackagePackagedPipeline[];
   /** Asset files left out of the package, with reasons. */
   withheldFiles?: PipelinePackageWithheldFile[];
+  /** A cloud copy's skill or plugin files left out, with reasons (CAN-6176). */
+  withheldMemberFiles?: CapabilityPackageWithheldMemberFile[];
+  /**
+   * Whether a cloud copy could ask git which files are ignored. `unavailable`
+   * when git can't run or the folder isn't in a repository: the copy still
+   * works, without that check. Absent for shares.
+   */
+  gitIgnoreCheck?: 'checked' | 'unavailable';
   /** Selected capabilities that analysis cannot include in the package. */
   unpackageableSelectionLabels?: string[];
   repoLocalScope?: { entryCount: number; scannedDirectoryCount: number };

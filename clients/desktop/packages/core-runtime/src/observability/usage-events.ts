@@ -21,6 +21,7 @@ import {
 import { parseObservedCost } from './audit-entry-parser';
 import {
   defaultToolCounts,
+  observedModelIdentity,
   normalizeOptionalAuditTokens,
 } from './audit-records';
 import {
@@ -335,7 +336,10 @@ export function normalizeUsageMetricEvent(
       type,
       chatId,
       auditEntryId: readString(value, 'auditEntryId'),
-      model: readString(value, 'model'),
+      ...observedModelIdentity({
+        model: readString(value, 'model'),
+        agentId: readString(value, 'agentId'),
+      }),
       turnStartedAt,
       turnCompletedAt: readString(value, 'turnCompletedAt'),
       turnDurationMs: readNumber(value, 'turnDurationMs'),

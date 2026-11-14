@@ -40,12 +40,18 @@ export const WORKER_SCRIPT_ERROR_CODES = [
   'worker.script.executionInProgress',
   'worker.script.idempotencyKeyReused',
   'worker.script.placementUnreachable',
+  'worker.script.notOrphaned',
+  'worker.script.confirmationRequired',
+  'worker.script.groupChanged',
   ...WORKER_EXECUTION_SECRET_ERROR_CODES,
 ] as const;
 
 export type WorkerScriptErrorCode = (typeof WORKER_SCRIPT_ERROR_CODES)[number];
 
 const id = z.string().min(1).max(512);
+
+/** The most members a group Force stop lists or acts on (CAN-6601). */
+export const WORKER_SCRIPT_GROUP_MAX_MEMBERS = 64;
 
 /**
  * The worktree a script runs in. The worker projects it, with the context,
@@ -204,11 +210,17 @@ export const WORKER_SCRIPT_EXECUTION_STATUSES = [
   'failed',
   'cancelled',
   'lost',
+  'orphaned',
 ] as const;
 
 /**
  * A script key's latest run from the durable run log. `lost` is a run a
  * restart interrupted: it was not run again and its outcome is unknown.
+ * `orphaned` is a run a restart interrupted whose process may still be
+ * running and could not be proven to be the run's own, so nothing was
+ * killed (CAN-6482); `pid` names that process. A `lost` run whose record
+ * names no process (an earlier version's, or one never identified) has
+ * `lostFrom: 'unrecorded'`: its process may still be running.
  */
 export const WorkerScriptExecutionSchema = z.strictObject({
   executionId: id,
@@ -220,6 +232,16 @@ export const WorkerScriptExecutionSchema = z.strictObject({
   exitCode,
   timedOut: z.boolean(),
   durationMs: z.int().nonnegative(),
+  /** An orphaned run's process (CAN-6482); absent for every other status. */
+  pid: z.int().min(2).optional(),
+  /** A lost run with no recorded process (CAN-6482 part 2). */
+  lostFrom: z.literal('unrecorded').optional(),
+  /**
+   * An orphaned run's record (CAN-6482 part 2): `recorded` names a full start
+   * identity, proven again before every signal; `unverifiable` names the PID
+   * only, so a Stop needs the user's confirmation and never signals a group.
+   */
+  orphanIdentity: z.enum(['recorded', 'unverifiable']).optional(),
 });
 export type WorkerScriptExecution = z.output<
   typeof WorkerScriptExecutionSchema
@@ -287,6 +309,155 @@ export const WorkerScriptExecutionCancelResultSchema = z.strictObject({
 });
 export type WorkerScriptExecutionCancelResult = z.output<
   typeof WorkerScriptExecutionCancelResultSchema
+>;
+
+/**
+ * Removes one finished run's record and log (CAN-6482 part 2): never a run
+ * that is running or orphaned, and never a process.
+ */
+export const WorkerScriptExecutionClearParamsSchema = z.strictObject({
+  scope: WorkerScriptScopeSchema,
+  scriptKey: z.string().min(1).max(1024),
+  /** Clears only this run: a newer run of the script key is kept. */
+  executionId: id,
+});
+export type WorkerScriptExecutionClearParams = z.output<
+  typeof WorkerScriptExecutionClearParamsSchema
+>;
+
+export const WorkerScriptExecutionClearResultSchema = z.strictObject({
+  /** False when the script key's latest run is not this one, or none is recorded. */
+  cleared: z.boolean(),
+});
+export type WorkerScriptExecutionClearResult = z.output<
+  typeof WorkerScriptExecutionClearResultSchema
+>;
+
+/**
+ * A user's Stop of an orphaned run's process (CAN-6482 part 2). The process
+ * and group come from the run's own record, never from the request.
+ */
+export const WorkerScriptExecutionStopParamsSchema = z.strictObject({
+  scope: WorkerScriptScopeSchema,
+  scriptKey: z.string().min(1).max(1024),
+  executionId: id,
+  /**
+   * `force`: SIGKILL to an unverifiable record's PID, after a Stop left it
+   * running. `force_group`: the confirmed group Force stop of a run whose
+   * leader has exited (CAN-6601), for exactly `members`.
+   */
+  mode: z.enum(['stop', 'force', 'force_group']),
+  /** The user confirmed the warning; required for `unverifiable` records, `force` and `force_group`. */
+  confirmed: z.literal(true).optional(),
+  /** `force_group` only: the members exactly as `worker.script.execution.groupMembers` showed them. */
+  members: z
+    .array(
+      z.strictObject({
+        pid: z.int().min(2),
+        startIdentity: z.string().min(1).max(256),
+      }),
+    )
+    .min(1)
+    .max(WORKER_SCRIPT_GROUP_MAX_MEMBERS)
+    .optional(),
+});
+export type WorkerScriptExecutionStopParams = z.output<
+  typeof WorkerScriptExecutionStopParamsSchema
+>;
+
+export const WorkerScriptExecutionStopResultSchema = z.strictObject({
+  /**
+   * `stopped`: it exited or was ended, and the run is recorded lost;
+   * `still_running`: an unverifiable record's PID outlived SIGTERM (a
+   * confirmed `force` may follow); `gone`: nothing was there, and the run is
+   * recorded lost; `not_same`: another process holds the recorded PID and
+   * the recorded group is empty, so nothing was signalled and the run is
+   * recorded lost; `unverifiable`: its identity could not be read or proven
+   * (it runs another program now, the PID is reused while its group still
+   * has members, or its leader is gone while its group still has members),
+   * so nothing was signalled and the run stays orphaned. A recorded identity that becomes unreadable after SIGTERM, or
+   * a leader that exits while its group lives on, reads `still_running`,
+   * never `stopped`. `group_remains` (CAN-6601): the recorded leader exited
+   * and its group still has members, so nothing more was signalled and a
+   * confirmed `force_group` may follow. A `force_group` answers `stopped`
+   * once the whole group is empty and the run is recorded lost, and
+   * `still_running` otherwise.
+   */
+  outcome: z.enum([
+    'stopped',
+    'still_running',
+    'gone',
+    'not_same',
+    'unverifiable',
+    'group_remains',
+  ]),
+  /**
+   * `force_group` only: what happened to each confirmed member. `stopped`:
+   * it exited after SIGTERM; `killed`: it outlived SIGTERM, matched again,
+   * and got SIGKILL; `gone`: it had already exited; `not_same`: it left the
+   * group or couldn't be read, so it was skipped; `still_running`: it
+   * outlived SIGTERM and couldn't be proven again.
+   */
+  members: z
+    .array(
+      z.strictObject({
+        pid: z.int().min(2),
+        outcome: z.enum([
+          'stopped',
+          'killed',
+          'gone',
+          'not_same',
+          'still_running',
+        ]),
+      }),
+    )
+    .max(WORKER_SCRIPT_GROUP_MAX_MEMBERS)
+    .optional(),
+});
+export type WorkerScriptExecutionStopResult = z.output<
+  typeof WorkerScriptExecutionStopResultSchema
+>;
+
+export const WorkerScriptExecutionGroupMembersParamsSchema = z.strictObject({
+  scope: WorkerScriptScopeSchema,
+  scriptKey: z.string().min(1).max(1024),
+  executionId: id,
+});
+export type WorkerScriptExecutionGroupMembersParams = z.output<
+  typeof WorkerScriptExecutionGroupMembersParamsSchema
+>;
+
+/**
+ * An orphaned run's live process group members once its recorded leader has
+ * exited (CAN-6601). `listed`: the group was read; `offerable` is true only
+ * when every member carries the run's id and started no earlier than the run
+ * did, so a confirmed `force_group` Stop may be offered. `not_group`: the record names no group,
+ * or its leader still runs or its PID is another process's. `unverifiable`:
+ * the leader or a member could not be read. `command` is the executable's
+ * base name, for the user only.
+ */
+export const WorkerScriptExecutionGroupMembersResultSchema = z.strictObject({
+  state: z.enum(['listed', 'not_group', 'unverifiable']),
+  offerable: z.boolean(),
+  members: z
+    .array(
+      z.strictObject({
+        pid: z.int().min(2),
+        startIdentity: z.string().min(1).max(256),
+        startedAt: z.iso.datetime({ offset: true }),
+        command: z.string().max(256),
+        /**
+         * Its environment carries the run's id, inherited from the run's own
+         * process; false when absent or unreadable. Only this answer leaves
+         * the host: never the environment itself.
+         */
+        carriesRunId: z.boolean(),
+      }),
+    )
+    .max(WORKER_SCRIPT_GROUP_MAX_MEMBERS),
+});
+export type WorkerScriptExecutionGroupMembersResult = z.output<
+  typeof WorkerScriptExecutionGroupMembersResultSchema
 >;
 
 export const WorkerScriptQueryErrorSchema = CanopyErrorPayloadSchema.extend({
@@ -361,6 +532,17 @@ export const WORKER_SCRIPT_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
       result: WorkerScriptExecutionGetResultSchema,
       error: WorkerScriptQueryErrorSchema,
     }),
+    'worker.script.execution.groupMembers': defineCanopyQuery({
+      plane: 'worker',
+      domain: 'script',
+      version: 1,
+      placement: 'target-selectable',
+      idempotency: 'inherent',
+      requiredGrants: [WORKER_SCRIPT_GRANTS.read],
+      params: WorkerScriptExecutionGroupMembersParamsSchema,
+      result: WorkerScriptExecutionGroupMembersResultSchema,
+      error: WorkerScriptQueryErrorSchema,
+    }),
     'worker.script.execution.list': defineCanopyQuery({
       plane: 'worker',
       domain: 'script',
@@ -397,6 +579,28 @@ export const WORKER_SCRIPT_INSTRUCTION_DEFINITIONS =
       requiredGrants: [WORKER_SCRIPT_GRANTS.execute],
       params: WorkerScriptExecutionCancelParamsSchema,
       result: WorkerScriptExecutionCancelResultSchema,
+      error: WorkerScriptInstructionErrorSchema,
+    }),
+    'worker.script.execution.clear': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'script',
+      version: 1,
+      placement: 'worker-only',
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_SCRIPT_GRANTS.execute],
+      params: WorkerScriptExecutionClearParamsSchema,
+      result: WorkerScriptExecutionClearResultSchema,
+      error: WorkerScriptInstructionErrorSchema,
+    }),
+    'worker.script.execution.stop': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'script',
+      version: 1,
+      placement: 'worker-only',
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_SCRIPT_GRANTS.execute],
+      params: WorkerScriptExecutionStopParamsSchema,
+      result: WorkerScriptExecutionStopResultSchema,
       error: WorkerScriptInstructionErrorSchema,
     }),
   });

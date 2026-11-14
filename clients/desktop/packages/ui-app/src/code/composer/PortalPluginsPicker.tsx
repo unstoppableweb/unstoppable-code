@@ -123,6 +123,30 @@ export interface AccountMcpSeam {
   onCatalogRefresh?: () => void | Promise<void>;
 }
 
+/** One of this computer's items the cloud account doesn't have yet (CAN-6176). */
+export interface PortalPluginsLocalItem {
+  readonly key: string;
+  readonly name: string;
+  readonly kind: 'skill' | 'plugin';
+  /** The cloud has an older copy; adding replaces it. */
+  readonly replacing: boolean;
+}
+
+/**
+ * This computer's items, offered for the cloud account. Adding one runs the
+ * host's own consent flow; it resolves with what to select once the cloud
+ * copy is in `catalog`, or null when nothing was added.
+ */
+export interface PortalPluginsLocalItemsSeam {
+  readonly items: readonly PortalPluginsLocalItem[];
+  readonly onAdd: (
+    key: string,
+  ) => Promise<Pick<
+    PortalChatTabPluginSelections,
+    'skillRefs' | 'pluginRefs'
+  > | null>;
+}
+
 export interface PortalPluginsPickerProps {
   /** Controlled ownership is fixed on mount. Omit to keep the standalone trigger. */
   open?: boolean;
@@ -153,6 +177,8 @@ export interface PortalPluginsPickerProps {
   marketplacesEnabled?: boolean;
   addMarketplace?: AddMarketplaceSeam;
   accountMcp?: AccountMcpSeam;
+  /** This computer's items the cloud account lacks; desktop cloud chats only. */
+  localItems?: PortalPluginsLocalItemsSeam;
   notice?: string;
   /**
    * The part of `selections` the chat inherits from its project's default
@@ -717,6 +743,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
   marketplacesEnabled = false,
   addMarketplace,
   accountMcp,
+  localItems,
   notice,
   inheritedSelections,
   unavailable = NO_UNAVAILABLE,
@@ -776,6 +803,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     [],
   );
   const [draft, setDraft] = useState<PickerDraft | null>(null);
+  const [addingLocal, setAddingLocal] = useState<string | null>(null);
   const [detailEntry, setDetailEntry] =
     useState<PortalPluginCatalogUnifiedEntry | null>(null);
   const detailSecurityAudit = parseSecurityAudit(detailEntry?.securityAudit);
@@ -888,6 +916,36 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     },
     [projection],
   );
+  const addLocal = async (key: string): Promise<void> => {
+    if (localItems === undefined || addingLocal !== null) return;
+    setAddingLocal(key);
+    try {
+      const added = await localItems.onAdd(key);
+      if (added === null) return;
+      // The cloud copy joins the draft, as if it had been ticked.
+      setDraft((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              skillKeys: new Set([
+                ...current.skillKeys,
+                ...added.skillRefs.map((ref) =>
+                  skillKey(ref.sourceId, ref.skillName),
+                ),
+              ]),
+              pluginKeys: new Set([
+                ...current.pluginKeys,
+                ...added.pluginRefs.map((ref) =>
+                  pluginKey(ref.marketplaceId, ref.pluginName),
+                ),
+              ]),
+            },
+      );
+    } finally {
+      setAddingLocal(null);
+    }
+  };
   const selectedRowKeys = useMemo(() => {
     if (!draft) return new Set<string>();
     const result = new Set<string>();
@@ -924,7 +982,8 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     : 0;
 
   const handleSave = useCallback((): void => {
-    if (savingRef.current) return;
+    // A copy still being added would be left out of what saves.
+    if (savingRef.current || addingLocal !== null) return;
     if (!draft) return handleClose();
     const skillLookup = new Map<
       string,
@@ -1040,6 +1099,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     onApplied?.(next, selections);
     handleClose();
   }, [
+    addingLocal,
     catalog,
     draft,
     deferredTools,
@@ -1102,7 +1162,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
               variant="primary"
               size="compact"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || addingLocal !== null}
               data-testid="portal-plugins-save"
             >
               Save
@@ -1139,8 +1199,53 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
               rowCheckboxTestId="portal-plugins-row-checkbox"
               selectionCopy={selectionCopy}
             />
+            {localItems !== undefined && localItems.items.length > 0 && (
+              <div className="pt-3" data-testid="portal-plugins-local-items">
+                <Divider />
+                <div className="flex flex-col gap-2 pt-3">
+                  <div>
+                    <p className="text-xs font-medium fg-primary">
+                      On this computer
+                    </p>
+                    <p className="text-xs fg-secondary">
+                      Not in your cloud account yet. Add one to use it in cloud
+                      chats; you see which files go first.
+                    </p>
+                  </div>
+                  <ul className="flex flex-col gap-1">
+                    {localItems.items.map((item) => (
+                      <li
+                        key={item.key}
+                        className="flex items-center justify-between gap-3"
+                        data-testid="portal-plugins-local-item"
+                      >
+                        <span className="flex min-w-0 items-baseline gap-2">
+                          <span className="truncate text-m fg-primary">
+                            {item.name}
+                          </span>
+                          <span className="text-xs fg-secondary">
+                            {item.kind === 'skill' ? 'Skill' : 'Plugin'}
+                          </span>
+                        </span>
+                        <Button
+                          size="compact"
+                          onClick={(): void => {
+                            void addLocal(item.key);
+                          }}
+                          disabled={addingLocal !== null || saving}
+                          data-testid="portal-plugins-local-add"
+                        >
+                          {item.replacing ? 'Update in cloud' : 'Add to cloud'}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
             {marketplaceAdded && (
               <Notice
+                errorSource="portal-plugins-marketplace-added"
                 role="status"
                 intent={marketplaceAdded.intent}
                 className="mt-3"
@@ -1177,6 +1282,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
                   />
                   {saveError && (
                     <ErrorBanner
+                      errorSource="portal-plugins-picker"
                       className=""
                       error="Couldn't save plugin settings. Try again."
                     />

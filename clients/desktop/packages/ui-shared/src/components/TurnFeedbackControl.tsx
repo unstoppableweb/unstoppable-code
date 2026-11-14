@@ -58,8 +58,9 @@ export function TurnFeedbackControl({
   const wrap = (node: ReactElement, label: string): ReactNode =>
     renderTooltip ? renderTooltip(node, label) : node;
 
-  // Both looks use the turn's 28px quiet icon button: tertiary ink at rest,
-  // full ink while pressed, and a rating reads through the filled icon.
+  // The turn's 28px quiet icon button uses the step icons' 14px glyph:
+  // tertiary ink at rest, full ink while pressed, with a filled rating icon.
+
   const upSelected = rating === 'up';
   const downSelected = rating === 'down';
 

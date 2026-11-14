@@ -1,4 +1,7 @@
-import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
+import type {
+  AgentDelegationCardData,
+  AgentDelegationSnapshot,
+} from '@canopy/protocol/delegation';
 
 /** Stream fields that may change before the parent chat commits a new card. */
 export interface ManagedDelegationProgress {
@@ -81,5 +84,35 @@ export function overlayManagedDelegationProgress<
     ...(phase === undefined ? {} : { phase }),
     ...(queue === undefined ? {} : { queue }),
     ...(approvalPending === undefined ? {} : { approvalPending }),
+  };
+}
+
+/**
+ * A card with the delegation's current snapshot, as its authority reads it,
+ * for a host whose transcript never commits a newer card (cloud chats: the
+ * card is the Delegate Task call's first answer). Every snapshot field comes
+ * from `live`; the card keeps what only it knows: the task, the parent and
+ * where its child transcript is. A snapshot of an older run than the card's
+ * changes nothing.
+ */
+export function overlayManagedDelegationSnapshot(
+  card: AgentDelegationCardData,
+  live: AgentDelegationSnapshot | undefined,
+): AgentDelegationCardData {
+  if (live === undefined || live.delegationId !== card.delegationId)
+    return card;
+  if ((live.runGeneration ?? 1) < (card.runGeneration ?? 1)) return card;
+  return {
+    ...live,
+    parentHarnessId: card.parentHarnessId,
+    description: card.description,
+    prompt: card.prompt,
+    executionMode: card.executionMode,
+    ...(card.transcriptStore === undefined
+      ? {}
+      : { transcriptStore: card.transcriptStore }),
+    ...(card.streamRevision === undefined
+      ? {}
+      : { streamRevision: card.streamRevision }),
   };
 }

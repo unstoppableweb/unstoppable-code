@@ -1,3 +1,4 @@
+import { assertLegacyWorktreeBaseRequest } from '../worktree-base-capability';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { RemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { BrowserWindow } from 'electron';
@@ -63,7 +64,10 @@ import type { RemoteUploadStore } from './uploads';
 export interface HostSessionOptions {
   session: SecureSession;
   /** One bridge per controller window, made on that window's first call. */
-  createBridge: (surface: RemoteSurface) => Promise<HostBridge>;
+  createBridge: (
+    surface: RemoteSurface,
+    exactWorktreeBaseBranch: boolean,
+  ) => Promise<HostBridge>;
   mainWindowPushes: MainWindowPushSource;
   uploads: RemoteUploadStore;
   /** Reads files the controller opens in its own default app. */
@@ -186,6 +190,7 @@ export class RemoteHostSession {
     },
   );
   private compatible = false;
+  private exactWorktreeBaseBranch = false;
   /** The controller sent a valid hello, whatever its protocol. */
   private greeted = false;
   /** Each open core stream's close, by key, including ones still opening. */
@@ -249,7 +254,11 @@ export class RemoteHostSession {
     if (existing) return existing;
     if (!this.compatible) return Promise.reject(this.mismatchError());
     const forwarder = this.ensureForwarding();
-    const bridge = this.options.createBridge(surface).then(
+    const startingBridge = this.options.createBridge(
+      surface,
+      this.exactWorktreeBaseBranch,
+    );
+    const bridge = startingBridge.then(
       (created) => {
         if (this.closed) {
           created.destroy();
@@ -456,6 +465,8 @@ export class RemoteHostSession {
         if (this.servesHostedChat(channel)) {
           return this.dispatchHostedChat(channel, args[0]);
         }
+        if (!this.exactWorktreeBaseBranch)
+          assertLegacyWorktreeBaseRequest(channel, args[0]);
         const bridge = await this.bridgeFor(surface ?? 'main');
         const result = await bridge.invoke(channel, args);
         return this.options.kind !== 'desktop' &&
@@ -657,7 +668,14 @@ export class RemoteHostSession {
     }
     this.greeted = true;
     if (decision.outcome === 'incompatible') return hello;
+    if (!this.compatible) {
+      this.exactWorktreeBaseBranch =
+        this.options.kind === 'desktop' &&
+        parsed.data.exactWorktreeBaseBranch === true;
+    }
     this.compatible = true;
+    if (this.exactWorktreeBaseBranch && hello.features)
+      hello.features.exactWorktreeBaseBranch = true;
     // Warm the bridge so the controller's first calls do not wait for it.
     this.start().catch((error: unknown) => this.options.onBridgeError?.(error));
     return resume

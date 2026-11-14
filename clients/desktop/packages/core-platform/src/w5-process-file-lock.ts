@@ -171,6 +171,47 @@ export interface W5DesktopDeleteGate {
   completeReservation(id: string): void;
 }
 
+async function initializeDesktopDeleteGate(
+  db: DatabaseSync,
+  kind: 'desktop' | 'delete',
+): Promise<boolean> {
+  const deadline = performance.now() + 5_000;
+  let initialized = false;
+  for (;;) {
+    try {
+      const mode = db.prepare('PRAGMA journal_mode').get();
+      if (mode?.journal_mode !== 'delete')
+        throw new Error('Unsafe admission journal mode');
+      db.exec('PRAGMA synchronous = FULL');
+      if (db.prepare('PRAGMA user_version').get()?.user_version === 0) {
+        // Only initialize virgin evidence, rechecked under first-opener exclusion.
+        db.exec('BEGIN EXCLUSIVE');
+        if (
+          db.prepare('PRAGMA user_version').get()?.user_version === 0 &&
+          !db.prepare('SELECT name FROM sqlite_master LIMIT 1').get()
+        ) {
+          db.exec(
+            'CREATE TABLE deletion_hold (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), reservation_id TEXT NOT NULL) STRICT; PRAGMA user_version = 1; COMMIT',
+          );
+          initialized = true;
+        } else db.exec('ROLLBACK');
+      }
+      if (db.prepare('PRAGMA user_version').get()?.user_version !== 1)
+        throw new W5DesktopDeleteAdmissionError(
+          'Desktop admission evidence is incomplete or from another version. Keep the data folder unchanged for manual recovery.',
+        );
+      return initialized;
+    } catch (error) {
+      if (db.isTransaction) db.exec('ROLLBACK');
+      const remaining = deadline - performance.now();
+      if (kind !== 'desktop' || !sqliteBusy(error) || remaining <= 0)
+        throw error;
+      // A rival initializer can block even PRAGMA reads, then hold lifetime SHARED.
+      await delay(Math.min(25, remaining));
+    }
+  }
+}
+
 export async function acquireW5DesktopDeleteGate(
   dataRoot: string,
   kind: 'desktop' | 'delete',
@@ -192,46 +233,9 @@ export async function acquireW5DesktopDeleteGate(
   try {
     if (hostOperatingSystem() !== 'win32') await chmod(path, 0o600);
     db.exec('PRAGMA busy_timeout = 0');
-    const mode = db.prepare('PRAGMA journal_mode').get();
-    if (mode?.journal_mode !== 'delete')
-      throw new Error('Unsafe admission journal mode');
-    db.exec('PRAGMA synchronous = FULL');
-    if (db.prepare('PRAGMA user_version').get()?.user_version === 0) {
-      // Opening can leave an empty file after interruption. Only initialize
-      // virgin evidence, rechecked under exclusion from other first openers.
-      try {
-        db.exec('BEGIN EXCLUSIVE');
-      } catch (error) {
-        // A rival may have initialized and joined shared desktop presence
-        // since our version read. Recheck instead of requiring exclusion.
-        if (
-          !sqliteBusy(error) ||
-          db.prepare('PRAGMA user_version').get()?.user_version !== 1
-        )
-          throw error;
-      }
-      if (db.isTransaction) {
-        if (
-          db.prepare('PRAGMA user_version').get()?.user_version === 0 &&
-          !db.prepare('SELECT name FROM sqlite_master LIMIT 1').get()
-        ) {
-          db.exec(
-            'CREATE TABLE deletion_hold (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), reservation_id TEXT NOT NULL) STRICT; PRAGMA user_version = 1; COMMIT',
-          );
-          for (const parent of [
-            directory,
-            dirname(directory),
-            root,
-            dirname(root),
-          ])
-            await flushDirectory(parent);
-        } else db.exec('ROLLBACK');
-      }
-    }
-    if (db.prepare('PRAGMA user_version').get()?.user_version !== 1)
-      throw new W5DesktopDeleteAdmissionError(
-        'Desktop admission evidence is incomplete or from another version. Keep the data folder unchanged for manual recovery.',
-      );
+    if (await initializeDesktopDeleteGate(db, kind))
+      for (const parent of [directory, dirname(directory), root, dirname(root)])
+        await flushDirectory(parent);
     if (kind === 'delete') db.exec('PRAGMA locking_mode = EXCLUSIVE');
     db.exec(kind === 'delete' ? 'BEGIN EXCLUSIVE' : 'BEGIN');
     // Unlike the exclusively held canonical log, this latch is readable at

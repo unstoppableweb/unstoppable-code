@@ -1,5 +1,6 @@
 import { useState, type ComponentProps, type JSX } from 'react';
 import {
+  DropdownMenuSurface,
   Button,
   HostTooltipProvider,
   NoticeButton,
@@ -67,33 +68,49 @@ function UsageActionsSection(): JSX.Element {
     <SpecimenPanel title="Usage popover actions">
       <SpecimenGrid min={280}>
         <SpecimenCell label="UsageSectionHeader, live (toggles the chevron)">
-          <div className="w-64 rounded-lg bg-quaternary p-3">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="readout"
+            className="w-64"
+          >
             <UsageSectionHeader
               label="Context"
               expanded={open}
               onToggle={(): void => setOpen((v) => !v)}
             />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageSectionHeader, expanded, with a quiet action">
-          <div className="w-64 rounded-lg bg-quaternary p-3">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="readout"
+            className="w-64"
+          >
             <UsageSectionHeader
               label="Accounts"
               expanded
               onToggle={noop}
               action={<UsageTextAction label="Manage" onClick={noop} />}
             />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageActionRow">
-          <div className="w-64 rounded-lg bg-quaternary p-3">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="readout"
+            className="w-64"
+          >
             <UsageActionRow label="See detailed breakdown" onClick={noop} />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageActionRow, footer band">
-          <div className="w-64 overflow-hidden rounded-lg bg-quaternary">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="none"
+            className="w-64 overflow-hidden"
+          >
             <UsageActionRow label="Manage usage" onClick={noop} band />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageTextAction">
           <UsageTextAction label="Manage" onClick={noop} />
@@ -200,6 +217,7 @@ function UsageLimitSection(): JSX.Element {
 const WAKE_REASONS: readonly WakeParkedReason[] = [
   'consecutive_limit',
   'daily_limit',
+  'delegation_limit',
   'other',
 ];
 

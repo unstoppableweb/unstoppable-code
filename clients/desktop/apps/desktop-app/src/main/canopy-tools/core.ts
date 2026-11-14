@@ -1,3 +1,4 @@
+import { searchChatsSchema, readChatExcerptSchema } from './definitions';
 import { executeShowCapabilities } from './show-capabilities';
 import { setAutoArchiveThroughCore } from './auto-archive-core-client';
 import { randomUUID } from 'node:crypto';
@@ -158,6 +159,8 @@ export interface CanopyInjectedToolRuntime {
   saveLocalMemory?: (request: SaveLocalMemoryInput) => Promise<string>;
   searchLocalMemory?: (request: SearchLocalMemoryInput) => Promise<string>;
   readLocalMemory?: (request: ReadLocalMemoryInput) => Promise<string>;
+  searchChats?: (request: { query: string; limit: number }) => Promise<string>;
+  readChatExcerpt?: (request: { matchId: string }) => Promise<string>;
   loadPipelineYaml?: (
     request: ReadPipelineYamlInput,
   ) => Promise<PipelineYamlReadResult>;
@@ -329,6 +332,26 @@ export async function executeCanopyInjectedTool(
       return executeSaveMemory(rawArgs, runtime, context);
     case 'search_memory':
       return executeSearchMemory(rawArgs, runtime);
+    case 'search_chats': {
+      const parsed = searchChatsSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('SearchChats');
+      if (!runtime.searchChats)
+        return {
+          text: 'Chat search is unavailable in this chat.',
+          isError: true,
+        };
+      return { text: await runtime.searchChats(parsed.data) };
+    }
+    case 'read_chat_excerpt': {
+      const parsed = readChatExcerptSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('ReadChatExcerpt');
+      if (!runtime.readChatExcerpt)
+        return {
+          text: 'Chat excerpts are unavailable in this chat.',
+          isError: true,
+        };
+      return { text: await runtime.readChatExcerpt(parsed.data) };
+    }
     case 'read_memory':
       return executeReadMemory(rawArgs, runtime);
     case 'read_pipeline_yaml':

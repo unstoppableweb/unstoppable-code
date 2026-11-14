@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-3233: current Cowork creation must remain independent of user Git policy.
 jest.mock('../portal/portal-structural-sync', () => ({
   schedulePortalStructuralSync: jest.fn(),
@@ -58,6 +59,7 @@ posixTest.each(GIT_FAILURE_CASES)(
       CANOPY_DATA_DIR: join(root, 'data'),
     };
     __resetSidebarItemsStateForTests();
+    const closeW5Store = await installRoutedW5GoldenStore();
     try {
       const trace = fixture.readTrace();
       const started = performance.now();
@@ -97,6 +99,7 @@ posixTest.each(GIT_FAILURE_CASES)(
       );
       fixture.assertPolicyUnchanged();
     } finally {
+      await closeW5Store();
       process.env = originalEnv;
       __resetSidebarItemsStateForTests();
       try {
@@ -121,6 +124,7 @@ test('missing external Cowork folder refuses selection writes and first send wit
   const base = await mkdtemp(join(tmpdir(), 'can-6019-golden-'));
   process.env = { ...originalEnv, CANOPY_DATA_DIR: join(base, 'data') };
   __resetSidebarItemsStateForTests();
+  const closeW5Store = await installRoutedW5GoldenStore();
   try {
     const folder = join(base, 'FY27 Budget');
     await mkdir(folder);
@@ -175,6 +179,7 @@ test('missing external Cowork folder refuses selection writes and first send wit
     ).toMatchObject({ status: 'present' });
     await saveNote(project.id, 'Note', 'hello');
   } finally {
+    await closeW5Store();
     process.env = originalEnv;
     __resetSidebarItemsStateForTests();
     await rm(base, { recursive: true, force: true });

@@ -51,7 +51,12 @@ export function MarketplaceSourceRemoveDialog({
           )}
           {error && (
             <div>
-              <ErrorBanner className="" error={error} blockMessageFromReplay />
+              <ErrorBanner
+                errorSource="marketplace-source-remove-dialog"
+                className=""
+                error={error}
+                blockMessageFromReplay
+              />
             </div>
           )}
         </Stack>

@@ -211,8 +211,14 @@ export interface AdditionalOrganizationInvite {
   readonly failure: PersonalOrganizationUpgradeFailure | null;
 }
 
+interface ChecklistReply {
+  readonly isCurrent: () => boolean;
+  readonly apply: <T>(write: () => T) => T | undefined;
+}
+
 export interface PersonalOrganizationUpgradeState {
   readonly phase: PersonalOrganizationUpgradePhase;
+  readonly retired: boolean;
   readonly name: string;
   readonly inviteEmail: string;
   readonly projects: PersonalProjectListState;
@@ -256,7 +262,9 @@ export interface PersonalOrganizationUpgradeState {
   readonly retryAnother: (id: string) => Promise<void>;
   /** Restore a previous run for this account, if one was recorded. */
   readonly restore: () => Promise<void>;
-  /** Forget the record once nothing is pending; called when the dialog closes. */
+  /** Capture the checklist generation before starting work that can reply later. */
+  readonly captureChecklistReply: () => ChecklistReply;
+  /** Retire the finished checklist and clear its saved record. */
   readonly acknowledge: () => void;
   /** Stop applying late replies (unmount or account change). */
   readonly dispose: () => void;
@@ -351,6 +359,7 @@ export function createPersonalOrganizationUpgradeStore({
   schedule = defaultSchedule,
 }: PersonalOrganizationUpgradeStoreOptions): PersonalOrganizationUpgradeStore {
   let alive = true;
+  let checklistGeneration = 0;
   let busy = false;
   let loadedOnce = false;
   let cancelPoll: (() => void) | null = null;
@@ -362,11 +371,21 @@ export function createPersonalOrganizationUpgradeStore({
   let originalDesktopSessionId = port.desktopSessionId;
   let existingOrganizationId: string | null =
     initialExistingOrganizationId ?? null;
-  const active = (): boolean => alive && (port.isCurrent?.() ?? true);
-  const projectsCurrent = (): boolean =>
-    active() && port.desktopSessionId === originalDesktopSessionId;
-
+  const contextCurrent = (): boolean => alive && (port.isCurrent?.() ?? true);
+  const captureChecklistReply = (): ChecklistReply => {
+    const generation = checklistGeneration;
+    const isCurrent = (): boolean =>
+      generation === checklistGeneration && contextCurrent();
+    return {
+      isCurrent,
+      apply: (write) => (isCurrent() ? write() : undefined),
+    };
+  };
   const store = create<PersonalOrganizationUpgradeState>((set, get) => {
+    const active = (): boolean => !get().retired && contextCurrent();
+    const projectsCurrent = (): boolean =>
+      active() && port.desktopSessionId === originalDesktopSessionId;
+
     const persist = (): void => {
       const state = get();
       recovery?.write({
@@ -428,13 +447,17 @@ export function createPersonalOrganizationUpgradeStore({
         polls >= maxPolls
       )
         return;
+      const reply = captureChecklistReply();
       cancelPoll = schedule(() => {
         cancelPoll = null;
+        if (!reply.isCurrent()) return;
         polls += 1;
         void get()
           .refreshOperation()
-          .then(() => get().reconcileInvite())
-          .then(() => pollWhilePending());
+          .then(() => {
+            if (reply.isCurrent()) return get().reconcileInvite();
+          })
+          .then(() => reply.apply(pollWhilePending));
       }, pollIntervalMs);
     };
 
@@ -454,6 +477,7 @@ export function createPersonalOrganizationUpgradeStore({
         });
         return;
       }
+      const reply = captureChecklistReply();
       set({ phase: 'converting', conversionFailure: null });
       try {
         const operation = await port.convert({
@@ -462,14 +486,17 @@ export function createPersonalOrganizationUpgradeStore({
           workspaceIds: [...get().selection],
           ...(retry ? { retryWorkspaceIds: [...workspaceIds] } : {}),
         });
-        if (!active()) return;
-        set({ operation });
-        polls = 0;
-        pollWhilePending();
+        reply.apply(() => {
+          set({ operation });
+          polls = 0;
+          pollWhilePending();
+        });
       } catch (error) {
-        if (!active()) return;
-        set({ conversionFailure: failureOf(error) });
-        persist();
+        if (!reply.isCurrent()) return;
+        reply.apply(() => {
+          set({ conversionFailure: failureOf(error) });
+          persist();
+        });
         // The request may have started work; read what is durable.
         await get().refreshOperation();
       }
@@ -482,6 +509,7 @@ export function createPersonalOrganizationUpgradeStore({
         await get().reconcileInvite();
         return;
       }
+      const reply = captureChecklistReply();
       set({
         phase: get().promotion === null ? get().phase : 'inviting',
         invite: { status: 'sending', result: null, failure: null },
@@ -489,25 +517,24 @@ export function createPersonalOrganizationUpgradeStore({
       persist();
       try {
         const result = await port.invite(organizationId, { email });
-        if (!active()) return;
-        set({ invite: { status: 'done', result, failure: null } });
+        reply.apply(() =>
+          set({ invite: { status: 'done', result, failure: null } }),
+        );
       } catch (error) {
-        if (!active()) return;
-        const definite =
-          error instanceof OrganizationOperationFailure &&
-          error.status !== undefined &&
-          error.status >= 400 &&
-          error.status < 500;
-        set({
-          invite: {
-            status: definite ? 'failed' : 'pending',
-            result: null,
-            failure: failureOf(error),
-          },
+        if (!reply.isCurrent()) return;
+        const definite = isDefiniteRefusal(error);
+        reply.apply(() => {
+          set({
+            invite: {
+              status: definite ? 'failed' : 'pending',
+              result: null,
+              failure: failureOf(error),
+            },
+          });
         });
         if (!definite) await get().reconcileInvite();
       }
-      persist();
+      reply.apply(persist);
     };
 
     const updateAdditional = (
@@ -538,21 +565,24 @@ export function createPersonalOrganizationUpgradeStore({
         });
         return;
       }
+      const reply = captureChecklistReply();
       try {
         const status = await port.reconcileInvite(organizationId, email);
-        if (!active()) return;
-        if (status.status === 'pending' || status.status === 'not-found')
-          updateAdditional(id, {
-            status: 'pending',
-            failure: failureOf(sendError),
-          });
-        else updateAdditional(id, { status: 'done', result: status });
+        reply.apply(() => {
+          if (status.status === 'pending' || status.status === 'not-found')
+            updateAdditional(id, {
+              status: 'pending',
+              failure: failureOf(sendError),
+            });
+          else updateAdditional(id, { status: 'done', result: status });
+        });
       } catch (reconcileError) {
-        if (active())
+        reply.apply(() =>
           updateAdditional(id, {
             status: 'pending',
             failure: failureOf(reconcileError),
-          });
+          }),
+        );
       }
     };
 
@@ -561,21 +591,29 @@ export function createPersonalOrganizationUpgradeStore({
       id: string,
       email: string,
     ): Promise<void> => {
+      const reply = captureChecklistReply();
       updateAdditional(id, { status: 'sending', result: null, failure: null });
       try {
         const result = await port.invite(organizationId, { email });
-        if (active())
-          updateAdditional(id, { status: 'done', result, failure: null });
+        reply.apply(() =>
+          updateAdditional(id, { status: 'done', result, failure: null }),
+        );
       } catch (error) {
-        if (!active()) return;
+        if (!reply.isCurrent()) return;
         if (isDefiniteRefusal(error))
-          updateAdditional(id, { status: 'failed', failure: failureOf(error) });
+          reply.apply(() =>
+            updateAdditional(id, {
+              status: 'failed',
+              failure: failureOf(error),
+            }),
+          );
         else await confirmAdditional(organizationId, id, email, error);
       }
     };
 
     return {
       phase: 'editing',
+      retired: false,
       name: defaultName,
       inviteEmail: '',
       projects: { status: 'idle', items: [] },
@@ -607,6 +645,7 @@ export function createPersonalOrganizationUpgradeStore({
             ].includes(code)
           ) {
             promotionOperationId = createId();
+            checklistGeneration += 1;
             submittedName = undefined;
           }
         }
@@ -629,28 +668,31 @@ export function createPersonalOrganizationUpgradeStore({
 
       loadProjects: async (): Promise<void> => {
         if (!active() || !port.canBringProjects) return;
+        const reply = captureChecklistReply();
         set((state) => ({
           projects: { ...state.projects, status: 'loading' },
         }));
         try {
           const items = await port.listProjects();
-          if (!active()) return;
-          const firstLoad = !loadedOnce;
-          loadedOnce = true;
-          const selection =
-            firstLoad && !get().withoutProjects
-              ? items.map((item) => item.workspaceId)
-              : get().selection;
-          set({
-            projects: { status: 'ready', items },
-            ...(get().promotion === null ? { selection } : {}),
+          reply.apply(() => {
+            const firstLoad = !loadedOnce;
+            loadedOnce = true;
+            const selection =
+              firstLoad && !get().withoutProjects
+                ? items.map((item) => item.workspaceId)
+                : get().selection;
+            set({
+              projects: { status: 'ready', items },
+              ...(get().promotion === null ? { selection } : {}),
+            });
           });
         } catch {
-          if (!active()) return;
           // Keep the previous list and choices; never read as "no projects".
-          set((state) => ({
-            projects: { ...state.projects, status: 'error' },
-          }));
+          reply.apply(() =>
+            set((state) => ({
+              projects: { ...state.projects, status: 'error' },
+            })),
+          );
         }
       },
 
@@ -666,6 +708,7 @@ export function createPersonalOrganizationUpgradeStore({
         )
           return;
         if (email !== '' && !EMAIL_SHAPE.test(email)) return;
+        const reply = captureChecklistReply();
         busy = true;
         try {
           let organizationId = teamId();
@@ -679,26 +722,30 @@ export function createPersonalOrganizationUpgradeStore({
                 name: submittedName,
                 operationId: promotionOperationId,
               });
-              if (!active()) return;
-              set({ promotion });
-              persist();
+              if (!reply.isCurrent()) return;
+              reply.apply(() => {
+                set({ promotion });
+                persist();
+              });
               organizationId = promotion.promotion.organizationId;
             } catch (error) {
-              if (!active()) return;
-              set({ phase: 'editing', promotionFailure: failureOf(error) });
+              reply.apply(() =>
+                set({ phase: 'editing', promotionFailure: failureOf(error) }),
+              );
               return;
             }
           }
           if (port.canBringProjects && get().operation === null) {
             await convert(get().selection, false);
-            if (!active()) return;
+            if (!reply.isCurrent()) return;
           }
           if (get().invite.status !== 'done') {
             await sendInvite(organizationId);
-            if (!active()) return;
           }
-          set({ phase: settledPhase() });
-          persist();
+          reply.apply(() => {
+            set({ phase: settledPhase() });
+            persist();
+          });
         } finally {
           busy = false;
         }
@@ -706,11 +753,14 @@ export function createPersonalOrganizationUpgradeStore({
 
       retryProjects: async (workspaceIds): Promise<void> => {
         if (!active() || busy || workspaceIds.length === 0) return;
+        const reply = captureChecklistReply();
         busy = true;
         try {
           await convert(workspaceIds, true);
-          if (active()) set({ phase: settledPhase() });
-          persist();
+          reply.apply(() => {
+            set({ phase: settledPhase() });
+            persist();
+          });
         } finally {
           busy = false;
         }
@@ -723,22 +773,22 @@ export function createPersonalOrganizationUpgradeStore({
           get().selection.length === 0
         )
           return;
+        const reply = captureChecklistReply();
         try {
           const operation = await port.status(conversionOperationId);
           if (!projectsCurrent()) return;
-          if (operation === null) {
+          reply.apply(() => {
             // A failed request plus a confirmed absent journal can be retried.
             // Legacy records and unknown status remain pending.
-            if (get().conversionFailure !== null) {
-              set({ operation: null });
-              if (!busy) set({ phase: settledPhase() });
-              persist();
-            }
-            return;
-          }
-          set({ operation, conversionFailure: null });
-          if (!busy) set({ phase: settledPhase() });
-          persist();
+            if (operation === null && get().conversionFailure === null) return;
+            set(
+              operation === null
+                ? { operation }
+                : { operation, conversionFailure: null },
+            );
+            if (!busy) set({ phase: settledPhase() });
+            persist();
+          });
         } catch {
           // Status stays as last known; the dialog offers Check again.
         }
@@ -747,14 +797,15 @@ export function createPersonalOrganizationUpgradeStore({
       retryInvite: async (): Promise<void> => {
         const organizationId = teamId();
         if (!active() || busy || organizationId === null) return;
+        const reply = captureChecklistReply();
         busy = true;
         try {
           await sendInvite(organizationId);
         } finally {
           busy = false;
-          if (active()) set({ phase: settledPhase() });
+          reply.apply(() => set({ phase: settledPhase() }));
         }
-        if (alive) persist();
+        reply.apply(persist);
       },
 
       reconcileInvite: async (): Promise<void> => {
@@ -766,19 +817,20 @@ export function createPersonalOrganizationUpgradeStore({
           !port.reconcileInvite
         )
           return;
+        const reply = captureChecklistReply();
         try {
           const result = await port.reconcileInvite(
             organizationId,
             get().inviteEmail.trim(),
           );
-          if (!active()) return;
-          if (result.status !== 'pending' && result.status !== 'not-found')
-            set({ invite: { status: 'done', result, failure: null } });
-          if (!busy) set({ phase: settledPhase() });
-          persist();
+          reply.apply(() => {
+            if (result.status !== 'pending' && result.status !== 'not-found')
+              set({ invite: { status: 'done', result, failure: null } });
+            if (!busy) set({ phase: settledPhase() });
+            persist();
+          });
         } catch (error) {
           if (
-            !active() ||
             !(error instanceof OrganizationOperationFailure) ||
             error.status === undefined ||
             error.status < 400 ||
@@ -786,21 +838,24 @@ export function createPersonalOrganizationUpgradeStore({
             error.status >= 500
           )
             return;
-          set({
-            invite: {
-              status: 'failed',
-              result: null,
-              failure: failureOf(error),
-            },
+          reply.apply(() => {
+            set({
+              invite: {
+                status: 'failed',
+                result: null,
+                failure: failureOf(error),
+              },
+            });
+            if (!busy) set({ phase: settledPhase() });
+            persist();
           });
-          if (!busy) set({ phase: settledPhase() });
-          persist();
         }
       },
 
       refreshPromotion: async (): Promise<void> => {
         if (!active() || busy || get().promotion === null || !submittedName)
           return;
+        const reply = captureChecklistReply();
         busy = true;
         try {
           const promotion = await port.promote({
@@ -808,10 +863,10 @@ export function createPersonalOrganizationUpgradeStore({
             name: submittedName,
             operationId: promotionOperationId,
           });
-          if (active()) {
+          reply.apply(() => {
             set({ promotion });
             persist();
-          }
+          });
         } catch {
           /* Promotion is committed; retain its follow-up warnings. */
         } finally {
@@ -843,13 +898,14 @@ export function createPersonalOrganizationUpgradeStore({
 
       inviteExisting: async (organizationId): Promise<void> => {
         if (!active() || busy) return;
+        const reply = captureChecklistReply();
         existingOrganizationId = organizationId;
         busy = true;
         try {
           await sendInvite(organizationId);
         } finally {
           busy = false;
-          if (active()) set({ phase: settledPhase() });
+          reply.apply(() => set({ phase: settledPhase() }));
         }
       },
 
@@ -911,6 +967,9 @@ export function createPersonalOrganizationUpgradeStore({
             !(record.promotion === null && record.submittedName !== undefined))
         )
           return;
+        if (promotionOperationId !== record.promotionOperationId)
+          checklistGeneration += 1;
+        const reply = captureChecklistReply();
         promotionOperationId = record.promotionOperationId;
         conversionOperationId = record.conversionOperationId;
         originalPersonalOrganizationId = record.personalOrganizationId;
@@ -984,19 +1043,26 @@ export function createPersonalOrganizationUpgradeStore({
               },
             });
           if (record.promotion !== null) await get().refreshOperation();
+          if (!reply.isCurrent()) return;
           await get().reconcileInvite();
+          if (!reply.isCurrent()) return;
           // Closing during conversion can leave the originally requested invite
           // unstarted. Resume only that stage; uncertain delivery stays pending.
           if (hasUnsentInvite()) await get().retryInvite();
-          if (active()) set({ phase: settledPhase() });
-          polls = 0;
-          pollWhilePending();
+          reply.apply(() => {
+            set({ phase: settledPhase() });
+            polls = 0;
+            pollWhilePending();
+          });
         }
       },
+
+      captureChecklistReply,
 
       acknowledge: (): void => {
         const state = get();
         if (
+          !state.retired &&
           (state.promotion !== null || existingOrganizationId !== null) &&
           state.phase === 'finished' &&
           !needsAttention(state.operation) &&
@@ -1009,7 +1075,11 @@ export function createPersonalOrganizationUpgradeStore({
           state.invite.status !== 'sending' &&
           !hasUnsentInvite()
         ) {
-          recovery?.write(null);
+          checklistGeneration += 1;
+          set({ retired: true });
+          stopPolling();
+          if (recovery?.read()?.promotionOperationId === promotionOperationId)
+            recovery.write(null);
         }
       },
 

@@ -49,6 +49,7 @@ export function isActivitySectionId(value: string): boolean {
 
 const TRACKED_PLAN_SOURCES: readonly WireTrackedPlanSource[] = [
   'copilot',
+  'antigravity',
   'opencode',
   'cursor',
   'claude',

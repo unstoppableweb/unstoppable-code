@@ -1,5 +1,6 @@
 import { THINKING_LEVELS } from '@canopy/protocol/thinking';
 import { z } from 'zod';
+import { agentExecutionHarnessSchema } from '../../execution-harness';
 
 export const ENVIRONMENT_ACTION_TYPES = [
   'workspace.get',
@@ -80,6 +81,8 @@ const chatCreateActionSchema = z.strictObject({
   placement: z.enum(ENVIRONMENT_CHAT_CREATE_PLACEMENTS).default('current'),
   model: idSchema.optional(),
   thinkingLevel: z.enum(THINKING_LEVELS).optional(),
+  /** The model's own harness or one of its models.list harnessChoices. */
+  executionHarness: agentExecutionHarnessSchema.optional(),
   title: labelSchema.optional(),
   watchers: inlineWatchersSchema.optional(),
 });

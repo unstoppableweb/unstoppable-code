@@ -8,6 +8,7 @@ import {
   type QueuedMessageAttachment,
   QueuedMessageReason,
   QueuedMessageRow,
+  SteeringRequestTitle,
   type QueuedMessageRowProps,
   QueuedMessageSettingsHeldWarning,
   Surface,
@@ -196,6 +197,19 @@ const ROW_CASES: readonly RowCase[] = [
   {
     label: 'Sending: actions disabled until the message is queued',
     props: { text: MESSAGE, ...BASE_ACTIONS, sending: true },
+  },
+  {
+    label: 'Queued without actions',
+    props: { text: MESSAGE, status: 'Queued' },
+  },
+  {
+    label: 'Inline steering sender without actions',
+    props: {
+      text: MESSAGE,
+      label: (
+        <SteeringRequestTitle requestedBy="Upload worker" layout="inline" />
+      ),
+    },
   },
   {
     label: 'Status after the text',

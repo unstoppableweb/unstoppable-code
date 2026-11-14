@@ -124,6 +124,234 @@ describe('connectCanopyHttp', () => {
     expect(connection.signal.aborted).toBe(true);
   });
 
+  it('keeps the connection when a gateway answers one POST 503, and fails only that request, retryably', async () => {
+    // As staging's load balancer answers when a deploy closes the pod's
+    // connection mid-request (CAN-6394).
+    let gatewayDown = true;
+    const http = fakeFetch((path, _method, body) => {
+      if (path === ENDPOINT) return created();
+      if (gatewayDown) {
+        gatewayDown = false;
+        return new Response('upstream connect error', { status: 503 });
+      }
+      const id = Reflect.get(Object(body), 'id') as number;
+      return Response.json({ jsonrpc: '2.0', id, result: { ok: 1 } });
+    });
+    const connection = await connectCanopyHttp({
+      endpoint: ENDPOINT,
+      fetch: http.fetch,
+    });
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'core.chat.task.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toMatchObject({
+      id: 1,
+      error: {
+        data: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      },
+    });
+    expect(connection.signal.aborted).toBe(false);
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'core.chat.task.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { ok: 1 },
+    });
+    connection.close();
+  });
+
+  it('keeps the connection when the web core answers one POST 500, and fails only that request, retryably (CAN-6558)', async () => {
+    // As staging answered one worker.filesystem.roots.list.
+    let failing = true;
+    const http = fakeFetch((path, _method, body) => {
+      if (path === ENDPOINT) return created();
+      if (failing) {
+        failing = false;
+        return new Response('Internal Server Error', { status: 500 });
+      }
+      const id = Reflect.get(Object(body), 'id') as number;
+      return Response.json({ jsonrpc: '2.0', id, result: { ok: 1 } });
+    });
+    const connection = await connectCanopyHttp({
+      endpoint: ENDPOINT,
+      fetch: http.fetch,
+    });
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'worker.filesystem.roots.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toMatchObject({
+      id: 1,
+      error: {
+        data: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      },
+    });
+    expect(connection.signal.aborted).toBe(false);
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'worker.filesystem.roots.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { ok: 1 },
+    });
+    connection.close();
+  });
+
+  it('ends the connection as unavailable once every request keeps failing, and counts afresh after one succeeds (CAN-6558)', async () => {
+    const statuses: number[] = [500, 503, 502, 500, 200, 500, 504, 500, 502];
+    const http = fakeFetch((path, _method, body) => {
+      if (path === ENDPOINT) return created();
+      const status = statuses.shift() ?? 500;
+      const id = Reflect.get(Object(body), 'id') as number;
+      return status === 200
+        ? Response.json({ jsonrpc: '2.0', id, result: { ok: 1 } })
+        : new Response('failed', { status });
+    });
+    const connection = await connectCanopyHttp({
+      endpoint: ENDPOINT,
+      fetch: http.fetch,
+    });
+    const request = async (id: number): Promise<CanopyJsonRpcMessage> => {
+      await connection.send({
+        jsonrpc: '2.0',
+        id,
+        method: 'core.chat.task.list',
+        params: {},
+      });
+      return connection.receive();
+    };
+    // Four failures, then a success: the connection stands throughout.
+    for (const id of [1, 2, 3, 4])
+      await expect(request(id)).resolves.toMatchObject({ id, error: {} });
+    await expect(request(5)).resolves.toMatchObject({ id: 5, result: {} });
+    for (const id of [6, 7, 8, 9])
+      await expect(request(id)).resolves.toMatchObject({ id, error: {} });
+    expect(connection.signal.aborted).toBe(false);
+    // A fifth failure in a row: the web core is not answering, so the
+    // owner goes offline and reconnects instead of looking healthy.
+    await expect(request(10)).rejects.toMatchObject({
+      payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+    });
+    expect(connection.signal.aborted).toBe(true);
+  });
+
+  it('still ends the connection when the web core answers 404 for it (CAN-6558)', async () => {
+    const http = fakeFetch((path) =>
+      path === ENDPOINT
+        ? created()
+        : Response.json({ error: 'Not found' }, { status: 404 }),
+    );
+    const connection = await connectCanopyHttp({
+      endpoint: ENDPOINT,
+      fetch: http.fetch,
+    });
+    const pending = connection.receive();
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'core.client.lease.renew',
+      params: {},
+    });
+    await expect(pending).rejects.toMatchObject({
+      payload: { kind: 'not_found' },
+    });
+    expect(connection.signal.aborted).toBe(true);
+  });
+
+  it('keeps the connection when one POST gets no response, and fails only that request, retryably (CAN-6442)', async () => {
+    // As a local network blip leaves one request with no answer at all
+    // ("fetch failed").
+    let dropped = false;
+    const http = fakeFetch((path, _method, body) => {
+      if (path === ENDPOINT) return created();
+      const id = Reflect.get(Object(body), 'id') as number;
+      return Response.json({ jsonrpc: '2.0', id, result: { ok: 1 } });
+    });
+    const connection = await connectCanopyHttp({
+      endpoint: ENDPOINT,
+      fetch: (path, init) => {
+        if (path !== ENDPOINT && init?.method === 'POST' && !dropped) {
+          dropped = true;
+          return Promise.reject(new TypeError('fetch failed'));
+        }
+        return http.fetch(path, init);
+      },
+    });
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'core.chat.task.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toMatchObject({
+      id: 1,
+      error: {
+        data: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      },
+    });
+    expect(connection.signal.aborted).toBe(false);
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'core.chat.task.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { ok: 1 },
+    });
+    connection.close();
+  });
+
+  it('ends the connection as unreachable when a second POST in a row gets no response (CAN-6442)', async () => {
+    // A network that stays down is not a blip: the owner goes offline and
+    // reconnects.
+    const http = fakeFetch((path) =>
+      path === ENDPOINT ? created() : new Response(null, { status: 500 }),
+    );
+    const connection = await connectCanopyHttp({
+      endpoint: ENDPOINT,
+      fetch: (path, init) =>
+        path !== ENDPOINT && init?.method === 'POST'
+          ? Promise.reject(new TypeError('fetch failed'))
+          : http.fetch(path, init),
+    });
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'core.chat.task.list',
+      params: {},
+    });
+    await expect(connection.receive()).resolves.toMatchObject({ id: 1 });
+    expect(connection.signal.aborted).toBe(false);
+    const pending = connection.receive();
+    await connection.send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'core.chat.task.list',
+      params: {},
+    });
+    await expect(pending).rejects.toMatchObject({
+      payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+    });
+    expect(connection.signal.aborted).toBe(true);
+  });
+
   it('refuses to connect when the server refuses the connection', async () => {
     const http = fakeFetch(() => new Response(null, { status: 404 }));
     await expect(
@@ -375,6 +603,94 @@ describe('connectCanopyHttp', () => {
       http.calls.filter((call) => call.path.endsWith('/events')),
     ).toHaveLength(1);
     connection.close();
+  });
+
+  describe('an event stream that goes silent', () => {
+    // Staging, a web rollout: the pod serving a tab's event stream went away
+    // without the stream's end reaching the browser, and the load balancer
+    // held the 200 open. Leases and writes kept working, so the connection
+    // stayed online while every stream on it (terminal output too) was silent
+    // until a reload. The server writes `: keepalive` every 25 s.
+    const lease = (n: number): string =>
+      `id: ${n}\ndata: ${JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'core.client.lease.evicted',
+        params: {
+          leaseId: `l-${n}`,
+          reason: 'expired',
+          releasedRegistrationCount: 0,
+        },
+      })}\n\n`;
+    /** Serves event streams that stay open; `feed` writes to the newest. */
+    const openStreams = (): {
+      readonly opened: (string | null)[];
+      feed(text: string): void;
+      readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
+    } => {
+      const opened: (string | null)[] = [];
+      let current: ReadableStreamDefaultController<Uint8Array> | null = null;
+      return {
+        opened,
+        feed: (text) => current?.enqueue(new TextEncoder().encode(text)),
+        fetch: (path, init) => {
+          if (path === ENDPOINT) return Promise.resolve(created());
+          if (!path.endsWith('/events'))
+            return Promise.resolve(new Response(null, { status: 204 }));
+          opened.push(new Headers(init?.headers).get('last-event-id'));
+          const body = new ReadableStream<Uint8Array>({
+            start: (controller): void => {
+              current = controller;
+              init?.signal?.addEventListener('abort', () =>
+                controller.error(new Error('aborted')),
+              );
+            },
+          });
+          return Promise.resolve(
+            new Response(body, {
+              headers: { 'content-type': 'text/event-stream' },
+            }),
+          );
+        },
+      };
+    };
+
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it('reopens one that sends nothing for 60 s, after the last event it delivered', async () => {
+      const server = openStreams();
+      const connection = await connectCanopyHttp({
+        endpoint: ENDPOINT,
+        fetch: server.fetch,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      server.feed(`: connected\n\n${lease(1)}`);
+      await expect(connection.receive()).resolves.toMatchObject({
+        params: { leaseId: 'l-1' },
+      });
+      await jest.advanceTimersByTimeAsync(59_000);
+      expect(server.opened).toEqual([null]);
+      // Past the idle window, then the reopen's usual delay.
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(server.opened).toEqual([null, '1']);
+      connection.close();
+    });
+
+    it('keeps one that sends a keepalive every 25 s', async () => {
+      const server = openStreams();
+      const connection = await connectCanopyHttp({
+        endpoint: ENDPOINT,
+        fetch: server.fetch,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      server.feed(': connected\n\n');
+      for (let beat = 0; beat < 12; beat += 1) {
+        await jest.advanceTimersByTimeAsync(25_000);
+        server.feed(': keepalive\n\n');
+      }
+      expect(server.opened).toEqual([null]);
+      connection.close();
+    });
   });
 
   it('refuses byte channels in v1', async () => {

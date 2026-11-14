@@ -13,7 +13,11 @@ import {
   type DeviceRelayTokenResponse,
 } from '@canopy/protocol/device-relay';
 import { MAX_MESSAGE_BYTES } from './message-codec';
-import type { RelayTransport } from './session-manager';
+import type {
+  RelayFrameSendFailure,
+  RelayFrameSendOptions,
+  RelayTransport,
+} from './session-manager';
 
 /** The relay connection as the remote-control service uses it. */
 export interface RemoteRelay extends RelayTransport {
@@ -469,12 +473,22 @@ export class RelayClient implements RelayTransport {
 
   /**
    * Sends a frame, or queues it behind earlier ones while the socket is
-   * backed up. Returns false only when not connected or when this client's
-   * own queue is full.
+   * backed up. Callers can opt into the specific reason for a refusal.
    */
-  sendFrame(peerDeviceId: string, payload: Uint8Array): boolean {
+  sendFrame(
+    peerDeviceId: string,
+    payload: Uint8Array,
+    options: RelayFrameSendOptions,
+  ): true | RelayFrameSendFailure;
+  sendFrame(peerDeviceId: string, payload: Uint8Array): boolean;
+  sendFrame(
+    peerDeviceId: string,
+    payload: Uint8Array,
+    options?: RelayFrameSendOptions,
+  ): boolean | RelayFrameSendFailure {
     const socket = this.socket;
-    if (!socket || !this.authenticated) return false;
+    if (!socket || !this.authenticated)
+      return options?.includeFailureReason ? 'disconnected' : false;
     const frame = encodeDeviceRelayDataFrame(peerDeviceId, payload);
     if (
       this.outbound.length === 0 &&
@@ -484,7 +498,8 @@ export class RelayClient implements RelayTransport {
       return true;
     }
     const maxQueued = this.options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
-    if (this.outboundBytes + frame.byteLength > maxQueued) return false;
+    if (this.outboundBytes + frame.byteLength > maxQueued)
+      return options?.includeFailureReason ? 'queue-full' : false;
     this.outbound.push(frame);
     this.outboundBytes += frame.byteLength;
     this.scheduleDrain();

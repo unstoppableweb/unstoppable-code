@@ -10,6 +10,7 @@ export type {
 } from '@canopy/protocol/portal';
 import type { ApprovalSafetyDeniedInfo } from '@canopy/protocol/approvals';
 import type { OpenCodeReportedUsage } from '@canopy/protocol/portal';
+import type { ReportedTurnUsage } from '@canopy/protocol/portal';
 import type { AgentArtifactReceiptV1 } from '@canopy/protocol/agent-artifacts';
 import type {
   AgentDelegationSnapshot,
@@ -54,7 +55,8 @@ export type AgentProviderType =
   | 'ollama'
   | 'cursor'
   | 'opencode'
-  | 'copilot';
+  | 'copilot'
+  | 'antigravity';
 
 export type ChatInterfaceMode = 'canopy' | 'claude-code' | 'auto';
 
@@ -144,6 +146,8 @@ export interface TodoItem {
 // ---------------------------------------------------------------------------
 
 export interface ChatTabUsage {
+  /** Per-turn snapshot; null means this turn has no valid report. */
+  reportedTurnUsage?: ReportedTurnUsage | null;
   /** OpenCode's latest reported turn and context; never account spend. */
   opencodeReportedUsage?: OpenCodeReportedUsage;
   /** Cursor's latest response report; never interpreted as cumulative totals. */
@@ -725,6 +729,12 @@ export type PersistedUserMessageSource =
 export interface PersistedChatMessage {
   /** Host-only orchestration input retained for replay, never displayed. */
   hidden?: boolean;
+  /**
+   * A prompt whose turn its core cancelled before it replied, such as a
+   * queued message deleted from the queue: it reads Cancelled, as the web's
+   * transcript shows it (CAN-6689).
+   */
+  cancelled?: true;
   id: string;
   role: 'user' | 'assistant' | 'system';
   blocks: PersistedChatBlock[];

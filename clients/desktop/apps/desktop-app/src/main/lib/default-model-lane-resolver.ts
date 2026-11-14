@@ -6,6 +6,7 @@ import {
   type BillingLane,
   type DefaultModelLaneResolution,
   type EnforcedOrgGatewayLane,
+  type PersonalGatewayLane,
 } from '@canopy/desktop-shared/lib/default-model-lane';
 import {
   AI_GATEWAY_MODELS,
@@ -39,10 +40,14 @@ import {
 import {
   isGatewayOnlyModel,
   isGatewayRoutableModel,
+  resolveOrgGatewayOrganizationId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { hasModelGatewayCredential } from './model-gateway-credential-store';
 import {
   isModelExcludedByGatewayRequirement,
   listOrgGatewayModelsForOrganization,
+  listPersonalGatewayDefaultModels,
+  soleEnforcingOrganizationId,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
 import {
   isProviderNativelyAuthenticatedForRouting,
@@ -66,7 +71,10 @@ import {
   isOrgModelPolicyActiveForStoredAccount,
   isStoredModelPolicyReadDegraded,
 } from './model-policy-state';
-import { getModelGatewayRequirementForOwner } from './model-gateway-state';
+import {
+  getCurrentModelGatewayIndex,
+  getModelGatewayRequirementForOwner,
+} from './model-gateway-state';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import { updatePreferencesFile } from './preferences-store';
 import {
@@ -451,16 +459,39 @@ export async function resolveDefaultModelLaneForPreferences(
    * own branch.
    */
   const orgGatewayExcluded = (model: ChatModel): boolean =>
-    isModelExcludedByGatewayRequirement(model, gatewayRequirement, owner);
+    isModelExcludedByGatewayRequirement(
+      model,
+      gatewayRequirement,
+      owner,
+      account?.personalOrganizationId,
+    );
+  // The owner's enforced gateway: an organization's, or your own under
+  // "Use only my AI gateway".
+  const enforcedGatewayOrganizationId = owner
+    ? soleEnforcingOrganizationId(gatewayRequirement)
+    : undefined;
   const orgGateway: EnforcedOrgGatewayLane | undefined =
-    gatewayRequirement.kind === 'enforced' && owner?.kind === 'organization'
+    enforcedGatewayOrganizationId
       ? {
           enforced: true,
           models: listOrgGatewayModelsForOrganization(
             AI_GATEWAY_MODELS,
-            owner.organizationId,
+            enforcedGatewayOrganizationId,
           ),
         }
+      : undefined;
+  // The Personal gateway, for when it is the account's only working route
+  // (CAN-6444). The shared resolver uses it only while AI Credits are not
+  // confirmed eligible. Organization work can't use Personal models, so the
+  // owner-scoped exclusion filters them out there. Same helper as the renderer
+  // seed, so the composer and dispatch pick the same model.
+  const personalGatewayModels = listPersonalGatewayDefaultModels(
+    getCurrentModelGatewayIndex(),
+    AI_GATEWAY_MODELS,
+  ).filter((model) => !orgGatewayExcluded(model));
+  const personalGateway: PersonalGatewayLane | undefined =
+    personalGatewayModels.length > 0
+      ? { models: personalGatewayModels }
       : undefined;
 
   const candidateModels = new Set<ChatModel>([
@@ -469,6 +500,9 @@ export async function resolveDefaultModelLaneForPreferences(
     ...(input.defaults.ollama ? [input.defaults.ollama.model] : []),
     ...(input.defaults.aiCredits ? [input.defaults.aiCredits.model] : []),
     ...(input.creditsCandidates ?? CREDITS_LANE_DEFAULT_CANDIDATES),
+    // Judged by policy like every other candidate, so a Personal default is
+    // not left provisional (and unpersisted) for want of a policy answer.
+    ...personalGatewayModels,
   ]);
   const policyByModel = new Map<ChatModel, boolean | undefined>();
   if (!policyActive) {
@@ -763,6 +797,7 @@ export async function resolveDefaultModelLaneForPreferences(
     ollamaPinned: input.ollamaPinned,
     codexAccountModels,
     ...(orgGateway ? { orgGateway } : {}),
+    ...(personalGateway ? { personalGateway } : {}),
     guestPrincipal,
     // Synthesized credits candidates carry a nominal `'high'`, which callers
     // forward straight into the dispatched turn. Clamp it with exactly the hook
@@ -908,7 +943,20 @@ export async function resolveConcreteModelDispatchability(
   if (
     getExecutionHarnessForModel(model) === 'cursor' ||
     getExecutionHarnessForModel(model) === 'copilot' ||
+    getExecutionHarnessForModel(model) === 'antigravity' ||
     getExecutionHarnessForModel(model) === 'opencode'
+  )
+    return 'dispatchable';
+  // An organization or Personal AI gateway model bills to the member's own
+  // gateway key, never AI Credits, so with that key on this device the credits
+  // read below can't judge it (CAN-6444): a gateway-only user with no credits
+  // was refused here before their first turn. Without a key (or when the key
+  // store can't be read) it falls through to the credits check as before, so a
+  // keyless pick is still refused before anything is persisted.
+  const gatewayOrganizationId = resolveOrgGatewayOrganizationId(model);
+  if (
+    gatewayOrganizationId !== undefined &&
+    (await hasModelGatewayCredential(gatewayOrganizationId).catch(() => false))
   )
     return 'dispatchable';
   // A GATEWAY-ONLY model skips the native shortcut entirely.

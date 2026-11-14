@@ -1,11 +1,14 @@
-import type { ExternalProjectImportInviteState } from '@canopy/desktop-shared/types';
+import type {
+  ExternalProjectImportInviteState,
+  ExternalProjectProvider,
+} from '@canopy/desktop-shared/types';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import {
   markExternalProjectInviteShown,
   readExternalProjectImportLedger,
 } from './ledger';
-import { detectProviderStorePresence } from './provider-presence';
+import { detectProviderStorePresenceByProvider } from './provider-presence';
 
 /**
  * One-time invitation for installs that finished onboarding before the bulk
@@ -26,17 +29,19 @@ import { detectProviderStorePresence } from './provider-presence';
  */
 const PRESENCE_TTL_MS = 5 * 60 * 1000;
 
-let presenceCache: { value: boolean; checkedAt: number } | null = null;
-let presenceInFlight: Promise<boolean> | null = null;
+type ProviderPresence = Record<ExternalProjectProvider, boolean>;
 
-export function hasAnyProviderStore(): Promise<boolean> {
+let presenceCache: { value: ProviderPresence; checkedAt: number } | null = null;
+let presenceInFlight: Promise<ProviderPresence> | null = null;
+
+export function readProviderPresenceByProvider(): Promise<ProviderPresence> {
   if (presenceCache && Date.now() - presenceCache.checkedAt < PRESENCE_TTL_MS) {
     return Promise.resolve(presenceCache.value);
   }
   if (presenceInFlight) return presenceInFlight;
   presenceInFlight = attachedCoworkFolders()
     .then((extraExcludedRoots) =>
-      detectProviderStorePresence({ extraExcludedRoots }),
+      detectProviderStorePresenceByProvider({ extraExcludedRoots }),
     )
     .then((value) => {
       presenceCache = { value, checkedAt: Date.now() };
@@ -46,6 +51,10 @@ export function hasAnyProviderStore(): Promise<boolean> {
       presenceInFlight = null;
     });
   return presenceInFlight;
+}
+
+export async function hasAnyProviderStore(): Promise<boolean> {
+  return Object.values(await readProviderPresenceByProvider()).some(Boolean);
 }
 
 /**

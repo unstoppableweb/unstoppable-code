@@ -7,28 +7,26 @@
 import {
   useCallback,
   useEffect,
-  useRef,
-  useState,
+  useMemo,
   type DragEvent,
   type JSX,
 } from 'react';
 import type { WorkspaceAttachmentItem } from '@canopy/desktop-shared/types';
+import {
+  AttachmentsSectionBody,
+  attachmentsSectionTestIds,
+  useAttachmentFileDrag,
+  type AttachmentListRow,
+  type AttachmentsSource,
+} from '@canopy/ui-app/attachments';
 import { GuestFilesState } from '@canopy/ui-app/guest-files';
 import {
   useDesktopFilesGuestGate,
   type DesktopFilesGuestGate,
 } from '@/hooks/useDesktopFilesGuestGate';
-import {
-  Stack,
-  AttachmentDropZone,
-  AttachmentItemRow,
-  HeaderActionButton,
-} from '@canopy/ui-shared/components';
+import { HeaderActionButton } from '@canopy/ui-shared/components';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
-import {
-  AttachmentIcon as CentralAttachmentIcon,
-  FolderIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { AttachmentIcon as CentralAttachmentIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
 import {
   PanelSection,
@@ -44,120 +42,36 @@ import {
 import { dataTransferHasFiles } from '@/lib/terminal-file-drop';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useWorkspaceItemsStore } from '@/stores/workspaceItemsStore';
+import { webCoreLocalId } from '@/lib/chat-authority';
 import type { ActivitySectionRenderProps } from './activity-sections';
 import {
+  CloudAttachmentsSection,
+  useCloudAttachmentsHeaderChrome,
+} from './CloudAttachmentsSection';
+import {
   dispatchWorkspaceItemMention,
-  InlineDeleteConfirm,
-  MentionIcon,
   PlusIcon,
-  RowActionButton,
-  RowActionTray,
-  TrashIcon,
-  useInlineDelete,
 } from './workspace-items-shared';
 
 const EMPTY_ATTACHMENTS: readonly WorkspaceAttachmentItem[] = [];
 
-interface AttachmentRowProps {
-  attachment: WorkspaceAttachmentItem;
-  projectId: string;
-  worktreeId: string;
-  onDelete: (filename: string) => Promise<void>;
-  onMouseEnter: (absolutePath: string, element: HTMLElement) => void;
-  onMouseLeave: () => void;
-  /** Read-only scopes preview attachments but never mention, reveal or delete. */
-  readOnly?: boolean;
-}
-
-function AttachmentRow({
-  attachment,
-  projectId,
-  worktreeId,
-  onDelete,
-  onMouseEnter,
-  onMouseLeave,
-  readOnly = false,
-}: AttachmentRowProps): JSX.Element {
-  const del = useInlineDelete(
-    useCallback(
-      () => onDelete(attachment.filename),
-      [attachment.filename, onDelete],
-    ),
-  );
-
-  const handleMention = useCallback((): void => {
-    dispatchWorkspaceItemMention({
-      displayPath: attachment.absolutePath,
-      absolutePath: attachment.absolutePath,
-      repoName: 'Attachments',
-      kind: 'attachment',
-    });
-  }, [attachment.absolutePath]);
-
-  const handleReveal = useCallback((): void => {
-    void window.api.showInFinder({
-      absolutePath: attachment.absolutePath,
-      projectId,
-      worktreeId,
-    });
-  }, [attachment.absolutePath, projectId, worktreeId]);
-
-  return (
-    <AttachmentItemRow
-      testId="workspace-attachments-item"
-      onMouseEnter={(event): void =>
-        onMouseEnter(attachment.absolutePath, event.currentTarget)
-      }
-      onMouseLeave={onMouseLeave}
-      filename={attachment.filename}
-      icon={
-        <FileTypeIcon
-          filename={attachment.filename}
-          size="sm"
-          className="shrink-0"
-        />
-      }
-      actions={
-        readOnly ? undefined : (
-          <RowActionTray inRowOnTouch>
-            {del.confirming ? (
-              <InlineDeleteConfirm
-                onConfirm={del.confirm}
-                onCancel={del.cancel}
-                deleting={del.deleting}
-              />
-            ) : (
-              <>
-                <RowActionButton
-                  label="Mention in chat"
-                  onClick={handleMention}
-                >
-                  <MentionIcon />
-                </RowActionButton>
-                <RowActionButton
-                  label="Reveal in Finder"
-                  onClick={handleReveal}
-                >
-                  <FolderIcon size="sm" />
-                </RowActionButton>
-                <RowActionButton
-                  label="Delete attachment"
-                  destructive
-                  onClick={del.request}
-                >
-                  <TrashIcon />
-                </RowActionButton>
-              </>
-            )}
-          </RowActionTray>
-        )
-      }
-    />
-  );
-}
+const TEST_IDS = attachmentsSectionTestIds('workspace-attachments', {
+  row: 'workspace-attachments-item',
+  empty: 'workspace-attachments-empty-dropzone',
+});
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function useAttachmentsHeaderChrome({
+export function useAttachmentsHeaderChrome(props: ActivitySectionRenderProps): {
+  hasContent: boolean;
+  subtitle: string | undefined;
+  collapsedIconColor: CollapsedIconColor;
+} {
+  const local = useLocalAttachmentsHeaderChrome(props);
+  const cloud = useCloudAttachmentsHeaderChrome(props);
+  return webCoreLocalId(props.worktreeId) === null ? local : cloud;
+}
+
+function useLocalAttachmentsHeaderChrome({
   projectId,
   worktreeId,
 }: ActivitySectionRenderProps): {
@@ -179,7 +93,21 @@ export function useAttachmentsHeaderChrome({
   };
 }
 
-export function AttachmentsSection({
+/**
+ * A cloud chat scope's attachments are its chat's, on the web core
+ * (CAN-6175 R8d); every other scope's are this computer's attachment folder.
+ */
+export function AttachmentsSection(
+  props: ActivitySectionRenderProps,
+): JSX.Element {
+  return webCoreLocalId(props.worktreeId) === null ? (
+    <LocalAttachmentsSection {...props} />
+  ) : (
+    <CloudAttachmentsSection {...props} />
+  );
+}
+
+function LocalAttachmentsSection({
   projectId,
   worktreeId,
 }: ActivitySectionRenderProps): JSX.Element {
@@ -259,8 +187,6 @@ function AuthenticatedAttachmentsSection({
     collapsedIconColor: count > 0 ? ('amber' as const) : ('muted' as const),
   };
   const addToast = useGitHubStore((state) => state.addToast);
-  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
-  const fileDragDepthRef = useRef(0);
   const {
     hoveredPath,
     anchorRef,
@@ -304,65 +230,10 @@ function AuthenticatedAttachmentsSection({
       });
   }, [gate, readOnly, projectId, reportAttachmentImportFailure, worktreeId]);
 
-  const handleDelete = useCallback(
-    async (filename: string): Promise<void> => {
-      await useWorkspaceItemsStore
-        .getState()
-        .deleteAttachment(
-          projectId,
-          worktreeId,
-          filename,
-          gate.captureAccess(),
-        );
-    },
-    [projectId, worktreeId, gate],
-  );
-
-  const handleFileDragEnter = useCallback(
-    (event: DragEvent<HTMLElement>): void => {
-      if (!dataTransferHasFiles(event.dataTransfer)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      fileDragDepthRef.current += 1;
-      setIsDraggingFiles(true);
-    },
-    [],
-  );
-
-  const handleFileDragLeave = useCallback(
-    (event: DragEvent<HTMLElement>): void => {
-      if (fileDragDepthRef.current === 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
-      if (fileDragDepthRef.current === 0) {
-        setIsDraggingFiles(false);
-      }
-    },
-    [],
-  );
-
-  const handleFileDragOver = useCallback(
-    (event: DragEvent<HTMLElement>): void => {
-      if (!dataTransferHasFiles(event.dataTransfer)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = 'copy';
-    },
-    [],
-  );
-
-  const handleFileDrop = useCallback(
-    (event: DragEvent<HTMLElement>): void => {
-      if (!dataTransferHasFiles(event.dataTransfer)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      fileDragDepthRef.current = 0;
-      setIsDraggingFiles(false);
-
+  const importFiles = useCallback(
+    (files: readonly File[]): void => {
       if (gate.interceptAttachment() || readOnly) return;
       const isCurrent = gate.captureAccess();
-      const files = Array.from(event.dataTransfer.files);
       if (files.length === 0) return;
 
       const filePaths: string[] = [];
@@ -412,6 +283,108 @@ function AuthenticatedAttachmentsSection({
     [gate, readOnly, projectId, reportAttachmentImportFailure, worktreeId],
   );
 
+  // The collapsed card takes drops too; it isn't part of the body.
+  const cardDrag = useAttachmentFileDrag({
+    enabled: !readOnly,
+    onFiles: importFiles,
+  });
+
+  const source = useMemo((): AttachmentsSource => {
+    const byFilename = new Map(
+      attachments.map((attachment) => [attachment.filename, attachment]),
+    );
+    const pathOf = (row: AttachmentListRow): string | undefined =>
+      byFilename.get(row.id)?.absolutePath;
+    return {
+      scopeKey: key,
+      load: {
+        kind: 'ready',
+        rows: attachments.map(
+          (attachment): AttachmentListRow => ({
+            id: attachment.filename,
+            filename: attachment.filename,
+            sizeBytes: attachment.sizeBytes,
+          }),
+        ),
+      },
+      rowIcon: (row) => (
+        <FileTypeIcon filename={row.filename} size="sm" className="shrink-0" />
+      ),
+      hover: {
+        onEnter: (row, element): void => {
+          const absolutePath = pathOf(row);
+          if (absolutePath !== undefined) {
+            handleMouseEnter(absolutePath, element);
+          }
+        },
+        onLeave: handleMouseLeave,
+        overlay: hoveredPath ? (
+          <AttachmentPreviewPopover
+            absolutePath={hoveredPath}
+            filename={hoveredAttachment?.filename}
+            sizeBytes={hoveredAttachment?.sizeBytes}
+            createdAt={hoveredAttachment?.createdAt}
+            anchorRef={anchorRef}
+            onMouseEnter={popoverMouseEnter}
+            onMouseLeave={popoverMouseLeave}
+          />
+        ) : null,
+      },
+      ...(readOnly
+        ? { emptyMessage: 'No attachments' }
+        : {
+            add: { kind: 'import', importFiles, pick: handleImport },
+            mention: (row: AttachmentListRow): void => {
+              const absolutePath = pathOf(row);
+              if (absolutePath === undefined) return;
+              dispatchWorkspaceItemMention({
+                displayPath: absolutePath,
+                absolutePath,
+                repoName: 'Attachments',
+                kind: 'attachment',
+              });
+            },
+            reveal: {
+              label: 'Reveal in Finder',
+              run: (row: AttachmentListRow): void => {
+                const absolutePath = pathOf(row);
+                if (absolutePath === undefined) return;
+                void window.api.showInFinder({
+                  absolutePath,
+                  projectId,
+                  worktreeId,
+                });
+              },
+            },
+            remove: (row: AttachmentListRow): Promise<void> =>
+              useWorkspaceItemsStore
+                .getState()
+                .deleteAttachment(
+                  projectId,
+                  worktreeId,
+                  row.id,
+                  gate.captureAccess(),
+                ),
+          }),
+    };
+  }, [
+    anchorRef,
+    attachments,
+    gate,
+    handleImport,
+    handleMouseEnter,
+    handleMouseLeave,
+    hoveredAttachment,
+    hoveredPath,
+    importFiles,
+    key,
+    popoverMouseEnter,
+    popoverMouseLeave,
+    projectId,
+    readOnly,
+    worktreeId,
+  ]);
+
   return (
     <PanelSection
       icon={<CentralAttachmentIcon size="sm" />}
@@ -424,12 +397,7 @@ function AuthenticatedAttachmentsSection({
         ? {}
         : {
             actionOnlyLabel: 'Import attachment',
-            actionOnlyCardProps: {
-              onDragEnter: handleFileDragEnter,
-              onDragLeave: handleFileDragLeave,
-              onDragOver: handleFileDragOver,
-              onDrop: handleFileDrop,
-            },
+            actionOnlyCardProps: cardDrag.handlers,
           })}
       headerAction={
         readOnly ? undefined : (
@@ -445,60 +413,11 @@ function AuthenticatedAttachmentsSection({
       }
       framelessBody="flex"
     >
-      <div
-        className={
-          frameless
-            ? 'relative min-h-28 flex-1 overflow-y-auto'
-            : 'relative min-h-28 max-h-75 overflow-y-auto'
-        }
-        data-testid="workspace-attachments-dropzone"
-        {...(readOnly
-          ? {}
-          : {
-              onDragEnter: handleFileDragEnter,
-              onDragLeave: handleFileDragLeave,
-              onDragOver: handleFileDragOver,
-              onDrop: handleFileDrop,
-            })}
-      >
-        {isDraggingFiles ? (
-          <AttachmentDropZone
-            active
-            testId="workspace-attachments-active-dropzone"
-          />
-        ) : attachments.length === 0 ? (
-          <AttachmentDropZone
-            emptyMessage={readOnly ? 'No attachments' : undefined}
-            testId="workspace-attachments-empty-dropzone"
-          />
-        ) : (
-          <Stack gap="tight">
-            {attachments.map((attachment) => (
-              <AttachmentRow
-                key={attachment.filename}
-                attachment={attachment}
-                projectId={projectId}
-                worktreeId={worktreeId}
-                onDelete={handleDelete}
-                onMouseEnter={handleMouseEnter}
-                onMouseLeave={handleMouseLeave}
-                readOnly={readOnly}
-              />
-            ))}
-            {hoveredPath && (
-              <AttachmentPreviewPopover
-                absolutePath={hoveredPath}
-                filename={hoveredAttachment?.filename}
-                sizeBytes={hoveredAttachment?.sizeBytes}
-                createdAt={hoveredAttachment?.createdAt}
-                anchorRef={anchorRef}
-                onMouseEnter={popoverMouseEnter}
-                onMouseLeave={popoverMouseLeave}
-              />
-            )}
-          </Stack>
-        )}
-      </div>
+      <AttachmentsSectionBody
+        source={source}
+        testIds={TEST_IDS}
+        fill={frameless}
+      />
     </PanelSection>
   );
 }

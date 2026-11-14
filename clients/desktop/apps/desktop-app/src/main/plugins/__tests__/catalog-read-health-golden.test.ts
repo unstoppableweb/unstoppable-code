@@ -39,6 +39,7 @@ import {
   updatePreferencesFile,
 } from '../../lib/preferences-store';
 import { cloneRepo } from '../../lib/git';
+import { getMcpServersIndexFilePath } from '../../lib/paths';
 import { runClaudeCliProcessOffMain } from '../../agents/claude-process-host-runner';
 import {
   addCodexMarketplace,
@@ -329,6 +330,21 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
       expect(resolve().sdkPlugins).toEqual([]);
       expect(fs.readFileSync(catalogPath)).toEqual(before);
     }
+  });
+
+  test('installed-items:list-status distinguishes an absent device MCP index from damage', async () => {
+    const { installedItemService } =
+      await import('../../installed-items/installed-item-service');
+    const index = getMcpServersIndexFilePath();
+
+    expect(fs.existsSync(index)).toBe(false);
+    await expect(installedItemService.listStatus()).resolves.toEqual({
+      items: [],
+    });
+
+    fs.mkdirSync(path.dirname(index), { recursive: true });
+    fs.writeFileSync(index, '{invalid json');
+    await expect(installedItemService.listStatus()).rejects.toThrow();
   });
 
   test('installed-item full snapshots refuse damage rather than claiming plugins absent (deferred contract gap)', async () => {

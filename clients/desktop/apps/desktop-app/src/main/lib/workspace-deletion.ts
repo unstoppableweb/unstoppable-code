@@ -1,3 +1,15 @@
+import {
+  archiveRecoveryStore,
+  readArchiveRecoveryHolds,
+  assertNoArchiveResolution,
+} from './archive-recovery-refs';
+import {
+  deleteArchiveRecoveryRefs,
+  qualifyArchiveRecoveryRefDeletion,
+} from './archived-container-git';
+import { settleArchiveRecovery } from './archive-recovery-settlement';
+import type { DestructiveRecoveryRecord } from './w5-destructive-recovery';
+import { ArchiveRecoveryRefusedError } from '@canopy/desktop-shared/node/archive-recovery-store';
 import { rememberDestructiveFailure } from './destructive-failure-context';
 import {
   setArchiveFailurePhase,
@@ -10,12 +22,16 @@ export {
 } from './workspace-deletion-refusal';
 import {
   assertFailedChildArchivesResumed,
+  prepareArchiveRecoveryCleanup,
+  qualifyArchiveRecoveryCleanupParent,
+  acknowledgeArchiveRecoveryCleanup,
   completeSupersededChildArchives,
   isStepFreeDestructiveFailure,
   readInFlightWorktreeDestructiveOperations,
   resumableDestructiveStep,
   runStepFreeChildLifecycles,
   withDestructiveLifecycle,
+  withExclusiveLifecycleJournalAccess,
   withdrawInterruptedWorkspaceDeletion,
   destructiveStep,
   markDestructiveCleanupRequired,
@@ -71,12 +87,7 @@ import {
 import { listWorkEntryIds } from './cowork-work-entries';
 import { deleteCoworkWorkspace } from './cowork-workspace-crud';
 import { recordWorkspaceCrudTelemetry } from './desktop-telemetry';
-import {
-  getWorkspaceIndexFilePath,
-  getDefaultReposDir,
-  getWorkspaceConfigPath,
-  getWorkspaceWorktreesFilePath,
-} from './paths';
+import { w5RecordReadPaths, getDefaultReposDir } from './paths';
 import { isPathInside } from './path-safety';
 import { cleanupUnreferencedRepoShadows } from './repo-shadow';
 import { syncCodeGraphBaseRepositories } from './code-graph-base-manager';
@@ -303,6 +314,7 @@ async function deleteWorkspaceAdmitted(
       ...(wire?.admit && { admit: wire.admit }),
       isPreEffectRefusal: (error) =>
         error instanceof WorkspaceDeletionRefusedError ||
+        error instanceof ArchiveRecoveryRefusedError ||
         error instanceof WorktreeArchiveRefusedError ||
         error instanceof LiveDelegationsError ||
         error instanceof SplitLockError ||
@@ -316,6 +328,8 @@ async function deleteWorkspaceAdmitted(
           { kind: 'workspace', workspaceId },
           expectedRevision,
         );
+        if (USER_DELETION_SOURCES.has(request.source))
+          await admitProjectDeletionArchiveResolutions(workspaceId);
         const superseded = request.supersedeInterruptedDeletion;
         // Anything but an operation id refuses as it would without it.
         if (
@@ -364,6 +378,31 @@ async function deleteWorkspaceAdmitted(
         );
       }),
   );
+}
+
+/** Explicit deletion abandons only intents whose protected sources still own every effect. */
+async function admitProjectDeletionArchiveResolutions(
+  workspaceId: string,
+): Promise<void> {
+  const store = archiveRecoveryStore();
+  for (const receipt of await store.list(workspaceId)) {
+    if (receipt.cancelled || receipt.stage === 'completed') continue;
+    try {
+      if (!(await store.inspect(receipt)).effectFree) continue;
+      // Co-owner qualification can take shared journal access; the workspace queue protects refs.
+      await qualifyArchiveRecoveryRefDeletion(receipt);
+      await withExclusiveLifecycleJournalAccess(async () => {
+        await store.normalize(workspaceId, receipt.operationId);
+        await store.cancel(receipt);
+      });
+    } catch (cause) {
+      throw new ArchiveRecoveryRefusedError(
+        `Archive resolution ${receipt.operationId} could not be safely cancelled before project deletion.`,
+        cause,
+      );
+    }
+  }
+  await assertNoArchiveResolution(workspaceId);
 }
 
 /**
@@ -684,8 +723,8 @@ async function readDeletionTarget(request: WorkspaceDeletionRequest): Promise<{
   if (kind === 'single-repo' || kind === 'multi-repo') {
     // Store-level admission matches removal: corrupt JSON is still removable.
     const records = await settleAll([
-      desktopW5FileStore.read(getWorkspaceConfigPath(workspaceId)),
-      desktopW5FileStore.read(getWorkspaceWorktreesFilePath(workspaceId)),
+      desktopW5FileStore.read(w5RecordReadPaths.manifest(workspaceId)),
+      desktopW5FileStore.read(w5RecordReadPaths.worktrees(workspaceId)),
     ]);
     if (records.some((record) => record.state === 'unreadable'))
       throw new WorkspaceDeletionRefusedError(
@@ -839,6 +878,77 @@ async function removeManagedRepository(
   }
 }
 
+/** Parent commit proof, not live-project admission, grants cleanup of the exact adopted holds. */
+export async function settleWorkspaceArchiveRecoveryCleanup(
+  record: DestructiveRecoveryRecord,
+): Promise<void> {
+  if (!record.archiveRecoveryCleanup?.length) return;
+  record = await qualifyArchiveRecoveryCleanupParent(record);
+  if (!record.archiveRecoveryCleanup?.some((entry) => !entry.done)) return;
+  if (
+    record.operation !== 'workspace-delete' ||
+    record.worktreeId !== undefined
+  )
+    throw new ArchiveRecoveryRefusedError(
+      'Invalid archive recovery cleanup parent.',
+    );
+  const removal = record.steps.find(
+    (step) => step.phase === 'canonical-index-removal',
+  );
+  if (!removal) return; // No canonical removal was attempted: preserve every hold.
+  if (removal.state !== 'done') {
+    // An unacknowledged W5 commit is proven only by both canonical records being absent.
+    const index = await getWorkspaceIndexRepository().read();
+    if (
+      (index.authority !== 'ok' && index.authority !== 'absent') ||
+      index.entries.some((entry) => entry.id === record.workspaceId)
+    )
+      return;
+    if (
+      (await readWorkspaceConfigDetailed(record.workspaceId)).authority !==
+      'absent'
+    )
+      return;
+  }
+  const store = archiveRecoveryStore();
+  const failures: { operationId: string; error: unknown }[] = [];
+  for (const member of record.archiveRecoveryCleanup) {
+    if (member.done) continue;
+    try {
+      await store.normalize(record.workspaceId, member.operationId);
+      const receipt = await store.read(record.workspaceId, member.operationId);
+      if (!receipt || receipt.revision !== member.revision)
+        throw new ArchiveRecoveryRefusedError(
+          `Adopted hold ${member.operationId} changed or disappeared.`,
+        );
+      await settleArchiveRecovery(receipt, 'committed-parent', {
+        store,
+        qualifyRefs: qualifyArchiveRecoveryRefDeletion,
+        deleteRefs: deleteArchiveRecoveryRefs,
+        admitResolution: () => {
+          throw new Error('Parent cannot resolve unfinished receipts.');
+        },
+        admitDeletion: () => {
+          throw new Error('Committed parent must not re-admit.');
+        },
+        withdraw: () => {
+          throw new Error('Parent cannot withdraw source journals.');
+        },
+      });
+      await acknowledgeArchiveRecoveryCleanup(record, member.operationId);
+    } catch (error) {
+      failures.push({ operationId: member.operationId, error });
+    }
+  }
+  if (failures.length)
+    throw Object.assign(
+      new Error(
+        `Archive recovery cleanup remains incomplete for ${failures.map(({ operationId }) => operationId).join(', ')}.`,
+      ),
+      { failures },
+    );
+}
+
 async function deleteWorkspaceWithLease(
   request: WorkspaceDeletionRequest,
   options: W5CommitOptions,
@@ -873,11 +983,14 @@ async function deleteWorkspaceWithLease(
             {
               ...options,
               locks: [
-                { kind: 'index', path: getWorkspaceIndexFilePath() },
-                { kind: 'manifest', path: getWorkspaceConfigPath(workspaceId) },
+                { kind: 'index', path: w5RecordReadPaths.index() },
+                {
+                  kind: 'manifest',
+                  path: w5RecordReadPaths.manifest(workspaceId),
+                },
                 {
                   kind: 'list',
-                  path: getWorkspaceWorktreesFilePath(workspaceId),
+                  path: w5RecordReadPaths.worktrees(workspaceId),
                 },
               ],
               expectedRevisions: w5ExpectedRevision(
@@ -900,7 +1013,7 @@ async function deleteWorkspaceWithLease(
       // Publication or the step's completion save can reject a durable removal.
       if (recordsApplied)
         projectPluginDefaultsWritten({
-          configPath: getWorkspaceConfigPath(workspaceId),
+          configPath: w5RecordReadPaths.manifest(workspaceId),
           workspaceId,
           layerChanged: true,
         });
@@ -914,6 +1027,10 @@ async function deleteWorkspaceWithLease(
   // teardown must leave every retained container recoverable.
   const archivedManifests =
     await listArchivedContainerManifestsStrict(workspaceId);
+  const recoveryHolds = (await readArchiveRecoveryHolds(workspaceId)).filter(
+    (receipt) => !receipt.cancelled && receipt.retention !== 'deleted',
+  );
+  const recoveryCleanup = await prepareArchiveRecoveryCleanup(recoveryHolds);
   const archivedGitStates: ArchivedGitState[] = [];
   for (const manifest of archivedManifests) {
     if (manifest.version === 2) {
@@ -1009,7 +1126,7 @@ async function deleteWorkspaceWithLease(
     } finally {
       if (ownerCommitted)
         projectPluginDefaultsWritten({
-          configPath: getWorkspaceConfigPath(workspaceId),
+          configPath: w5RecordReadPaths.manifest(workspaceId),
           workspaceId,
           layerChanged: true,
         });
@@ -1030,6 +1147,14 @@ async function deleteWorkspaceWithLease(
     await removeProjectWorktreeRegistrations(worktreeRegistrations);
   const managedRepository = await removeManagedRepository(managedRepoPath);
   let archivedGitRefs: WorkspaceCleanupResult = { status: 'done' };
+  if (recoveryCleanup) {
+    await destructiveCleanup('archive-recovery-holds', () =>
+      settleWorkspaceArchiveRecoveryCleanup(recoveryCleanup),
+    ).catch((error: unknown) => {
+      archivedGitRefs = { status: 'failed', error };
+    });
+  }
+
   for (const gitState of archivedGitStates) {
     await destructiveCleanup('archived-git-refs', () =>
       releaseArchivedGitState(gitState),

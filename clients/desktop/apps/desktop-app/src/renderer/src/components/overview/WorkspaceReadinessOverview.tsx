@@ -616,7 +616,11 @@ export function WorkspaceReadinessOverview({
         </DataTableFrame>
       </div>
 
-      <ErrorBanner className="" error={launchError} />
+      <ErrorBanner
+        errorSource="workspace-readiness-overview-launch"
+        className=""
+        error={launchError}
+      />
     </section>
   );
 }

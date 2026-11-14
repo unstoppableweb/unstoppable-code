@@ -31,6 +31,7 @@ import {
 import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { isClaudeWorkerToolExposed } from '../integration/claude-worker-tool-exposure';
 import { isRecord } from './integration-http';
+import { antigravityAdvertisedSchema } from '../antigravity/mcp-schema';
 import { hasInterfaceTool } from '../agents/interface-tool-binding';
 import { isPipelineEditorToolAdvertised } from '../pipeline-editor/tool-advertisement';
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
@@ -60,6 +61,8 @@ import {
   SAVE_MEMORY_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   READ_MEMORY_DESCRIPTION,
+  SEARCH_CHATS_DESCRIPTION,
+  READ_CHAT_EXCERPT_DESCRIPTION,
   SHOW_FILES_DESCRIPTION,
   SHOW_VISUAL_DESCRIPTION,
   RESPOND_TO_FILE_COMMENT_DESCRIPTION,
@@ -94,6 +97,8 @@ import {
   saveMemoryJsonSchema,
   searchMemoryJsonSchema,
   readMemoryJsonSchema,
+  searchChatsJsonSchema,
+  readChatExcerptJsonSchema,
   showFilesJsonSchema,
   showVisualJsonSchema,
   previewVisualJsonSchema,
@@ -226,6 +231,14 @@ export const CLAUDE_TERMINAL_TOOL_DEFINITIONS: Readonly<
   search_memory: {
     description: SEARCH_MEMORY_DESCRIPTION,
     inputSchema: searchMemoryJsonSchema,
+  },
+  search_chats: {
+    description: SEARCH_CHATS_DESCRIPTION,
+    inputSchema: searchChatsJsonSchema,
+  },
+  read_chat_excerpt: {
+    description: READ_CHAT_EXCERPT_DESCRIPTION,
+    inputSchema: readChatExcerptJsonSchema,
   },
   read_memory: {
     description: READ_MEMORY_DESCRIPTION,
@@ -398,6 +411,7 @@ export const COWORK_TOOL_SURFACES: ReadonlySet<CanopyInjectedToolSurface> =
     'native-sdk-standalone',
     'cursor-acp-standalone',
     'opencode-acp-standalone',
+    'antigravity-acp-standalone',
     'copilot-sdk-standalone',
   ]);
 
@@ -413,6 +427,10 @@ export const CLAUDE_NATIVE_UI_MCP_TOOLS =
 export const CLAUDE_WORKER_MCP_TOOLS =
   buildClaudeCanopyMcpTools('claude-worker');
 export const COPILOT_SDK_MCP_TOOLS = buildClaudeCanopyMcpTools('copilot-sdk');
+const ANTIGRAVITY_ACP_MCP_TOOLS = buildClaudeCanopyMcpTools('antigravity-acp');
+const ANTIGRAVITY_ACP_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
+  'antigravity-acp-standalone',
+);
 export const OPENCODE_ACP_MCP_TOOLS = buildClaudeCanopyMcpTools('opencode-acp');
 export const OPENCODE_ACP_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
   'opencode-acp-standalone',
@@ -684,6 +702,10 @@ export function getClaudeCanopyToolsForSurface(
       return CLAUDE_NATIVE_UI_MCP_TOOLS;
     case 'copilot-sdk':
       return COPILOT_SDK_MCP_TOOLS;
+    case 'antigravity-acp':
+      return ANTIGRAVITY_ACP_MCP_TOOLS;
+    case 'antigravity-acp-standalone':
+      return ANTIGRAVITY_ACP_STANDALONE_MCP_TOOLS;
     case 'opencode-acp':
       return OPENCODE_ACP_MCP_TOOLS;
     case 'opencode-acp-standalone':
@@ -959,5 +981,11 @@ export function listCanopyRouteTools(
       })),
     ];
   }
-  return getCanopyRouteTools(route, uiServer);
+  const tools = getCanopyRouteTools(route, uiServer);
+  return route.providerType === 'antigravity'
+    ? tools.map((tool) => ({
+        ...tool,
+        inputSchema: antigravityAdvertisedSchema(tool.inputSchema),
+      }))
+    : tools;
 }

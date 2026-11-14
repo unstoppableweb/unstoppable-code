@@ -1,3 +1,5 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import { BrowserProfileError } from '@canopy/desktop-shared/browser-profile-error';
 import {
   isBrowserProfileSelection,
@@ -629,7 +631,7 @@ export function registerBrowserHandlers(
       const request = args[0];
       if (!isProfileRecord(request) || typeof request.browserId !== 'string')
         return handler(event, ...args);
-      return browserService.withRuntimeTarget(
+      const targeted = browserService.withRuntimeTarget(
         {
           browserId: request.browserId,
           expectedRuntimeGeneration:
@@ -651,6 +653,17 @@ export function registerBrowserHandlers(
           rehydrate: channel === IPC_CHANNELS.browserCreate,
         },
       );
+      if (channel !== IPC_CHANNELS.browserSetVisible) return targeted;
+      return targeted.catch((error: unknown): never => {
+        if (
+          error instanceof BrowserProfileError &&
+          (error.code === 'stale_runtime' ||
+            error.code === 'operation_conflict' ||
+            error.code === 'scope_retired')
+        )
+          throw classifyError(error, 'external.state_changed');
+        throw error;
+      });
     });
   };
 
@@ -955,7 +968,18 @@ export function registerBrowserHandlers(
   registerBrowserIpc<[{ browserId: string; visible: boolean }], Promise<void>>(
     IPC_CHANNELS.browserSetVisible,
     (event, request) => {
-      validateId(request.browserId, 'browserId');
+      if (!request || typeof request.visible !== 'boolean')
+        throw classifyError(
+          new Error('Expected a browser visibility request.'),
+          'input.not_accepted',
+        );
+      try {
+        validateId(request.browserId, 'browserId');
+      } catch (error) {
+        if (error instanceof IdentifierValidationError)
+          throw classifyError(error, 'input.not_accepted');
+        throw error;
+      }
       return preserveInvokingRendererFocus(event, browserService, () => {
         browserService.setVisible(request.browserId, request.visible);
       });

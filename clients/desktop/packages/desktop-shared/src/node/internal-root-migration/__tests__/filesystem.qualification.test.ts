@@ -1,10 +1,16 @@
 import fs from 'node:fs/promises';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import syncFs, {
+  createReadStream,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  type Stats,
+} from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve, win32 } from 'node:path';
+import { dirname, join, resolve, sep, win32 } from 'node:path';
 import * as platform from '@canopy/core-platform/host-platform';
 import canopy from '../../../../../../brands/canopy/brand.json';
 import unstoppableCode from '../../../../../../brands/unstoppable-code/brand.json';
@@ -12,6 +18,7 @@ import {
   migrateInternalRoot,
   InternalRootMigrationRefused,
   type InternalRootIdentity,
+  type InternalRootInventory,
   type InternalRootJournal,
   type InternalRootMigrationWorker,
   type InternalRootRepairContext,
@@ -32,6 +39,7 @@ import { createFreshInternalRoot } from '../fresh-start';
 import { createInternalRootRepairs } from '@canopy/core-runtime/node/internal-root-repairs';
 import {
   buildInternalRoot,
+  flush,
   internalRootIdentity,
   internalRootStaging,
   isWithinInternalRoot,
@@ -45,6 +53,9 @@ import {
   createPrivateMigrationDirectory,
   internalRootFilesystemHost,
   migrationNodeIdentity,
+  ownedMigrationNode,
+  observeMigrationNode,
+  qualifyMigrationGroup,
   type InternalRootFilesystemHost,
 } from '../filesystem-host';
 import * as progress from '../progress';
@@ -184,6 +195,343 @@ async function assertSource(): Promise<void> {
   );
   expect(await fs.readFile(join(identity.source, 'empty'), 'utf8')).toBe('');
 }
+
+// The pre-CAN-6386 walk is the compatibility oracle for persisted seals.
+async function legacyManifest(
+  root: string,
+  durable = false,
+  omitted: (relative: string) => boolean = () => false,
+  group: (relative: string, stat: Stats) => Promise<number> = (
+    _relative,
+    stat,
+  ) => Promise.resolve(stat.gid),
+): Promise<Pick<InternalRootInventory, 'fingerprint' | 'files' | 'bytes'>> {
+  const rootDevice = (await fs.lstat(root)).dev;
+  const hash = createHash('sha256');
+  const row = (value: unknown): void => {
+    hash.update(JSON.stringify(value));
+    hash.update('\n');
+  };
+  let files = 0;
+  let bytes = 0;
+  async function visit(relative: string): Promise<void> {
+    if (omitted(relative)) return;
+    const path = join(root, relative);
+    const stat = await fs.lstat(path);
+    if (stat.dev !== rootDevice || !ownedMigrationNode(stat))
+      throw new Error(`Unsupported parity fixture: ${path}`);
+    qualifyMigrationGroup(path, stat);
+    const windows = await observeMigrationNode(path, stat, host);
+    const mode = stat.mode & 0o7777;
+    const gid = await group(relative, stat);
+    const metadata = [
+      relative,
+      mode,
+      stat.uid,
+      gid,
+      stat.size,
+      Math.floor(stat.mtimeMs),
+    ];
+    if (windows)
+      row(['windows', relative, windows.attributes, windows.security]);
+    if (stat.isSymbolicLink())
+      row(['link', ...metadata, await fs.readlink(path)]);
+    else if (stat.isDirectory()) {
+      row([
+        'directory',
+        relative,
+        mode,
+        stat.uid,
+        gid,
+        Math.floor(stat.mtimeMs),
+      ]);
+      for (const child of (await fs.readdir(path)).sort())
+        await visit(join(relative, child));
+      if (durable) await flush(path);
+    } else if (stat.isFile()) {
+      const critical =
+        relative.startsWith(`w5${sep}`) && stat.size <= 16 * 1024 * 1024;
+      let digest: string | null = null;
+      if (critical && host.windows)
+        digest = createHash('sha256')
+          .update(host.windows.read(path))
+          .digest('hex');
+      else if (critical) {
+        const content = createHash('sha256');
+        for await (const chunk of createReadStream(path)) {
+          if (!Buffer.isBuffer(chunk)) throw new Error('Expected file bytes');
+          content.update(chunk);
+        }
+        digest = content.digest('hex');
+      }
+      row(['file', ...metadata, digest]);
+      files += 1;
+      bytes += stat.size;
+      if (durable) await flush(path);
+    } else if (!(stat.isSocket() && relative.startsWith(`runtime${sep}`)))
+      throw new Error(`Unsupported parity fixture: ${path}`);
+  }
+  await visit('');
+  return { fingerprint: hash.digest('hex'), files, bytes };
+}
+
+async function runtimeSocket(root: string): Promise<void> {
+  const runtime = join(root, 'runtime');
+  await fs.mkdir(runtime, { recursive: true, mode: 0o700 });
+  // Bind relative to cwd to stay within the Unix socket path limit on macOS.
+  await execute(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer().listen('s', () => process.exit(0))",
+    ],
+    { cwd: runtime },
+  );
+}
+
+posixTest.each(['empty', 'populated'])(
+  'keeps legacy manifest fingerprints, counts and durable seals for a %s tree',
+  async (fixture) => {
+    if (fixture === 'empty') {
+      await fs.unlink(join(identity.source, 'empty'));
+      await fs.unlink(join(identity.source, 'opaque data α'));
+    } else {
+      await fs.mkdir(join(identity.source, 'nested', 'empty'), {
+        recursive: true,
+        mode: 0o700,
+      });
+      await fs.writeFile(join(identity.source, 'nested', 'z'), 'nested bytes');
+      await fs.symlink('nested/z', join(identity.source, 'a-link'));
+      await fs.mkdir(join(identity.source, 'w5'), { mode: 0o700 });
+      await fs.writeFile(
+        join(identity.source, 'w5', 'critical'),
+        Buffer.from([0, 255, 10]),
+      );
+      await fs.writeFile(join(identity.source, 'w5', 'empty'), '');
+      for (const size of [16 * 1024 * 1024, 16 * 1024 * 1024 + 1]) {
+        const handle = await fs.open(
+          join(identity.source, 'w5', String(size)),
+          'wx',
+          0o600,
+        );
+        try {
+          await handle.truncate(size);
+        } finally {
+          await handle.close();
+        }
+      }
+      await fs.utimes(
+        join(identity.source, 'w5', 'critical'),
+        1.234567,
+        1.234567,
+      );
+      await runtimeSocket(identity.source);
+    }
+    expect(await worker.inventory(identity)).toMatchObject(
+      await legacyManifest(identity.source),
+    );
+
+    let sealed = { fingerprint: '', files: 0, bytes: 0 };
+    await expect(
+      run({
+        ...worker,
+        seal: async (saved, publicationIdentity) => {
+          const staging = internalRootStaging(identity);
+          if (fixture === 'populated') await runtimeSocket(staging);
+          sealed = await legacyManifest(staging, true);
+          const fingerprint = await worker.seal(saved, publicationIdentity);
+          expect(fingerprint).toBe(sealed.fingerprint);
+          return fingerprint;
+        },
+      }),
+    ).resolves.toMatchObject({ kind: 'complete' });
+    expect(sealed.fingerprint).not.toBe('');
+    expect(await worker.inventory(identity, true)).toMatchObject(sealed);
+    expect((await journal()).publicationFingerprint).toBe(sealed.fingerprint);
+  },
+);
+
+test.each(['file', 'nested-file', 'directory', 'overlapping'])(
+  'keeps both legacy fingerprints in a single source walk with %s omissions',
+  async (kind) => {
+    const omittedDirectory = join(identity.source, 'omitted');
+    await fs.mkdir(join(omittedDirectory, 'nested'), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await fs.writeFile(
+      join(omittedDirectory, 'nested', 'payload'),
+      'retained only in source',
+    );
+    await fs.mkdir(join(identity.source, 'w5'), { mode: 0o700 });
+    await fs.writeFile(
+      join(identity.source, 'w5', 'critical'),
+      'byte-hashed evidence',
+    );
+    if (!windows) await fs.symlink('empty', join(identity.source, 'link'));
+    await expect(
+      run({
+        ...worker,
+        build: () => Promise.reject(new Error('before build')),
+      }),
+    ).rejects.toThrow('before build');
+    const saved = await journal();
+    const abandonedPaths =
+      kind === 'file'
+        ? [join(identity.source, 'empty')]
+        : kind === 'nested-file'
+          ? [join(omittedDirectory, 'nested', 'payload')]
+          : kind === 'directory'
+            ? [omittedDirectory]
+            : [
+                omittedDirectory,
+                join(omittedDirectory, 'nested'),
+                join(home, 'outside-source'),
+              ];
+    const value: InternalRootJournal = {
+      ...saved,
+      repairPlan: {
+        transition: relocationTransition({
+          version: 1,
+          installationId: saved.transactionId,
+          brandId: identity.brandId,
+          from: {
+            authorityId: 'a'.repeat(64),
+            canonicalDataRoot: identity.source,
+          },
+          to: {
+            authorityId: 'b'.repeat(64),
+            canonicalDataRoot: identity.destination,
+          },
+        }),
+        gitPlan: await prepareRelocationGit(git, []),
+        ownedPaths: [],
+        workspaces: [],
+        abandonedPaths,
+      },
+    };
+    const before = await legacyManifest(identity.source);
+    const result = await worker.build(value);
+    expect(result.sourceInventory).toMatchObject(before);
+    expect(result.sourceInventory.fingerprint).toBe(saved.settledFingerprint);
+    const staging = join(identity.coordination, 'staging');
+    const omitted = (relative: string): boolean =>
+      abandonedPaths.some(
+        (path) =>
+          isWithin(identity.source, path) &&
+          isWithin(path, join(identity.source, relative)),
+      );
+    const expected = await legacyManifest(
+      identity.source,
+      false,
+      omitted,
+      async (relative, stat) =>
+        stat.isSocket()
+          ? stat.gid
+          : (await fs.lstat(join(staging, relative))).gid,
+    );
+    expect(await legacyManifest(staging)).toEqual(expected);
+    expect(expected.fingerprint).not.toBe(before.fingerprint);
+    expect(await legacyManifest(identity.source)).toEqual(before);
+    expect(await migrationNodeIdentity(staging, await fs.lstat(staging))).toBe(
+      result.publicationIdentity,
+    );
+  },
+);
+
+posixTest.each(['omitted-special', 'owner-record'])(
+  'checks the projected copy before post-clone %s refusals',
+  async (fault) => {
+    const omitted = join(identity.source, 'omitted');
+    await fs.mkdir(omitted, { mode: 0o700 });
+    await expect(
+      run({
+        ...worker,
+        build: () => Promise.reject(new Error('before build')),
+      }),
+    ).rejects.toThrow('before build');
+    const saved = await journal();
+    if (fault === 'omitted-special')
+      await execute('mkfifo', [join(omitted, 'special')]);
+    else
+      await fs.writeFile(
+        join(identity.source, 'build-storage-owner.json'),
+        '{}',
+      );
+    const value: InternalRootJournal = {
+      ...saved,
+      repairPlan: {
+        transition: relocationTransition({
+          version: 1,
+          installationId: saved.transactionId,
+          brandId: identity.brandId,
+          from: {
+            authorityId: 'a'.repeat(64),
+            canonicalDataRoot: identity.source,
+          },
+          to: {
+            authorityId: 'b'.repeat(64),
+            canonicalDataRoot: identity.destination,
+          },
+        }),
+        gitPlan: await prepareRelocationGit(git, []),
+        ownedPaths: [],
+        workspaces: [],
+        abandonedPaths: [omitted],
+      },
+    };
+    for (const corrupt of [true, false]) {
+      await expect(
+        buildInternalRoot(
+          value,
+          async (from, to): Promise<void> => {
+            await fs.cp(from, to, {
+              recursive: true,
+              preserveTimestamps: true,
+            });
+            const metadata = await fs.lstat(from);
+            await fs.utimes(
+              to,
+              metadata.atimeMs / 1000,
+              (Math.floor(metadata.mtimeMs) + 0.5) / 1000,
+            );
+            if (corrupt && from === join(identity.source, 'empty'))
+              await fs.writeFile(to, 'copy differs from source');
+          },
+          host,
+        ),
+      ).rejects.toMatchObject({
+        reason: corrupt ? 'source-changed' : 'unsupported-layout',
+      });
+    }
+    expect(await fs.readFile(join(identity.source, 'empty'), 'utf8')).toBe('');
+    expect(await fs.lstat(identity.destination).catch(() => null)).toBeNull();
+  },
+);
+
+posixTest('keeps the event loop live during manifest inventory', async () => {
+  for (let index = 0; index < 510; index += 1)
+    await fs.writeFile(join(identity.source, String(index)), '');
+  let inspected = 0;
+  const samples: number[] = [];
+  const sample = (): void => {
+    samples.push(inspected);
+    if (samples.length < 2) setImmediate(sample);
+  };
+  jest
+    .spyOn(progress, 'internalRootMigrationProgress')
+    .mockImplementation((detail) => {
+      if (detail !== 'inspected manifest entry') return;
+      inspected += 1;
+      if (inspected === 1) setImmediate(sample);
+    });
+  await expect(worker.inventory(identity)).resolves.toMatchObject({
+    files: 512,
+    bytes: 4,
+  });
+  expect(samples).toEqual([256, 512]);
+  expect(inspected).toBe(513);
+});
 
 test('refuses insufficient destination space before creating a transaction or staging', async () => {
   const volume = await fs.statfs(home);
@@ -1626,6 +1974,188 @@ posixTest(
   },
 );
 
+posixTest.each(['fresh', 'building-refusal', 'building-copy', 'rebuild'])(
+  'preserves owner-read-only capability directories through %s migration',
+  async (cut) => {
+    const relative = join('codex-capabilities', 'v1', 'roots', 'readonly');
+    const directory = join(identity.source, relative);
+    const external = join(home, 'outside-capabilities');
+    await fs.mkdir(external, { mode: 0o700 });
+    await fs.writeFile(join(external, 'payload'), 'outside data');
+    await fs.chmod(external, 0o500);
+    const externalBefore = await fs.lstat(external);
+    await fs.mkdir(join(directory, 'nested'), { recursive: true, mode: 0o700 });
+    const copiedSibling = join(dirname(directory), '000-copied-before-refusal');
+    await fs.writeFile(copiedSibling, 'copied sibling', { mode: 0o600 });
+    await fs.writeFile(join(directory, 'nested', 'payload'), 'retain me', {
+      mode: 0o400,
+    });
+    await fs.symlink(external, join(directory, 'external-link'));
+    await fs.mkdir(join(directory, 'empty'), { mode: 0o500 });
+    await fs.chmod(join(directory, 'nested'), 0o500);
+    await fs.chmod(directory, 0o500);
+    const before = await worker.inventory(identity);
+    const children = ['', 'nested', 'empty'];
+    const sourceBefore = await Promise.all(
+      children.map(async (child) => ({
+        child,
+        stat: await fs.lstat(join(directory, child)),
+      })),
+    );
+    const recoverW5 = jest.spyOn(worker, 'recoverW5');
+    try {
+      if (cut === 'building-refusal' || cut === 'building-copy') {
+        await expect(
+          run({
+            ...worker,
+            build: async (saved) => {
+              if (cut === 'building-copy') await worker.build(saved);
+              else if (linux) {
+                const partial = join(
+                  identity.coordination,
+                  'staging',
+                  'codex-capabilities',
+                  'v1',
+                  'roots',
+                  '000-copied-before-refusal',
+                );
+                const report = progress.internalRootMigrationProgress;
+                // Old guard's exact cut: sibling copied, 0500 entry inspected,
+                // but its destination directory has not yet been created.
+                const oldGuard = jest
+                  .spyOn(progress, 'internalRootMigrationProgress')
+                  .mockImplementation((message) => {
+                    report(message);
+                    if (
+                      message === 'inspected copy source entry' &&
+                      syncFs.existsSync(partial)
+                    )
+                      throw new InternalRootMigrationRefused(
+                        'unsupported-layout',
+                        'Read-only or inaccessible source directory',
+                      );
+                  });
+                try {
+                  await worker.build(saved);
+                } finally {
+                  oldGuard.mockRestore();
+                }
+                throw new Error('Expected the old Linux copy guard to refuse');
+              } else {
+                const staging = join(identity.coordination, 'staging');
+                await createPrivateMigrationDirectory(staging, host);
+                await worker.saveJournal({
+                  ...saved,
+                  stagingIdentity: await migrationNodeIdentity(
+                    staging,
+                    await fs.lstat(staging),
+                  ),
+                });
+                await fs.writeFile(join(staging, 'partial'), 'partial copy');
+              }
+              throw new InternalRootMigrationRefused(
+                'unsupported-layout',
+                'Read-only or inaccessible source directory',
+              );
+            },
+          }),
+        ).rejects.toMatchObject({ reason: 'unsupported-layout' });
+        expect(await journal()).toMatchObject({
+          version: 7,
+          phase: 'building',
+          secureRelocation: 'pending',
+        });
+        await expect(fs.lstat(identity.destination)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        if (cut === 'building-refusal' && linux) {
+          const staging = join(identity.coordination, 'staging');
+          expect(
+            await fs.readFile(
+              join(
+                staging,
+                'codex-capabilities',
+                'v1',
+                'roots',
+                '000-copied-before-refusal',
+              ),
+              'utf8',
+            ),
+          ).toBe('copied sibling');
+          await expect(fs.lstat(join(staging, relative))).rejects.toMatchObject(
+            {
+              code: 'ENOENT',
+            },
+          );
+        }
+      }
+      const transactionId = cut.startsWith('building')
+        ? (await journal()).transactionId
+        : null;
+      expect(await run()).toMatchObject({
+        kind: 'complete',
+        journal: { phase: 'complete', secureRelocation: 'complete' },
+      });
+      if (transactionId)
+        expect((await journal()).transactionId).toBe(transactionId);
+      expect(recoverW5).toHaveBeenCalledTimes(1);
+      if (cut === 'rebuild')
+        expect(
+          await migrateInternalRoot(
+            worker,
+            identity,
+            { ...apply, rebuild: true },
+            repairs,
+          ),
+        ).toMatchObject({ kind: 'complete' });
+      for (const root of [identity.source, identity.destination]) {
+        for (const child of children)
+          expect(
+            (await fs.lstat(join(root, relative, child))).mode & 0o777,
+          ).toBe(0o500);
+        expect(
+          await fs.readFile(join(root, relative, 'nested', 'payload'), 'utf8'),
+        ).toBe('retain me');
+        expect(await fs.readdir(join(root, relative, 'empty'))).toEqual([]);
+        expect(await fs.readlink(join(root, relative, 'external-link'))).toBe(
+          external,
+        );
+      }
+      expect(await fs.readFile(join(external, 'payload'), 'utf8')).toBe(
+        'outside data',
+      );
+      expect((await worker.inventory(identity)).fingerprint).toBe(
+        before.fingerprint,
+      );
+      expect(await fs.lstat(external)).toMatchObject({
+        mode: externalBefore.mode,
+        mtimeMs: externalBefore.mtimeMs,
+        ctimeMs: externalBefore.ctimeMs,
+      });
+      for (const { child, stat } of sourceBefore) {
+        expect(await fs.lstat(join(directory, child))).toMatchObject({
+          mode: stat.mode,
+          mtimeMs: stat.mtimeMs,
+          ctimeMs: stat.ctimeMs,
+        });
+      }
+      await assertSource();
+    } finally {
+      // Teardown only; migration must leave the source modes unchanged.
+      for (const root of [
+        identity.source,
+        identity.destination,
+        join(identity.coordination, 'staging'),
+        join(identity.coordination, 'discarding'),
+      ]) {
+        for (const child of children)
+          await fs.chmod(join(root, relative, child), 0o700).catch(() => {});
+      }
+      await fs.chmod(external, 0o700);
+    }
+  },
+);
+
 windowsTest(
   'refuses junctions and long paths without following them',
   async () => {
@@ -2709,24 +3239,37 @@ darwinTest.each([
   'compares unassignable source groups without ignoring other clone changes ($changed, inherited: $inheritedGroup)',
   async ({ changed, inheritedGroup }) => {
     const original = fs.lstat;
+    const originalSync = syncFs.lstatSync;
     const foreignGroup = 987654;
     jest.spyOn(process, 'getgroups').mockReturnValue([]);
-    jest.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
-      const stat = await original(...args);
+    const projectedGroup = (path: unknown): number | undefined => {
       if (
         ['empty', 'opaque data α'].some(
-          (name) => args[0] === join(identity.source, name),
+          (name) => path === join(identity.source, name),
         )
       )
-        Object.defineProperty(stat, 'gid', { value: foreignGroup });
-      else if (
+        return foreignGroup;
+      if (
         inheritedGroup &&
         ['empty', 'opaque data α'].some((name) =>
-          String(args[0]).endsWith(`/${name}`),
+          String(path).endsWith(`/${name}`),
         )
       )
         // A setgid parent can supply a group outside the account's memberships.
-        Object.defineProperty(stat, 'gid', { value: foreignGroup - 1 });
+        return foreignGroup - 1;
+      return undefined;
+    };
+    // The manifest is synchronous; group projection still reads the copy asynchronously.
+    jest.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
+      const stat = await original(...args);
+      const gid = projectedGroup(args[0]);
+      if (gid !== undefined) Object.defineProperty(stat, 'gid', { value: gid });
+      return stat;
+    });
+    jest.spyOn(syncFs, 'lstatSync').mockImplementation((...args) => {
+      const stat = originalSync(...args);
+      const gid = projectedGroup(args[0]);
+      if (gid !== undefined) Object.defineProperty(stat, 'gid', { value: gid });
       return stat;
     });
     const stderr = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
@@ -2744,7 +3287,28 @@ darwinTest.each([
         reason: 'source-changed',
       });
     else {
-      await expect(run(effects)).resolves.toMatchObject({ kind: 'complete' });
+      await expect(
+        run({
+          ...effects,
+          build: async (value) => {
+            const result = await effects.build(value);
+            expect(result.sourceInventory).toMatchObject(
+              await legacyManifest(identity.source),
+            );
+            const staging = join(identity.coordination, 'staging');
+            expect(await legacyManifest(staging)).toEqual(
+              await legacyManifest(
+                identity.source,
+                false,
+                () => false,
+                async (relative) =>
+                  (await fs.lstat(join(staging, relative))).gid,
+              ),
+            );
+            return result;
+          },
+        }),
+      ).resolves.toMatchObject({ kind: 'complete' });
       for (const name of ['empty', 'opaque data α'])
         expect(stderr.mock.calls.flat().join('')).toContain(
           JSON.stringify(join(identity.source, name)),
@@ -2930,9 +3494,9 @@ test.each(['after-staging', 'after-journal'])(
 darwinTest(
   'still refuses a copied group mismatch when the source group is assignable',
   async () => {
-    const original = fs.lstat;
-    jest.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
-      const stat = await original(...args);
+    const original = syncFs.lstatSync;
+    jest.spyOn(syncFs, 'lstatSync').mockImplementation((...args) => {
+      const stat = original(...args);
       if (args[0] === join(identity.coordination, 'staging', 'empty'))
         Object.defineProperty(stat, 'gid', { value: 987654 });
       return stat;

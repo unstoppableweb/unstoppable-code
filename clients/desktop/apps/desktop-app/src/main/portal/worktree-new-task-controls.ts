@@ -35,6 +35,7 @@ export function projectNewTaskControls(
 ): PortalEntityEnvelope[] {
   const availableModels = buildProjectedModelCatalog(undefined, {
     cursor: true,
+    antigravity: true,
     owner,
     copilot: true,
     opencode: true,

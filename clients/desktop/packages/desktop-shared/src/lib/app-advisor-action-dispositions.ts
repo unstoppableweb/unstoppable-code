@@ -35,6 +35,7 @@ export type AppAdvisorActionGrant = (typeof APP_ADVISOR_ACTION_GRANTS)[number];
 export type AppAdvisorCoreExecutor =
   | 'shared-engine'
   | 'script-preferences'
+  | 'chat-history'
   | 'transcript-read'
   | 'code-graph'
   | 'browser'
@@ -723,6 +724,16 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     kind: 'core',
     access: 'read',
     executor: 'transcript-read',
+  }),
+  'chat.history.search': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'chat-history',
+  }),
+  'chat.history.excerpt': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'chat-history',
   }),
   'chat.transcript.page': Object.freeze({
     kind: 'core',

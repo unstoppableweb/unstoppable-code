@@ -22,8 +22,24 @@ interface CloudChatsWorld {
     readonly creates: unknown[];
     createDelayMs: number;
     readonly createRefusals: unknown[];
+    readonly extraAnswers: Map<string, (params: unknown) => unknown>;
+    replyDelayMs: number;
+    readonly cancels: unknown[];
+    sandboxAsleep: boolean;
+    readonly files: Record<string, string>;
+    readonly deletes: unknown[];
   };
+  addDeliverable(
+    chatId: string,
+    deliverable: { session: string; name: string; content: string },
+  ): string;
   call(method: string, params: Record<string, unknown>): unknown;
+  addWorkspaceFile(file: { name: string }): void;
+  raiseApproval(
+    chatId: string,
+    card: { toolName: string; toolCallId: string; command: string },
+  ): string;
+  deleteChat(chatId: string, options?: { endStream?: boolean }): void;
   onNotification(listener: (notification: unknown) => void): () => void;
   served(): string[];
   streams(): string[];
@@ -36,6 +52,7 @@ const { createCloudChatsWorld, SEEDED_CLOUD_CHATS } = jest.requireActual<{
     readonly rootChatId: string;
     readonly secondChatId: string;
     readonly questionId: string;
+    readonly questionToolUseId: string;
   };
 }>('../../../../tests/electron/fixtures/cloudChatsWorld.js');
 
@@ -43,6 +60,7 @@ interface Definition {
   readonly params: ZodType;
   readonly result?: ZodType;
   readonly item?: ZodType;
+  readonly end?: ZodType;
   readonly openResult?: ZodType;
   readonly error?: ZodType;
 }
@@ -106,6 +124,16 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       expect(() => definition(method)).not.toThrow();
   });
 
+  it('lists each served operation once, also one a spec overrides', () => {
+    const other = createCloudChatsWorld({ accountId: 'acct-1' });
+    other.state.extraAnswers.set('core.chat.message.send', () => ({
+      result: {},
+    }));
+    const served = other.served();
+    expect(served).toContain('core.chat.message.send');
+    expect(new Set(served).size).toBe(served.length);
+  });
+
   it('lists the seeded project and task, and reads both chats', () => {
     call('core.workspace.list', {});
     const tasks = call('core.chat.task.list', {
@@ -146,14 +174,179 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       }) as { messages: unknown[] };
       expect(page.messages.length).toBeGreaterThan(0);
     }
-    call('core.catalog.snapshot.get', {
+    // The Plugins picker's rows: a curated skill beside its same-name
+    // curated plugin, and a marketplace plugin (CAN-6397).
+    const catalog = call('core.catalog.snapshot.get', {
       scope: { workspaceId: SEEDED_CLOUD_CHATS.workspaceId },
       kinds: [],
       includeUnavailable: true,
-    });
+    }) as { entries: { entryId: string }[] };
+    expect(catalog.entries.map((entry) => entry.entryId)).toEqual([
+      'skill:cloud-curated/release-notes',
+      'plugin:cloud-curated/release-notes',
+      'plugin:marketplace:5f0c6c1e-6a2a-4d4f-9c55-3a8a2b7f0e11/lint-rules',
+    ]);
     call('core.catalog.selection.get', {
       scope: { chatId: SEEDED_CLOUD_CHATS.rootChatId },
     });
+  });
+
+  it("lists the project's shared workspace files, and no other owner's (CAN-6568)", () => {
+    const other = createCloudChatsWorld({ accountId: 'acct-1' });
+    const list = (owner: Record<string, unknown>): unknown => {
+      const params = {
+        owner,
+        kinds: ['file'],
+        states: ['available'],
+        cursor: null,
+        limit: 100,
+      };
+      const shape = definition('core.artifact.list');
+      expect(shape.params.safeParse(params).error).toBeUndefined();
+      const answer = other.call('core.artifact.list', params) as {
+        result: unknown;
+      };
+      expect(shape.result?.safeParse(answer.result).error).toBeUndefined();
+      return answer.result;
+    };
+    const workspace = { kind: 'workspace', id: SEEDED_CLOUD_CHATS.workspaceId };
+    expect(list(workspace)).toEqual({ artifacts: [], nextCursor: null });
+    other.addWorkspaceFile({ name: 'ericeira_weather.csv' });
+    expect(list(workspace)).toMatchObject({
+      artifacts: [{ name: 'ericeira_weather.csv', availability: 'available' }],
+    });
+    expect(list({ kind: 'chat', id: SEEDED_CLOUD_CHATS.rootChatId })).toEqual({
+      artifacts: [],
+      nextCursor: null,
+    });
+  });
+
+  it('resolves a transcript link into the task folder, refuses one outside it, and renames a file (CAN-6587)', () => {
+    const other = createCloudChatsWorld({ accountId: 'acct-1' });
+    const answer = (
+      method: string,
+      params: Record<string, unknown>,
+    ): { result?: unknown; error?: { code?: string } } => {
+      const shape = definition(method);
+      expect(shape.params.safeParse(params).error).toBeUndefined();
+      const reply = other.call(method, params) as {
+        result?: unknown;
+        error?: { code?: string };
+      };
+      if (reply.result !== undefined)
+        expect(shape.result?.safeParse(reply.result).error).toBeUndefined();
+      return reply;
+    };
+    const scope = { chatId: SEEDED_CLOUD_CHATS.rootChatId };
+    const link = (
+      href: string,
+    ): { result?: unknown; error?: { code?: string } } =>
+      answer('worker.filesystem.link.resolve', {
+        scope,
+        mode: 'transcript',
+        href,
+      });
+    expect(
+      link('/vercel/sandbox/workspace/notes/checklist.md').result,
+    ).toMatchObject({ relativePath: 'notes/checklist.md', kind: 'file' });
+    expect(link('/etc/hosts').error?.code).toBe(
+      'worker.filesystem.link.outsideRoots',
+    );
+    const root = (
+      answer('worker.filesystem.roots.list', { scope }).result as {
+        roots: { fileRootId: string }[];
+      }
+    ).roots[0]?.fileRootId;
+    expect(
+      answer('worker.filesystem.entry.move', {
+        scope,
+        sourceFileRootId: root,
+        destinationFileRootId: root,
+        fromRelativePath: 'README.md',
+        toRelativePath: 'LAUNCH.md',
+        expectedSourceVersion: null,
+        expectedDestinationAbsent: true,
+        conflictPolicy: 'error',
+        _meta: { idempotencyKey: 'move-1' },
+      }).result,
+    ).toMatchObject({ toRelativePath: 'LAUNCH.md' });
+    expect(
+      answer('worker.filesystem.file.read', {
+        scope,
+        fileRootId: root,
+        relativePath: 'LAUNCH.md',
+        maxBytes: 65536,
+      }).result,
+    ).toMatchObject({ relativePath: 'LAUNCH.md' });
+  });
+
+  it("lists a chat's saved deliverable, reads it for that chat only, and keeps it while the sandbox sleeps (CAN-6587)", () => {
+    const other = createCloudChatsWorld({ accountId: 'acct-1' });
+    const answer = (
+      method: string,
+      params: Record<string, unknown>,
+    ): { result?: unknown; error?: { kind?: string; code?: string } } => {
+      const shape = definition(method);
+      expect(shape.params.safeParse(params).error).toBeUndefined();
+      const reply = other.call(method, params) as {
+        result?: unknown;
+        error?: { kind?: string; code?: string };
+      };
+      if (reply.result !== undefined)
+        expect(shape.result?.safeParse(reply.result).error).toBeUndefined();
+      if (reply.error !== undefined)
+        expect(shape.error?.safeParse(reply.error).error).toBeUndefined();
+      return reply;
+    };
+    const chatId = SEEDED_CLOUD_CHATS.secondChatId;
+    const id = other.addDeliverable(chatId, {
+      session: 'session-1',
+      name: 'weather.csv',
+      content: 'day,temp\nMon,18\n',
+    });
+    expect(
+      answer('core.artifact.list', {
+        owner: { kind: 'chat', id: chatId },
+        kinds: ['file'],
+        states: ['available'],
+        cursor: null,
+        limit: 500,
+      }).result,
+    ).toMatchObject({
+      artifacts: [{ artifactId: `dlv:${chatId}:${id}`, name: 'weather.csv' }],
+    });
+    const read = (scopeChatId: string): ReturnType<typeof answer> =>
+      answer('worker.artifact.download.read', {
+        artifactId: `deliverable:${id}`,
+        scope: { chatId: scopeChatId },
+        offset: 0,
+        length: 4,
+      });
+    expect(read(chatId).result).toEqual({
+      sizeBytes: 16,
+      offset: 0,
+      data: Buffer.from('day,').toString('base64'),
+      nextOffset: 4,
+    });
+    // Another chat's deliverable reads as missing, as the web core answers.
+    expect(read(SEEDED_CLOUD_CHATS.rootChatId).error).toMatchObject({
+      kind: 'not_found',
+    });
+
+    // Asleep, the sandbox lists its roots and refuses its files.
+    other.state.sandboxAsleep = true;
+    const scope = { chatId };
+    expect(
+      answer('worker.filesystem.roots.list', { scope }).result,
+    ).toBeDefined();
+    expect(
+      answer('worker.filesystem.link.resolve', {
+        scope,
+        mode: 'transcript',
+        href: '/vercel/sandbox/workspace/deliverables/session-1/weather.csv',
+      }).error,
+    ).toMatchObject({ kind: 'failed_precondition' });
+    expect(read(chatId).result).toBeDefined();
   });
 
   it('serves the task folder’s files', () => {
@@ -196,7 +389,138 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     expect(read.content).toContain('Launch plan');
   });
 
-  it('pushes a sent message and its reply, and a question’s answer, as chat events', async () => {
+  it("refuses a sleeping sandbox's files as the web core does until a turn wakes it, and deletes an entry (CAN-6543)", async () => {
+    const fresh = createCloudChatsWorld({ accountId: 'acct-1' });
+    const scope = { chatId: SEEDED_CLOUD_CHATS.rootChatId };
+    const fileRootId = 'e2e-cloud-root';
+    const listParams = { scope, fileRootId, relativePath: '' };
+    const deleteParams = {
+      scope,
+      fileRootId,
+      relativePath: 'notes',
+      expectedVersion: null,
+      recursive: true,
+      disposition: 'permanent',
+      _meta: { idempotencyKey: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a31' },
+    };
+    const sandboxCalls: [string, Record<string, unknown>, string][] = [
+      [
+        'worker.filesystem.directory.list',
+        listParams,
+        'worker.filesystem.directory',
+      ],
+      [
+        'worker.filesystem.search',
+        {
+          scope,
+          fileRootId,
+          query: '',
+          mode: 'name',
+          purpose: 'file-explorer',
+          limit: 25_000,
+        },
+        'worker.filesystem.search',
+      ],
+      [
+        'worker.filesystem.file.read',
+        { scope, fileRootId, relativePath: 'README.md', maxBytes: 1024 },
+        'worker.filesystem.file',
+      ],
+      [
+        'worker.filesystem.entry.delete',
+        deleteParams,
+        'worker.filesystem.entry',
+      ],
+    ];
+    fresh.state.sandboxAsleep = true;
+    // Its roots still list; every read and write of the sandbox is refused
+    // with the web core's own sleeping reason, and nothing is deleted.
+    expect(
+      fresh.call('worker.filesystem.roots.list', { scope }),
+    ).toHaveProperty('result');
+    for (const [method, params, namespace] of sandboxCalls) {
+      expect(definition(method).params.safeParse(params).error).toBe(undefined);
+      const answer = fresh.call(method, params) as { error?: unknown };
+      expect([method, answer.error]).toEqual([
+        method,
+        {
+          kind: 'failed_precondition',
+          message: 'The sandbox is asleep.',
+          code: `${namespace}.invalidState`,
+          details: {
+            reason: 'sandbox_sleeping',
+            wakeAllowed: true,
+            cloudCode: 'SANDBOX_NOT_READY',
+          },
+          retry: { kind: 'after_refresh', resource: namespace },
+        },
+      ]);
+      expect(definition(method).error?.safeParse(answer.error).error).toBe(
+        undefined,
+      );
+    }
+    expect(fresh.state.deletes).toEqual([]);
+
+    // A sent turn runs in the sandbox and wakes it.
+    const commandId = '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a32';
+    fresh.state.replyDelayMs = 10;
+    expect(
+      fresh.call('core.chat.message.send', {
+        scope: SCOPE,
+        commandId,
+        chatId: SEEDED_CLOUD_CHATS.rootChatId,
+        messageId: 'message-asleep',
+        text: 'List the notes.',
+        _meta: { idempotencyKey: commandId },
+      }),
+    ).toHaveProperty('result');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(fresh.state.sandboxAsleep).toBe(false);
+
+    const answer = fresh.call(
+      'worker.filesystem.entry.delete',
+      deleteParams,
+    ) as { result?: unknown };
+    expect(
+      definition('worker.filesystem.entry.delete').result?.safeParse(
+        answer.result,
+      ).error,
+    ).toBeUndefined();
+    expect(answer.result).toEqual({
+      deleted: true,
+      deletedEntryCount: 1,
+      disposition: 'permanent',
+    });
+    expect(fresh.state.deletes).toEqual([deleteParams]);
+    const listed = fresh.call(
+      'worker.filesystem.directory.list',
+      listParams,
+    ) as {
+      result: { entries: { name: string }[] };
+    };
+    expect(listed.result.entries.map((entry) => entry.name)).toEqual([
+      'README.md',
+    ]);
+    // Deleting it again finds nothing, as the web core answers.
+    expect(
+      (
+        fresh.call('worker.filesystem.entry.delete', deleteParams) as {
+          error?: { kind: string };
+        }
+      ).error?.kind,
+    ).toBe('not_found');
+    // Another world keeps the seeded files.
+    const other = createCloudChatsWorld({ accountId: 'acct-1' }).call(
+      'worker.filesystem.directory.list',
+      listParams,
+    ) as { result: { entries: { name: string }[] } };
+    expect(other.result.entries.map((entry) => entry.name).sort()).toEqual([
+      'README.md',
+      'notes',
+    ]);
+  });
+
+  it('pushes a sent turn and an answered question as the web core reports Core’s turns', async () => {
     call('core.chat.task.events', { scope: 'all', cursor: null });
     call('core.chat.events', {
       scope: {
@@ -209,6 +533,63 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       scope: { ...SCOPE, chatId: SEEDED_CLOUD_CHATS.rootChatId },
     });
     await Promise.resolve();
+    const changes = (): {
+      type: string;
+      runtime?: Record<string, unknown>;
+      message?: { id: string; blocks: Record<string, unknown>[] };
+    }[] =>
+      items
+        .filter((each) => each.method === 'core.chat.events.item')
+        .flatMap(
+          (each) =>
+            (each.params.item as { changes: ReturnType<typeof changes> })
+              .changes,
+        );
+    const runtimes = (): Record<string, unknown>[] =>
+      changes().flatMap((change) =>
+        change.type === 'runtime.patched' && change.runtime
+          ? [change.runtime]
+          : [],
+      );
+    // A pending question's turn runs, waiting on the answer.
+    expect(
+      (
+        call('core.chat.snapshot.get', { scope: SCOPE }) as {
+          runtimeByChatId: Record<string, unknown>;
+        }
+      ).runtimeByChatId[SEEDED_CLOUD_CHATS.rootChatId],
+    ).toMatchObject({ status: 'awaiting_input' });
+    expect(
+      (
+        call('core.chat.snapshot.get', { scope: SCOPE }) as {
+          runtimeByChatId: Record<string, { activeTurnId?: unknown }>;
+        }
+      ).runtimeByChatId[SEEDED_CLOUD_CHATS.rootChatId]?.activeTurnId,
+    ).toEqual(expect.stringMatching(/./));
+
+    // The answer settles the question; the turn runs on to its reply, and
+    // Core records no result for the question call.
+    call('core.chat.question.respond', {
+      chatId: SEEDED_CLOUD_CHATS.rootChatId,
+      questionId: SEEDED_CLOUD_CHATS.questionId,
+      answers: { room: { selectedOptions: ['Studio B'] } },
+    });
+    expect(changes().map((change) => change.type)).toEqual([
+      'pending_question.removed',
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const asking = changes().find((change) =>
+      change.message?.blocks.some(
+        (block) => block.toolUseId === SEEDED_CLOUD_CHATS.questionToolUseId,
+      ),
+    )?.message;
+    expect(asking?.blocks.map((block) => block.type)).toEqual([
+      'text',
+      'tool_use',
+    ]);
+    // Core's session still reads streaming in the batch that ends the turn.
+    expect(runtimes()).toEqual([{ status: 'streaming', queuedMessageIds: [] }]);
+
     const receipt = call('core.chat.message.send', {
       scope: SCOPE,
       commandId: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21',
@@ -216,18 +597,27 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       messageId: 'message-1',
       text: 'Studio B, please.',
       _meta: { idempotencyKey: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21' },
-    }) as { outcome: string };
+    }) as { outcome: string; entityId: string };
     expect(receipt.outcome).toBe('applied');
-    call('core.chat.question.respond', {
-      chatId: SEEDED_CLOUD_CHATS.rootChatId,
-      questionId: SEEDED_CLOUD_CHATS.questionId,
-      answers: { room: { selectedOptions: ['Studio B'] } },
-    });
-    expect(items.map((each) => each.method)).toEqual([
-      'core.chat.live.events.item',
-      'core.chat.events.item',
-      'core.chat.events.item',
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Queued, then running under the receipt's turn, then committed with no
+    // turn and Core's session still streaming.
+    expect(runtimes().slice(1)).toEqual([
+      { status: 'awaiting_input', queuedMessageIds: ['message-1'] },
+      {
+        status: 'streaming',
+        queuedMessageIds: [],
+        activeTurnId: receipt.entityId,
+      },
+      { status: 'streaming', queuedMessageIds: [] },
     ]);
+    expect(
+      changes().some((change) =>
+        change.message?.blocks.some(
+          (block) => block.text === 'Seeded reply: Studio B, please.',
+        ),
+      ),
+    ).toBe(true);
     expectItemsValid();
     expect(world.state.sends).toHaveLength(1);
     expect(world.state.answers).toHaveLength(1);
@@ -236,6 +626,113 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       commandId: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21',
     }) as { outcome: string };
     expect(matched.outcome).toBe('matched');
+
+    // Stop on a turn already over is not an error.
+    expect(
+      call('core.chat.turn.cancel', {
+        chatId: SEEDED_CLOUD_CHATS.rootChatId,
+        turnId: receipt.entityId,
+        reason: 'user',
+      }),
+    ).toMatchObject({ state: 'idle' });
+  });
+
+  it('stops a running turn by its conversation turn id, as the web core does (CAN-6393)', async () => {
+    const running = createCloudChatsWorld({ accountId: 'acct-1' });
+    running.state.replyDelayMs = 60_000;
+    const pushed: { method: string; params: { item: unknown } }[] = [];
+    running.onNotification((notification: unknown) => {
+      pushed.push(notification as (typeof pushed)[number]);
+    });
+    const runningCall = (
+      method: string,
+      params: Record<string, unknown>,
+    ): unknown => {
+      const shape = definition(method);
+      expect(shape.params.safeParse(params).error).toBeUndefined();
+      const answer = running.call(method, params) as { result: unknown };
+      const answerShape =
+        shape.item === undefined ? shape.result : shape.openResult;
+      expect(answerShape?.safeParse(answer.result).error).toBeUndefined();
+      return answer.result;
+    };
+    runningCall('core.chat.events', {
+      scope: {
+        projectId: SEEDED_CLOUD_CHATS.workspaceId,
+        worktreeId: SEEDED_CLOUD_CHATS.taskId,
+      },
+      cursor: null,
+    });
+    const commandId = '6b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
+    const receipt = runningCall('core.chat.message.send', {
+      scope: SCOPE,
+      commandId,
+      chatId: SEEDED_CLOUD_CHATS.secondChatId,
+      messageId: 'message-running',
+      text: 'Take your time.',
+      _meta: { idempotencyKey: commandId },
+    }) as { entityId: string };
+    // The receipt names the conversation turn, as the snapshot's activeTurnId does.
+    expect(receipt.entityId).toBe(`turn-${commandId}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    runningCall('core.chat.live.events', {
+      scope: { ...SCOPE, chatId: SEEDED_CLOUD_CHATS.secondChatId },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const liveItems = (): unknown[] =>
+      pushed
+        .filter((each) => each.method === 'core.chat.live.events.item')
+        .map((each) => each.params.item);
+    // A running turn's live stream opens with no idle.
+    expect(liveItems()).toEqual([]);
+    const ended = runningCall('core.chat.turn.cancel', {
+      chatId: SEEDED_CLOUD_CHATS.secondChatId,
+      turnId: 'turn-other',
+      reason: 'user',
+    }) as { state: string };
+    expect(ended.state).toBe('idle');
+    const stopped = runningCall('core.chat.turn.cancel', {
+      chatId: SEEDED_CLOUD_CHATS.secondChatId,
+      turnId: receipt.entityId,
+      reason: 'user',
+    }) as { state: string };
+    expect(stopped.state).toBe('running');
+    expect(running.state.cancels).toHaveLength(2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const runtimes = pushed.flatMap((each) =>
+      each.method === 'core.chat.events.item'
+        ? (
+            each.params.item as {
+              changes: { type: string; runtime?: Record<string, unknown> }[];
+            }
+          ).changes.flatMap((change) =>
+            change.type === 'runtime.patched' && change.runtime
+              ? [change.runtime]
+              : [],
+          )
+        : [],
+    );
+    // Queued, running under its turn, then the reply so far commits with no
+    // turn while Core's session still reads streaming; the live stream says
+    // idle.
+    expect(runtimes).toEqual([
+      { status: 'awaiting_input', queuedMessageIds: ['message-running'] },
+      {
+        status: 'streaming',
+        queuedMessageIds: [],
+        activeTurnId: receipt.entityId,
+      },
+      { status: 'streaming', queuedMessageIds: [] },
+    ]);
+    expect(liveItems()).toEqual([
+      { kind: 'idle', chatId: SEEDED_CLOUD_CHATS.secondChatId },
+    ]);
+    for (const notification of pushed) {
+      const stream = notification.method.replace(/\.item$/, '');
+      expect(
+        definition(stream).item?.safeParse(notification.params.item).error,
+      ).toBeUndefined();
+    }
   });
 
   it('refuses what the real web core refuses, as the web core does', () => {
@@ -362,7 +859,7 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       }),
     ).toHaveProperty('result');
     // A relay operation the fake doesn't serve answers nothing.
-    expect(fresh.call('core.chat.archive', {})).toBeUndefined();
+    expect(fresh.call('core.chat.update', {})).toBeUndefined();
   });
 
   /** `core.chat.create` params for `tabId` in `worktreeId`, protocol-valid. */
@@ -488,10 +985,13 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       _meta: { idempotencyKey: commandId },
     }) as { result: { outcome: string } };
     expect(sent.result.outcome).toBe('applied');
-    expect(pushed.at(-1)).toMatchObject({
-      method: 'core.chat.events.item',
-      params: { item: { worktreeId: taskId } },
-    });
+    // The turn runs and commits its reply after the receipt, as Core's does.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(
+      pushed.findLast(
+        (notification) => notification.method === 'core.chat.events.item',
+      ),
+    ).toMatchObject({ params: { item: { worktreeId: taskId } } });
     for (const notification of pushed) {
       const stream = notification.method.replace(/\.item$/, '');
       expect(
@@ -600,6 +1100,178 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('archives a task through its own chat, which drops it from the list (CAN-6511)', () => {
+    const other = createCloudChatsWorld({ accountId: 'acct-1' });
+    const archive = (): unknown => {
+      const params = {
+        commandId: 'cmd-archive',
+        projectId: SEEDED_CLOUD_CHATS.workspaceId,
+        worktreeId: SEEDED_CLOUD_CHATS.taskId,
+        _meta: { idempotencyKey: 'cmd-archive' },
+        action: { type: 'chat.archive_tab', tabId: SEEDED_CLOUD_CHATS.taskId },
+      };
+      const shape = definition('core.chat.archive');
+      expect(shape.params.safeParse(params).error).toBeUndefined();
+      const answer = other.call('core.chat.archive', params) as {
+        result: unknown;
+      };
+      expect(shape.result).toBeDefined();
+      expect(shape.result?.safeParse(answer.result).error).toBeUndefined();
+      return answer.result;
+    };
+    expect(archive()).toMatchObject({ outcome: 'applied' });
+    // A retry is already applied, as the web core answers an archived chat.
+    expect(archive()).toMatchObject({ outcome: 'already_applied' });
+    const tasks = other.call('core.chat.task.list', {
+      scope: { workspaceId: SEEDED_CLOUD_CHATS.workspaceId },
+    }) as { result: { items: unknown[] } };
+    expect(tasks.result.items).toEqual([]);
+  });
+
+  it('raises a chat’s tool approval, lists its card at revision 2 and settles it once answered (CAN-6515)', () => {
+    const before = items.length;
+    const params = {
+      scope: { chatId: SEEDED_CLOUD_CHATS.secondChatId },
+      cursor: null,
+    };
+    call('core.approval.request.events', params);
+    const requestId = world.raiseApproval(SEEDED_CLOUD_CHATS.secondChatId, {
+      toolName: 'Bash',
+      toolCallId: 'toolu_ls',
+      command: 'ls -la',
+    });
+    const listed = call('core.approval.request.list', {
+      scope: { chatId: SEEDED_CLOUD_CHATS.secondChatId },
+      states: ['pending'],
+      cursor: null,
+      limit: 500,
+      revision: 2,
+    }) as { requests: { requestId: string; presentation?: unknown }[] };
+    const card: unknown = expect.objectContaining({ toolCallId: 'toolu_ls' });
+    expect(listed.requests).toEqual([
+      expect.objectContaining({ requestId, presentation: card }),
+    ]);
+    call('core.approval.request.respond', {
+      requestId,
+      policyRevision: 0,
+      decision: 'allow',
+      stopTurn: false,
+      message: null,
+      createRule: null,
+      _meta: { idempotencyKey: 'answer-1' },
+    });
+    // The request, then its settlement, went to the chat's stream.
+    expect(
+      items
+        .slice(before)
+        .filter((each) => each.method === 'core.approval.request.events.item')
+        .map((each) => (each.params.item as { kind: string }).kind),
+    ).toEqual(['request', 'resolved']);
+    expectItemsValid();
+    expect(
+      call('core.approval.request.list', {
+        scope: { chatId: SEEDED_CLOUD_CHATS.secondChatId },
+        states: ['pending'],
+        cursor: null,
+        limit: 500,
+        revision: 2,
+      }),
+    ).toMatchObject({ requests: [] });
+  });
+
+  it('deletes a task on another device as the web core reports it: tab.removed, then not found (CAN-6614)', async () => {
+    const fresh = createCloudChatsWorld({ accountId: 'acct-1' });
+    const pushed: {
+      method: string;
+      params: { subscriptionId: string; item?: unknown };
+    }[] = [];
+    fresh.onNotification((notification: unknown) => {
+      pushed.push(notification as (typeof pushed)[number]);
+    });
+    const scope = {
+      projectId: SEEDED_CLOUD_CHATS.workspaceId,
+      worktreeId: SEEDED_CLOUD_CHATS.taskId,
+    };
+    const opened = fresh.call('core.chat.events', { scope, cursor: null }) as {
+      result: { subscriptionId: string };
+    };
+    fresh.call('core.chat.task.events', { scope: 'all', cursor: null });
+    fresh.deleteChat(SEEDED_CLOUD_CHATS.rootChatId);
+    // The task's stream removes its chats, the sidebar's names the task,
+    // and the task's stream then ends not found, each as its schema says.
+    expect(
+      pushed.map((each) => [each.method, each.params.item ?? null]),
+    ).toEqual([
+      [
+        'core.chat.events.item',
+        expect.objectContaining({
+          worktreeId: SEEDED_CLOUD_CHATS.taskId,
+          changes: [
+            { type: 'tab.removed', tabId: SEEDED_CLOUD_CHATS.rootChatId },
+            { type: 'tab.removed', tabId: SEEDED_CLOUD_CHATS.secondChatId },
+          ],
+        }),
+      ],
+      [
+        'core.chat.task.events.item',
+        expect.objectContaining({ worktreeId: SEEDED_CLOUD_CHATS.taskId }),
+      ],
+      ['core.chat.events.end', null],
+    ]);
+    for (const notification of pushed) {
+      const [, stream = '', frame] =
+        /^(.*)\.(item|end)$/.exec(notification.method) ?? [];
+      const shape = definition(stream);
+      const { subscriptionId, ...params } = notification.params;
+      expect(
+        (frame === 'item'
+          ? shape.item?.safeParse(params.item)
+          : shape.end?.safeParse(params)
+        )?.error,
+      ).toBeUndefined();
+      expect(typeof subscriptionId).toBe('string');
+    }
+    expect(pushed.at(-1)?.params).toMatchObject({
+      subscriptionId: opened.result.subscriptionId,
+      outcome: 'error',
+      error: { kind: 'not_found' },
+    });
+    // The task and both its chats are gone: reads, a new chat in it, a send
+    // and a reopened stream all answer not found, and the sidebar lists it
+    // no more.
+    const taskScope = {
+      workspaceId: SEEDED_CLOUD_CHATS.workspaceId,
+      worktreeId: SEEDED_CLOUD_CHATS.taskId,
+    };
+    const kindOf = (answer: unknown): unknown =>
+      (answer as { error?: { kind: string } }).error?.kind;
+    expect(
+      kindOf(fresh.call('core.chat.snapshot.get', { scope: taskScope })),
+    ).toBe('not_found');
+    expect(
+      kindOf(
+        fresh.call('core.chat.transcript.page', {
+          scope: { ...taskScope, chatId: SEEDED_CLOUD_CHATS.secondChatId },
+        }),
+      ),
+    ).toBe('not_found');
+    expect(
+      kindOf(fresh.call('core.chat.events', { scope, cursor: null })),
+    ).toBe('not_found');
+    expect(
+      (
+        await create(
+          fresh,
+          createParams(crypto.randomUUID(), SEEDED_CLOUD_CHATS.taskId),
+        )
+      ).error?.kind,
+    ).toBe('not_found');
+    const listed = fresh.call('core.chat.task.list', {
+      scope: { workspaceId: SEEDED_CLOUD_CHATS.workspaceId },
+    }) as { result: { items: unknown[] } };
+    expect(listed.result.items).toEqual([]);
   });
 
   it('holds main’s client lease and takes its acknowledgements', () => {

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import {
   isWorkflowLaunchReceipt,
@@ -35,6 +36,7 @@ import type {
   ShareRunResponse,
   ShareTrackedPlanRequest,
   TrackedPlanData,
+  TrackedPlanListWithSkippedResult,
   UnshareRunResponse,
   WorktreeSummaryLoadBatchResponse,
   WorktreeSummaryData,
@@ -44,6 +46,7 @@ import {
   useLiveBackgroundTaskStore,
 } from './liveBackgroundTaskStore';
 import type { LiveBackgroundTaskChatEntry } from './liveBackgroundTaskStore';
+import { isWebCoreTaskProcess } from './chat/web-core/agent-task-processes';
 
 const MAX_OUTPUT_LINES = 200;
 const TERMINAL_OUTPUT_STOP_DELAY_MS = 2000;
@@ -150,6 +153,8 @@ interface ActivityState {
   toolUses: Record<string, Record<string, ToolUseMeta>>;
   worktreeSummaries: Record<string, WorktreeSummaryData>;
   trackedPlans: Record<string, TrackedPlanData[]>;
+  /** Stored plan records each worktree's list left out (CAN-6666). */
+  trackedPlanSkipped: Record<string, number>;
   /**
    * Worktree keys whose full tracked-plan inventory has loaded
    * (`loadTrackedPlans` / `setTrackedPlans`). `trackedPlans[key]` alone does
@@ -176,6 +181,16 @@ interface ActivityState {
     projectId: string,
     worktreeId: string,
     files: ActivityChangedFilesResponse,
+  ) => void;
+  /**
+   * Replace one chat's background processes in its scope: a cloud chat's,
+   * which the web core reports as agent task rows rather than main.
+   */
+  setChatBackgroundProcesses: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    processes: readonly BackgroundProcess[],
   ) => void;
   setWorktreeSummary: (key: string, data: WorktreeSummaryData) => void;
   setTrackedPlans: (key: string, plans: TrackedPlanData[]) => void;
@@ -2090,12 +2105,22 @@ function applySystemEventToData(
     nextProcess.taskId &&
     nextProcess.outputFile
   ) {
+    const pollingTaskId = nextProcess.outputTaskId ?? nextProcess.taskId;
+    // Routine progress should not retry a refused start for the same output.
+    if (
+      effectiveSubtype === 'task_progress' &&
+      existing.status === 'running' &&
+      existing.outputFile === nextProcess.outputFile &&
+      (existing.outputTaskId ?? existing.taskId) === pollingTaskId
+    ) {
+      return {};
+    }
     return {
       startPolling: {
         projectId,
         worktreeId,
         chatId,
-        taskId: nextProcess.outputTaskId ?? nextProcess.taskId,
+        taskId: pollingTaskId,
         outputFile: nextProcess.outputFile,
       },
     };
@@ -2290,6 +2315,26 @@ function applyTabMessagesToData(
   }
 }
 
+/**
+ * A worktree's tracked plans and how many stored records were left out
+ * (CAN-6666). A host on an older release refuses the newer read, so the
+ * plain list stands in, with no count.
+ */
+async function readTrackedPlans(request: {
+  projectId: string;
+  worktreeId: string;
+}): Promise<TrackedPlanListWithSkippedResult> {
+  const plans = window.api.activity.plans;
+  if (typeof plans.listWithSkipped !== 'function')
+    return { plans: await plans.list(request) };
+  try {
+    return await plans.listWithSkipped(request);
+  } catch (error) {
+    reportClientAppError(error);
+    return { plans: await plans.list(request) };
+  }
+}
+
 export const useActivityStore = create<ActivityState>((set, get) => ({
   panelExpanded: false,
   changedFiles: {},
@@ -2297,6 +2342,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   toolUses: {},
   worktreeSummaries: {},
   trackedPlans: {},
+  trackedPlanSkipped: {},
   trackedPlanInventoryLoaded: {},
   detectedPlans: {},
   summaryGenerating: {},
@@ -2328,6 +2374,23 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     set((state) => ({ panelExpanded: !state.panelExpanded }));
   },
 
+  setChatBackgroundProcesses: (
+    projectId,
+    worktreeId,
+    chatId,
+    processes,
+  ): void => {
+    const key = worktreeKey(projectId, worktreeId);
+    set((state) => {
+      const current = state.bgProcesses[key] ?? [];
+      const others = current.filter((process) => process.chatId !== chatId);
+      if (others.length === current.length && processes.length === 0)
+        return state;
+      return {
+        bgProcesses: { ...state.bgProcesses, [key]: [...others, ...processes] },
+      };
+    });
+  },
   setChangedFiles: (projectId, worktreeId, files): void => {
     const key = worktreeKey(projectId, worktreeId);
     const prev = get().changedFiles[key];
@@ -2595,11 +2658,11 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       (trackedPlanListsInFlight.get(key) ?? 0) + 1,
     );
     let listed: TrackedPlanData[];
+    let skipped: number;
     try {
-      listed = await window.api.activity.plans.list({
-        projectId,
-        worktreeId,
-      });
+      const read = await readTrackedPlans({ projectId, worktreeId });
+      listed = read.plans;
+      skipped = read.skipped ?? 0;
     } catch (error) {
       finishTrackedPlanList(key);
       throw error;
@@ -2622,13 +2685,22 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       );
       const inventoryFlagChanged =
         state.trackedPlanInventoryLoaded[key] !== true;
-      if (!trackedPlansChanged && !inventoryFlagChanged) {
+      const skippedChanged = (state.trackedPlanSkipped[key] ?? 0) !== skipped;
+      if (!trackedPlansChanged && !inventoryFlagChanged && !skippedChanged) {
         return state;
       }
 
       return {
         ...(trackedPlansChanged
           ? { trackedPlans: { ...state.trackedPlans, [key]: plans } }
+          : {}),
+        ...(skippedChanged
+          ? {
+              trackedPlanSkipped: {
+                ...state.trackedPlanSkipped,
+                [key]: skipped,
+              },
+            }
           : {}),
         ...(inventoryFlagChanged
           ? {
@@ -3091,12 +3163,24 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       }
     }
 
-    nextData.bgProcesses = withEndedAt(
-      previousProcesses,
-      nextData.bgProcesses.map((process) =>
-        mergePreviousProcessState(previousProcesses, process),
-      ),
-    );
+    // A cloud chat's agent tasks come from the web core, not its transcript
+    // (CAN-6452): the rebuild keeps each one, with its id and no local Stop,
+    // in place of any launch it rebuilt for the same task.
+    const published = (previousProcesses ?? []).filter(isWebCoreTaskProcess);
+    const rebuilt = nextData.bgProcesses
+      .map((process) => mergePreviousProcessState(previousProcesses, process))
+      .filter(
+        (process) =>
+          findProcessIndex(published, {
+            chatId: process.chatId,
+            taskId: process.taskId,
+            toolUseId: process.toolUseId,
+          }) < 0,
+      );
+    nextData.bgProcesses = withEndedAt(previousProcesses, [
+      ...rebuilt,
+      ...published,
+    ]);
 
     set((state) => {
       if (

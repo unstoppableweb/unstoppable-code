@@ -1,4 +1,9 @@
 import { useCanopyCloudAccountState } from './useCanopyCloudAccountState';
+import { useLocalModelGateway } from './useLocalModelGateway';
+import {
+  effectivePersonalModelGateway,
+  localModelGatewayProjection,
+} from '@canopy/desktop-shared/lib/org-model-gateway';
 import type {
   CanopyAccountResponse,
   CanopyOrgEnforcedSettings,
@@ -157,8 +162,18 @@ export function useOrgModelGateways(): OrgModelGateway[] | undefined {
     : undefined;
 }
 
-/** {@link resolvePersonalModelGateway} for the signed-in account, kept current. */
+/**
+ * {@link resolvePersonalModelGateway} for the current account, kept current:
+ * the account's own, or the device AI gateway while the account names no
+ * Personal organization (signed out or a guest).
+ */
 export function usePersonalModelGateway(): OrgModelGateway | null {
   const { account } = useCanopyCloudAccountState();
-  return resolvePersonalModelGateway(account?.personalModelGateway);
+  const device = useLocalModelGateway();
+  return resolvePersonalModelGateway(
+    effectivePersonalModelGateway(
+      account ?? null,
+      localModelGatewayProjection(device?.gateway),
+    ).personalModelGateway,
+  );
 }

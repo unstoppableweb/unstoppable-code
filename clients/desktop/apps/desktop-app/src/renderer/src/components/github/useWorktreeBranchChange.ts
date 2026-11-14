@@ -1,3 +1,4 @@
+import { hasExactWorktreeBaseCatalogue } from '@/lib/remote-control/worktree-base-availability';
 import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
@@ -9,8 +10,9 @@ import {
   type HomeBranchTarget,
 } from '@/stores/homeComposerStore';
 import { gitActionFailureRaiser, useGitHubStore } from '@/stores/githubStore';
-import { useProjectsStore } from '@/stores/projectsStore';
+import { refreshCheckoutBranches } from '@/lib/refresh-checkout-branches';
 import { toAppError } from '@canopy/protocol/app-errors';
+import { showBranchCheckoutWarning } from '@/lib/branch-checkout-warning';
 import { inlineFailure } from '@/lib/inline-app-error';
 
 interface WorktreeBranchChangeInput {
@@ -98,6 +100,8 @@ export function useWorktreeBranchChange({
       }
       changingRef.current.add(changingKey);
       const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
+      let attemptedCheckout = false;
+      let checkoutFailed = false;
       try {
         // A failed load already showed its failure under the top bar.
         const loaded = await loadRef.current;
@@ -110,9 +114,9 @@ export function useWorktreeBranchChange({
         if (!options || !branchName || branchName === currentBranch) return;
         const entryFor = (name: string): BranchEntry | undefined =>
           branches.find((branch) => branch.name === name);
-        let result: { branchName: string };
+        attemptedCheckout = true;
         if (options.existingBranch) {
-          result = await window.api.switchBranch({
+          await window.api.switchBranch({
             projectId,
             worktreeId,
             branchName,
@@ -123,7 +127,7 @@ export function useWorktreeBranchChange({
           });
         } else {
           const startBranch = baseBranch ?? loaded.defaultBranch ?? '';
-          result = await window.api.createBranch({
+          const created = await window.api.createBranch({
             projectId,
             worktreeId,
             newBranchName: branchName,
@@ -131,16 +135,38 @@ export function useWorktreeBranchChange({
             // Start from origin whenever it has the base, as Branch info's
             // picker does; a local base may be behind it.
             baseBranchIsRemote: entryFor(startBranch)?.hasRemoteRef === true,
+            baseBranchSource:
+              hasExactWorktreeBaseCatalogue(loaded) &&
+              baseBranch == null &&
+              loaded.defaultBranch != null
+                ? 'catalog'
+                : undefined,
           });
+          if (!created.success) {
+            checkoutFailed = true;
+            if (created.failureMessage)
+              raiseFailure({ error: created.failureMessage });
+            return;
+          }
+          showBranchCheckoutWarning(created.warning, projectId, worktreeId);
         }
-        const projects = useProjectsStore.getState();
-        projects.updateBranchName(projectId, worktreeId, result.branchName);
-        void projects.refreshDiffStats();
       } catch (err: unknown) {
+        checkoutFailed = true;
         const appError = toAppError(resolveClientAppError(err));
         if (appError)
           raiseFailure(inlineFailure(appError, "Couldn't change the branch."));
       } finally {
+        if (attemptedCheckout) {
+          await refreshCheckoutBranches({ projectId, worktreeId }).catch(
+            (err: unknown) => {
+              const appError = toAppError(resolveClientAppError(err));
+              if (!checkoutFailed && appError)
+                raiseFailure(
+                  inlineFailure(appError, "Couldn't load the branches."),
+                );
+            },
+          );
+        }
         changingRef.current.delete(changingKey);
       }
     },

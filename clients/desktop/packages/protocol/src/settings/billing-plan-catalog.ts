@@ -17,6 +17,17 @@ import {
 } from '../billing/index';
 
 /**
+ * BURN / observed-cost valuation ONLY: $0.15 of actual gateway USD cost = 1
+ * credit. This is the global consumption-debit rate (gateway cost → credits
+ * debited) and the basis for `getBalance().balanceUsd`, and the rate the cost
+ * views show AI Credits work in (CAN-6180). It is intentionally DISTINCT from
+ * the per-tier SALE price (dollars paid → credits granted for allotments +
+ * top-ups), which lives on `billing_plans.credit_price_usd` — see
+ * `creditPriceUsdForPlanKey`. Do NOT use this constant for the grant/sale path.
+ */
+export const AI_CREDIT_USD_PER_CREDIT: number = 0.15;
+
+/**
  * Default per-refill increment (USD) used when auto-top-up is enabled without an
  * explicit `amountUsd`. The auto-top-up UX (CAN-1040 / T17) deliberately hides
  * this tuning field; on first enable the engine falls back to this catalog

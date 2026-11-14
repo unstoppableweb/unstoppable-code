@@ -7,7 +7,7 @@ import {
   type AuthFailureClass,
   type AuthSettingsTarget,
 } from '@canopy/protocol/auth-recovery';
-import { Button, CopyButton } from '@canopy/ui-shared/components';
+import { Button, CopyButton, Notice } from '@canopy/ui-shared/components';
 import { CheckIcon, WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type {
   AuthTerminalProvider,
@@ -272,9 +272,6 @@ function openAuthSettings(destination: AuthSettingsDestination): void {
   }
   navigation.openSettings(destination.section);
 }
-
-const FRAME_CLASS =
-  'mt-1 flex flex-col gap-2 rounded-lg border border-line-attention/40 bg-warning-subtle px-3 py-2 text-xs fg-primary';
 
 /**
  * Stable automation hook for the action button.
@@ -561,45 +558,50 @@ export const AuthRecoveryCard = memo(function AuthRecoveryCard({
     return null;
   }
   return (
-    <div
+    <Notice
+      intent="attention"
       role="alert"
+      icon={null}
       data-testid="auth-recovery-card"
       data-blocker-count={rows.length}
-      className={FRAME_CLASS}
+      data-chat-notice=""
+      className="mt-1"
     >
-      {rows.length > 1 ? (
-        <p
-          data-testid="auth-recovery-checklist-header"
-          className="min-w-0 break-words fg-secondary"
-        >
-          {`${rows.length} connections need attention before this can continue.`}
-        </p>
-      ) : null}
-      {rows.map((row) => (
-        <AuthRecoveryRow
-          key={row.dependencyId}
-          failure={row}
-          onConnectionState={onConnectionState}
-        />
-      ))}
-      {ready && sourceMessageId ? (
-        <Button
-          size="compact"
-          className="self-start"
-          data-testid="auth-recovery-resume"
-          disabled={!recovery.canResume || recovery.resuming}
-          onClick={(): void => {
-            void resume();
-          }}
-        >
-          {recovery.resuming ? 'Resuming…' : 'Resume'}
-        </Button>
-      ) : null}
-      {recovery.error ? (
-        <p role="status" className="fg-secondary">
-          {recovery.error}
-        </p>
-      ) : null}
-    </div>
+      <div className="flex flex-col gap-2">
+        {rows.length > 1 ? (
+          <p
+            data-testid="auth-recovery-checklist-header"
+            className="min-w-0 break-words fg-secondary"
+          >
+            {`${rows.length} connections need attention before this can continue.`}
+          </p>
+        ) : null}
+        {rows.map((row) => (
+          <AuthRecoveryRow
+            key={row.dependencyId}
+            failure={row}
+            onConnectionState={onConnectionState}
+          />
+        ))}
+        {ready && sourceMessageId ? (
+          <Button
+            size="compact"
+            className="self-start"
+            data-testid="auth-recovery-resume"
+            disabled={!recovery.canResume || recovery.resuming}
+            onClick={(): void => {
+              void resume();
+            }}
+          >
+            {recovery.resuming ? 'Resuming…' : 'Resume'}
+          </Button>
+        ) : null}
+        {recovery.error ? (
+          <p role="status" className="fg-secondary">
+            {recovery.error}
+          </p>
+        ) : null}
+      </div>
+    </Notice>
   );
 });

@@ -23,8 +23,9 @@ import {
   COST_SOURCE_COLORS,
   costBarScale,
   costSourceSegments,
-  formatCostAmount,
-  formatCostTotal,
+  formatCostAmountIn,
+  formatCostTotalIn,
+  useCostCurrency,
 } from '@canopy/ui-shared/components/cost';
 import { formatTokenCount } from '@canopy/ui-shared/lib/format-usage';
 import {
@@ -79,10 +80,11 @@ function StepCostRow({
   readonly scope: CostScopeRef;
   readonly navigator: CostNavigator;
 }): JSX.Element {
+  const currency = useCostCurrency();
   const segments = costSourceSegments(step.totals.bySource, RUN_SOURCES);
   const total = step.totals.usd;
   const metadata = stepMetadata(step);
-  const amount = formatCostTotal(step.totals);
+  const amount = formatCostTotalIn(step.totals, currency);
   const proxyAccounts = step.proxyAccounts ?? [];
   const open = (): void => {
     navigator.openPipelineJob?.(scope, step.executionId, step.jobId);
@@ -157,12 +159,13 @@ function AdvisorCostRow({
   readonly view: PipelineRunCostViewValue;
   readonly maxTotal: number;
 }): JSX.Element | null {
+  const currency = useCostCurrency();
   const advisor = view.advisor;
   if (advisor === undefined) return null;
   const amount =
     advisor.usd === 0 && advisor.notPricedCount > 0
       ? COST_NOT_PRICED_LABEL
-      : formatCostAmount(advisor.usd);
+      : formatCostAmountIn(advisor.usd, currency);
   const details =
     advisor.reportCount === 1
       ? 'Run report'
@@ -209,10 +212,14 @@ function ChildRunCostRow({
   readonly scope: CostScopeRef;
   readonly navigator: CostNavigator;
 }): JSX.Element {
-  const amount = formatCostTotal({
-    usd: child.usd,
-    notPricedCount: child.notPricedCount ?? 0,
-  });
+  const currency = useCostCurrency();
+  const amount = formatCostTotalIn(
+    {
+      usd: child.usd,
+      notPricedCount: child.notPricedCount ?? 0,
+    },
+    currency,
+  );
   const metadata = plural(child.agentStepCount, 'agent step', 'agent steps');
   const content = (
     <>
@@ -302,13 +309,14 @@ function ModelRows({
 }: {
   readonly rows: readonly CostModelRow[];
 }): JSX.Element {
+  const currency = useCostCurrency();
   return (
     <CostValueRows>
       {rows.map((row) => (
         <CostValueRow
           key={row.model}
           label={row.model}
-          value={formatCostTotal(row)}
+          value={formatCostTotalIn(row, currency)}
         />
       ))}
     </CostValueRows>
@@ -354,6 +362,7 @@ function PipelineRunCostContent({
   readonly onRefresh: () => void;
   readonly now?: number;
 }): JSX.Element {
+  const currency = useCostCurrency();
   // A nested run's steps are represented by its child run row.
   const runSteps = view.steps.filter(
     (step) => step.executionId === view.run.executionId,
@@ -382,7 +391,7 @@ function PipelineRunCostContent({
           className="flex min-w-0 flex-1 items-baseline gap-1.5"
         >
           <CostObservedTotal
-            amountLabel={formatCostTotal(view.run.totals)}
+            amountLabel={formatCostTotalIn(view.run.totals, currency)}
             size="inline"
             testId="pipeline-run-cost-observed-total"
           />

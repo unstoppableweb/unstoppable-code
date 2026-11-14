@@ -5,7 +5,6 @@ import {
   ApprovalFileChangePreview,
   Button,
   ChatCopyAction,
-  ChatLookProvider,
   ComposerIconButton,
   MessageEditBadge,
   MessageEditCancelSave,
@@ -200,16 +199,12 @@ export function ChatCopyActionSheet(): JSX.Element {
   return (
     <SpecimenPanel title="Message Copy action">
       <SpecimenGrid min={220}>
-        <SpecimenCell label="Clean look (press to see the check and Copied)">
-          <ChatLookProvider value="clean">
+        <SpecimenCell label="Press to see the check and Copied">
+          <>
             <ChatCopyAction text="Reply text to copy" />
-          </ChatLookProvider>
+          </>
         </SpecimenCell>
-        <SpecimenCell label="Classic look">
-          <ChatLookProvider value="classic">
-            <ChatCopyAction text="Reply text to copy" />
-          </ChatLookProvider>
-        </SpecimenCell>
+
         <SpecimenCell label="Custom label">
           <ChatCopyAction text="Plan text" label="Copy plan" />
         </SpecimenCell>

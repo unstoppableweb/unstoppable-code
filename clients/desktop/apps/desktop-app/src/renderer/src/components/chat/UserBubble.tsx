@@ -5,6 +5,7 @@ import { buildPluginMentionIndex } from '@/lib/pluginMentionIndex';
 import type { AppliedOrgMemoryTurn } from '@/stores/chatStore';
 import {
   UserBubble as SharedUserBubble,
+  UserBubbleCancelledNote,
   SteeringTitle,
   steeringRequestPresentation,
 } from '@canopy/ui-shared';
@@ -286,6 +287,7 @@ export const UserBubble = memo(function UserBubble({
             ))}
           </CollapsibleUserMessageContent>
         </div>
+        {message.cancelled ? <UserBubbleCancelledNote /> : null}
       </SharedUserBubble>
       {contextMenu}
       {resetDialogOpen && (

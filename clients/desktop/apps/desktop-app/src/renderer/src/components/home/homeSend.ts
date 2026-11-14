@@ -78,6 +78,8 @@ import { useGitHubConnectOfferStore } from '@/stores/githubConnectOfferStore';
 import {
   createOptionsForBranchTarget,
   createOptionsForNewWorktreeBaseTarget,
+  homeWorktreeBaseMissing,
+  MISSING_HOME_WORKTREE_BASE_MESSAGE,
   homeDraftChatPluginSelections,
   missingFolderSendError,
   homeSendUsesSourceHead,
@@ -592,7 +594,7 @@ async function preflightSourceHead(
     state: ReturnType<typeof useHomeComposerStore.getState>,
   ): boolean =>
     state.workspaceId === workspaceId &&
-    !state.branchTargetsLoading &&
+    state.branchTargetsStatus !== 'loading' &&
     state.branchTargets?.headUnborn === true &&
     homeSendUsesSourceHead({
       projectType: findWorkspace(workspaceId)?.type,
@@ -681,6 +683,17 @@ export async function dispatchHomeSend(): Promise<boolean> {
     gate = quickGate;
   }
   if (gate.kind === 'none') {
+    if (
+      draft.branchTarget.kind === 'new-worktree' &&
+      homeWorktreeBaseMissing(
+        draft.newWorktreeBaseTarget,
+        draft.branchTargets,
+        draft.branchTargetsStatus,
+      )
+    ) {
+      draft.setSendError(MISSING_HOME_WORKTREE_BASE_MESSAGE);
+      return false;
+    }
     const verdict = await preflightSourceHead(
       draft,
       submittedAccountEpoch,

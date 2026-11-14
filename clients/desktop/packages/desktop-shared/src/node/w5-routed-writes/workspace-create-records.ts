@@ -1,5 +1,10 @@
+import type { StoredWorkspaceIndexRepository } from '@canopy/core-runtime/node/w5/workspace-index-repository';
+import type { WorkspaceManifestRepository } from '@canopy/core-runtime/node/w5/workspace-manifest-repository';
+import type { WorktreeListRepository } from '@canopy/core-runtime/node/w5/worktree-list-repository';
+import type { W5FileStore } from '@canopy/core-runtime/node/w5/file-store';
+import { isSafeWorkspaceId } from '@canopy/core-runtime/node/identifiers';
 import { realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import {
   W5CommitRefusedError,
@@ -10,9 +15,10 @@ import {
   W5_CAPTURE_LIMITS,
 } from '@canopy/core-runtime/node/w5/commit-log/capture-contract';
 import { workspaceCreationDiagnosticsSchema } from '@canopy/core-runtime/node/w5/commit-log/reservation-diagnostics';
-import { createWorkspaceIndexRepository } from '@canopy/core-runtime/node/w5/workspace-index-repository';
-import { createWorkspaceManifestRepository } from '@canopy/core-runtime/node/w5/workspace-manifest-repository';
-import { createWorktreeListRepository } from '@canopy/core-runtime/node/w5/worktree-list-repository';
+import {
+  createW5RecordImageRepositories,
+  createW5RecordImageReaders,
+} from '@canopy/core-runtime/node/w5/record-image-repositories';
 import {
   setW5CommitOutcome,
   type W5CommitOptions,
@@ -64,17 +70,17 @@ function workspaceRecordPaths(id: string): {
 }
 
 function repositories(store: W5CommitLogFileStore): {
-  index: ReturnType<typeof createWorkspaceIndexRepository<ActivitySectionId>>;
-  manifest: ReturnType<
-    typeof createWorkspaceManifestRepository<WorkspaceConfigFile>
-  >;
-  list: ReturnType<typeof createWorktreeListRepository<WorktreeData>>;
+  index: StoredWorkspaceIndexRepository<WorkspaceIndexEntry>;
+  manifest: WorkspaceManifestRepository<WorkspaceConfigFile>;
+  list: WorktreeListRepository<WorktreeData>;
 } {
+  const images = createW5RecordImageRepositories({
+    root: getWorkspacesRootDir,
+    store,
+  });
   return {
-    index: createWorkspaceIndexRepository({
-      store,
-      filePath: () => join(getWorkspacesRootDir(), 'index.json'),
-      storage: storage.index,
+    index: images.index<ActivitySectionId>({
+      writer: storage.index.writer,
       normalizeActivitySectionOrder: (value) =>
         Array.isArray(value)
           ? value.filter(
@@ -85,17 +91,13 @@ function repositories(store: W5CommitLogFileStore): {
       onCommitted: () => undefined,
       onRefused: () => undefined,
     }),
-    manifest: createWorkspaceManifestRepository({
-      store,
-      filePath: (id) => workspaceRecordPaths(id).manifest,
-      storage: storage.manifest,
+    manifest: images.manifest<WorkspaceConfigFile>({
+      writer: storage.manifest.writer,
       knownFields: new Set(),
       knownRepoFields: new Set(),
     }),
-    list: createWorktreeListRepository({
-      store,
-      filePath: (id) => workspaceRecordPaths(id).list,
-      storage: storage.list,
+    list: images.worktrees<WorktreeData>({
+      writer: storage.list.writer,
       knownRowFields: new Set(),
       readRow: (row) => row,
     }),
@@ -114,83 +116,139 @@ export interface WorkspaceCreationSnapshot {
   entries: WorkspaceIndexEntry[];
   roots: string[];
   bindings: WorkspaceBinding[];
+  unknownBindings: Array<{ workspaceId: string; name: string }>;
 }
 
-/** Every indexed root must be known before absence, containment or reuse can be decided. */
+export class CliWorkspaceUnknownBindingsError extends Error {
+  readonly reason = 'unknown-workspace-bindings';
+  constructor(
+    readonly workspaceId: string,
+    readonly workspaceName: string,
+  ) {
+    super(
+      `The bindings of project ${workspaceName} (${workspaceId}) could not be read.`,
+    );
+    this.name = 'CliWorkspaceUnknownBindingsError';
+  }
+}
+
+export function requireKnownWorkspaceBindings(
+  snapshot: WorkspaceCreationSnapshot,
+): void {
+  const unknown = snapshot.unknownBindings[0];
+  if (unknown)
+    throw new CliWorkspaceUnknownBindingsError(
+      unknown.workspaceId,
+      unknown.name,
+    );
+}
+
+/** Unreadable projects reserve their identity and known roots, but cannot supply reusable bindings. */
 export async function readWorkspaceCreationSnapshot(
-  store: W5CommitLogFileStore,
+  store: Pick<W5FileStore, 'read'>,
 ): Promise<WorkspaceCreationSnapshot> {
-  const repo = repositories(store);
-  const index = await repo.index.read();
-  const backup = await createWorkspaceIndexRepository({
+  const readers = createW5RecordImageReaders({
+    root: getWorkspacesRootDir,
     store,
-    filePath: () => join(getWorkspacesRootDir(), 'index.json.bak'),
-    storage: storage.index,
-    normalizeActivitySectionOrder: () => undefined,
-    onCommitted: () => undefined,
-    onRefused: () => undefined,
-  }).read();
+  });
+  const repo = {
+    index: readers.index<ActivitySectionId>((value) =>
+      Array.isArray(value)
+        ? value.filter(
+            (id): id is ActivitySectionId =>
+              typeof id === 'string' && isActivitySectionId(id),
+          )
+        : undefined,
+    ),
+    manifest: readers.manifest(),
+  };
+  const index = await repo.index.read();
+  const backup = await readers.backupIndex().read();
   if (backup.authority !== 'ok' && backup.authority !== 'absent')
     throw new Error('The project list backup could not be read completely.');
   if (index.authority !== 'ok' && index.authority !== 'absent')
     throw new Error('The project list could not be read completely.');
   const roots: string[] = [];
   const bindings: WorkspaceBinding[] = [];
+  const unknownBindings: WorkspaceCreationSnapshot['unknownBindings'] = [];
   for (const entry of index.entries) {
     const manifest = await repo.manifest.read(entry.id);
-    if (manifest.authority !== 'ok')
-      throw new Error('A tracked project manifest could not be read.');
+    if (manifest.authority !== 'ok') {
+      unknownBindings.push({ workspaceId: entry.id, name: entry.name });
+      roots.push(join(getWorkspacesRootDir(), entry.id));
+      continue;
+    }
     const doc = manifest.document;
-    if (
-      doc.type !== entry.type ||
-      (doc.repos !== undefined && !Array.isArray(doc.repos)) ||
-      (entry.type === 'multi-repo' && !Array.isArray(doc.repos))
-    )
-      throw new Error('A tracked project manifest is incomplete.');
-    if (entry.type === 'cowork') {
-      const root =
-        doc.externalPath ?? join(getWorkspacesRootDir(), entry.id, 'home');
-      if (typeof root !== 'string')
-        throw new Error('A tracked folder binding is unreadable.');
-      roots.push(root);
-    } else {
-      const source =
-        entry.type === 'single-repo' ? doc.repoPath : doc.sourceRepoPath;
-      if (source !== undefined && typeof source !== 'string')
-        throw new Error('A tracked repository binding is unreadable.');
-      if (typeof source === 'string') {
-        roots.push(source);
-        bindings.push({
-          workspaceId: entry.id,
-          path: source,
-          name: entry.name,
-          workspace: true,
-          reusable: entry.type === 'single-repo',
-          remote: null,
-        });
-      } else if (entry.type === 'single-repo')
-        throw new Error('A tracked repository binding is unreadable.');
-      for (const member of Array.isArray(doc.repos) ? doc.repos : []) {
-        if (
-          !isRecord(member) ||
-          typeof member.id !== 'string' ||
-          typeof member.name !== 'string' ||
-          typeof member.repoPath !== 'string'
-        )
-          throw new Error('A tracked member binding is unreadable.');
-        roots.push(member.repoPath);
-        bindings.push({
-          workspaceId: entry.id,
-          path: member.repoPath,
-          name: member.name,
-          workspace: false,
-          reusable: true,
-          remote: null,
-        });
+    const entryBindings: WorkspaceBinding[] = [];
+    const entryRoots: string[] = [];
+    for (const key of ['repoPath', 'sourceRepoPath', 'externalPath'])
+      if (typeof doc[key] === 'string') entryRoots.push(doc[key]);
+    if (Array.isArray(doc.repos))
+      for (const member of doc.repos)
+        if (isRecord(member) && typeof member.repoPath === 'string')
+          entryRoots.push(member.repoPath);
+    let complete = true;
+    try {
+      if (
+        doc.type !== entry.type ||
+        (doc.repos !== undefined && !Array.isArray(doc.repos)) ||
+        (entry.type === 'multi-repo' && !Array.isArray(doc.repos))
+      )
+        throw new Error('A tracked project manifest is incomplete.');
+      if (entry.type === 'cowork') {
+        const root =
+          doc.externalPath ?? join(getWorkspacesRootDir(), entry.id, 'home');
+        if (typeof root !== 'string')
+          throw new Error('A tracked folder binding is unreadable.');
+        entryRoots.push(root);
+      } else {
+        const source =
+          entry.type === 'single-repo' ? doc.repoPath : doc.sourceRepoPath;
+        if (source !== undefined && typeof source !== 'string')
+          throw new Error('A tracked repository binding is unreadable.');
+        if (typeof source === 'string') {
+          entryRoots.push(source);
+          entryBindings.push({
+            workspaceId: entry.id,
+            path: source,
+            name: entry.name,
+            workspace: true,
+            reusable: entry.type === 'single-repo',
+            remote: null,
+          });
+        } else if (entry.type === 'single-repo')
+          throw new Error('A tracked repository binding is unreadable.');
+        for (const member of Array.isArray(doc.repos) ? doc.repos : []) {
+          if (
+            !isRecord(member) ||
+            typeof member.id !== 'string' ||
+            typeof member.name !== 'string' ||
+            typeof member.repoPath !== 'string'
+          )
+            throw new Error('A tracked member binding is unreadable.');
+          entryRoots.push(member.repoPath);
+          entryBindings.push({
+            workspaceId: entry.id,
+            path: member.repoPath,
+            name: member.name,
+            workspace: false,
+            reusable: true,
+            remote: null,
+          });
+        }
       }
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      complete = false;
+    }
+    roots.push(...new Set(entryRoots));
+    if (complete) bindings.push(...entryBindings);
+    else {
+      unknownBindings.push({ workspaceId: entry.id, name: entry.name });
+      roots.push(join(getWorkspacesRootDir(), entry.id));
     }
   }
-  return { entries: index.entries, roots, bindings };
+  return { entries: index.entries, roots, bindings, unknownBindings };
 }
 
 async function resolveTrackedRoot(path: string): Promise<string | null> {
@@ -204,6 +262,37 @@ async function resolveTrackedRoot(path: string): Promise<string | null> {
       return null;
     throw error;
   }
+}
+
+/** Missing descendants still inherit their existing ancestors' symlink identity. */
+async function resolveOwnershipPath(value: string): Promise<string> {
+  let path = resolve(value);
+  const missing: string[] = [];
+  for (;;) {
+    const existing = await resolveTrackedRoot(path);
+    if (existing !== null) return join(existing, ...missing.reverse());
+    const parent = dirname(path);
+    if (parent === path) return resolve(value);
+    missing.push(basename(path));
+    path = parent;
+  }
+}
+
+export async function workspacePathHasRecordedOwner(
+  snapshot: WorkspaceCreationSnapshot,
+  candidate: string,
+): Promise<boolean> {
+  const resolved = await resolveOwnershipPath(candidate);
+  for (const root of snapshot.roots) {
+    const tracked = await resolveOwnershipPath(root);
+    if (
+      tracked === resolved ||
+      isPathInside(tracked, resolved) ||
+      isPathInside(resolved, tracked)
+    )
+      return true;
+  }
+  return false;
 }
 
 export async function resolveWorkspaceBindings(
@@ -265,6 +354,7 @@ export async function assertWorkspaceImportable(
   root: string,
   cowork: boolean,
 ): Promise<void> {
+  requireKnownWorkspaceBindings(snapshot);
   const resolved = await realpath(root);
   if (cowork) {
     const data = await realpath(getCanopyDataDir());
@@ -274,7 +364,7 @@ export async function assertWorkspaceImportable(
       isPathInside(resolved, data)
     )
       throw new Error(
-        'Cannot add a folder that overlaps the app data directory.',
+        'Cannot add a folder inside the app data directory or a folder that contains it; this overlaps protected storage.',
       );
   }
   for (const path of snapshot.roots) {
@@ -285,7 +375,9 @@ export async function assertWorkspaceImportable(
       cowork &&
       (isPathInside(tracked, resolved) || isPathInside(resolved, tracked))
     )
-      throw new Error('Cannot add a folder that overlaps an existing project.');
+      throw new Error(
+        'Cannot add a folder that contains an existing project or is inside one; this overlaps its root.',
+      );
   }
 }
 
@@ -296,7 +388,7 @@ export function workspaceIdBase(name: string): string {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'workspace';
-  if (!isW5CaptureWorkspaceId(id))
+  if (!isSafeWorkspaceId(id))
     throw new Error(
       'The generated project ID is unsupported. Choose a different name.',
     );
@@ -323,6 +415,10 @@ export async function allocateWorkspaceIdentity(
   const base = workspaceIdBase(name);
   for (let suffix = 1; suffix <= 10000; suffix += 1) {
     const candidate = suffix === 1 ? base : `${base}-${suffix}`;
+    if (!isSafeWorkspaceId(candidate))
+      throw new Error(
+        'The project ID cannot be represented by the record authority.',
+      );
     workspaceRecordPaths(candidate);
     if (
       !busy.has(candidate.toLowerCase()) &&
@@ -351,6 +447,10 @@ function configFor(item: SidebarItem): WorkspaceConfigFile {
   };
 }
 
+// Independent CLI processes can each invalidate a publication; three attempts
+// cannot drain even four simultaneous creates. Provisioning never joins this retry.
+const WORKSPACE_PUBLICATION_ATTEMPTS = 16;
+
 /** Only this decision retries; prepared source/member repositories are immutable inputs. */
 export function publishRoutedWorkspace(options: {
   store: W5CommitLogFileStore;
@@ -361,9 +461,11 @@ export function publishRoutedWorkspace(options: {
 }): Promise<WorkspaceCliRecord> {
   const { store, item, signal } = options;
   const conflictedChildren = new Set<string>();
-  return createW5DecisionOnlyRetry().run('cli workspace publish', async () => {
+  const retry = createW5DecisionOnlyRetry(WORKSPACE_PUBLICATION_ATTEMPTS);
+  return retry.run('cli workspace publish', async () => {
     signal.throwIfAborted();
     const discovered = await readWorkspaceCreationSnapshot(store);
+    if (options.imported) requireKnownWorkspaceBindings(discovered);
     // Allocate child records afresh, but never reallocate the provisioned parent.
     const children: SidebarItem[] = [];
     const bindings = [...discovered.bindings];

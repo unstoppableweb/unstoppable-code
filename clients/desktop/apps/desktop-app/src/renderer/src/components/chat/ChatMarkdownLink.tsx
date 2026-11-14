@@ -17,6 +17,54 @@ import {
   openFileInBrowserPanel,
 } from '@/lib/openFileInBrowserPanel';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
+import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
+import {
+  classifyFileLinkRefusal,
+  FileLinkStatus,
+  type FileLinkFailure,
+} from '@canopy/ui-app/file-link-status';
+import { webCoreFilePath } from '@/lib/chat-authority';
+import { isAmbiguousDeliverable } from '@/lib/files/saved-deliverables';
+import { chatIdOf } from '@/lib/files/web-core-file-source';
+import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
+
+/** A link that didn't open, and why (CAN-6665). */
+class LinkNotOpened extends Error {
+  constructor(readonly failure: FileLinkFailure) {
+    super(failure.kind);
+  }
+}
+
+/**
+ * A cloud chat's link, resolved on the web core for the task's sandbox
+ * (CAN-6587): the file it names in the task folder, as the viewer opens a
+ * cloud file, or a refusal. It never reaches this computer's file IPC.
+ */
+async function resolveCloudFileLink(
+  target: { readonly projectId: string; readonly worktreeId: string },
+  href: string,
+  operations: NonNullable<ReturnType<typeof scopedFileOperationsFor>>,
+): Promise<{ readonly absolutePath: string; readonly filename: string }> {
+  let resolved;
+  try {
+    resolved = await operations['file.resolveLink']({ ...target, href });
+  } catch (error) {
+    if (error instanceof CoreCoworkRequestError) {
+      const failure = classifyFileLinkRefusal(error.payload);
+      if (failure.kind !== 'failed') throw new LinkNotOpened(failure);
+    }
+    throw error;
+  }
+  if (resolved === null) throw new LinkNotOpened({ kind: 'refused' });
+  return {
+    absolutePath: webCoreFilePath({
+      chatId: chatIdOf(target.worktreeId),
+      fileRootId: resolved.fileRootLocalId,
+      relativePath: resolved.relativePath,
+    }),
+    filename: resolved.relativePath.split('/').pop() ?? resolved.relativePath,
+  };
+}
 
 interface ChatMarkdownLinkProps extends ComponentPropsWithoutRef<'a'> {
   originChatTabId?: string;
@@ -28,12 +76,12 @@ export function ChatMarkdownLink({
   originChatTabId,
 }: ChatMarkdownLinkProps): JSX.Element {
   const target = useContext(ChatMarkdownFileTargetContext);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<FileLinkFailure | null>(null);
   const [opening, setOpening] = useState(false);
   const openRequestRef = useRef(0);
   useEffect(() => {
     setOpening(false);
-    setError(false);
+    setError(null);
     return (): void => {
       openRequestRef.current += 1;
     };
@@ -82,8 +130,23 @@ export function ChatMarkdownLink({
     const isCurrent = (): boolean =>
       isMountedRequest() && isLatestTranscriptOpen();
     setOpening(true);
-    setError(false);
+    setError(null);
     try {
+      const cloudOperations = scopedFileOperationsFor(target.worktreeId);
+      if (cloudOperations !== undefined) {
+        const resolved = await resolveCloudFileLink(
+          target,
+          fileHref,
+          cloudOperations,
+        );
+        if (!isCurrent()) return;
+        const tabId = useChatStore.getState().openFileTab(resolved, target);
+        if (!tabId) throw new Error('File panel unavailable');
+        useAgentFilePresentationStore.getState().present(tabId, location ?? {});
+        if (originChatTabId)
+          requestFilePanelPlacementBesideChat(tabId, originChatTabId);
+        return;
+      }
       // URL resolution otherwise mistakes a Windows drive for a URI scheme.
       const resolverHref = /^[a-zA-Z]:[\\/]/.test(fileHref)
         ? `/${fileHref.replace(/\\/g, '/')}`
@@ -135,15 +198,25 @@ export function ChatMarkdownLink({
       useAgentFilePresentationStore.getState().present(tabId, location ?? {});
       if (originChatTabId)
         requestFilePanelPlacementBesideChat(tabId, originChatTabId);
-    } catch {
-      if (isCurrent()) setError(true);
+    } catch (cause) {
+      if (isCurrent())
+        setError(
+          cause instanceof LinkNotOpened
+            ? cause.failure
+            : // Only a sleeping sandbox's saved copies can share a name, and
+              // the refusal says what to do (CAN-6587).
+              isAmbiguousDeliverable(cause) &&
+                cause instanceof CoreCoworkRequestError
+              ? { kind: 'not-awake', message: cause.payload.message }
+              : { kind: 'failed' },
+        );
     } finally {
       // A superseded link remains mounted and can be tried again.
       if (isMountedRequest()) setOpening(false);
     }
   };
   return (
-    <>
+    <FileLinkStatus failure={error}>
       {/* The link text can name the file differently from its path, so the
           tip shows where it points. It portals out of the transcript's
           replay mask, so it carries its own. */}
@@ -171,11 +244,6 @@ export function ChatMarkdownLink({
           {children}
         </button>
       </Tooltip>
-      {error && (
-        <span role="status" className="ml-2 text-xs fg-secondary">
-          Couldn't open file
-        </span>
-      )}
-    </>
+    </FileLinkStatus>
   );
 }

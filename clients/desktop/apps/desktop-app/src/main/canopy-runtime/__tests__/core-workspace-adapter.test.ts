@@ -582,6 +582,26 @@ describe('core workspace read projections', () => {
     await runtime.shutdown();
   });
 
+  test('workspace get refuses the cloud settings revision before any read (CAN-6093)', async () => {
+    const { runtime, reads } = makeRuntime(fixture('single-repo'));
+    await expect(
+      runtime.query(
+        'core.workspace.get',
+        { workspaceId: 'ws-1', revision: 2 },
+        { caller },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { unsupported: ['revision'], reason: 'unserved' },
+        retry: { kind: 'after_refresh', resource: 'core.runtime.manifest.get' },
+      },
+    });
+    expect(reads.readWorkspaceIndexEntry).not.toHaveBeenCalled();
+    expect(reads.readWorkspaceConfig).not.toHaveBeenCalled();
+    await runtime.shutdown();
+  });
+
   test('worktree get rejects conflicting scope and unsupported dimensions', async () => {
     const { runtime, reads } = makeRuntime(fixture('single-repo'));
     await expect(

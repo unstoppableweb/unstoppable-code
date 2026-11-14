@@ -1,8 +1,14 @@
+import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import {
+  archiveRecoveryStore,
+  assertNoArchiveResolution,
+} from './archive-recovery-refs';
 import {
   destructiveFailureCode,
   rememberDestructiveFailure,
 } from './destructive-failure-context';
 import { canonicalizePossiblyMissingPath } from './worktree-registration-removal';
+import { isDeepStrictEqual } from 'node:util';
 import { isAbsolute, relative } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
@@ -53,6 +59,7 @@ import {
 export type { DestructiveRecoveryRecord } from '@canopy/desktop-shared/node/w5-destructive-journal';
 interface Lifecycle {
   record: DestructiveRecoveryRecord;
+  exactJournal?: ExactArchiveJournal;
   checkIdentity: () => Promise<void>;
   queue: ReturnType<typeof createSerialQueue>;
   failed: boolean;
@@ -458,7 +465,7 @@ async function unreadableJournalEntry(
     },
   );
 }
-function journalDirectoryUnreadable(): W5CommitRefusedError {
+export function journalDirectoryUnreadable(): W5CommitRefusedError {
   return new W5CommitRefusedError(
     'recovery-required',
     LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
@@ -561,28 +568,89 @@ async function entryStats(path: string): Promise<Stats | null> {
 }
 
 /** Outside the deleted workspace: namespace backups cannot recover erased payloads. */
-function save(record: DestructiveRecoveryRecord): Promise<void> {
-  return withSharedJournalAccess(async () => {
-    const created = await mkdir(journalDirectory(), {
-      recursive: true,
-      mode: 0o700,
-    });
-    if (created) {
-      for (
-        let directory = journalDirectory();
-        ;
-        directory = dirname(directory)
-      ) {
-        await syncDirectory(directory);
-        if (directory === dirname(created)) break;
+export interface ExactArchiveJournal {
+  record: DestructiveRecoveryRecord;
+  persist: (record: DestructiveRecoveryRecord) => Promise<void>;
+}
+
+/** The existing journal writer, restricted to a reviewed operation's own copies. */
+export function exactArchiveJournal(
+  record: DestructiveRecoveryRecord,
+  names: readonly string[],
+): ExactArchiveJournal {
+  const slot = lifecycleJournalSlotName(record.workspaceId, record.worktreeId);
+  if (
+    record.operation !== 'worktree-archive' ||
+    names.length === 0 ||
+    names.length > 2 ||
+    new Set(names).size !== names.length ||
+    names.some((name) => name !== slot && name !== `${record.operationId}.json`)
+  )
+    throw recoveryRequired(record, 'exact-journal-targets');
+  let expected = journalSchema.parse(JSON.parse(JSON.stringify(record)));
+  return {
+    record,
+    persist: (next) =>
+      withSharedJournalAccess(async () => {
+        for (const name of names) {
+          const path = join(journalDirectory(), name);
+          const stat = await lstat(path);
+          if (
+            !stat.isFile() ||
+            stat.isSymbolicLink() ||
+            stat.nlink !== 1 ||
+            !isDeepStrictEqual(
+              journalSchema.parse(JSON.parse(await readFile(path, 'utf8'))),
+              expected,
+            )
+          )
+            throw recoveryRequired(next, 'exact-journal-changed');
+        }
+        // Concurrent best-effort owners may mark debt while this write flushes.
+        const serialized = JSON.stringify(next);
+        const written = journalSchema.parse(JSON.parse(serialized));
+        // A crash between copies leaves conflicting evidence and fails closed on retry.
+        for (const name of names)
+          await writeFileAtomically(
+            join(journalDirectory(), name),
+            serialized,
+            { durable: true, mode: 0o600 },
+          );
+        expected = written;
+      }),
+  };
+}
+
+async function save(record: DestructiveRecoveryRecord): Promise<void> {
+  const exact = current()?.exactJournal;
+  if (exact && exact.record.operationId === record.operationId)
+    await exact.persist(record);
+  else
+    await withSharedJournalAccess(async () => {
+      const created = await mkdir(journalDirectory(), {
+        recursive: true,
+        mode: 0o700,
+      });
+      if (created) {
+        for (
+          let directory = journalDirectory();
+          ;
+          directory = dirname(directory)
+        ) {
+          await syncDirectory(directory);
+          if (directory === dirname(created)) break;
+        }
       }
-    }
-    await writeFileAtomically(
-      journalPath(record.workspaceId, record.worktreeId),
-      JSON.stringify(record),
-      { durable: true, mode: 0o600 },
+      await writeFileAtomically(
+        journalPath(record.workspaceId, record.worktreeId),
+        JSON.stringify(record),
+        { durable: true, mode: 0o600 },
+      );
+    });
+  if (record.state === 'completed')
+    await withExclusiveLifecycleJournalAccess(() =>
+      archiveRecoveryStore().normalizeWorkspace(record.workspaceId),
     );
-  });
 }
 
 export function readDestructiveRecovery(
@@ -677,11 +745,35 @@ export async function retryDeletedWorkspaceSearchCleanup(
   await save(record);
 }
 
+/** Project-deletion children leave completed holds for the parent's committed cleanup. */
+async function assertNoLifecycleArchiveResolution(
+  workspaceId: string,
+  worktreeId?: string,
+): Promise<void> {
+  let scope = current();
+  while (scope) {
+    if (
+      scope.active &&
+      scope.childrenStepFree &&
+      scope.record.operation === 'workspace-delete' &&
+      scope.record.workspaceId === workspaceId
+    )
+      return assertNoArchiveResolution(
+        workspaceId,
+        worktreeId,
+        'workspace-delete',
+      );
+    scope = scope.parent;
+  }
+  return assertNoArchiveResolution(workspaceId, worktreeId);
+}
+
 export async function assertNoDestructiveRecovery(
   workspaceId: string,
   worktreeId?: string,
   includeCleanup = false,
 ): Promise<void> {
+  await assertNoLifecycleArchiveResolution(workspaceId, worktreeId);
   const record = (
     await readBlockingDestructiveRecoveries(
       workspaceId,
@@ -751,13 +843,26 @@ export async function readInFlightWorktreeDestructiveOperations(
   }
 }
 
-async function readBlockingDestructiveRecoveries(
+export async function readBlockingDestructiveRecoveries(
   workspaceId: string,
   worktreeId?: string,
   includeCleanup = false,
 ): Promise<DestructiveRecoveryRecord[]> {
-  const records = await readWorkspaceDestructiveRecoveries(workspaceId);
+  return filterBlockingDestructiveRecoveries(
+    await readWorkspaceDestructiveRecoveries(workspaceId),
+    worktreeId,
+    includeCleanup,
+  );
+}
+
+/** Shared admission classification for executors and background preflight. */
+export async function filterBlockingDestructiveRecoveries(
+  records: readonly DestructiveRecoveryRecord[],
+  worktreeId?: string,
+  includeCleanup = false,
+): Promise<DestructiveRecoveryRecord[]> {
   const blocking: DestructiveRecoveryRecord[] = [];
+  const active = current();
   for (const record of records)
     if (
       (worktreeId === undefined ||
@@ -765,8 +870,9 @@ async function readBlockingDestructiveRecoveries(
         record.worktreeId === worktreeId) &&
       (record.state !== 'completed' ||
         (includeCleanup && record.cleanupRequired)) &&
-      record.operationId !== current()?.record.operationId &&
-      record.operationId !== current()?.supersedes &&
+      (!active ||
+        (record.operationId !== active.record.operationId &&
+          record.operationId !== active.supersedes)) &&
       !(await isSupersedableDeletion(record))
     )
       blocking.push(record);
@@ -996,6 +1102,7 @@ const CHILD_ARCHIVE_STEP_RULES = {
   'managed-repository-removal': { resume: 'never' },
   'canonical-index-removal': { resume: 'never' },
   'archived-git-refs': { resume: 'never' },
+  'archive-recovery-holds': { resume: 'never' },
   'chat-search-rows': { resume: 'never' },
 } satisfies Record<string, ChildArchiveStepRule>;
 
@@ -1302,6 +1409,38 @@ async function assertChildArchiveResumable(
     throw recoveryRequired(previous, 'child-archive-resumable');
 }
 
+/** The journal's project directory, including its incarnation marker, still agrees. */
+export async function isRecoveryProjectUnreplaced(
+  record: DestructiveRecoveryRecord,
+): Promise<boolean> {
+  return isRecordedProjectDirectory(
+    await projectDirectoryIdentity(record.workspaceId),
+    record.directoryIdentity,
+  );
+}
+
+/** Read-only projection of standalone takeover; execution repeats these checks. */
+export async function canAdmitInterruptedArchive(
+  record: DestructiveRecoveryRecord,
+  input: {
+    operation: 'worktree-archive' | 'worktree-delete';
+    worktreeId: string;
+    createdAt: string;
+  },
+): Promise<boolean> {
+  if (!canResumeInterruptedArchive(record)) return false;
+  try {
+    await assertChildArchiveResumable(
+      record,
+      input,
+      await projectDirectoryIdentity(record.workspaceId),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Only a verified committed archive can re-enter its idempotent cleanup tail. */
 async function assertArchiveCleanupRecovery(
   record: DestructiveRecoveryRecord,
@@ -1329,7 +1468,14 @@ async function assertArchiveCleanupRecovery(
     !record.directoryIdentity ||
     !requiredPhases.every(completed) ||
     record.steps.some(
-      (step) => step.state !== 'done' && !isArchiveCleanupPhase(step.phase),
+      (step) =>
+        step.state !== 'done' &&
+        !isArchiveCleanupPhase(step.phase) &&
+        !(
+          archiveManifestVersion === 3 &&
+          step.phase === 'git-capture' &&
+          step.state === 'failed'
+        ),
     ) ||
     !isRecordedProjectDirectory(
       await projectDirectoryIdentity(record.workspaceId),
@@ -1486,6 +1632,8 @@ export async function withDestructiveLifecycle<T>(
     allowMissingRow?: boolean;
     /** Internal: the caller verified the retained manifest for this incarnation. */
     resumeArchiveCleanup?: boolean;
+    /** Locked, exact-operation resolver; never projects history into the current slot. */
+    exactJournal?: ExactArchiveJournal;
     /** Internal: verified committed manifest format; defaults to v2. */
     archiveManifestVersion?: 2 | 3;
     /** Authoritative row read; null after canonical removal, never a replacement. */
@@ -1496,13 +1644,13 @@ export async function withDestructiveLifecycle<T>(
   },
   work: () => Promise<T>,
 ): Promise<T> {
-  const previous = await readDestructiveRecovery(
-    input.workspaceId,
-    input.worktreeId,
-  );
+  await assertNoLifecycleArchiveResolution(input.workspaceId, input.worktreeId);
+  const previous =
+    input.exactJournal?.record ??
+    (await readDestructiveRecovery(input.workspaceId, input.worktreeId));
   const resumingArchiveCleanup =
     previous !== null &&
-    previous.state !== 'completed' &&
+    (previous.state !== 'completed' || input.exactJournal !== undefined) &&
     input.resumeArchiveCleanup === true;
   const resumedFailure =
     previous !== null &&
@@ -1519,7 +1667,7 @@ export async function withDestructiveLifecycle<T>(
       : undefined;
   if (
     previous &&
-    previous.state !== 'completed' &&
+    (previous.state !== 'completed' || resumingArchiveCleanup) &&
     !resumedFailure &&
     !supersededDeletion
   ) {
@@ -1577,6 +1725,7 @@ export async function withDestructiveLifecycle<T>(
     );
   const parent = current();
   const lifecycle: Lifecycle = {
+    exactJournal: input.exactJournal,
     record:
       resumingArchiveCleanup && previous
         ? previous
@@ -1584,6 +1733,16 @@ export async function withDestructiveLifecycle<T>(
             version: 1,
             operationId: randomUUID(),
             operation: input.operation,
+            ...(resumedFailure
+              ? {
+                  supersedesArchives: [
+                    ...(resumedFailure.supersedesArchives ?? []),
+                    ...(resumedFailure.operation === 'worktree-archive'
+                      ? [resumedFailure.operationId]
+                      : []),
+                  ],
+                }
+              : {}),
             trigger: input.trigger,
             ...(parent?.childrenStepFree
               ? { parentOperation: parent.record.operation }
@@ -1611,7 +1770,7 @@ export async function withDestructiveLifecycle<T>(
     ...(resumingArchiveCleanup
       ? {}
       : { journalBefore: { record: supersededDeletion ? null : previous } }),
-    ...(resumingArchiveCleanup && previous
+    ...(resumingArchiveCleanup && previous && !input.exactJournal
       ? { takesOver: previous }
       : resumedFailure
         ? { takesOver: resumedFailure }
@@ -1663,7 +1822,7 @@ export async function withDestructiveLifecycle<T>(
   };
   if (resumingArchiveCleanup && previous) {
     lifecycle.record.state = 'active';
-    lifecycle.record.cleanupRequired = false;
+    if (!input.exactJournal) lifecycle.record.cleanupRequired = false;
     if (input.worktreeId) {
       const metadata = getWorktreeDataDir(input.workspaceId, input.worktreeId);
       if (!lifecycle.record.ownedPaths.some((entry) => entry.path === metadata))
@@ -1759,11 +1918,19 @@ export async function destructiveStep<T>(
   return runDestructiveStep(phase, work, canonicalRemovalOrOptions, false);
 }
 
+/** The repair must verify and clean every archived repository before returning. */
+export function destructiveTurnDiffCleanupRepair(
+  work: () => Promise<void>,
+): Promise<void> {
+  return runDestructiveStep('turn-diff-cleanup', work, false, false, 'phase');
+}
+
 async function runDestructiveStep<T>(
   phase: DestructivePhase,
   work: () => Promise<T>,
   canonicalRemovalOrOptions: Parameters<typeof destructiveStep>[2],
   resumable: boolean,
+  completion: 'step' | 'phase' = 'step',
 ): Promise<T> {
   const canonicalRemoval =
     typeof canonicalRemovalOrOptions === 'boolean'
@@ -1875,6 +2042,15 @@ async function runDestructiveStep<T>(
     .queue(async () => {
       if (canonicalRemoval) lifecycle.canonicalRemoved = true;
       step.state = 'done';
+      if (completion === 'phase') {
+        // Multi-repo archives record one obligation per repository.
+        for (const obligation of lifecycle.record.steps) {
+          if (obligation.phase !== phase) continue;
+          obligation.state = 'done';
+          delete obligation.code;
+          delete obligation.error;
+        }
+      }
       await save(lifecycle.record);
     })
     .catch((error: unknown) => {
@@ -2058,6 +2234,172 @@ export async function protectDestructivePath(
     });
 }
 
+/** Exact membership is saved before the parent's canonical removal can run. */
+export async function prepareArchiveRecoveryCleanup(
+  holds: readonly { operationId: string; revision: string }[],
+): Promise<DestructiveRecoveryRecord | null> {
+  const lifecycle = current();
+  if (!lifecycle) {
+    if (holds.length)
+      throw recoveryRequired(undefined, 'archive-recovery-handoff');
+    return null;
+  }
+  if (lifecycle.record.operation !== 'workspace-delete')
+    throw recoveryRequired(lifecycle.record);
+  lifecycle.record.archiveRecoveryCleanup = holds.map(
+    ({ operationId, revision }) => ({ operationId, revision }),
+  );
+  await lifecycle.queue(() => save(lifecycle.record));
+  return lifecycle.record;
+}
+
+/** Only cleanup acknowledgements may differ between redundant parent copies. */
+function archiveRecoveryCleanupParentBinding(
+  record: DestructiveRecoveryRecord,
+): DestructiveRecoveryRecord {
+  const binding = {
+    ...record,
+    archiveRecoveryCleanup: record.archiveRecoveryCleanup?.map(
+      ({ operationId, revision }) => ({ operationId, revision }),
+    ),
+    steps: record.steps.map((step) => {
+      if (step.phase !== 'archive-recovery-holds') return step;
+      const pending = { ...step, state: 'pending' as const };
+      delete pending.error;
+      delete pending.code;
+      return pending;
+    }),
+  };
+  delete binding.cleanupRequired;
+  return binding;
+}
+
+/** Refresh commit proof from durable parent copies before any adopted hold effect. */
+export async function qualifyArchiveRecoveryCleanupParent(
+  expected: DestructiveRecoveryRecord,
+): Promise<DestructiveRecoveryRecord> {
+  return withSharedJournalAccess(async () => {
+    const inspection = await (
+      await import('@canopy/desktop-shared/node/w5-destructive-journal')
+    ).inspectDestructiveJournals(getCanopyDataDir());
+    if (inspection.issues.length)
+      throw recoveryRequired(expected, 'archive-recovery-parent-unreadable');
+    const copies = inspection.records.filter(
+      ({ record }) => record.operationId === expected.operationId,
+    );
+    const actual =
+      copies.find(({ record }) =>
+        record.archiveRecoveryCleanup?.some((member) => !member.done),
+      )?.record ?? copies[0]?.record;
+    if (
+      !actual ||
+      actual.operation !== 'workspace-delete' ||
+      actual.workspaceId !== expected.workspaceId ||
+      !isDeepStrictEqual(
+        archiveRecoveryCleanupParentBinding(actual).archiveRecoveryCleanup,
+        archiveRecoveryCleanupParentBinding(expected).archiveRecoveryCleanup,
+      ) ||
+      copies.some(
+        ({ record }) =>
+          !isDeepStrictEqual(
+            archiveRecoveryCleanupParentBinding(record),
+            archiveRecoveryCleanupParentBinding(actual),
+          ),
+      )
+    )
+      throw recoveryRequired(expected, 'archive-recovery-parent-changed');
+    // An unacknowledged copy replays the tombstone; it cannot authorize a second deletion.
+    return {
+      ...actual,
+      archiveRecoveryCleanup: actual.archiveRecoveryCleanup?.map((member) => ({
+        ...member,
+        done: copies.every(({ record }) =>
+          record.archiveRecoveryCleanup?.some(
+            (copy) => copy.operationId === member.operationId && copy.done,
+          ),
+        ),
+      })),
+    };
+  });
+}
+
+function settleArchiveRecoveryCleanupStep(
+  record: DestructiveRecoveryRecord,
+): void {
+  if (!record.archiveRecoveryCleanup?.every((member) => member.done)) return;
+  for (const step of record.steps) {
+    if (step.phase !== 'archive-recovery-holds') continue;
+    step.state = 'done';
+    delete step.error;
+    delete step.code;
+  }
+  record.cleanupRequired = record.steps.some((step) => step.state !== 'done');
+}
+
+/** Only the parent cleanup driver calls this, under the existing workspace writer. */
+export async function acknowledgeArchiveRecoveryCleanup(
+  record: DestructiveRecoveryRecord,
+  operationId: string,
+): Promise<void> {
+  const member = record.archiveRecoveryCleanup?.find(
+    (entry) => entry.operationId === operationId,
+  );
+  if (!member) throw recoveryRequired(record, 'archive-recovery-handoff');
+  const lifecycle = current();
+  if (lifecycle?.record.operationId === record.operationId) {
+    const ownedMember = lifecycle.record.archiveRecoveryCleanup?.find(
+      (entry) =>
+        entry.operationId === operationId && entry.revision === member.revision,
+    );
+    if (!ownedMember)
+      throw recoveryRequired(record, 'archive-recovery-handoff-changed');
+    ownedMember.done = true;
+    member.done = true;
+    settleArchiveRecoveryCleanupStep(lifecycle.record);
+    await lifecycle.queue(() => save(lifecycle.record));
+    return;
+  }
+  await withExclusiveLifecycleJournalAccess(async () => {
+    const copies: { path: string; record: DestructiveRecoveryRecord }[] = [];
+    for (const name of await readdir(journalDirectory())) {
+      if (!LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name)) continue;
+      const path = join(journalDirectory(), name);
+      const stat = await lstat(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+        throw recoveryRequired(record);
+      const actual = journalSchema.parse(
+        JSON.parse(await readFile(path, 'utf8')),
+      );
+      if (actual.operationId !== record.operationId) continue;
+      if (
+        actual.workspaceId !== record.workspaceId ||
+        !isDeepStrictEqual(
+          archiveRecoveryCleanupParentBinding(actual),
+          archiveRecoveryCleanupParentBinding(record),
+        )
+      )
+        throw recoveryRequired(record, 'archive-recovery-handoff-changed');
+      copies.push({ path, record: actual });
+    }
+    if (!copies.length)
+      throw recoveryRequired(record, 'archive-recovery-parent-disappeared');
+    for (const copy of copies) {
+      const selected = copy.record.archiveRecoveryCleanup?.find(
+        (entry) => entry.operationId === operationId,
+      );
+      if (!selected) throw recoveryRequired(record);
+      selected.done = true;
+      settleArchiveRecoveryCleanupStep(copy.record);
+      await writeFileAtomically(copy.path, JSON.stringify(copy.record), {
+        durable: true,
+        mode: 0o600,
+      });
+    }
+    member.done = true;
+    settleArchiveRecoveryCleanupStep(record);
+  });
+}
+
 /** Cleanup failures after the owner commit keep their warnings and never earn a false done. */
 export async function destructiveCleanup<T>(
   phase: DestructivePhase,
@@ -2090,6 +2432,24 @@ export async function destructiveCleanup<T>(
     }
     throw error;
   }
+}
+
+/** Exact repair clears only positively identified debt after its owners settled. */
+export async function settleDestructiveCleanupDebt(): Promise<void> {
+  const lifecycle = current();
+  if (!lifecycle?.exactJournal) throw recoveryRequired();
+  if (
+    lifecycle.record.steps.some(
+      (step) =>
+        (!childArchiveStepRules.has(step.phase) &&
+          !step.phase.startsWith('sidecar:')) ||
+        (step.state !== 'done' &&
+          !(step.phase === 'git-capture' && step.state === 'failed')),
+    )
+  )
+    return;
+  lifecycle.record.cleanupRequired = false;
+  await lifecycle.queue(() => save(lifecycle.record));
 }
 
 export function markDestructiveCleanupRequired(): void {
@@ -2473,6 +2833,7 @@ export async function withWorktreeDiscardLifecycle<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   if (current()) throw recoveryRequired(current()?.record);
+  await assertNoArchiveResolution(input.workspaceId, input.worktreeId);
   const previous = await readDestructiveRecovery(
     input.workspaceId,
     input.worktreeId,
@@ -2514,6 +2875,9 @@ export async function withWorktreeDiscardLifecycle<T>(
         operationId: randomUUID(),
         operation: 'worktree-delete',
         trigger: 'manual',
+        ...(input.supersede?.supersedesArchives
+          ? { supersedesArchives: input.supersede.supersedesArchives }
+          : {}),
         workspaceId: input.workspaceId,
         worktreeId: input.worktreeId,
         createdAt: input.createdAt,

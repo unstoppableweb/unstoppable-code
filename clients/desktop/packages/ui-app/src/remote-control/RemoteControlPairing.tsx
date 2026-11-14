@@ -154,6 +154,7 @@ export function RemoteControlPairing({
     <div className="flex flex-col gap-4">
       <DialogStep step={step} testIdPrefix={testIdPrefix} />
       <ErrorBanner
+        errorSource="remote-control-pairing"
         className=""
         error={error}
         testId={`${testIdPrefix}-error`}
@@ -257,7 +258,12 @@ function DialogStep({
       );
     case 'failed':
       return (
-        <ErrorBanner className="" testId={step.testId} error={step.message} />
+        <ErrorBanner
+          errorSource="remote-control-pairing-step"
+          className=""
+          testId={step.testId}
+          error={step.message}
+        />
       );
     case 'content':
       return step.content;
@@ -408,7 +414,12 @@ function InlineStep({
     case 'failed':
       return (
         <div className="flex flex-col gap-4">
-          <ErrorBanner className="" testId={step.testId} error={step.message} />
+          <ErrorBanner
+            errorSource="inline-step"
+            className=""
+            testId={step.testId}
+            error={step.message}
+          />
           <InlineActions actions={actions} />
         </div>
       );

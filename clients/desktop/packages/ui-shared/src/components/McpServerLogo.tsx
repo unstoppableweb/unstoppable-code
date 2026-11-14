@@ -109,7 +109,6 @@ export function McpServerLogo({
   useRemoteLogo = (): undefined => undefined,
   renderBrandMark,
 }: McpServerLogoProps): JSX.Element {
-  const [broken, setBroken] = useState(false);
   const curatedLogo =
     curatedKey !== undefined &&
     Object.prototype.hasOwnProperty.call(MCP_BRAND_LOGOS, curatedKey)
@@ -142,32 +141,57 @@ export function McpServerLogo({
       </span>
     );
   }
-  if (!src || broken) {
-    const letter = name?.trim().charAt(0).toUpperCase() ?? '';
-    const useMonogram = fallback === 'monogram' && letter.length > 0;
-    return (
-      <span
-        className={`flex shrink-0 items-center justify-center ${radiusClassName} ${backgroundClassName} ${chromeClassName} ${className}`}
-        style={{ width: size, height: size }}
-      >
-        {useMonogram ? (
-          <span
-            className="select-none font-medium leading-none fg-secondary"
-            style={{ fontSize: Math.round(size * 0.5) }}
-            data-testid={fallbackTestId}
-          >
-            {letter}
-          </span>
-        ) : (
-          <McpServerIcon
-            size={Math.round(size * 0.7) > 16 ? 'xl' : 'sm'}
-            className="shrink-0 fg-secondary"
-            data-testid={fallbackTestId}
-          />
-        )}
-      </span>
-    );
-  }
+  const letter = name?.trim().charAt(0).toUpperCase() ?? '';
+  const fallbackTile = (
+    <span
+      className={`flex shrink-0 items-center justify-center ${radiusClassName} ${backgroundClassName} ${chromeClassName} ${className}`}
+      style={{ width: size, height: size }}
+    >
+      {fallback === 'monogram' && letter.length > 0 ? (
+        <span
+          className="select-none font-medium leading-none fg-secondary"
+          style={{ fontSize: Math.round(size * 0.5) }}
+          data-testid={fallbackTestId}
+        >
+          {letter}
+        </span>
+      ) : (
+        <McpServerIcon
+          size={Math.round(size * 0.7) > 16 ? 'xl' : 'sm'}
+          className="shrink-0 fg-secondary"
+          data-testid={fallbackTestId}
+        />
+      )}
+    </span>
+  );
+  if (!src) return fallbackTile;
+  return (
+    <McpLogoImage
+      key={src}
+      src={src}
+      size={size}
+      className={`shrink-0 ${radiusClassName} ${fit === 'contain' ? 'object-contain' : 'object-cover'} ${chromeClassName} ${className}`}
+      imgTestId={imgTestId}
+      fallback={fallbackTile}
+    />
+  );
+}
+
+function McpLogoImage({
+  src,
+  size,
+  className,
+  imgTestId,
+  fallback,
+}: {
+  src: string;
+  size: number;
+  className: string;
+  imgTestId?: string;
+  fallback: JSX.Element;
+}): JSX.Element {
+  const [broken, setBroken] = useState(false);
+  if (broken) return fallback;
   return (
     <img
       src={src}
@@ -178,7 +202,7 @@ export function McpServerLogo({
       referrerPolicy={imageReferrerPolicyFor(src)}
       onError={() => setBroken(true)}
       style={{ width: size, height: size }}
-      className={`shrink-0 ${radiusClassName} ${fit === 'contain' ? 'object-contain' : 'object-cover'} ${chromeClassName} ${className}`}
+      className={className}
       data-testid={imgTestId}
     />
   );

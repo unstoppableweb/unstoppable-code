@@ -21,6 +21,8 @@ import {
   linuxColdMembership,
   linuxColdDevice,
   type LinuxColdTreeEntry,
+  type LinuxColdCensusOptions,
+  LinuxColdCensusError,
 } from './linux-membership';
 
 interface LinuxFileIdentity {
@@ -51,7 +53,7 @@ const nativeIO: LinuxColdIO = {
         rows.length === 1
           ? /^mnt_id:\s+(0|[1-9]\d*)$/.exec(rows[0] ?? '')?.[1]
           : undefined;
-      // Internal shmem may report mount 0; only disjoint memfd references bypass mountinfo.
+      // Internal mounts may report mount 0; only device-disjoint references bypass mountinfo.
       if (mountId === undefined)
         throw new Error('Incomplete proc reference mount identity');
       return { dev: identity.dev, ino: identity.ino, mountId };
@@ -85,10 +87,23 @@ const nativeIO: LinuxColdIO = {
   },
 };
 
-function boundedIO(io: LinuxColdIO): LinuxColdIO {
-  const deadline = performance.now() + 30_000;
-  async function bounded<T>(read: () => Promise<T>): Promise<T> {
-    if (performance.now() >= deadline)
+interface BoundedLinuxColdIO extends LinuxColdIO {
+  readonly outsideBudget: <T>(read: () => Promise<T>) => Promise<T>;
+  readonly census: LinuxColdIO;
+}
+
+function boundedIO(io: LinuxColdIO): BoundedLinuxColdIO {
+  let deadline = performance.now() + 30_000;
+  let excludedDepth = 0;
+  let excludedStarted = 0;
+  async function bounded<T>(
+    read: () => Promise<T>,
+    census = false,
+  ): Promise<T> {
+    const message = census
+      ? 'Linux census metadata read deadline exceeded'
+      : 'Proc observation deadline exceeded';
+    if (!census && performance.now() >= deadline)
       throw new Error('Proc observation deadline exceeded');
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -96,8 +111,8 @@ function boundedIO(io: LinuxColdIO): LinuxColdIO {
         read(),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error('Proc observation deadline exceeded')),
-            Math.min(4000, deadline - performance.now()),
+            () => reject(new Error(message)),
+            census ? 4000 : Math.min(4000, deadline - performance.now()),
           );
         }),
       ]);
@@ -106,6 +121,23 @@ function boundedIO(io: LinuxColdIO): LinuxColdIO {
     }
   }
   return {
+    census: {
+      pin: (file) => bounded(() => io.pin(file), true),
+      entry: (file) => bounded(() => io.entry(file), true),
+      text: (file) => bounded(() => io.text(file), true),
+      link: (file) => bounded(() => io.link(file), true),
+      list: (file) => bounded(() => io.list(file), true),
+      identity: (file) => bounded(() => io.identity(file), true),
+    },
+    outsideBudget: async (read) => {
+      if (excludedDepth++ === 0) excludedStarted = performance.now();
+      try {
+        return await read();
+      } finally {
+        if (--excludedDepth === 0)
+          deadline += performance.now() - excludedStarted;
+      }
+    },
     pin: (file) => bounded(() => io.pin(file)),
     entry: (file) => bounded(() => io.entry(file)),
     text: (file) => bounded(() => io.text(file)),
@@ -149,6 +181,14 @@ class LinuxColdProcessEvidenceError extends Error {
 
   constructor(cause: unknown) {
     super(inspectionFailure(cause));
+    this.cause = cause;
+  }
+}
+class LinuxColdMappingEvidenceError extends Error {
+  declare readonly cause: unknown;
+
+  constructor(message: string, cause: unknown) {
+    super(message);
     this.cause = cause;
   }
 }
@@ -245,7 +285,9 @@ export class LinuxColdInspectionError extends Error {
           (row) =>
             `pid=${row.pid ?? 'unknown'} comm=${JSON.stringify(row.comm)} exe=${JSON.stringify(row.executable)} uids(real:effective:saved:fs)=${row.uids?.join(':') ?? 'unavailable'} exeReadFailure=${JSON.stringify(row.executableReadFailure ?? null)} dumpable=${row.dumpable} reason=${JSON.stringify(row.reason)} namespaces=${JSON.stringify(row.differingNamespaces)} cgroup=${JSON.stringify(row.cgroup)}`,
         )
-        .join('; ')}`,
+        .join(
+          '; ',
+        )}. Try again from a native host terminal. If a separate application or service is named, save work before closing it or stopping its service normally. For migration-observer or census failures, or if it still refuses, share this diagnostic. Do not use sudo or change process protections.`,
     );
     this.refusals = sorted;
     this.failure = sorted[0]?.cause;
@@ -295,7 +337,10 @@ async function diagnosed<T>(
         : '';
     const match = /^\/proc\/([1-9]\d*)\//.exec(failedPath);
     // A referenced pathname may belong to another PID, not the process being inspected.
-    const pid = targetPid ?? (match ? Number(match[1]) : null);
+    const pid =
+      cause instanceof LinuxColdCensusError
+        ? null
+        : (targetPid ?? (match ? Number(match[1]) : null));
     let comm: string | null = null;
     let executable: string | null = null;
     let executableReadFailure: string | null = null;
@@ -647,6 +692,7 @@ async function observeRootBoundThread(
   thread: string,
   membership: LinuxMembership,
   hostMapper: ReturnType<typeof createLinuxColdPathMapper>,
+  hostMounts: string,
   inspectOpenFiles: boolean,
 ): Promise<{
   readonly executable: string;
@@ -675,12 +721,45 @@ async function observeRootBoundThread(
     device: string,
     inode: bigint,
     rawAddress: string,
+    deleted = false,
   ): Promise<void> {
     const [start = '', end = ''] = rawAddress.split('-');
     const address = `${BigInt(`0x${start}`).toString(16)}-${BigInt(`0x${end}`).toString(16)}`;
     // map_files exists only at process level, including for non-main threads.
     const referencePath = `${directory}/map_files/${address}`;
-    const pinned = await io.pin(referencePath);
+    let pinned: Awaited<ReturnType<LinuxColdIO['pin']>>;
+    try {
+      pinned = await io.pin(referencePath);
+    } catch (cause) {
+      // map_files following needs capabilities even for dumpable same-user processes.
+      if (!deleted || (!hasCode(cause, 'EPERM') && !hasCode(cause, 'EACCES')))
+        throw cause;
+      function refuse(reason: string): never {
+        throw new LinuxColdMappingEvidenceError(
+          `Deleted mapping cannot be ruled out: path=${JSON.stringify(file)} device=${device} inode=${inode}; ${reason}; map_files pin denied (${inspectionFailure(cause)})`,
+          cause,
+        );
+      }
+      if (mounts !== hostMounts)
+        refuse('process and observer mount tables differ');
+      // A detached mount can hide its original path, but any still-linked target alias is in the census.
+      if (membership.mapping(device, inode))
+        refuse('superblock/inode collides with the affected-tree census');
+      let candidates: readonly LinuxColdPathIdentity[];
+      try {
+        candidates = mapper.deletedMapping(file, device);
+      } catch (error) {
+        refuse(inspectionFailure(error));
+      }
+      if (!candidates.length) refuse('no mount coordinate could be resolved');
+      if (candidates.some(membership.coordinate))
+        refuse('a candidate mount coordinate is under an affected tree');
+      const target = `${file} (deleted)`;
+      if ((await io.link(referencePath)) !== target)
+        refuse('deleted mapping link disagrees with proc maps');
+      references.set(referencePath, { target, identity: null });
+      return;
+    }
     mappingReferences.set(referencePath, pinned);
     if (pinned.ino !== inode) throw new Error('Proc mapping identity changed');
     const referenceMapper = mapper.hasMount(pinned.mountId)
@@ -715,6 +794,13 @@ async function observeRootBoundThread(
     // A deleted dentry has no pathname stat; its live proc reference and mount coordinates remain evidence.
     // Snap children can inherit descriptors from host mounts absent in their new namespace.
     const inherited = !mapper.hasMount(identity.mountId);
+    // Unlisted internal/private mounts need no pathname when their device is disjoint.
+    if (
+      inherited &&
+      !hostMapper.hasMount(identity.mountId) &&
+      !membership.objectDevice(identity.dev)
+    )
+      return target;
     const coordinate = (inherited ? hostMapper : mapper).reference(
       file,
       linuxColdDevice(identity.dev),
@@ -777,9 +863,23 @@ async function observeRootBoundThread(
     if (file.endsWith(' (deleted)')) {
       // Disjoint superblocks cannot hold target objects, including anonymous shmem.
       if (!membership.mappingDevice(device)) continue;
-      await mappingReference(name, device, inode, line.split(' ')[0] ?? '');
+      await mappingReference(
+        name,
+        device,
+        inode,
+        line.split(' ')[0] ?? '',
+        true,
+      );
     } else {
-      const current = await io.identity(`${thread}/root${name}`);
+      let current: LinuxFileIdentity;
+      try {
+        current = await io.identity(`${thread}/root${name}`);
+      } catch (error) {
+        // Internal mappings can lack a pathname without carrying a deleted suffix.
+        if (hasCode(error, 'ENOENT') && !membership.mappingDevice(device))
+          continue;
+        throw error;
+      }
       if (current.ino !== inode)
         throw new Error(
           `Linux mapping no longer names the observed object: path=${JSON.stringify(file)}`,
@@ -935,6 +1035,7 @@ async function observeProcess(
           thread,
           membership,
           mapPath,
+          mountInfo,
           pid !== selfPid,
         );
         rootBoundObserved = true;
@@ -1107,6 +1208,7 @@ export async function observeLinuxColdProcess(
   pid: number,
   io?: LinuxColdIO,
   roots: readonly string[] = [],
+  census: LinuxColdCensusOptions = {},
 ): Promise<NativeColdProcess> {
   if (!io && hostPlatformOperatingSystem() !== 'linux')
     throw new Error('Linux proc required');
@@ -1119,7 +1221,11 @@ export async function observeLinuxColdProcess(
       const mounts = await operations.text('/proc/self/mountinfo');
       const mapPath = createLinuxColdPathMapper(mounts);
       const membership = roots.length
-        ? await linuxColdMembership(operations, roots, mapPath)
+        ? await operations.outsideBudget(() =>
+            diagnosed(operations.census, () =>
+              linuxColdMembership(operations.census, roots, mapPath, census),
+            ),
+          )
         : undefined;
       const row = await observe(
         pid,
@@ -1130,7 +1236,11 @@ export async function observeLinuxColdProcess(
         mapPath,
         membership,
       );
-      await membership?.recheck();
+      await operations.outsideBudget(() =>
+        diagnosed(operations.census, async () => {
+          await membership?.recheck();
+        }),
+      );
       if (mounts !== (await operations.text('/proc/self/mountinfo')))
         throw new Error('Linux mountinfo changed: path="/proc/self/mountinfo"');
       return row;
@@ -1140,6 +1250,7 @@ export async function observeLinuxColdProcess(
 }
 
 interface LinuxColdSnapshotOptions {
+  readonly census?: LinuxColdCensusOptions;
   readonly io?: LinuxColdIO;
   readonly uid?: number;
   readonly roots?: readonly string[];
@@ -1169,7 +1280,7 @@ export async function observeLinuxColdProcesses(
 
 async function observeLinuxColdProcessSnapshot(
   options: LinuxColdSnapshotOptions,
-  io: LinuxColdIO,
+  io: BoundedLinuxColdIO,
 ): Promise<readonly NativeColdProcess[]> {
   return diagnosed(
     io,
@@ -1180,7 +1291,16 @@ async function observeLinuxColdProcessSnapshot(
       const mounts = await io.text('/proc/self/mountinfo');
       const mapPath = createLinuxColdPathMapper(mounts);
       const membership = options.roots?.length
-        ? await linuxColdMembership(io, options.roots, mapPath)
+        ? await io.outsideBudget(() =>
+            diagnosed(io.census, () =>
+              linuxColdMembership(
+                io.census,
+                options.roots ?? [],
+                mapPath,
+                options.census,
+              ),
+            ),
+          )
         : undefined;
       const proc = mounts
         .split('\n')
@@ -1202,6 +1322,7 @@ async function observeLinuxColdProcessSnapshot(
       const managers = new Map<number, NativeColdProcess>();
       const denied: { readonly pid: number; readonly cause: unknown }[] = [];
       const refusals = new Map<number | null, LinuxColdRefusal>();
+      const censusRefusals: LinuxColdRefusal[] = [];
       async function markExited(pid: number): Promise<boolean> {
         if (!options.roots?.length || pid === process.pid) return false;
         const previous = refusals.get(pid);
@@ -1237,6 +1358,11 @@ async function observeLinuxColdProcessSnapshot(
         } catch (error) {
           if (!(error instanceof LinuxColdInspectionError)) throw error;
           for (const row of error.refusals) {
+            // A global /proc refusal and a target-census refusal both have no PID.
+            if (row.cause instanceof LinuxColdCensusError) {
+              censusRefusals.push(row);
+              continue;
+            }
             const cause =
               row.pid !== null && row.pid === pid
                 ? await classifyChurn(
@@ -1414,18 +1540,20 @@ async function observeLinuxColdProcessSnapshot(
             );
         }, row.pid);
       }
+      await io.outsideBudget(() =>
+        collect(async () => {
+          await membership?.recheck();
+        }, null),
+      );
       await collect(async () => {
         if (mounts !== (await io.text('/proc/self/mountinfo')))
           throw new Error(
             'Linux mountinfo changed: path="/proc/self/mountinfo"',
           );
       }, process.pid);
-      await collect(async () => {
-        await membership?.recheck();
-      }, process.pid);
-      if (refusals.size) {
+      if (refusals.size || censusRefusals.length) {
         throw new LinuxColdInspectionError(
-          [...refusals.values()],
+          [...refusals.values(), ...censusRefusals],
           rows.filter((row) => !refusals.has(row.pid)),
         );
       }

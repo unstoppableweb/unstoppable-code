@@ -17,6 +17,7 @@ import {
   DrawerInspectorAction,
   Tooltip,
   useShimmerPhase,
+  ShimmerCopies,
   SpinnerStyleProvider,
 } from '@canopy/ui-shared/components';
 import {
@@ -309,6 +310,7 @@ export function DrawerRow({
         style={shimmerStyle}
       >
         {name}
+        {!modal && !open && shimmering && <ShimmerCopies>{name}</ShimmerCopies>}
       </span>
       {!modal &&
         detail !== undefined &&
@@ -340,6 +342,7 @@ export function DrawerRow({
           style={shimmerStyle}
         >
           {name}
+          {!open && shimmering && <ShimmerCopies>{name}</ShimmerCopies>}
         </span>
         {detail !== undefined && (
           // 6px from the name, as a separator's dot sits from its text.

@@ -1,3 +1,4 @@
+import { toAppError } from '@canopy/protocol/app-errors';
 import { readFile, writeFile } from 'node:fs/promises';
 import { getWorkspaceWorktreesFilePath } from '../lib/paths';
 import { readWorkspaceWorktreesUnlocked } from '../lib/workspace-persistence';
@@ -50,6 +51,7 @@ jest.mock('../ipc/register', () => ({
 }));
 
 import { registerActivityGoldenHandlers } from './helpers/activity-golden-registration';
+import { createDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 
 jest.setTimeout(120_000);
 
@@ -71,6 +73,24 @@ afterAll(async () => {
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;
   fixture.cleanup();
+});
+
+it('rejects non-string stop-polling IDs and keeps valid cleanup idempotent', async () => {
+  const stop = mockHandlers.get(IPC_CHANNELS.activityStopOutputPolling);
+  if (!stop) throw new Error('Stop-polling handler was not registered');
+  const request = {
+    projectId: 'project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+  };
+
+  const error = await Promise.resolve()
+    .then(() => stop({}, { ...request, taskId: 23 }))
+    .catch((thrown: unknown) => toAppError(thrown));
+  expect(error).toMatchObject({ code: 'input.not_accepted' });
+  await expect(
+    Promise.resolve().then(() => stop({}, { ...request, taskId: '23' })),
+  ).resolves.toBeUndefined();
 });
 
 type Outcome = { result: unknown } | { error: Record<string, unknown> };
@@ -415,5 +435,44 @@ it('reads a healthy worktree when a peer row cannot be decoded', async () => {
     expect(await changedFilesResult(request)).toEqual(expected);
   } finally {
     await writeFile(listPath, original);
+  }
+});
+
+// Revision 2 and a recorded base are the web core's (CAN-6093): the desktop
+// dispatcher advertises no schema revision and records no base, so it refuses
+// both before reading anything; the daemon serves the same handler.
+it('refuses worker.git.diff.get revision 2 and an omitted base as capability_unavailable', async () => {
+  const runtime = createDesktopRuntime();
+  const caller = {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'electron-web-contents:1',
+    authorityId: 'local-desktop',
+    interfaceKind: 'desktop',
+    grants: ['worker.git.read'],
+  } as const;
+  const diff = (extra: Record<string, unknown>): Promise<unknown> =>
+    runtime.query(
+      'worker.git.diff.get',
+      {
+        scope: { workspaceId: SINGLE_WS, worktreeId: WORKTREE },
+        repoId: WORKSPACE_ROOT_REPO_ID,
+        head: 'WORKTREE',
+        ...extra,
+      },
+      { caller: { ...caller, grants: [...caller.grants] } },
+    );
+  try {
+    expect(await diff({ base: 'HEAD' })).toMatchObject({ truncated: false });
+    await expect(diff({ base: 'HEAD', revision: 2 })).rejects.toMatchObject({
+      payload: {
+        kind: 'capability_unavailable',
+        details: { unsupported: ['revision'], reason: 'unserved' },
+      },
+    });
+    await expect(diff({})).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
+    });
+  } finally {
+    await runtime.shutdown();
   }
 });

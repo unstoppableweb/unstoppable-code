@@ -19,6 +19,7 @@ function createVisibilityController(document: Document): VisibilityController {
   const view = document.defaultView;
   const motion = view?.matchMedia?.('(prefers-reduced-motion: reduce)');
   const update = (): void => {
+    const started: HTMLElement[] = [];
     for (const [element, entry] of entries) {
       if (element.ownerDocument !== document) {
         entry.cleanup();
@@ -27,9 +28,13 @@ function createVisibilityController(document: Document): VisibilityController {
       }
       const active = entry.visible && !document.hidden && !motion?.matches;
       const value = String(active);
-      if (element.getAttribute('data-canopy-motion-active') !== value)
+      if (element.getAttribute('data-canopy-motion-active') !== value) {
         element.setAttribute('data-canopy-motion-active', value);
+        if (active) started.push(entry.element);
+      }
     }
+    // Read after every write, so the style flush runs once per batch.
+    for (const element of started) alignToDocumentClock(element);
   };
   // Ref callbacks arrive in batches. Avoid scanning a large mounted list
   // once per ref; IntersectionObserver already batches visibility changes.
@@ -83,6 +88,25 @@ function createVisibilityController(document: Document): VisibilityController {
       };
     },
   };
+}
+
+/**
+ * A CSS animation starts when its element starts animating: on mount, and
+ * again each time it returns to view, since inactive indicators drop their
+ * animations. Start every looping indicator at the document timeline's
+ * origin instead, so all of them turn in step however late each began. Each
+ * keeps its own `animation-delay`, so staggered dots stay staggered. Finite
+ * animations, such as an entrance, keep their own start.
+ */
+function alignToDocumentClock(element: HTMLElement): void {
+  if (typeof element.getAnimations !== 'function') return;
+  for (const animation of element.getAnimations({ subtree: true })) {
+    if (
+      animation.timeline === element.ownerDocument.timeline &&
+      animation.effect?.getTiming().iterations === Infinity
+    )
+      animation.startTime = 0;
+  }
 }
 
 function attach(element: HTMLElement, entry: Entry): void {

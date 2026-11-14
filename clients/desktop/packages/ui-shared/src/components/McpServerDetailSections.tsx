@@ -217,7 +217,7 @@ export function PluginSection({
             </Skeleton>
           </DelayedLoadingPlaceholder>
         )}
-        <ErrorBanner className="" error={error} />
+        <ErrorBanner errorSource="plugin-section" className="" error={error} />
         {!loading && !error && context && (
           <PluginSectionCard server={server} context={context} />
         )}
@@ -396,7 +396,11 @@ export function StandaloneConfigsSection({
             </Skeleton>
           </DelayedLoadingPlaceholder>
         )}
-        <ErrorBanner className="" error={error} />
+        <ErrorBanner
+          errorSource="standalone-configs-section"
+          className=""
+          error={error}
+        />
         {!loading && !error && serverData && (
           <>
             {serverData.configs.length === 0 ? (

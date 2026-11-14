@@ -1,5 +1,6 @@
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
+import type * as ChildProcess from 'node:child_process';
 import { once } from 'node:events';
 import {
   copyFile,
@@ -12,7 +13,15 @@ import {
 import type * as FileSystem from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type * as Util from 'node:util';
+import { createInternalRootRelocationRepairs } from '../repairs';
+import { abandonedArchivePaths } from '../abandoned-paths';
+import { freezeInternalRootJournals } from '../lifecycle-journals';
+import { selectInternalRootArchiveAbandonments } from '../operator-options';
+import { desktopW5Durability } from '../../w5-commit-log/durability';
 import type * as CorePlatform from '@canopy/core-platform';
+import type * as HostPlatform from '@canopy/core-platform/host-platform';
+import type * as StoragePaths from '@canopy/core-platform/storage-path-observation';
 import {
   createPlatformEndpointServices,
   observeLinuxColdProcess,
@@ -42,6 +51,65 @@ let mockWindowsPolicy:
     }
   | undefined;
 let mockIncompleteWindowsHelper = false;
+let mockGitScopeTree: Map<string, Buffer | readonly string[]> | undefined;
+let mockGitScopeGit:
+  | ((cwd: string, args: readonly string[]) => Promise<string>)
+  | undefined;
+let mockGitScopeFailure:
+  | { operation: string; file: string; calls: number; code?: string }
+  | undefined;
+jest.mock('node:child_process', () => {
+  const processes =
+    jest.requireActual<typeof ChildProcess>('node:child_process');
+  const { promisify } = jest.requireActual<typeof Util>('node:util');
+  return {
+    ...processes,
+    execFile: Object.assign(jest.fn(processes.execFile), {
+      [promisify.custom]: (
+        file: string,
+        args: readonly string[],
+        options: { cwd: string },
+      ): Promise<{ stdout: string; stderr: string }> => {
+        if (!mockGitScopeGit)
+          return promisify(processes.execFile)(file, args, options);
+        if (file !== 'git' || args[0] !== '--no-optional-locks')
+          return Promise.reject(new Error('Unexpected fixture process'));
+        return mockGitScopeGit(options.cwd, args.slice(1)).then((stdout) => ({
+          stdout,
+          stderr: '',
+        }));
+      },
+    }),
+  };
+});
+jest.mock('@canopy/core-platform/storage-path-observation', () => {
+  const storage = jest.requireActual<typeof StoragePaths>(
+    '@canopy/core-platform/storage-path-observation',
+  );
+  return {
+    ...storage,
+    observeStoragePathSync: (
+      file: string,
+    ): StoragePaths.StoragePathObservation => {
+      if (!mockGitScopeTree) return storage.observeStoragePathSync(file);
+      const value = mockGitScopeTree.get(file);
+      return {
+        requestedPath: file,
+        canonicalPath: file,
+        kind:
+          value === undefined
+            ? 'missing'
+            : Buffer.isBuffer(value)
+              ? 'file'
+              : 'directory',
+        stat: undefined,
+        existingAncestor: file,
+        missingComponents: [],
+        symbolicLinkComponents: [],
+      };
+    },
+  };
+});
 jest.mock('@canopy/core-platform', () => {
   const platform = jest.requireActual<typeof CorePlatform>(
     '@canopy/core-platform',
@@ -60,9 +128,119 @@ jest.mock('@canopy/core-platform', () => {
 });
 jest.mock('node:fs/promises', () => {
   const fs = jest.requireActual<typeof FileSystem>('node:fs/promises');
+  function probe<T>(
+    operation: string,
+    file: string,
+    read: () => T,
+  ): Promise<T> {
+    return Promise.resolve().then(() => {
+      if (
+        mockGitScopeFailure?.operation === operation &&
+        mockGitScopeFailure.file === file
+      ) {
+        mockGitScopeFailure.calls++;
+        throw Object.assign(new Error(`Fixture ${operation} denied: ${file}`), {
+          code: mockGitScopeFailure.code ?? 'EACCES',
+        });
+      }
+      return read();
+    });
+  }
+  function node(file: string): Buffer | readonly string[] {
+    const value = mockGitScopeTree?.get(file);
+    if (value === undefined)
+      throw Object.assign(new Error(`Missing fixture entry: ${file}`), {
+        code: 'ENOENT',
+      });
+    return value;
+  }
+  function path(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (value instanceof URL) return value.pathname;
+    if (Buffer.isBuffer(value)) return value.toString('utf8');
+    throw new Error('Unexpected fixture path');
+  }
+  function metadata(file: string): {
+    dev: number;
+    ino: number;
+    size: number;
+    nlink: number;
+    birthtimeMs: number;
+    isFile(): boolean;
+    isDirectory(): boolean;
+    isSymbolicLink(): boolean;
+  } {
+    const value = node(file);
+    return {
+      dev: 2049,
+      ino: [...(mockGitScopeTree?.keys() ?? [])].indexOf(file) + 1,
+      size: Buffer.isBuffer(value) ? value.length : 0,
+      nlink: 1,
+      birthtimeMs: 0,
+      isFile: (): boolean => Buffer.isBuffer(value),
+      isDirectory: (): boolean => !Buffer.isBuffer(value),
+      isSymbolicLink: (): boolean => false,
+    };
+  }
   return {
     ...fs,
+    lstat: (...args: Parameters<typeof fs.lstat>): Promise<unknown> =>
+      mockGitScopeTree
+        ? probe('lstat', path(args[0]), () => metadata(path(args[0])))
+        : fs.lstat(...args),
+    stat: (...args: Parameters<typeof fs.stat>): Promise<unknown> =>
+      mockGitScopeTree
+        ? probe('stat', path(args[0]), () => metadata(path(args[0])))
+        : fs.stat(...args),
+    readdir: (...args: Parameters<typeof fs.readdir>): Promise<unknown> =>
+      mockGitScopeTree
+        ? probe('readdir', path(args[0]), () => {
+            const value = node(path(args[0]));
+            if (Buffer.isBuffer(value))
+              throw new Error('Not a fixture directory');
+            return args[1]?.withFileTypes
+              ? value.map((name) => ({
+                  name,
+                  ...metadata(join(path(args[0]), name)),
+                }))
+              : value;
+          })
+        : fs.readdir(...args),
+    readFile: (...args: Parameters<typeof fs.readFile>): Promise<unknown> => {
+      if (!mockGitScopeTree) return fs.readFile(...args);
+      return probe('readFile', path(args[0]), () => {
+        const value = node(path(args[0]));
+        if (!Buffer.isBuffer(value)) throw new Error('Not a fixture file');
+        return args[1] ? value.toString('utf8') : value;
+      });
+    },
+    open: (...args: Parameters<typeof fs.open>): Promise<unknown> => {
+      if (!mockGitScopeTree) return fs.open(...args);
+      const file = path(args[0]);
+      return probe('open', file, () => {
+        const value = node(file);
+        if (!Buffer.isBuffer(value)) throw new Error('Not a fixture file');
+        return {
+          stat: (): Promise<ReturnType<typeof metadata>> =>
+            probe('stat', file, () => metadata(file)),
+          read: (
+            buffer: Buffer,
+            offset: number,
+            length: number,
+          ): Promise<{ bytesRead: number; buffer: Buffer }> =>
+            probe('read', file, () => ({
+              bytesRead: value.copy(buffer, offset, 0, length),
+              buffer,
+            })),
+          close: (): Promise<void> => probe('close', file, () => undefined),
+        };
+      });
+    },
     realpath: async (file: string): Promise<string> => {
+      if (mockGitScopeTree) {
+        node(file);
+        return file;
+      }
       if (mockLinuxCanonicalPaths.includes(file)) return file;
       if (mockWindowsPolicy) {
         mockWindowsPolicy.calls.push(file);
@@ -88,6 +266,699 @@ jest.mock('node:fs/promises', () => {
 });
 const brands = [canopy, unstoppable];
 const mounts = '10 0 8:1 / / rw - ext4 /dev/sda1 rw\n';
+(process.platform === 'win32' ? it.skip : it).each([
+  'valid list',
+  'malformed list',
+  'incomplete list',
+  'unreadable list',
+  'disappearing list',
+  'directory list',
+  'directory manifest',
+])(
+  'Linux Git scope classifies indexed owner evidence: %s',
+  async (scenario) => {
+    const source = '/target';
+    const workspace = `${source}/workspaces/indexed`;
+    const list = `${workspace}/worktrees.json`;
+    mockGitScopeTree = new Map<string, Buffer | readonly string[]>([
+      [source, ['workspaces']],
+      [`${source}/workspaces`, ['index.json', 'indexed']],
+      [
+        `${source}/workspaces/index.json`,
+        Buffer.from(
+          JSON.stringify({
+            version: 1,
+            workspaces: [
+              { id: 'indexed', name: 'Indexed', type: 'cowork', color: 'blue' },
+            ],
+          }),
+        ),
+      ],
+      [workspace, ['workspace.json', 'worktrees.json']],
+      [
+        `${workspace}/workspace.json`,
+        scenario === 'directory manifest' ? [] : Buffer.from('{"version":1}'),
+      ],
+      [
+        list,
+        scenario === 'directory list'
+          ? []
+          : Buffer.from(
+              scenario === 'malformed list'
+                ? '{'
+                : JSON.stringify({
+                    version: 1,
+                    worktrees:
+                      scenario === 'incomplete list'
+                        ? [{ id: 'unknown' }]
+                        : [
+                            {
+                              id: 'external',
+                              branchName: 'external',
+                              createdAt: '2026-11-01T00:00:00.000Z',
+                              creation: {
+                                checkouts: [
+                                  {
+                                    repositoryPath: '/repository',
+                                    checkoutPath: '/external',
+                                  },
+                                ],
+                              },
+                            },
+                          ],
+                  }),
+            ),
+      ],
+    ]);
+    if (scenario === 'unreadable list' || scenario === 'disappearing list')
+      mockGitScopeFailure = {
+        operation: 'readFile',
+        file: list,
+        calls: 0,
+        code: scenario === 'disappearing list' ? 'ENOENT' : 'EACCES',
+      };
+    const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const repairs = createInternalRootRelocationRepairs({
+        durability: desktopW5Durability,
+        filesystemHost: {},
+      });
+      if (!repairs.coldExternalFiles) throw new Error('Missing Git scope');
+      await expect(
+        repairs.coldExternalFiles({
+          identity: {
+            brandId: 'canopy',
+            brandDisplayName: 'Canopy',
+            build: 'internal',
+            source,
+            destination: '/destination',
+            historicalSecure: '/secure',
+            coordination: '/coordination',
+          },
+          transactionId: 'fixture',
+          workingRoot: source,
+          externalFiles: [],
+          inventory: {
+            sourceIdentity: 'fixture',
+            destinationIdentity: null,
+            fingerprint: 'fixture',
+            files: mockGitScopeTree.size,
+            bytes: 0,
+            historicalSecure: false,
+            nestedSecure: false,
+            stableOwned: false,
+          },
+        }),
+      ).resolves.toEqual([]);
+      if (scenario === 'valid list') expect(warning).not.toHaveBeenCalled();
+      else expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+      if (mockGitScopeFailure)
+        expect(mockGitScopeFailure.calls).toBeGreaterThan(0);
+    } finally {
+      warning.mockRestore();
+      mockGitScopeTree = undefined;
+      mockGitScopeFailure = undefined;
+    }
+  },
+);
+(process.platform === 'win32' ? it.skip : it)(
+  'Linux Git scope excludes unindexed sidecars without a lower-bound warning',
+  async () => {
+    const source = '/target';
+    const sidecar = `${source}/workspaces/unindexed`;
+    mockGitScopeTree = new Map<string, Buffer | readonly string[]>([
+      [source, ['workspaces']],
+      [`${source}/workspaces`, ['index.json', 'unindexed']],
+      [
+        `${source}/workspaces/index.json`,
+        Buffer.from(JSON.stringify({ version: 1, workspaces: [] })),
+      ],
+      [sidecar, ['workspace.json', '.git']],
+      [
+        `${sidecar}/workspace.json`,
+        Buffer.from(JSON.stringify({ repoPath: '/repository' })),
+      ],
+      [`${sidecar}/.git`, ['commondir']],
+      [`${sidecar}/.git/commondir`, Buffer.from([0, 255])],
+    ]);
+    const platform = jest
+      .spyOn(
+        jest.requireActual<typeof HostPlatform>(
+          '@canopy/core-platform/host-platform',
+        ),
+        'hostOperatingSystem',
+      )
+      .mockReturnValue('linux');
+    const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const repairs = createInternalRootRelocationRepairs({
+        durability: desktopW5Durability,
+        filesystemHost: {},
+      });
+      if (!repairs.coldExternalFiles) throw new Error('Missing Git scope');
+      await expect(
+        repairs.coldExternalFiles({
+          identity: {
+            brandId: 'canopy',
+            brandDisplayName: 'Canopy',
+            build: 'internal',
+            source,
+            destination: '/destination',
+            historicalSecure: '/secure',
+            coordination: '/coordination',
+          },
+          transactionId: 'fixture',
+          workingRoot: source,
+          externalFiles: [],
+          inventory: {
+            sourceIdentity: 'fixture',
+            destinationIdentity: null,
+            fingerprint: 'fixture',
+            files: mockGitScopeTree.size,
+            bytes: 0,
+            historicalSecure: false,
+            nestedSecure: false,
+            stableOwned: false,
+          },
+        }),
+      ).resolves.toEqual([]);
+      expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+      platform.mockRestore();
+      mockGitScopeTree = undefined;
+    }
+  },
+);
+(process.platform === 'win32' ? it.skip : it).each([
+  ...['explicit', 'frozen'].flatMap((selection) =>
+    [
+      'crow',
+      '.crow.archive-quarantine',
+      'membership',
+      'membership-owned',
+    ].flatMap((layout) =>
+      ['separate-admin', 'shared-admin'].map((route) => ({
+        selection,
+        layout,
+        route,
+        fault: 'none',
+      })),
+    ),
+  ),
+  ...['membership', 'membership-owned'].flatMap((layout) =>
+    ['journal', 'membership'].map((fault) => ({
+      selection: 'explicit',
+      layout,
+      route: 'shared-admin',
+      fault,
+    })),
+  ),
+])(
+  'Linux Git scope honors $selection archive abandonment ($layout, $route, fault=$fault) for valid external links',
+  async ({ selection, layout, route, fault }) => {
+    const source = '/target';
+    const workspace = `${source}/workspaces/fixture`;
+    const checkout = layout.startsWith('membership')
+      ? `${source}/retained-archive`
+      : `${workspace}/worktrees/${layout}`;
+    const admin = '/repository/.git/worktrees/archive';
+    const keptCommon =
+      route === 'shared-admin' ? '/repository/.git' : '/kept-repository/.git';
+    const keptAdmin = `${keptCommon}/worktrees/kept`;
+    const journal = '12345678-1234-4234-8234-123456789abc.json';
+    const tree = new Map<string, Buffer | readonly string[]>([
+      ['/', ['target', 'repository', 'kept-repository']],
+      ['/repository', ['.git']],
+      ['/kept-repository', ['.git']],
+      [source, ['workspaces', 'w5', 'kept']],
+      [`${source}/kept`, ['.git']],
+      [`${source}/kept/.git`, Buffer.from(`gitdir: ${keptAdmin}\n`)],
+      [keptAdmin, ['gitdir', 'commondir']],
+      [`${keptAdmin}/gitdir`, Buffer.from(`${source}/kept/.git\n`)],
+      [`${keptAdmin}/commondir`, Buffer.from('../..\n')],
+      [`${source}/workspaces`, ['index.json', 'fixture']],
+      [
+        `${source}/workspaces/index.json`,
+        Buffer.from(
+          JSON.stringify({
+            version: 1,
+            workspaces: [
+              {
+                id: 'fixture',
+                name: 'Fixture',
+                type: 'single-repo',
+                color: 'blue',
+              },
+            ],
+          }),
+        ),
+      ],
+      [workspace, ['workspace.json', 'worktrees']],
+      [
+        `${workspace}/workspace.json`,
+        Buffer.from(JSON.stringify({ version: 1, repoPath: `${source}/kept` })),
+      ],
+      [`${workspace}/worktrees`, [layout]],
+      [checkout, ['.git', 'node_modules']],
+      [`${checkout}/.git`, Buffer.from(`gitdir: ${admin}\n`)],
+      [`${checkout}/node_modules`, ['retained']],
+      [`${checkout}/node_modules/retained`, Buffer.from('payload')],
+      [`${source}/w5`, ['destructive-lifecycles']],
+      [`${source}/w5/destructive-lifecycles`, [journal]],
+      [
+        `${source}/w5/destructive-lifecycles/${journal}`,
+        Buffer.from(
+          JSON.stringify({
+            version: 1,
+            operationId: journal.slice(0, -5),
+            operation: 'worktree-archive',
+            workspaceId: 'fixture',
+            worktreeId: 'crow',
+            createdAt: '2026-11-01T00:00:00.000Z',
+            directoryIdentity: null,
+            state: 'recovery-required',
+            steps: [],
+            ownedPaths: [],
+          }),
+        ),
+      ],
+      ['/repository/.git', []],
+      [admin, ['gitdir', 'commondir']],
+      [`${admin}/gitdir`, Buffer.from(`${checkout}/.git\n`)],
+      [`${admin}/commondir`, Buffer.from('../..\n')],
+    ]);
+    tree.set(keptCommon, route === 'shared-admin' ? ['worktrees'] : []);
+    if (route === 'shared-admin')
+      tree.set(`${keptCommon}/worktrees`, ['archive', 'kept']);
+    if (layout.startsWith('membership')) {
+      tree.set(source, ['workspaces', 'w5', 'retained-archive', 'kept']);
+      tree.set(`${workspace}/worktrees`, []);
+      tree.set(workspace, ['workspace.json', 'worktrees.json', 'worktrees']);
+      tree.set(
+        `${workspace}/worktrees.json`,
+        Buffer.from(
+          JSON.stringify({
+            version: 1,
+            worktrees: [
+              {
+                id: 'crow',
+                branchName: 'crow',
+                createdAt: '2026-11-01T00:00:00.000Z',
+                ...(layout === 'membership-owned'
+                  ? {
+                      creation: {
+                        checkouts: [
+                          {
+                            repositoryPath: '/repository',
+                            checkoutPath: checkout,
+                          },
+                        ],
+                      },
+                    }
+                  : { path: checkout }),
+              },
+            ],
+          }),
+        ),
+      );
+    }
+    const context = {
+      identity: {
+        brandId: 'canopy' as const,
+        brandDisplayName: 'Canopy',
+        build: 'internal' as const,
+        source,
+        destination: '/destination',
+        historicalSecure: '/secure',
+        coordination: '/coordination',
+      },
+      transactionId: 'fixture',
+      workingRoot: source,
+      externalFiles: [],
+      inventory: {
+        sourceIdentity: 'fixture',
+        destinationIdentity: null,
+        fingerprint: 'fixture',
+        files: tree.size,
+        bytes: 0,
+        historicalSecure: false,
+        nestedSecure: false,
+        stableOwned: false,
+      },
+    };
+    const discover = (
+      abandonArchives: readonly string[],
+    ): Promise<readonly string[]> => {
+      const repairs = createInternalRootRelocationRepairs({
+        durability: desktopW5Durability,
+        filesystemHost: {},
+        abandonArchives,
+      });
+      if (!repairs.coldExternalFiles) throw new Error('Missing Git scope');
+      return repairs.coldExternalFiles(context);
+    };
+    const platform = jest
+      .spyOn(
+        jest.requireActual<typeof HostPlatform>(
+          '@canopy/core-platform/host-platform',
+        ),
+        'hostOperatingSystem',
+      )
+      .mockReturnValue('linux');
+    const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    mockGitScopeTree = tree;
+    mockGitScopeGit = (cwd, args): Promise<string> => {
+      if (cwd !== checkout && cwd !== `${source}/kept`)
+        return Promise.reject(new Error(`Unexpected fixture checkout: ${cwd}`));
+      const common = cwd === `${source}/kept` ? keptCommon : '/repository/.git';
+      const members =
+        route === 'shared-admin' ? [checkout, `${source}/kept`] : [cwd];
+      switch (args.join(' ')) {
+        case 'worktree list --porcelain -z':
+          return Promise.resolve(
+            members
+              .map(
+                (member) =>
+                  `worktree ${member}\0HEAD ${'1'.repeat(40)}\0branch refs/heads/${member === checkout ? 'archive' : 'kept'}\0\0`,
+              )
+              .join(''),
+          );
+        case 'rev-parse --path-format=absolute --git-common-dir':
+          return Promise.resolve(`${common}\n`);
+        case 'rev-parse --absolute-git-dir':
+          return Promise.resolve(`${cwd === checkout ? admin : keptAdmin}\n`);
+        case 'status --porcelain=v1 -z --untracked-files=all':
+        case 'config --null --list':
+        case 'ls-files --stage -z':
+          return Promise.resolve('');
+        default:
+          return Promise.reject(
+            new Error(
+              `Unexpected fixture Git command: ${cwd} ${args.join(' ')}`,
+            ),
+          );
+      }
+    };
+    try {
+      await expect(discover([])).resolves.toEqual([
+        `${admin}/gitdir`,
+        `${admin}/commondir`,
+        `${keptAdmin}/gitdir`,
+        `${keptAdmin}/commondir`,
+      ]);
+      warning.mockClear();
+      const names = ['fixture/crow'];
+      const selected = selectInternalRootArchiveAbandonments(
+        selection === 'explicit' ? names : [],
+        selection === 'frozen' ? names : undefined,
+      );
+      const omissions = await abandonedArchivePaths(
+        source,
+        await freezeInternalRootJournals(source, selected),
+      );
+      // Canonical worktreePaths reads creation.checkouts, not a top-level path.
+      expect(omissions.includes(checkout)).toBe(layout !== 'membership');
+      const retained = [
+        ...(layout === 'membership'
+          ? [`${admin}/gitdir`, `${admin}/commondir`]
+          : []),
+        `${keptAdmin}/gitdir`,
+        `${keptAdmin}/commondir`,
+      ];
+      // Exercise the canonical freeze and metadata projection, not just the
+      // omission helper: a top-level row.path checkout is still physically owned.
+      const prepared = await createInternalRootRelocationRepairs({
+        durability: desktopW5Durability,
+        filesystemHost: {},
+        abandonArchives: selected,
+      }).prepare(context);
+      expect(prepared.kind).toBe('ready');
+      if (prepared.kind !== 'ready' || !prepared.repairPlan)
+        throw new Error('Missing canonical frozen scope');
+      expect([...prepared.externalFiles].sort()).toEqual([...retained].sort());
+      expect(
+        prepared.repairPlan.gitPlan.checkouts.some(
+          (row) => row.path === checkout,
+        ),
+      ).toBe(layout === 'membership');
+      expect(prepared.repairPlan.abandonedPaths?.includes(checkout)).toBe(
+        layout !== 'membership',
+      );
+      if (fault !== 'none')
+        mockGitScopeFailure = {
+          operation: 'readFile',
+          file:
+            fault === 'journal'
+              ? `${source}/w5/destructive-lifecycles/${journal}`
+              : `${workspace}/worktrees.json`,
+          calls: 0,
+        };
+      await expect(discover(selected)).resolves.toEqual(
+        fault === 'none' ? retained : [],
+      );
+      if (fault === 'none') expect(warning).not.toHaveBeenCalled();
+      else expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+      if (mockGitScopeFailure) {
+        expect(mockGitScopeFailure.calls).toBeGreaterThan(0);
+        mockGitScopeFailure = undefined;
+        warning.mockClear();
+        await expect(discover(selected)).resolves.toEqual(retained);
+        expect(warning).not.toHaveBeenCalled();
+      }
+    } finally {
+      mockGitScopeTree = undefined;
+      mockGitScopeGit = undefined;
+      mockGitScopeFailure = undefined;
+      warning.mockRestore();
+      platform.mockRestore();
+    }
+  },
+);
+(process.platform === 'win32' ? it.skip : it).each([
+  ...['explicit', 'frozen'].flatMap((selection) =>
+    ['gitfile', 'directory', 'shared-admin'].map((layout) => ({
+      selection,
+      layout,
+      fault: 'none',
+    })),
+  ),
+  ...[
+    'lstat',
+    'readdir',
+    'readFile',
+    'open',
+    'stat',
+    'read',
+    'close',
+    'admin-read',
+  ].map((fault) => ({
+    selection: 'explicit',
+    layout: 'shared-admin',
+    fault,
+  })),
+])(
+  'Linux Git scope honors $selection checkout abandonment ($layout, fault=$fault) without excluding metadata',
+  async ({ selection, layout, fault }) => {
+    const source = '/target';
+    const checkout = `${source}/checkout`;
+    const admin = '/repository/.git/worktrees/kept';
+    const binary = Buffer.from([0, 255, 0, 128]);
+    const tree = new Map<string, Buffer | readonly string[]>([
+      [source, ['checkout', 'checkout-other', 'workspaces']],
+      [checkout, ['.git', 'nested', 'node_modules']],
+      [`${checkout}/.git`, binary],
+      [`${checkout}/nested`, ['.git']],
+      [`${checkout}/nested/.git`, binary],
+      [`${checkout}/node_modules`, ['retained']],
+      [`${checkout}/node_modules/retained`, Buffer.from('unique payload')],
+      [`${source}/checkout-other`, ['.git']],
+      [`${source}/checkout-other/.git`, Buffer.from(`gitdir: ${admin}\n`)],
+      [`${source}/workspaces`, ['index.json', 'fixture']],
+      [
+        `${source}/workspaces/index.json`,
+        Buffer.from(
+          JSON.stringify({
+            version: 1,
+            workspaces: [
+              {
+                id: 'fixture',
+                name: 'Fixture',
+                type: 'single-repo',
+                color: 'blue',
+              },
+            ],
+          }),
+        ),
+      ],
+      [`${source}/workspaces/fixture`, ['workspace.json']],
+      [
+        `${source}/workspaces/fixture/workspace.json`,
+        Buffer.from(JSON.stringify({ version: 1, repoPath: checkout })),
+      ],
+      [admin, ['gitdir', 'commondir']],
+      ['/repository/.git', ['worktrees']],
+      [`${admin}/commondir`, Buffer.from('../..\n')],
+      [`${admin}/gitdir`, Buffer.from(`${source}/checkout-other/.git\n`)],
+    ]);
+    if (layout === 'directory') {
+      tree.set(`${checkout}/.git`, ['commondir']);
+      tree.set(`${checkout}/.git/commondir`, binary);
+    }
+    if (layout === 'shared-admin') {
+      const abandonedAdmin = '/repository/.git/worktrees/abandoned';
+      tree.set('/repository/.git/worktrees', ['abandoned', 'kept']);
+      tree.set(abandonedAdmin, ['gitdir', 'commondir']);
+      tree.set(`${abandonedAdmin}/gitdir`, Buffer.from(`${checkout}/.git\n`));
+      tree.set(`${abandonedAdmin}/commondir`, binary);
+    }
+    const identity = {
+      brandId: 'canopy' as const,
+      brandDisplayName: 'Canopy',
+      build: 'internal' as const,
+      source,
+      destination: '/destination',
+      historicalSecure: '/secure',
+      coordination: '/coordination',
+    };
+    const context = {
+      identity,
+      transactionId: 'fixture',
+      workingRoot: source,
+      externalFiles: [],
+      inventory: {
+        sourceIdentity: 'fixture',
+        destinationIdentity: null,
+        fingerprint: 'fixture',
+        files: tree.size,
+        bytes: 0,
+        historicalSecure: false,
+        nestedSecure: false,
+        stableOwned: false,
+      },
+    };
+    const discover = (
+      abandonCheckouts: readonly string[],
+    ): Promise<readonly string[]> => {
+      const repairs = createInternalRootRelocationRepairs({
+        durability: desktopW5Durability,
+        filesystemHost: {},
+        abandonCheckouts,
+      });
+      if (!repairs.coldExternalFiles) throw new Error('Missing Git scope');
+      return repairs.coldExternalFiles(context);
+    };
+    const platform = jest
+      .spyOn(
+        jest.requireActual<typeof HostPlatform>(
+          '@canopy/core-platform/host-platform',
+        ),
+        'hostOperatingSystem',
+      )
+      .mockReturnValue('linux');
+    mockGitScopeTree = tree;
+    if (fault !== 'none')
+      mockGitScopeFailure = {
+        operation: fault === 'admin-read' ? 'read' : fault,
+        file:
+          fault === 'lstat' || fault === 'readdir'
+            ? checkout
+            : fault === 'readFile'
+              ? `${source}/workspaces/fixture/workspace.json`
+              : fault === 'close'
+                ? `${admin}/commondir`
+                : fault === 'admin-read'
+                  ? '/repository/.git/worktrees/abandoned/gitdir'
+                  : `${checkout}/.git`,
+        calls: 0,
+      };
+    const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      await expect(discover([])).resolves.toEqual([
+        `${admin}/gitdir`,
+        `${admin}/commondir`,
+      ]);
+      expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+      if (mockGitScopeFailure)
+        expect(mockGitScopeFailure.calls).toBeGreaterThan(0);
+      const selected = selectInternalRootArchiveAbandonments(
+        selection === 'explicit' ? [checkout] : [],
+        selection === 'frozen' ? [checkout] : undefined,
+        'Checkout',
+      );
+      warning.mockClear();
+      await expect(discover(selected)).resolves.toEqual([
+        `${admin}/gitdir`,
+        `${admin}/commondir`,
+      ]);
+      if (['readFile', 'close', 'admin-read'].includes(fault))
+        expect(warning.mock.calls.flat().join('')).toContain('lower bound');
+      else expect(warning).not.toHaveBeenCalled();
+      const seen = new Map<string, number>();
+      const io: CorePlatform.LinuxColdIO = {
+        text: (file) =>
+          Promise.resolve().then(() => {
+            if (file.endsWith('/mountinfo')) return mounts;
+            if (file.endsWith('/boot_id'))
+              return '01234567-0123-0123-0123-0123456789ab\n';
+            if (file.endsWith('/status'))
+              return 'Uid:\t1000\t1000\t1000\t1000\n';
+            if (file.endsWith('/stat'))
+              return `${process.pid} (node) S 1 ${Array(17).fill('0').join(' ')} 42 0\n`;
+            throw new Error(`Unexpected proc read ${file}`);
+          }),
+        entry: (file) =>
+          Promise.resolve().then(() => {
+            const value = tree.get(file);
+            if (value === undefined)
+              throw new Error(`Unexpected entry ${file}`);
+            seen.set(file, (seen.get(file) ?? 0) + 1);
+            return {
+              dev: 2049n,
+              ino: BigInt([...tree.keys()].indexOf(file) + 1),
+              mode: Buffer.isBuffer(value) ? 0o100600n : 0o040700n,
+              ctimeNs: 0n,
+              mtimeNs: 0n,
+            };
+          }),
+        list: (file) =>
+          Promise.resolve().then(() => {
+            if (file.endsWith('/task')) return [String(process.pid)];
+            const value = tree.get(file);
+            if (!value || Buffer.isBuffer(value))
+              throw new Error(`Unexpected directory ${file}`);
+            return value;
+          }),
+        identity: () => Promise.resolve({ dev: 2049n, ino: 999999n }),
+        pin: () => Promise.resolve({ dev: 2049n, ino: 999999n, mountId: '10' }),
+        link: (file) =>
+          Promise.resolve().then(() => {
+            const ns = /\/ns\/(mnt|user|pid)$/.exec(file)?.[1];
+            if (ns) return `${ns}:[123]`;
+            if (file.endsWith('/exe')) return '/usr/bin/node';
+            if (file.endsWith('/cwd') || file.endsWith('/root')) return '/';
+            throw new Error(`Unexpected proc link ${file}`);
+          }),
+      };
+      await observeLinuxColdProcess(process.pid, io, [source]);
+      for (const [file, value] of tree)
+        if (file.startsWith(`${source}/`))
+          expect(seen.get(file)).toBe(Buffer.isBuffer(value) ? 2 : 3);
+      expect(
+        tree.get(
+          layout === 'directory'
+            ? `${checkout}/.git/commondir`
+            : `${checkout}/.git`,
+        ),
+      ).toEqual(binary);
+    } finally {
+      warning.mockRestore();
+      mockGitScopeTree = undefined;
+      mockGitScopeFailure = undefined;
+      platform.mockRestore();
+    }
+  },
+);
 const row = (executable: string, pid = 42): NativeColdProcess => ({
   pid,
   scope: 'same-user',

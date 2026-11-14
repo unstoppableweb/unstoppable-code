@@ -14,6 +14,7 @@ import {
 import {
   type CliPathStatus,
   type DependencyVersions,
+  type ExternalProjectProvider,
   type PreferencesLoadResult,
   type TargetUpdateVersionItem,
   type UpdateState,
@@ -34,6 +35,7 @@ import {
   Surface,
   ToggleSwitch,
   WindowPage,
+  InlineCode,
 } from '@canopy/ui-shared/components';
 import {
   Badge,
@@ -76,7 +78,13 @@ import {
   useReleaseHighlightsStore,
 } from '@/stores/releaseHighlightsStore';
 import { resolveManualReleaseNotesEntry } from '@/lib/release-highlights/release-highlights';
-import { CODE_CHAT_DESTINATION_NOTE } from '@/components/import-projects/importProjectsCopy';
+import {
+  CODE_CHAT_DESTINATION_NOTE,
+  detectedSources,
+  IMPORT_SOURCE_ORDER,
+  importSourcesLabel,
+  importSourcesList,
+} from '@/components/import-projects/importProjectsCopy';
 
 function getManualUpdateStatus(
   updateState: UpdateState,
@@ -243,6 +251,59 @@ function DependenciesSection({
 }
 
 function noop(): void {}
+
+/**
+ * Get started's import row. It names the tools found on this computer; until
+ * the presence check answers, or when it can't, the button reads "other
+ * tools" and the description lists every tool the import reads.
+ */
+function ImportProjectsRow(): JSX.Element {
+  const [detected, setDetected] = useState<ExternalProjectProvider[] | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void window.api.externalProjects
+      .readProviderPresence()
+      .then((presence) => {
+        if (!cancelled) setDetected(detectedSources(presence.providers));
+      })
+      .catch((error: unknown): void => {
+        reportClientAppError(error);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, []);
+  const found = detected ?? [];
+  const sources =
+    found.length > 0
+      ? importSourcesList(found, 'and')
+      : importSourcesList(IMPORT_SOURCE_ORDER, 'or');
+  return (
+    <SettingsRow
+      label="Import projects"
+      dataTestId="settings-canopy-import-projects"
+      description={
+        <>
+          Bring projects and chats from {sources} into {brandText.appName}.{' '}
+          {CODE_CHAT_DESTINATION_NOTE}
+        </>
+      }
+      control={
+        <Button
+          size="compact"
+          onClick={(): void => {
+            openImportProjectsModal({ source: 'settings' });
+          }}
+          data-testid="settings-canopy-import-projects-open"
+        >
+          Import from {importSourcesLabel(found)}
+        </Button>
+      }
+    />
+  );
+}
 
 export function CanopyTab(): JSX.Element {
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
@@ -555,14 +616,13 @@ export function CanopyTab(): JSX.Element {
           }
         >
           {brandText.appName} is storing local data in{' '}
-          <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-            {dataDirStatus.path}
-          </code>{' '}
-          because the primary folder is not present.
+          <InlineCode>{dataDirStatus.path}</InlineCode> because the primary
+          folder is not present.
         </Notice>
       )}
 
       <ErrorBanner
+        errorSource="settings-data-dir-error"
         className=""
         testId="settings-data-dir-error"
         error={
@@ -595,27 +655,7 @@ export function CanopyTab(): JSX.Element {
       >
         <SettingsGroup>
           <ShowTipsAgainRow />
-          <SettingsRow
-            label="Import projects"
-            dataTestId="settings-canopy-import-projects"
-            description={
-              <>
-                Bring projects and chats from Claude Code, Claude Desktop, and
-                Codex into {brandText.appName}. {CODE_CHAT_DESTINATION_NOTE}
-              </>
-            }
-            control={
-              <Button
-                size="compact"
-                onClick={(): void => {
-                  openImportProjectsModal({ source: 'settings' });
-                }}
-                data-testid="settings-canopy-import-projects-open"
-              >
-                Import from Claude and Codex
-              </Button>
-            }
-          />
+          <ImportProjectsRow />
           <SettingsRow
             label="Cursor rules"
             dataTestId="settings-canopy-import-editor-setup"
@@ -649,20 +689,15 @@ export function CanopyTab(): JSX.Element {
             <Stack gap="item">
               <p>
                 This creates a new default primary data folder at{' '}
-                <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-                  {dataDirStatus.allCandidates[0]}
-                </code>
-                , then restarts {brandText.appName}.
+                <InlineCode>{dataDirStatus.allCandidates[0]}</InlineCode>, then
+                restarts {brandText.appName}.
               </p>
               <p className="font-medium fg-primary">
                 Projects will not be transitioned.
               </p>
               <p className="text-xs">
                 Existing data will remain in{' '}
-                <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-                  {dataDirStatus.path}
-                </code>
-                .
+                <InlineCode>{dataDirStatus.path}</InlineCode>.
               </p>
             </Stack>
           }
@@ -733,7 +768,11 @@ export function CanopyTab(): JSX.Element {
               </Button>
             </form>
 
-            <ErrorBanner className="" error={versionError} />
+            <ErrorBanner
+              errorSource="canopy-tab-version"
+              className=""
+              error={versionError}
+            />
 
             <Surface variant="outline" className="overflow-hidden">
               <div

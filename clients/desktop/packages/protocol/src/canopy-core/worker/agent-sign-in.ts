@@ -21,6 +21,7 @@ export const WORKER_AGENT_SIGN_IN_PROVIDERS = [
   'codex',
   'github',
   'opencode',
+  'antigravity',
 ] as const;
 export type WorkerAgentSignInProvider =
   (typeof WORKER_AGENT_SIGN_IN_PROVIDERS)[number];
@@ -46,6 +47,9 @@ export const PROVIDER_CREDENTIAL_EFFECT_IDS = [
   'github.darwin.gh-store',
   'github.linux.gh-store',
   'github.win32.gh-store',
+  'antigravity.darwin.native-store',
+  'antigravity.linux.native-store',
+  'antigravity.win32.native-store',
   'opencode.darwin.auth-file',
   'opencode.linux.auth-file',
   'opencode.win32.auth-file',
@@ -156,6 +160,36 @@ export const PROVIDER_SIGN_IN_CREDENTIAL_EFFECTS: readonly ProviderCredentialEff
       store: 'file-or-os-keyring',
       location:
         'gh: Windows Credential Manager when available, else %GH_CONFIG_DIR%\\hosts.yml (default %AppData%\\GitHub CLI)',
+      writer: 'provider-binary',
+      evidence: 'provider-documentation',
+    },
+    {
+      effectId: 'antigravity.darwin.native-store',
+      provider: 'antigravity',
+      os: 'darwin',
+      store: 'file-or-os-keyring',
+      location:
+        'Antigravity native credential store; runtime profile under the app data root/antigravity',
+      writer: 'provider-binary',
+      evidence: 'provider-documentation',
+    },
+    {
+      effectId: 'antigravity.linux.native-store',
+      provider: 'antigravity',
+      os: 'linux',
+      store: 'file-or-os-keyring',
+      location:
+        'Antigravity native credential store; runtime profile under the app data root/antigravity',
+      writer: 'provider-binary',
+      evidence: 'provider-documentation',
+    },
+    {
+      effectId: 'antigravity.win32.native-store',
+      provider: 'antigravity',
+      os: 'win32',
+      store: 'file-or-os-keyring',
+      location:
+        'Antigravity native credential store; runtime profile under the app data root/antigravity',
       writer: 'provider-binary',
       evidence: 'provider-documentation',
     },

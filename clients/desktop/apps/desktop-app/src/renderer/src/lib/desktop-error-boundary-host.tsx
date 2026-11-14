@@ -1,10 +1,10 @@
 /* eslint-disable react-refresh/only-export-components */
-import type { AppErrorSurface } from '@canopy/protocol/app-errors';
-import type { AppErrorBoundaryHost } from '@canopy/ui-app';
 import {
-  captureClientInstrumentationError,
-  reportClientAppError,
-} from '@canopy/desktop-instrumentation/client';
+  rememberAppErrorNativeFrames,
+  type AppErrorSurface,
+} from '@canopy/protocol/app-errors';
+import type { AppErrorBoundaryHost } from '@canopy/ui-app';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { DesktopReportThisAction } from '@/components/shared/DesktopReportThisAction';
 import { brandText } from '@/lib/brand';
 import {
@@ -16,8 +16,6 @@ import type { RendererErrorBoundaryId } from '@/lib/surfaced-error-recording';
 
 interface DesktopErrorBoundaryScope {
   readonly boundary: RendererErrorBoundaryId;
-  /** The name this boundary already reports to instrumentation under. */
-  readonly instrumentationBoundary: string;
   readonly surface: AppErrorSurface;
   readonly consoleMessage: string;
 }
@@ -61,15 +59,8 @@ function createDesktopErrorBoundaryHost(
   scope: DesktopErrorBoundaryScope,
 ): AppErrorBoundaryHost {
   return {
-    capture(error, info, context) {
-      isolated(scope.surface, () =>
-        captureClientInstrumentationError(error, {
-          context: {
-            boundary: scope.instrumentationBoundary,
-            ...(context?.panelKind ? { panelKind: context.panelKind } : {}),
-          },
-        }),
-      );
+    capture(error, info, context, thrownType) {
+      if (thrownType === undefined) rememberAppErrorNativeFrames(error);
       isolated(scope.surface, () =>
         reportRendererConsoleError(scope.consoleMessage, {
           ...describeThrown(error),
@@ -77,7 +68,12 @@ function createDesktopErrorBoundaryHost(
           ...context,
         }),
       );
-      return captureRendererAppError(error, scope.surface, scope.boundary);
+      return captureRendererAppError(
+        error,
+        scope.surface,
+        scope.boundary,
+        thrownType,
+      );
     },
     present: presentRendererAppError,
     renderReportAction: (appError, telemetry) => (
@@ -92,28 +88,24 @@ function createDesktopErrorBoundaryHost(
 
 export const rootErrorBoundaryHost = createDesktopErrorBoundaryHost({
   boundary: 'root',
-  instrumentationBoundary: 'root',
   surface: 'window',
   consoleMessage: 'Top-level renderer error boundary caught an error',
 });
 
 export const panelErrorBoundaryHost = createDesktopErrorBoundaryHost({
   boundary: 'panel',
-  instrumentationBoundary: 'panel',
   surface: 'panel',
   consoleMessage: 'Panel error boundary caught an error',
 });
 
 export const chartErrorBoundaryHost = createDesktopErrorBoundaryHost({
   boundary: 'chart',
-  instrumentationBoundary: 'chart',
   surface: 'panel',
   consoleMessage: 'Chart error boundary caught an error',
 });
 
 export const lazyLoadErrorBoundaryHost = createDesktopErrorBoundaryHost({
   boundary: 'lazy-load',
-  instrumentationBoundary: 'lazy_load',
   surface: 'panel',
   consoleMessage: 'Lazy component failed to load',
 });

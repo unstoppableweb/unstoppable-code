@@ -6,7 +6,10 @@ import type {
   CanopyQueryResult,
   PlaneQualifiedName,
 } from '@canopy/protocol/canopy-core';
-import type { ModelCatalogOption } from '@canopy/protocol/models';
+import type {
+  AgentExecutionHarness,
+  ModelCatalogOption,
+} from '@canopy/protocol/models';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import type { AgentActionErrorCode } from '../response';
 import type { AgentChatCreatePlacement } from '../surface/capabilities';
@@ -60,7 +63,16 @@ export interface AgentGetChatInput {
 export interface AgentStartChatInput {
   scope: AgentWorktreeScope;
   placement: AgentChatCreatePlacement;
-  model?: { id: string; thinkingLevel?: ThinkingLevel };
+  /**
+   * The checked selection. `executionHarness` is set only when the action
+   * named one; the family already matched it to the model's own harness or
+   * one of its `harnessChoices`, so the host pins the new chat to it.
+   */
+  model?: {
+    id: string;
+    thinkingLevel?: ThinkingLevel;
+    executionHarness?: AgentExecutionHarness;
+  };
   title?: string;
   message: { text: string };
   lineage: { parentChatId: string; depth: number };

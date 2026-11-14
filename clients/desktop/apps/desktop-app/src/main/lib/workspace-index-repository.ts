@@ -1,9 +1,7 @@
 import {
-  createWorkspaceIndexRepository as createCoreWorkspaceIndexRepository,
   type StoredWorkspaceIndexRepository as CoreStoredWorkspaceIndexRepository,
   type WorkspaceIndexChange as CoreWorkspaceIndexChange,
   type WorkspaceIndexRepository as CoreWorkspaceIndexRepository,
-  type WorkspaceIndexRepositoryDeps as CoreWorkspaceIndexRepositoryDeps,
   type WorkspaceIndexSnapshot as CoreWorkspaceIndexSnapshot,
   type WorkspaceIndexStoredSnapshot as CoreWorkspaceIndexStoredSnapshot,
 } from '@canopy/core-runtime/node/w5/workspace-index-repository';
@@ -32,12 +30,6 @@ export type WorkspaceIndexStoredSnapshot =
   CoreWorkspaceIndexStoredSnapshot<WorkspaceIndexEntry>;
 export type StoredWorkspaceIndexRepository =
   CoreStoredWorkspaceIndexRepository<WorkspaceIndexEntry>;
-/** Desktop main binds its activity sections. */
-export type WorkspaceIndexRepositoryDeps = Omit<
-  CoreWorkspaceIndexRepositoryDeps<ActivitySectionId>,
-  'normalizeActivitySectionOrder'
->;
-
 export function normalizeActivitySectionOrder(
   value: unknown,
 ): ProjectData['activitySectionOrder'] {
@@ -50,14 +42,4 @@ export function normalizeActivitySectionOrder(
       typeof entry === 'string' && isActivitySectionId(entry),
   );
   return normalized.length > 0 ? normalized : undefined;
-}
-
-/** The desktop `<data>/workspaces/index.json` repository (CAN-3800). */
-export function createWorkspaceIndexRepository(
-  deps: WorkspaceIndexRepositoryDeps,
-): StoredWorkspaceIndexRepository {
-  return createCoreWorkspaceIndexRepository({
-    ...deps,
-    normalizeActivitySectionOrder,
-  });
 }

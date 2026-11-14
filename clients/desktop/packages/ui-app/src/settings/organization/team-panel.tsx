@@ -214,12 +214,14 @@ export function TeamPanel({
   return (
     <section className="flex flex-col gap-6" data-testid="team-panel">
       <ErrorBanner
+        errorSource="team-panel-load"
         className=""
         error={loadError?.copy}
         details={loadError?.details}
         onRetry={() => void refresh()}
       />
       <ErrorBanner
+        errorSource="team-panel-action"
         className=""
         error={actionError?.copy}
         details={actionError?.details}

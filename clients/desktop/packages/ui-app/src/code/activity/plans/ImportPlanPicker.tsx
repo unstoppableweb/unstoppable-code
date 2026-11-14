@@ -18,6 +18,7 @@ import {
   HighlightedSegments,
   SearchField,
   Skeleton,
+  Surface,
   splitMatchSegments,
 } from '@canopy/ui-shared/components';
 import { formatShortcut } from '@canopy/ui-shared/lib/shortcuts';
@@ -238,46 +239,51 @@ function PreviewPane({
 }): JSX.Element {
   const path = itemPath(item);
   return (
-    <aside
+    <Surface
+      as="aside"
+      variant="section"
+      boundary="left"
       data-testid="import-plan-preview"
       aria-label="Preview"
-      className="hidden w-72 shrink-0 flex-col gap-3 border-l py-3 pl-4 pr-6 md:flex"
+      className="hidden w-72 shrink-0 flex-col md:flex"
     >
-      <div className="min-w-0">
-        {title !== undefined ? (
+      <div className="flex flex-col gap-3 py-3 pl-4 pr-6">
+        <div className="min-w-0">
+          {title !== undefined ? (
+            <div
+              data-testid="import-plan-preview-title"
+              className={`line-clamp-2 text-s font-semibold fg-primary ${REPLAY_BLOCK_CLASS}`}
+            >
+              {title}
+            </div>
+          ) : (
+            <div className="truncate text-s font-semibold fg-primary">
+              {baseName(path)}
+            </div>
+          )}
           <div
-            data-testid="import-plan-preview-title"
-            className={`line-clamp-2 text-s font-semibold fg-primary ${REPLAY_BLOCK_CLASS}`}
+            data-testid="import-plan-preview-path"
+            className="mt-0.5 break-all text-xs fg-secondary"
           >
-            {title}
+            {path}
           </div>
-        ) : (
-          <div className="truncate text-s font-semibold fg-primary">
-            {baseName(path)}
-          </div>
-        )}
-        <div
-          data-testid="import-plan-preview-path"
-          className="mt-0.5 break-all text-xs fg-secondary"
-        >
-          {path}
         </div>
+        <ul className="flex flex-col gap-1 text-xs fg-primary">
+          {BENEFITS.map((benefit) => (
+            <li key={benefit}>{benefit}</li>
+          ))}
+        </ul>
+        {/* Opening a tracked plan copies nothing. */}
+        {itemTrackedPlanId(item) ? null : (
+          <p
+            data-testid="import-plan-copy-notice"
+            className="text-xs fg-secondary"
+          >
+            {COPY_NOTICE}
+          </p>
+        )}
       </div>
-      <ul className="flex flex-col gap-1 text-xs fg-primary">
-        {BENEFITS.map((benefit) => (
-          <li key={benefit}>{benefit}</li>
-        ))}
-      </ul>
-      {/* Opening a tracked plan copies nothing. */}
-      {itemTrackedPlanId(item) ? null : (
-        <p
-          data-testid="import-plan-copy-notice"
-          className="text-xs fg-secondary"
-        >
-          {COPY_NOTICE}
-        </p>
-      )}
-    </aside>
+    </Surface>
   );
 }
 
@@ -520,29 +526,35 @@ export function ImportPlanPicker({
       {/* The palette's own keys (arrows, Enter, Escape) are handled here, so
           the field never clears on Escape and an IME composition keeps them. */}
       <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
-        <div className="border-b px-6 py-3">
-          <SearchField
-            ref={inputRef}
-            size="lg"
-            clearOnEscape={false}
-            value={query}
-            onValueChange={onQueryChange}
-            placeholder="Search files (.md or .txt)…"
-            aria-label="Search plan files"
-            role="combobox"
-            aria-autocomplete="list"
-            aria-expanded={hasRows}
-            aria-controls={hasRows ? listboxId : undefined}
-            aria-activedescendant={
-              selectedItemKey === null
-                ? undefined
-                : optionIds.get(selectedItemKey)
-            }
-            data-testid="import-plan-input"
-          />
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div className="px-6 py-3">
+            <SearchField
+              ref={inputRef}
+              size="lg"
+              clearOnEscape={false}
+              value={query}
+              onValueChange={onQueryChange}
+              placeholder="Search files (.md or .txt)…"
+              aria-label="Search plan files"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={hasRows}
+              aria-controls={hasRows ? listboxId : undefined}
+              aria-activedescendant={
+                selectedItemKey === null
+                  ? undefined
+                  : optionIds.get(selectedItemKey)
+              }
+              data-testid="import-plan-input"
+            />
+          </div>
+        </Surface>
 
-        <div className="flex min-h-0 flex-1 border-b">
+        <Surface
+          variant="section"
+          boundary="bottom"
+          className="flex min-h-0 flex-1"
+        >
           <div className="max-h-104 min-w-0 flex-1 overflow-y-auto">
             {hasRows && (
               <div
@@ -668,42 +680,44 @@ export function ImportPlanPicker({
               </div>
             )}
             {hiddenSuggestions.length > 0 && (
-              <div className="border-t px-6 py-2">
-                <Disclosure
-                  dataTestId="import-plan-dismissed-section"
-                  label={`${hiddenSuggestions.length} hidden`}
-                >
-                  <ul className="divide-y">
-                    {hiddenSuggestions.map((suggestion) => (
-                      <li
-                        key={suggestion.id}
-                        className="flex items-center justify-between gap-3 py-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-s font-medium fg-primary">
-                            {baseName(suggestion.sourceFilePath)}
-                          </div>
-                          <div className="mt-0.5 truncate text-xs fg-secondary">
-                            {suggestion.sourceFilePath}
-                          </div>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="compact"
-                          data-testid={`import-plan-detected-import-${suggestion.id}`}
-                          disabled={importing}
-                          onClick={(): void =>
-                            runPrimary({ kind: 'suggestion', suggestion })
-                          }
+              <Surface variant="section" boundary="top">
+                <div className="px-6 py-2">
+                  <Disclosure
+                    dataTestId="import-plan-dismissed-section"
+                    label={`${hiddenSuggestions.length} hidden`}
+                  >
+                    <ul className="divide-y">
+                      {hiddenSuggestions.map((suggestion) => (
+                        <li
+                          key={suggestion.id}
+                          className="flex items-center justify-between gap-3 py-2"
                         >
-                          {suggestion.trackedPlanId ? 'Open plan' : 'Import'}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </Disclosure>
-              </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-s font-medium fg-primary">
+                              {baseName(suggestion.sourceFilePath)}
+                            </div>
+                            <div className="mt-0.5 truncate text-xs fg-secondary">
+                              {suggestion.sourceFilePath}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="compact"
+                            data-testid={`import-plan-detected-import-${suggestion.id}`}
+                            disabled={importing}
+                            onClick={(): void =>
+                              runPrimary({ kind: 'suggestion', suggestion })
+                            }
+                          >
+                            {suggestion.trackedPlanId ? 'Open plan' : 'Import'}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </Disclosure>
+                </div>
+              </Surface>
             )}
           </div>
 
@@ -717,7 +731,7 @@ export function ImportPlanPicker({
               }
             />
           )}
-        </div>
+        </Surface>
       </div>
     </DialogModal>
   );

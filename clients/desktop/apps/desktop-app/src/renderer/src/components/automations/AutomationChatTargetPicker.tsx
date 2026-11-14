@@ -413,11 +413,17 @@ export function AutomationChatTargetPicker({
           >
             Open {CHAT_UNIT_LABEL.toLowerCase()}
           </Button>
-          <ErrorBanner className="" error={openChatError} />
+          <ErrorBanner
+            errorSource="automation-chat-target-picker-open"
+            className=""
+            error={openChatError}
+          />
         </div>
       ) : null}
       {unavailable ? (
         <ErrorBanner
+          errorSource="automations-form-chat-target-unavailable"
+          displayErrorCode="external.state_changed"
           className=""
           error={AUTOMATION_CHAT_TARGET_UNAVAILABLE_ERROR}
           testId="automations-form-chat-target-unavailable"

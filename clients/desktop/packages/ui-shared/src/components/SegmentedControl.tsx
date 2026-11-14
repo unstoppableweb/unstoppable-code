@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type FocusEvent,
   type JSX,
   type KeyboardEvent,
   type ReactNode,
@@ -11,7 +12,7 @@ import {
 import { useFlipBox } from '../lib/flip-box';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
 import { getWindow } from '../panels/window-registry';
-import { Tooltip } from './Tooltip';
+import { Tooltip, type TooltipLink } from './Tooltip';
 
 export interface SegmentedControlOption<T extends string> {
   readonly value: T;
@@ -27,9 +28,20 @@ export interface SegmentedControlOption<T extends string> {
   /** Shown after the label, such as a count. */
   readonly trailing?: ReactNode;
   /** Explains the option on hover and keyboard focus. */
-  readonly tooltip?: string;
+  readonly tooltip?: ReactNode;
+  /** A link under the tooltip's text, such as an unavailable option's next step. */
+  readonly tooltipLink?: TooltipLink;
+  /** Id of the sentence that explains this option. */
+  readonly describedBy?: string;
   /** Shown and focusable, so its tooltip can say why, but not selectable. */
   readonly unavailable?: boolean;
+  /**
+   * Runs when an unavailable option is pressed, for an in-app next step a
+   * tooltip cannot offer on touch or inside a focus trap.
+   */
+  readonly onUnavailablePress?: () => void;
+  /** Not selectable and out of the Tab order, with no reason to show. */
+  readonly disabled?: boolean;
   /** With `semantics="tabs"`, the tab's id. */
   readonly id?: string;
   /** With `semantics="tabs"`, the id of the panel the tab shows. */
@@ -44,10 +56,14 @@ export interface SegmentedControlProps<T extends string> {
   /** Accessible name for the group. */
   readonly label: string;
   /**
-   * `toggle` switches a setting in place: a group of pressed buttons. `tabs`
-   * switches the view below it: a tablist whose tabs name their panels.
+   * `toggle` switches a setting in place: a group of pressed buttons. `radio`
+   * is one choice of a form: a radiogroup with one Tab stop and arrow keys
+   * that move and choose. `tabs` switches the view below it: a tablist whose
+   * tabs name their panels.
    */
-  readonly semantics?: 'toggle' | 'tabs';
+  readonly semantics?: 'toggle' | 'radio' | 'tabs';
+  /** Id of an element that describes the whole group. */
+  readonly describedBy?: string;
   /**
    * `control`: at least the settings control column (208px), so a stack of
    * settings rows lines its pickers up edge to edge; a picker whose labels do
@@ -218,6 +234,7 @@ export function SegmentedControl<T extends string>({
   onChange,
   label,
   semantics = 'toggle',
+  describedBy,
   width = 'control',
   shape = 'rounded',
   disabled,
@@ -226,6 +243,7 @@ export function SegmentedControl<T extends string>({
 }: SegmentedControlProps<T>): JSX.Element {
   const trackRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLSpanElement>(null);
+  const [focusedValue, setFocusedValue] = useState<T | null>(null);
   const [surface, setSurface] = useState<SurfacePlacement | null>(null);
   useFlipBox(surfaceRef, { ...SURFACE_SLIDE, snap: surface?.slide !== true });
   const layoutKey = optionsLayoutKey(options);
@@ -260,24 +278,47 @@ export function SegmentedControl<T extends string>({
   }, [layoutKey]);
 
   const tabs = semantics === 'tabs';
-  // As tabs, only the selected tab (or the first, while loading) is in the
-  // Tab order, and the arrow keys, Home and End move between tabs. A tab the
-  // arrows land on is selected, unless it is unavailable: then it only takes
-  // focus, so its tooltip can say why.
-  const tabbableValue = options.some((option) => option.value === value)
+  const radio = semantics === 'radio';
+  const roving = tabs || radio;
+  // Enter at the selected segment, or the first enabled segment while loading.
+  // Inside the group the Tab stop follows focus so Tab can leave even when an
+  // unavailable segment has focus and another segment is selected.
+  const enabledOptions = options.filter((option) => option.disabled !== true);
+  const entryValue = enabledOptions.some((option) => option.value === value)
     ? value
-    : options[0]?.value;
-  const onTabKeyDown = (
+    : enabledOptions[0]?.value;
+  const tabbableValue = enabledOptions.some(
+    (option) => option.value === focusedValue,
+  )
+    ? focusedValue
+    : entryValue;
+  const onTrackBlur = (event: FocusEvent<HTMLDivElement>): void => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      setFocusedValue(null);
+    }
+  };
+  const onRovingKeyDown = (
     event: KeyboardEvent<HTMLButtonElement>,
-    index: number,
+    segmentValue: T,
   ): void => {
-    const count = options.length;
+    const count = enabledOptions.length;
+    const index = enabledOptions.findIndex(
+      (option) => option.value === segmentValue,
+    );
     let next: number;
     switch (event.key) {
       case 'ArrowRight':
         next = (index + 1) % count;
         break;
       case 'ArrowLeft':
+        next = (index - 1 + count) % count;
+        break;
+      case 'ArrowDown':
+        if (!radio) return;
+        next = (index + 1) % count;
+        break;
+      case 'ArrowUp':
+        if (!radio) return;
         next = (index - 1 + count) % count;
         break;
       case 'Home':
@@ -290,12 +331,12 @@ export function SegmentedControl<T extends string>({
         return;
     }
     event.preventDefault();
-    const option = options[next];
+    const option = enabledOptions[next];
     if (option === undefined) return;
     const segments = trackRef.current?.querySelectorAll<HTMLButtonElement>(
       '[data-segment-index]',
     );
-    segments?.[next]?.focus();
+    segments?.[options.indexOf(option)]?.focus();
     if (option.unavailable !== true && option.value !== value) {
       onChange(option.value);
     }
@@ -303,8 +344,10 @@ export function SegmentedControl<T extends string>({
   return (
     <div
       ref={trackRef}
-      role={tabs ? 'tablist' : 'group'}
+      role={tabs ? 'tablist' : radio ? 'radiogroup' : 'group'}
       aria-label={label}
+      aria-describedby={describedBy}
+      onBlur={roving ? onTrackBlur : undefined}
       data-testid={dataTestId}
       className={`${TRACK_CLASS_NAME} ${TRACK_CORNER_CLASS_NAME[shape]} ${TRACK_WIDTH_CLASS_NAME[width]}${touchTarget ? ' pointer-coarse:h-auto' : ''}`.trim()}
     >
@@ -321,35 +364,41 @@ export function SegmentedControl<T extends string>({
         const selected = option.value === value;
         const unavailable = option.unavailable === true;
         const iconOnly = option.icon !== undefined;
+        const semanticProps = tabs
+          ? {
+              role: 'tab',
+              'aria-selected': selected,
+              id: option.id,
+              'aria-controls': option.controls,
+            }
+          : radio
+            ? { role: 'radio', 'aria-checked': selected }
+            : { 'aria-pressed': selected };
         const segment = (
           <button
             key={option.value}
             type="button"
-            {...(tabs
-              ? {
-                  role: 'tab',
-                  'aria-selected': selected,
-                  id: option.id,
-                  'aria-controls': option.controls,
-                }
-              : { 'aria-pressed': selected })}
+            {...semanticProps}
             // An unavailable option stays focusable so its tooltip can be
             // reached; only `disabled` takes a segment out of the tab order.
             aria-label={iconOnly ? option.label : undefined}
+            aria-describedby={option.describedBy}
             aria-disabled={unavailable || undefined}
-            disabled={disabled}
+            disabled={disabled || option.disabled}
             data-segment-selected={selected}
             data-segment-index={index}
-            {...(tabs
+            {...(roving
               ? {
                   tabIndex: option.value === tabbableValue ? 0 : -1,
+                  onFocus: (): void => setFocusedValue(option.value),
                   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>): void =>
-                    onTabKeyDown(event, index),
+                    onRovingKeyDown(event, option.value),
                 }
               : {})}
             data-testid={option.dataTestId}
             onClick={(): void => {
-              if (!unavailable) onChange(option.value);
+              if (unavailable) option.onUnavailablePress?.();
+              else onChange(option.value);
             }}
             className={`${segmentClassName(selected, unavailable, shape, iconOnly)}${touchTarget ? ' pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''}`}
           >
@@ -365,7 +414,11 @@ export function SegmentedControl<T extends string>({
           </button>
         );
         return option.tooltip ? (
-          <Tooltip key={option.value} label={option.tooltip}>
+          <Tooltip
+            key={option.value}
+            label={option.tooltip}
+            link={option.tooltipLink}
+          >
             {segment}
           </Tooltip>
         ) : (

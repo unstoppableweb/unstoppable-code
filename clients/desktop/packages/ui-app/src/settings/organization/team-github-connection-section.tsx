@@ -200,7 +200,11 @@ export function TeamGitHubConnectionSection({
         </div>
         {error ? (
           <div className="pb-3">
-            <ErrorBanner error={error?.copy} details={error?.details} />
+            <ErrorBanner
+              errorSource="team-git-hub-connection-section"
+              error={error?.copy}
+              details={error?.details}
+            />
           </div>
         ) : null}
       </div>

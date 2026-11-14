@@ -117,6 +117,8 @@ export interface McpProxyRouteRegistration extends Omit<
   'routeId' | 'reauthRequired'
 > {
   routeKey?: string;
+  /** The capability snapshot's host-neutral key for a plugin server's route (CAN-6168). */
+  snapshotKey?: string;
 }
 export type {
   CanopyWorktreeSessionRoute,
@@ -620,6 +622,13 @@ export class McpHttpProxyService {
     mcpServers: Record<string, unknown>,
   ): string[] {
     return this.connections.codexCapabilityAuthorityIds(mcpServers);
+  }
+
+  /** Fingerprint v1's authority ids, to recognize a lease written before v2 (CAN-6168). */
+  getLegacyCodexCapabilityAuthorityIds(
+    mcpServers: Record<string, unknown>,
+  ): string[] {
+    return this.connections.codexCapabilityAuthorityIds(mcpServers, true);
   }
 
   /** Stable config identities without persisting credentials or ephemeral proxy addresses. */

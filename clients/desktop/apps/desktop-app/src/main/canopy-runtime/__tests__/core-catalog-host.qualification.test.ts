@@ -279,7 +279,8 @@ function fakes(): Fakes {
         : Promise.resolve({
             workspaceId: params.workspaceId,
             written: true,
-            ...(params.change.kind === 'setDefaults'
+            ...(params.change.kind === 'setDefaults' &&
+            params.change.defaultPluginSelections !== null
               ? {
                   defaultPluginSelections:
                     params.change.defaultPluginSelections,

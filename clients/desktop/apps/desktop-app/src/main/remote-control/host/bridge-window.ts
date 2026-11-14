@@ -41,6 +41,7 @@ export interface HostBridge {
 
 interface BridgeRecord {
   controllerDeviceId: string;
+  exactWorktreeBaseBranch: boolean;
   onReady: () => void;
   onResult: (message: unknown) => void;
 }
@@ -80,6 +81,13 @@ export function resolveRemoteBridgeSender(sender: {
   return bridgesByWebContentsId.get(sender.id)?.controllerDeviceId ?? null;
 }
 
+/** Local windows and negotiated desktop bridges use the exact catalogue. */
+export function usesExactWorktreeBaseCatalogue(sender: {
+  id: number;
+}): boolean {
+  return bridgesByWebContentsId.get(sender.id)?.exactWorktreeBaseBranch ?? true;
+}
+
 const BRIDGE_PAGE = `data:text/html;charset=utf-8,${encodeURIComponent(
   '<!doctype html><meta charset="utf-8"><title>Remote control bridge</title>',
 )}`;
@@ -97,6 +105,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export async function createBridgeWindow(options: {
   controllerDeviceId: string;
+  exactWorktreeBaseBranch: boolean;
   preloadPath: string;
 }): Promise<HostBridge> {
   installIpcListeners();
@@ -148,6 +157,7 @@ export async function createBridgeWindow(options: {
 
   bridgesByWebContentsId.set(webContentsId, {
     controllerDeviceId: options.controllerDeviceId,
+    exactWorktreeBaseBranch: options.exactWorktreeBaseBranch,
     onReady: () => markReady(),
     onResult: (message) => {
       if (!isRecord(message) || typeof message.id !== 'number') return;

@@ -26,7 +26,10 @@ import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
 import type { CostNavigator } from '@canopy/app-core';
 import { toPipelineRunDefinitionViewModel } from '@canopy/desktop-shared/pipelines/pipeline-read-detail-adapter';
 import { PipelineRunDefinitionUsed } from '@canopy/ui-app';
-import { formatCostTotal } from '@canopy/ui-shared/components/cost';
+import {
+  formatCostTotalIn,
+  useCostCurrency,
+} from '@canopy/ui-shared/components/cost';
 import type { PipelineDetailOwner } from '@/stores/pipelineDetailCoordinator';
 import {
   useNavigationStore,
@@ -423,6 +426,7 @@ export function PipelineExecutionDetail({
     );
   const runCost = usePipelineRunCostPanel();
   const costView = runCost?.value ?? null;
+  const costCurrency = useCostCurrency();
   const hasCost = costView !== null && costView.run.agentStepCount > 0;
   const costReadPending =
     runCost !== null &&
@@ -903,7 +907,12 @@ export function PipelineExecutionDetail({
                 selected={visibleSelection}
                 costEntry={
                   hasCost && costView !== null
-                    ? { amount: formatCostTotal(costView.run.totals) }
+                    ? {
+                        amount: formatCostTotalIn(
+                          costView.run.totals,
+                          costCurrency,
+                        ),
+                      }
                     : undefined
                 }
                 statusFilter={statusFilter}
@@ -942,6 +951,7 @@ export function PipelineExecutionDetail({
                     {pauseResumeContent}
                     {state.error && (
                       <Notice
+                        errorSource="pipeline-execution-detail"
                         className=""
                         intent="destructive"
                         title="Execution error"

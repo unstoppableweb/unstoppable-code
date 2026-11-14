@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
@@ -15,17 +14,14 @@ import {
 } from '@canopy/ui-shared/components';
 import { subscriptionUsageLimits } from '@canopy/desktop-shared/lib/subscription-usage';
 import { resolveAiCreditsFundingSource } from '@canopy/desktop-shared/lib/ai-credits-funding';
-import type { CanopyCloudAiCreditsState } from '@canopy/desktop-shared';
 import type {
   AgentUsageOverview,
-  AiCreditsScopeRequest,
   NativeAccountProvider,
 } from '@canopy/desktop-shared/types';
-import {
-  useChatTargetAiCreditsScope,
-  useStableAiCreditsScope,
-} from '@/lib/aiCreditsScope';
+import { useChatTargetAiCreditsScope } from '@/lib/aiCreditsScope';
 import { formatCredits } from '@/lib/ai-credits-format';
+import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
+import { useComposerWorkIsPersonal } from '@/hooks/useComposerAiCreditsBalance';
 import {
   clearAiCreditsArrival,
   selectAiCreditsArrivalEvidence,
@@ -37,6 +33,8 @@ import { scheduleAt } from '@/lib/scheduleAt';
 import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
 import {
   chatBannerKey,
+  useNoBillingSourceSignal,
+  type NoBillingSourceSignal,
   type ChatBannerTarget,
 } from '@/stores/aiCreditsBannerStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
@@ -62,6 +60,8 @@ interface AiCreditsRoutingStatusBannerProps {
   active: boolean;
   /** True while the current turn is actively running. */
   turnActive: boolean;
+  /** Canonical refusal, including an explicit absence. */
+  persistedRefusal?: NoBillingSourceSignal | null;
   /** The billed provider, used for the reset line. */
   provider?: NativeAccountProvider;
   /** Native model whose subscription windows apply to the next attempt. */
@@ -96,106 +96,6 @@ export interface ContinueInterruptedTurn {
   busy: boolean;
   /** Feedback from a failed send, shown under the message. */
   error: string | null;
-}
-
-/**
- * Live AI-credits state for the banner, so the user can watch their balance tick
- * down as the session spends. Reads the source-gated balance
- * (`/api/v1/ai-credits/balance` via `loadCanopyCloudAiCredits`) — the UD balance
- * when the account is UD-linked and eligible, otherwise the native Canopy wallet
- * — so it reflects whichever pool is actually funding this session.
- *
- * Returns the whole state rather than just the credit number, because an empty
- * personal wallet can still be funded by the org pool the server names in
- * `balance.orgPool`; the caller resolves the payer from it.
- *
- * It is fetched once when the banner first becomes visible and re-read shortly
- * after each turn ends: the proxy debits deliver-then-debit, so the balance
- * settles asynchronously just after the stream completes. Two short delayed
- * reads catch the settled value without a steady poll. Returns `null` until the
- * first successful read (and on a disconnected account); the caller hides the
- * chip while `null`.
- *
- * The read is scoped to the chat's owner (CAN-3463): the server reports only
- * that owner's organization pool, so "Covered by" can never name an org that
- * does not own this work. A target change drops the previous chat's state
- * before its own read lands.
- */
-function useAiCreditsSessionBalance(
-  visible: boolean,
-  turnActive: boolean,
-  scope: AiCreditsScopeRequest | undefined,
-  scopeKey: string,
-): CanopyCloudAiCreditsState | null {
-  const [state, setState] = useState<{
-    key: string;
-    value: CanopyCloudAiCreditsState;
-  } | null>(null);
-  const scopeKeyRef = useRef(scopeKey);
-  scopeKeyRef.current = scopeKey;
-
-  const fetchBalance = useCallback(async (): Promise<void> => {
-    const load = window.api?.loadCanopyCloudAiCredits;
-    if (!load) {
-      return;
-    }
-    const requestedScope = scope;
-    const requestedScopeKey = scopeKey;
-    try {
-      const next = await load(requestedScope);
-      // A read for a chat the banner no longer shows describes another owner.
-      if (scopeKeyRef.current !== requestedScopeKey) return;
-      // `loadCanopyCloudAiCredits` reports a transient lookup failure by
-      // *returning* `{ error, balance: null }` rather than throwing, so the
-      // `catch` below is not the path a blip actually takes. Committing that
-      // state would make `resolveAiCreditsFundingSource` fall to `unknown` and
-      // the chip vanish mid-session on one failed poll — the balance is re-read
-      // twice after every turn, so a single blip is likely. Hold the last
-      // resolved value instead. `noUdAccount` and a disconnected account are
-      // authoritative answers, not blips, so they still commit.
-      setState((previous) => {
-        const previousValue =
-          previous?.key === requestedScopeKey ? previous.value : null;
-        return {
-          key: requestedScopeKey,
-          value:
-            next.error !== null && previousValue !== null
-              ? previousValue
-              : next,
-        };
-      });
-    } catch {
-      // Keep last-known-good if the IPC call itself rejects.
-    }
-  }, [scope, scopeKey]);
-
-  // Read once when the banner becomes visible.
-  useEffect(() => {
-    if (!visible) {
-      return;
-    }
-    void fetchBalance();
-  }, [visible, fetchBalance]);
-
-  // Re-read after a turn ends. The debit is applied post-stream, so poll twice
-  // with short delays to catch the settled balance without a steady poll.
-  const wasTurnActive = useRef(turnActive);
-  useEffect(() => {
-    const ended = wasTurnActive.current && !turnActive;
-    wasTurnActive.current = turnActive;
-    if (!visible || !ended) {
-      return;
-    }
-    const timers = [
-      setTimeout(() => void fetchBalance(), 1_500),
-      setTimeout(() => void fetchBalance(), 4_000),
-    ];
-    return (): void => timers.forEach(clearTimeout);
-  }, [turnActive, visible, fetchBalance]);
-
-  // Exclude another owner's settled value during render. Waiting for a passive
-  // effect to clear it permits one committed paint with the previous payer.
-  return state?.key === scopeKey ? state.value : null;
 }
 
 /** How long the card waits on a usage lookup before treating it as unknown. */
@@ -464,16 +364,29 @@ export function AiCreditsRoutingStatusBanner({
   onSwitchToSubscription,
   accountChangedAt,
   continueInterruptedTurn,
+  persistedRefusal,
 }: AiCreditsRoutingStatusBannerProps): JSX.Element | null {
   const visible = target !== null && active;
-  const requestedScope = useChatTargetAiCreditsScope(target);
-  const { scope, key: scopeKey } = useStableAiCreditsScope(requestedScope);
-  const state = useAiCreditsSessionBalance(
-    visible,
-    turnActive,
-    scope,
-    scopeKey,
+  const scope = useChatTargetAiCreditsScope(target);
+  const personalWallet = useComposerWorkIsPersonal(target?.projectId);
+  const balance = useAiCreditsUsage(scope, {
+    enabled: visible,
+    personalWallet,
+  });
+  const liveRefusal = useNoBillingSourceSignal(
+    persistedRefusal === undefined ? target : null,
   );
+  const refusal =
+    persistedRefusal === undefined ? liveRefusal : persistedRefusal;
+  // Share the footer's owner-scoped snapshot. A refusal invalidates that cache;
+  // until a successful newer read, an old positive count is not funding evidence.
+  const state =
+    balance.refreshing ||
+    (refusal &&
+      (balance.lastUpdatedAt === null ||
+        balance.lastUpdatedAt <= refusal.detectedAt))
+      ? null
+      : balance.state;
   const canSwitch = visible && onSwitchToSubscription !== undefined;
   // The reset line only accompanies the button: it tells the user whether
   // switching back now would hit the limit again.

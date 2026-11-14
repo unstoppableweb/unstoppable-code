@@ -150,17 +150,16 @@ export function UsageSectionHeader({
     // The action and chevron sit 4px apart, as the Context and Cost rows'
     // value and chevron do, so their right edges and chevrons line up.
     <div className="relative flex items-center text-xs">
-      <button
-        type="button"
+      <DisclosureToggle
+        variant="usage-section"
+        open={expanded}
         onClick={onToggle}
-        aria-expanded={expanded}
         data-testid={testId}
         // The row's overlay (`after:`) takes clicks anywhere on the row; the
         // action and chevron that follow light up with it as its peers.
-        className={`${USAGE_DISCLOSURE_ROW_CLASS} peer flex-1 items-center after:absolute after:inset-0 after:content-['']`}
       >
         <span className="whitespace-nowrap fg-primary">{label}</span>
-      </button>
+      </DisclosureToggle>
       {action && <span className="ml-3 flex">{action}</span>}
       <span
         aria-hidden="true"

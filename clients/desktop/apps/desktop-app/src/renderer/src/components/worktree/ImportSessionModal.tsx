@@ -558,6 +558,8 @@ export function ImportSessionModal({
             </div>
 
             <Notice
+              errorSource="import-session-compatibility-status"
+              displayErrorCode="input.not_accepted"
               intent={isMismatch ? 'destructive' : 'positive'}
               data-testid="import-session-compatibility-status"
               title={
@@ -588,7 +590,12 @@ export function ImportSessionModal({
               inspection.missingRepos.length > 0 && (
                 // The compatibility notice above already announces the
                 // mismatch; this list only itemizes it, so it stays polite.
-                <Notice intent="destructive" role="status">
+                <Notice
+                  errorSource="import-session-missing-repositories"
+                  displayErrorCode="input.not_accepted"
+                  intent="destructive"
+                  role="status"
+                >
                   <ul
                     data-testid="import-session-missing-repos"
                     className="flex flex-col gap-2"
@@ -690,7 +697,11 @@ export function ImportSessionModal({
           </Notice>
         )}
 
-        {error && <Notice intent="destructive">{error}</Notice>}
+        {error && (
+          <Notice errorSource="import-session-submit" intent="destructive">
+            {error}
+          </Notice>
+        )}
 
         <div className="flex items-center justify-end gap-2 border-t pt-4">
           {inspection && phase === 'ready' && (

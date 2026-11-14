@@ -1,4 +1,9 @@
 export {
+  CHAT_DELETED_ELSEWHERE_ACTION,
+  CHAT_DELETED_ELSEWHERE_TITLE,
+  chatDeletedElsewhereNotice,
+  chatFilesNotAttachedNotice,
+  composerRefusalNotice,
   composerRefusedUserMessageId,
   composerRecoveryPortalTranscript,
   applyComposerRecovery,

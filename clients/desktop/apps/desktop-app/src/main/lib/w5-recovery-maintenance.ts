@@ -4,12 +4,9 @@ import {
   hostPlatformOperatingSystem,
   hostPlatformServices,
 } from '@canopy/core-platform';
-import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
-import {
-  isW5MaintenanceHostHeld,
-  W5MaintenanceRefusedError,
-  type W5MaintenanceContext,
-} from './w5-maintenance';
+import { createCanopyStartupClaimPort } from '@canopy/core-transport/node';
+import { createW5MaintenanceHost } from '@canopy/core-runtime/node/w5/cold-host-composition';
+import type { W5MaintenanceContext } from './w5-maintenance';
 
 /** Cold composition shared by recovery launches; never joins the host cohort. */
 export function createW5RecoveryMaintenanceContext(
@@ -24,21 +21,37 @@ export function createW5RecoveryMaintenanceContext(
   } = {},
 ): W5MaintenanceContext {
   const platform = hostPlatformServices(
-    createPlatformEndpointServices(hostPlatformOperatingSystem()),
+    createPlatformEndpointServices(hostPlatformOperatingSystem(), {
+      validateStartupClaim: async (claim): Promise<boolean> => {
+        const self = await platform.supervision.inspectProcess({
+          pid: process.pid,
+        });
+        if (self.state !== 'running' || claim.dataRoot !== dataRoot)
+          return false;
+        const claims = createCanopyStartupClaimPort({
+          dataRoot,
+          owner: { pid: process.pid, startIdentity: self.startIdentity },
+          inspectProcess: async (pid, signal) => {
+            const found = await platform.supervision.inspectProcess({
+              pid,
+              signal,
+            });
+            return found.state === 'running'
+              ? { kind: 'alive', startIdentity: found.startIdentity }
+              : { kind: found.state === 'absent' ? 'dead' : 'unknown' };
+          },
+        });
+        return claims.verify(claim);
+      },
+    }),
     { windowsProcessPath: options.windowsProcessPath },
   );
-  const host: W5CommitLogHost = new W5CommitLogHost({
+  const host = createW5MaintenanceHost({
     dataRoot,
-    root: join(dataRoot, 'workspaces'),
-    dbPath: join(dataRoot, 'w5/commit-log.sqlite'),
     confinementAddon: options.confinementAddon,
     workerEntry:
       options.workerEntry ?? join(__dirname, 'w5-commit-log-worker.js'),
-    admission: async (): Promise<void> => {
-      await options.admission?.();
-      if (!(await isW5MaintenanceHostHeld(host, dataRoot)))
-        throw new W5MaintenanceRefusedError('claim-lost');
-    },
+    admission: options.admission,
   });
   return {
     dataRoot,

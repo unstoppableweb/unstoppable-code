@@ -17,6 +17,7 @@ import { prepareMarkdownRender, type MarkdownProps } from './markdown-render';
 import { useSingleDollarMathEnabled } from './use-single-dollar-math';
 import {
   loadedSmoothMarkdown,
+  useMountedInOpeningTranscript,
   useSmoothStreaming,
   type SmoothMarkdownTools,
 } from './streaming-text';
@@ -37,11 +38,16 @@ export const Markdown = memo(function Markdown(
   // never re-mounts the reply; one already on screen when the switch flips
   // stays as it is.
   const smoothStreaming = useSmoothStreaming();
+  const alreadyOnScreen = useMountedInOpeningTranscript();
   const [SmoothRenderer] = useState(() =>
     props.streaming && smoothStreaming ? loadedSmoothMarkdown() : null,
   );
   return SmoothRenderer ? (
-    <SmoothRenderer {...props} tools={SMOOTH_MARKDOWN_TOOLS} />
+    <SmoothRenderer
+      {...props}
+      tools={SMOOTH_MARKDOWN_TOOLS}
+      alreadyOnScreen={alreadyOnScreen}
+    />
   ) : (
     <StandardMarkdown {...props} />
   );

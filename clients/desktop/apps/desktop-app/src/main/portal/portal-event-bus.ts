@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { isRecord } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { projectNewTaskControls } from './worktree-new-task-controls';
 import { acquirePortalOverviewSnapshot } from './portal-overview-build';
+import { subscribeAutoDeleteAttention } from '../lib/auto-delete-attention';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 // Zero top-level imports of its own — defers `runtime-status` (and the
 // `__CANOPY_CURSOR_CLI__` build constant it reads) internally, matching
@@ -27,6 +28,7 @@ import {
 
 let active = false;
 let eventSink: ((event: PortalEventEnvelope) => void) | null = null;
+let unsubscribeAutoDeleteAttention: (() => void) | null = null;
 let overviewRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let overviewPush: Promise<void> | null = null;
 // Arrival mark of the latest push requested while one was in flight; the
@@ -92,7 +94,8 @@ export function setCanopyPortalEventSink(
   sink: ((event: PortalEventEnvelope) => void) | null,
 ): void {
   const wasActive = active;
-  if (eventSink !== sink) {
+  const sinkChanged = eventSink !== sink;
+  if (sinkChanged) {
     sinkGeneration++;
     opencodeCatalogWarmup?.abort();
     opencodeCatalogWarmup = undefined;
@@ -104,6 +107,19 @@ export function setCanopyPortalEventSink(
   }
   eventSink = sink;
   active = sink !== null;
+  // Inactivity sweeps can finish before renderer startup unlocks the armed
+  // scheduler. Portal delivery belongs to the connected sink, not that scheduler.
+  if (active && unsubscribeAutoDeleteAttention === null) {
+    unsubscribeAutoDeleteAttention = subscribeAutoDeleteAttention(
+      notifyPortalStructureChanged,
+    );
+  } else if (!active) {
+    unsubscribeAutoDeleteAttention?.();
+    unsubscribeAutoDeleteAttention = null;
+  }
+  // A sweep can commit before subscription. Replay through an authorized
+  // overview, even if the browser hydrates from an already-fresh hosted cache.
+  if (active && sinkChanged) notifyPortalStructureChanged();
   if (!active && overviewRefreshTimer) {
     clearTimeout(overviewRefreshTimer);
     overviewRefreshTimer = null;

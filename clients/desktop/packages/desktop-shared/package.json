@@ -20,7 +20,8 @@
     "js-yaml": "^4.1.1",
     "yauzl": "^2.10.0",
     "zod": "4.3.6",
-    "@canopy/copilot-recipient": "workspace:*"
+    "@canopy/copilot-recipient": "workspace:*",
+    "launchdarkly-node-client-sdk": "^3.3.1"
   },
   "exports": {
     ".": "./src/index.ts",

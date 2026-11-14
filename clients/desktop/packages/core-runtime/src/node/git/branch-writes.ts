@@ -1,3 +1,5 @@
+import type { WorkerGitBranchCreateResult } from '@canopy/protocol/canopy-core';
+import { worktreeSourceFailure } from './head-state';
 import {
   occupiedGitWorktreeBranches,
   parseGitWorktreeListPorcelain,
@@ -11,6 +13,8 @@ import {
  * never reads as an answer.
  */
 export interface GitBranchWritePort {
+  readonly signal?: AbortSignal;
+  readTrackingConfig(this: void): Promise<string>;
   /** `status --porcelain --untracked-files=normal` printed anything. */
   hasUncommittedChanges(this: void): Promise<boolean>;
   /**
@@ -35,17 +39,204 @@ export interface GitBranchWritePort {
   listLocalBranchesUnder(this: void, name: string): Promise<string>;
   /** `rev-parse --abbrev-ref HEAD`. */
   currentBranch(this: void): Promise<string>;
-  /** Effect: `checkout <branch>`. */
-  checkout(this: void, branch: string): Promise<void>;
+  /** Exact symbolic HEAD, or null when detached. */
+  readHeadRef(this: void): Promise<string | null>;
+  /** Attach to an existing local branch by its literal branch name. */
+  checkout(
+    this: void,
+    branch: string,
+    continuingCreation?: true,
+  ): Promise<void>;
+  /** Exact branch ref lookup with no revision fallback. */
+  resolveCatalogBranch(
+    this: void,
+    branch: string,
+    remote: boolean,
+  ): Promise<string | undefined>;
   /** Effect: `checkout -b <name> <startPoint>`. */
   checkoutNewBranch(
     this: void,
     name: string,
     startPoint: string,
   ): Promise<void>;
+  createBranch(this: void, name: string, startPoint: string): Promise<void>;
   /** Effect: `branch -m <name>`, renaming the current branch. */
   renameCurrentBranch(this: void, name: string): Promise<void>;
 }
+
+function trackingValues(config: readonly string[], key: string): string[] {
+  const prefix = `${key}\n`;
+  return config
+    .filter((entry) => entry === key || entry.startsWith(prefix))
+    .map((entry) => (entry === key ? 'true' : entry.slice(prefix.length)));
+}
+
+export class GitCheckoutCreationError extends Error {
+  constructor(
+    readonly branch: string,
+    readonly branchExists: boolean | undefined,
+    message: string,
+    cause: unknown,
+  ) {
+    super(message);
+    Object.assign(this, { cause });
+  }
+}
+
+interface GitCreationReads {
+  readHeadRef(): Promise<string | null>;
+  branchExists(): Promise<boolean>;
+  readBranchTip?(): Promise<string | undefined>;
+  readSourceTip?(): Promise<string | undefined>;
+  readTrackingConfig(): Promise<string>;
+  worktreeExists?: () => Promise<boolean>;
+}
+
+/** A failed creation may have changed Git state. Read it before answering. */
+export async function createAndVerifyGitCheckout(
+  reads: GitCreationReads,
+  input: {
+    branch: string;
+    expectedTip?: string;
+    signal?: AbortSignal;
+    create: () => Promise<void>;
+    checkout?: () => Promise<void>;
+  },
+): Promise<WorkerGitBranchCreateResult> {
+  const { branch, expectedTip, signal, create, checkout } = input;
+  // With no pinned tip, create is the combined checkout -b command.
+  let checkoutStarted = expectedTip === undefined;
+  let failure: { error: unknown } | undefined;
+  if (signal?.aborted)
+    throw new GitBranchWriteInterrupted(
+      'cancelled',
+      'The operation was cancelled.',
+      signal.reason,
+    );
+  try {
+    await create();
+    if (checkout) {
+      if ((await reads.readBranchTip?.()) !== expectedTip)
+        throw new Error('Branch tip changed during setup.');
+      if (!(await reads.readSourceTip?.()))
+        throw new Error('The selected base ref disappeared during setup.');
+      checkoutStarted = true;
+      await checkout();
+    }
+  } catch (error) {
+    failure = { error };
+  }
+
+  // A hook can advance an attached branch. The pin guards preparation and
+  // hook-disabled worktree add, while a switch is verified by symbolic HEAD.
+  const checkPinnedTip = expectedTip !== undefined && !checkoutStarted;
+  const [head, tip, config, worktree, source] = await Promise.allSettled([
+    reads.readHeadRef(),
+    checkPinnedTip ? reads.readBranchTip?.() : undefined,
+    reads.readTrackingConfig(),
+    reads.worktreeExists?.(),
+    checkPinnedTip ? reads.readSourceTip?.() : undefined,
+  ]);
+  const fields =
+    config.status === 'fulfilled' ? config.value.split('\0') : null;
+  const remote = fields
+    ? trackingValues(fields, `branch.${branch}.remote`)
+    : [];
+  const merge = fields ? trackingValues(fields, `branch.${branch}.merge`) : [];
+  const upstream =
+    remote.length && merge.length
+      ? 'configured'
+      : remote.length || merge.length
+        ? 'partial'
+        : 'unset';
+  const complete =
+    head.status === 'fulfilled' &&
+    head.value === `refs/heads/${branch}` &&
+    (!checkPinnedTip ||
+      (tip.status === 'fulfilled' &&
+        tip.value === expectedTip &&
+        source.status === 'fulfilled' &&
+        source.value !== undefined &&
+        fields !== null)) &&
+    worktree.status === 'fulfilled' &&
+    (!reads.worktreeExists || worktree.value === true);
+  if (complete && !failure) return { branch };
+  if (complete && checkoutStarted && fields !== null) {
+    return { branch, warning: { code: 'checkout-command-failed', upstream } };
+  }
+
+  const branchExists = await reads.branchExists().catch(() => undefined);
+  if (
+    failure &&
+    (worktreeSourceFailure(failure.error) ||
+      (expectedTip === undefined && branchExists === false))
+  )
+    throw failure.error;
+  const headStatus =
+    worktree.status === 'fulfilled' && worktree.value === false
+      ? 'HEAD is unavailable.'
+      : head.status === 'rejected'
+        ? 'HEAD could not be checked.'
+        : head.value === null
+          ? 'HEAD is detached.'
+          : `HEAD is on "${head.value.replace(/^refs\/heads\//, '')}".`;
+  const branchStatus =
+    branchExists === undefined
+      ? 'Branch could not be checked.'
+      : branchExists
+        ? 'Branch exists.'
+        : 'Branch does not exist.';
+  const upstreamStatus =
+    fields === null
+      ? 'Upstream could not be checked.'
+      : `Upstream is ${upstream}.`;
+  const worktreeStatus =
+    worktree.status === 'rejected'
+      ? 'Worktree could not be checked.'
+      : worktree.value === true
+        ? 'Worktree exists.'
+        : worktree.value === false
+          ? 'Worktree does not exist.'
+          : '';
+  const message = [
+    `Could not finish creating "${branch}".`,
+    branchStatus,
+    headStatus,
+    upstreamStatus,
+    worktreeStatus,
+    checkPinnedTip && source.status === 'rejected'
+      ? 'The selected base ref could not be checked.'
+      : checkPinnedTip &&
+          source.status === 'fulfilled' &&
+          source.value === undefined
+        ? 'The selected base ref disappeared during setup.'
+        : '',
+    checkPinnedTip &&
+    tip.status === 'fulfilled' &&
+    tip.value &&
+    tip.value !== expectedTip
+      ? 'Branch tip changed during setup.'
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  throw new GitCheckoutCreationError(
+    branch,
+    branchExists,
+    message,
+    failure?.error,
+  );
+}
+
+export const GIT_BRANCH_TRACKING_CONFIG_PATTERN =
+  '^branch\\..*\\.(remote|merge)$';
+
+// Exact catalogue names have already been verified. Git's literal ref
+// match takes precedence over DWIM candidates such as tags with that name.
+export const GIT_EXACT_CATALOGUE_REF_ARGS = [
+  '-c',
+  'core.warnAmbiguousRefs=false',
+] as const;
 
 /**
  * The Git read and effects one recorded repository's branch delete runs,
@@ -129,7 +320,7 @@ export const GIT_BRANCH_HEAD_CHANGED_MESSAGE =
   'The branch changed since this was shown. Check the latest status and try again.';
 
 export interface GitBranchWriteOptions {
-  /** Refuse unless this branch is checked out right before the effect. */
+  /** Rename precondition. Switch/create retain this field for caller compatibility. */
   readonly expectedBranch?: string;
 }
 
@@ -244,12 +435,12 @@ async function assertExpectedHead(
  * Checks out `branch` in a clean checkout: the local branch, else a new branch
  * tracking `origin/<branch>`, fetching that one branch first when the checkout
  * has no remote-tracking ref for it. A branch another worktree holds is
- * refused. The expected head is checked right before the effect.
+ * refused. Git checks whether the switch is safe when it executes.
  */
 export async function checkoutGitBranch(
   port: GitBranchWritePort,
   branch: string,
-  options: GitBranchWriteOptions = {},
+  options: GitBranchWriteOptions & { readonly remote?: boolean } = {},
 ): Promise<void> {
   if (await port.hasUncommittedChanges())
     throw new GitBranchWriteRefusal(
@@ -261,23 +452,22 @@ export async function checkoutGitBranch(
       'branch-occupied',
       `Branch "${branch}" is already checked out in another worktree`,
     );
-  if (await port.localBranchExists(branch)) {
-    await assertExpectedHead(port, options);
+  if (options.remote !== true && (await port.localBranchExists(branch))) {
     await port.checkout(branch);
     return;
   }
   const remote =
-    (await port.remoteBranchExists(branch)) ||
-    (await port.fetchRemoteBranch(branch).then(
-      () => port.remoteBranchExists(branch),
-      (error: unknown) => {
-        rethrowInterrupted(error);
-        return false;
-      },
-    ));
+    options.remote !== false &&
+    ((await port.remoteBranchExists(branch)) ||
+      (await port.fetchRemoteBranch(branch).then(
+        () => port.remoteBranchExists(branch),
+        (error: unknown) => {
+          rethrowInterrupted(error);
+          return false;
+        },
+      )));
   if (remote) {
-    await assertExpectedHead(port, options);
-    await port.checkoutNewBranch(branch, `origin/${branch}`);
+    await port.checkoutNewBranch(branch, `refs/remotes/origin/${branch}`);
     return;
   }
   throw new GitBranchWriteRefusal(
@@ -289,14 +479,18 @@ export async function checkoutGitBranch(
 /**
  * Creates `name` at `startPoint` and checks it out in a clean checkout. The
  * name must pass `check-ref-format --branch`; a taken name gets the first
- * free suffix. Returns the name created.
+ * free suffix. A catalogue base uses its exact namespace and provenance;
+ * direct legacy start points retain their existing Git interpretation.
+ * Returns the created branch and any warning after a completed switch.
  */
 export async function createGitBranch(
   port: GitBranchWritePort,
   name: string,
   startPoint: string,
-  options: GitBranchWriteOptions = {},
-): Promise<string> {
+  options: GitBranchWriteOptions & {
+    readonly baseBranch?: { readonly branch: string; readonly remote: boolean };
+  } = {},
+): Promise<WorkerGitBranchCreateResult> {
   if (await port.hasUncommittedChanges())
     throw new GitBranchWriteRefusal(
       'uncommitted-changes',
@@ -308,32 +502,79 @@ export async function createGitBranch(
       `Invalid branch name: "${name}"`,
     );
   const resolved = await selectAvailableGitBranchName(port, name);
-  await assertExpectedHead(port, options);
-  await port.checkoutNewBranch(resolved, startPoint);
-  return resolved;
+  const reads = {
+    readHeadRef: port.readHeadRef,
+    branchExists: (): Promise<boolean> => port.localBranchExists(resolved),
+    readTrackingConfig: port.readTrackingConfig,
+  };
+  const base = options.baseBranch;
+  if (!base) {
+    // Preserve typed revisions and tags, while using exact refs when the
+    // start point identifies an existing branch.
+    let ref = startPoint;
+    if (!ref.startsWith('refs/')) {
+      if (await port.localBranchExists(ref)) {
+        ref = `refs/heads/${ref}`;
+      } else if (ref.startsWith('origin/')) {
+        const remoteName = ref.slice('origin/'.length);
+        if (await port.remoteBranchExists(remoteName))
+          ref = `refs/remotes/origin/${remoteName}`;
+      }
+    }
+    return createAndVerifyGitCheckout(reads, {
+      branch: resolved,
+      signal: port.signal,
+      create: () => port.checkoutNewBranch(resolved, ref),
+    });
+  }
+  const ref = base.remote
+    ? `refs/remotes/origin/${base.branch}`
+    : `refs/heads/${base.branch}`;
+  const tip = await port.resolveCatalogBranch(base.branch, base.remote);
+  if (!tip || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tip))
+    throw new GitBranchWriteRefusal(
+      'invalid-start-point',
+      'Invalid base branch',
+    );
+  return createAndVerifyGitCheckout(
+    {
+      ...reads,
+      readBranchTip: () => port.resolveCatalogBranch(resolved, false),
+      readSourceTip: () => port.resolveCatalogBranch(base.branch, base.remote),
+    },
+    {
+      branch: resolved,
+      expectedTip: tip,
+      signal: port.signal,
+      create: () => port.createBranch(resolved, ref),
+      checkout: () => port.checkout(resolved, true),
+    },
+  );
 }
 
 /**
- * The trimmed new name and start point the desktop's create dialog sends,
- * refused as before when empty or option-like. `remote` starts at
- * `origin/<branch>`.
+ * Reject empty or option-like inputs before dispatch. Preserve the spelling
+ * of the start point and let Git validate the typed branch name in its checkout.
  */
 export function gitBranchCreateRequest(
   name: string,
-  startPoint: { readonly branch: string; readonly remote: boolean },
+  startPoint: {
+    readonly branch: string;
+    readonly remote: boolean;
+    readonly source?: 'catalog';
+  },
 ): { name: string; startPoint: string } {
-  const trimmedName = name.trim();
-  if (!trimmedName || trimmedName.startsWith('-'))
+  if (!name || name.startsWith('-'))
     throw new GitBranchWriteRefusal('invalid-name', 'Invalid new branch name');
-  const base = startPoint.branch.trim();
+  const base = startPoint.branch;
   if (!base || base.startsWith('-'))
     throw new GitBranchWriteRefusal(
       'invalid-start-point',
       'Invalid base branch',
     );
   return {
-    name: trimmedName,
-    startPoint: startPoint.remote ? `origin/${base}` : base,
+    name,
+    startPoint: startPoint.remote ? `refs/remotes/origin/${base}` : base,
   };
 }
 
@@ -376,7 +617,10 @@ export function parseGitCheckedOutBranches(
       continue;
     }
     if (line.startsWith('branch refs/heads/') && currentPath)
-      result.set(line.slice('branch refs/heads/'.length).trim(), currentPath);
+      result.set(
+        line.slice('branch refs/heads/'.length).replace(/\r$/, ''),
+        currentPath,
+      );
   }
   return result;
 }

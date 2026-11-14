@@ -1,3 +1,4 @@
+import { readChatArchiveMetadata } from '../lib/chat-archives';
 import { migrateLegacyChatScope } from '../lib/legacy-chat-migration';
 import { ChatStateV2Backend } from '../services/chat-state-v2-backend';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
@@ -303,6 +304,7 @@ export async function initStandaloneChat(projectId?: string): Promise<void> {
 
 export async function listChats(
   projectId?: string,
+  options: { readOnly?: boolean } = {},
 ): Promise<StandaloneChatListResponse> {
   const resolvedProjectId = resolveChatProjectId(projectId);
   const entries = await listHistoryChatIds(resolvedProjectId);
@@ -343,7 +345,9 @@ export async function listChats(
     }
   }
 
-  const unifiedArchives = await readChatArchivesFile(
+  const unifiedArchives = await (
+    options.readOnly ? readChatArchiveMetadata : readChatArchivesFile
+  )(
     resolveCoworkWorkspaceId(resolvedProjectId),
     legacyArchiveWorktreeId(resolvedProjectId),
   );

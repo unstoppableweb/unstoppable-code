@@ -5,6 +5,7 @@ import type {
 } from './types';
 
 declare const __CANOPY_E2E__: boolean;
+declare const __CANOPY_BRAND_ID__: string;
 
 export interface PostHogInstrumentationConfig {
   enabled: boolean;
@@ -17,6 +18,7 @@ export interface DesktopInstrumentationConfig {
   providers: readonly DesktopInstrumentationProvider[];
   /** Bundled release version of the app, independent of any provider. */
   appVersion?: string;
+  appBrand?: string;
   /** Bundled release flavor; omitted when the build sets no known flavor. */
   releaseChannel?: BrandReleaseFlavor;
   posthog: PostHogInstrumentationConfig;
@@ -123,6 +125,10 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
     appVersion:
       typeof __CANOPY_APP_VERSION__ !== 'undefined'
         ? readBuildString(__CANOPY_APP_VERSION__)
+        : undefined,
+    appBrand:
+      typeof __CANOPY_BRAND_ID__ !== 'undefined'
+        ? readBuildString(__CANOPY_BRAND_ID__)
         : undefined,
     releaseChannel:
       typeof __CANOPY_RELEASE_FLAVOR__ !== 'undefined'

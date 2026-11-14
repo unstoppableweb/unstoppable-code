@@ -48,9 +48,14 @@ export interface DurableTerminalConnection {
   readonly signal: AbortSignal;
 }
 
-/** Why a terminal closed; an exit by signal has no code. */
+/**
+ * Why a terminal closed; an exit by signal has no code. A sleeping sandbox
+ * refused the shell (CAN-6690); `wakeAllowed` is the web core's, for a host
+ * that can wake it.
+ */
 export type DurablePtyCloseReason =
   | { readonly kind: 'connection-lost'; readonly phase: 'connecting' | 'open' }
+  | { readonly kind: 'sandbox-asleep'; readonly wakeAllowed: boolean }
   | { readonly kind: 'exit'; readonly code: number | null };
 
 /** Where a later page reattaches: the terminal and the output it holds. */
@@ -124,6 +129,17 @@ const isGone = (error: CanopyErrorPayload): boolean =>
   error.kind === 'not_found' ||
   error.retry.kind === 'never' ||
   (error.code !== undefined && GONE_CODES.has(error.code));
+
+/** A refusal because the sandbox sleeps, as the web core sends it. */
+function asleepOf(error: CanopyErrorPayload): { wakeAllowed: boolean } | null {
+  if (error.kind !== 'failed_precondition') return null;
+  const details = isRecordValue(error.details) ? error.details : null;
+  if (details?.reason !== 'sandbox_sleeping') return null;
+  return { wakeAllowed: details.wakeAllowed !== false };
+}
+
+const isRecordValue = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const payloadOf = (error: unknown): CanopyErrorPayload =>
   error instanceof CoreCoworkRequestError
@@ -454,8 +470,10 @@ export class DurablePtyClient {
           );
           terminalId = terminal.terminalId;
           applied = created;
-        } catch {
-          lost();
+        } catch (error) {
+          const asleep = asleepOf(payloadOf(error));
+          if (asleep !== null) finish({ kind: 'sandbox-asleep', ...asleep });
+          else lost();
           return;
         }
         // Disposed while starting: nobody holds this shell.

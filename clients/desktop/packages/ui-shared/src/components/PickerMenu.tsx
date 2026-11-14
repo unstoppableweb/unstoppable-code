@@ -110,7 +110,8 @@ export interface PickerTriggerProps extends ButtonHTMLAttributes<HTMLButtonEleme
    * fill or edge until hovered or open, 12px before its label and 8px after
    * its chevron (the chevron's own whitespace balances the pill).
    */
-  size?: 'default' | 'compact' | 'page';
+  // `composer` preserves the 40px filled field in the New Task footer.
+  size?: 'default' | 'compact' | 'page' | 'composer';
   /** Set a branch or path value in the mono face. */
   mono?: boolean;
   /**
@@ -155,13 +156,12 @@ const PICKER_TRIGGER_SHELLS: Record<PickerTriggerVariant, string> = {
   capsule:
     'gap-1 rounded-full border-0 bg-transparent px-2.5 transition-colors hover:bg-subtle hover:fg-primary disabled:hover:bg-transparent disabled:hover:fg-secondary',
   // The shared field look (`TextInput`, `Select`): the 1px `shadow-field` edge
-  // on a transparent fill, the 10px corners of the 28px and 32px fields. It stays 32px tall because its callers
-  // sit in 32px rows (the PR status bar, worktree settings).
-  field: `h-8 gap-2 rounded-row bg-transparent px-2 text-s shadow-field transition-[box-shadow,background-color,transform,scale] ${DROPDOWN_TRIGGER_INTERACTION_CLASS} disabled:pointer-events-none`,
+  // on a transparent fill, the shared row corners. Default callers sit in
+  // 32px rows; the composer size opts into a 40px filled field.
+  field: `gap-2 rounded-row text-s shadow-field transition-[box-shadow,background-color,transform,scale] ${DROPDOWN_TRIGGER_INTERACTION_CLASS} disabled:pointer-events-none`,
 };
 
-// A field stays 32px (see above); a capsule is 32px or the compact 28px,
-// in the small text.
+// Capsule heights, in small text. Field geometry is selected separately below.
 const PICKER_TRIGGER_HEIGHTS: Record<
   NonNullable<PickerTriggerProps['size']>,
   string
@@ -169,6 +169,7 @@ const PICKER_TRIGGER_HEIGHTS: Record<
   default: 'h-8 text-xs',
   compact: 'h-7 text-xs',
   page: 'h-7 pl-3 pr-2 text-xs aria-expanded:bg-subtle',
+  composer: 'h-10 text-xs',
 };
 
 // A field focuses like the shared fields: the neutral edge and halo replace
@@ -210,7 +211,7 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
         {...props}
         ref={ref}
         type={type}
-        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : ''} ${PICKER_TRIGGER_SHELLS[variant]}${
+        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : size === 'composer' ? 'h-10 bg-base px-3' : 'h-8 bg-transparent px-2'} ${PICKER_TRIGGER_SHELLS[variant]}${
           variant !== 'capsule' || size === 'page'
             ? ''
             : labelOnly

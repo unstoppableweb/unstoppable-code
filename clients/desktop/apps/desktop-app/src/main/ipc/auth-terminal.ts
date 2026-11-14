@@ -36,6 +36,11 @@ async function refreshProviderAfterAuthTerminalExit(
 ): Promise<void> {
   const cancelled = exitCode === null || (signal !== null && signal !== '0');
   const succeeded = exitCode === 0 && !cancelled;
+  if (provider === 'antigravity') {
+    const models = await import('../antigravity/models');
+    models.invalidateAntigravityModels();
+    return;
+  }
   if (provider === 'opencode') {
     if (succeeded) {
       const connection = await import('../opencode/connection');
@@ -104,7 +109,7 @@ export function registerAuthTerminalHandlers(
       if (
         payload.exitCode !== 0 ||
         (payload.signal !== null && payload.signal !== '0') ||
-        payload.provider !== 'codex'
+        (payload.provider !== 'codex' && payload.provider !== 'antigravity')
       ) {
         sendToWindow(getWindow(), channel, payload);
         void refreshProviderAfterAuthTerminalExit(
@@ -138,7 +143,8 @@ export function registerAuthTerminalHandlers(
       if (
         provider !== 'claude' &&
         provider !== 'github' &&
-        provider !== 'opencode'
+        provider !== 'opencode' &&
+        provider !== 'antigravity'
       ) {
         throw new Error(`Invalid auth-terminal provider: ${String(provider)}`);
       }

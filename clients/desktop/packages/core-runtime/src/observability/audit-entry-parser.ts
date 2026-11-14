@@ -1,3 +1,5 @@
+import { observedModelIdentity } from './audit-records';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type {
   AgentAuditAccountProxyAccount,
   AgentAuditAccountProxyUsage,
@@ -662,6 +664,7 @@ export function normalizeAuditEntry(value: unknown): AgentAuditEntry | null {
     provider !== 'codex' &&
     provider !== 'ollama' &&
     provider !== 'cursor' &&
+    provider !== 'antigravity' &&
     provider !== 'opencode'
   ) {
     return null;
@@ -701,6 +704,21 @@ export function normalizeAuditEntry(value: unknown): AgentAuditEntry | null {
   readOptionalStringField(value, 'requestedModel', (requestedModel) => {
     entry.requestedModel = requestedModel;
   });
+  if (
+    entry.requestedModel === undefined &&
+    entry.model &&
+    parseAgentRouteModelId(entry.model)
+  ) {
+    entry.requestedModel = entry.model;
+  }
+  Object.assign(
+    entry,
+    observedModelIdentity({
+      model: entry.model,
+      requestedModel: entry.requestedModel,
+      agentId: readString(value, 'agentId'),
+    }),
+  );
   readOptionalStringField(value, 'serviceTier', (serviceTier) => {
     entry.serviceTier = serviceTier;
   });

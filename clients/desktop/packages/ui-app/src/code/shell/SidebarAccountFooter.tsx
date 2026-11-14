@@ -2,7 +2,11 @@
 
 import { Dot, type DotTone } from '@canopy/ui-shared/components/Badge';
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
-import { DisplayAvatar, FloatingMenu } from '@canopy/ui-shared/components';
+import {
+  DisplayAvatar,
+  FloatingMenu,
+  Surface,
+} from '@canopy/ui-shared/components';
 import { PersonIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -263,7 +267,13 @@ export function SidebarAccountRow({
             </span>
           )}
         </div>
-        {railActions}
+        {railActions === undefined ? null : (
+          // The rail's buttons line up 2px in from the edge, in the same
+          // column as every sidebar row's controls.
+          <span className="flex shrink-0 items-center gap-0.5 pr-0.5">
+            {railActions}
+          </span>
+        )}
       </div>
       <FloatingMenu
         id={menuId}
@@ -313,13 +323,17 @@ export function SidebarAccountFooter({
       >
         {footerBanner}
       </div>
-      <div
+      <Surface
+        variant="section"
+        boundary="top"
         data-testid={row.testIds?.footer ?? 'sidebar-account-footer'}
-        className="-mx-2 border-t px-2 pt-2"
+        className="-mx-2"
       >
-        {contextRow}
-        <SidebarAccountRow {...row} />
-      </div>
+        <div className="px-2 pt-2">
+          {contextRow}
+          <SidebarAccountRow {...row} />
+        </div>
+      </Surface>
     </div>
   );
 }

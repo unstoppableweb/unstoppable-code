@@ -686,6 +686,7 @@ function mergeToolResultsFresh(
         ...(msg.userMessageSource
           ? { userMessageSource: msg.userMessageSource }
           : {}),
+        ...(msg.cancelled === true ? { cancelled: true } : {}),
       });
     }
   }

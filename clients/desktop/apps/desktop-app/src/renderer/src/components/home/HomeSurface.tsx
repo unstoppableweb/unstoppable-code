@@ -78,6 +78,7 @@ import {
   ComposerDrawer,
   ComposerHeroFrame,
   FirstSendFailedNotice,
+  ModelUnavailableNotice,
   Notice,
   NoticeButton,
   Tooltip,
@@ -115,7 +116,9 @@ import {
   useHomeComposerStore,
   resolveHomeEffectiveProviderType,
   defaultNewWorktreeBaseTarget,
-  homeBranchTargetsEqual,
+  homeNewWorktreeBaseTargetsEqual,
+  homeWorktreeBaseMissing,
+  MISSING_HOME_WORKTREE_BASE_MESSAGE,
   isGitHubConnectResumeFresh,
   currentMissingFolderRecovery,
 } from '@/stores/homeComposerStore';
@@ -167,6 +170,7 @@ import { HomeWorkspacePicker } from './HomeWorkspacePicker';
 import { HomeBranchPicker } from './HomeBranchPicker';
 import { HomeBaseBranchPicker } from './HomeBaseBranchPicker';
 import { HomeComposerControls } from './HomeComposerControls';
+import { useUnbillableModelSwitch } from '@/lib/unbillableModel';
 import { HomeComposerContextRow } from './HomeComposerContextRow';
 import { HomeLinkTargetChip } from './HomeLinkTargetChip';
 import { useHomeLinkTargetSync } from './homeLinkTargetSync';
@@ -428,6 +432,11 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const selectedGatewayOrganizationId = resolveOrgGatewayOrganizationId(
     effectiveSettings.model,
   );
+  // CAN-6444 — the chip's model can't run for this account; offer the user's
+  // own gateway model before they press send.
+  const unbillableModelSwitch = useUnbillableModelSwitch(
+    effectiveSettings.model,
+  );
 
   // Seed the default workspace from the MRU preference (falling back to the
   // first project) while no workspace is selected. Both stay inside the
@@ -498,7 +507,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       if (
         state.workspaceId === workspaceId &&
         state.branchTargets?.headUnborn === true &&
-        !state.branchTargetsLoading &&
+        state.branchTargetsStatus !== 'loading' &&
         !state.isSending
       )
         void state.loadBranchTargets();
@@ -953,7 +962,6 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const showNewWorktreeBasePicker =
     selectedWorkspace?.type === 'single-repo' &&
     branchTarget.kind === 'new-worktree' &&
-    newWorktreeBaseTarget !== null &&
     showBranchPicker;
   // A target chosen while the picker was visible must not survive into Work
   // mode as an invisible destination: with the picker hidden the send always
@@ -974,7 +982,10 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       if (
         defaultBase !== null &&
         store.newWorktreeBaseTarget !== null &&
-        !homeBranchTargetsEqual(store.newWorktreeBaseTarget, defaultBase)
+        !homeNewWorktreeBaseTargetsEqual(
+          store.newWorktreeBaseTarget,
+          defaultBase,
+        )
       ) {
         store.setNewWorktreeBaseTarget(defaultBase);
       }
@@ -1277,6 +1288,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       attachments,
       branchTarget,
       branchTargets,
+      branchTargetsStatus,
+      newWorktreeBaseTarget: base,
       scheduledSendDraft: submittedSchedule,
       pendingAttachmentImportIds,
     } = useHomeComposerStore.getState();
@@ -1292,11 +1305,18 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     if (mode === 'pipeline') {
       const taskText = buildPipelineTaskText(text, attachments);
       const workspace = projects.find((p) => p.id === draftWorkspaceId);
+      if (
+        branchTarget.kind === 'new-worktree' &&
+        homeWorktreeBaseMissing(base, branchTargets, branchTargetsStatus)
+      ) {
+        setSendError(MISSING_HOME_WORKTREE_BASE_MESSAGE);
+        return;
+      }
       const target = resolveTaskReadyLaunchTarget(
         workspace,
         branchTarget,
         branchTargets?.branches ?? [],
-        useHomeComposerStore.getState().newWorktreeBaseTarget,
+        base,
       );
       void pipelineLauncher.open(draftWorkspaceId, taskText, target);
       return;
@@ -1459,8 +1479,23 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                 : askOwnerToChoosePlanCopy(orgWithoutPlan.organizationName)}
             </Notice>
           ),
+          unbillableModelSwitch ? (
+            <ModelUnavailableNotice
+              key="model-unavailable"
+              testId="home-composer-model-unavailable"
+              modelLabel={unbillableModelSwitch.modelLabel}
+              reason={unbillableModelSwitch.reason}
+              switchModelLabel={unbillableModelSwitch.switchModelLabel}
+              onSwitch={(): void =>
+                useHomeComposerStore
+                  .getState()
+                  .setModel(unbillableModelSwitch.switchModel)
+              }
+            />
+          ) : null,
           orgWithoutPlan && personalSwitchError ? (
             <DesktopErrorBanner
+              errorSource="home-composer-personal-switch-error"
               key="personal-switch-error"
               testId="home-composer-personal-switch-error"
               className="pointer-events-auto"
@@ -1477,6 +1512,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
             // Locate folder only reveals where it was; it doesn't repoint
             // the project. No retry: sending again checks the folder afresh.
             <Notice
+              errorSource="home-composer-missing-folder"
+              displayErrorCode="external.state_changed"
               key="send-error"
               data-testid="home-composer-error"
               intent="destructive"
@@ -1532,6 +1569,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
             />
           ) : sendError ? (
             <DesktopErrorBanner
+              errorSource="home-composer-error"
               key="send-error"
               testId="home-composer-error"
               className="pointer-events-auto"

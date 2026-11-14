@@ -172,6 +172,7 @@ export function OnlyMemberEmptyState({
               )}
             </div>
             <ErrorBanner
+              errorSource="only-member-empty-state-open-failed"
               className=""
               error={openFailed ? 'Could not open that page. Try again.' : null}
             />

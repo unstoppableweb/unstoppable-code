@@ -37,7 +37,19 @@ import {
 import { SPLIT_PR_BLOCKER_COPY } from '@/lib/splitPrEligibilityInputs';
 import { brandText } from '@/lib/brand';
 import { SKILL_SHARE_NUDGE_COPY } from '@/components/chat/SkillShareNudgeBanner';
+import {
+  DRAFT_RESTORE_FAILED_MESSAGE,
+  DRAFT_RESTORE_FAILED_TITLE,
+  DRAFT_SAVE_FAILED_TITLE,
+  draftSaveFailedMessage,
+} from '@/components/chat/chatDraftNoticeCopy';
 import { SKILL_SUGGESTION_COPY } from '@canopy/ui-app';
+import {
+  CHAT_DELETED_ELSEWHERE_ACTION,
+  CHAT_DELETED_ELSEWHERE_TITLE,
+  chatDeletedElsewhereNotice,
+  chatFilesNotAttachedNotice,
+} from '@canopy/ui-app/composer-recovery';
 import { automationRevealNoticeCopy } from '@/components/automations/automationRevealNotice';
 import { installRevealNotice } from '@/components/share/installRevealNotice';
 import { automationRunsInMessage } from '@canopy/execution-engine/lib/automation-context-copy';
@@ -227,12 +239,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         title: 'Claude or Codex unreachable (defect)',
         note: 'Two failed auth probes, 5 seconds apart. Retests every 30 seconds until it recovers.',
         intent: 'destructive',
-        heading: "Couldn't reach Claude.",
-        message:
-          "Agents on it can't start. Try again, or report this if it continues.",
-        detail: 'Reference ERR-0000AB12',
+        heading: "Couldn't connect to Claude.",
+        message: 'Retry, or switch to another model.',
         aside: '2 more issues',
-        actions: [{ label: 'Try again' }, { label: 'Report this' }],
+        actions: [{ label: 'Retry now' }, { label: 'Report this' }],
         actionsPlacement: 'below',
       },
       {
@@ -242,7 +252,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'attention',
         heading: "Couldn't reach Ollama.",
         message: 'Start it or check its connection settings.',
-        actions: [{ label: 'Open Ollama settings' }],
+        actions: [{ label: 'Open settings' }],
       },
       {
         id: 'standing-sync-paused',
@@ -784,6 +794,64 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'neutral',
         heading: 'Catching up',
         message: 'Updates are about 2 minutes behind the agent.',
+      },
+      {
+        id: 'draft-restore-failed',
+        title: 'Saved draft unreadable',
+        note: "Shown once, on the chat whose stored draft couldn't be read when it loaded. The composer starts empty.",
+        intent: 'attention',
+        heading: DRAFT_RESTORE_FAILED_TITLE,
+        message: DRAFT_RESTORE_FAILED_MESSAGE,
+        dismissible: true,
+      },
+      {
+        id: 'draft-save-failed',
+        title: 'Draft not saved',
+        note: 'Shown once per session, on the chat whose draft first failed to save (too long or storage full). Typing carries on.',
+        intent: 'attention',
+        heading: DRAFT_SAVE_FAILED_TITLE,
+        message: draftSaveFailedMessage(),
+        dismissible: true,
+      },
+      {
+        id: 'cloud-chat-deleted-elsewhere',
+        title: 'Cloud chat deleted on another device',
+        note: 'CAN-6614. The draft and attachments stay above and Send is off. Start new chat opens a new task in the same project with the draft, attaching each file again from the disk; Discard asks first when the draft has text.',
+        intent: 'attention',
+        heading: CHAT_DELETED_ELSEWHERE_TITLE,
+        message: chatDeletedElsewhereNotice({
+          draft: true,
+          attachments: 1,
+          attachAgain: [],
+        }),
+        actions: [
+          { label: 'Discard' },
+          { label: CHAT_DELETED_ELSEWHERE_ACTION, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'cloud-chat-deleted-elsewhere-pasted',
+        title: 'Cloud chat deleted on another device: pasted files',
+        note: 'CAN-6614. A pasted file, or one dragged from another app, has no file on this computer to read again, so the new chat asks for it. With some such files, the message names them.',
+        intent: 'attention',
+        heading: CHAT_DELETED_ELSEWHERE_TITLE,
+        message: chatDeletedElsewhereNotice({
+          draft: true,
+          attachments: 3,
+          attachAgain: ['screenshot.png', 'notes.txt'],
+        }),
+        actions: [
+          { label: 'Discard' },
+          { label: CHAT_DELETED_ELSEWHERE_ACTION, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'cloud-chat-files-not-attached',
+        title: 'New chat from a deleted one: files not attached',
+        note: 'CAN-6614. On the new chat, for each file it couldn’t take: a pasted one, or one that moved on disk since it was attached.',
+        intent: 'attention',
+        message: chatFilesNotAttachedNotice(['screenshot.png', 'brief.md']),
+        dismissible: true,
       },
     ],
   },

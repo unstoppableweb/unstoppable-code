@@ -505,27 +505,14 @@ export function DigestShareControls({
                 They can read the complete report.
               </p>
             </div>
-            <button
+            <ToggleSwitch
               ref={switchRef}
-              type="button"
-              role="switch"
-              aria-checked={sharingEnabled}
-              aria-label="Anyone with the link"
+              checked={sharingEnabled}
+              label="Anyone with the link"
               disabled={saving}
-              onClick={requestToggleSharing}
-              data-testid="digest-sharing-toggle"
-              className={`relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                sharingEnabled
-                  ? 'bg-accent hover:bg-accent/90'
-                  : 'bg-fg-quaternary hover:bg-fg-tertiary'
-              }`}
-            >
-              <span
-                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-fg-emphasis transition-transform ${
-                  sharingEnabled ? 'translate-x-4' : 'translate-x-0.5'
-                }`}
-              />
-            </button>
+              onChange={requestToggleSharing}
+              dataTestId="digest-sharing-toggle"
+            />
           </div>
 
           {sharingEnabled ? (

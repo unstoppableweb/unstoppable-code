@@ -2,12 +2,96 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import { scanInterruptedWork } from '../lib/interrupted-work-scan-worker';
+import { createWorkspaceStartupBarrier } from '../lib/workspace-startup';
 import {
   createQueueHarness,
   queuedRequest,
 } from '../services/__tests__/helpers/queue-harness';
 
 const target = { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'chat-1' };
+
+describe('local workspace startup admission', () => {
+  it('holds every window and replays completion to a reloaded window', async () => {
+    const barrier = createWorkspaceStartupBarrier();
+    const mounted = jest.fn();
+    const main = barrier.wait().then(mounted);
+    const advisor = barrier.wait().then(mounted);
+    await Promise.resolve();
+    expect(mounted).not.toHaveBeenCalled();
+    barrier.complete();
+    await Promise.all([main, advisor]);
+    expect(mounted).toHaveBeenCalledTimes(2);
+    await expect(barrier.wait()).resolves.toBeUndefined();
+  });
+
+  it('never admits pending windows after shutdown cancellation', async () => {
+    const barrier = createWorkspaceStartupBarrier();
+    const settled = jest.fn();
+    void barrier.wait().then(settled, settled);
+    barrier.cancel();
+    barrier.complete();
+    barrier.refuse(new Error('late startup failure'));
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('retains early startup failure for a later window', async () => {
+    const barrier = createWorkspaceStartupBarrier();
+    const error = new Error('startup failed');
+    barrier.refuse(error);
+    await Promise.resolve();
+    await expect(barrier.wait()).rejects.toBe(error);
+  });
+
+  it('keeps window creation ahead of the W5 sequence without reopening during quit', async () => {
+    const source = await readFile(join(__dirname, '..', 'index.ts'), 'utf8');
+    const startup = source.slice(source.indexOf('void app.whenReady().then'));
+    const window = startup.indexOf('createWindowWithState(preferences);');
+    const handoff = startup.indexOf('await w5Handoff;');
+    const handoffStart = startup.indexOf(
+      'const w5Handoff = startW5FlipHandoff({ admission: w5Host });',
+    );
+    const queueHold = startup.indexOf(
+      'getStartupChatQueue().holdDrainsForStartup();',
+    );
+    expect(window).toBeGreaterThan(-1);
+    expect(handoffStart).toBeGreaterThan(-1);
+    expect(handoffStart).toBeLessThan(window);
+    expect(handoff).toBeGreaterThan(window);
+    expect(queueHold).toBeGreaterThan(-1);
+    expect(queueHold).toBeLessThan(window);
+    const resume = startup.slice(
+      startup.indexOf('await rendererOriginDecided;'),
+      window,
+    );
+    expect(resume).toContain('if (appIsQuitting) return;');
+    const stages = [
+      'await w5Handoff;',
+      'await getForeignActivityCarryoverService().initialize();',
+      'await migrateAppManagedChatWorkspaces();',
+      'await migrateAppAdvisorChatsToWorkEntries();',
+      'await migrateStandaloneChatToCowork();',
+      'await loadCoworkMigrationMapCache();',
+      'await migrateCoworkChatsToWorkEntries();',
+      'await migrateDefaultCoworkWorkspaceName();',
+      'await recoverInterruptedWorkAtStartup();',
+      'sweepInterruptedPipelinesAtStartup()',
+      'releaseStartupDrainHold();',
+      'startWorktreeBranchObserver({',
+      'workspaceStartup.complete();',
+      'startupRecoveryPromise = finishWorkspaceStartup();',
+    ].map((stage) => startup.indexOf(stage));
+    expect(stages.every((position) => position > window)).toBe(true);
+    expect(stages).toEqual([...stages].sort((a, b) => a - b));
+    const normalized = startup.replace(/\s+/g, ' ');
+    expect(normalized).toContain(
+      'getOrgProjectMaterialization() .sweepInterruptedSetups()',
+    );
+    expect(normalized).toContain(
+      '(async (): Promise<void> => { await staleCodexCleanup; if (appIsQuitting) return; await recoverInterruptedWorkAtStartup(); })',
+    );
+  });
+});
 
 async function writeScope(
   root: string,

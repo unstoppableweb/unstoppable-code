@@ -160,6 +160,7 @@ export async function generatePrContentWithUsage(
       provider === 'codex' ||
       provider === 'cursor' ||
       provider === 'copilot' ||
+      provider === 'antigravity' ||
       provider === 'opencode'
     ) {
       throw new Error(

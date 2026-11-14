@@ -315,6 +315,7 @@ function ToastDetailModal({
                 data-testid="toast-action"
                 label={toast.meta.action.label}
                 busyLabel={toast.meta.action.busyLabel}
+                busy={toast.meta.action.busy === true}
                 actionKey={toast.id}
                 run={toast.meta.action.onClick}
                 onDone={onActionDone}
@@ -560,6 +561,7 @@ function StackToastCardBody({
             data-testid={action.testId ?? 'toast-action'}
             label={action.label}
             busyLabel={action.busyLabel}
+            busy={action.busy === true}
             actionKey={toast.id}
             run={action.onClick}
             onDone={action.keepOpen === true ? noop : onDismiss}
@@ -640,7 +642,10 @@ function StackToastCardBody({
           : { textContext: messageContext })}
         onOverflowChange={setClampOverflow}
         footer={
-          reported === undefined ? undefined : (
+          // A card that leaves the row off relies on Report this for the
+          // reference; without Report this (a guest) the row stays.
+          reported === undefined ||
+          (toast.hideReference === true && canReport) ? undefined : (
             <ToastFailureReference error={reported} />
           )
         }

@@ -11,6 +11,7 @@ import type {
   PipelinePackageReferenceDismissal,
   PipelinePackageWithheldFile,
   PipelinePackageWithheldReason,
+  CapabilityPackageWithheldMemberFile,
   Pipeline,
   PipelineInputValue,
   RepoLocalInvocableEntry,
@@ -284,6 +285,22 @@ function promptSourceLocation(
 export interface AnalyzeCapabilityPackageInput extends CapabilityPackageResolutionInput {
   /** The subject's content; the manifest is keyed to its hash. */
   rawContent: string;
+  /**
+   * A cloud copy of a skill or plugin (CAN-6176): files a share blocks on are
+   * withheld from its members instead, so the rest still goes, and listed
+   * with their reasons. `gitIgnored` answers, for each member packaged, the
+   * git-ignored paths in its own folder, with nested repositories git
+   * couldn't answer for withheld whole. When git could not answer for the
+   * folder's own repository (`checked` false, or null with nothing to
+   * withhold), the summary reports it. A dependency skill lives in its own
+   * folder, so one member's answer never stands in for another's.
+   */
+  cloudCopy?: {
+    gitIgnored: (descriptor: PipelinePackageSourceDescriptor) => Promise<{
+      isIgnored: (absolutePath: string) => boolean;
+      checked: boolean;
+    } | null>;
+  };
   requests: CapabilityPackageRequest[];
   promptSources?: CapabilityPackagePromptSource[];
   /**
@@ -469,6 +486,10 @@ export type PipelinePackageAnalysisInternal = CapabilityPackageAnalysisInternal;
 type ResolvedInvocable =
   | { origin: 'inventory'; entry: InvocableInventoryEntry }
   | { origin: 'repo'; entry: RepoLocalInvocableEntry };
+
+/** Component paths a Claude plugin.json may declare (CAN-6176). */
+const DECLARED_COMPONENT_KEYS = ['skills', 'commands', 'agents'] as const;
+type DeclaredComponentKey = (typeof DECLARED_COMPONENT_KEYS)[number];
 
 type PendingBlocker = Omit<PipelinePackageAnalysisBlocker, 'occurrences'> & {
   provider?: 'claude' | 'codex';
@@ -703,6 +724,8 @@ function frontmatterInvocationStrings(
   });
 }
 
+const SEND_AGENT_MESSAGE_ACTION = 'builtin/send-agent-message';
+
 function stepPromptText(
   pipeline: Pipeline,
   step: Pipeline['jobs'][string]['steps'][number],
@@ -718,7 +741,13 @@ function stepPromptText(
     typeof step.with?.system_prompt === 'string'
       ? step.with.system_prompt
       : undefined,
-    aliasInstructions && 'base' in aliasInstructions
+    // A send step's message is the prompt of the chat it starts, as a
+    // converted chat automation's is, so its commands are packaged too.
+    step.uses === SEND_AGENT_MESSAGE_ACTION &&
+    typeof step.with?.text === 'string'
+      ? step.with.text
+      : undefined,
+    aliasInstructions && !('agent_id' in aliasInstructions)
       ? aliasInstructions.instructions
       : undefined,
   ]
@@ -775,7 +804,7 @@ function affectedStepsForCollection(
       .filter(
         (alias) =>
           alias.defaults &&
-          'base' in alias.defaults &&
+          !('agent_id' in alias.defaults) &&
           alias.defaults.plugin_collection_id === collectionId,
       )
       .map((alias) => alias.id),
@@ -912,7 +941,9 @@ function declaredEnvironmentRequirements(
     );
     if (affectedSteps.length === 0) continue;
     const model =
-      alias.defaults && 'base' in alias.defaults
+      alias.defaults &&
+      'base' in alias.defaults &&
+      alias.defaults.base !== undefined
         ? alias.defaults.base
         : alias.name;
     requirements.push({
@@ -984,16 +1015,20 @@ function reserveCollectionFile(
 
 interface CollectMemberFilesOptions {
   /**
-   * Withhold mode, for file assets. Denied names, `.git` directories,
-   * symlinks and files whose content trips the secret scan are left out and
-   * reported here instead of blocking; native and opaque executables,
-   * escapes and package limits still block. Asset files are data, so their
-   * contents are not followed as references and return no texts.
+   * Withhold mode, for file assets and cloud copies. Denied names, `.git`
+   * directories, symlinks, files whose content trips the secret scan and
+   * (with `isIgnored`) git-ignored paths are left out and reported here
+   * instead of blocking; native and opaque executables, escapes and package
+   * limits still block.
    */
   withhold?: (file: {
     relativePath: string;
     reason: Exclude<PipelinePackageWithheldReason, 'missing_optional_asset'>;
   }) => void;
+  /** Asset files are data: their contents are not followed as references and return no texts. */
+  data?: boolean;
+  /** Whether git ignores an absolute path; withheld as `git_ignored`. */
+  isIgnored?: (absolutePath: string) => boolean;
 }
 
 async function collectMemberFiles(
@@ -1006,7 +1041,7 @@ async function collectMemberFiles(
   budget: CollectionBudget,
   options: CollectMemberFilesOptions = {},
 ): Promise<{ entries: PipelinePackageFileEntry[]; texts: string[] }> {
-  const { withhold } = options;
+  const { withhold, data, isIgnored } = options;
   const sourceRoot = path.resolve(descriptor.sourceRoot);
   const memberRoot = path.resolve(sourceRoot, descriptor.memberPath);
   const exportRoot = descriptor.exportRoot
@@ -1034,7 +1069,25 @@ async function collectMemberFiles(
   const canonicalSourceRoot = await fs
     .realpath(sourceRoot)
     .catch(() => sourceRoot);
+  // Any casing: a case-insensitive volume loads `skill.md` as the SKILL.md
+  // the publish sends, so it is that same file (CAN-6176).
+  const isPrimarySkillFile = (normalized: string): boolean =>
+    path.dirname(normalized) === memberRoot &&
+    path.basename(normalized).toLowerCase() === 'skill.md';
+  // A standalone skill's publish sends its SKILL.md as the skill itself, so
+  // that file blocks rather than being withheld: leaving it out of the
+  // package would not keep its content here (CAN-6176). A plugin uploads
+  // only the analysed files, so any of its files can be withheld.
+  const withholdFor = (
+    normalized: string,
+  ): CollectMemberFilesOptions['withhold'] =>
+    data !== true &&
+    descriptor.runtimeKind === 'standalone_skill' &&
+    (normalized === memberRoot || isPrimarySkillFile(normalized))
+      ? undefined
+      : withhold;
   const sourcePathIsSafe = async (normalized: string): Promise<boolean> => {
+    const withhold = withholdFor(normalized);
     const relativeToSource = path.relative(sourceRoot, normalized);
     let current = sourceRoot;
     for (const segment of relativeToSource.split(path.sep).filter(Boolean)) {
@@ -1101,6 +1154,89 @@ async function collectMemberFiles(
       relativePath,
       size,
     });
+  /**
+   * The plugin's own component paths from its Claude plugin.json (CAN-6176):
+   * kept only when each one resolves inside the plugin, so the analysed
+   * manifest declares the skills, commands and agents the plugin declares and
+   * never more. A path that is absolute, climbs with `..`, names the plugin
+   * root itself, or is or passes through a symbolic link out of the plugin
+   * blocks the analysis; a path that doesn't exist declares nothing.
+   */
+  const declaredComponentPaths = async (
+    sourceManifest: Record<string, unknown>,
+    manifestPath: string,
+  ): Promise<Partial<Record<DeclaredComponentKey, string[]>>> => {
+    const declared: Partial<Record<DeclaredComponentKey, string[]>> = {};
+    if (provider !== 'claude') return declared;
+    const refuse = (key: DeclaredComponentKey, value: string): void => {
+      blockers.push({
+        code: 'SOURCE_PATH_ESCAPE',
+        message: `The plugin's plugin.json declares ${key} at ${JSON.stringify(value.slice(0, 200))}, which is not inside the plugin.`,
+        subject: manifestPath,
+        relativePath: manifestPath,
+      });
+    };
+    for (const key of DECLARED_COMPONENT_KEYS) {
+      const raw = sourceManifest[key];
+      if (raw === undefined) continue;
+      const values =
+        typeof raw === 'string'
+          ? [raw]
+          : Array.isArray(raw) &&
+              raw.every((value): value is string => typeof value === 'string')
+            ? raw
+            : null;
+      if (values === null) {
+        blockers.push({
+          code: 'SOURCE_PATH_ESCAPE',
+          message: `The plugin's plugin.json ${key} must be a path or a list of paths.`,
+          subject: manifestPath,
+          relativePath: manifestPath,
+        });
+        continue;
+      }
+      const kept: string[] = [];
+      for (const value of values) {
+        const slashed = value.replace(/\\/g, '/');
+        if (
+          path.posix.isAbsolute(slashed) ||
+          path.win32.isAbsolute(value) ||
+          slashed.split('/').includes('..')
+        ) {
+          refuse(key, value);
+          continue;
+        }
+        const relative = path.posix
+          .normalize(slashed)
+          .replace(/^(?:\.\/)+/, '')
+          .replace(/\/+$/, '');
+        const absolute = path.resolve(sourceRoot, ...relative.split('/'));
+        if (
+          relative === '' ||
+          relative === '.' ||
+          !isPathStrictlyInside(sourceRoot, absolute)
+        ) {
+          refuse(key, value);
+          continue;
+        }
+        const stat = await fs.lstat(absolute).catch(() => null);
+        if (stat === null) continue;
+        const real = await fs.realpath(absolute).catch(() => null);
+        if (
+          stat.isSymbolicLink() ||
+          real === null ||
+          !isPathStrictlyInside(canonicalSourceRoot, real)
+        ) {
+          refuse(key, value);
+          continue;
+        }
+        const declaredPath = `./${relative}`;
+        if (!kept.includes(declaredPath)) kept.push(declaredPath);
+      }
+      if (kept.length > 0) declared[key] = kept;
+    }
+    return declared;
+  };
   const includeSanitizedPluginManifest = async (
     manifestPath: string,
   ): Promise<void> => {
@@ -1127,6 +1263,14 @@ async function collectMemberFiles(
     if (
       containsPipelinePackageSecretMaterial(stripControlCharacters(sourceText))
     ) {
+      // A cloud copy leaves it out like any member file, and the copy is
+      // named from the plugin's key; a share still blocks.
+      const withholdManifest = withholdFor(normalized);
+      if (withholdManifest) {
+        releaseFile(relativePath, stat.size);
+        withholdManifest({ relativePath, reason: 'suspected_secret' });
+        return;
+      }
       blockers.push({
         code: 'SUSPECTED_SECRET',
         message: 'A dependency file may contain a credential.',
@@ -1167,6 +1311,7 @@ async function collectMemberFiles(
       ...(typeof sourceManifest.description === 'string'
         ? { description: sourceManifest.description }
         : {}),
+      ...(await declaredComponentPaths(sourceManifest, relativePath)),
     };
     const bytes = new TextEncoder().encode(
       `${JSON.stringify(identity, null, 2)}\n`,
@@ -1251,6 +1396,21 @@ async function collectMemberFiles(
       return;
     }
     visited.add(normalized);
+    const withhold = withholdFor(normalized);
+    if (options.withhold && isIgnored !== undefined && isIgnored(normalized)) {
+      const relativePath = outputPath(normalized);
+      if (withhold) {
+        withhold({ relativePath, reason: 'git_ignored' });
+        return;
+      }
+      blockers.push({
+        code: 'EXPORT_DENIED_FILE',
+        message: "Git ignores this skill's SKILL.md.",
+        subject: relativePath,
+        relativePath,
+      });
+      return;
+    }
     if (stat.isSymbolicLink()) {
       const relativePath = outputPath(normalized);
       if (withhold) {
@@ -1377,7 +1537,7 @@ async function collectMemberFiles(
       size: bytes.byteLength,
       mode: executable ? 'execute' : 'read',
     });
-    if (withhold) return;
+    if (data === true) return;
     if (!text.includes('\u0000')) {
       texts.push(text);
       const references = new Set<string>();
@@ -1430,9 +1590,18 @@ async function collectMemberFiles(
         provider === 'codex' ? '.codex-plugin' : '.claude-plugin',
         'plugin.json',
       );
+      const ignoredManifest = path.resolve(manifestPath);
       try {
         await fs.access(manifestPath);
-        await includeSanitizedPluginManifest(manifestPath);
+        // A git-ignored manifest's contents never leave, not even its name or
+        // description: it's withheld like any ignored file, and the copy is
+        // named from the plugin's own key.
+        if (options.withhold && isIgnored?.(ignoredManifest) === true)
+          withholdFor(ignoredManifest)?.({
+            relativePath: outputPath(ignoredManifest),
+            reason: 'git_ignored',
+          });
+        else await includeSanitizedPluginManifest(manifestPath);
       } catch {
         if (descriptor.syntheticManifestName) {
           includeSyntheticPluginManifest(manifestPath);
@@ -1581,6 +1750,7 @@ async function collectFileAsset(
     context.sourceDirectories,
     context.budget,
     {
+      data: true,
       withhold: ({ relativePath, reason }) => {
         withheldFiles.push({
           pipelineKey: asset.pipelineKey,
@@ -2113,6 +2283,13 @@ async function analyzeCapabilityPackageOnce(
     });
   }
   const blobs = new Map<string, Uint8Array>();
+  // Keyed by root and path: two members, or both providers, can reach one file.
+  const withheldMemberFiles = new Map<
+    string,
+    CapabilityPackageWithheldMemberFile
+  >();
+  /** A packaged member git could not check: the summary says so. */
+  let gitIgnoreUnchecked = false;
   const sourceStats: CapabilityPackageAnalysisInternal['sourceStats'] = [];
   const sourceDirectories: CapabilityPackageAnalysisInternal['sourceDirectories'] =
     [];
@@ -2250,6 +2427,16 @@ async function analyzeCapabilityPackageOnce(
       continue;
     }
     const provider = resolvedProvider(target);
+    const cloudCopy = input.cloudCopy;
+    const gitAnswer =
+      cloudCopy === undefined || descriptor.sourceVisibility === 'builtin'
+        ? undefined
+        : await cloudCopy.gitIgnored(descriptor);
+    // Unchecked whenever git couldn't answer for the member's own folder,
+    // even though nested repositories it couldn't answer for are withheld.
+    if (gitAnswer === null || gitAnswer?.checked === false)
+      gitIgnoreUnchecked = true;
+    const isIgnored = gitAnswer?.isIgnored;
     const collected =
       descriptor.sourceVisibility === 'builtin'
         ? { entries: [], texts: [] }
@@ -2261,6 +2448,17 @@ async function analyzeCapabilityPackageOnce(
             sourceStats,
             sourceDirectories,
             collectionBudget,
+            cloudCopy === undefined
+              ? {}
+              : {
+                  withhold: ({ relativePath, reason }): void => {
+                    withheldMemberFiles.set(
+                      `${descriptor.rootName}\0${relativePath}`,
+                      { rootName: descriptor.rootName, relativePath, reason },
+                    );
+                  },
+                  ...(isIgnored === undefined ? {} : { isIgnored }),
+                },
           );
     discoveredText.push(...collected.texts);
     collectedByKey.set(key, { target, files: collected.entries });
@@ -2802,6 +3000,20 @@ async function analyzeCapabilityPackageOnce(
       ...(automationPipelines && automationPipelines.withheldFiles.length > 0
         ? { withheldFiles: automationPipelines.withheldFiles }
         : {}),
+      ...(withheldMemberFiles.size > 0
+        ? {
+            withheldMemberFiles: [...withheldMemberFiles.values()].sort(
+              (a, b) =>
+                a.rootName.localeCompare(b.rootName) ||
+                a.relativePath.localeCompare(b.relativePath),
+            ),
+          }
+        : {}),
+      ...(input.cloudCopy === undefined
+        ? {}
+        : {
+            gitIgnoreCheck: gitIgnoreUnchecked ? 'unavailable' : 'checked',
+          }),
       ...(input.repoLocalInvocables
         ? {
             repoLocalScope: {
@@ -2867,6 +3079,55 @@ function stepVariants(
 ): readonly PipelinePackageStepVariant[] {
   if (providers === undefined) return [];
   return typeof providers === 'string' ? [{ provider: providers }] : providers;
+}
+
+/**
+ * Requests for the skills and plugins a pipeline's plugin collections take on
+ * this machine: the collection preferences outside the YAML, such as the local
+ * selections a converted chat automation keeps in `chat_plugins`. Each `key`
+ * names an inventory capability, and each request binds to a step that uses
+ * the collection, under every provider the step can run with, as a YAML
+ * default's request does. They are required: the run that uses them has them.
+ */
+export function pluginCollectionSelectionRequests(
+  pipeline: Pipeline,
+  providerByStep: Record<string, PipelinePackageStepProviders>,
+  collections: ReadonlyArray<{
+    collectionId: string;
+    keys: readonly string[];
+  }>,
+): CapabilityPackageRequest[] {
+  return collections.flatMap(({ collectionId, keys }) =>
+    affectedStepsForCollection(pipeline, collectionId).flatMap(
+      ({ jobId, stepId }) => {
+        const unconfirmedByProvider = new Map<
+          PipelinePackageProvider,
+          boolean
+        >();
+        for (const variant of stepVariants(
+          providerByStep[`${jobId}.${stepId}`],
+        )) {
+          unconfirmedByProvider.set(
+            variant.provider,
+            (unconfirmedByProvider.get(variant.provider) ?? true) &&
+              variant.unconfirmed === true,
+          );
+        }
+        return Array.from(new Set(keys)).flatMap((key) =>
+          Array.from(
+            unconfirmedByProvider,
+            ([provider, unconfirmed]): CapabilityPackageRequest => ({
+              key,
+              provider,
+              required: true,
+              bindingKey: `${jobId}\0${stepId}`,
+              ...(unconfirmed ? { unconfirmed } : {}),
+            }),
+          ),
+        );
+      },
+    ),
+  );
 }
 
 /** The analyzer input a pipeline contributes: requests, prompts, requirements. */

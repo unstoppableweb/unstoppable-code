@@ -86,6 +86,7 @@ export function CustomizePartsSpecimen(): JSX.Element {
                       placement={placement}
                       health={
                         <McpRowHealth
+                          name={entry.name}
                           model={
                             checking
                               ? { ...model, text: 'Checking…', tone: 'neutral' }
@@ -124,6 +125,7 @@ export function CustomizePartsSpecimen(): JSX.Element {
         <SpecimenGrid min={240}>
           <SpecimenCell label="Plugin MCP: signed in, no connection check yet">
             <McpRowHealth
+              name="Plugin MCP"
               model={{ text: 'Connected', tone: 'positive', action: null }}
               testId="lab-plugin-mcp-signed-in"
             />
@@ -137,7 +139,11 @@ export function CustomizePartsSpecimen(): JSX.Element {
             mcpRowHealthModel({ status: 'unknown', disabled: true }),
           ].map((model) => (
             <SpecimenCell key={model.text} label={model.text}>
-              <McpRowHealth model={model} testId={`lab-health-${model.text}`} />
+              <McpRowHealth
+                name="Example MCP server"
+                model={model}
+                testId={`lab-health-${model.text}`}
+              />
             </SpecimenCell>
           ))}
           {[false, true].map((busy) => (
@@ -148,6 +154,7 @@ export function CustomizePartsSpecimen(): JSX.Element {
             >
               <div className="flex min-w-0 items-center gap-2">
                 <McpRowHealth
+                  name="Example MCP server"
                   model={
                     busy
                       ? {

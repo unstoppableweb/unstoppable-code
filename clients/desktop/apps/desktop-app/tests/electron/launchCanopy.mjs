@@ -213,6 +213,7 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-portal-enabled': true,
   'canopy-desktop-pr-split': true,
   'canopy-desktop-cursor-harness': true,
+  'canopy-desktop-antigravity-harness': true,
   'canopy-desktop-opencode-harness': true,
   'canopy-desktop-claude-tui-workers': true,
   'canopy-desktop-claude-tui-chats': true,
@@ -1724,6 +1725,24 @@ export function buildElectronEnv(
           CANOPY_CLAUDE_DESKTOP_DATA_DIR:
             extraEnv.CANOPY_CLAUDE_DESKTOP_DATA_DIR ??
             path.join(providerState.claude, 'desktop'),
+          // The import reads T3 Code's store too; isolate it the same way so
+          // a developer's own threads never reach a suite's scans. A spec
+          // seeding a T3 store names its own (seedT3CodeImportFixture).
+          T3CODE_HOME:
+            extraEnv.T3CODE_HOME ?? path.join(providerState.home, '.t3'),
+          // And OpenCode's, which resolves from `OPENCODE_DB`, else
+          // `XDG_DATA_HOME`. Pinning the database also overrides an
+          // `OPENCODE_DB` inherited from the developer's shell. A spec seeding
+          // an OpenCode store names its data home (seedOpenCodeImportFixture)
+          // or the database itself.
+          OPENCODE_DB:
+            extraEnv.OPENCODE_DB ??
+            path.join(
+              extraEnv.XDG_DATA_HOME ??
+                path.join(providerState.home, '.local', 'share'),
+              'opencode',
+              'opencode.db',
+            ),
         }),
   };
   // A headed request must belong to this launch. Never inherit a stale shell

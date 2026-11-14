@@ -98,8 +98,9 @@ export function PptxPreview({
           {slideCount.toLocaleString('en-US')} slides.
         </div>
       )}
-      <div
-        className="min-h-0 flex-1 overflow-auto bg-secondary"
+      <Surface
+        variant="well"
+        className="min-h-0 flex-1 overflow-auto"
         data-testid="pptx-slides"
         data-selectable
         aria-label={`Slides in ${fileName}`}
@@ -125,7 +126,7 @@ export function PptxPreview({
             ))}
           </div>
         )}
-      </div>
+      </Surface>
     </div>
   );
 }

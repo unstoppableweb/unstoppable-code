@@ -873,6 +873,7 @@ export function OllamaTab(): JSX.Element {
     <SettingsPage title="Ollama" dataTestId="settings-tab-ollama">
       <SettingsSection title="Setup" headingId="ollama-setup-heading">
         <DesktopErrorBanner
+          errorSource="ollama-page-error"
           className=""
           error={pageError?.error}
           {...(pageError?.details === undefined
@@ -917,6 +918,7 @@ export function OllamaTab(): JSX.Element {
 
         {mode === 'managed' && managedView === 'failure' && (
           <DesktopErrorBanner
+            errorSource="ollama-install-failure"
             className=""
             error={installFailure.error}
             {...(installFailure.details === undefined
@@ -1377,6 +1379,7 @@ export function OllamaTab(): JSX.Element {
             {/* Completed pulls with errors */}
             {failedPulls.map((pull) => (
               <DesktopErrorBanner
+                errorSource="ollama-tab"
                 key={pull.model}
                 className=""
                 error={`Couldn't pull ${pull.model}.`}

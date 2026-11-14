@@ -1,4 +1,8 @@
 import type { TerminalShellProfileId } from '@canopy/desktop-shared/types';
+import { requireTerminalClient } from '@canopy/app-state/terminal';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { cloudTerminalsEnabled } from '@/lib/web-core-scope-capabilities';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useBrowserStore } from '@/stores/browserStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import {
@@ -87,16 +91,28 @@ export async function createTerminalPanel(
 ): Promise<boolean> {
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
   const { projectId, worktreeId } = splitKey(ownerKey);
+  // A cloud task's shell runs in its sandbox through the bound scoped client;
+  // main's local terminal host never gets a cloud id (CAN-6542, CAN-6395).
+  const cloud = isWebCoreScope(worktreeId);
   let terminalId: string | null = null;
+  let client: ReturnType<typeof requireTerminalClient> | null = null;
   try {
-    await ensureTerminalWorktreeHydrated(projectId, worktreeId).catch(
-      () => undefined,
-    );
-    const session = await window.api.terminal.spawn({
+    if (
+      cloud &&
+      !cloudTerminalsEnabled(useFeatureFlagsStore.getState().isEnabled)
+    )
+      throw new Error('Terminals are not available for this cloud task.');
+    client = requireTerminalClient();
+    if (!cloud)
+      await ensureTerminalWorktreeHydrated(projectId, worktreeId).catch(
+        () => undefined,
+      );
+    const session = await client.command('terminal.spawn', {
       projectId,
       worktreeId,
       terminalProfileId,
-      ...(initialCommand ? { initialCommand } : {}),
+      // A cloud terminal runs no startup command.
+      ...(initialCommand && !cloud ? { initialCommand } : {}),
       cols: 80,
       rows: 24,
     });
@@ -125,7 +141,9 @@ export async function createTerminalPanel(
     if (terminalId !== null) {
       clearTerminalFocusRequest(terminalId);
       useTerminalActivityStore.getState().markUserInitiatedClose(terminalId);
-      await window.api.terminal.kill({ terminalId }).catch(() => undefined);
+      await client
+        ?.command('terminal.kill', { terminalId })
+        .catch(() => undefined);
       useTerminalStore
         .getState()
         .removeTerminal(projectId, worktreeId, terminalId);

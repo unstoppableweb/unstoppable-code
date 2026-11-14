@@ -48,6 +48,7 @@ export interface ResolvePortablePluginRefsRequest {
     | 'ollama'
     | 'cursor'
     | 'copilot'
+    | 'antigravity'
     | 'opencode';
 }
 
@@ -69,6 +70,7 @@ export interface ResolvePortableEnableRefRequest {
     | 'ollama'
     | 'cursor'
     | 'copilot'
+    | 'antigravity'
     | 'opencode';
 }
 

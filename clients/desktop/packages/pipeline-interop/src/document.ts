@@ -473,6 +473,7 @@ export interface PipelineInlineModelAliasDefaults {
  */
 export interface PipelineAgentModelAliasDefaults {
   agent_id: string;
+  base?: string;
 }
 
 /**

@@ -6,6 +6,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   APP_ADVISOR_PROJECT_ID,
+  canSwitchProviderInPlace,
   getProviderForModel,
   inferLegacyExecutionHarness,
   isTerminalBackedInterfaceMode,
@@ -152,13 +153,48 @@ export interface ContinuableTabLike extends TabLike {
  * they can never disagree about whether a continue is allowed.
  *
  * A continued chat is a brand-new chat id, so this never asks the main process
- * to approve a cross-provider change on an existing session: the main-process
- * `isProviderChangeAllowed` guard is untouched.
+ * to approve a cross-provider change on an existing session.
  */
 export function canContinueOnOtherHarness(
   tab: ContinuableTabLike | undefined,
   targetProvider: AgentProviderType,
   projectId: string | undefined,
+): ContinueOnOtherHarnessCheck {
+  return checkProviderChange(
+    tab,
+    targetProvider,
+    projectId,
+    isContinuableHarnessPair,
+  );
+}
+
+/**
+ * Whether a started chat may switch to `targetProvider` in place, keeping the
+ * chat and carrying its conversation to the new provider (CAN-6445). Main
+ * allows the same pairs (`canSwitchProviderInPlace`); the transient blockers
+ * are the continue flow's, since both hand a settled conversation over.
+ */
+export function canSwitchChatProvider(
+  tab: ContinuableTabLike | undefined,
+  targetProvider: AgentProviderType,
+  projectId: string | undefined,
+): ContinueOnOtherHarnessCheck {
+  return checkProviderChange(
+    tab,
+    targetProvider,
+    projectId,
+    canSwitchProviderInPlace,
+  );
+}
+
+function checkProviderChange(
+  tab: ContinuableTabLike | undefined,
+  targetProvider: AgentProviderType,
+  projectId: string | undefined,
+  pairAllowed: (
+    lockedProvider: AgentProviderType,
+    rowProvider: AgentProviderType,
+  ) => boolean,
 ): ContinueOnOtherHarnessCheck {
   if (!tab || tab.kind === 'file') {
     return {
@@ -179,7 +215,7 @@ export function canContinueOnOtherHarness(
     };
   }
   if (
-    !isContinuableHarnessPair(sourceProvider, targetProvider) ||
+    !pairAllowed(sourceProvider, targetProvider) ||
     projectId === APP_ADVISOR_PROJECT_ID ||
     isTerminalBackedInterfaceMode(tab.interfaceMode)
   ) {

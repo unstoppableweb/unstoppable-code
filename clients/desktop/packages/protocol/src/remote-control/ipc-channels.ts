@@ -16,6 +16,7 @@ import { SCRIPT_ACTIONS_CHANNELS } from '../script-actions';
  * reads, external URLs) are deliberately absent.
  */
 export const REMOTE_IPC_CHANNELS = {
+  homeListBranchTargets: 'home:list-branch-targets',
   activityFileDiff: 'activity:file-diff',
   activityStopBgProcess: 'activity:stop-bg-process',
   appAdvisorSettingsPatch: 'app-advisor:settings-patch',
@@ -116,6 +117,7 @@ export const REMOTE_IPC_CHANNELS = {
   referencePreviewLinearTeams: 'reference-preview:linear-teams',
   repoDefaultCloneDir: 'repo:default-clone-dir',
   repoRulesApply: 'repo-rules:apply',
+  repoRulesCheck: 'repo-rules:check',
   repoRulesPreview: 'repo-rules:preview',
   repoRulesScan: 'repo-rules:scan',
   repoRulesStatus: 'repo-rules:status',

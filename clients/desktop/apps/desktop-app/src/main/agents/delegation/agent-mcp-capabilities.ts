@@ -114,7 +114,13 @@ export interface DelegatedMcpResolutionOptions {
   readonly stagedRootDir: string;
   /** The original host chat scope, never the child staging directory. */
   readonly inheritedPluginProjectPath?: string;
-  readonly provider: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  readonly provider:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   readonly signal: AbortSignal;
   readonly mcpHttpProxyService: McpHttpProxyServiceForResolver;
   readonly mcpStdioBroker: McpStdioBrokerForResolver;
@@ -160,7 +166,13 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
 
 async function liveSelections(
   selections: readonly AgentMcpSelection[],
-  provider: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  provider:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
   inheritedPluginProjectPath?: string,
 ): Promise<LiveSelection[]> {
   const live: LiveSelection[] = [];

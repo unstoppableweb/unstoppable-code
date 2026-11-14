@@ -63,7 +63,7 @@ export function ShowTipsAgainRow(): JSX.Element | null {
         </Button>
       }
     >
-      {error && <ErrorBanner error={error} />}
+      {error && <ErrorBanner errorSource="show-tips-again-row" error={error} />}
     </SettingsRow>
   );
 }

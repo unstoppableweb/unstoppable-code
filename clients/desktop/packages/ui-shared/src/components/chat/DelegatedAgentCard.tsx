@@ -1,3 +1,4 @@
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   memo,
   useCallback,
@@ -36,8 +37,6 @@ import { Button } from '../Button';
 import { Disclosure } from '../Disclosure';
 import { StatusLabel } from '../StatusLabel';
 import { Fact, FactList } from '../FactList';
-import { ThinkingSpinner } from '../ThinkingSpinner';
-import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 /** Header status while the delegate's request waits in its parent's queue. */
 export const DELEGATED_AGENT_WAITING_ON_PARENT_LABEL = 'Waiting for the parent';
@@ -181,9 +180,23 @@ export function delegatedAgentRouteMetadata(
       snapshot.requestedModelId ??
       'Preparing model',
     ...(route?.selectedModelId ? { selectedId: route.selectedModelId } : {}),
-    runtime: route?.runtimeModelLabel ?? route?.runtimeModelId ?? 'Preparing',
+    runtime:
+      route?.runtimeModelLabel ??
+      route?.runtimeModelId ??
+      delegatedAgentUnroutedLabel(snapshot),
     ...(route?.runtimeModelId ? { runtimeId: route.runtimeModelId } : {}),
   };
+}
+
+/**
+ * What a route field reads before its host reports one: `Preparing` while
+ * the delegate hasn't started, `Not reported` once it has, for a host that
+ * never reports its route (cloud chats run delegates on Core's route).
+ */
+export function delegatedAgentUnroutedLabel(
+  snapshot: Pick<AgentDelegationSnapshot, 'status'>,
+): string {
+  return snapshot.status === 'pending' ? 'Preparing' : 'Not reported';
 }
 
 /** Shared desktop and Portal presentation; native actions are explicitly supplied by the host. */
@@ -242,13 +255,17 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
     >
       <AgentBlockCard
         dataTestId="agent-block-shared"
-        subagentType={`${selected} · ${route?.harnessId ?? 'Preparing'}`}
+        subagentType={
+          // An unreported harness is left out once the delegate has started.
+          route?.harnessId === undefined && snapshot.status !== 'pending'
+            ? selected
+            : `${selected} · ${route?.harnessId ?? 'Preparing'}`
+        }
         description={description || 'Delegated task'}
         prompt={visibleDelegationPrompt(prompt)}
         result={snapshot.finalText}
         runInBackground={executionMode === 'background'}
         isRunning={running}
-        pendingSpinner={<ThinkingSpinner />}
         isError={
           snapshot.status === 'failed' ||
           snapshot.status === 'deadline_exceeded'
@@ -344,7 +361,8 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
                 </Fact>
               )}
               <Fact label="Harness">
-                {parentHarnessId} → {route?.harnessId ?? 'Preparing'}
+                {parentHarnessId} →{' '}
+                {route?.harnessId ?? delegatedAgentUnroutedLabel(snapshot)}
               </Fact>
               <Fact label="Execution">{executionMode}</Fact>
               {snapshot.resultIndex !== undefined && (

@@ -192,6 +192,15 @@ into `sharedContainersState.dismissed` instead of dropping them:
 }
 ```
 
+Owner departure notices (CAN-5120) are `GET /api/v1/shared-containers/owner-departures`
+and `DELETE …/owner-departures/:id`, seeded through
+`sharedContainersState.ownerDepartures`. A spec ends a share with
+`POST /api/v1/shared-containers/:id/owner-departure` (`noticeId`, `ownerName`,
+`reason`), a test control the real server does not have: it removes the share
+and its grants and adds the notice, leaving the rest of the scenario alone.
+`cloud.withholdSharedContainerOwnerDeparturesCapability: true` models a Cloud
+deployed before this change.
+
 ### Shared plans (`routes/shared-plans.mjs`)
 
 The `sharedPlans` slice serves the desktop owner's shared-plan client:

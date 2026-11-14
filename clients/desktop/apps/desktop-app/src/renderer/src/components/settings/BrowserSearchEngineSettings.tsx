@@ -183,6 +183,7 @@ export function BrowserSearchEngineSettings(): JSX.Element {
         dataTestId="settings-browser-search-engine"
       >
         <DesktopErrorBanner
+          errorSource="settings-browser-search-engine-save-error"
           className=""
           error={saveError?.error}
           {...(saveError?.details === undefined

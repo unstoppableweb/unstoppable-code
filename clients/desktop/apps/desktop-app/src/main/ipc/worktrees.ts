@@ -1,3 +1,5 @@
+import { usesExactWorktreeBaseCatalogue } from '../remote-control/host/bridge-window';
+import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import type { BrowserWindow } from 'electron';
 import {
@@ -369,6 +371,8 @@ export function registerWorktreeHandlers(
       const response = await withTypedArchiveRefusal(
         {
           typedRefusal: request.typedRefusal,
+          intent: worktreeRemovalIntent(request.lockAfterArchive),
+          expectedCreatedAt: request.expectedCreatedAt,
           workspaceId: request.projectId,
           worktreeId: request.worktreeId,
         },
@@ -641,6 +645,7 @@ export function registerWorktreeHandlers(
         runtime.daemonGitRoute
           ? { route: runtime.daemonGitRoute(), sender: event.sender }
           : undefined,
+        usesExactWorktreeBaseCatalogue(event.sender),
       ),
   );
 
@@ -655,6 +660,7 @@ export function registerWorktreeHandlers(
         runtime.dispatcher,
         () => runtime.resolveCaller(event),
         request,
+        usesExactWorktreeBaseCatalogue(event.sender),
       );
       refreshCachedDiffStats(request.projectId, request.worktreeId);
       return response;

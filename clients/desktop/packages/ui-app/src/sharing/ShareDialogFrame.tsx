@@ -413,7 +413,11 @@ export function ShareDialogFrame({
 
       {actionErrorMessage !== undefined && actionErrorMessage !== '' && (
         <div className="px-6 pb-3">
-          <Notice intent="destructive" data-testid={`${p}-error`}>
+          <Notice
+            errorSource="share-dialog-frame-action"
+            intent="destructive"
+            data-testid={`${p}-error`}
+          >
             {actionErrorMessage}
           </Notice>
         </div>
@@ -421,6 +425,7 @@ export function ShareDialogFrame({
       {lifecycle.status === 'error' && errorMessage && (
         <div className="px-6 pb-3">
           <Notice
+            errorSource="share-dialog-frame"
             intent="destructive"
             data-testid={`${p}-error`}
             {...(errorAction !== undefined ? { actions: errorAction } : {})}

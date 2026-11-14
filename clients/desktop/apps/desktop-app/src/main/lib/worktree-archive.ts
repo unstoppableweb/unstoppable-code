@@ -1,4 +1,9 @@
 import {
+  captureAutoDeleteAttention,
+  resolveAutoDeleteAttention,
+} from './auto-delete-attention';
+import { logMainProcessWarn } from './main-process-logging';
+import {
   withArchiveFailureTelemetry,
   type ArchiveTrigger,
   type ArchiveFailureTelemetryOptions,
@@ -402,6 +407,12 @@ async function archiveWorktreeTransition(
     });
   }
 
+  const attentionGenerations = await captureAutoDeleteAttention(
+    workspaceId,
+  ).catch((error: unknown) => {
+    logMainProcessWarn('Could not read Auto Delete attention', error);
+    return [];
+  });
   // Read-only journal refusals release a keyed reservation; the locked
   // service's own refusals follow its fences and keep it.
   const journals = <T>(read: () => Promise<T>): Promise<T> =>
@@ -444,11 +455,28 @@ async function archiveWorktreeTransition(
     persistRemovalCleanup: false,
   });
   const current = rows.find((worktree) => worktree.id === worktreeId);
+  const resolveAttention = async (
+    createdAt: string | undefined,
+  ): Promise<void> => {
+    if (createdAt === undefined) return;
+    await resolveAutoDeleteAttention(
+      workspaceId,
+      worktreeId,
+      createdAt,
+      false,
+      attentionGenerations,
+    ).catch((error: unknown) =>
+      logMainProcessWarn('Could not resolve Auto Delete attention', error),
+    );
+  };
   if (!current && !needsCleanupRecovery) {
     // A row can leave the list while its checkout stays, as a needs-repair
     // rollback does; the archive lifecycle still tears that checkout down.
     if (!(await checkoutExists(workspaceId, worktreeId))) {
       if (recovery || (await wasArchived(request))) {
+        await resolveAttention(
+          request.expectedCreatedAt ?? recovery?.createdAt,
+        );
         return {
           ...(recovery?.state === 'completed'
             ? archiveOutcomeSchema.parse({
@@ -469,6 +497,7 @@ async function archiveWorktreeTransition(
   ) {
     // The caller's incarnation is archived; a newer one under the same id is
     // left alone.
+    await resolveAttention(request.expectedCreatedAt);
     return {
       ...(recovery?.state === 'completed'
         ? archiveOutcomeSchema.parse({
@@ -596,6 +625,10 @@ async function archiveWorktreeTransition(
           teardownOperation,
           archive,
         );
+  if (response.success)
+    await resolveAttention(
+      request.expectedCreatedAt ?? current?.createdAt ?? unfinished?.createdAt,
+    );
   recordWorktreeCrudTelemetry({
     action: 'archive',
     workspaceId,

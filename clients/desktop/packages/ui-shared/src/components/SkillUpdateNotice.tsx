@@ -70,6 +70,7 @@ export function SkillUpdateNotice({
     const checkFailed = error.kind === 'check-failed';
     return (
       <Notice
+        errorSource="skill-update-notice"
         intent="destructive"
         title={
           checkFailed

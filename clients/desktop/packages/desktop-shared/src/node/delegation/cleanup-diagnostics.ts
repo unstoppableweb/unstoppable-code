@@ -27,7 +27,7 @@ const ERROR_CODES = [
   'ERR_USE_AFTER_CLOSE',
 ] as const;
 // prettier-ignore
-const HARNESS_IDS = ['claude', 'codex', 'copilot', 'cursor', 'opencode'] as const;
+const HARNESS_IDS = ['claude', 'codex', 'copilot', 'antigravity', 'cursor', 'opencode'] as const;
 // prettier-ignore
 const RUNTIME_KINDS = [
   'claude-sdk', 'codex-app-server', 'copilot-sdk', 'cursor-acp', 'opencode-acp',

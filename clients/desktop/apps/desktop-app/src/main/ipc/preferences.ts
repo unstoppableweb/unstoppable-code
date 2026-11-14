@@ -81,6 +81,7 @@ import {
 import { requestActivationRecompute } from '../notifications/campaigns/scheduler';
 import { getWakeLockService } from '../power/wake-lock-service';
 import { getUsageDataPolicy } from '../lib/usage-data-policy';
+import { nativeCrashAnnotation } from '../lib/native-crash-policy';
 import { getMemoryDiagnosticsService } from '../memory-diagnostics';
 import { getBrowserService } from '../browser/browser-service-registry';
 import { registerIpcHandler } from './register';
@@ -560,6 +561,14 @@ export async function savePreferencesPatch(
   // Main owns native account tracking (CAN-4200); a renderer copy can be
   // older than main's latest record, so it never overwrites it.
   const rendererPatch = { ...preferences };
+  // A wider Settings snapshot may predate a disconnect in another window.
+  // Only the explicit one-key connection intent may change this choice.
+  if (
+    Object.keys(preferences).length !== 1 ||
+    typeof preferences.googleSubscriptionDisconnected !== 'boolean'
+  ) {
+    delete rendererPatch.googleSubscriptionDisconnected;
+  }
   // Main's Copilot connection owns the flag with its account pin (CAN-4880).
   // Only the dedicated updateSuggestions command changes the master/dismissals.
   // A generic Settings snapshot may predate a toggle in another window.
@@ -609,6 +618,11 @@ export async function savePreferencesPatch(
       // flows it omits back on through their defaults.
       (latest) => {
         precondition?.(latest);
+        // Stop marking and sending native crashes before this opt-out writes.
+        // Across restart, preference-write failures follow the shared consent
+        // store, just as analytics does. CAN-6589 tracks opt-out durability.
+        if (rendererPatch.usageData?.errorReports === false)
+          nativeCrashAnnotation.suspendForOptOut();
         return rendererPatch.usageData
           ? {
               ...rendererPatch,
@@ -633,6 +647,11 @@ export async function savePreferencesPatch(
         // commit: a commit proves the stored file is real again, which
         // also ends a fail-closed startup read of unreadable preferences.
         getUsageDataPolicy().setPreferences(committed.usageData);
+        if (
+          rendererPatch.usageData?.errorReports === true &&
+          committed.usageData.errorReports
+        )
+          nativeCrashAnnotation.resumeAfterOptIn();
         if ('useAsSystemDefaultBrowser' in preferences) {
           defaultBrowserRegistration = enqueueDefaultBrowserRegistration(
             committed.useAsSystemDefaultBrowser === true,

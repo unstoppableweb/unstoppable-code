@@ -48,6 +48,7 @@ const mockRuntime = {
 };
 const mockMcpProxy = {
   getCodexCapabilityAuthorityIds: jest.fn(() => []),
+  getLegacyCodexCapabilityAuthorityIds: jest.fn(() => []),
   unregisterRoutesForSession: jest.fn(() => {
     mockCalls.push('mcpProxy.unregisterRoutesForSession');
   }),

@@ -10,7 +10,13 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { Stack, Fact, FactList, Heading } from '@canopy/ui-shared/components';
+import {
+  Inline,
+  Stack,
+  Fact,
+  FactList,
+  Heading,
+} from '@canopy/ui-shared/components';
 import type {
   LocalMemoryChatRef,
   LocalMemoryClient,
@@ -1243,29 +1249,40 @@ export function MemoryPanel({
             </FormField>
           </div>
         )}
-        <FormField id="memory-edit-body" label="Memory">
-          {(control) => (
-            <TextArea
-              {...control}
-              autoFocus={!titled}
-              rows={Math.min(14, Math.max(5, draftBody.split('\n').length + 1))}
-              value={draftBody}
-              disabled={saving}
-              onChange={(event) => setDraftBody(event.target.value)}
-              onKeyDown={onKeyDown}
-              data-testid="memory-item-draft"
+        <Stack gap="inline">
+          <FormField id="memory-edit-body" label="Memory">
+            {(control) => (
+              <TextArea
+                {...control}
+                autoFocus={!titled}
+                rows={Math.min(
+                  14,
+                  Math.max(5, draftBody.split('\n').length + 1),
+                )}
+                value={draftBody}
+                disabled={saving}
+                onChange={(event) => setDraftBody(event.target.value)}
+                onKeyDown={onKeyDown}
+                data-testid="memory-item-draft"
+              />
+            )}
+          </FormField>
+          {removedWhileEditing ? (
+            <ErrorBanner
+              errorSource="memory-item-removed"
+              displayErrorCode="external.state_changed"
+              className=""
+              testId="memory-item-removed"
+              error="This memory was removed, so it can't be saved. Copy your draft before you cancel."
+            />
+          ) : (
+            <ErrorBanner
+              errorSource="memory-panel-save"
+              className=""
+              error={saveError}
             />
           )}
-        </FormField>
-        {removedWhileEditing ? (
-          <ErrorBanner
-            className="mt-2"
-            testId="memory-item-removed"
-            error="This memory was removed, so it can't be saved. Copy your draft before you cancel."
-          />
-        ) : (
-          <ErrorBanner className="mt-2" error={saveError} />
-        )}
+        </Stack>
         <div className="mt-3.5 flex justify-end gap-2">
           <Button
             variant="secondary"
@@ -1325,72 +1342,76 @@ export function MemoryPanel({
           {editing ? (
             renderEditor(entry)
           ) : (
-            <>
+            <Stack gap="inline">
               <Heading
                 level={2}
                 variant="title"
-                className="mb-2"
                 data-testid="memory-detail-title"
               >
                 <span className={REPLAY_MASK_CLASS}>
                   {content?.title || entry.title}
                 </span>
               </Heading>
-              {document?.error ? (
-                <ErrorBanner error={document.error} />
-              ) : content ? (
-                content.body && (
-                  <MemoryBody testId="memory-detail-body">
-                    <Markdown options={markdown ?? undefined}>
-                      {content.body}
-                    </Markdown>
-                  </MemoryBody>
-                )
-              ) : (
-                <DelayedLoadingPlaceholder slowNote="Still opening…">
-                  <Skeleton
-                    loading
-                    label="Opening memory"
-                    testId="memory-detail-loading"
-                  >
-                    <MemoryBody>
-                      {SAMPLE_MEMORY_PARAGRAPHS.map((paragraph) => (
-                        <p key={paragraph}>{paragraph}</p>
-                      ))}
+              <div>
+                {document?.error ? (
+                  <ErrorBanner
+                    errorSource="memory-panel-document"
+                    error={document.error}
+                  />
+                ) : content ? (
+                  content.body && (
+                    <MemoryBody testId="memory-detail-body">
+                      <Markdown options={markdown ?? undefined}>
+                        {content.body}
+                      </Markdown>
                     </MemoryBody>
-                  </Skeleton>
-                </DelayedLoadingPlaceholder>
-              )}
-              <Stack gap="group">
-                {renderFacts(entry)}
-                <div className="flex gap-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={
-                      !content || document?.document?.markdown === undefined
-                    }
-                    onClick={() => void startEditing(entry)}
-                    data-testid="memory-detail-edit"
-                  >
-                    <PencilIcon size="sm" aria-hidden="true" />
-                    Edit
-                  </Button>
-                  {entry.file.kind !== 'index' && (
-                    <Button
-                      variant="ghost-destructive"
-                      size="sm"
-                      disabled={!content}
-                      onClick={() => void deleteEntry(entry)}
-                      data-testid="memory-detail-delete"
+                  )
+                ) : (
+                  <DelayedLoadingPlaceholder slowNote="Still opening…">
+                    <Skeleton
+                      loading
+                      label="Opening memory"
+                      testId="memory-detail-loading"
                     >
-                      <TrashIcon size="sm" aria-hidden="true" />
-                      Delete
+                      <MemoryBody>
+                        {SAMPLE_MEMORY_PARAGRAPHS.map((paragraph) => (
+                          <p key={paragraph}>{paragraph}</p>
+                        ))}
+                      </MemoryBody>
+                    </Skeleton>
+                  </DelayedLoadingPlaceholder>
+                )}
+                <Stack gap="group">
+                  {renderFacts(entry)}
+                  <Inline align="stretch">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={
+                        !content || document?.document?.markdown === undefined
+                      }
+                      onClick={() => void startEditing(entry)}
+                      data-testid="memory-detail-edit"
+                    >
+                      <PencilIcon size="sm" aria-hidden="true" />
+                      Edit
                     </Button>
-                  )}
-                </div>
-              </Stack>
-            </>
+                    {entry.file.kind !== 'index' && (
+                      <Button
+                        variant="ghost-destructive"
+                        size="sm"
+                        disabled={!content}
+                        onClick={() => void deleteEntry(entry)}
+                        data-testid="memory-detail-delete"
+                      >
+                        <TrashIcon size="sm" aria-hidden="true" />
+                        Delete
+                      </Button>
+                    )}
+                  </Inline>
+                </Stack>
+              </div>
+            </Stack>
           )}
         </div>
       </div>

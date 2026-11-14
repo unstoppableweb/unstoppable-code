@@ -14,15 +14,19 @@ const id = z.string().min(1).max(512);
 const timestamp = z.iso.datetime({ offset: true });
 const count = z.number().int().nonnegative();
 /**
- * A cloud listing record passed through unchanged (CAN-6111). Its values are
- * bounded only by the web core's largest message (16 MiB), not the 32 KiB of
- * a plain JSON value: the cloud stores 128,000 characters of setup output and
- * first messages of any length, and one oversized record would fail the
- * whole listing.
+ * A cloud value passed through unchanged (CAN-6111), bounded only by the web
+ * core's largest message (16 MiB), not the 32 KiB of a plain JSON value: the
+ * cloud stores 128,000 characters of setup output and first messages of any
+ * length, and one oversized value would fail the whole answer.
  */
+export const CoreCloudJsonValueSchema = canopyJsonValueSchemaWithin(
+  16 * 1024 * 1024,
+);
+
+/** A cloud listing record, its values bounded as {@link CoreCloudJsonValueSchema}. */
 export const CoreCloudRecordSchema = z.record(
   z.string(),
-  canopyJsonValueSchemaWithin(16 * 1024 * 1024),
+  CoreCloudJsonValueSchema,
 );
 
 /**
@@ -47,6 +51,37 @@ const CLOUD_WORKSPACE_FIELDS = {
   modelLibrary: z.enum(MODEL_LIBRARY_ACCESS_VALUES).optional(),
   chats: z.array(CoreCloudRecordSchema).optional(),
 };
+/**
+ * A cloud project's settings at `core.workspace.get` revision 2 (CAN-6093):
+ * exactly what `GET /api/cloud/workspaces/{id}/settings` sends, its
+ * `workspace` with the body's `defaultPluginSelectionsUnavailable`. Its own
+ * field, so the listing's `color` and `repository` keep their meaning here:
+ * the stored color as saved, and the full repository record.
+ */
+export const CoreWorkspaceCloudSettingsSchema = z
+  .object({
+    externalId: id,
+    name: z.string(),
+    description: z.string().nullable(),
+    color: z.string().nullable(),
+    defaultModelDefinitionId: id.nullable(),
+    deletionRetentionDays: count,
+    defaultAgentInstructions: z.string().nullable(),
+    defaultPluginSelections: CoreCloudRecordSchema.nullable(),
+    defaultPluginSelectionsRevision: count,
+    hostModeEnabled: z.boolean(),
+    hostPorts: z.array(z.number().int().min(1).max(65535)),
+    egressAllowedHosts: z.array(z.string()),
+    createdAtMs: z.number(),
+    executionKind: z.string().min(1),
+    repository: CoreCloudRecordSchema.nullable(),
+    /** Default plugins the project's chats cannot use (REG-3042). */
+    defaultPluginSelectionsUnavailable: z
+      .array(CoreCloudRecordSchema)
+      .optional(),
+  })
+  .catchall(CoreCloudJsonValueSchema);
+
 const HOST_PATH_EXEMPT: ReadonlySet<string> = new Set([
   'workspaceId',
   'name',
@@ -54,6 +89,7 @@ const HOST_PATH_EXEMPT: ReadonlySet<string> = new Set([
   'repository',
   'itemGroups',
   'chats',
+  'cloudSettings',
 ]);
 
 // The typed fields use the `core.workspace.update` patch's value schemas, so a
@@ -98,6 +134,18 @@ function isPortableRelativePath(path: string): boolean {
       .every((segment) => segment !== '' && segment !== '.' && segment !== '..')
   );
 }
+
+/**
+ * A cloud project's sandbox host settings (CAN-6114), read and patched with
+ * one value schema each; only the web core saves them. Null clears the ports.
+ */
+export const CoreWorkspaceHostPortsSchema = z
+  .array(z.number().int().min(1).max(65535))
+  .max(64)
+  .nullable();
+export const CoreWorkspaceEgressAllowedHostsSchema = z
+  .array(z.string().max(4096))
+  .max(64);
 
 /** `inherit`: no machine-local override; `null`: explicitly disabled. */
 const CoreWorkspaceStartPageSchema = z.union([
@@ -157,7 +205,12 @@ export const CoreWorkspaceSchema = z
     activitySectionOrder: CoreWorkspaceActivitySectionOrderSchema.optional(),
     alwaysShow: z.boolean().optional(),
     startPage: CoreWorkspaceStartPageSchema.optional(),
+    hostModeEnabled: z.boolean().optional(),
+    hostPorts: CoreWorkspaceHostPortsSchema.optional(),
+    egressAllowedHosts: CoreWorkspaceEgressAllowedHostsSchema.optional(),
     ...CLOUD_WORKSPACE_FIELDS,
+    /** Only on revision 2, from the web core. */
+    cloudSettings: CoreWorkspaceCloudSettingsSchema.optional(),
   })
   .catchall(CanopyJsonValueSchema)
   .refine(
@@ -175,9 +228,15 @@ export const CoreWorkspaceListParamsSchema = z.strictObject({
   pageSize: z.number().int().min(1).max(500).default(100).optional(),
   cursor: z.string().min(1).max(2048).optional(),
 });
+/**
+ * `core.workspace.get`'s minor schema revision (CAN-6093): a caller that sends
+ * it also gets a cloud project's settings. Only the web core advertises it.
+ */
+export const CORE_WORKSPACE_GET_SCHEMA_REVISION = 2;
 export const CoreWorkspaceGetParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema.optional(),
   workspaceId: id,
+  revision: z.literal(CORE_WORKSPACE_GET_SCHEMA_REVISION).optional(),
 });
 export const CoreWorkspaceListResultSchema = z
   .object({

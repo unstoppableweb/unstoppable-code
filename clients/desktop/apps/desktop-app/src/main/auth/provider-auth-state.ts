@@ -1,3 +1,4 @@
+import { getAntigravityModelEntries } from '@canopy/execution-engine/model-catalog';
 import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';
 import { resolveClaudePlanType } from '@canopy/desktop-shared/lib/account-proxy-claude-plan';
 import { peekCopilotRuntimeAvailability } from '../copilot/runtime-availability';
@@ -1287,6 +1288,7 @@ export function peekClaudeAuthInconclusiveWithoutSignIn(): boolean {
  */
 export function peekPortalProviderAvailability(): PortalChatProviderAvailability {
   const availability = peekProviderNativeAuthAvailability();
+  availability.antigravity = getAntigravityModelEntries().length > 0;
   const opencode = peekOpenCodeRuntimeAvailability();
   if (opencode !== undefined) availability.opencode = opencode;
   const copilot = peekCopilotRuntimeAvailability();

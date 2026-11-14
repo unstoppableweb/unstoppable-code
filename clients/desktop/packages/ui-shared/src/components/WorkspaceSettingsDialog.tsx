@@ -566,6 +566,7 @@ export function WorkspaceSettingsDialog({
                     value={color}
                     palette={palette}
                     testId={testIds?.colorSwatches}
+                    label="Project color"
                     onChange={(swatch) => {
                       setJustSaved(false);
                       colorEditVersionRef.current += 1;
@@ -729,6 +730,7 @@ export function WorkspaceSettingsDialog({
             <SettingsRowsGroup surface="plain">{removeRows}</SettingsRowsGroup>
           )}
           <ErrorBanner
+            errorSource="workspace-settings-dialog"
             className=""
             error={failure?.message}
             details={failure?.details}

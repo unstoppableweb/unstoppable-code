@@ -33,7 +33,7 @@ import {
 import { TaskIcon as AppCatalogTaskIcon } from '../../icons/AppIcons';
 import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
 import { capitalizeFirstLetter } from '../../lib/text-format';
-import { useCleanChatLook, useStepBadges, useStepTense } from '../chat-look';
+import { useStepBadges, useStepTense } from '../chat-look';
 import { StepBadge } from './StepBadge';
 import type { PortalChatToolFamily } from './tool-display-info';
 import type { AnsweredQuestionDisplay } from './AskUserQuestionCard';
@@ -296,6 +296,14 @@ const APP_ACTION_TOOL_ALIASES: ReadonlySet<string> = new Set([
   'SearchMemory',
   legacyMcpToolName('ReadMemory'),
   legacyCodexToolName('read_memory'),
+  legacyMcpToolName('SearchChats'),
+  legacyCodexToolName('search_chats'),
+  legacyCursorToolTitle('SearchChats'),
+  'SearchChats',
+  legacyMcpToolName('ReadChatExcerpt'),
+  legacyCodexToolName('read_chat_excerpt'),
+  legacyCursorToolTitle('ReadChatExcerpt'),
+  'ReadChatExcerpt',
   'ReadMemory',
   legacyMcpToolName('ReadPipelineYaml'),
   legacyCodexToolName('read_pipeline_yaml'),
@@ -416,6 +424,8 @@ const APP_MCP_DISPLAY_TO_CAPABILITY: ReadonlyMap<
   ['GetGitPreferences', 'get_git_preferences'],
   ['SaveMemory', 'save_memory'],
   ['SearchMemory', 'search_memory'],
+  ['SearchChats', 'search_chats'],
+  ['ReadChatExcerpt', 'read_chat_excerpt'],
   ['ReadMemory', 'read_memory'],
   ['ReadPipelineYaml', 'read_pipeline_yaml'],
   ['SearchWatchers', 'search_watchers'],
@@ -480,6 +490,8 @@ const APP_CODEX_SUFFIX_TO_CAPABILITY: ReadonlyMap<
   ['get_git_preferences', 'get_git_preferences'],
   ['save_memory', 'save_memory'],
   ['search_memory', 'search_memory'],
+  ['search_chats', 'search_chats'],
+  ['read_chat_excerpt', 'read_chat_excerpt'],
   ['read_memory', 'read_memory'],
   ['read_pipeline_yaml', 'read_pipeline_yaml'],
   ['search_watchers', 'search_watchers'],
@@ -598,7 +610,7 @@ function getBrandedAppCapability(
   }
 
   const codexMatch = toolName.match(
-    /^(.+?)_(ask_user_question|get_script_output|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate|set_chat_auto_archive|set_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|search_deferred_tools|load_deferred_tools|immediate_turn_restart|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry)$/,
+    /^(.+?)_(ask_user_question|get_script_output|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate|set_chat_auto_archive|set_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|get_git_preferences|save_memory|search_memory|search_chats|read_chat_excerpt|read_memory|read_pipeline_yaml|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|search_deferred_tools|load_deferred_tools|immediate_turn_restart|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry)$/,
   );
   if (codexMatch) {
     const namespace = codexMatch[1];
@@ -620,6 +632,14 @@ function getBrandedAppCapability(
     }
   }
 
+  const namespace = scope?.trustedMcpNamespace;
+  if (namespace && toolName.startsWith(`${namespace}: `)) {
+    const capability = APP_MCP_DISPLAY_TO_CAPABILITY.get(
+      toolName.slice(namespace.length + 2),
+    );
+    if (capability === 'search_chats' || capability === 'read_chat_excerpt')
+      return capability;
+  }
   return getTrustedCursorTitleLedgerCapability(toolName, scope);
 }
 
@@ -809,6 +829,8 @@ type CanopyActionCapability =
   | 'get_git_preferences'
   | 'save_memory'
   | 'search_memory'
+  | 'search_chats'
+  | 'read_chat_excerpt'
   | 'read_memory'
   | 'read_pipeline_yaml'
   | 'search_watchers'
@@ -1076,6 +1098,14 @@ const APP_ACTION_TOOL_NAME_TO_CAPABILITY: ReadonlyMap<
   ['SearchMemory', 'search_memory'],
   [legacyMcpToolName('ReadMemory'), 'read_memory'],
   [legacyCodexToolName('read_memory'), 'read_memory'],
+  [legacyMcpToolName('SearchChats'), 'search_chats'],
+  [legacyCodexToolName('search_chats'), 'search_chats'],
+  [legacyCursorToolTitle('SearchChats'), 'search_chats'],
+  ['SearchChats', 'search_chats'],
+  [legacyMcpToolName('ReadChatExcerpt'), 'read_chat_excerpt'],
+  [legacyCodexToolName('read_chat_excerpt'), 'read_chat_excerpt'],
+  [legacyCursorToolTitle('ReadChatExcerpt'), 'read_chat_excerpt'],
+  ['ReadChatExcerpt', 'read_chat_excerpt'],
   ['ReadMemory', 'read_memory'],
   [legacyMcpToolName('ReadPipelineYaml'), 'read_pipeline_yaml'],
   [legacyCodexToolName('read_pipeline_yaml'), 'read_pipeline_yaml'],
@@ -1265,81 +1295,54 @@ function shortenGraphTarget(target: string): string {
 const CLEAN_DETAIL_CLASS = 'fg-tertiary';
 
 function CodeChunk({ children }: { children: ReactNode }): JSX.Element {
-  const clean = useCleanChatLook();
   // Chat detail `detailed`: the target in a code badge.
   const badges = useStepBadges();
   if (badges) return <StepBadge>{children}</StepBadge>;
-  if (clean) return <span>{children}</span>;
-  return (
-    <code className="rounded bg-fg-primary/[0.08] px-1 py-0.5 font-mono text-2xs">
-      {children}
-    </code>
-  );
+  return <span>{children}</span>;
 }
 
 /** Stable action words; status belongs to the row, not its label. */
-function ToolVerb({
-  classic,
-  clean,
-}: {
-  classic: ReactNode;
-  clean: string;
-}): JSX.Element {
-  const cleanLook = useCleanChatLook();
-  return <>{cleanLook ? clean : classic}</>;
+function ToolVerb({ clean }: { clean: string }): JSX.Element {
+  return <>{clean}</>;
 }
 
 /**
  * Shell calls show the provider description followed by the same command
  * badge as undescribed calls. Expanded details retain the full command.
- * Classic rows retain their description and short command snippet.
  */
 function ShellLabel({
-  heading,
   command,
-  shortCommand,
   description,
 }: {
-  heading: string;
   command: string;
-  shortCommand: string;
+
   description?: string;
 }): JSX.Element {
-  const clean = useCleanChatLook();
   const tense = useStepTense();
-  if (clean) {
-    // What it did, then the command as the row's lighter detail: the
-    // agent's own description when it gave one, else "Ran a command" in the
-    // step's tense. A blocked or interrupted command, or one outside a step,
-    // never claims it ran.
-    const words =
-      description ??
-      (tense === 'running'
-        ? 'Running a command'
-        : tense === 'done' || tense === 'failed'
-          ? 'Ran a command'
-          : 'Run a command');
-    if (!command) return <>{words}</>;
-    return (
-      <>
-        {words}
-        <span className={CLEAN_DETAIL_CLASS}>
-          <span aria-hidden="true">{' · '}</span>
-          {command}
-        </span>
-      </>
-    );
-  }
-  if (!shortCommand) return <>{heading}</>;
+  // What it did, then the command as the row's lighter detail: the
+  // agent's own description when it gave one, else "Ran a command" in the
+  // step's tense. A blocked or interrupted command, or one outside a step,
+  // never claims it ran.
+  const words =
+    description ??
+    (tense === 'running'
+      ? 'Running a command'
+      : tense === 'done' || tense === 'failed'
+        ? 'Ran a command'
+        : 'Run a command');
+  if (!command) return <>{words}</>;
   return (
     <>
-      {heading} <MonoSnippet>{shortCommand}</MonoSnippet>
+      {words}
+      <span className={CLEAN_DETAIL_CLASS}>
+        <span aria-hidden="true">{' · '}</span>
+        {command}
+      </span>
     </>
   );
 }
 
 function MutedSnippet({ children }: { children: ReactNode }): JSX.Element {
-  const clean = useCleanChatLook();
   // Chat detail `detailed`: shrinks in the badge line and ends in "…".
   const badges = useStepBadges();
   return (
@@ -1347,24 +1350,7 @@ function MutedSnippet({ children }: { children: ReactNode }): JSX.Element {
       className={
         badges
           ? `ml-1 min-w-0 truncate ${CLEAN_DETAIL_CLASS}`
-          : clean
-            ? `ml-1 ${CLEAN_DETAIL_CLASS}`
-            : 'ml-1 text-2xs fg-secondary'
-      }
-    >
-      {children}
-    </span>
-  );
-}
-
-function MonoSnippet({ children }: { children: ReactNode }): JSX.Element {
-  const clean = useCleanChatLook();
-  return (
-    <span
-      className={
-        clean
-          ? `ml-1 ${CLEAN_DETAIL_CLASS}`
-          : 'ml-1 font-mono text-2xs fg-secondary'
+          : `ml-1 ${CLEAN_DETAIL_CLASS}`
       }
     >
       {children}
@@ -2615,6 +2601,24 @@ const APP_ACTION_RENDERERS: Record<
   get_git_preferences: renderGetGitPreferences,
   save_memory: renderSaveMemory,
   search_memory: renderSearchMemory,
+  search_chats: (parsed) => ({
+    icon: <WrenchIcon />,
+    label: (
+      <span>
+        Search chats
+        {asString(parsed.query) ? (
+          <>
+            {' '}
+            <CodeChunk>{asString(parsed.query)}</CodeChunk>
+          </>
+        ) : null}
+      </span>
+    ),
+  }),
+  read_chat_excerpt: () => ({
+    icon: <WrenchIcon />,
+    label: 'Read chat excerpt',
+  }),
   read_memory: renderReadMemory,
   read_pipeline_yaml: renderAppAdvisorReadPipelineYaml,
   search_watchers: renderAppSearchWatchers,
@@ -2763,8 +2767,7 @@ const renderRead: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentIcon />,
     label: filePath ? (
       <>
-        <ToolVerb classic="Read" clean="Read" />{' '}
-        <CodeChunk>{baseName(filePath)}</CodeChunk>
+        <ToolVerb clean="Read" /> <CodeChunk>{baseName(filePath)}</CodeChunk>
       </>
     ) : (
       'Read'
@@ -2813,8 +2816,7 @@ const renderWrite: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentPencilIcon />,
     label: filePath ? (
       <>
-        <ToolVerb classic="Write" clean="Write" />{' '}
-        <CodeChunk>{baseName(filePath)}</CodeChunk>
+        <ToolVerb clean="Write" /> <CodeChunk>{baseName(filePath)}</CodeChunk>
       </>
     ) : (
       'Write'
@@ -2828,8 +2830,7 @@ const renderEdit: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentPencilIcon />,
     label: filePath ? (
       <>
-        <ToolVerb classic="Edit" clean="Edit" />{' '}
-        <CodeChunk>{baseName(filePath)}</CodeChunk>
+        <ToolVerb clean="Edit" /> <CodeChunk>{baseName(filePath)}</CodeChunk>
       </>
     ) : (
       'Edit'
@@ -2844,25 +2845,18 @@ const renderBash: ToolDisplayRenderer = (parsed, input, toolName) => {
   const command = unwrapShellWrappedCommand(
     asString(parsed.command ?? parsed.cmd) || readShellCommandInput(input),
   );
-  const truncated = truncate(command, 60);
   const description = capitalizeFirstLetter(
     asString(parsed.description).trim(),
   );
-  const truncatedDesc = truncate(description, 80);
-  const heading =
-    truncatedDesc || (toolName === 'PowerShell' ? toolName : 'Bash');
   return {
     icon: <TerminalIcon />,
     label:
-      description || truncated ? (
-        <ShellLabel
-          heading={heading}
-          command={command}
-          shortCommand={truncated}
-          description={description || undefined}
-        />
+      description || command ? (
+        <ShellLabel command={command} description={description || undefined} />
+      ) : toolName === 'PowerShell' ? (
+        toolName
       ) : (
-        heading
+        'Bash'
       ),
   };
 };
@@ -2870,18 +2864,9 @@ const renderBash: ToolDisplayRenderer = (parsed, input, toolName) => {
 const renderCommand: ToolDisplayRenderer = (_parsed, input) => {
   const command = input.trim();
   const displayCommand = unwrapShellWrappedCommand(command);
-  const truncated = truncate(displayCommand, 60);
   return {
     icon: <TerminalIcon />,
-    label: truncated ? (
-      <ShellLabel
-        heading="Command"
-        command={displayCommand}
-        shortCommand={truncated}
-      />
-    ) : (
-      'Command'
-    ),
+    label: displayCommand ? <ShellLabel command={displayCommand} /> : 'Command',
   };
 };
 
@@ -2906,7 +2891,7 @@ const renderFileChange: ToolDisplayRenderer = (_parsed, input) => {
         icon,
         label: (
           <>
-            <ToolVerb classic={verb} clean={verb} />{' '}
+            <ToolVerb clean={verb} />{' '}
             <CodeChunk>{baseName(filePath)}</CodeChunk>
           </>
         ),
@@ -2929,8 +2914,7 @@ const renderGrep: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentSearchIcon />,
     label: pattern ? (
       <>
-        <ToolVerb classic="Grep" clean="Search for" />{' '}
-        <CodeChunk>{pattern}</CodeChunk>
+        <ToolVerb clean="Search for" /> <CodeChunk>{pattern}</CodeChunk>
         {filePath && (
           <>
             {' '}
@@ -2950,7 +2934,7 @@ const renderGlob: ToolDisplayRenderer = (parsed) => {
     icon: <MagnifyingGlassIcon />,
     label: pattern ? (
       <>
-        <ToolVerb classic="Glob" clean="Find files matching" />{' '}
+        <ToolVerb clean="Find files matching" />{' '}
         <CodeChunk>{pattern}</CodeChunk>
       </>
     ) : (

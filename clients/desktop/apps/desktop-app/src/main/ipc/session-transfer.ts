@@ -53,6 +53,7 @@ const PROVIDER_TYPES: Record<AgentProviderType, true> = {
   cursor: true,
   opencode: true,
   copilot: true,
+  antigravity: true,
 };
 
 function isAgentProviderType(value: string): value is AgentProviderType {

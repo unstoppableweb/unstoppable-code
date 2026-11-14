@@ -47,6 +47,24 @@ function isHorizontal(event: WheelEvent): boolean {
   return Math.abs(event.deltaX) > Math.abs(event.deltaY);
 }
 
+interface TrackingSwipe {
+  readonly phase: 'tracking';
+  readonly document: Document;
+  readonly gesture: ToastSwipeGesture;
+  lastStep: number;
+  coastingSteps: number;
+  lastDirectInputAt: number | undefined;
+}
+
+type TrackpadSwipe =
+  | { readonly phase: 'idle' }
+  | TrackingSwipe
+  | {
+      readonly phase: 'draining';
+      readonly document: Document;
+      readonly direction: number;
+    };
+
 /**
  * Two-finger trackpad swipe to dismiss for the shared toast stack. Swipes
  * arrive as horizontal wheel events, which the stack's pointer swipe never
@@ -63,25 +81,16 @@ function isHorizontal(event: WheelEvent): boolean {
  */
 export const toastTrackpadSwipe: ToastStackSwipeInput = (swipe, host, side) => {
   const sign = side === 'right' ? 1 : -1;
-  let gesture: ToastSwipeGesture | null = null;
-  // The document whose wheel events the current swipe follows.
-  let swipeDocument: Document | null = null;
-  let lastStep = 0;
-  let coastingSteps = 0;
-  // A swipe that has ended mid-stream is spent until its momentum stops.
-  let spent = false;
-  let spentDirection = 0;
-  let lastDirectInputAt: number | undefined;
+  let state: TrackpadSwipe = { phase: 'idle' };
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   const stopFollowing = (): void => {
-    swipeDocument?.removeEventListener('wheel', onSwipeWheel, true);
-    swipeDocument = null;
-    gesture = null;
-    lastStep = 0;
-    coastingSteps = 0;
-    spentDirection = 0;
-    lastDirectInputAt = undefined;
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+    if (state.phase !== 'idle') {
+      state.document.removeEventListener('wheel', onSwipeWheel, true);
+      state = { phase: 'idle' };
+    }
   };
 
   const waitForQuiet = (ms: number, then: () => void): void => {
@@ -115,129 +124,125 @@ export const toastTrackpadSwipe: ToastStackSwipeInput = (swipe, host, side) => {
     return liveCard(isElementNode(event.target) ? event.target : null);
   };
 
-  const track = (g: ToastSwipeGesture, event: WheelEvent): void => {
+  const track = (active: TrackingSwipe, event: WheelEvent): void => {
+    const { gesture } = active;
     event.preventDefault();
     // Fingers moving toward the edge scroll the other way.
     const step = -sign * event.deltaX;
     const momentum = wheelMomentum(event);
     if (momentum !== true) {
-      coastingSteps =
+      const { lastStep, coastingSteps } = active;
+      active.coastingSteps =
         step * lastStep > 0 &&
         Math.abs(step) <= Math.abs(lastStep) &&
         (coastingSteps > 0 || Math.abs(step) < Math.abs(lastStep))
           ? coastingSteps + 1
           : 0;
-      lastStep = step;
-      g.move(step);
-      lastDirectInputAt = performance.now();
+      active.lastStep = step;
+      gesture.move(step);
+      active.lastDirectInputAt = performance.now();
     }
-    // Native direct input never ends because its deltas got smaller. The
-    // first momentum event is the release; do not feed its delta to the card.
-    // Older browsers retain the bounded fallback until they expose momentum.
+    // The first native momentum tick ends direct input without moving the
+    // card. Older browsers use the bounded shrinking-delta fallback.
     if (
       momentum === true ||
       (momentum === undefined &&
-        !g.ended &&
-        coastingSteps >= COASTING_STEPS &&
-        (g.wouldDismiss() || Math.abs(step) <= MOMENTUM_TAIL_PX))
+        !gesture.ended &&
+        active.coastingSteps >= COASTING_STEPS &&
+        (gesture.wouldDismiss() || Math.abs(step) <= MOMENTUM_TAIL_PX))
     ) {
-      g.end(lastDirectInputAt);
+      gesture.end(active.lastDirectInputAt);
     }
-    if (g.ended) {
-      // Keep the document listener until the tail stops, even if the card
-      // has moved away from the pointer or is already back in place.
-      gesture = null;
-      spentDirection = Math.sign(step);
-      lastStep = 0;
-      coastingSteps = 0;
-      spent = true;
-      waitForQuiet(MOMENTUM_IDLE_MS, () => {
-        spent = false;
-        stopFollowing();
-      });
+    if (gesture.ended) {
+      // Release the card but keep listening until the momentum tail ends.
+      state = {
+        phase: 'draining',
+        document: active.document,
+        direction: Math.sign(step),
+      };
+      waitForQuiet(MOMENTUM_IDLE_MS, stopFollowing);
       return;
     }
-    const inputEndedAt = lastDirectInputAt;
-    waitForQuiet(g.isPastLine() ? IDLE_PAST_LINE_MS : IDLE_MS, () => {
+    const inputEndedAt = active.lastDirectInputAt;
+    waitForQuiet(gesture.isPastLine() ? IDLE_PAST_LINE_MS : IDLE_MS, () => {
       stopFollowing();
-      // Decided on the speed the fingers had, not one diluted by the wait.
-      g.end(inputEndedAt);
+      // Decide at the fingers' last speed, before the quiet wait.
+      gesture.end(inputEndedAt);
     });
+  };
+
+  const startTracking = (card: HTMLElement, event: WheelEvent): boolean => {
+    const gesture = swipe.begin(card);
+    if (gesture === null) return false;
+    const active: TrackingSwipe = {
+      phase: 'tracking',
+      document: state.phase === 'idle' ? card.ownerDocument : state.document,
+      gesture,
+      lastStep: 0,
+      coastingSteps: 0,
+      lastDirectInputAt: undefined,
+    };
+    if (state.phase === 'idle') {
+      active.document.addEventListener('wheel', onSwipeWheel, {
+        capture: true,
+        passive: false,
+      });
+    }
+    state = active;
+    track(active, event);
+    return true;
   };
 
   function onSwipeWheel(event: WheelEvent): void {
     const momentum = wheelMomentum(event);
     if (!isHorizontal(event) && momentum !== true) {
-      if (spent) {
-        // A fresh vertical gesture and its inertia belong to the page too.
-        clearTimeout(idleTimer);
-        spent = false;
-        stopFollowing();
-      }
+      // A fresh vertical gesture and its inertia belong to the page.
+      if (state.phase === 'draining') stopFollowing();
       return;
     }
-    if (spent) {
-      const direction = Math.sign(-sign * event.deltaX);
-      // New direct input can start on the next card without waiting for the
-      // outgoing card or moving the cursor. Inertia never transfers cards.
-      const freshInput =
-        momentum === false ||
-        (momentum === undefined &&
-          direction !== 0 &&
-          direction !== spentDirection);
-      const card = freshInput ? cardAtPointer(event) : null;
-      if (freshInput) {
-        const next = card === null ? null : swipe.begin(card);
-        if (card !== null && next !== null) {
-          spent = false;
-          gesture = next;
-          track(next, event);
+    switch (state.phase) {
+      case 'idle':
+        return;
+      case 'tracking':
+        track(state, event);
+        return;
+      case 'draining': {
+        const direction = Math.sign(-sign * event.deltaX);
+        // Fresh direct input can pick up the next card at the same cursor.
+        // Inertia never transfers cards.
+        const freshInput =
+          momentum === false ||
+          (momentum === undefined &&
+            direction !== 0 &&
+            direction !== state.direction);
+        if (freshInput) {
+          const card = cardAtPointer(event);
+          if (card !== null && startTracking(card, event)) return;
+          stopFollowing();
           return;
         }
-        // Fresh scrolling outside the deck belongs to the page, including
-        // when another input already owns the card under the pointer.
-        clearTimeout(idleTimer);
-        spent = false;
-        stopFollowing();
-        return;
+        event.preventDefault();
+        waitForQuiet(MOMENTUM_IDLE_MS, stopFollowing);
       }
-      event.preventDefault();
-      waitForQuiet(MOMENTUM_IDLE_MS, () => {
-        spent = false;
-        stopFollowing();
-      });
-      return;
     }
-    if (gesture !== null) track(gesture, event);
   }
 
   const onWheel = (event: WheelEvent): void => {
-    // A swipe under way is followed through its document's listener.
-    if (gesture !== null || spent || !isHorizontal(event)) return;
+    if (state.phase !== 'idle' || !isHorizontal(event)) return;
     const card = cardAtPointer(event);
     if (card === null) return;
     if (wheelMomentum(event) === true) {
       event.preventDefault();
       return;
     }
-    // Null while a mouse drag owns the card.
-    const g = swipe.begin(card);
-    if (g === null) return;
-    gesture = g;
-    swipeDocument = card.ownerDocument;
-    swipeDocument.addEventListener('wheel', onSwipeWheel, {
-      capture: true,
-      passive: false,
-    });
-    track(g, event);
+    startTracking(card, event);
   };
 
   host.addEventListener('wheel', onWheel, { passive: false });
   return (): void => {
-    clearTimeout(idleTimer);
-    const g = gesture;
+    const gesture = state.phase === 'tracking' ? state.gesture : null;
     stopFollowing();
-    g?.end();
+    gesture?.end();
     host.removeEventListener('wheel', onWheel);
   };
 };

@@ -359,6 +359,7 @@ export function LedgerEntryOpenArea({
       {open.notice}
       {open.closedExplanation}
       <ErrorBanner
+        errorSource="ledger-entry-open-error"
         className=""
         error={open.openError}
         testId="ledger-entry-open-error"

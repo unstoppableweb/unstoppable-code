@@ -1,4 +1,4 @@
-import { useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
@@ -22,18 +22,20 @@ import {
 } from '@canopy/ui-app/settings/ai-gateway/ai-gateway-adapter';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
-import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
+import {
+  matchAiGatewayPreset,
+  type AiGatewayPresetId,
+} from '@canopy/protocol/model-gateway/presets';
+import { GatewayPresetMarks } from '@canopy/ui-app/settings/ai-gateway/GatewayPresetMarks';
 import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
 import { SettingsGroup } from '@/components/settings/SettingsLayout';
 import { useDesktopStandaloneSettingsHost } from '@/components/settings/hosted/DesktopSettingsHost';
 import { useHostedSettingsClient } from '@/components/settings/hosted/hosted-settings-availability';
 import { useCanopyCloudAccountState } from '@/hooks/useCanopyCloudAccountState';
 import { usePersonalModelGateway } from '@/hooks/useOrgModelGateway';
-import { announceCanopyCloudAccountChanged } from '@/lib/canopyCloudAccountChange';
-import {
-  isConnectedNonGuest,
-  useCloudConnectGateStore,
-} from '@/stores/cloudConnectGateStore';
+import { useLocalModelGateway } from '@/hooks/useLocalModelGateway';
+import { createDeviceAiGatewaySettingsClient } from '@/client/device-ai-gateway-settings-client';
+import { isConnectedNonGuest } from '@/stores/cloudConnectGateStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 
 interface GatewaySummary {
@@ -44,104 +46,66 @@ interface GatewaySummary {
 }
 
 /**
- * First run's provider rows plus its quiet way to use your own AI gateway.
- * Nothing extra shows until the account is read. Guests and signed-out users
- * get a sign-in prompt below the box: it opens the shared cloud connect gate,
- * then opens the gateway dialog once the signed-in account names its Personal
- * organization. A signed-in account without one gets the plain rows, so a key
- * is never saved under a guess. Otherwise a link below the box before a
- * gateway is set up, then a row in the box with its name, model count, and
+ * First run's provider rows plus its quiet way to use an AI gateway. Nothing
+ * extra shows until the account is read. Signed in, the gateway is the
+ * account's Personal gateway; a signed-in account that names no Personal
+ * organization yet gets the plain rows, so a key is never saved under a
+ * guess. Signed out or a guest, it is this device's gateway, kept only on
+ * this computer. Before a gateway is set up, a link and the preset marks sit
+ * below the box; then a row in the box shows its name, model count, and
  * whether this computer has its key.
- *
- * The open-after-sign-in intent is used once. It lapses quietly when the
- * gateway flag is off for the signed-in account, and it waits through a failed
- * read after sign-in until the next successful one.
  */
 export function FirstRunProviderGroup({
   children,
 }: {
   readonly children: ReactNode;
 }): JSX.Element {
-  const client = useHostedSettingsClient();
+  const hostedClient = useHostedSettingsClient();
   const enabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
   );
   const { account } = useCanopyCloudAccountState();
   const accountId = account?.account?.id;
-  const organizationId = account?.personalOrganizationId;
   const signedIn = isConnectedNonGuest(account);
+  const device = useLocalModelGateway();
+  const deviceClient = useMemo(createDeviceAiGatewaySettingsClient, []);
+  const scope = signedIn
+    ? hostedClient && account?.personalOrganizationId
+      ? {
+          client: hostedClient,
+          organizationId: account.personalOrganizationId,
+        }
+      : null
+    : device
+      ? { client: deviceClient, organizationId: device.organizationId }
+      : null;
+  const organizationId = scope?.organizationId;
   const projected = usePersonalModelGateway();
   const [saved, setSaved] = useState<AiGatewayEditorConfig | null>(null);
-  const [open, setOpen] = useState(false);
-  // Open the dialog once sign-in from the prompt below lands. Not reset with
-  // the account: it waits for exactly that change.
-  const [pendingOpen, setPendingOpen] = useState(false);
+  const [open, setOpen] = useState<{
+    readonly presetId?: AiGatewayPresetId;
+  } | null>(null);
 
   useEffect(() => {
     setSaved(null);
-    setOpen(false);
+    setOpen(null);
   }, [organizationId, accountId]);
 
-  // Runs in the same effect phase as the reset above, after it, so this
-  // `setOpen(true)` wins over its `setOpen(false)`. Keep it below.
-  useEffect(() => {
-    if (!pendingOpen || !signedIn) return;
-    if (organizationId && client && enabled) setOpen(true);
-    setPendingOpen(false);
-  }, [pendingOpen, signedIn, organizationId, client, enabled]);
-
-  if (!client || !enabled || account === null) {
-    return <SettingsGroup>{children}</SettingsGroup>;
-  }
-
-  if (!signedIn) {
-    const signIn = (): void => {
-      useCloudConnectGateStore.getState().requestConnect(
-        {
-          title: 'Sign in to use your own AI gateway',
-          subtitle: null,
-          description:
-            'Your AI gateway is saved to your account. Its key stays on this computer.',
-          toastMessage: "You're signed in. Finish setting up your AI gateway.",
-        },
-        () => {
-          setPendingOpen(true);
-          announceCanopyCloudAccountChanged('same-account-refresh');
-        },
-      );
-    };
-    return (
-      <>
-        <SettingsGroup>{children}</SettingsGroup>
-        <div>
-          <Button
-            variant="ghost-accent"
-            size="compact"
-            data-testid="first-run-ai-gateway-sign-in"
-            onClick={signIn}
-          >
-            Sign in to use your own AI gateway
-          </Button>
-        </div>
-      </>
-    );
-  }
-
-  if (!organizationId) {
+  if (!enabled || account === null || !scope) {
     return <SettingsGroup>{children}</SettingsGroup>;
   }
 
   const summary: GatewaySummary | null =
     saved?.baseUrl && saved.models.length > 0
       ? {
-          organizationId,
+          organizationId: scope.organizationId,
           name: saved.displayName || gatewayHostname(saved.baseUrl),
           baseUrl: saved.baseUrl,
           modelCount: saved.models.length,
         }
-      : projected && projected.organizationId === organizationId
+      : projected && projected.organizationId === scope.organizationId
         ? {
-            organizationId,
+            organizationId: scope.organizationId,
             name: projected.organizationName,
             baseUrl: projected.baseUrl,
             modelCount: projected.modelIds.length,
@@ -153,33 +117,35 @@ export function FirstRunProviderGroup({
       <SettingsGroup>
         {children}
         {summary ? (
-          <ConfiguredGatewayRow
-            summary={summary}
-            onEdit={() => setOpen(true)}
-          />
+          <ConfiguredGatewayRow summary={summary} onEdit={() => setOpen({})} />
         ) : null}
       </SettingsGroup>
       {summary ? null : (
-        <div>
+        <div className="flex items-center gap-2">
           <Button
             variant="ghost-accent"
             size="compact"
             data-testid="first-run-ai-gateway-link"
-            onClick={() => setOpen(true)}
+            onClick={() => setOpen({})}
           >
-            Use your own AI gateway
+            Use an AI gateway
           </Button>
+          <GatewayPresetMarks
+            onPick={(presetId) => setOpen({ presetId })}
+            onMore={() => setOpen({})}
+          />
         </div>
       )}
       {open ? (
         <FirstRunAiGatewayDialog
-          key={`${accountId}/${organizationId}`}
-          client={client}
-          organizationId={organizationId}
-          onClose={() => setOpen(false)}
+          key={`${accountId ?? 'device'}/${scope.organizationId}`}
+          client={scope.client}
+          organizationId={scope.organizationId}
+          {...(open.presetId ? { initialPresetId: open.presetId } : {})}
+          onClose={() => setOpen(null)}
           onSaved={(config) => {
             setSaved(config);
-            setOpen(false);
+            setOpen(null);
           }}
         />
       ) : null}
@@ -287,6 +253,8 @@ function ConfiguredGatewayRow({
 interface FirstRunAiGatewayDialogProps {
   readonly client: AccountOrganizationSettingsClient;
   readonly organizationId: string;
+  /** Opens at this preset's key step, from a preset mark. */
+  readonly initialPresetId?: AiGatewayPresetId;
   readonly onClose: () => void;
   readonly onSaved: (config: AiGatewayEditorConfig) => void;
 }
@@ -299,6 +267,7 @@ interface FirstRunAiGatewayDialogProps {
 function FirstRunAiGatewayDialog({
   client,
   organizationId,
+  initialPresetId,
   onClose,
   onSaved,
 }: FirstRunAiGatewayDialogProps): JSX.Element {
@@ -353,6 +322,7 @@ function FirstRunAiGatewayDialog({
           <CenteredLoadingSpinner />
         ) : current.status === 'failed' ? (
           <ErrorBanner
+            errorSource="first-run-ai-gateway-dialog"
             error="Couldn't load your AI gateway. Try again."
             onRetry={() => setAttempt((value) => value + 1)}
           />
@@ -362,6 +332,7 @@ function FirstRunAiGatewayDialog({
             current={current.config}
             enableOnSave
             layout="dialog"
+            {...(initialPresetId ? { initialPresetId } : {})}
             onSaved={onSaved}
           />
         )}

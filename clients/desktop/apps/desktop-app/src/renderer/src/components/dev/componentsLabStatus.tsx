@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import {
+  DropdownMenuSurface,
   Badge,
   Button,
   LoadingSpinner,
@@ -29,7 +30,7 @@ import {
   preloadSmoothMarkdown,
 } from '@canopy/ui-shared/components';
 import type { SkillUpdateAction } from '@canopy/ui-shared/lib';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   APPLE_APP_STORE_BADGE_DATA_URI,
   GOOGLE_PLAY_BADGE_DATA_URI,
@@ -452,30 +453,48 @@ function SlashCommandSection(): JSX.Element {
           </span>
         </SpecimenCell>
         <SpecimenCell label="group heading, default">
-          <div className="w-64 rounded-lg bg-quaternary py-1">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="menu"
+            className="w-64"
+          >
             <SlashCommandGroupHeading label="Commands" />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="group heading, compact">
-          <div className="w-64 rounded-lg bg-quaternary py-1">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="menu"
+            className="w-64"
+          >
             <SlashCommandGroupHeading label="Recent" compact />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="group heading with a divider, and the Available divider">
-          <div className="w-64 rounded-lg bg-quaternary py-1 text-s">
-            <div className="px-3 py-1">/review</div>
-            <SlashCommandGroupHeading label="Skills" divider />
-            <div className="px-3 py-1">/summarize</div>
-            <SlashCommandAvailableDivider />
-            <div className="flex items-center gap-2 px-3 py-1">
-              /translate <SlashCommandAvailabilityTag />
+          <DropdownMenuSurface
+            role="presentation"
+            padding="menu"
+            className="w-64"
+          >
+            <div className="text-s">
+              <div className="px-3 py-1">/review</div>
+              <SlashCommandGroupHeading label="Skills" divider />
+              <div className="px-3 py-1">/summarize</div>
+              <SlashCommandAvailableDivider />
+              <div className="flex items-center gap-2 px-3 py-1">
+                /translate <SlashCommandAvailabilityTag />
+              </div>
             </div>
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
         <SpecimenCell label="long heading truncation is the host’s; it wraps here">
-          <div className="w-48 rounded-lg bg-quaternary py-1">
+          <DropdownMenuSurface
+            role="presentation"
+            padding="menu"
+            className="w-48"
+          >
             <SlashCommandGroupHeading label="A very long group heading from a plugin" />
-          </div>
+          </DropdownMenuSurface>
         </SpecimenCell>
       </SpecimenGrid>
     </SpecimenPanel>
@@ -560,7 +579,7 @@ function StreamingReply({ run }: { readonly run: number }): JSX.Element {
     void preloadSmoothMarkdown().then(() => setReady(true));
   }, []);
   return (
-    <div className={`w-full text-s ${POSTHOG_REPLAY_BLOCK_CLASS}`}>
+    <div className={`w-full text-s ${REPLAY_BLOCK_CLASS}`}>
       {ready ? (
         <Markdown key={run} streaming={!done}>
           {text}

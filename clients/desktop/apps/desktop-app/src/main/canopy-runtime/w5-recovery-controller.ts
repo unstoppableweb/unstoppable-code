@@ -82,6 +82,7 @@ export function createW5RecoveryController(
     if (!ports.supported()) return status();
     const flight = (async (): Promise<W5RecoveryStatus> => {
       try {
+        if ((await status()).state === 'hidden') return current;
         const peers = await ports.peers();
         if (peers.length) {
           update({

@@ -89,6 +89,7 @@ interface AuthLoginModalProps {
 }
 
 function providerLabel(provider: AuthTerminalProvider): string {
+  if (provider === 'antigravity') return 'Antigravity';
   if (provider === 'opencode') return 'OpenCode';
   if (provider === 'claude') return 'Claude';
   if (provider === 'codex') return 'Codex';
@@ -96,7 +97,7 @@ function providerLabel(provider: AuthTerminalProvider): string {
 }
 
 function invalidateProviderCache(provider: AuthTerminalProvider): void {
-  if (provider === 'opencode') return;
+  if (provider === 'opencode' || provider === 'antigravity') return;
   if (provider === 'claude') {
     invalidateClaudeAuthStatusCache();
   } else if (provider === 'codex') {
@@ -118,6 +119,15 @@ async function fetchProviderStatus(
   }
   if (provider === 'codex') {
     return window.api.getCodexAuthStatus({ forceRefresh: true });
+  }
+  if (provider === 'antigravity') {
+    const snapshot = await window.api.getModelRegistry({ probe: true });
+    return {
+      authenticated: (snapshot.antigravity?.length ?? 0) > 0,
+      accountLabel: null,
+      detail: null,
+      error: null,
+    };
   }
   if (provider === 'opencode')
     return {
@@ -235,6 +245,7 @@ function LoginFailedView({
           </p>
         ) : failure ? (
           <DesktopErrorBanner
+            errorSource="auth-login-failure-detail"
             className="text-left"
             error={failure.error}
             {...(failure.details === undefined

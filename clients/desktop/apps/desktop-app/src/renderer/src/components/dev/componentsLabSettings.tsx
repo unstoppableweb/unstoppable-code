@@ -1,8 +1,11 @@
-import { useState, type JSX } from 'react';
+import { useContext, useState, type JSX } from 'react';
+import { LabBrandDisplayNameContext } from './componentsLabStageContext';
 import {
   AgentAccessEditor,
   Button,
   DiffSourceSelector,
+  ErrorBanner,
+  GoogleSubscriptionRow,
   LoadingButton,
   SettingsBackButton,
   SettingsButtonRow,
@@ -352,6 +355,50 @@ export function SettingsAndAgentsSpecimen(): JSX.Element {
       <SettingsRowsSection title="Agent access">
         <AgentAccessSpecimen />
       </SettingsRowsSection>
+    </div>
+  );
+}
+
+/** All connection, refresh and error combinations of the shared Google row. */
+export function GoogleSubscriptionSpecimen(): JSX.Element {
+  const brandDisplayName = useContext(LabBrandDisplayNameContext);
+  return (
+    <div className="flex flex-col gap-6">
+      {[
+        { connected: false, disconnected: false, label: 'Not signed in' },
+        { connected: true, disconnected: false, label: 'Connected' },
+        { connected: false, disconnected: true, label: 'Disconnected' },
+      ].flatMap(({ connected, disconnected, label }) =>
+        [false, true].flatMap((busy) =>
+          [false, true].map((failed) => (
+            <SpecimenPanel
+              key={`${label}-${busy}-${failed}`}
+              title={`${label}, ${busy ? 'updating' : 'idle'}${failed ? ', error' : ''}`}
+            >
+              <SettingsRowsGroup>
+                <GoogleSubscriptionRow
+                  connected={connected}
+                  disconnected={disconnected}
+                  appName={brandDisplayName}
+                  busy={busy}
+                  onSignIn={noop}
+                  onRefresh={noop}
+                  onDisconnect={noop}
+                  onReconnect={noop}
+                  error={
+                    failed ? (
+                      <ErrorBanner
+                        errorSource="preview-google-subscription-specimen"
+                        error="Google sign-in failed. Try again."
+                      />
+                    ) : undefined
+                  }
+                />
+              </SettingsRowsGroup>
+            </SpecimenPanel>
+          )),
+        ),
+      )}
     </div>
   );
 }

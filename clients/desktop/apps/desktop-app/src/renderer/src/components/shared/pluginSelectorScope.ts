@@ -24,6 +24,7 @@ export type PluginSelectorProviderScope =
   | 'ollama'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | 'mixed';
 

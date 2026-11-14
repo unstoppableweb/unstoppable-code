@@ -1,7 +1,6 @@
-import {
-  isAgentDefaultBaseModel,
-  parseAgentRouteModelId,
-} from '@canopy/protocol/agents';
+import { isAntigravityModel } from './lib/antigravity-models';
+import { resolveAgentBaseModel } from './lib/agent-model-selection';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { isSyntacticallyValidModelId } from './lib/model-id';
 export { isSyntacticallyValidModelId } from './lib/model-id';
 import { isCursorModel } from './lib/cursor-models';
@@ -54,6 +53,7 @@ export function isModelHarness(value: unknown): value is ModelHarness {
     value === 'codex' ||
     value === 'cursor' ||
     value === 'copilot' ||
+    value === 'antigravity' ||
     value === 'opencode'
   );
 }
@@ -73,6 +73,7 @@ export function isModelHarnessSource(
     value === 'codex-managed' ||
     value === 'cursor-managed' ||
     value === 'copilot-managed' ||
+    value === 'antigravity-managed' ||
     value === 'opencode-managed' ||
     value === 'ai-gateway' ||
     value === 'ollama'
@@ -138,8 +139,7 @@ export function normalizeModelHarnessOverrides(
 }
 
 /**
- * Base of a chat route id: the route's own base for an inheriting Agent, the
- * Agent's configured base for a pinned one.
+ * The explicit route base takes precedence over the Agent's default.
  */
 function agentRouteBaseModel(
   modelId: string,
@@ -152,9 +152,14 @@ function agentRouteBaseModel(
     Object.prototype.hasOwnProperty.call(agentBaseModels, route.agentId)
       ? agentBaseModels[route.agentId]
       : undefined;
-  return agentBase && !isAgentDefaultBaseModel(agentBase)
-    ? agentBase
-    : route.baseModel;
+  const choice = resolveAgentBaseModel(
+    {
+      explicitModel: route.baseModel,
+      agentDefaultModel: agentBase ?? 'default',
+    },
+    (model) => model,
+  );
+  return choice.kind === 'resolved' ? choice.model : undefined;
 }
 
 function resolveCatalogModelId(
@@ -177,6 +182,7 @@ export function getModelHarnessSource(
   catalog: ModelHarnessCatalog,
 ): ModelHarnessSource | undefined {
   const resolved = resolveCatalogModelId(modelId, catalog);
+  if (isAntigravityModel(resolved)) return 'antigravity-managed';
   if (isCopilotModel(resolved)) return 'copilot-managed';
   if (isOpenCodeModel(resolved)) return 'opencode-managed';
   if (catalog.claudeModels.includes(resolved)) return 'claude-managed';
@@ -199,6 +205,7 @@ export function getDefaultModelHarness(
   if (source === 'claude-managed') return 'claude';
   if (source === 'codex-managed') return 'codex';
   if (source === 'cursor-managed') return 'cursor';
+  if (source === 'antigravity-managed') return 'antigravity';
   if (source === 'copilot-managed') return 'copilot';
   if (source === 'opencode-managed') return 'opencode';
   if (source === 'ollama') return DEFAULT_OLLAMA_HARNESS;
@@ -217,6 +224,7 @@ export function getAvailableModelHarnesses(
   const source = getModelHarnessSource(resolved, catalog);
   const native = getDefaultModelHarness(resolved, catalog);
   if (!native) return [];
+  if (native === 'antigravity') return ['antigravity'];
   if (native === 'copilot') return ['copilot'];
   if (native === 'opencode') return ['opencode'];
   const choices: ModelHarness[] =
@@ -286,6 +294,7 @@ export function buildModelHarnessAssignmentSnapshot(
     ...catalog.claudeModels,
     ...catalog.codexModels,
     ...(catalog.copilotModels ?? []),
+    ...(catalog.antigravityModels ?? []),
     ...(catalog.opencodeModels ?? []),
     ...(catalog.cursorModels ?? []).filter(
       (id) => !Object.values(catalog.cursorModelMappings ?? {}).includes(id),
@@ -467,13 +476,21 @@ export function getHydratedModelHarnessAssignment(
  */
 export function requireHeadlessHarness(
   harness: ModelHarness,
-): Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode'>;
+): Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode' | 'antigravity'>;
 export function requireHeadlessHarness(
   harness: ModelHarness | undefined,
-): Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode'> | undefined;
+):
+  | Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode' | 'antigravity'>
+  | undefined;
 export function requireHeadlessHarness(
   harness: ModelHarness | undefined,
-): Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode'> | undefined {
+):
+  | Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode' | 'antigravity'>
+  | undefined {
+  if (harness === 'antigravity')
+    throw new Error(
+      'Google subscription models do not run on this dispatch path.',
+    );
   if (harness === 'opencode')
     throw new Error('OpenCode does not run on this dispatch path.');
   if (harness === 'copilot')

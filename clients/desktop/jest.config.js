@@ -13,7 +13,7 @@ const config = {
   ],
   // Golden tests live in __tests__/ (see scripts/golden-suites.mjs). Local TDD
   // tests live in gitignored __scratch__/ directories and are never committed.
-  testPathIgnorePatterns: ["<rootDir>/apps/desktop-app/src/main/lib/__tests__/internal-root-migration-qualification.test.ts","<rootDir>/scripts/run-internal-root-migration-qualification.mjs","<rootDir>/packages/core-platform/src/__tests__/windows-process-native.test.ts","<rootDir>/packages/desktop-shared/src/node/internal-root-migration/__tests__/cold-proof-qualification.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/windows-phase3-qualification.test.ts","<rootDir>/apps/desktop-app/scripts/windows-phase3-qualify.mjs","<rootDir>/apps/desktop-app/src/main/__tests__/fixtures/windows-phase3/electron.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/w5-recovery-daemon.test.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-daemon-child.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-refusal-child.ts","<rootDir>/packages/core-runtime/src/node/vault/__tests__/copilot-grant-authority.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/core-platform/src/__tests__/secret-protection.win32.test.ts","<rootDir>/packages/core-platform/src/__tests__/secret-protection.darwin.test.ts","<rootDir>/packages/core-platform/src/__tests__/secret-protection.linux.test.ts","<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-status-host-change.qualification.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
+  testPathIgnorePatterns: ["<rootDir>/apps/desktop-app/scripts/main-bytecode-sourcemaps.test.mjs","<rootDir>/apps/desktop-app/src/main/lib/__tests__/internal-root-migration-qualification.test.ts","<rootDir>/scripts/run-internal-root-migration-qualification.mjs","<rootDir>/packages/core-platform/src/__tests__/windows-process-native.test.ts","<rootDir>/packages/desktop-shared/src/node/internal-root-migration/__tests__/cold-proof-qualification.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/windows-phase3-qualification.test.ts","<rootDir>/apps/desktop-app/scripts/windows-phase3-qualify.mjs","<rootDir>/apps/desktop-app/src/main/__tests__/fixtures/windows-phase3/electron.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/w5-recovery-daemon.test.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-daemon-child.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-refusal-child.ts","<rootDir>/packages/core-runtime/src/node/vault/__tests__/copilot-grant-authority.test.ts","<rootDir>/apps/desktop-app/src/__tests__/copilot-vault-pilot.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/core-platform/src/__tests__/secret-protection.win32.test.ts","<rootDir>/packages/core-platform/src/__tests__/secret-protection.darwin.test.ts","<rootDir>/packages/core-platform/src/__tests__/secret-protection.linux.test.ts","<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-status-host-change.qualification.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
   testMatch: [
     '**/__tests__/**/*.test.ts',
     '**/__tests__/**/*.test.tsx',
@@ -21,8 +21,10 @@ const config = {
     '**/__scratch__/**/*.test.tsx',
   ],
   // Tests spawn `git` in temp repositories; drop inherited repository
-  // variables (set when run from a Git hook) before any worker forks.
+  // variables (set when run from a Git hook) and turn off the developer's
+  // commit signing before any worker forks.
   globalSetup: '<rootDir>/scripts/lib/jest-git-env-isolation.mjs',
+  globalTeardown: '<rootDir>/scripts/lib/jest-git-env-teardown.mjs',
   setupFiles: [
     '<rootDir>/scripts/lib/jest-web-encoding-setup.cjs',
     '<rootDir>/apps/desktop-app/src/__tests__/jestDataDirIsolation.ts',
@@ -31,6 +33,7 @@ const config = {
     '<rootDir>/apps/desktop-app/src/__tests__/jestW5FileStoreSetup.ts',
     '<rootDir>/apps/desktop-app/src/__tests__/jestCodeGraphResourcesSetup.ts',
   ],
+  setupFilesAfterEnv: [  ],
   moduleNameMapper: {
     '^@canopy/mcp-oauth-core$':
       '<rootDir>/packages/mcp-oauth-core/src/index.ts',
@@ -48,6 +51,8 @@ const config = {
     '^@anthropic-ai/claude-agent-sdk$':
       '<rootDir>/apps/desktop-app/src/__tests__/claudeAgentSdkMock.ts',
     '^electron$': '<rootDir>/apps/desktop-app/src/__tests__/electronMock.ts',
+    '^electron-log/main(\\.js)?$':
+      '<rootDir>/apps/desktop-app/src/__tests__/jestElectronLog.ts',
     '^react-diff-viewer-continued$':
       '<rootDir>/apps/desktop-app/src/__tests__/reactDiffViewerMock.tsx',
     '^mammoth$': '<rootDir>/node_modules/mammoth/mammoth.browser.js',

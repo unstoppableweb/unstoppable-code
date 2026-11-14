@@ -363,6 +363,27 @@ export async function reconcileGitPendingWorktrees(
   getWindow: () => BrowserWindow | null = () => null,
 ): Promise<void> {
   const recovery = await reportDestructiveRecovery();
+  for (const record of recovery) {
+    if (!record.archiveRecoveryCleanup?.some((entry) => !entry.done)) continue;
+    await (
+      await import('./chat-project-operation-queue')
+    )
+      .serializeWorkspaceMutation(async () => {
+        await (
+          await import('./workspace-deletion')
+        ).settleWorkspaceArchiveRecoveryCleanup(record);
+      })
+      .catch((error: unknown) => {
+        // A committed parent keeps cleanup debt; missing Git is never reported as deleted refs.
+        logMainProcessWarn(
+          'Archive recovery parent cleanup remains incomplete',
+          {
+            operationId: record.operationId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      });
+  }
   const interrupted = (workspaceId: string, worktreeId: string): boolean =>
     recovery.some(
       (record) =>

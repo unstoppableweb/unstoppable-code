@@ -364,6 +364,7 @@ export function QuestionPrompt({
             // Padded, not a margin, so the box owns its spacing (legacy-spacing).
             <div className="px-1">
               <Notice
+                errorSource="chat-question-notice"
                 intent={notice.intent}
                 title={notice.title}
                 data-testid="chat-question-notice"

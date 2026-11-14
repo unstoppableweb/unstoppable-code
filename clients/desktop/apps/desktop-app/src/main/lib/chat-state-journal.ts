@@ -2,7 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import type { ChatJournalRecord } from '@canopy/desktop-shared/types';
-import { writePrettyJsonCooperatively } from './chat-tabs';
+import { writeJsonValuesCooperatively } from './cooperative-json';
 
 export interface ChatJournalDiagnostic {
   kind:
@@ -64,7 +64,10 @@ export async function writeSyncedJsonTemp(
       .slice(2)}.tmp`,
   );
   try {
-    await writePrettyJsonCooperatively(tempPath, value, options.shouldAbort);
+    await writeJsonValuesCooperatively(tempPath, [value], {
+      pretty: true,
+      shouldAbort: options.shouldAbort,
+    });
     return tempPath;
   } catch (error) {
     await rm(tempPath, { force: true }).catch(() => undefined);

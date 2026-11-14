@@ -261,6 +261,7 @@ const LEGACY_ROW_FIELDS = {
   final: true,
   truncated: true,
   agentSent: true,
+  cancelled: true,
   // Read results only; a rewrite never carries one forward.
   blocksOmitted: true,
 } satisfies Record<Exclude<keyof DelegationChildRow, 'blocksRef'>, true>;

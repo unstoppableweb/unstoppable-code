@@ -271,6 +271,9 @@ export async function updateSharedSkill(
         ...(request.revokePublicShare
           ? { revokePublicShare: request.revokePublicShare }
           : {}),
+        ...(request.expectedAudience
+          ? { expectedAudience: request.expectedAudience }
+          : {}),
       }),
       headers: PACKAGE_HEADERS,
     },

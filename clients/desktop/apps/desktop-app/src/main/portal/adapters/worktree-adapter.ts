@@ -1,3 +1,18 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import {
+  PORTAL_CATALOG_RESULT_MAX_BYTES,
+  decodeWorktreeBaseBranch,
+  isExplicitWorktreeBaseBranch,
+  PORTAL_WORKTREE_BASE_BRANCH_ENCODING,
+  type PortalWorktreeBranchesListResult,
+} from '@canopy/protocol/portal';
+import { fitListResult, resultByteLength } from './result-budget';
+import { getActiveDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
+import { validateBranchName } from '../../lib/git';
+import { assertMutuallyExclusiveWorktreeBaseSources } from '../../ipc/worktree-create-validation';
+import { readDefaultBranchHint } from '../../lib/git-default-branch';
+import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
+import { WorktreeRecoveryRequestSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
 import type {
   PortalTaskFirstChat,
   PortalTaskFirstChatResult,
@@ -13,7 +28,12 @@ import {
   isSidebarItemGroupId,
   isSidebarItemGroupColor,
 } from '@canopy/protocol/sidebar';
-import { CORE_PULL_REQUEST_GRANTS } from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  CORE_PULL_REQUEST_GRANTS,
+  WORKER_GIT_GRANTS,
+  type WorkerGitBranchListResult,
+} from '@canopy/protocol/canopy-core';
 import { mintPullRequestId } from '@canopy/core-runtime/node/github';
 import { getDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
 import { readRepositoryRemoteUrl } from '../../canopy-runtime/worker-git-dispatch';
@@ -614,6 +634,120 @@ export async function handlePortalWorktreeReorder(
   }
 }
 
+/** Read branch bases through the existing worker Git projection. */
+async function readPortalBranchCatalogue(
+  workspaceId: string,
+  sessionId: string,
+  repoPath: string | null | undefined,
+  signal: AbortSignal,
+): Promise<WorkerGitBranchListResult> {
+  // Give the optional freshness lookup a short budget before using cached refs.
+  const hintTimer = new AbortController();
+  const hintSignal = AbortSignal.any([signal, hintTimer.signal]);
+  const hint = repoPath
+    ? await Promise.race([
+        readDefaultBranchHint(repoPath, {}, hintSignal).catch(() => null),
+        delay(250, null, {
+          signal: hintSignal,
+        }),
+      ]).finally(() => hintTimer.abort())
+    : null;
+  signal.throwIfAborted();
+  return getActiveDesktopRuntime().query(
+    'worker.git.branch.list',
+    {
+      scope: { workspaceId },
+      repository: { kind: 'reference' },
+      allowRemoteLookup: false,
+      ...(hint && {
+        defaultBranchHint: {
+          defaultBranch: hint.defaultBranch,
+          resolvedAt: new Date(hint.resolvedAt).toISOString(),
+        },
+      }),
+    },
+    {
+      signal,
+      caller: createPortalCaller({ sessionId }, [WORKER_GIT_GRANTS.read]),
+    },
+  );
+}
+
+export async function handlePortalWorktreeBranchesList(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  const payload = command.payload;
+  if (
+    !isRecord(payload) ||
+    typeof payload.workspaceId !== 'string' ||
+    payload.baseBranchEncoding !== PORTAL_WORKTREE_BASE_BRANCH_ENCODING
+  ) {
+    context.fail(command, 'invalid_payload', 'A workspaceId is required.');
+    return;
+  }
+  try {
+    validateId(payload.workspaceId, 'workspaceId');
+  } catch {
+    context.fail(command, 'invalid_payload', 'Invalid workspaceId.');
+    return;
+  }
+  try {
+    const config = await readWorkspaceConfig(payload.workspaceId);
+    if (config.type !== 'single-repo') {
+      context.complete(command, {
+        supported: false,
+        branches: [],
+        defaultBranch: null,
+      });
+      return;
+    }
+    if (!context.sessionId) throw new Error('Portal session is unavailable.');
+    const deadline = new AbortController();
+    const result = await Promise.race([
+      readPortalBranchCatalogue(
+        payload.workspaceId,
+        context.sessionId,
+        config.repoPath,
+        deadline.signal,
+      ),
+      delay(5_000, undefined, { signal: deadline.signal }).then(() => {
+        throw new Error('Branch catalogue deadline exceeded.');
+      }),
+    ]).finally(() => deadline.abort());
+    const bounded = fitListResult(
+      result.branches,
+      (branches, truncated): PortalWorktreeBranchesListResult => ({
+        supported: true,
+        branches,
+        defaultBranch: result.defaultBranch,
+        ...(truncated ? { truncated: true } : {}),
+      }),
+    );
+    if (resultByteLength(bounded) > PORTAL_CATALOG_RESULT_MAX_BYTES) {
+      throw new Error('Branch catalog metadata exceeds the result budget.');
+    }
+    context.complete(command, bounded);
+  } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.code === 'worker.git.branch.repositoryUnavailable'
+    ) {
+      context.complete(command, {
+        supported: false,
+        branches: [],
+        defaultBranch: null,
+      });
+      return;
+    }
+    context.fail(
+      command,
+      'execution_failed',
+      'Failed to list branch bases. Try again.',
+    );
+  }
+}
+
 /**
  * Handle `portal.worktree.create` — create a new worktree ("task") in a
  * workspace from the browser Remote Control sidebar (the workspace add "+" /
@@ -643,6 +777,12 @@ export async function handlePortalWorktreeCreate(
   if (
     !isRecord(payload) ||
     typeof payload.workspaceId !== 'string' ||
+    (payload.baseBranch !== undefined &&
+      (typeof payload.baseBranch !== 'string' ||
+        (payload.baseBranchEncoding === undefined
+          ? isExplicitWorktreeBaseBranch(payload.baseBranch)
+          : payload.baseBranchEncoding !==
+            PORTAL_WORKTREE_BASE_BRANCH_ENCODING))) ||
     (payload.sidebarItemGroupId !== undefined &&
       !isSidebarItemGroupId(payload.sidebarItemGroupId))
   ) {
@@ -682,6 +822,33 @@ export async function handlePortalWorktreeCreate(
       ? payload.baseWorktreeId
       : undefined;
 
+  let explicitBaseBranch: string | undefined;
+  try {
+    assertMutuallyExclusiveWorktreeBaseSources({
+      baseWorktreeId,
+      ...(typeof payload.baseBranch === 'string'
+        ? { baseBranch: payload.baseBranch }
+        : {}),
+    });
+    // worktree_create_from_v1 sends generic Git bases without a marker.
+    // Only negotiated v2 selections carry exact local/origin identity.
+    if (payload.baseBranchEncoding === PORTAL_WORKTREE_BASE_BRANCH_ENCODING) {
+      if (
+        typeof payload.baseBranch !== 'string' ||
+        decodeWorktreeBaseBranch(payload.baseBranch) === null
+      ) {
+        throw new Error('Invalid exact branch base.');
+      }
+      explicitBaseBranch = payload.baseBranch;
+    }
+  } catch {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Choose a valid branch base or a worktree base, then try again.',
+    );
+    return;
+  }
   try {
     validateId(workspaceId, 'workspaceId');
     if (baseWorktreeId) {
@@ -706,7 +873,24 @@ export async function handlePortalWorktreeCreate(
       failWorktreeCreateRefusal(command, context, 'unsupported-workspace');
       return;
     }
-    let { existingBranch, baseBranch } = additions;
+    if (
+      explicitBaseBranch !== undefined &&
+      (config.type !== 'single-repo' ||
+        !config.repoPath ||
+        !(await validateBranchName(
+          config.repoPath,
+          decodeWorktreeBaseBranch(explicitBaseBranch)?.branchName ?? '',
+        )))
+    ) {
+      context.fail(
+        command,
+        'invalid_payload',
+        'A valid branch base requires a single-repository project.',
+      );
+      return;
+    }
+    let { existingBranch } = additions;
+    let baseBranch = explicitBaseBranch ?? additions.baseBranch;
     if (additions.pullRequest) {
       const pr = await resolveCreatePullRequest(
         workspaceId,
@@ -751,12 +935,23 @@ export async function handlePortalWorktreeCreate(
       workspaceId,
       ...(existingBranch !== undefined ? { existingBranch } : {}),
       ...(baseBranch !== undefined ? { baseBranch } : {}),
+      // The existing composer marker distinguishes the catalogue's full ref
+      // from legacy base names on other Portal create requests and PR heads.
+      ...(config.type === 'single-repo' &&
+      payload.creditRecoveryIntent === 'new-task' &&
+      explicitBaseBranch === undefined &&
+      additions.baseBranch !== undefined
+        ? { baseBranchIsQualified: true }
+        : {}),
       ...(!additions.sidebarItemGroupName &&
       isSidebarItemGroupId(payload.sidebarItemGroupId)
         ? { sidebarItemGroupId: payload.sidebarItemGroupId }
         : {}),
       existingWorktreeIds,
       baseWorktreeId,
+      ...(explicitBaseBranch === undefined
+        ? {}
+        : { baseBranchResolution: 'exact-branch' }),
       startPostCreateSetup: false,
       deferGitSetup: true,
       beforeGitReady: (event): Promise<void> =>
@@ -925,8 +1120,72 @@ export async function handlePortalWorktreeArchive(
   const workspaceId = payload.workspaceId;
   const worktreeId = payload.worktreeId;
   const mode = payload.mode;
+  const expectedCreatedAt = payload.expectedCreatedAt;
+  if (
+    expectedCreatedAt !== undefined &&
+    (typeof expectedCreatedAt !== 'string' || !expectedCreatedAt.trim())
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree archive payload.',
+    );
+    return;
+  }
   if (mode !== undefined && mode !== 'archive' && mode !== 'delete') {
     context.fail(command, 'invalid_payload', 'Invalid worktree archive mode.');
+    return;
+  }
+  const recovery =
+    payload.recovery === undefined
+      ? undefined
+      : WorktreeRecoveryRequestSchema.safeParse(payload.recovery);
+  if (
+    recovery &&
+    (!recovery.success || !recovery.data.expectedCreatedAt || context.origin)
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree recovery request.',
+    );
+    return;
+  }
+  if (
+    (payload.deleteBranch !== undefined &&
+      typeof payload.deleteBranch !== 'boolean') ||
+    (payload.deleteWithoutRetentionIfMissing !== undefined &&
+      typeof payload.deleteWithoutRetentionIfMissing !== 'boolean') ||
+    (payload.expectedBranchName !== undefined &&
+      typeof payload.expectedBranchName !== 'string')
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree removal options.',
+    );
+    return;
+  }
+  if (
+    context.origin &&
+    (payload.deleteBranch !== undefined ||
+      payload.deleteWithoutRetentionIfMissing !== undefined ||
+      payload.expectedBranchName !== undefined)
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Worktree removal options require a user confirmation.',
+    );
+    return;
+  }
+  const recoveryRequest = recovery?.success ? recovery.data : undefined;
+  if (recoveryRequest && recoveryRequest.intent !== (mode ?? 'archive')) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree recovery intent.',
+    );
     return;
   }
   // The discard description is user-only (CAN-5334); an agent gets the throw.
@@ -939,17 +1198,34 @@ export async function handlePortalWorktreeArchive(
     const result = await withTypedArchiveRefusal(
       {
         typedRefusal,
+        intent: worktreeRemovalIntent(mode !== 'delete'),
         workspaceId,
         worktreeId,
         archiveTrigger: context.origin ? 'agent' : 'manual',
+        expectedCreatedAt:
+          recoveryRequest?.expectedCreatedAt ?? expectedCreatedAt,
       },
       () =>
         archiveWorktree(
           {
             workspaceId,
             worktreeId,
+            expectedCreatedAt:
+              recoveryRequest?.expectedCreatedAt ?? expectedCreatedAt,
             archiveTrigger: context.origin ? 'agent' : 'manual',
             source: 'portal',
+            ...(typeof payload.deleteBranch === 'boolean'
+              ? { deleteBranch: payload.deleteBranch }
+              : {}),
+            ...(typeof payload.deleteWithoutRetentionIfMissing === 'boolean'
+              ? {
+                  deleteWithoutRetentionIfMissing:
+                    payload.deleteWithoutRetentionIfMissing,
+                }
+              : {}),
+            ...(typeof payload.expectedBranchName === 'string'
+              ? { expectedBranchName: payload.expectedBranchName }
+              : {}),
             ...(mode !== 'delete' ? { lockAfterArchive: true } : {}),
           },
           { telemetryParent: 'inherit' },
@@ -1056,12 +1332,24 @@ export async function handlePortalWorktreeDiscardDescribe(
     return;
   }
   try {
+    const options = {
+      ...(target.retainedArchives ? { retainedArchives: true } : {}),
+      ...(isRecord(command.payload) && command.payload.recovery !== undefined
+        ? {
+            recovery: WorktreeRecoveryRequestSchema.parse(
+              command.payload.recovery,
+            ),
+          }
+        : {}),
+    };
     context.complete(
       command,
-      target.retainedArchives
-        ? await describeWorktreeDiscard(target.workspaceId, target.worktreeId, {
-            retainedArchives: true,
-          })
+      Object.keys(options).length > 0
+        ? await describeWorktreeDiscard(
+            target.workspaceId,
+            target.worktreeId,
+            options,
+          )
         : await describeWorktreeDiscard(target.workspaceId, target.worktreeId),
     );
   } catch (error) {

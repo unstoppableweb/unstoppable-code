@@ -150,7 +150,12 @@ export function TeamSubTeamsSection({
       className="flex flex-col gap-4"
       data-testid="team-subteams-section"
     >
-      <ErrorBanner className="" error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="team-sub-teams-section"
+        className=""
+        error={error?.copy}
+        details={error?.details}
+      />
 
       {creating && (
         <form onSubmit={handleCreate} className="flex items-center gap-2">
@@ -330,7 +335,11 @@ function RenameSubTeamDialog({
       dataTestId="rename-subteam-dialog"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <ErrorBanner error={error?.copy} details={error?.details} />
+        <ErrorBanner
+          errorSource="rename-sub-team-dialog"
+          error={error?.copy}
+          details={error?.details}
+        />
         <DialogFormField label="Name" htmlFor="rename-subteam-name">
           <TextInput
             id="rename-subteam-name"
@@ -444,7 +453,11 @@ function SubTeamMembershipDialog({
       dataTestId="subteam-membership-dialog"
     >
       <div className="flex flex-col gap-4">
-        <ErrorBanner error={error?.copy} details={error?.details} />
+        <ErrorBanner
+          errorSource="sub-team-membership-dialog"
+          error={error?.copy}
+          details={error?.details}
+        />
         {/* The whole list scrolls in its capped box. */}
         <div className="max-h-72 overflow-y-auto rounded-lg">
           <ChoiceList aria-label="Members">

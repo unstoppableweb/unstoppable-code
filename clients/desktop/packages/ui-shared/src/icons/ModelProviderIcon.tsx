@@ -1,5 +1,6 @@
 import type { JSX, SVGProps } from 'react';
 import {
+  AntigravityIcon,
   BuildingIcon,
   TerminalIcon,
   ClaudeIcon,
@@ -7,6 +8,7 @@ import {
   CursorIcon,
   DeepSeekIcon,
   GitHubIcon,
+  GoogleIcon,
   MiniMaxIcon,
   MoonshotIcon,
   OllamaIcon,
@@ -93,6 +95,10 @@ export function ModelProviderIcon({
       ) : (
         <CodexLogo {...svgProps} />
       );
+    case 'google':
+      return <GoogleIcon size="md" {...centralProps} />;
+    case 'antigravity':
+      return <AntigravityIcon size="md" {...centralProps} />;
     case 'opencode':
       return <TerminalIcon {...centralProps} />;
     case 'copilot':

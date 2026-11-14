@@ -116,7 +116,9 @@ export function ChangeDiagramPanel({
           className={`flex shrink-0 flex-col gap-4 px-2 pt-2 ${notice ? '' : 'pb-2'}`}
         >
           {(error || artifacts.error) && (
-            <Notice intent="destructive">{error ?? artifacts.error}</Notice>
+            <Notice errorSource="change-diagram-panel" intent="destructive">
+              {error ?? artifacts.error}
+            </Notice>
           )}
           {notice && <Notice intent="positive">{notice}</Notice>}
         </div>

@@ -153,7 +153,12 @@ export function McpWorkspaceDefaultsSection({
             </Button>
           )}
         </div>
-        <ErrorBanner className="" error={error} testId={`${testId}-error`} />
+        <ErrorBanner
+          errorSource="mcp-workspace-defaults-section"
+          className=""
+          error={error}
+          testId={`${testId}-error`}
+        />
       </div>
     </section>
   );

@@ -1,5 +1,8 @@
+import { AGENT_MODEL_PREFIX } from '@canopy/protocol/agents';
 import type { Pipeline, ShellType, Step } from './document';
-import { normalizePipelineScopes } from './scope';
+import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
+import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
+import { executionContextSatisfies, normalizePipelineScopes } from './scope';
 
 /*
  * Cloud run preflight (CAN-6169, plan CP-18): every step a cloud run cannot
@@ -86,9 +89,9 @@ export const CLOUD_RUN_BUNDLED_ACTIONS: Readonly<
   'discover-review-tracks': 'portable',
   discovery: 'portable',
   'gather-linear-context': 'portable',
-  'git-commit-push': 'model_action',
+  'git-commit-push': 'portable',
   'git-workspace-details': 'portable',
-  'github-create-pr': 'model_action',
+  'github-create-pr': 'portable',
   'github-fetch-branch-pr': 'portable',
   'github-post-review-comment': 'portable',
   'greenfield-detection': 'portable',
@@ -204,6 +207,21 @@ export const CLOUD_RUN_COMPOSITE_MODEL_ACTIONS: Readonly<
   'spec-writer': { action: 'agent-prompt', forwardsPermissionPreset: false },
 };
 
+/**
+ * The bundled actions that commit, push or open a pull request, which a
+ * folder or worktree run's host runs with the run's brokered GitHub
+ * credentials (`DAEMON_BROKERED_REPOSITORY_MODEL_ACTIONS`, CAN-6739). Each
+ * writes its text with a Claude model named by its own input, or the
+ * runner's default (`DAEMON_ACTION_MODEL_INPUTS`); the host parity golden
+ * keeps them equal.
+ */
+export const CLOUD_RUN_REPOSITORY_MODEL_INPUTS: Readonly<
+  Record<string, { readonly input: string; readonly runnerDefault: string }>
+> = {
+  'git-commit-push': { input: 'commit_model', runnerDefault: 'haiku' },
+  'github-create-pr': { input: 'pr_model', runnerDefault: 'sonnet' },
+};
+
 /** The bundled host actions (`runs.using: host`) the owner settles. */
 export const CLOUD_RUN_HOST_ACTIONS: ReadonlySet<string> = new Set([
   'create-bot-entry',
@@ -228,6 +246,15 @@ export const CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL: ReadonlySet<string> =
     'github-fetch-branch-pr',
     'github-post-review-comment',
   ]);
+
+/**
+ * Bundled actions whose manifest `scope` leaves out `directory`, which the
+ * executor refuses in a folder run (CAN-6739): they commit to and open pull
+ * requests from a worktree's own branch. The host parity golden reads the
+ * scopes from the manifests.
+ */
+export const CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_DIRECTORY: ReadonlySet<string> =
+  new Set(['git-commit-push', 'github-create-pr']);
 
 /** Host actions that reach the Orchestrator when they name a `bot_id` (R4). */
 const BOT_TARGET_ACTIONS: ReadonlySet<string> = new Set([
@@ -278,16 +305,16 @@ const MESSAGES: Readonly<Record<CloudRunRefusalReason, string>> = {
   dynamic_model:
     "Cloud runs can't use a model chosen by an expression. Name the model in this step.",
   model_alias:
-    "Cloud runs can't use this workflow's model aliases yet. Name the model in this step, or run the workflow on This computer.",
+    "Cloud runs can't use a model alias that names an Agent or has no default model. Name the model in this step, or run the workflow on This computer.",
   plugin_collections:
-    "Cloud runs can't use plugin collections yet. Remove the plugin collection, or run the workflow on This computer.",
+    "Cloud runs can't load this plugin collection. Remove it, or run the workflow on This computer.",
   host_paths:
     "Cloud runs can't attach files to a message yet. Put the text in text or text_file, or run the workflow on This computer.",
   host_inputs:
     "Cloud runs can't send a message with its own model or plugin collection yet. Remove its model and plugin collection, or run the workflow on This computer.",
   unresolved_action: "Cloud runs can't find this action.",
   action_scope:
-    'This action runs only in a folder or worktree, and cloud runs are global for now.',
+    'This action runs only in a folder or worktree. Run the workflow in a project or worktree.',
   orchestrator: 'The Orchestrator only runs in the desktop app.',
   desktop_path: 'This step uses a folder on your computer.',
   windows_shell: "Cloud runs use Linux, which doesn't have this shell.",
@@ -296,25 +323,25 @@ const MESSAGES: Readonly<Record<CloudRunRefusalReason, string>> = {
   local_runtime:
     "This workflow needs Ollama, which runs on your computer and can't be reached from the cloud.",
   run_scope:
-    "This workflow doesn't run as a global workflow, which cloud runs need for now.",
+    "This workflow doesn't run as a global workflow. Run it in a project or worktree.",
 };
+
+/** `run_scope` for a run in a project folder or a worktree (CP-29). */
+const RUN_SCOPE_MESSAGES: Readonly<Record<PipelineExecutionScope, string>> = {
+  global: MESSAGES.run_scope,
+  directory:
+    "This workflow doesn't run in a project folder. Run it in a worktree, or as a global workflow if it allows that.",
+  worktree:
+    "This workflow doesn't run in a worktree. Run it in a project folder, or as a global workflow if it allows that.",
+};
+
+/** An action that runs only in a worktree, in a folder run (CAN-6739). */
+const WORKTREE_ACTION_MESSAGE =
+  'This action runs only in a worktree. Run the workflow in a worktree.';
 
 /** R11: files from a desktop task's attachments folder, which never leave it. */
 const DESKTOP_FILES_MESSAGE =
   'This message attaches files from your computer. Put the text in text or text_file, or run the workflow on This computer.';
-
-/**
- * The bundled actions that commit, push or open a pull request (G3): they
- * need the run's GitHub credentials, which cloud runs don't broker until
- * CP-30.
- */
-const REPOSITORY_ACTIONS: ReadonlySet<string> = new Set([
-  'git-commit-push',
-  'github-create-pr',
-]);
-
-const REPOSITORY_ACTION_MESSAGE =
-  "Cloud runs can't commit, push or open pull requests yet. Run the workflow on This computer.";
 
 const BUILTIN_PREFIX = 'builtin/';
 
@@ -386,38 +413,138 @@ function checkHostAction(name: string, at: StepAt, refuse: Refuse): void {
     refuse('host_paths', 'R11', at, DESKTOP_FILES_MESSAGE);
   else if (input.attachments !== undefined) refuse('host_paths', 'G6', at);
   if (SEND_APP_RESOLVED_INPUTS.some((key) => input[key] !== undefined))
-    refuse('host_inputs', 'CP-24', at);
+    refuse('host_inputs', 'CP-32', at);
 }
 
 /**
- * A model step's checks, as the host makes them. A composite step's own
- * `plugin_collection_id` reaches no step inside it, so only its `model` is
- * checked.
+ * What a cloud run resolves a step's model alias to (CAN-6439): its inline
+ * default's base model and the plugin collection it adds. `undefined` when
+ * `model` names no alias of the workflow; `null` for an alias a cloud run
+ * can't resolve: one that names an Agent, whose definition lives on a
+ * computer, or one with no default, which only a desktop preference fills.
+ * The web core resolves the rest before the run starts.
+ */
+export function cloudModelAliasOf(
+  pipeline: Pick<Pipeline, 'model_aliases'>,
+  model: string,
+):
+  | { readonly base: string; readonly pluginCollectionId?: string }
+  | null
+  | undefined {
+  const alias = pipeline.model_aliases?.find(
+    // Normalization trims alias ids, which the executor then resolves.
+    (candidate) => candidate.id.trim() === model.trim(),
+  );
+  if (alias === undefined) return undefined;
+  const defaults = alias.defaults;
+  if (defaults === undefined || 'agent_id' in defaults) return null;
+  const written = String(defaults.base).trim();
+  // A built-in `$` alias names its model, as pipeline normalization
+  // resolves it, so the host resolves the alias to a model it knows.
+  const base = Object.prototype.hasOwnProperty.call(
+    STATIC_MODEL_REFERENCE_ALIASES,
+    written,
+  )
+    ? (STATIC_MODEL_REFERENCE_ALIASES[written] ?? written)
+    : written;
+  if (base === '' || base.startsWith(AGENT_MODEL_PREFIX)) return null;
+  const collection = defaults.plugin_collection_id?.trim();
+  return {
+    base,
+    ...(collection !== undefined &&
+      collection !== '' && {
+        pluginCollectionId: collection,
+      }),
+  };
+}
+
+/**
+ * The model actions that take a model alias or a plugin collection of their
+ * own on the pipeline host (`DAEMON_ALIAS_MODEL_ACTIONS`, CAN-5832); the host
+ * parity golden keeps them equal.
+ */
+export const CLOUD_RUN_ALIAS_MODEL_ACTIONS: ReadonlySet<string> = new Set([
+  'agent-prompt',
+  'agent-resume',
+]);
+
+/** A step's alias or collection on a model action the host doesn't take them on. */
+const ALIAS_ACTION_MESSAGE =
+  'Cloud runs use model aliases only in agent-prompt and agent-resume steps. Name the model in this step, or run the workflow on This computer.';
+const COLLECTION_ACTION_MESSAGE =
+  'Cloud runs load a plugin collection only in agent-prompt and agent-resume steps. Remove it from this step, or run the workflow on This computer.';
+/** A step's collection the workflow doesn't declare, which fails at start on desktop too. */
+const UNDECLARED_COLLECTION_MESSAGE =
+  "This step names a plugin collection the workflow doesn't declare. Add it to plugin_collections, or remove it from this step.";
+
+/**
+ * A repository action's model checks, as the host makes them (CAN-6739): it
+ * takes neither a model alias nor a plugin collection, and its model is
+ * written, never an expression. `cloud-model-preflight` checks the model.
+ */
+function checkRepositoryModel(
+  pipeline: Pipeline,
+  at: StepAt,
+  refuse: Refuse,
+  input: string,
+): void {
+  const inputs = at.step.with ?? {};
+  if (inputs.plugin_collection_id !== undefined)
+    refuse('plugin_collections', 'CP-25', at, COLLECTION_ACTION_MESSAGE);
+  const model = inputs[input] === undefined ? '' : String(inputs[input]);
+  if (isExpression(model)) {
+    refuse('dynamic_model', 'G4', at);
+    return;
+  }
+  const alias = cloudModelAliasOf(pipeline, model);
+  if (alias === null) refuse('model_alias', 'CP-25', at);
+  else if (alias !== undefined)
+    refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
+}
+
+/**
+ * A model step's checks, as the host makes them. Plugin collections and
+ * inline model aliases are the web core's to resolve before the run starts
+ * (CAN-6439); the host takes them on agent-prompt and agent-resume steps
+ * only, a composite's through the model step inside it.
+ * `cloud-model-preflight` lists a step that loads a collection on a Codex
+ * model, which the host refuses (CAN-6012).
  */
 function checkModelAction(
   pipeline: Pipeline,
   at: StepAt,
   refuse: Refuse,
+  action: string,
   composite: boolean,
 ): void {
   const input = at.step.with ?? {};
-  if (
-    (pipeline.plugin_collections?.length ?? 0) > 0 ||
-    (!composite && input.plugin_collection_id !== undefined)
-  ) {
-    refuse('plugin_collections', 'CP-25', at);
+  const model = input.model === undefined ? '' : String(input.model);
+  // A composite's own plugin collection reaches none of its steps.
+  const collection = composite ? undefined : input.plugin_collection_id;
+  if (collection !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
+    refuse('plugin_collections', 'CP-25', at, COLLECTION_ACTION_MESSAGE);
+  else if (
+    collection !== undefined &&
+    !pipeline.plugin_collections?.some(
+      ({ id }) => id.trim() === String(collection).trim(),
+    )
+  )
+    refuse('plugin_collections', 'CP-25', at, UNDECLARED_COLLECTION_MESSAGE);
+  if (isExpression(model)) {
+    refuse('dynamic_model', 'G4', at);
     return;
   }
-  const model = input.model === undefined ? '' : String(input.model);
-  if (isExpression(model)) refuse('dynamic_model', 'G4', at);
-  else if (pipeline.model_aliases?.some((alias) => alias.id === model.trim()))
-    refuse('model_alias', 'CP-24', at);
+  const alias = cloudModelAliasOf(pipeline, model);
+  if (alias === null) refuse('model_alias', 'CP-25', at);
+  else if (alias !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
+    refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
 }
 
 function checkStep(
   pipeline: Pipeline,
   at: StepAt,
   inheritedShell: ShellType | undefined,
+  scope: PipelineExecutionScope,
   refuse: Refuse,
 ): void {
   const { step } = at;
@@ -447,18 +574,22 @@ function checkStep(
     return;
   }
   if (verdict !== 'portable') {
-    refuse(
-      verdict,
-      parityIdOf(verdict),
-      at,
-      verdict === 'model_action' && REPOSITORY_ACTIONS.has(name)
-        ? REPOSITORY_ACTION_MESSAGE
-        : undefined,
-    );
+    refuse(verdict, parityIdOf(verdict), at);
     return;
   }
-  if (CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL.has(name)) {
+  // A folder or worktree run has the checkout these actions work in (CP-29).
+  if (
+    scope === 'global' &&
+    CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL.has(name)
+  ) {
     refuse('action_scope', 'CP-29', at);
+    return;
+  }
+  if (
+    scope === 'directory' &&
+    CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_DIRECTORY.has(name)
+  ) {
+    refuse('action_scope', 'CP-29', at, WORKTREE_ACTION_MESSAGE);
     return;
   }
   const memoryPathInput = Object.prototype.hasOwnProperty.call(
@@ -475,15 +606,33 @@ function checkStep(
     return;
   }
   if (CLOUD_RUN_HOST_ACTIONS.has(name)) checkHostAction(name, at, refuse);
+  else if (
+    Object.prototype.hasOwnProperty.call(
+      CLOUD_RUN_REPOSITORY_MODEL_INPUTS,
+      name,
+    )
+  )
+    checkRepositoryModel(
+      pipeline,
+      at,
+      refuse,
+      CLOUD_RUN_REPOSITORY_MODEL_INPUTS[name]?.input ?? '',
+    );
   else if (CLOUD_RUN_PORTABLE_MODEL_ACTIONS.has(name))
-    checkModelAction(pipeline, at, refuse, false);
+    checkModelAction(pipeline, at, refuse, name, false);
   else if (
     Object.prototype.hasOwnProperty.call(
       CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
       name,
     )
   )
-    checkModelAction(pipeline, at, refuse, true);
+    checkModelAction(
+      pipeline,
+      at,
+      refuse,
+      CLOUD_RUN_COMPOSITE_MODEL_ACTIONS[name]?.action ?? '',
+      true,
+    );
   else if (step.log_format_hint === 'agent') refuse('model_action', 'G3', at);
 }
 
@@ -501,14 +650,21 @@ function parityIdOf(reason: CloudRunRefusalReason): string {
   }
 }
 
+/** Where the run executes: global, in a project folder, or in a worktree (CP-29). */
+export interface CloudRunPreflightOptions {
+  readonly scope?: PipelineExecutionScope;
+}
+
 /**
- * Every item of `pipeline` a global cloud run refuses, in document order;
- * empty when it may run. Throws only when the definition's `scope` is
- * invalid, as normalization does.
+ * Every item of `pipeline` a cloud run in `scope` (global unless named)
+ * refuses, in document order; empty when it may run. Throws only when the
+ * definition's `scope` is invalid, as normalization does.
  */
 export function preflightCloudRun(
   pipeline: Pipeline,
+  options: CloudRunPreflightOptions = {},
 ): readonly CloudRunRefusal[] {
+  const scope = options.scope ?? 'global';
   const refusals: CloudRunRefusal[] = [];
   const refuse: Refuse = (reason, parityId, at, message) => {
     refusals.push({
@@ -524,8 +680,14 @@ export function preflightCloudRun(
           }),
     });
   };
-  if (!normalizePipelineScopes(pipeline.scope, 'scope').includes('global'))
-    refuse('run_scope', 'CP-29');
+  // A worktree also serves a workflow declared for a folder.
+  if (
+    !executionContextSatisfies(
+      normalizePipelineScopes(pipeline.scope, 'scope'),
+      scope,
+    )
+  )
+    refuse('run_scope', 'CP-29', undefined, RUN_SCOPE_MESSAGES[scope]);
   if ((pipeline.local_state?.length ?? 0) > 0) refuse('local_state', 'R8');
   if (
     Array.isArray(pipeline.dependencies) &&
@@ -543,7 +705,7 @@ export function preflightCloudRun(
     // Raw text is parsed, not normalized, so a job may lack its steps.
     if (!Array.isArray(job.steps)) continue;
     for (const [stepIndex, step] of job.steps.entries())
-      checkStep(pipeline, { jobId, stepIndex, step }, shell, refuse);
+      checkStep(pipeline, { jobId, stepIndex, step }, shell, scope, refuse);
   }
   return refusals;
 }

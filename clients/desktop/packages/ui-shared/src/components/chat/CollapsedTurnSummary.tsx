@@ -38,10 +38,8 @@ import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
 } from '@canopy/protocol/portal';
-import { formatDuration } from '../../lib/format-usage';
 import { RichHoverTooltip } from '../RichHoverTooltip';
 import { useIsPhone } from '../useMediaQuery';
-import { useCleanChatLook } from '../chat-look';
 import { describeStepCounts, type StepKind } from './step-words';
 import { TurnOutcomeTooltip } from './TurnOutcomeTooltip';
 import { TurnOutcomeWords } from './TurnOutcomeWords';
@@ -116,8 +114,6 @@ export interface CollapsedTurnSummaryProps {
    * Defaults to complete.
    */
   completionStatus?: TurnCompletionStatus;
-  /** Hide the visible step-count label while preserving its automation data. */
-  hideLeadingLabel?: boolean;
   /**
    * How many counted steps a safety check blocked, ran into an error, or
    * were interrupted. Omit when the host has no outcome metadata; that is unknown, not
@@ -136,8 +132,6 @@ export interface CollapsedTurnSummaryProps {
    * outcome then only describes them.
    */
   onJumpToOutcome?: (toolUseId?: string) => void;
-  /** Test ID hook for automation. */
-  dataTestId?: string;
 }
 
 /**
@@ -270,22 +264,6 @@ export function formatStepCount(total: number): string {
     return 'Agent steps';
   }
   return `${total} ${total === 1 ? 'step' : 'steps'}`;
-}
-
-/**
- * Renders {@link CollapsedTurnSummaryProps.elapsedMs} for display, or `null`
- * when there is nothing worth showing.
- *
- * The sub-second case is the reason this is not a bare call to
- * `formatDuration`: that helper rounds to whole seconds, so a 400ms turn comes
- * out as "0s" — technically true and completely useless next to a step count.
- * "<1s" says the same thing without claiming the turn took no time.
- */
-function formatElapsedLabel(elapsedMs: number | undefined): string | null {
-  if (elapsedMs == null || !Number.isFinite(elapsedMs) || elapsedMs <= 0) {
-    return null;
-  }
-  return elapsedMs < 1000 ? '<1s' : formatDuration(elapsedMs);
 }
 
 /** Whether a turn has any blocked, errored or interrupted step to report. */
@@ -475,76 +453,6 @@ export function TurnOutcomeControl({
   );
 }
 
-export interface CollapsedTurnSummaryContentProps {
-  chips: readonly TurnSummaryChip[];
-  /** Elapsed time after the step count, already formatted. */
-  elapsedLabel?: string | null;
-  /** Hide the visible step-count label while preserving its automation data. */
-  hideLeadingLabel?: boolean;
-}
-
-/**
- * The words inside {@link CollapsedTurnSummaryRow}'s toggle: "4 steps" and
- * an optional elapsed time. The outcome control and the count chips
- * ({@link CollapsedTurnSummaryChips}) sit beside the toggle, in the row's
- * `outcome` and `trailing` slots.
- */
-export function CollapsedTurnSummaryContent({
-  chips,
-  elapsedLabel = null,
-  hideLeadingLabel = false,
-}: CollapsedTurnSummaryContentProps): JSX.Element {
-  const totalSteps = chips.reduce(
-    (total: number, chip: TurnSummaryChip): number => total + chip.count,
-    0,
-  );
-  return (
-    <span
-      className={`${
-        hideLeadingLabel ? 'hidden' : 'flex'
-      } flex-shrink-0 items-center gap-1.5 whitespace-nowrap font-medium`}
-      data-turn-step-count={totalSteps}
-    >
-      {!hideLeadingLabel && (
-        <>
-          {formatStepCount(totalSteps)}
-          {elapsedLabel !== null && (
-            <span
-              className="font-normal fg-tertiary"
-              data-turn-elapsed={elapsedLabel}
-            >
-              · {elapsedLabel}
-            </span>
-          )}
-        </>
-      )}
-    </span>
-  );
-}
-
-/** The per-family count chips at the end of a collapsed turn summary. */
-export function CollapsedTurnSummaryChips({
-  chips,
-}: {
-  chips: readonly TurnSummaryChip[];
-}): JSX.Element {
-  return (
-    <>
-      {chips.map((chip) => (
-        <span
-          key={chip.key}
-          className="flex items-center gap-1"
-          title={describeTurnSummaryChip(chip)}
-          data-tool-chip={chip.key}
-        >
-          <span className="flex-shrink-0">{chip.icon}</span>
-          <span className="text-2xs font-medium">{chip.count}</span>
-        </span>
-      ))}
-    </>
-  );
-}
-
 export interface CollapsedTurnSummaryRowProps {
   /** Whether the parent currently shows the expanded intermediate region. */
   isExpanded: boolean;
@@ -686,70 +594,36 @@ export function CollapsedTurnSummary({
   appIcon,
   elapsedMs,
   completionStatus = 'complete',
-  hideLeadingLabel = false,
   outcomes,
   outcomeSteps,
   onJumpToOutcome,
-  dataTestId,
 }: CollapsedTurnSummaryProps): JSX.Element {
   const chips = buildChips(summary, appIcon);
   const ariaLabel = formatTurnSummaryAriaLabel(chips, outcomes);
-  const elapsedLabel = formatElapsedLabel(elapsedMs);
-  const clean = useCleanChatLook();
 
   // Clean chat look: the finished turn's header, "Worked for 3m 24s", opens
   // the steps; what they did reads as words on hover.
-  if (clean) {
-    return (
-      <TurnWorkHeader
-        elapsedMs={elapsedMs}
-        live={false}
-        completionStatus={completionStatus}
-        expandable
-        isOpen={isExpanded}
-        onToggle={onToggle}
-        ariaLabel={ariaLabel}
-        title={describeStepCounts(turnSummaryStepCounts(summary)) || undefined}
-        stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
-        outcome={
-          hasTurnOutcomes(outcomes) ? (
-            <TurnOutcomeControl
-              outcomes={outcomes}
-              outcomeSteps={outcomeSteps}
-              onJumpToOutcome={onJumpToOutcome}
-            />
-          ) : undefined
-        }
-        dataTestId="turn-work-header"
-      />
-    );
-  }
-
   return (
-    <CollapsedTurnSummaryRow
-      isExpanded={isExpanded}
-      onClick={onToggle}
+    <TurnWorkHeader
+      elapsedMs={elapsedMs}
+      live={false}
+      completionStatus={completionStatus}
+      expandable
+      isOpen={isExpanded}
+      onToggle={onToggle}
       ariaLabel={ariaLabel}
-      dataTestId={dataTestId}
+      title={describeStepCounts(turnSummaryStepCounts(summary)) || undefined}
+      stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
       outcome={
         hasTurnOutcomes(outcomes) ? (
           <TurnOutcomeControl
             outcomes={outcomes}
             outcomeSteps={outcomeSteps}
             onJumpToOutcome={onJumpToOutcome}
-            leadingSeparator={!hideLeadingLabel}
           />
         ) : undefined
       }
-      trailing={
-        chips.length > 0 ? <CollapsedTurnSummaryChips chips={chips} /> : null
-      }
-    >
-      <CollapsedTurnSummaryContent
-        chips={chips}
-        elapsedLabel={elapsedLabel}
-        hideLeadingLabel={hideLeadingLabel}
-      />
-    </CollapsedTurnSummaryRow>
+      dataTestId="turn-work-header"
+    />
   );
 }

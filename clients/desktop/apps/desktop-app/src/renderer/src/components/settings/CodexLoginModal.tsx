@@ -404,6 +404,7 @@ export function CodexLoginModal({
             </>
           )}
           <DesktopErrorBanner
+            errorSource="codex-login-modal"
             className=""
             error={error?.error}
             {...(error?.details === undefined

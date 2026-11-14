@@ -54,6 +54,12 @@ export interface LiveFollowerOptions {
   readonly turnRuns: (chat: LiveChat) => boolean;
   /** Publishes a chat's replies; an empty list clears them. */
   readonly publish: (key: string, chat: LiveChatState) => void;
+  /**
+   * The live stream says no turn runs. The committed runtime may not have
+   * caught up: the web core can commit a turn's last reply before Core ends
+   * the turn, and commit nothing after (CAN-6396).
+   */
+  readonly onIdle?: (chat: LiveChat) => void;
   readonly now?: () => number;
   /** Delay before reopening a live stream while its turn runs. */
   readonly reopenDelayMs?: number;
@@ -167,6 +173,7 @@ export function createLiveFollower(options: LiveFollowerOptions): LiveFollower {
     const item = parseLiveItem(frame.item);
     if (item.chatId !== (options.chatToCore ?? bareId)(entry.chat.chatId))
       return 'next';
+    if (item.kind === 'idle') options.onIdle?.(entry.chat);
     // A turn that streams runs on: its reply no longer expires. A chat runs
     // one turn at a time, so every other turn's reply has stopped, even
     // when the chat never went idle between them (a lost finish frame).

@@ -1,6 +1,7 @@
 import {
   parseOpenCodeReportedUsage,
   type OpenCodeReportedUsage,
+  type ReportedTurnUsage,
 } from '@canopy/protocol/portal';
 import {
   useCallback,
@@ -605,6 +606,8 @@ export function UsageIndicatorAccountSummary({
 }
 
 export interface UsageIndicatorUsage {
+  /** A provider's latest turn snapshot; null explicitly clears older counts. */
+  reportedTurnUsage?: ReportedTurnUsage | null;
   /** Current context window fill. */
   contextTokens: number;
   /** Model context window; 0 when unknown (hides the meter). */
@@ -830,7 +833,7 @@ export function UsageIndicator({
   isCodex,
   seedUsage,
   modelLabel,
-  responseUsage,
+  responseUsage: suppliedResponseUsage,
   accountUsage,
   onSeeDetails,
   contextBreakdown,
@@ -850,6 +853,20 @@ export function UsageIndicator({
   // popover shows its zero but never its window as the runtime's figure —
   // Codex only reports context through `token_usage_updated`.
   const usage = reportedUsage ?? seedUsage ?? UNKNOWN_USAGE;
+  const responseUsage =
+    suppliedResponseUsage ??
+    (usage.reportedTurnUsage !== undefined
+      ? {
+          title: 'Turn usage',
+          message: usage.reportedTurnUsage
+            ? 'Latest reported turn. Input excludes reported cached tokens.'
+            : 'The provider has not reported token usage for this turn.',
+          note: usage.reportedTurnUsage?.reasoningIncludedInOutput
+            ? 'Output includes reasoning. Cost and context usage are unavailable.'
+            : 'Cost and context usage are unavailable.',
+          usage: usage.reportedTurnUsage ?? undefined,
+        }
+      : undefined);
   const [open, setOpen] = useState(false);
   const onOpenChangeRef = useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;

@@ -1,4 +1,8 @@
-import { Button, TranscriptPagingControls } from '@canopy/ui-shared/components';
+import {
+  Surface,
+  Button,
+  TranscriptPagingControls,
+} from '@canopy/ui-shared/components';
 import {
   installTranscriptPage,
   TRANSCRIPT_PAGE_LOAD_ERROR,
@@ -340,7 +344,12 @@ export function ArchivedChatTranscriptModal({
       }
     >
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="shrink-0 border-b px-4 py-2">
+        <Surface
+          variant="section"
+          boundary="bottom"
+          padding="section-default"
+          className="shrink-0"
+        >
           <SearchBar
             query={search.query}
             onQueryChange={search.setQuery}
@@ -357,7 +366,7 @@ export function ArchivedChatTranscriptModal({
               </Button>
             </p>
           )}
-        </div>
+        </Surface>
 
         {tab ? (
           <ChatMessageList

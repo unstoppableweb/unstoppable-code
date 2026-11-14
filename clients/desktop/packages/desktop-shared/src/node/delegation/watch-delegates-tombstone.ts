@@ -4,7 +4,13 @@ import type { AgentDelegationResult } from '@canopy/protocol/delegation';
 /** Compatibility only: never add these names to a live tool list. */
 export function isWatchDelegatesCompatibilityName(
   name: string,
-  harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
 ): boolean {
   // All transports may carry the bare display name in retained calls.
   void harness;

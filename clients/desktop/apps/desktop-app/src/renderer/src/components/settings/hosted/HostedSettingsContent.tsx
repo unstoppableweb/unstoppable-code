@@ -31,6 +31,7 @@ import { useNavigationStore } from '@/stores/navigationStore';
 // Imported here, inside the hosted content chunk, so the device sections
 // load with hosted pages rather than with the overlay.
 import { AccountDeviceSettings } from './AccountDeviceSettings';
+import { DeviceAiGatewayPage } from './DeviceAiGatewayPage';
 import { HostedSettingsHostFailureNotice } from './HostedSettingsHostFailureNotice';
 import {
   useHostedSettingsAccount,
@@ -363,6 +364,10 @@ export function HostedSettingsContent({
 }: HostedSettingsContentProps): JSX.Element {
   const account = useHostedSettingsAccount();
   const freeAccessFallback = useFreeAccessFallback();
+  // Signed out, the AI gateway page sets up this device's own gateway.
+  const aiGatewayEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
+  );
   const route = location.route;
   if (account.status === 'loading') {
     if (route.scope !== 'account') return <HostedRouteLoading route={route} />;
@@ -389,7 +394,9 @@ export function HostedSettingsContent({
     // nothing on this computer keep the prompt rather than render empty.
     return (
       <AccountScopeShell route={route} state="signed_out" freeAccess={false}>
-        {SIGNED_OUT_DEVICE_PAGES.has(route.page) ? null : (
+        {route.page === 'ai-gateway' && aiGatewayEnabled ? (
+          <DeviceAiGatewayPage />
+        ) : SIGNED_OUT_DEVICE_PAGES.has(route.page) ? null : (
           <HostedSettingsErrorState
             code="signed_out"
             onSignIn={openAccountSignIn}

@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { type Stats } from 'node:fs';
@@ -5,7 +6,7 @@ import { documentPreviewMaxBytes } from '@canopy/protocol/document-preview';
 import { FileSaveConflictError } from '@canopy/protocol/file-save-conflict';
 import { FileSaveValidationError } from '@canopy/protocol/file-image-save';
 import { createImageFile, decodeImageSave } from '../lib/create-image-file';
-import { basename, extname, join, sep } from 'node:path';
+import { basename, extname, isAbsolute, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { nativeImage, shell, type IpcMainInvokeEvent } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
@@ -102,6 +103,27 @@ const MAX_EDIT_TEXT_BYTES = MAX_FULL_TEXT_BYTES;
 /** The engine's classification, shared with `worker.filesystem.file.read`. */
 function classifyExtension(absolutePath: string): FileContentKind {
   return classifyFileContentKind(absolutePath);
+}
+
+function classifyPreviewReadFailure(error: unknown): never {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOENT' ||
+      error.code === 'ENOTDIR' ||
+      error.code === 'EISDIR')
+  ) {
+    // Native filesystem errors may come from a different VM realm.
+    const message =
+      'message' in error && typeof error.message === 'string'
+        ? error.message
+        : error.code;
+    const local = new Error(message);
+    Object.defineProperty(local, 'cause', { value: error });
+    throw classifyError(local, 'external.state_changed');
+  }
+  throw error;
 }
 
 async function readTextSlice(
@@ -754,9 +776,18 @@ export function registerFilePreviewHandlers(
       _event,
       request: FilePreviewRequest,
     ): Promise<FilePreviewResponse> => {
-      validateAbsolutePath(request.absolutePath, 'absolutePath');
-
-      const fileStat = await stat(request.absolutePath);
+      if (
+        !request ||
+        typeof request.absolutePath !== 'string' ||
+        !isAbsolute(request.absolutePath)
+      )
+        throw classifyError(
+          new Error('Invalid absolutePath: must be an absolute path'),
+          'input.not_accepted',
+        );
+      const fileStat = await stat(request.absolutePath).catch(
+        classifyPreviewReadFailure,
+      );
       const sizeBytes = fileStat.size;
       const modifiedAtMs = fileStat.mtimeMs;
       const filename = basename(request.absolutePath);
@@ -783,7 +814,7 @@ export function registerFilePreviewHandlers(
           filename,
           sizeBytes,
           modifiedAtMs,
-        );
+        ).catch(classifyPreviewReadFailure);
       }
 
       return readTextContent(
@@ -793,7 +824,7 @@ export function registerFilePreviewHandlers(
         modifiedAtMs,
         kind,
         MAX_PREVIEW_TEXT_BYTES,
-      );
+      ).catch(classifyPreviewReadFailure);
     },
   );
 

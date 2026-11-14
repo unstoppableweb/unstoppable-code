@@ -39,6 +39,21 @@ export const SIGNED_OUT_SETTINGS_NAV_MODEL: SettingsNavModel = {
 };
 
 /**
+ * The signed-out rail. AI gateway is listed while its flag is on: signed out
+ * (or as a guest) its page sets up this device's own gateway.
+ */
+export function signedOutSettingsNavModel(
+  aiGatewayEnabled: boolean,
+): SettingsNavModel {
+  return aiGatewayEnabled
+    ? {
+        ...SIGNED_OUT_SETTINGS_NAV_MODEL,
+        account: { ...SIGNED_OUT_SETTINGS_NAV_MODEL.account, aiGatewayEnabled },
+      }
+    : SIGNED_OUT_SETTINGS_NAV_MODEL;
+}
+
+/**
  * The desktop rail model. The organization group appears only for the
  * organization the viewer explicitly browses (a pick from the Organizations
  * list or a validated deep link), never from the workspace context or

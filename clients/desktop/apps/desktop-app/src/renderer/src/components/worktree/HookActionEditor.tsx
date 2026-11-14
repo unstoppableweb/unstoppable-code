@@ -579,6 +579,7 @@ function PipelineActionFields({
         )}
         {/* Settings never show a raw exception: our own sentence. */}
         <ErrorBanner
+          errorSource="pipeline-action-fields-load"
           className=""
           error={pipelineLoadError ? "Couldn't load this workflow." : undefined}
           details={pipelineLoadError}

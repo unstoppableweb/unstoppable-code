@@ -44,6 +44,7 @@ export function AutomationCatalogStatus({
   const loadingMore = sharedLoadingMore || (curatedHasMore && curated?.loading);
   const notice = curated?.error ? (
     <Notice
+      errorSource="plugins-curated-automations-error"
       intent="destructive"
       role="none"
       title="Couldn't load curated automations."

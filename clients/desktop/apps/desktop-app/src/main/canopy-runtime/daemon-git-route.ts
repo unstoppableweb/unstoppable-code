@@ -195,6 +195,9 @@ export function createDaemonGitRoute(
         repository: params.repository,
         scope,
         ...(params.includeHeadState ? { includeHeadState: true } : {}),
+        ...(params.exactWorktreeBaseBranch
+          ? { exactWorktreeBaseBranch: true }
+          : {}),
       };
       const now = Date.now();
       const owner = options.lifetime.ownerFor(request.sender);

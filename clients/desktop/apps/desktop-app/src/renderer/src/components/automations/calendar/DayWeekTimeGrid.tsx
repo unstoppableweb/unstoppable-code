@@ -206,7 +206,12 @@ export function DayWeekTimeGrid({
           {days.map((day, dayIndex) => {
             const positioned = positionedByDay.get(dayKeys[dayIndex]) ?? [];
             return (
-              <div key={day.getTime()} className="relative flex-1 border-l">
+              <Surface
+                variant="section"
+                boundary="left"
+                key={day.getTime()}
+                className="relative flex-1"
+              >
                 {HOURS.map((hour) => (
                   <div
                     key={hour}
@@ -225,7 +230,7 @@ export function DayWeekTimeGrid({
                 {isToday(day, now) && (
                   <NowIndicator now={now} hourPx={HOUR_PX} />
                 )}
-              </div>
+              </Surface>
             );
           })}
         </div>

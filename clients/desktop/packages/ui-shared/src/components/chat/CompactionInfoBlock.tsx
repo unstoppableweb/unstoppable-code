@@ -1,7 +1,6 @@
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { memo, type JSX } from 'react';
 import { RestoreIcon as AppCatalogRestoreIcon } from '../../icons/AppIcons';
-import { useCleanChatLook } from '../chat-look';
-import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 /**
  * Who compacted the session, keyed off both provider and interface mode so a
@@ -51,54 +50,27 @@ function CompactionInfoBlockComponent({
   });
   // Clean chat look: a quiet notice centered in the chat column between
   // the messages, like a date divider, instead of a boxed banner.
-  const clean = useCleanChatLook();
-  if (clean) {
-    return (
-      <div
-        data-testid={dataTestId}
-        data-chat-notice=""
-        className="flex w-full flex-col items-center gap-1 py-2 text-center text-s fg-tertiary"
-      >
-        <span className="flex max-w-full items-center gap-2">
-          <span
-            className="flex h-5 shrink-0 items-center [&_svg]:size-3.5"
-            aria-hidden="true"
-          >
-            <AppCatalogRestoreIcon />
-          </span>
-          <span className="min-w-0 truncate">
-            {headline} at {localTime}
-          </span>
-        </span>
-        {summary !== undefined && summary.length > 0 ? (
-          <span
-            className={`${REPLAY_BLOCK_CLASS} max-w-full whitespace-pre-wrap break-words`}
-          >
-            {summary}
-          </span>
-        ) : null}
-      </div>
-    );
-  }
+
   return (
     <div
       data-testid={dataTestId}
-      className="flex flex-col gap-1 rounded-lg ring-1 ring-inset ring-line-base bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary"
+      data-chat-notice=""
+      className="flex w-full flex-col items-center gap-1 py-2 text-center text-s fg-tertiary"
     >
-      <div className="flex items-center gap-2">
-        <AppCatalogRestoreIcon
-          size="sm"
-          className="flex-shrink-0"
-          aria-hidden="true"
-        />
-        <span>
-          {headline} <span className="fg-secondary/80">at {localTime}</span>
+      <span className="flex max-w-full items-center gap-2">
+        <span className="flex h-5 shrink-0 items-center" aria-hidden="true">
+          <AppCatalogRestoreIcon size="sm" />
         </span>
-      </div>
+        <span className="min-w-0 truncate">
+          {headline} at {localTime}
+        </span>
+      </span>
       {summary !== undefined && summary.length > 0 ? (
-        <div className={`${REPLAY_BLOCK_CLASS} pl-6 fg-secondary/80`}>
+        <span
+          className={`${REPLAY_BLOCK_CLASS} max-w-full whitespace-pre-wrap break-words`}
+        >
           {summary}
-        </div>
+        </span>
       ) : null}
     </div>
   );

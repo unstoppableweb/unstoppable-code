@@ -4,6 +4,7 @@ import { CheckIcon as AppCatalogCheckIcon } from '../icons/AppIcons';
 export type PlanSource =
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | 'claude'
   | 'codex'

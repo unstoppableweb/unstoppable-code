@@ -1,3 +1,5 @@
+import { isArchivedContainerManifest } from '@canopy/desktop-shared/lib/archived-container-contracts';
+import { isRecord } from '../type-guards';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   startPolling,
@@ -6,6 +8,8 @@ import {
   getForegroundWorktreeKey,
   setForegroundWorktree,
 } from '../github-poller';
+import { installW5StoreSide } from './fixtures/w5-store-sides';
+import { installRoutedW5GoldenStore } from './fixtures/w5-routed-golden-store';
 import type * as WorkerTerminalModule from '../../terminal/worker-terminal';
 import type * as RoutedWorkerTerminalModule from '../../terminal/routed-worker-terminal';
 import type * as PortalEventBusModule from '../../portal/portal-event-bus';
@@ -80,6 +84,7 @@ import {
 } from '../archived-container-git';
 import { markWorkspaceTargetRemovalPending } from '../workspace-target-exclusion';
 import { realpathSync } from 'node:fs';
+import { canonicalizePossiblyMissingPath } from '../worktree-registration-removal';
 import { registerWorkspaceTypes } from '../workspace-registry';
 import { spawnTerminalForRenderer } from '../../services/terminal-service';
 import * as terminalService from '../../services/terminal-service';
@@ -105,17 +110,22 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import * as worktreeGit from '../git';
+import { createGitBranch } from '@canopy/core-runtime/node/git';
 import path from 'node:path';
 import { AutomationsService } from '../../automations/service';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type WorktreeData,
+  type WorkspaceConfigFile,
+  type WorkspaceReadinessIssue,
   type PortalCommandEnvelope,
   type TerminalSession,
   type TerminalSpawnRequest,
 } from '@canopy/desktop-shared/types';
 import {
   getSidebarItemGroupsFilePath,
+  getArchivedContainerManifestPath,
+  getW5DestructiveLifecycleDir,
   getWorkspaceConfigPath,
   getWorkspaceIndexFilePath,
   getWorkspaceWorktreeRepoDir,
@@ -123,10 +133,17 @@ import {
   getWorktreeDir,
 } from '../paths';
 import {
+  readWorkspaceConfig,
   readWorkspaceWorktrees,
   readWorkspaceWorktreesDetailed,
   setWorktreeRegistryReconciler,
+  writeWorkspaceWorktrees,
 } from '../workspace-persistence';
+import { W5AuthorityUnreachableError } from '../w5-file-store';
+import {
+  inspectWorktreeCreationRecovery,
+  repairOrphanedWorktreeRegistration,
+} from '../worktree-create-recovery';
 import { initializeSidebarItemGroups } from '../../services/sidebar-item-groups-service';
 import {
   clearCachedGitExecutablePath,
@@ -186,6 +203,17 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
 
+async function registeredWorktrees(repo: string): Promise<string[]> {
+  return Promise.all(
+    git(repo, ['worktree', 'list', '--porcelain'])
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) =>
+        canonicalizePossiblyMissingPath(line.slice('worktree '.length)),
+      ),
+  );
+}
+
 /** A clone of a bare origin with `main` and `develop`, both pushed. */
 function createRepository(root: string, name: string): string {
   const origin = path.join(root, `${name}.git`);
@@ -195,6 +223,7 @@ function createRepository(root: string, name: string): string {
   git(work, ['config', 'user.name', 'Canopy Test']);
   git(work, ['config', 'user.email', 'test@canopy.example']);
   git(work, ['config', 'commit.gpgsign', 'false']);
+  git(work, ['config', 'branch.autoSetupMerge', 'true']);
   execFileSync('git', ['checkout', '-q', '-b', 'main'], { cwd: work });
   execFileSync('sh', ['-c', 'echo base > README.md'], { cwd: work });
   git(work, ['add', '-A']);
@@ -251,6 +280,36 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  let closeW5Store: (() => Promise<void>) | undefined;
+  let repairCommitFailure: Error | undefined;
+  let afterRepairDecision: (() => Promise<void>) | undefined;
+  let repairDecisions: number;
+
+  async function startupOrphan(list: 'absent' | 'empty' = 'empty'): Promise<{
+    config: WorkspaceConfigFile;
+    recovery: NonNullable<WorkspaceReadinessIssue['recovery']>;
+  }> {
+    if (list === 'empty') await writeWorkspaceWorktrees(SINGLE, []);
+    const checkout = getWorktreeDir(SINGLE, 'startup-repair');
+    await mkdir(path.dirname(checkout), { recursive: true });
+    git(singleRepo, [
+      'worktree',
+      'add',
+      '-b',
+      `repair-${path.basename(process.env.CANOPY_DATA_DIR ?? '')}`,
+      checkout,
+      'main',
+    ]);
+    await rm(checkout, { recursive: true });
+    const config = await readWorkspaceConfig(SINGLE);
+    const issues = await inspectWorktreeCreationRecovery(SINGLE, config);
+    const recovery = issues.find(
+      (entry) => entry.recovery?.phase === 'orphan-checkout',
+    )?.recovery;
+    if (!recovery) throw new Error('Missing orphan recovery evidence');
+    return { config, recovery };
+  }
+
   beforeEach(async () => {
     originalDataDir = process.env.CANOPY_DATA_DIR;
     const dataDir = await mkdtemp(path.join(root, 'data-'));
@@ -289,12 +348,182 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
         { id: 'web', name: 'web', repoPath: webRepo },
       ],
     });
+    repairCommitFailure = undefined;
+    afterRepairDecision = undefined;
+    repairDecisions = 0;
+    closeW5Store = await installRoutedW5GoldenStore({
+      wrapTransport: (transport) => ({
+        ...transport,
+        commit: async (request): ReturnType<typeof transport.commit> => {
+          if (
+            request.operation !==
+            'internal.worktree.recovery.repair-registration'
+          )
+            return transport.commit(request);
+          repairDecisions += 1;
+          if (repairCommitFailure) throw repairCommitFailure;
+          const result = await transport.commit(request);
+          await afterRepairDecision?.();
+          return result;
+        },
+      }),
+    });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeW5Store?.();
     if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
     else process.env.CANOPY_DATA_DIR = originalDataDir;
   });
+
+  async function portalArchiveFixture(count: number): Promise<{
+    projectId: string;
+    command: PortalCommandEnvelope<unknown>;
+    context: PortalAdapterContext;
+    complete: jest.Mock<void, [PortalCommandEnvelope<unknown>, unknown]>;
+    fail: jest.Mock<void, unknown[]>;
+  }> {
+    const { createCoworkWorkspace } = await import('../cowork-workspace-crud');
+    const { getWorkspaceChatHistoryMetaFilePath } = await import('../paths');
+    const project = await createCoworkWorkspace('Retained chats');
+    for (let i = 0; i < count; i++) {
+      const id = `legacy-${String(i).padStart(3, '0')}`;
+      await writeJson(getWorkspaceChatHistoryMetaFilePath(project.id, id), {
+        id,
+        title: id,
+        archived: true,
+        createdAt: '2026-11-01T00:00:00.000Z',
+        archivedAt: '2026-11-02T00:00:00.000Z',
+        description: '',
+      });
+    }
+    const complete = jest.fn<void, [PortalCommandEnvelope<unknown>, unknown]>();
+    const fail = jest.fn<void, unknown[]>();
+    return {
+      projectId: project.id,
+      command: {
+        id: 'archive-read',
+        sequence: 1,
+        type: 'portal.workspace.archived_work_entries.list',
+        target: { workspaceLocalId: project.id },
+        payload: { projectLocalId: project.id },
+        createdAt: '2026-11-01T00:00:00.000Z',
+        expiresAt: null,
+      },
+      context: {
+        sessionId: 'archive-read-session',
+        getWindow: () => null,
+        enqueueEvent: () => {},
+        canArchiveStandaloneChats: () => true,
+        complete,
+        fail,
+      },
+      complete,
+      fail,
+    };
+  }
+
+  it.each([false, true])(
+    'Portal archive reads leave every persisted workspace file unchanged (migrated=%s)',
+    async (migrated) => {
+      const { handlePortalArchivedWorkEntriesList } =
+        await import('../../portal/adapters/standalone-chat-adapter');
+      const fixture = await portalArchiveFixture(1);
+      const { workspacePersistenceTestExports } =
+        await import('../workspace-persistence');
+      // A stale row still exists on disk after removal, which an ordinary sidebar
+      // read would clean up. The archive query must leave it alone.
+      await writeJson(getWorkspaceWorktreesFilePath(SINGLE), {
+        version: 1,
+        worktrees: [
+          {
+            id: 'removed-row',
+            branchName: 'main',
+            createdAt: '2026-11-01T00:00:00.000Z',
+          },
+        ],
+      });
+      workspacePersistenceTestExports.markWorktreeRecentlyRemoved(
+        SINGLE,
+        'removed-row',
+        '2026-11-01T00:00:00.000Z',
+      );
+      async function snapshot(dir: string): Promise<Record<string, string>> {
+        const files: Record<string, string> = {};
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          const file = path.join(dir, entry.name);
+          if (entry.isDirectory()) Object.assign(files, await snapshot(file));
+          else if (entry.isFile()) files[file] = await readFile(file, 'base64');
+        }
+        return files;
+      }
+      if (migrated) {
+        const { writeChatArchivesFile } = await import('../chat-archives');
+        await writeChatArchivesFile(fixture.projectId, 'home', {
+          version: 1,
+          archived: [
+            {
+              archivedAt: '2026-11-02T00:00:00.000Z',
+              turnCount: 0,
+              tab: {
+                id: 'canonical-archive',
+                title: 'Canonical archive',
+                createdAt: '2026-11-01T00:00:00.000Z',
+                messages: [],
+              },
+            },
+          ],
+        });
+      }
+      const before = await snapshot(process.env.CANOPY_DATA_DIR ?? '');
+      await handlePortalArchivedWorkEntriesList(
+        fixture.command,
+        fixture.context,
+      );
+      expect(fixture.fail).not.toHaveBeenCalled();
+      const result = fixture.complete.mock.calls[0]?.[1];
+      if (!isRecord(result)) throw new Error('Archive reply is missing');
+      expect(result.nextOffset).toBeNull();
+      expect(result.items).toContainEqual(
+        expect.objectContaining({ id: 'legacy-000', legacyChat: true }),
+      );
+      if (migrated)
+        expect(result.items).toContainEqual(
+          expect.objectContaining({ id: 'canonical-archive' }),
+        );
+      expect(await snapshot(process.env.CANOPY_DATA_DIR ?? '')).toEqual(before);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'Portal returns the entire bounded archive before a concurrent purge can shift pages',
+    async () => {
+      const { handlePortalArchivedWorkEntriesList } =
+        await import('../../portal/adapters/standalone-chat-adapter');
+      const { getWorkspaceChatHistoryDir } = await import('../paths');
+      const fixture = await portalArchiveFixture(65);
+      await handlePortalArchivedWorkEntriesList(
+        fixture.command,
+        fixture.context,
+      );
+      expect(fixture.fail).not.toHaveBeenCalled();
+      const result = fixture.complete.mock.calls[0]?.[1];
+      if (!isRecord(result)) throw new Error('Archive reply is missing');
+      expect(result?.items).toHaveLength(65);
+      expect(result?.nextOffset).toBeNull();
+      await rm(getWorkspaceChatHistoryDir(fixture.projectId, 'legacy-000'), {
+        recursive: true,
+      });
+      for (let i = 0; i < 65; i++)
+        expect(result.items).toContainEqual(
+          expect.objectContaining({
+            id: `legacy-${String(i).padStart(3, '0')}`,
+          }),
+        );
+    },
+    TEST_TIMEOUT_MS,
+  );
 
   it(
     'enrolls a newly created worktree in PR polling without a sidebar sync',
@@ -354,6 +583,25 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
           worktreePath: getWorktreeDir(SINGLE, record.worktreeId),
           persistedWorktree: row,
         });
+        expect(
+          isArchivedContainerManifest({
+            version: 2,
+            kind: 'worktree',
+            id: row.id,
+            projectId: SINGLE,
+            workspaceType: 'single-repo',
+            name: 'Archived worktree',
+            createdAt: row.createdAt,
+            archivedAt: '2026-11-02T00:00:00.000Z',
+            retentionDays: 30,
+            expiresAt: '2099-12-01T00:00:00.000Z',
+            chatCount: 0,
+            archivedChatCount: 0,
+            executionCount: 0,
+            originalWorktree: row,
+            ...captured,
+          }),
+        ).toBe(true);
         const repository = captured.gitState.repositories[0];
         expect(repository).toMatchObject({
           comparisonBaseBranch: 'develop',
@@ -381,10 +629,7 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
       const { rename } = await import('node:fs/promises');
       const { reconcileGitPendingWorktrees } =
         await import('../worktree-boot-recovery');
-      await writeJson(getWorkspaceWorktreesFilePath(SINGLE), {
-        version: 1,
-        worktrees: [],
-      });
+      await writeWorkspaceWorktrees(SINGLE, []);
       const orphan = getWorktreeDir(SINGLE, 'startup-orphan');
       const held = getWorktreeDir(SINGLE, 'startup-held');
       await mkdir(path.dirname(orphan), { recursive: true });
@@ -411,12 +656,10 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
         '.startup-held.archive-quarantine',
       );
       await rename(held, quarantine);
-      const registeredBefore = git(singleRepo, [
-        'worktree',
-        'list',
-        '--porcelain',
-      ]);
-      expect(registeredBefore).toContain(orphan);
+      const canonicalOrphan = await canonicalizePossiblyMissingPath(orphan);
+      const canonicalHeld = await canonicalizePossiblyMissingPath(held);
+      const registeredBefore = await registeredWorktrees(singleRepo);
+      expect(registeredBefore).toContain(canonicalOrphan);
       await rm(orphan, { recursive: true });
       const workspaces = await import('../workspace-service');
       const listed = await workspaces.listWorkspaceItems();
@@ -432,13 +675,9 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
       } finally {
         onlySingle.mockRestore();
       }
-      const registeredAfter = git(singleRepo, [
-        'worktree',
-        'list',
-        '--porcelain',
-      ]);
-      expect(registeredAfter).not.toContain(`worktree ${orphan}\n`);
-      expect(registeredAfter).toContain(`worktree ${held}\n`);
+      const registeredAfter = await registeredWorktrees(singleRepo);
+      expect(registeredAfter).not.toContain(canonicalOrphan);
+      expect(registeredAfter).toContain(canonicalHeld);
       expect(git(singleRepo, ['branch', '--list', orphanBranch])).toContain(
         orphanBranch,
       );
@@ -451,6 +690,269 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     },
     TEST_TIMEOUT_MS,
   );
+  it.each(['absent', 'empty'] as const)(
+    'fences a %s list through the authority before startup Git repair without changing its bytes',
+    async (list) => {
+      const { config, recovery } = await startupOrphan(list);
+      const listPath = getWorkspaceWorktreesFilePath(SINGLE);
+      const before =
+        list === 'absent' ? null : await readFile(listPath, 'utf8');
+      expect(
+        await repairOrphanedWorktreeRegistration(SINGLE, config, recovery),
+      ).toBe(true);
+      expect(repairDecisions).toBe(1);
+      expect(await registeredWorktrees(singleRepo)).not.toContain(
+        await canonicalizePossiblyMissingPath(recovery.checkoutPath),
+      );
+      if (before === null)
+        await expect(readFile(listPath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      else expect(await readFile(listPath, 'utf8')).toBe(before);
+      expect(
+        git(singleRepo, ['branch', '--list', recovery.branchName]),
+      ).toContain(recovery.branchName);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    'listed',
+    'partial',
+    'unreadable',
+    'checkout',
+    'pending',
+    'archive-manifest',
+    'journal',
+  ] as const)(
+    'keeps an absent registration with %s ownership or incomplete evidence',
+    async (owner) => {
+      const { config, recovery } = await startupOrphan();
+      let release = (): void => {};
+      switch (owner) {
+        case 'listed':
+          await writeWorkspaceWorktrees(SINGLE, [
+            {
+              id: 'startup-repair',
+              branchName: recovery.branchName,
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+          break;
+        case 'partial':
+          await writeJson(getWorkspaceWorktreesFilePath(SINGLE), {
+            version: 1,
+            worktrees: [{ id: 'unreadable-row' }],
+          });
+          break;
+        case 'unreadable':
+          await writeFile(getWorkspaceWorktreesFilePath(SINGLE), '{');
+          break;
+        case 'checkout':
+          await mkdir(recovery.checkoutPath);
+          break;
+        case 'pending':
+          release = markWorkspaceTargetRemovalPending(SINGLE, 'startup-repair');
+          break;
+        case 'archive-manifest':
+          await writeJson(
+            getArchivedContainerManifestPath(SINGLE, 'startup-repair'),
+            {},
+          );
+          break;
+        case 'journal':
+          await mkdir(getW5DestructiveLifecycleDir(), { recursive: true });
+          await writeFile(
+            path.join(
+              getW5DestructiveLifecycleDir(),
+              '00000000-0000-0000-0000-000000000000.json',
+            ),
+            '{',
+          );
+          break;
+      }
+      try {
+        const repair = repairOrphanedWorktreeRegistration(
+          SINGLE,
+          config,
+          recovery,
+        );
+        if (owner === 'journal') await expect(repair).rejects.toThrow();
+        else expect(await repair).toBe(false);
+        expect(repairDecisions).toBe(0);
+        expect(await registeredWorktrees(singleRepo)).toContain(
+          await canonicalizePossiblyMissingPath(recovery.checkoutPath),
+        );
+        expect(
+          git(singleRepo, ['branch', '--list', recovery.branchName]),
+        ).toContain(recovery.branchName);
+      } finally {
+        release();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'does not remove a registration when daemon admission fails after readable inspection',
+    async () => {
+      const { config, recovery } = await startupOrphan();
+      repairCommitFailure = new W5AuthorityUnreachableError(
+        'refused',
+        'connect',
+      );
+      await expect(
+        repairOrphanedWorktreeRegistration(SINGLE, config, recovery),
+      ).rejects.toBe(repairCommitFailure);
+      expect(repairDecisions).toBe(1);
+      expect(await registeredWorktrees(singleRepo)).toContain(
+        await canonicalizePossiblyMissingPath(recovery.checkoutPath),
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it.each(['pending', 'checkout', 'quarantine'] as const)(
+    'rechecks %s exclusion after the daemon decision and before removing a registration',
+    async (owner) => {
+      const { config, recovery } = await startupOrphan();
+      let release = (): void => {};
+      afterRepairDecision = async (): Promise<void> => {
+        if (owner === 'pending')
+          release = markWorkspaceTargetRemovalPending(SINGLE, 'startup-repair');
+        else
+          await mkdir(
+            owner === 'checkout'
+              ? recovery.checkoutPath
+              : path.join(
+                  path.dirname(recovery.checkoutPath),
+                  '.startup-repair.archive-quarantine',
+                ),
+          );
+      };
+      try {
+        expect(
+          await repairOrphanedWorktreeRegistration(SINGLE, config, recovery),
+        ).toBe(false);
+        expect(repairDecisions).toBe(1);
+        expect(await registeredWorktrees(singleRepo)).toContain(
+          await canonicalizePossiblyMissingPath(recovery.checkoutPath),
+        );
+      } finally {
+        release();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'keeps both registrations when the inspected repository alias is retargeted after the daemon decision',
+    async () => {
+      await writeWorkspaceWorktrees(MULTI, []);
+      const checkout = getWorkspaceWorktreeRepoDir(
+        MULTI,
+        'startup-repair',
+        'api',
+      );
+      await mkdir(path.dirname(checkout), { recursive: true });
+      const branch = `rebound-${path.basename(process.env.CANOPY_DATA_DIR ?? '')}`;
+      for (const repository of [apiRepo, webRepo]) {
+        git(repository, ['worktree', 'add', '-b', branch, checkout, 'main']);
+        await rm(checkout, { recursive: true });
+      }
+      const alias = path.join(path.dirname(checkout), 'reference-alias');
+      await symlink(apiRepo, alias, 'junction');
+      const config: WorkspaceConfigFile = {
+        version: 1,
+        type: 'multi-repo',
+        repos: [{ id: 'api', name: 'api', repoPath: alias }],
+      };
+      const recovery = (
+        await inspectWorktreeCreationRecovery(MULTI, config)
+      ).find((entry) => entry.recovery?.phase === 'orphan-checkout')?.recovery;
+      if (!recovery) throw new Error('Missing aliased orphan evidence');
+      expect(recovery.repositoryPath).toBe(alias);
+      afterRepairDecision = async (): Promise<void> => {
+        await rm(alias);
+        await symlink(webRepo, alias, 'junction');
+      };
+      expect(
+        await repairOrphanedWorktreeRegistration(MULTI, config, recovery),
+      ).toBe(false);
+      expect(repairDecisions).toBe(1);
+      for (const repository of [apiRepo, webRepo]) {
+        expect(await registeredWorktrees(repository)).toContain(
+          await canonicalizePossiblyMissingPath(checkout),
+        );
+        expect(git(repository, ['branch', '--list', branch])).toContain(branch);
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'keeps changed registration identity when another repository retains matching orphan evidence',
+    async () => {
+      const { recovery } = await startupOrphan();
+      git(apiRepo, [
+        'worktree',
+        'add',
+        '-b',
+        recovery.branchName,
+        recovery.checkoutPath,
+        'main',
+      ]);
+      await rm(recovery.checkoutPath, { recursive: true });
+      const config: WorkspaceConfigFile = {
+        version: 1,
+        type: 'multi-repo',
+        repos: [
+          { id: 'app', name: 'app', repoPath: singleRepo },
+          { id: 'api', name: 'api', repoPath: apiRepo },
+        ],
+      };
+      const entries = path.join(
+        await worktreeGit.getGitCommonDir(singleRepo),
+        'worktrees',
+      );
+      let registration: string | undefined;
+      for (const entry of await readdir(entries)) {
+        const candidate = path.join(entries, entry);
+        if (
+          (await readFile(path.join(candidate, 'HEAD'), 'utf8')).trim() ===
+          `ref: refs/heads/${recovery.branchName}`
+        )
+          registration = candidate;
+      }
+      if (!registration) throw new Error('Missing source registration');
+      const selectedRegistration = registration;
+      const nextBranch = `${recovery.branchName}-replacement`;
+      git(singleRepo, ['branch', nextBranch, 'main']);
+      afterRepairDecision = (): Promise<void> => {
+        git(singleRepo, [
+          '--git-dir',
+          selectedRegistration,
+          'symbolic-ref',
+          'HEAD',
+          `refs/heads/${nextBranch}`,
+        ]);
+        return Promise.resolve();
+      };
+      expect(
+        await repairOrphanedWorktreeRegistration(SINGLE, config, recovery),
+      ).toBe(false);
+      expect(repairDecisions).toBe(1);
+      for (const repository of [singleRepo, apiRepo])
+        expect(await registeredWorktrees(repository)).toContain(
+          await canonicalizePossiblyMissingPath(recovery.checkoutPath),
+        );
+      expect(
+        await readFile(path.join(selectedRegistration, 'HEAD'), 'utf8'),
+      ).toBe(`ref: refs/heads/${nextBranch}\n`);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   (process.platform === 'win32' ? it.skip : it).each([
     ['single-repo', SINGLE, undefined, 'renderer'],
     ['multi-repo', MULTI, 'api', 'renderer'],
@@ -977,6 +1479,340 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     );
 
     it(
+      'fetches the Home default when the branch is missing from local and cached refs',
+      async () => {
+        const baseBranch = 'remote-default-only';
+        const expectedCommit = git(singleRepo, [
+          'rev-parse',
+          'refs/heads/develop',
+        ]);
+        git(singleRepo, [
+          'push',
+          'origin',
+          `refs/heads/develop:refs/heads/${baseBranch}`,
+        ]);
+        git(singleRepo, [
+          'update-ref',
+          '-d',
+          `refs/remotes/origin/${baseBranch}`,
+        ]);
+        try {
+          const { record } = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'new', branchName: 'feature/from-remote-default' },
+            base: { kind: 'branch', baseBranch },
+          });
+          expect(record.trackedBaseBranch).toBe(baseBranch);
+          expect(
+            git(getWorktreeDir(SINGLE, record.worktreeId), [
+              'rev-parse',
+              'HEAD',
+            ]),
+          ).toBe(expectedCommit);
+        } finally {
+          git(singleRepo, ['push', 'origin', '--delete', baseBranch]);
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it.each([
+      [
+        'remote branch shadowed by a tag',
+        'refs/remotes/origin/develop',
+        'develop',
+      ],
+      ['local branch shadowed by a tag', 'refs/heads/develop', 'develop'],
+      [
+        'local branch named like an origin ref',
+        'refs/heads/origin/develop',
+        'origin/develop',
+      ],
+    ])(
+      'creates from the exact %s',
+      async (_case, baseBranch, trackedBaseBranch) => {
+        const otherCommit = git(singleRepo, [
+          'commit-tree',
+          'main^{tree}',
+          '-m',
+          'Distinct collision commit',
+        ]);
+        git(singleRepo, ['tag', '-f', 'develop', otherCommit]);
+        git(singleRepo, ['tag', '-f', 'origin/develop', otherCommit]);
+        git(singleRepo, [
+          'update-ref',
+          'refs/heads/origin/develop',
+          otherCommit,
+        ]);
+        try {
+          const expectedCommit = git(singleRepo, ['rev-parse', baseBranch]);
+          const { record } = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: {
+              kind: 'new',
+              branchName: `feature/from-${baseBranch.replace(/\//g, '-')}`,
+            },
+            base: { kind: 'branch', baseBranch },
+            baseBranchIsQualified: true,
+          });
+          expect(record.trackedBaseBranch).toBe(trackedBaseBranch);
+          const checkout = getWorktreeDir(SINGLE, record.worktreeId);
+          expect(git(checkout, ['rev-parse', 'HEAD'])).toBe(expectedCommit);
+          if (baseBranch === 'refs/remotes/origin/develop') {
+            expect(
+              git(checkout, [
+                'rev-parse',
+                '--symbolic-full-name',
+                '@{upstream}',
+              ]),
+            ).toBe(baseBranch);
+          }
+        } finally {
+          git(singleRepo, ['tag', '-d', 'develop', 'origin/develop']);
+          git(singleRepo, ['update-ref', '-d', 'refs/heads/origin/develop']);
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    (process.platform === 'win32' ? it.skip : it).each([
+      ['worktree', 'failed-command'],
+      ['worktree', 'ref-advanced'],
+      ['branch-info', 'failed-command'],
+      ['branch-info', 'ref-advanced'],
+    ] as const)(
+      'reports retained Git state after native creation and a concurrent advance (%s, %s)',
+      async (operation, outcome) => {
+        const branch = `tracking-race-${operation}-${outcome}`;
+        const ref = `refs/heads/${branch}`;
+        const target = path.join(root, branch);
+        const executable = path.join(root, `${branch}-git`);
+        const marker = path.join(root, `${branch}-advanced`);
+        const before = git(singleRepo, [
+          'rev-parse',
+          'refs/remotes/origin/develop',
+        ]);
+        const originalHead = git(singleRepo, ['symbolic-ref', 'HEAD']);
+        const advanced = git(singleRepo, [
+          'commit-tree',
+          'main^{tree}',
+          '-p',
+          before,
+          '-m',
+          'Advance during tracking',
+        ]);
+        const previous = process.env.CANOPY_GIT_EXECUTABLE;
+        const configPattern = `^branch\\.${branch}\\.`;
+        git(singleRepo, [
+          'config',
+          `branch.${branch}.description`,
+          'Keep this description',
+        ]);
+        git(singleRepo, [
+          'config',
+          `branch.${branch}.remote`,
+          'previous-remote',
+        ]);
+        git(singleRepo, [
+          'config',
+          '--add',
+          `branch.${branch}.merge`,
+          'refs/heads/previous-base',
+        ]);
+        git(singleRepo, [
+          'config',
+          '--add',
+          `branch.${branch}.merge`,
+          'refs/heads/second-base',
+        ]);
+        await writeFile(
+          executable,
+          `#!/bin/sh
+case " $* " in
+  *" branch ${branch} refs/remotes/origin/develop "*|*" worktree add -b ${branch} "*)
+    if [ ! -f '${marker}' ]; then
+      touch '${marker}'
+      git "$@" || exit 16
+      if [ '${operation}' = 'worktree' ]; then
+        printf '%s\n' 'Keep these new files' > '${target}/keep-during-create.txt'
+      fi
+      git update-ref '${ref}' '${advanced}' '${before}' || exit 18
+      if [ '${outcome}' = 'failed-command' ]; then exit 17; fi
+      exit 0
+    fi
+    ;;
+esac
+exec git "$@"
+`,
+          { mode: 0o700 },
+        );
+        process.env.CANOPY_GIT_EXECUTABLE = executable;
+        try {
+          const create =
+            operation === 'worktree'
+              ? worktreeGit.createWorktreeFromStartPoint(
+                  singleRepo,
+                  target,
+                  branch,
+                  `${before}^{commit}`,
+                  {
+                    trackingRef: 'refs/remotes/origin/develop',
+                  },
+                )
+              : createGitBranch(
+                  worktreeGit.gitBranchWritePort(singleRepo),
+                  branch,
+                  'develop',
+                  {
+                    baseBranch: { branch: 'develop', remote: true },
+                  },
+                );
+          const failure = await create.catch((error: unknown) => error);
+          expect(failure).toBeInstanceOf(Error);
+          const expectedHead = operation === 'worktree' ? ref : originalHead;
+          const message = failure instanceof Error ? failure.message : '';
+          expect(message).toContain('Branch exists.');
+          expect(message).toContain(
+            `HEAD is on "${expectedHead.slice('refs/heads/'.length)}".`,
+          );
+          expect(message).toContain('Upstream is configured.');
+          if (operation === 'worktree') {
+            expect(message).toContain('Worktree exists.');
+            expect(
+              await readFile(
+                path.join(target, 'keep-during-create.txt'),
+                'utf8',
+              ),
+            ).toBe('Keep these new files\n');
+          }
+          expect(
+            git(singleRepo, ['for-each-ref', '--format=%(objectname)', ref]),
+          ).toBe(advanced);
+          expect(
+            git(singleRepo, ['config', '--get-regexp', configPattern]),
+          ).toContain('Keep this description');
+          expect(git(singleRepo, ['config', `branch.${branch}.remote`])).toBe(
+            'origin',
+          );
+          expect(
+            git(singleRepo, ['config', '--get-all', `branch.${branch}.merge`]),
+          ).toBe(
+            'refs/heads/previous-base\nrefs/heads/second-base\nrefs/heads/develop',
+          );
+          expect(git(singleRepo, ['symbolic-ref', 'HEAD'])).toBe(originalHead);
+          if (operation === 'worktree') {
+            expect(git(target, ['symbolic-ref', 'HEAD'])).toBe(ref);
+            expect(
+              git(singleRepo, ['worktree', 'list', '--porcelain']),
+            ).toContain(target);
+          }
+        } finally {
+          if (previous === undefined) delete process.env.CANOPY_GIT_EXECUTABLE;
+          else process.env.CANOPY_GIT_EXECUTABLE = previous;
+          if (
+            operation === 'worktree' &&
+            git(singleRepo, ['worktree', 'list', '--porcelain']).includes(
+              target,
+            )
+          )
+            git(singleRepo, ['worktree', 'remove', '--force', target]);
+          git(singleRepo, ['update-ref', '-d', ref]);
+          git(singleRepo, ['config', '--remove-section', `branch.${branch}`]);
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preserves Git upstream and rebase policy for an explicit remote branch',
+      async () => {
+        git(singleRepo, ['config', 'branch.autoSetupRebase', 'remote']);
+        try {
+          const { record } = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'new', branchName: 'feature/remote-rebase' },
+            base: { kind: 'branch', baseBranch: 'remote:develop' },
+          });
+          const checkout = getWorktreeDir(SINGLE, record.worktreeId);
+          expect(
+            git(checkout, ['rev-parse', '--symbolic-full-name', '@{upstream}']),
+          ).toBe('refs/remotes/origin/develop');
+          expect(
+            git(checkout, ['config', 'branch.feature/remote-rebase.rebase']),
+          ).toBe('true');
+        } finally {
+          git(singleRepo, ['config', '--unset', 'branch.autoSetupRebase']);
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'creates from a literal refs-prefixed branch name on legacy and Portal paths',
+      async () => {
+        const branchName = 'refs/heads/develop';
+        const fullRef = `refs/heads/${branchName}`;
+        const commit = git(singleRepo, [
+          'commit-tree',
+          'main^{tree}',
+          '-m',
+          'Literal branch commit',
+        ]);
+        git(singleRepo, ['update-ref', fullRef, commit]);
+        try {
+          const ordinaryCommit = git(singleRepo, ['rev-parse', 'develop']);
+          const cases = [
+            {
+              name: 'legacy',
+              baseBranch: branchName,
+              expectedBranch: branchName,
+              expectedCommit: commit,
+            },
+            {
+              name: 'portal-literal',
+              baseBranch: fullRef,
+              expectedBranch: branchName,
+              expectedCommit: commit,
+            },
+            {
+              name: 'portal-ordinary',
+              baseBranch: branchName,
+              expectedBranch: 'develop',
+              expectedCommit: ordinaryCommit,
+            },
+          ];
+          for (const {
+            name,
+            baseBranch,
+            expectedBranch,
+            expectedCommit,
+          } of cases) {
+            const { record } = await createWorktreeFromSelection({
+              workspaceId: SINGLE,
+              workspaceKind: 'single-repo',
+              branch: { kind: 'new', branchName: `feature/from-${name}` },
+              base: { kind: 'branch', baseBranch },
+              ...(name !== 'legacy' ? { baseBranchIsQualified: true } : {}),
+            });
+            expect(record.trackedBaseBranch).toBe(expectedBranch);
+            expect(
+              git(getWorktreeDir(SINGLE, record.worktreeId), [
+                'rev-parse',
+                'HEAD',
+              ]),
+            ).toBe(expectedCommit);
+          }
+        } finally {
+          git(singleRepo, ['update-ref', '-d', fullRef]);
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
       'checks out an existing branch and still tracks a base branch',
       async () => {
         git(singleRepo, ['branch', 'feature/existing', 'main']);
@@ -1406,6 +2242,7 @@ describeIdentityHost('desktop creation claim qualification', () => {
   let originalDataDir: string | undefined;
   let host: W5CommitLogHost;
   let store: W5CommitLogFileStore;
+  let closeStoreSide: (() => Promise<void>) | undefined;
   beforeEach(async () => {
     const desktopStore = await import('../w5-commit-log-file-store');
     const { startW5TestCommitLogHost } =
@@ -1417,10 +2254,17 @@ describeIdentityHost('desktop creation claim qualification', () => {
       root: path.dirname(getWorkspaceIndexFilePath()),
       logDirectory: path.join(dir, 'w5'),
     });
-    store = desktopStore.createW5CommitLogFileStore(() => host);
-    desktopStore.__setDesktopW5FileStoreForTests(store);
+    closeStoreSide = await installW5StoreSide('daemon', {
+      host,
+      root: path.dirname(getWorkspaceIndexFilePath()),
+      setDaemonOwned: () => undefined,
+    });
+    const installed = desktopStore.getW5IdentityStore();
+    if (!installed) throw new Error('Missing routed identity store');
+    store = installed;
   });
   afterEach(async () => {
+    await closeStoreSide?.();
     const desktopStore = await import('../w5-commit-log-file-store');
     desktopStore.__setDesktopW5FileStoreForTests(undefined);
     if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
@@ -1428,22 +2272,42 @@ describeIdentityHost('desktop creation claim qualification', () => {
     await host.shutdown();
     await rm(dir, { recursive: true, force: true });
   });
-  it.each(['con', 'a'.repeat(128), 'a'.repeat(129)])(
-    'creates desktop workspace %s through the commit log',
-    async (name) => {
+  it.each([
+    {
+      name: 'con',
+      id: 'con-2',
+      title:
+        'desktop workspace con is created and indexed with a safe allocated ID',
+    },
+    {
+      name: 'a'.repeat(128),
+      id: 'a'.repeat(128),
+      title: `creates desktop workspace ${'a'.repeat(128)} through the commit log`,
+    },
+    {
+      name: 'a'.repeat(129),
+      id: 'a'.repeat(128),
+      title: `desktop workspace ${'a'.repeat(129)} is created and indexed with a safe allocated ID`,
+    },
+  ])(
+    '$title',
+    async ({ name, id }) => {
       const { createAndPersistNewMultiRepoWorkspace } =
         await import('../workspace-service');
       const result = await createAndPersistNewMultiRepoWorkspace(name);
-      expect(result.id).toBe(name);
+      expect(result.id).toBe(id);
+      if (id !== name) expect(result.name).toBe(name);
       const index: unknown = JSON.parse(
         await readFile(getWorkspaceIndexFilePath(), 'utf8'),
       );
       expect(index).toHaveProperty(
         'workspaces',
-        expect.arrayContaining([expect.objectContaining({ id: name })]),
+        expect.arrayContaining([
+          expect.objectContaining(id === name ? { id } : { id, name }),
+        ]),
       );
       expect(
-        JSON.parse(await readFile(getWorkspaceConfigPath(name), 'utf8')),
+        JSON.parse(await readFile(getWorkspaceConfigPath(id), 'utf8')),
       ).toMatchObject({ type: 'multi-repo' });
       expect(await store.readReservations()).toEqual([]);
     },

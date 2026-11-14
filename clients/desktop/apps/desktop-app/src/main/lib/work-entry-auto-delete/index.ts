@@ -1,3 +1,10 @@
+import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
+import { AutoDeleteInspectionError } from '../auto-delete-inspection-error';
+import {
+  listAutoDeleteAttention,
+  subscribeAutoDeleteAttention,
+} from '../auto-delete-attention';
+import { formatWorktreeRecoveryReason } from '@canopy/protocol/portal/worktree-recovery';
 import {
   DEFAULT_WORK_ENTRY_AUTO_DELETE_TEARDOWN,
   DEFAULT_WORK_ENTRY_AUTO_DELETE_UNMERGED_BRANCH,
@@ -54,6 +61,8 @@ import {
   collectScheduledAutomationTargetKeys,
   workspaceTargetBusyReasons,
   removeWorkspaceTarget,
+  inspectAutoDeleteRecovery,
+  recordCurrentAutoDeleteAttention,
   emitAutoArchiveNotification,
   shouldTouchAutoArchiveTargetsForTerminalEvent,
   type AutoArchiveCandidate,
@@ -90,7 +99,16 @@ let requestEvaluation: (() => void) | undefined;
 const keyOf = (workspaceId: string, targetId: string): string =>
   `${workspaceId}\0${targetId}`;
 const describe = (candidate: AutoArchiveCandidate): string =>
-  `${candidate.worktree ? 'worktree' : 'work entry'} “${candidate.targetName}”`;
+  `${candidate.surface === 'single-repo' || candidate.surface === 'multi-repo' ? 'worktree' : 'work entry'} “${candidate.targetName}”`;
+
+async function readAttention(
+  ...args: Parameters<typeof listAutoDeleteAttention>
+): Promise<AutoDeleteAttention[]> {
+  return listAutoDeleteAttention(...args).catch((error: unknown) => {
+    logMainProcessWarn('Could not read Auto Delete attention', error);
+    return [];
+  });
+}
 
 function validateTarget(request: WorkEntryAutoDeleteDisarmRequest): void {
   validateId(request.workspaceId, 'workspaceId');
@@ -100,6 +118,7 @@ function validateTarget(request: WorkEntryAutoDeleteDisarmRequest): void {
 async function candidateFor(
   workspaceId: string,
   targetId: string,
+  expectedIdentity?: WorkEntryAutoDeleteArm['identity'],
 ): Promise<AutoArchiveCandidate | undefined> {
   const item = (await readAllSidebarItems()).items.find(
     (item) => item.id === workspaceId,
@@ -123,7 +142,24 @@ async function candidateFor(
   }
   if (!item) return undefined;
   const worktree = item.worktrees.find((row) => row.id === targetId);
-  if (!worktree) return undefined;
+  if (!worktree) {
+    if (!expectedIdentity) return undefined;
+    const [incident] = await readAttention([workspaceId], {
+      worktreeId: targetId,
+      createdAt: expectedIdentity.createdAt,
+    });
+    if (!incident || incident.kind !== 'worktree') return undefined;
+    return {
+      surface: item.type,
+      workspaceId,
+      workspaceName: item.name,
+      targetId,
+      targetName: incident.worktreeName,
+      createdAt: incident.createdAt,
+      inactivityDays: 0,
+      recoveryOnly: true,
+    };
+  }
   return {
     surface: item.type,
     workspaceId,
@@ -139,11 +175,16 @@ async function candidateFor(
 
 async function unavailableReason(
   candidate: AutoArchiveCandidate,
+  allowRecovery = false,
 ): Promise<string | undefined> {
   const { workspaceId, targetId, worktree } = candidate;
   if (isWorkspaceTargetRemovalPending(workspaceId, targetId))
     return 'the worktree is being removed';
-  if (worktree && (await readDestructiveRecovery(workspaceId, targetId)))
+  if (
+    !allowRecovery &&
+    worktree &&
+    (await readDestructiveRecovery(workspaceId, targetId))
+  )
     return 'the worktree has an unfinished removal or recovery operation';
   if (
     worktree?.healthIssue ||
@@ -182,8 +223,10 @@ function sameIdentity(
 ): boolean {
   return (
     candidate.createdAt === arm.identity.createdAt &&
-    candidate.worktree?.branchName === arm.identity.branchName &&
-    Boolean(candidate.worktree) === (arm.targetKind === 'worktree')
+    (candidate.recoveryOnly ||
+      candidate.worktree?.branchName === arm.identity.branchName) &&
+    (Boolean(candidate.worktree) || candidate.recoveryOnly === true) ===
+      (arm.targetKind === 'worktree')
   );
 }
 
@@ -241,12 +284,17 @@ async function pendingResumes(
 
 async function snapshot(
   workspaceId: string,
+  attention?: readonly AutoDeleteAttention[],
 ): Promise<WorkEntryAutoDeleteWorkspaceSnapshot> {
   const targets: Record<string, WorkEntryAutoDeleteRowState> = {};
   const arms = await readArms(workspaceId);
   const retained: WorkEntryAutoDeleteArm[] = [];
   for (const arm of arms) {
-    const candidate = await candidateFor(workspaceId, arm.targetId);
+    const candidate = await candidateFor(
+      workspaceId,
+      arm.targetId,
+      arm.identity,
+    );
     const key = keyOf(workspaceId, arm.targetId);
     if (!candidate || !sameIdentity(candidate, arm)) {
       armedKeys.delete(key);
@@ -274,7 +322,11 @@ async function snapshot(
     };
   }
   if (retained.length !== arms.length) await writeArms(workspaceId, retained);
-  return { workspaceId, targets };
+  return {
+    workspaceId,
+    targets,
+    attention: attention ?? (await readAttention([workspaceId])),
+  };
 }
 
 async function broadcast(workspaceId: string): Promise<void> {
@@ -421,11 +473,18 @@ export async function listWorkEntryAutoDeleteSnapshots(): Promise<
   WorkEntryAutoDeleteWorkspaceSnapshot[]
 > {
   return withArmWriter(async () => {
-    const ids = new Set(
-      (await readAllSidebarItems()).items.map((item) => item.id),
-    );
+    const items = (await readAllSidebarItems()).items;
+    const ids = new Set(items.map((item) => item.id));
     ids.add(APP_ADVISOR_PROJECT_ID);
-    return Promise.all([...ids].map(snapshot));
+    const attention = await readAttention([...ids]);
+    return Promise.all(
+      [...ids].map((id) =>
+        snapshot(
+          id,
+          attention.filter((row) => row.workspaceId === id),
+        ),
+      ),
+    );
   });
 }
 
@@ -559,7 +618,7 @@ async function evaluate(
   let candidate: AutoArchiveCandidate | undefined;
   let removalStarted = false;
   try {
-    candidate = await candidateFor(workspaceId, arm.targetId);
+    candidate = await candidateFor(workspaceId, arm.targetId, arm.identity);
     if (!candidate || !sameIdentity(candidate, arm)) {
       await replaceArm(workspaceId, undefined, arm.targetId);
       return;
@@ -567,7 +626,10 @@ async function evaluate(
     const recurring = await recurringAutomation(candidate);
     if (recurring) throw new Error(recurring);
     if (arm.state !== 'armed') return;
-    if ((await unavailableReason(candidate)) || (await waitingFor(candidate))) {
+    if (
+      (await unavailableReason(candidate, true)) ||
+      (await waitingFor(candidate))
+    ) {
       idleSince.delete(key);
       return;
     }
@@ -581,16 +643,50 @@ async function evaluate(
       workspaceId,
       arm.targetId,
       async () => {
-        const current = await candidateFor(workspaceId, arm.targetId);
+        const current = await candidateFor(
+          workspaceId,
+          arm.targetId,
+          arm.identity,
+        );
         if (!current || !sameIdentity(current, arm))
           throw new WorkspaceTargetAutoArchiveExcludedError(
             'The target identity changed',
           );
         const recurring = await recurringAutomation(current);
         if (recurring) throw new Error(recurring);
-        if ((await unavailableReason(current)) || (await waitingFor(current))) {
+        if (
+          (await unavailableReason(current, true)) ||
+          (await waitingFor(current))
+        ) {
           idleSince.delete(key);
           return;
+        }
+        if (
+          current.surface === 'single-repo' ||
+          current.surface === 'multi-repo'
+        ) {
+          const recovery = await inspectAutoDeleteRecovery(current, arm.mode);
+          if (
+            recovery &&
+            ((!recovery.actions.retry.eligible &&
+              !recovery.actions.finishArchive.eligible) ||
+              (current.recoveryOnly &&
+                !recovery.actions.finishArchive.eligible))
+          ) {
+            idleSince.delete(key);
+            const outcome = await recordCurrentAutoDeleteAttention(
+              current,
+              arm.mode,
+            );
+            if (outcome.status === 'attention' && outcome.fresh) {
+              await report(
+                workspaceId,
+                arm,
+                formatWorktreeRecoveryReason(outcome.recovery),
+              );
+            }
+            return;
+          }
         }
         const branch = await branchPolicy(current, arm);
         if (Array.isArray(branch)) {
@@ -629,18 +725,41 @@ async function evaluate(
         } finally {
           removingKeys.delete(key);
         }
+        if (result.status === 'attention') {
+          idleSince.delete(key);
+          // Keep the arm and its initiating chat; attention is not completion.
+          if (result.fresh)
+            await report(
+              workspaceId,
+              arm,
+              formatWorktreeRecoveryReason(result.recovery),
+            );
+          return;
+        }
+        // Keep an obsolete attempt quiet. The next authoritative projection prunes
+        // absent/replaced targets; a live target retains its user's arm.
+        if (result.status === 'obsolete') {
+          idleSince.delete(key);
+          return;
+        }
+        const success: { status: 'success'; warnings?: string[] } = result;
         await replaceArm(workspaceId, undefined, arm.targetId);
         emitAutoArchiveNotification({
           ...notificationCandidate(current),
           trigger: 'agent',
           mode: arm.mode,
           status: 'success',
-          warnings: result.warnings,
+          warnings: success.warnings,
         });
       },
     );
   } catch (error) {
     idleSince.delete(key);
+    if (error instanceof AutoDeleteInspectionError) {
+      logMainProcessWarn('Could not inspect Auto Delete recovery', error);
+      idleSince.set(key, Date.now());
+      return;
+    }
     if (
       error instanceof WorkspaceTargetAutoArchiveExcludedError ||
       error instanceof LiveDelegationsError
@@ -774,6 +893,11 @@ export function startWorkEntryAutoDeleteScheduler(): {
     if (armedKeys.size) run();
   };
   const unsubscribers = [
+    subscribeAutoDeleteAttention((workspaceId) => {
+      void withArmWriter(() => broadcast(workspaceId)).catch((error: unknown) =>
+        logMainProcessWarn('Could not publish Auto Delete attention', error),
+      );
+    }),
     subscribeAutoDeleteActivity((keys) => {
       let affected = false;
       for (const key of keys)

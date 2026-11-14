@@ -18,6 +18,7 @@ import {
   HOSTED_CONTROLLER_LIMITS,
   PAIR_DEVICE_LABEL,
   deviceKindLabel,
+  isRemoteControllerLive,
   remoteHostDotTone,
   remoteHostStatus,
   type RemoteControlHostConnection,
@@ -124,11 +125,6 @@ type PendingRemoval =
       readonly device: RemoteControlControllerRow;
     };
 
-/** A hosted root is live while any delegated session is (CAN-5985). */
-function controllerLive(controller: RemoteControlControllerRow): boolean {
-  return controller.connected || controller.hostedSessions.length > 0;
-}
-
 /**
  * The confirmation button repeats the title's verb and names the device's
  * kind (docs/ux-writing/confirmations.md); a computer you control is always
@@ -234,7 +230,7 @@ export function RemoteControlDevices({
                   label={
                     <span className="inline-flex min-w-0 items-center gap-2">
                       <span className="truncate">{controller.name}</span>
-                      {controllerLive(controller) ? (
+                      {isRemoteControllerLive(controller) ? (
                         <Badge
                           tone="success"
                           data-testid={`${testIdPrefix}-controller-connected-${controller.deviceId}`}

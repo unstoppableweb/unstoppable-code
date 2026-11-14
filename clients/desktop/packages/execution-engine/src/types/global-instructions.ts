@@ -14,6 +14,7 @@ export const GLOBAL_INSTRUCTION_HARNESSES = [
   'ollama',
   'cursor',
   'copilot',
+  'antigravity',
   'opencode',
 ] as const;
 

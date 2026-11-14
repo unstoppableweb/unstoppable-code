@@ -123,6 +123,7 @@ export function LaunchAtLoginSection(): JSX.Element | null {
         </Notice>
       )}
       <DesktopErrorBanner
+        errorSource="launch-at-login-error"
         className=""
         error={
           error === null

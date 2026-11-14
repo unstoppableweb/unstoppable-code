@@ -140,7 +140,11 @@ export function MetricsBreakdownPanel({
         </div>
       </div>
       {error ? (
-        <ErrorBanner error={error} className="" />
+        <ErrorBanner
+          errorSource="metrics-breakdown-panel"
+          error={error}
+          className=""
+        />
       ) : response === null ? (
         <DelayedLoadingPlaceholder slowNote="Still loading breakdown…">
           <Skeleton

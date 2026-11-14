@@ -1,5 +1,5 @@
 import { withW5RepositoryLocks } from './w5-repository-locks';
-import { getWorkspaceConfigPath, getWorkspaceIndexFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import type { HookOverrides } from '@canopy/desktop-shared/hooks';
 import type { WorkspaceOwnerBinding } from '@canopy/desktop-shared/types';
@@ -290,8 +290,8 @@ async function releaseAdmittedAdoptedWorkspace(
     const decided = { released: true };
     await withW5RepositoryLocks(
       [
-        { kind: 'index', path: getWorkspaceIndexFilePath() },
-        { kind: 'manifest', path: getWorkspaceConfigPath(workspaceId) },
+        { kind: 'index', path: w5RecordReadPaths.index() },
+        { kind: 'manifest', path: w5RecordReadPaths.manifest(workspaceId) },
       ],
       async (): Promise<void> => {
         try {

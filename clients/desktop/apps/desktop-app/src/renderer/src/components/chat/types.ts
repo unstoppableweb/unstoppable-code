@@ -100,6 +100,8 @@ export interface ActiveComposerView {
   status: ChatTab['status'];
   error: ChatTab['error'];
   readOnly?: boolean;
+  /** Where an imported chat came from; its read-only notice names it. */
+  importedFrom?: ChatTab['importedFrom'];
   planMode: boolean;
   /** Effective tool-approval mode for this tab's `ApprovalModePicker`. Undefined until the tab-creation/send-time default resolution lands. */
   approvalMode?: ApprovalMode;
@@ -159,7 +161,13 @@ export interface ActiveComposerView {
   queuedMessageCount?: number;
   /** A transient queue hold, projected without exposing prompt content. */
   queuedCreditHeld?: boolean;
-  lockedHarness?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  lockedHarness?:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
   /** Selected repo for multi-repo workspace cwd resolution. */
   selectedRepoId?: string;
   /**
@@ -331,6 +339,7 @@ export function toActiveComposerView(
     status: tab.status,
     error: tab.error,
     ...(tab.readOnly ? { readOnly: true } : {}),
+    ...(tab.importedFrom ? { importedFrom: tab.importedFrom } : {}),
     planMode: tab.planMode,
     ...(tab.approvalMode ? { approvalMode: tab.approvalMode } : {}),
     proposalMode: tab.proposalMode,

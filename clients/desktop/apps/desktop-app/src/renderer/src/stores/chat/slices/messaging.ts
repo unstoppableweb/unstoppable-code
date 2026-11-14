@@ -28,10 +28,14 @@ import {
   withoutSendingLease,
 } from '../canonical-changes';
 import { tagStatusWrite } from '../runtime-divergence';
+import {
+  armCloudStopRetry,
+  cloudStopPromptId,
+  presentedCloudStop,
+} from '../cloud-stop';
 import { chatStoreApi } from '../store-ref';
 import type {
   ChatActivePlanContext,
-  ChatCancelResult,
   ChatResumeStoppedTurnResult,
   ChatSendAuthRefusal,
   PendingSystemInstruction,
@@ -158,6 +162,7 @@ import {
   rejectUndispatchedProvisionalFirstSend,
 } from '../provisional-first-send';
 import {
+  type ChatBackendCancelResult,
   chatBackendFor,
   ignoreUnavailable,
   isCapabilityUnavailable,
@@ -167,6 +172,8 @@ import { taskCreationSettled } from '../web-core/task-creations';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
 import { WebCoreSendRefusedError } from '../web-core/send-refusal';
+import { useWebCoreStartingTurnStore } from '../web-core/starting-turns';
+import { liveReplyKey } from '../web-core/live-replies';
 
 /**
  * Whether a cloud send failed because the web core refused it outright, or
@@ -187,7 +194,13 @@ const ACCEPTED_AGENT_SENDER_UNREACHABLE_MESSAGE =
 // Stop can arrive while the renderer is preparing a send, before main has a
 // provider turn to cancel. Keep that intent with the individual preparation;
 // a later send or canonical terminal may clear the tab's presentation flags.
-const pendingNativeSends = new Map<string, Set<{ cancelled: boolean }>>();
+// `dispatched` marks a send the host has taken: a cloud chat's backend owns
+// its Stop from then on (CAN-6592).
+interface NativeSendPreparation {
+  cancelled: boolean;
+  dispatched: boolean;
+}
+const pendingNativeSends = new Map<string, Set<NativeSendPreparation>>();
 function nativeSendKey(target: {
   projectId: string;
   worktreeId: string;
@@ -2084,11 +2097,23 @@ export const createMessagingSlice: StateCreator<
     // the legacy immediate path below only when no delivery row owns the input
     // window; once older rows are queued, feedback joins the queue to preserve
     // FIFO order. A send still awaiting acknowledgement (sending lease) counts
-    // as a running turn, as its optimistic `streaming` status once did.
+    // as a running turn, as its optimistic `streaming` status once did. So
+    // does a cloud turn that may still be starting, which no runtime names
+    // running yet: a send behind it waits in the web core's queue (CAN-6733).
+    const cloudTurnStarting =
+      isWebCoreScope(sel.projectId) &&
+      useWebCoreStartingTurnStore.getState().byChat[
+        liveReplyKey({
+          projectId: sel.projectId,
+          worktreeId: sel.worktreeId,
+          chatId,
+        })
+      ] === true;
     if (
       hasPendingInputDelivery ||
       ((tab.status === 'streaming' ||
-        hasPendingSendingLease(tab, Date.now())) &&
+        hasPendingSendingLease(tab, Date.now()) ||
+        cloudTurnStarting) &&
         (!tab.pendingPlanExit || tab.queuedMessages.length > 0))
     ) {
       const userMessageId = options?.userMessageId ?? nextMsgId();
@@ -2687,6 +2712,7 @@ export const createMessagingSlice: StateCreator<
           executionHarness: executionHarnessForMessage,
           sendRefusal: undefined,
           cancelRequestedByUser: undefined,
+          cloudStop: undefined,
           // A new turn supersedes any stopped turn's Resume offer (CAN-3137).
           stoppedTurnResume: undefined,
           lastEventAt: now,
@@ -2834,8 +2860,11 @@ export const createMessagingSlice: StateCreator<
     const preparationKey = nativeSendKey({ ...sel, chatId });
     const preparations =
       pendingNativeSends.get(preparationKey) ??
-      new Set<{ cancelled: boolean }>();
-    const preparation = { cancelled: false };
+      new Set<NativeSendPreparation>();
+    const preparation: NativeSendPreparation = {
+      cancelled: false,
+      dispatched: false,
+    };
     preparations.add(preparation);
     pendingNativeSends.set(preparationKey, preparations);
     let routingStartedAt: number | undefined;
@@ -3046,6 +3075,7 @@ export const createMessagingSlice: StateCreator<
       }
 
       hostDispatchStarted = true;
+      preparation.dispatched = true;
       const sendResult = await chatBackendFor(sel).chat.sendMessage({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
@@ -3751,9 +3781,35 @@ export const createMessagingSlice: StateCreator<
     const context = getWorktreeChatContext(get(), target);
     if (!context) return;
     const { selection: sel, chatId } = context;
+    const cloud = isWebCoreScope(sel.projectId);
+    // A cloud Stop already sent is sent again only once it has waited a
+    // while for its turn to end (CAN-6592).
+    if (cloud && presentedCloudStop(context.activeTab) === 'stopping') return;
+    // Each press at the same turn is a new attempt: a retry sends its own
+    // cancel.
+    const previousStop = context.activeTab?.cloudStop;
+    const pressedPromptId =
+      context.activeTab === undefined
+        ? undefined
+        : cloudStopPromptId(context.activeTab);
+    const stopAttempt =
+      previousStop !== undefined &&
+      previousStop.promptMessageId === pressedPromptId
+        ? (previousStop.attempt ?? 1) + 1
+        : 1;
+    // A Stop's reply speaks only for its own press: a later attempt, or a
+    // new turn, has replaced it (CAN-6592).
+    const ownsStop = (tab: ChatTab): boolean =>
+      tab.cloudStop?.attempt === stopAttempt &&
+      tab.cloudStop.promptMessageId === pressedPromptId;
     pendingNativeSends
       .get(nativeSendKey({ ...sel, chatId }))
       ?.forEach((preparation) => {
+        // A cloud send its backend has taken is the backend's to stop: it
+        // cancels the turn by the send's receipt, so the send is never
+        // also withdrawn here (CAN-6592). Before dispatch, the send is
+        // withdrawn (CAN-6335).
+        if (cloud && preparation.dispatched) return;
         preparation.cancelled = true;
       });
 
@@ -3761,6 +3817,16 @@ export const createMessagingSlice: StateCreator<
       updateCapturedChatTab(state, context, (tab) => ({
         ...tab,
         cancelRequestedByUser: true,
+        // A cloud turn reads Stopping… until it ends (CAN-6592).
+        ...(cloud
+          ? {
+              cloudStop: {
+                phase: 'stopping' as const,
+                promptMessageId: pressedPromptId,
+                attempt: stopAttempt,
+              },
+            }
+          : {}),
         ignoreNextCancellationTerminal:
           tab.forceQueuedMessageCancelPending === true
             ? tab.ignoreNextCancellationTerminal
@@ -3771,6 +3837,7 @@ export const createMessagingSlice: StateCreator<
         autoArchiveToggleVisible: undefined,
       })),
     );
+    if (cloud) armCloudStopRetry(context.key, chatId);
 
     const reloadMarker = context.activeTab?.deferredToolsReload;
     if (reloadMarker) {
@@ -3783,25 +3850,57 @@ export const createMessagingSlice: StateCreator<
       );
     }
 
-    let cancelResult: ChatCancelResult | undefined;
+    let cancelResult: ChatBackendCancelResult | undefined;
     try {
       cancelResult = await chatBackendFor(sel).chat.cancel({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
         chatId,
+        ...(cloud ? { attempt: stopAttempt } : {}),
       });
     } catch (error: unknown) {
       set((state) =>
-        updateCapturedChatTab(state, context, (tab) => ({
-          ...tab,
-          cancelRequestedByUser: undefined,
-          forceQueuedMessageCancelPending: undefined,
-          ignoreNextCancellationTerminal: undefined,
-        })),
+        updateCapturedChatTab(state, context, (tab) => {
+          const next: ChatTab = {
+            ...tab,
+            cancelRequestedByUser: undefined,
+            forceQueuedMessageCancelPending: undefined,
+            ignoreNextCancellationTerminal: undefined,
+          };
+          if (ownsStop(tab)) delete next.cloudStop;
+          return next;
+        }),
       );
       // An authority that serves no stop leaves the turn as it was.
       if (isCapabilityUnavailable(error)) return;
       throw error;
+    }
+
+    if (cloud && cancelResult?.outcome !== 'stop_requested') {
+      const notStopped = cancelResult?.outcome === 'not_stopped';
+      set((state) =>
+        updateCapturedChatTab(state, context, (tab) => {
+          if (!ownsStop(tab)) return tab;
+          if (!notStopped) {
+            // Nothing runs to stop: the turn ended, or its send was withdrawn.
+            const next: ChatTab = { ...tab };
+            delete next.cloudStop;
+            return next;
+          }
+          // The turn may still run and nothing could name it: Stop stays,
+          // and the composer says so.
+          return {
+            ...tab,
+            cancelRequestedByUser: undefined,
+            cloudStop: {
+              phase: 'not_stopped',
+              promptMessageId: pressedPromptId,
+              attempt: stopAttempt,
+            },
+          };
+        }),
+      );
+      if (notStopped) return;
     }
 
     // Main reports whether the stopped turn can be resumed (CAN-3137). Any

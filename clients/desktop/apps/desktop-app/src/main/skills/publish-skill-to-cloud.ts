@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   CatalogHostRefusedError,
   type CatalogPublication,
+  type CatalogPublishOptions,
   type CatalogPublishPackage,
 } from '@canopy/core-runtime/node/catalog';
 import {
@@ -19,7 +20,12 @@ import {
   type CanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
 import type { SkillAnalysisSubject } from '../pipelines/pipeline-package-service';
-import { ShareOperationError } from '../sharing/share-operation-result';
+import {
+  PackageAnalysisBlockedError,
+  ShareOperationError,
+} from '../sharing/share-operation-result';
+import type { CloudCopyAudience } from '@canopy/desktop-shared/types';
+import { readLinkedCopyAudience } from '../cloud-copy/audience';
 import { CUSTOM_SOURCE_ID } from './paths';
 
 /** What a skill publish calls; tests inject fakes. Defaults load lazily. */
@@ -68,13 +74,23 @@ export interface PublishSkillDeps {
       capabilityPackage: PipelinePackageRef;
       committedPackageUploadId: string;
       expectedSourceSha256: string;
+      expectedAudience: CloudCopyAudience;
     },
     context: CanopyCloudCredentialContext,
   ) => Promise<SharedSkillDetail>;
   writeLink: (localId: string, remote: ShareRemoteMetadata) => Promise<void>;
+  /**
+   * Who sees the linked copy in the cloud now, from its own record; null
+   * when it no longer exists for this account.
+   */
+  linkedCopyAudience: (
+    skillId: string,
+    context: CanopyCloudCredentialContext,
+  ) => Promise<CloudCopyAudience | null>;
 }
 
 const defaultDeps: PublishSkillDeps = {
+  linkedCopyAudience: readLinkedCopyAudience,
   loadSkills: async () => {
     const { loadSkills } = await import('./skill-service');
     const { filterStoredSkillContexts } =
@@ -137,14 +153,23 @@ const sha256 = (text: string): string =>
   createHash('sha256').update(text).digest('hex');
 
 function cloudRefusal(error: unknown): CatalogHostRefusedError {
+  if (error instanceof CatalogHostRefusedError) return error;
   return new CatalogHostRefusedError(
-    // The package commit and the share client refuse an expired, blocked or
-    // outdated analysis, or a SKILL.md edited since the check, locally.
-    error instanceof ShareOperationError && error.kind === 'dependency-review'
-      ? 'publish-package-stale'
-      : error instanceof CanopyCloudClientError && error.status === 409
-        ? 'publish-revision-moved'
-        : 'publish-remote-unavailable',
+    // The package commit and the share client refuse a blocked analysis,
+    // and an expired or outdated one or a SKILL.md edited since the check,
+    // locally.
+    error instanceof PackageAnalysisBlockedError
+      ? 'publish-package-blocked'
+      : error instanceof ShareOperationError &&
+          error.kind === 'dependency-review'
+        ? 'publish-package-stale'
+        : error instanceof CanopyCloudClientError &&
+            error.status === 409 &&
+            error.serverCode === 'audience_changed'
+          ? 'publish-package-stale'
+          : error instanceof CanopyCloudClientError && error.status === 409
+            ? 'publish-revision-moved'
+            : 'publish-remote-unavailable',
     error,
   );
 }
@@ -161,6 +186,7 @@ export async function publishSkillToCloud(
   entryId: string,
   pkg: CatalogPublishPackage,
   deps: PublishSkillDeps = defaultDeps,
+  options: CatalogPublishOptions = {},
 ): Promise<CatalogPublication> {
   if (!entryId.startsWith(CUSTOM_PREFIX))
     throw new CatalogHostRefusedError('publish-source-unsupported');
@@ -178,9 +204,16 @@ export async function publishSkillToCloud(
   if (
     analysed?.sourceId !== CUSTOM_SOURCE_ID ||
     analysed.skillName !== skillName ||
-    analysed.contentHash !== checked
+    analysed.contentHash !== checked ||
+    // Only a cloud copy's review withholds what a share would block on.
+    !analysed.cloudCopy ||
+    // And only the consent dialog's own, for the account it was issued for.
+    analysed.accountId === null ||
+    analysed.accountId !== options.expectedAccountId ||
+    analysed.audience === null
   )
     throw new CatalogHostRefusedError('publish-package-stale');
+  const consentedAudience = analysed.audience;
 
   let accountId: string;
   let detail: SharedSkillDetail;
@@ -189,12 +222,29 @@ export async function publishSkillToCloud(
     // mid-publish cannot split the copy and its link across accounts.
     const credentials = await deps.credentials();
     accountId = credentials.accountId;
-    const committed = await deps.commitPackage(pkg, credentials.context);
+    // Nothing uploads for an account the person didn't choose.
+    if (
+      options.expectedAccountId !== undefined &&
+      accountId !== options.expectedAccountId
+    )
+      throw new CatalogHostRefusedError('publish-account-mismatch');
     // Only an author link of this account is a copy to update.
     const link =
       skill.remote !== undefined && skill.remote.accountId === accountId
         ? skill.remote
         : undefined;
+    // An update reaches whoever sees the linked copy now. That must be the
+    // audience the consent dialog named; a copy shared more widely since
+    // (or never shown) uploads nothing, and the dialog asks again.
+    if (link !== undefined) {
+      const now = await deps.linkedCopyAudience(
+        link.remoteId,
+        credentials.context,
+      );
+      if (now !== null && now !== consentedAudience)
+        throw new CatalogHostRefusedError('publish-package-stale');
+    }
+    const committed = await deps.commitPackage(pkg, credentials.context);
     const create = (): Promise<SharedSkillDetail> =>
       deps.createSharedSkill(
         {
@@ -218,6 +268,9 @@ export async function publishSkillToCloud(
                 expectedContentHash: link.contentHash,
                 ...committed,
                 expectedSourceSha256: checked,
+                // The cloud checks this as it writes, closing the gap
+                // after the read above.
+                expectedAudience: consentedAudience,
               },
               credentials.context,
             );

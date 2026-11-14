@@ -32,7 +32,7 @@ import {
   type ProjectPluginDefaultsReconcileBound,
 } from '../plugins/project-plugin-defaults-cache';
 import { logMainProcessWarn } from './main-process-logging';
-import { getWorkspaceConfigPath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import { validateId } from './validation';
 import {
   checkW5ExpectedRevision,
@@ -510,7 +510,7 @@ async function pruneMarketplace(
         } finally {
           await afterW5Commit(() =>
             projectPluginDefaultsWritten({
-              configPath: getWorkspaceConfigPath(workspaceId),
+              configPath: w5RecordReadPaths.manifest(workspaceId),
               workspaceId,
               layerChanged: projectPluginLayerChanged(before, after),
             }),
@@ -672,12 +672,13 @@ async function reconcilePluginDefaults(
   let loadedAt = 0;
   try {
     const result = await reconcileProjectPluginDefaults({
-      configPath: getWorkspaceConfigPath(workspaceId),
+      configPath: w5RecordReadPaths.manifest(workspaceId),
       workspaceId,
       bound,
       serialize: (work) =>
         getWorkspaceManifestRepository().serialize(workspaceId, work),
-      committing: () => w5CommitsSettling(getWorkspaceConfigPath(workspaceId)),
+      committing: () =>
+        w5CommitsSettling(w5RecordReadPaths.manifest(workspaceId)),
       // The read `readProjectPluginDefaults` serves.
       load: async () => {
         const read = composeRead(workspaceId, reader);
@@ -700,7 +701,7 @@ async function reconcilePluginDefaults(
     if (result === 'exhausted') return 'exhausted';
   } catch (error) {
     projectPluginDefaultsWritten({
-      configPath: getWorkspaceConfigPath(workspaceId),
+      configPath: w5RecordReadPaths.manifest(workspaceId),
       workspaceId,
       layerChanged: false,
     });
@@ -852,7 +853,10 @@ async function runKeyedPluginsChange(input: {
           {
             ...options,
             locks: [
-              { kind: 'manifest', path: getWorkspaceConfigPath(workspaceId) },
+              {
+                kind: 'manifest',
+                path: w5RecordReadPaths.manifest(workspaceId),
+              },
             ],
             expectedRevisions: w5ExpectedRevision(resource, expectedRevision),
           },
@@ -1060,7 +1064,7 @@ function settleDecided(
     !owedReconciles.has(workspaceId) &&
     !unkeyedOutcomeUnknown.has(workspaceId)
   )
-    projectPluginLayerSettled(getWorkspaceConfigPath(workspaceId));
+    projectPluginLayerSettled(w5RecordReadPaths.manifest(workspaceId));
 }
 
 /**
@@ -1069,7 +1073,7 @@ function settleDecided(
  */
 function markLayerUnsettled(workspaceId: string): void {
   projectPluginLayerUnsettled(
-    getWorkspaceConfigPath(workspaceId),
+    w5RecordReadPaths.manifest(workspaceId),
     () => reconcileInBackground(workspaceId, null),
     () => retryHandOffs(workspaceId),
   );

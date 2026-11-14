@@ -7,6 +7,10 @@ import type {
 } from '../agents/delegation/record-reader-contract';
 import type { DelegationRegistryOperations } from '../lib/chat-delta-journal/delegation-registry-api';
 import { checkWatcherDeliveryIngress } from './active-chat-input';
+import {
+  applyProviderSwitchToSession,
+  resetSessionForHarnessChange,
+} from './chat-provider-sessions';
 import { assertUntrustedChatInput } from '../agent-messaging/untrusted-input';
 import { automationDispatchRequestFields } from '../agent-messaging/automation-dispatch';
 import {
@@ -101,7 +105,7 @@ import {
   recordProviderEventApplied,
   recordProviderEventIngested,
 } from '@canopy/desktop-shared/node/work-counters';
-import { searchTranscriptMessages } from '../lib/chat-transcript-search';
+import { searchTranscriptMessages } from '@canopy/agent-transcript/lib/transcript-search';
 import type {
   ChatStateV2Backend as ChatStateV2BackendType,
   ChildStreamContentRange,
@@ -203,6 +207,7 @@ import type {
   ChatTabsFile,
   ChangedFileInfo,
   McpQuestionAnswer,
+  ModelHarness,
   PersistedChatMessage,
   PersistedCommandReceipt,
   PortalChatSendIdentity,
@@ -236,6 +241,7 @@ import { applyMutation } from './chat-state-reducer';
 import {
   APP_ADVISOR_PROJECT_ID,
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+  canSwitchProviderInPlace,
   CODE_REVIEW_CHAT_PROJECT_ID,
   FAIL_CLOSED_APPROVAL_MODE,
   getEffectiveModelContextWindow,
@@ -412,6 +418,7 @@ export interface ProviderEventInput extends ChatScopeKey {
     | 'ollama'
     | 'cursor'
     | 'copilot'
+    | 'antigravity'
     | 'opencode';
   mutationId?: string;
   source?: 'provider' | 'terminal';
@@ -589,7 +596,7 @@ export interface ChatStateServiceOptions {
    * `resolveSendModelPin`.
    */
   resolveSendModel?: (
-    target: ChatScopeKey,
+    target: ChatScopeKey & { chatId?: string; executionHarness?: ModelHarness },
     stored: string | undefined,
     requested: string | undefined,
   ) => Promise<string | undefined>;
@@ -1092,18 +1099,20 @@ function tabWithSendModel(
     delete next.executionHarness;
     delete next.executionHarnessExplicitlyChosen;
   }
-  if (
-    providerChanged ||
-    (tab.model !== model &&
-      currentHarness !== undefined &&
-      targetHarness !== undefined &&
-      currentHarness !== targetHarness)
+  if (providerChanged && providerType !== undefined) {
+    applyProviderSwitchToSession(
+      tab,
+      next,
+      persistedTabProvider(tab),
+      providerType,
+    );
+  } else if (
+    tab.model !== model &&
+    currentHarness !== undefined &&
+    targetHarness !== undefined &&
+    currentHarness !== targetHarness
   ) {
-    delete next.sdkSessionId;
-    delete next.globalInstructionsSnapshot;
-    delete next.codexReconstructionSeedId;
-    delete next.claudeForkSessionOnNextSend;
-    delete next.claudeTerminal;
+    resetSessionForHarnessChange(tab, next);
     delete next.executionHarness;
     delete next.executionHarnessExplicitlyChosen;
   }
@@ -1111,7 +1120,9 @@ function tabWithSendModel(
     providerType === 'cursor' ||
     targetHarness === 'cursor' ||
     providerType === 'copilot' ||
-    targetHarness === 'copilot'
+    providerType === 'antigravity' ||
+    targetHarness === 'copilot' ||
+    targetHarness === 'antigravity'
   ) {
     delete next.aiCreditsRouting;
     delete next.subscriptionBillingOverride;
@@ -2592,6 +2603,11 @@ function runtimeForEvent(
     if (!effectiveTurnUserMessageId || turnHasVisibleOutput !== false) {
       return null;
     }
+    // The Claude CLI ran this command itself and never called the model, so
+    // no output is missing: `/clear` prints nothing (CAN-6416).
+    if (data.type === 'result' && typeof data.local_command === 'string') {
+      return null;
+    }
     const sessionId =
       typeof data.session_id === 'string'
         ? data.session_id
@@ -3705,7 +3721,7 @@ export class ChatStateService implements ChatStateCommandPort {
         // import the chat-state singleton.
         const { resolveSendModelPin } =
           await import('../agents/agent-default-model');
-        return resolveSendModelPin(target.projectId, stored, requested);
+        return resolveSendModelPin(target.projectId, stored, requested, target);
       });
     this.withPlanReviewRevision =
       options.withPlanReviewRevision ??
@@ -4061,6 +4077,39 @@ export class ChatStateService implements ChatStateCommandPort {
     } catch {
       return false;
     }
+    const refusal = current.tabsFile.tabs.find(
+      ({ id }) => id === chatId,
+    )?.aiCreditsNoBillingSource;
+    const previousTurn = current.runtimeByChatId[chatId]?.turn;
+    if (
+      refusal &&
+      !mutations.some(
+        (mutation) =>
+          mutation.type === 'tab.metadata_patched' &&
+          mutation.tabId === chatId &&
+          mutation.patch.aiCreditsNoBillingSource !== undefined,
+      ) &&
+      snapshot.turnRecords?.some(
+        (turn) =>
+          turn.origin === 'user' &&
+          turn.userMessageId !== undefined &&
+          turn.startedAtMs > refusal.detectedAt &&
+          !previousTurn?.endedTurnIds.includes(turn.id) &&
+          (previousTurn?.current?.id !== turn.id ||
+            previousTurn.current.userMessageId !== turn.userMessageId) &&
+          snapshot.lifecycle?.some(
+            (owner) =>
+              owner.turnId === turn.id &&
+              owner.transition !== 'end' &&
+              owner.inputIds[0] === turn.userMessageId,
+          ),
+      )
+    )
+      mutations.push({
+        type: 'tab.metadata_patched',
+        tabId: chatId,
+        patch: { aiCreditsNoBillingSource: null },
+      });
     recordSnapshotTurnEnds(mutations, current, chatId, snapshot, this.now());
     settleAutoArchiveOwner(mutations, current, chatId, snapshot);
     const ownership = getChatTurnOwnership().getSnapshot(snapshot.scope);
@@ -4681,6 +4730,7 @@ export class ChatStateService implements ChatStateCommandPort {
         provider !== 'codex' &&
         provider !== 'cursor' &&
         provider !== 'copilot' &&
+        provider !== 'antigravity' &&
         provider !== 'opencode'
       ) {
         continue;
@@ -7516,6 +7566,12 @@ export class ChatStateService implements ChatStateCommandPort {
         delete metadataTab.forkedFrom.resumePointRequired;
       }
     }
+    // Output from the active provider advances the conversation past what
+    // every parked session holds, including a hidden continuation that adds
+    // no user turn, so none of them can be resumed any more (CAN-6445).
+    if (metadataTab.providerSessions !== undefined && turnHasVisibleOutput) {
+      delete metadataTab.providerSessions;
+    }
     const currentRuntime = current.runtimeByChatId[tab.id];
     const reducedRuntime = runtimeForEvent(
       currentRuntime,
@@ -7937,6 +7993,18 @@ export class ChatStateService implements ChatStateCommandPort {
     const createdAt = new Date(this.now()).toISOString();
     const explicitTitle = explicitChatTitle(request.title);
     const title = explicitTitle ?? initialChatTitle(request.text);
+    // An agent action may pin the fresh chat to one of its model's chat
+    // harness options, as the pickers do for an empty tab; the send that
+    // follows then captures that harness. Every other trusted sender echoes
+    // the harness main already resolved for the chat (the advisor, the
+    // renderer, the Portal), which is no choice and pins nothing. The choice
+    // is checked only when the tab is created below: a send to an existing
+    // chat keeps whatever harness that chat captured, whatever the current
+    // catalog says.
+    const explicitHarness =
+      request.executionHarnessChoice === true
+        ? request.executionHarness
+        : undefined;
     const tab: PersistedChatTab = {
       ...createPersistedChatTab({
         id: request.chatId,
@@ -7960,6 +8028,12 @@ export class ChatStateService implements ChatStateCommandPort {
           : {}),
       }),
       ...(explicitTitle ? { customTitle: explicitTitle } : {}),
+      ...(explicitHarness !== undefined
+        ? {
+            executionHarness: explicitHarness,
+            executionHarnessExplicitlyChosen: true,
+          }
+        : {}),
       ...(request.approvalMode ? { approvalMode: request.approvalMode } : {}),
       ...trustedSendDenyRulesField(request.sessionApprovalRules),
       ...(request.pluginSelections
@@ -7993,6 +8067,16 @@ export class ChatStateService implements ChatStateCommandPort {
               `Trusted send targets removed chat ${request.chatId}`,
             );
           }
+          // An explicit harness on a fresh tab must be one its model offers
+          // a chat; anything else fails closed before the tab exists.
+          if (
+            explicitHarness !== undefined &&
+            (request.model === undefined ||
+              !supportsChatHarnessChoice(request.model, explicitHarness))
+          )
+            throw new Error(
+              `Model "${request.model ?? ''}" does not run on the "${explicitHarness}" execution harness.`,
+            );
           // Chats nobody asked for open behind the tab the user is on:
           // hook-started chats and sends that ask to stay behind (scheduled
           // and catch-up automation runs). Everything the user set in motion
@@ -8845,7 +8929,7 @@ export class ChatStateService implements ChatStateCommandPort {
         refusal,
       );
       const reason = isAgentSenderContextError(error)
-        ? `agent_send:${error.code === 'authorization_conflict' ? 'owner_boundary' : error.code}`
+        ? `agent_send:${error.code}`
         : 'agent_send:owner_context_unavailable';
       let endedTurn = false;
       try {
@@ -10401,6 +10485,37 @@ export class ChatStateService implements ChatStateCommandPort {
    * live, including retained transcripts. Compatibility writer only: it
    * ignores naming state, so initial naming must use `commitInitialChatTitle`.
    */
+  /**
+   * The provider-switch seed was delivered: a turn whose prompt carried it was
+   * accepted by the provider (CAN-6445). Only then is the pending flag
+   * cleared, never when a session id is recorded, which can happen before the
+   * seed is read.
+   */
+  public async consumeProviderSwitchSeed(
+    scope: ChatScopeKey,
+    chatId: string,
+  ): Promise<void> {
+    await this.repository.transactWith(
+      scope,
+      (current) => {
+        const liveTab = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === chatId,
+        );
+        if (liveTab?.providerSwitchSeedPending !== true) return [];
+        const { providerSwitchSeedPending: consumed, ...next } = liveTab;
+        void consumed;
+        return [
+          {
+            type: 'tab.metadata_patched' as const,
+            tabId: chatId,
+            patch: buildTabMetadataPatch(liveTab, next),
+          },
+        ];
+      },
+      { source: 'provider' },
+    );
+  }
+
   public async updateChatDescription(
     scope: ChatScopeKey,
     chatId: string,
@@ -11659,10 +11774,13 @@ export class ChatStateService implements ChatStateCommandPort {
             tab.sdkSessionId === undefined &&
             tab.messages.length === 1 &&
             runtime?.status === 'starting';
+          // A started chat changes harness only with its provider, where
+          // the pair switches in place (CAN-6445).
           if (
             !autoStartingFirstTurn &&
             started &&
-            currentHarness !== targetHarness
+            currentHarness !== targetHarness &&
+            !canSwitchProviderInPlace(currentProvider, command.providerType)
           ) {
             throw new Error('Start a new chat to change its harness.');
           }
@@ -11762,14 +11880,25 @@ export class ChatStateService implements ChatStateCommandPort {
           // provider family. A cross-provider model change (including an
           // organization-policy fallback) must let the next send resolve and
           // persist the new model's harness; retaining the old pin would route a
-          // visibly Claude model through Codex, or vice versa.
-          delete next.executionHarness;
-          delete next.sdkSessionId;
-          delete next.globalInstructionsSnapshot;
-          delete next.codexReconstructionSeedId;
-          delete next.claudeForkSessionOnNextSend;
-          delete next.claudeTerminal;
-        } else if (harnessChanged || leavesTerminalMode) {
+          // visibly Claude model through Codex, or vice versa. A pick that names
+          // the new model's harness pins that one.
+          if (command.executionHarness !== undefined && targetHarness) {
+            next.executionHarness = targetHarness;
+            next.executionHarnessExplicitlyChosen = true;
+          } else {
+            delete next.executionHarness;
+          }
+          // The outgoing provider's session is parked, never deleted, so
+          // switching back can resume it (CAN-6445).
+          applyProviderSwitchToSession(
+            tab,
+            next,
+            currentProvider,
+            command.providerType,
+          );
+        } else if (harnessChanged) {
+          resetSessionForHarnessChange(tab, next);
+        } else if (leavesTerminalMode) {
           delete next.sdkSessionId;
           delete next.globalInstructionsSnapshot;
           delete next.codexReconstructionSeedId;
@@ -11780,7 +11909,9 @@ export class ChatStateService implements ChatStateCommandPort {
           targetHarness === 'cursor' ||
           command.providerType === 'cursor' ||
           targetHarness === 'copilot' ||
+          targetHarness === 'antigravity' ||
           command.providerType === 'copilot' ||
+          command.providerType === 'antigravity' ||
           targetHarness === 'opencode' ||
           command.providerType === 'opencode'
         ) {
@@ -12113,19 +12244,42 @@ export class ChatStateService implements ChatStateCommandPort {
       tabBeforeAuthorization?.kind === 'file'
         ? undefined
         : tabBeforeAuthorization?.model;
+    const admissionTab =
+      tabBeforeAuthorization && tabBeforeAuthorization.kind !== 'file'
+        ? tabWithSendModel(tabBeforeAuthorization, command)
+        : undefined;
     const sendModel =
       command.turnOverride?.model === undefined &&
       (command.modelSelectionMode ??
         tabBeforeAuthorization?.modelSelectionMode) === 'auto'
         ? undefined
-        : await this.resolveSendModel(scope, storedModel, command.model);
+        : await this.resolveSendModel(
+            {
+              ...scope,
+              chatId: command.chatId,
+              executionHarness:
+                command.turnOverride?.executionHarness ??
+                (command.turnOverride?.model
+                  ? getExecutionHarnessForModel(command.turnOverride.model)
+                  : admissionTab?.executionHarness),
+            },
+            storedModel,
+            command.turnOverride?.model ?? command.model,
+          );
     const requestedCommand = command;
     if (sendModel !== undefined) {
-      command = {
-        ...command,
-        model: sendModel,
-        providerType: getProviderForModel(sendModel) ?? command.providerType,
-      };
+      command =
+        command.turnOverride?.model !== undefined
+          ? {
+              ...command,
+              turnOverride: { ...command.turnOverride, model: sendModel },
+            }
+          : {
+              ...command,
+              model: sendModel,
+              providerType:
+                getProviderForModel(sendModel) ?? command.providerType,
+            };
     }
     if (
       tabBeforeAuthorization &&
@@ -15204,6 +15358,8 @@ export class ChatStateService implements ChatStateCommandPort {
         // A derived creation title does not transfer the user-owned override.
         delete fork.customTitle;
         delete fork.mcpActivation;
+        // The source chat's parked provider sessions stay its own (CAN-6445).
+        delete fork.providerSessions;
         delete fork.automaticTitleState;
         // Session AI Credits routing covered the source chat's usage limit;
         // a fork starts on its normal billing. Persistent routing and the
@@ -15217,6 +15373,8 @@ export class ChatStateService implements ChatStateCommandPort {
         // including when destination metadata supplied its own usage state.
         if (truncated && fork.usage) {
           delete fork.usage.cursorReportedUsage;
+          if (fork.usage.reportedTurnUsage !== undefined)
+            fork.usage.reportedTurnUsage = null;
           if (fork.usage.opencodeReportedUsage) {
             delete fork.usage.opencodeReportedUsage;
             fork.usage.contextTokens = 0;
@@ -15429,6 +15587,19 @@ export class ChatStateService implements ChatStateCommandPort {
         chatId: tab.id,
       }));
     this.turnHandoff.invalidate({ ...scope, chatId: tab.id });
+    // A parked provider session holds the history this reset removes, so it
+    // can no longer be resumed (CAN-6445). Switching back starts fresh with
+    // the rewritten transcript as its seed.
+    const { providerSessions: removedParkedSessions, ...withoutParked } = tab;
+    const parkedSessionRemoval: ChatCoreMutation[] = removedParkedSessions
+      ? [
+          {
+            type: 'tab.metadata_patched',
+            tabId: tab.id,
+            patch: buildTabMetadataPatch(tab, withoutParked),
+          },
+        ]
+      : [];
     return this.commit(
       scope,
       envelope,
@@ -15439,6 +15610,7 @@ export class ChatStateService implements ChatStateCommandPort {
           messages,
           removedMessageIds,
         },
+        ...parkedSessionRemoval,
         ...pendingQuestionRemovals,
         {
           type: 'runtime.patched',

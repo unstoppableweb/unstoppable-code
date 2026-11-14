@@ -377,6 +377,7 @@ export function GlobalFocusShortcutSection(): JSX.Element {
             </div>
           )}
           <ErrorBanner
+            errorSource="global-focus-shortcut-error"
             className=""
             error={saveError}
             testId="global-focus-shortcut-error"

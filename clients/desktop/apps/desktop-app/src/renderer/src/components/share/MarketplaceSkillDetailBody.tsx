@@ -191,6 +191,7 @@ export function MarketplaceSkillDetailBody({
         {state.phase === 'error' && (
           <Stack data-testid="deep-link-share-error" gap="inline">
             <ErrorBanner
+              errorSource="marketplace-skill-detail-body"
               error={shareLandingErrorCopy(state.reason, entity)}
               className="mb-0"
             />
@@ -209,7 +210,11 @@ export function MarketplaceSkillDetailBody({
         )}
         {/* A failure reports under the action row, not under the README. */}
         {installError !== '' && (
-          <ErrorBanner error={installError} className="mb-0" />
+          <ErrorBanner
+            errorSource="marketplace-skill-detail-body-install"
+            error={installError}
+            className="mb-0"
+          />
         )}
         {snapshot?.entity === 'skill' && snapshot.publisher && (
           <>

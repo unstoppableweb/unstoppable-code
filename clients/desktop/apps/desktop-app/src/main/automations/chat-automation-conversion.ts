@@ -18,6 +18,7 @@ import {
   chatAutomationToPipeline,
   convertibleChatAutomation,
   type ChatAutomationAction,
+  type ChatAutomationConversionRefusal,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import type {
   Pipeline,
@@ -56,6 +57,29 @@ import {
   nativeGrantAuthority,
   nativeGrantContentHash,
 } from './chat-automation-native-grant';
+
+/**
+ * Why {@link saveOwnedChatPipeline} refused or failed, as a fixed code
+ * (CAN-5479): the shared converter's refusal, a run restriction the action
+ * doesn't imply, the pipeline save, or a record the save had to keep.
+ */
+export type OwnedChatConversionFailure =
+  | OwnedChatConversionRefusal
+  | 'pipeline_save'
+  | 'owner_not_recorded'
+  | 'settings_not_recorded'
+  | 'plugins_not_recorded';
+
+/** A conversion {@link saveOwnedChatPipeline} refused or that failed. */
+export class OwnedChatConversionError extends Error {
+  readonly reason: OwnedChatConversionFailure;
+
+  constructor(reason: OwnedChatConversionFailure, message: string) {
+    super(message);
+    this.name = 'OwnedChatConversionError';
+    this.reason = reason;
+  }
+}
 
 /** Electron main writing an automation's own pipeline. */
 export const AUTOMATION_PIPELINE_CALLER: CanopyCallerDescriptor = {
@@ -112,26 +136,45 @@ export function impliedChatTargetRequirement(
   return { contexts: [impliedTargetContext(action)] };
 }
 
+/** Why an activity stays native rather than converting (CAN-5479). */
+export type OwnedChatConversionRefusal =
+  | ChatAutomationConversionRefusal
+  | 'target_requirement';
+
 /**
- * Whether the activity converts: the shared converter accepts it, and any run
- * restriction is exactly the one its action implies. Any other restriction
- * already fails the native run, so that automation stays native.
+ * Why the activity doesn't convert, or undefined when it does: the shared
+ * converter's refusal, or `target_requirement` for a run restriction other
+ * than the one its action implies. Any other restriction already fails the
+ * native run, so that automation stays native.
  */
-export function convertsToOwnedChatPipeline(
+export function ownedChatConversionRefusal(
   activity: ScheduledActivity,
-): boolean {
+): OwnedChatConversionRefusal | undefined {
   const { action, targetRequirement } = activity;
-  if (!convertibleChatAutomation(activity).convertible) return false;
-  if (targetRequirement === undefined) return true;
+  const verdict = convertibleChatAutomation(activity);
+  if (!verdict.convertible) return verdict.reason;
+  if (targetRequirement === undefined) return undefined;
   if (
     action.type !== 'worktree_prompt' &&
     action.type !== 'standalone_prompt' &&
     action.type !== 'app_advisor_prompt' &&
     action.type !== 'worktree_session_prompt'
   )
-    return false;
+    return 'not_a_chat_action';
   const [context, ...rest] = targetRequirement.contexts;
-  return rest.length === 0 && context === impliedTargetContext(action);
+  return rest.length === 0 && context === impliedTargetContext(action)
+    ? undefined
+    : 'target_requirement';
+}
+
+/**
+ * Whether the activity converts: the shared converter accepts it, and any run
+ * restriction is exactly the one its action implies.
+ */
+export function convertsToOwnedChatPipeline(
+  activity: ScheduledActivity,
+): boolean {
+  return ownedChatConversionRefusal(activity) === undefined;
 }
 
 /**
@@ -301,9 +344,15 @@ export async function saveOwnedChatPipeline(
   const activity = withResolvedCoworkProject(stored);
   const verdict = convertibleChatAutomation(activity);
   if (!verdict.convertible)
-    throw new Error(`This automation can't convert (${verdict.reason}).`);
+    throw new OwnedChatConversionError(
+      verdict.reason,
+      `This automation can't convert (${verdict.reason}).`,
+    );
   if (!convertsToOwnedChatPipeline(activity))
-    throw new Error("This automation can't convert (target_requirement).");
+    throw new OwnedChatConversionError(
+      'target_requirement',
+      "This automation can't convert (target_requirement).",
+    );
   const { action } = activity;
   if (
     action.type !== 'worktree_prompt' &&
@@ -311,7 +360,10 @@ export async function saveOwnedChatPipeline(
     action.type !== 'app_advisor_prompt' &&
     action.type !== 'worktree_session_prompt'
   )
-    throw new Error("This automation can't convert (not_a_chat_action).");
+    throw new OwnedChatConversionError(
+      'not_a_chat_action',
+      "This automation can't convert (not_a_chat_action).",
+    );
   // CAN-5479: the selections that travel are the pipeline's defaults.
   const converted = chatAutomationToPipeline(activity, {
     portable: await chatPluginPortability(action.pluginSelections),
@@ -352,7 +404,10 @@ export async function saveOwnedChatPipeline(
     AUTOMATION_PIPELINE_CALLER,
   );
   if (!saved.success || !saved.data)
-    throw new Error(saved.error ?? 'The workflow could not be saved.');
+    throw new OwnedChatConversionError(
+      'pipeline_save',
+      saved.error ?? 'The workflow could not be saved.',
+    );
   const pipelineId = saved.data.id;
   const savedRevision = saved.data.revision;
   const rollback = async (): Promise<void> => {
@@ -420,7 +475,10 @@ export async function saveOwnedChatPipeline(
     if (authority !== undefined && inPlace?.withholdGrant !== true) {
       const written = storedRevisionContent(pipelineId, savedRevision);
       if (written === undefined && activity.agentAuthor !== undefined)
-        throw new Error('The workflow’s settings could not be recorded.');
+        throw new OwnedChatConversionError(
+          'settings_not_recorded',
+          'The workflow’s settings could not be recorded.',
+        );
       if (written !== undefined)
         grant = {
           automationId: activity.id,
@@ -452,11 +510,17 @@ export async function saveOwnedChatPipeline(
       recorded.ownerAutomationId !== activity.id ||
       (activity.agentAuthor !== undefined && recorded.agentAuthor === undefined)
     )
-      throw new Error('The workflow’s owner could not be recorded.');
+      throw new OwnedChatConversionError(
+        'owner_not_recorded',
+        'The workflow’s owner could not be recorded.',
+      );
     // Without its grant an agent's run would be refused what the native
     // action ran with; a stale one would keep authority the action dropped.
     if (!isDeepStrictEqual(recorded.nativeGrant ?? null, grant))
-      throw new Error('The workflow’s settings could not be recorded.');
+      throw new OwnedChatConversionError(
+        'settings_not_recorded',
+        'The workflow’s settings could not be recorded.',
+      );
     // Without them converting back would take the pipeline as hand edited.
     if (
       !isDeepStrictEqual(
@@ -464,7 +528,10 @@ export async function saveOwnedChatPipeline(
         converted.pluginDefaults ?? null,
       )
     )
-      throw new Error('The workflow’s plugins could not be recorded.');
+      throw new OwnedChatConversionError(
+        'plugins_not_recorded',
+        'The workflow’s plugins could not be recorded.',
+      );
   } catch (error) {
     await rollback();
     throw error;
@@ -486,8 +553,10 @@ export async function convertChatAutomation(
   activityId: string,
 ): Promise<AutomationMutationResponse> {
   const { getAutomationsService } = await import('./service');
-  return getAutomationsService().replaceWithOwnedPipeline(
+  const converted = await getAutomationsService().replaceWithOwnedPipeline(
     activityId,
     saveOwnedChatPipeline,
   );
+  // The failure stage is main's own; the response keeps its public shape.
+  return converted.ok ? converted : { ok: false, error: converted.error };
 }

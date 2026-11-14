@@ -21,6 +21,7 @@ import {
   type EntitlementsSummaryProbe,
 } from './entitlements';
 import { parseSseEvents } from '../plans/plan-realtime-subscription';
+import { CanopyCloudConfigError } from './config';
 
 interface AccessSubscription {
   readonly callbacks: Set<(credentialsChanged?: boolean) => void>;
@@ -34,7 +35,23 @@ export async function subscribeModelLibraryAccess(
   onChanged: (credentialsChanged?: boolean) => void,
   fetchImpl: typeof fetch = fetch,
 ): Promise<() => void> {
-  const credentials = await getCanopyCloudCredentials();
+  let credentials: Awaited<ReturnType<typeof getCanopyCloudCredentials>>;
+  try {
+    credentials = await getCanopyCloudCredentials();
+  } catch (error) {
+    if (
+      !(error instanceof CanopyCloudConfigError) ||
+      error.code !== 'api-key-required'
+    )
+      throw error;
+    // Signed out has no library to watch yet (CAN-6557): the watch idles
+    // until an account appears, then asks its consumers to read again.
+    const unsubscribe = subscribeCanopyCloudAccountChanges((): void => {
+      unsubscribe();
+      onChanged(true);
+    });
+    return unsubscribe;
+  }
   const key = `${credentials.baseUrl}|${credentials.apiKey}|${modelLibraryWorkOwnerKey(owner)}`;
   let subscription = accessSubscriptions.get(key);
   if (!subscription) {

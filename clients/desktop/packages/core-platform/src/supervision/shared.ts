@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -13,8 +13,12 @@ export interface SupervisionOperations {
   ) => Promise<string>;
   readonly kill: (pid: number, signal: 'SIGTERM' | 'SIGKILL' | 0) => void;
   readonly readText: (file: string, signal?: AbortSignal) => Promise<string>;
+  /** The target of a symbolic link, such as `/proc/PID/exe`. */
+  readonly readLink?: (file: string) => Promise<string>;
   readonly systemRoot: () => string;
   readonly selfPid: number;
+  /** This process's real user ID; absent where there is none (Windows). */
+  readonly selfUid?: number;
   readonly windowsProcess?: (
     pid: number,
     signal?: AbortSignal,
@@ -38,9 +42,11 @@ export const NODE_SUPERVISION: SupervisionOperations = {
   },
   readText: (file, signal): Promise<string> =>
     readFile(file, { encoding: 'utf8', signal }),
+  readLink: (file): Promise<string> => readlink(file),
   systemRoot: (): string =>
     process.env.SystemRoot ?? process.env.SYSTEMROOT ?? '',
   selfPid: process.pid,
+  ...(typeof process.getuid === 'function' && { selfUid: process.getuid() }),
 };
 
 export function errorCode(error: unknown): string | number | undefined {

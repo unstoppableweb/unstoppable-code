@@ -62,9 +62,11 @@ import {
   PanelTabContextMenu,
   type ClosePanelTab,
   type ClosePanelTabs,
+  type PanelTabContextMenuProps,
   type PanelTabContextMenuTarget,
 } from './PanelTabContextMenu';
 import { splitGroupMovingActiveTab } from './split-active-tab';
+import { useChatScopedSideViewCollapse } from './chat-scoped-collapse';
 
 export interface PanelAddTabMenuRenderProps {
   readonly groupId: string;
@@ -173,6 +175,8 @@ export interface PanelGridSurfaceServices {
   onRenameChat?: (chatTabId: string, ownerDocument?: Document) => void;
   /** Chat read state for the tab menu; see `PanelTabContextMenu`. */
   getChatReadState?: (chatTabId: string) => 'read' | 'unread' | undefined;
+  /** A tab's archive row in its menu; see `PanelTabContextMenu`. */
+  getTabArchiveAction?: PanelTabContextMenuProps['getArchiveAction'];
   /** Marks a chat unread or read; omitted where read state is unsupported. */
   onSetChatUnread?: (chatTabId: string, unread: boolean) => void;
   renderAddTabMenu: (props: PanelAddTabMenuRenderProps) => ReactNode;
@@ -322,6 +326,7 @@ export function PanelGridSurface({
     canShareSession,
     onExportSession,
     onRenameChat,
+    getTabArchiveAction,
     getChatReadState,
     onSetChatUnread,
     renderAddTabMenu,
@@ -377,6 +382,8 @@ export function PanelGridSurface({
     }
   }, [controller, onBrowserViewBoundsInvalidated]);
 
+  // Each chat tab keeps its own side panel open or closed.
+  useChatScopedSideViewCollapse(worktreeKey);
   // Intent callbacks all dispatch through the store, bound to this worktree
   // key. `focusGroup` no-ops in the store when the group is already active,
   // so the capture-phase mousedown focus intent stays cheap.
@@ -582,13 +589,15 @@ export function PanelGridSurface({
         ?.tabs.find((candidate) => candidate.panelId === panelId);
       if (
         fixedTopology &&
-        (tab === undefined || canCloseTab?.(tab) === false)
+        (tab === undefined ||
+          (canCloseTab?.(tab) === false &&
+            getTabArchiveAction?.(tab) === undefined))
       ) {
         return;
       }
       setTabContextMenu({ groupId, panelId, x: clientX, y: clientY });
     },
-    [canCloseTab, fixedTopology, viewModel],
+    [canCloseTab, fixedTopology, getTabArchiveAction, viewModel],
   );
 
   const handleCloseTabContextMenu = useCallback((): void => {
@@ -887,6 +896,7 @@ export function PanelGridSurface({
           canShareSession={canShareSession}
           onExportSession={onExportSession}
           onRenameChat={onRenameChat}
+          getArchiveAction={getTabArchiveAction}
           getChatReadState={getChatReadState}
           onSetChatUnread={onSetChatUnread}
           onNewWindow={popOut !== undefined ? handleNewWindow : undefined}

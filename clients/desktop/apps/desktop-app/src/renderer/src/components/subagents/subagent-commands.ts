@@ -18,6 +18,7 @@ import type {
 } from '@canopy/ui-app/subagents';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import type { SubagentHostScope } from './subagent-scope';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 /** Shown when a command names a subagent kind the host cannot act on. */
 export const SUBAGENT_COMMAND_UNSUPPORTED_ERROR =
@@ -29,7 +30,13 @@ export async function stopWorkflowRun(
   rootChatId: string,
   run: { readonly taskId?: string },
 ): Promise<SubagentCommandResult> {
-  if (!run.taskId) {
+  // A cloud run is not this computer's: main's Stop can't resolve its ids
+  // (CAN-6395).
+  if (
+    !run.taskId ||
+    isWebCoreScope(scope.projectId) ||
+    isWebCoreScope(scope.worktreeId)
+  ) {
     return { ok: false, error: 'This workflow run cannot be stopped.' };
   }
   try {

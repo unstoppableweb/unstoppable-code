@@ -62,12 +62,15 @@ import {
 } from './lib/markdown-math-preference';
 import { DesktopFileSessionRuntime } from './components/chat/DesktopFileSessionRuntime';
 import { ipcCanopyClient } from './client/ipc-canopy-client';
+import { installWebCoreAgentTasksPublisher } from './cloud-chats/web-core-agent-tasks-publisher';
 import { LifecycleJournalQuarantineHost } from '@canopy/ui-app/lifecycle-journal';
 import { DesktopWorktreeDiscardHost } from './components/worktree/DesktopWorktreeDiscardHost';
 import { DesktopProjectDeletionDiscardHost } from './components/worktree/DesktopProjectDeletionDiscardHost';
 import { DesktopTerminalRuntime } from './client/DesktopTerminalRuntime';
 import { EarlyAccessUiProviders } from './components/EarlyAccessUiProviders';
+import { DesktopCostCurrencyProvider } from './components/activity/cost/DesktopCostCurrencyProvider';
 import { localPlatform } from '@/lib/local-platform';
+import { WorkspaceStartupGate } from './components/startup/WorkspaceStartupGate';
 
 /**
  * The window a renderer page serves. Each window has its own HTML page and
@@ -123,33 +126,35 @@ export function startRenderer(
     import.meta.hot?.dispose(() => root.unmount());
     root.render(
       <RootErrorBoundary>
-        <CanopyClientProvider client={ipcCanopyClient}>
-          <HostMermaidExportProvider notify={postDiagramExportToast}>
-            <EarlyAccessUiProviders>
-              {/* One-at-a-time suggestions and their master switch (CAN-4343). */}
-              <SuggestionsProvider>
-                <DesktopTerminalRuntime />
-                <OrgProjectDeepLinkBridge />
-                <OrgProjectAddStoreBridge />
-                <OnboardingTipsPreferencesBridge />
-                <SuggestionsPreferencesBridge />
-                {/* The desktop file-session controller owns file tabs only in
-                    the main window; the standalone App Advisor renderer has
-                    none. */}
-                {isMainSurface && <DesktopFileSessionRuntime />}
-                {/* Deletion and archive refusals open this review (CAN-5335). */}
-                {isMainSurface && (
-                  <LifecycleJournalQuarantineHost client={ipcCanopyClient} />
-                )}
-                {/* A refused single-row removal offers a discard (CAN-5336). */}
-                {isMainSurface && <DesktopWorktreeDiscardHost />}
-                {/* A refused project deletion offers its discards (CAN-5337). */}
-                {isMainSurface && <DesktopProjectDeletionDiscardHost />}
-                <RootApp />
-              </SuggestionsProvider>
-            </EarlyAccessUiProviders>
-          </HostMermaidExportProvider>
-        </CanopyClientProvider>
+        <WorkspaceStartupGate>
+          <CanopyClientProvider client={ipcCanopyClient}>
+            <HostMermaidExportProvider notify={postDiagramExportToast}>
+              <EarlyAccessUiProviders>
+                {/* One-at-a-time suggestions and their master switch (CAN-4343). */}
+                <SuggestionsProvider>
+                  <DesktopCostCurrencyProvider>
+                    <DesktopTerminalRuntime />
+                    <OrgProjectDeepLinkBridge />
+                    <OrgProjectAddStoreBridge />
+                    <OnboardingTipsPreferencesBridge />
+                    <SuggestionsPreferencesBridge />
+                    {/* The desktop file-session controller owns file tabs only in
+                      the main window; the standalone App Advisor renderer has
+                      none. */}
+                    {isMainSurface && <DesktopFileSessionRuntime />}
+                    {/* Deletion and archive refusals open this review (CAN-5335). */}
+                    <LifecycleJournalQuarantineHost client={ipcCanopyClient} />
+                    {/* A refused single-row removal offers a discard (CAN-5336). */}
+                    <DesktopWorktreeDiscardHost />
+                    {/* A refused project deletion offers its discards (CAN-5337). */}
+                    {isMainSurface && <DesktopProjectDeletionDiscardHost />}
+                    <RootApp />
+                  </DesktopCostCurrencyProvider>
+                </SuggestionsProvider>
+              </EarlyAccessUiProviders>
+            </HostMermaidExportProvider>
+          </CanopyClientProvider>
+        </WorkspaceStartupGate>
       </RootErrorBoundary>,
     );
   });
@@ -211,6 +216,8 @@ function installRendererRuntime(): void {
   // so hot-reloaded modules don't double-subscribe (see store implementation).
   initClaudeTerminalSubscriptions();
   initTerminalActivitySubscriptions();
+  // Cloud chats' agent tasks reach the activity tray (CAN-6175 R2b).
+  installWebCoreAgentTasksPublisher();
   import.meta.hot?.dispose(() => {
     unsubscribeFromModelRegistry();
     uninstallRendererErrorLogging();

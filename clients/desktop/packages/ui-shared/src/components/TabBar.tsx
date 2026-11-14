@@ -80,6 +80,26 @@ const PREVIOUS_KEY: Readonly<Record<TabBarOrientation, string>> = {
   vertical: 'ArrowUp',
 };
 
+export function tabNavigationIndex(
+  key: string,
+  index: number,
+  count: number,
+  orientation: TabBarOrientation = 'horizontal',
+): number | undefined {
+  switch (key) {
+    case NEXT_KEY[orientation]:
+      return (index + 1) % count;
+    case PREVIOUS_KEY[orientation]:
+      return (index - 1 + count) % count;
+    case 'Home':
+      return 0;
+    case 'End':
+      return count - 1;
+    default:
+      return undefined;
+  }
+}
+
 const LABEL_CLASS_NAME: Readonly<Record<TabBarDensity, string>> = {
   default: 'text-s',
   compact: 'text-xs font-medium',
@@ -161,37 +181,24 @@ export function TabBar<T extends string>({
     }
   }, []);
 
-  const selectAt = (index: number): void => {
-    const count = items.length;
-    const next = items[((index % count) + count) % count];
-    if (next === undefined) return;
-    tabRefs.current.get(next.id)?.focus();
-    onChange(next.id, 'keyboard');
-  };
-
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
     // From the focused tab, not the value: a host that selects later (a
     // router) or not at all must not hold the arrows on one tab.
     const index = items.findIndex(
       (item) => tabRefs.current.get(item.id) === event.currentTarget,
     );
-    switch (event.key) {
-      case NEXT_KEY[orientation]:
-        selectAt(index + 1);
-        break;
-      case PREVIOUS_KEY[orientation]:
-        selectAt(index - 1);
-        break;
-      case 'Home':
-        selectAt(0);
-        break;
-      case 'End':
-        selectAt(items.length - 1);
-        break;
-      default:
-        return;
-    }
+    const nextIndex = tabNavigationIndex(
+      event.key,
+      index,
+      items.length,
+      orientation,
+    );
+    if (nextIndex === undefined) return;
     event.preventDefault();
+    const next = items[nextIndex];
+    if (next === undefined) return;
+    tabRefs.current.get(next.id)?.focus();
+    onChange(next.id, 'keyboard');
   };
 
   // A value that names no tab still leaves one tab reachable with Tab.

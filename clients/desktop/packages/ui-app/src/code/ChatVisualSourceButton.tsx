@@ -56,6 +56,7 @@ export function ChatVisualSourceButton({
       ) : null}
       {open && error ? (
         <ErrorBanner
+          errorSource="chat-visual-source-button"
           className=""
           error="Couldn't load this visual. Try again later."
         />

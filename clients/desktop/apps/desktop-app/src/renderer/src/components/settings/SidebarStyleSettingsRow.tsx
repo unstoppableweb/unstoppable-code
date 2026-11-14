@@ -44,7 +44,11 @@ export function SidebarStyleSettingsRow(): JSX.Element | null {
         />
       }
     >
-      <ErrorBanner error={error} className="" />
+      <ErrorBanner
+        errorSource="sidebar-style-settings-row"
+        error={error}
+        className=""
+      />
     </SettingsRow>
   );
 }

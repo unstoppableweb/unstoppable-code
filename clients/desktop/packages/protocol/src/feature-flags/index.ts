@@ -164,6 +164,13 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the Orchestrator page Labs experiment.',
   },
+  canopyDesktopLabsPromptSuggestions: {
+    key: 'canopy-desktop-labs-prompt-suggestions',
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description:
+      'Obsolete next prompt suggestions Labs selector. Retained only for wire compatibility.',
+  },
   canopyDesktopLabsOverviewPage: {
     key: 'canopy-desktop-labs-overview-page',
     launchDarklyDisabledDefaultValue: 'offered',
@@ -383,6 +390,20 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     description:
       'Promotes Cursor out of Labs into Accounts and harness discovery when the Cursor harness gate is also enabled.',
+  },
+  canopyDesktopAntigravityHarness: {
+    key: 'canopy-desktop-antigravity-harness',
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Controls desktop Antigravity setup, model discovery, and runtime access.',
+  },
+  canopyDesktopAntigravityHarnessReleased: {
+    key: 'canopy-desktop-antigravity-harness-released',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Promotes Antigravity setup from Labs to Providers when the Antigravity harness gate is also enabled.',
   },
   canopyDesktopCopilotHarness: {
     key: 'canopy-desktop-copilot-harness',
@@ -728,6 +749,8 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
     .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
+    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage
@@ -757,6 +780,8 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]: boolean;
@@ -870,6 +895,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
         .launchDarklyDisabledDefaultValue,
@@ -945,6 +973,12 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness
@@ -1099,6 +1133,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
         .launchDarklyEnabledUnavailableValue,
@@ -1176,6 +1213,12 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness
@@ -1294,6 +1337,7 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,

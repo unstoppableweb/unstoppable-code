@@ -469,6 +469,12 @@ export type CodeReviewGetRequest = CodeReviewScopeRequest;
 export interface CodeReviewGetResponse {
   review: CodeReviewFile;
   fingerprint: string;
+  /**
+   * Stored comment threads the reader couldn't use, so they aren't in
+   * `review` (CAN-6667). Writes keep them on disk as they were. Absent when
+   * there are none.
+   */
+  skippedCommentThreads?: number;
 }
 
 export type CodeReviewArmRequest = CodeReviewScopeRequest;
@@ -491,6 +497,8 @@ export interface CodeReviewUpdatedEvent {
   worktreeId: string;
   fingerprint: string;
   review: CodeReviewFile;
+  /** As on `CodeReviewGetResponse`. */
+  skippedCommentThreads?: number;
 }
 
 /**

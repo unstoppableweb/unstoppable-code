@@ -1,3 +1,5 @@
+import { assertAntigravityHarnessEnabled } from '../antigravity/feature-flag';
+import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import { removeUnstartedWorkEntry } from '../lib/cowork-work-entries';
 import { assertCoworkWorkspaceRootPresent } from '../lib/cowork-folder-guard';
@@ -36,6 +38,7 @@ import {
   type AgentModelConfig,
   type AgentProviderType,
   type AiCreditsScopeRequest,
+  type ChatActiveSessionInfo,
   type ModelHarness,
   type PersistedChatMessage,
   type PersistedChatTab,
@@ -66,6 +69,8 @@ import type {
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import { TurnDispatchTiming } from '../lib/turn-dispatch-timing';
 import { validateId } from '../lib/validation';
+import { isErrnoException } from '../lib/type-guards';
+import { isArchivedContainerExpired } from '@canopy/desktop-shared/lib/archive-retention';
 import {
   isModelBlockedByStoredPolicy,
   isOrgModelPolicyActiveForStoredAccount,
@@ -76,9 +81,11 @@ import type { SidebarItemsSnapshot } from '../lib/sidebar-items';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import {
   createWorkEntry,
+  listWorkEntries,
   listWorkEntryChatSummaries,
   listWorkEntryIds,
   resolveWorkEntryForChat,
+  workEntryHoldsChat,
   type WorkEntryChatSummaryListItem,
 } from '../lib/cowork-work-entries';
 import { sidebarItemGroupsService } from './sidebar-item-groups-service';
@@ -173,6 +180,30 @@ import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/
 
 const CURSOR_CONNECT_MESSAGE =
   'Connect Cursor in Settings to send with Cursor, or choose another model.';
+
+/**
+ * A standalone summary's turn fields, from the chat's live session: whether
+ * a turn runs and, for a session that applies setters only from its next
+ * turn, its declaration and the running turn's settings, so a composer can
+ * show a mid-turn change as pending.
+ */
+function standaloneTurnFields(
+  session: ChatActiveSessionInfo | undefined,
+): Pick<
+  PortalStandaloneChatSummary,
+  'turnActive' | 'settingApplication' | 'turnSettings'
+> {
+  const turnActive = session?.turnActive === true;
+  return {
+    turnActive,
+    ...(session?.settingApplication
+      ? { settingApplication: { ...session.settingApplication } }
+      : {}),
+    ...(turnActive && session?.turnSettings
+      ? { turnSettings: { ...session.turnSettings } }
+      : {}),
+  };
+}
 
 /**
  * Cowork runs Cursor on the managed runtime like a worktree chat. Every entry
@@ -708,11 +739,17 @@ async function isLegacyArchivedChat(
  * for the chat; a brand-new chat falls back to the default workspace with
  * `entryId: null` (senders create an entry for it).
  */
-export async function resolveStandaloneChatTarget(input?: {
-  projectId?: string;
-  projectLocalId?: string;
-  chatId?: string;
-}): Promise<ResolvedStandaloneChatTarget> {
+export async function resolveStandaloneChatTarget(
+  input?: {
+    projectId?: string;
+    projectLocalId?: string;
+    chatId?: string;
+    /** Archive only: the displayed Work Entry; other retained archives are skipped unread. */
+    workEntryId?: string;
+  },
+  options?: { forArchive: boolean },
+): Promise<ResolvedStandaloneChatTarget> {
+  if (options?.forArchive) return resolveStandaloneArchiveTarget(input);
   const explicitProjectId = input?.projectLocalId ?? input?.projectId;
   if (explicitProjectId) {
     const workspaceId = resolveCoworkWorkspaceId(
@@ -755,6 +792,156 @@ export async function resolveStandaloneChatTarget(input?: {
     archivedInEntryId: null,
     isArchived: false,
   };
+}
+
+/** Mutation-only resolution: no first-match or new-chat fallback. */
+async function resolveStandaloneArchiveTarget(
+  input:
+    | {
+        projectId?: string;
+        projectLocalId?: string;
+        chatId?: string;
+        workEntryId?: string;
+      }
+    | undefined,
+): Promise<ResolvedStandaloneChatTarget> {
+  const chatId = input?.chatId;
+  validateId(chatId, 'chatId');
+  const explicit = input?.projectLocalId ?? input?.projectId;
+  if (explicit !== undefined) validateId(explicit, 'projectLocalId');
+  const projects = await readStandaloneProjects(true);
+  const workspaceId =
+    explicit === undefined ? undefined : resolveCoworkWorkspaceId(explicit);
+  const scoped =
+    workspaceId === undefined
+      ? projects
+      : projects.filter((project) => project.id === workspaceId);
+  if (scoped.length === 0)
+    throw new PortalServiceError(
+      'invalid_target',
+      'The chat project is unavailable on this paired desktop.',
+    );
+  const {
+    listArchivedContainerManifests,
+    readArchivedContainerChats,
+    readArchivedContainerChatArchives,
+    readArchivedContainerManifestIncludingExpired,
+  } = await import('../lib/archived-containers');
+  // A listed archive that is restored, purged or expired before its payload
+  // is read no longer retains any chat, so it cannot be the target.
+  const leftRetention = async (
+    projectId: string,
+    containerId: string,
+  ): Promise<boolean> => {
+    try {
+      const current = await readArchivedContainerManifestIncludingExpired(
+        projectId,
+        containerId,
+      );
+      return (
+        current.restoredTo !== undefined ||
+        isArchivedContainerExpired(current, Date.now())
+      );
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return true;
+      throw error;
+    }
+  };
+  const matches: ResolvedStandaloneChatTarget[] = [];
+  for (const project of scoped) {
+    const requestedId = input?.workEntryId;
+    // With the displayed Work Entry named, read only that entry: another
+    // entry's unreadable files must not fail a first archive or a retry.
+    // A transcript archived inside a still-live Work Entry is not a retained
+    // container. Archive that Work Entry through the same authority.
+    const liveIds = await listWorkEntryIds(project.id);
+    let matchedLiveId: string | null = null;
+    // Set when the named entry is still registered but no longer holds the
+    // chat: either a partial archive (live data cleaned, row removal failed)
+    // or a new entry that reused the ID. Only a retained archive of the same
+    // incarnation (same creation time) may resume; otherwise refuse, so the
+    // deletion can never remove a live replacement.
+    let liveIncarnation: string | undefined;
+    if (requestedId !== undefined) {
+      if (liveIds.includes(requestedId)) {
+        if (await workEntryHoldsChat(project.id, requestedId, chatId)) {
+          matchedLiveId = requestedId;
+        } else {
+          // A row that disappeared between the two reads is no longer live
+          // (a concurrent archive removed it): leave the incarnation unset so
+          // the retained archive can settle the request as already archived.
+          liveIncarnation = (
+            await listWorkEntries(project.id, { strictRead: true })
+          ).find((entry) => entry.id === requestedId)?.createdAt;
+        }
+      }
+    } else {
+      const resolution = await resolveWorkEntryForChat(project.id, chatId);
+      const scannedId = resolution.entryId ?? resolution.archivedInEntryId;
+      if (scannedId && liveIds.includes(scannedId)) matchedLiveId = scannedId;
+    }
+    if (matchedLiveId) {
+      matches.push({
+        workspaceId: project.id,
+        entryId: matchedLiveId,
+        archivedInEntryId: null,
+        isArchived: false,
+      });
+      continue;
+    }
+    const matchesBeforeScan = matches.length;
+    for (const manifest of await listArchivedContainerManifests(project.id)) {
+      if (
+        (liveIncarnation !== undefined &&
+          manifest.originalEntry?.createdAt !== liveIncarnation) ||
+        manifest.kind !== 'work-entry' ||
+        manifest.projectId !== project.id ||
+        manifest.restoredTo !== undefined ||
+        !manifest.lockedAt ||
+        manifest.originalEntry?.id !== manifest.id ||
+        // Only the requested entry can match: never read (or fail on) an
+        // unrelated retained archive's payload.
+        (input?.workEntryId !== undefined && manifest.id !== input.workEntryId)
+      )
+        continue;
+      let containsChat: boolean;
+      try {
+        const tabs = await readArchivedContainerChats(project.id, manifest.id);
+        containsChat =
+          tabs.tabs.some((tab) => tab.id === chatId) ||
+          (
+            await readArchivedContainerChatArchives(project.id, manifest.id)
+          ).archived.some((chat) => chat.tab.id === chatId);
+      } catch (error) {
+        if (await leftRetention(project.id, manifest.id)) continue;
+        throw error;
+      }
+      if (containsChat)
+        matches.push({
+          workspaceId: project.id,
+          entryId: null,
+          archivedInEntryId: manifest.id,
+          isArchived: true,
+        });
+    }
+    if (liveIncarnation !== undefined && matches.length === matchesBeforeScan)
+      throw new PortalServiceError(
+        'invalid_target',
+        'The Work Entry changed before archive.',
+      );
+  }
+  if (matches.length > 1)
+    throw new PortalServiceError(
+      'invalid_target',
+      'The chat target is ambiguous. Specify its project.',
+    );
+  const match = matches[0];
+  if (!match)
+    throw new PortalServiceError(
+      'not_found',
+      'The chat has no live or retained archived Work Entry.',
+    );
+  return match;
 }
 
 /**
@@ -969,6 +1156,15 @@ function buildStandaloneChatSummary(
           },
         }
       : {}),
+    ...(options?.includeDelivery !== false &&
+    tab.usage?.reportedTurnUsage !== undefined
+      ? {
+          usage: {
+            model: tab.model,
+            reportedTurnUsage: tab.usage.reportedTurnUsage,
+          },
+        }
+      : {}),
     executionHarness: tab.executionHarness,
     modelHarnessLocked:
       hasChatContinuationSession(tab) ||
@@ -984,6 +1180,7 @@ function buildStandaloneChatSummary(
     availableModels: isCanopyPortalActive()
       ? buildProjectedModelCatalog(undefined, {
           cursor: true,
+          antigravity: true,
           copilot: true,
           opencode: true,
           owner: options?.owner,
@@ -995,11 +1192,11 @@ function buildStandaloneChatSummary(
     deferredToolsAllowed:
       options?.deferredToolsAllowed ?? tab.deferredToolsAllowed,
     ...(workEntryId !== undefined
-      ? {
-          turnActive: getActiveSessionInfos(projectId, workEntryId).some(
-            (session) => session.chatId === tab.id && session.turnActive,
+      ? standaloneTurnFields(
+          getActiveSessionInfos(projectId, workEntryId).find(
+            (session) => session.chatId === tab.id,
           ),
-        }
+        )
       : {}),
     ...(lastTurnEnd ? { lastTurnEnd } : {}),
     ...(options?.pendingQuestions !== undefined
@@ -1199,6 +1396,12 @@ export function projectStandaloneChatSnapshot(
     pluginSelectionsDetail: chat.pluginSelectionsDetail,
     deferredToolsAllowed: chat.deferredToolsAllowed,
     turnActive: chat.turnActive,
+    ...(chat.settingApplication !== undefined
+      ? { settingApplication: chat.settingApplication }
+      : {}),
+    ...(chat.turnSettings !== undefined
+      ? { turnSettings: chat.turnSettings }
+      : {}),
     ...(chat.lastTurnEnd !== undefined
       ? { lastTurnEnd: chat.lastTurnEnd }
       : {}),
@@ -1569,6 +1772,12 @@ export async function setStandaloneChatModel(
         `No execution harness is available for model "${model}".`,
       );
     }
+    await assertAgentModelAdmission(model, {
+      projectId: workspaceId,
+      worktreeId: entryId,
+      chatId: payload.chatId,
+      executionHarness: targetHarness,
+    });
     const capturedHarness = capturedExecutionHarnessForStandaloneTab(
       existing,
       workspaceId,
@@ -1580,6 +1789,7 @@ export async function setStandaloneChatModel(
         `Cannot change a started standalone chat from the "${capturedHarness}" execution harness to "${targetHarness}".`,
       );
     }
+    if (targetHarness === 'antigravity') assertAntigravityHarnessEnabled();
     if (targetHarness === 'copilot' && !(await isCopilotRuntimeAvailable()))
       throw new Error('Connect Copilot in Settings.');
     if (targetHarness === 'cursor') await assertCursorRuntimeForCowork();
@@ -1671,16 +1881,18 @@ export async function setStandaloneChatModel(
 function accountHarnessFor(
   providerType: string | undefined,
   executionHarness: string | undefined,
-): 'cursor' | 'copilot' | 'opencode' | undefined {
+): 'cursor' | 'copilot' | 'antigravity' | 'opencode' | undefined {
   if (
     executionHarness === 'cursor' ||
     executionHarness === 'copilot' ||
+    executionHarness === 'antigravity' ||
     executionHarness === 'opencode'
   )
     return executionHarness;
   if (
     providerType === 'cursor' ||
     providerType === 'copilot' ||
+    providerType === 'antigravity' ||
     providerType === 'opencode'
   )
     return providerType;
@@ -1698,7 +1910,7 @@ function resolveLiveAccountSessionModel(
   workspaceId: string,
   entryId: string,
   chatId: string,
-  harness: 'cursor' | 'copilot' | 'opencode',
+  harness: 'cursor' | 'copilot' | 'antigravity' | 'opencode',
 ): ReturnType<typeof getSessionSelectedModel> {
   if (getSessionProviderType(workspaceId, entryId, chatId) !== harness)
     return undefined;
@@ -1738,6 +1950,7 @@ export async function resolveStandaloneChatPolicyModels(input: {
    */
   cursorModelRequired?: true;
   copilotModelRequired?: true;
+  antigravityModelRequired?: true;
   opencodeModelRequired?: true;
 }> {
   const models = new Set<string>();
@@ -1830,11 +2043,13 @@ export async function resolveStandaloneChatPolicyModels(input: {
     return {
       readable: true,
       models: Array.from(models),
-      ...(accountHarness === 'opencode'
-        ? { opencodeModelRequired: true as const }
-        : accountHarness === 'copilot'
-          ? { copilotModelRequired: true as const }
-          : { cursorModelRequired: true as const }),
+      ...(accountHarness === 'antigravity'
+        ? { antigravityModelRequired: true as const }
+        : accountHarness === 'opencode'
+          ? { opencodeModelRequired: true as const }
+          : accountHarness === 'copilot'
+            ? { copilotModelRequired: true as const }
+            : { cursorModelRequired: true as const }),
     };
   }
   const preferences = await readPreferencesFile().catch(() => null);
@@ -2162,6 +2377,12 @@ async function sendStandaloneChatMessageOnce(
           workspaceId,
           existingTab?.model,
           request.model,
+          {
+            worktreeId: entryId,
+            chatId: request.chatId,
+            executionHarness:
+              request.executionHarness ?? existingTab?.executionHarness,
+          },
         );
         if (sendModelPin !== undefined) {
           request = {
@@ -2210,13 +2431,16 @@ async function sendStandaloneChatMessageOnce(
         // hearing about a Claude default the send would never run.
         if (accountHarness && !dispatchableModel) {
           throw new Error(
-            accountHarness === 'opencode'
-              ? 'Choose an OpenCode model before sending.'
-              : accountHarness === 'copilot'
-                ? 'Choose a Copilot model to send with Copilot, or choose another model.'
-                : 'Choose a Cursor model to send with Cursor, or choose another model.',
+            accountHarness === 'antigravity'
+              ? 'Choose a Google subscription model before sending.'
+              : accountHarness === 'opencode'
+                ? 'Choose an OpenCode model before sending.'
+                : accountHarness === 'copilot'
+                  ? 'Choose a Copilot model to send with Copilot, or choose another model.'
+                  : 'Choose a Cursor model to send with Cursor, or choose another model.',
           );
         }
+        if (accountHarness === 'antigravity') assertAntigravityHarnessEnabled();
         if (accountHarness === 'opencode')
           await assertOpenCodeSelectionAvailable({
             model: dispatchableModel,
@@ -2265,16 +2489,19 @@ async function sendStandaloneChatMessageOnce(
         if (
           policy.cursorModelRequired ||
           policy.copilotModelRequired ||
+          policy.antigravityModelRequired ||
           policy.opencodeModelRequired
         ) {
           // Reached only if the tab changed between the read above and the
           // resolver's own read; same refusal, same message.
           throw new Error(
-            policy.opencodeModelRequired
-              ? 'Choose an OpenCode model before sending.'
-              : policy.copilotModelRequired
-                ? 'Choose a Copilot model to send with Copilot, or choose another model.'
-                : 'Choose a Cursor model to send with Cursor, or choose another model.',
+            policy.antigravityModelRequired
+              ? 'Choose a Google subscription model before sending.'
+              : policy.opencodeModelRequired
+                ? 'Choose an OpenCode model before sending.'
+                : policy.copilotModelRequired
+                  ? 'Choose a Copilot model to send with Copilot, or choose another model.'
+                  : 'Choose a Cursor model to send with Cursor, or choose another model.',
           );
         }
         if (policy.noDispatchableModel) {

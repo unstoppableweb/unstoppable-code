@@ -152,7 +152,7 @@ function PipelineStepRowComponent({
         </div>
       </button>
       {expanded && (
-        <div className="border-t bg-base">
+        <Surface variant="pane" boundary="top">
           <PipelineStepDetail
             executionId={executionId}
             jobId={jobId}
@@ -165,7 +165,7 @@ function PipelineStepRowComponent({
             archivedSource={archivedSource}
             logsEnabled={logsEnabled}
           />
-        </div>
+        </Surface>
       )}
     </Surface>
   );

@@ -320,6 +320,7 @@ function McpToolsBody({
   if (toolsError)
     return (
       <ErrorBanner
+        errorSource="mcp-browse-tools-error"
         className=""
         error={toolsError}
         testId="mcp-browse-tools-error"

@@ -22,6 +22,7 @@ import {
   SlashCommandPendingSpinner,
 } from './SlashCommandPrimitives';
 import { Notice } from './Notice';
+import { Tooltip } from './Tooltip';
 import { EmptyStateRow, ErrorBanner } from './StatusBlocks';
 
 export interface ComposerActionRow {
@@ -237,6 +238,7 @@ export function ComposerActionList({
             </Notice>
           ) : (
             <ErrorBanner
+              errorSource="composer-action-list"
               className=""
               error={error.message}
               {...(error.onRetry ? { onRetry: error.onRetry } : {})}
@@ -311,13 +313,20 @@ export function ComposerActionList({
                         {row.label}
                       </span>
                       {row.description && (
-                        <span
-                          data-action-description
-                          className="min-w-0 truncate text-xs fg-tertiary"
-                          title={row.description}
+                        <Tooltip
+                          label={row.description}
+                          clamp
+                          allowShrink
+                          delay="long"
+                          replayBlock
                         >
-                          {row.description}
-                        </span>
+                          <span
+                            data-action-description
+                            className="min-w-0 truncate text-xs fg-tertiary"
+                          >
+                            {row.description}
+                          </span>
+                        </Tooltip>
                       )}
                     </span>
                     {row.available && <SlashCommandAvailabilityTag />}

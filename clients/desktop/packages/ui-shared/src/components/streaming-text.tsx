@@ -4,6 +4,8 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
+  useState,
   type JSX,
   type ReactNode,
 } from 'react';
@@ -51,6 +53,62 @@ export function useSmoothStreaming(): boolean {
 }
 
 /**
+ * How long text mounting in a transcript that just opened counts as already
+ * there. A window, not one commit: a virtualized transcript mounts its rows
+ * only after it measures. Text landing within it simply shows without typing.
+ */
+const TRANSCRIPT_OPENING_MS = 300;
+
+interface OpeningTranscript {
+  readonly id: string;
+  readonly opened: { id: string | null };
+}
+
+const OpeningTranscriptContext = createContext<OpeningTranscript | null>(null);
+
+/**
+ * One chat's transcript. What it already holds when it opens, a return to a
+ * running chat included, stays on screen rather than typing in again: only
+ * text that arrives while the reader is here is paced. Blocks of a running
+ * turn cannot tell this from their props, since hosts mark the whole turn as
+ * streaming and desktop text mounts whole either way.
+ */
+export function StreamingTranscript({
+  id,
+  hasContent,
+  children,
+}: {
+  readonly id: string;
+  /** False until the transcript has loaded, which keeps it opening. */
+  readonly hasContent: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  const [opened] = useState<OpeningTranscript['opened']>(() => ({ id: null }));
+  useEffect(() => {
+    if (!hasContent) return;
+    const timer = window.setTimeout(() => {
+      opened.id = id;
+    }, TRANSCRIPT_OPENING_MS);
+    return (): void => window.clearTimeout(timer);
+  }, [hasContent, id, opened]);
+  const opening = useMemo(() => ({ id, opened }), [id, opened]);
+  return (
+    <OpeningTranscriptContext.Provider value={opening}>
+      {children}
+    </OpeningTranscriptContext.Provider>
+  );
+}
+
+/** Whether this document mounted inside a transcript that was just opening. */
+export function useMountedInOpeningTranscript(): boolean {
+  const opening = useContext(OpeningTranscriptContext);
+  const [mountedOpening] = useState(
+    () => opening !== null && opening.opened.id !== opening.id,
+  );
+  return mountedOpening;
+}
+
+/**
  * What the smooth renderer compiles with, handed over by `Markdown`. The
  * renderer's chunk imports none of these itself, so it shares no module with
  * the first load and the first load's chunks stay as they were.
@@ -62,7 +120,10 @@ export interface SmoothMarkdownTools {
 }
 
 type SmoothMarkdownComponent = (
-  props: MarkdownProps & { readonly tools: SmoothMarkdownTools },
+  props: MarkdownProps & {
+    readonly tools: SmoothMarkdownTools;
+    readonly alreadyOnScreen: boolean;
+  },
 ) => JSX.Element;
 
 let smoothMarkdown: SmoothMarkdownComponent | null = null;

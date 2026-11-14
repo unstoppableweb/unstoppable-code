@@ -1,3 +1,14 @@
+import {
+  acquireModelRecoveryLease,
+  supersedeModelRecovery,
+  type ModelRecoveryLease,
+  type ModelRecoveryTarget,
+  type ModelRecoveryFreshness,
+} from '@/lib/modelRecoveryLease';
+import {
+  isAntigravityHarnessReleased,
+  getAntigravitySettingsSection,
+} from '@/lib/antigravity-settings';
 import { useOpenCodeChatAvailable } from '@/hooks/useOpenCodeChatAvailable';
 import { useOpenCodeModels } from '@/hooks/useOpenCodeModels';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -42,6 +53,7 @@ import {
   CODEX_MODELS,
   OLLAMA_MODELS,
   getAgentModelAvailability,
+  getChatHarnessOptions,
   getExecutionHarnessForModel,
   getGatewayModelEntry,
   getModelDisplayName,
@@ -83,12 +95,16 @@ import {
   type ModelCatalog,
   type ModelCatalogOption,
   type ModelPickerAutoOption,
+  type ModelPickerGatewayTab,
   type ModelPickerMenuControls,
   type ModelPickerOptionState,
   type ModelPickerMenuProps,
   type ModelPickerSelectionContext,
   type ModelPickerSelectionDisposition,
+  CompactToggleIndicator,
+  preferredGatewayTabId,
 } from '@canopy/ui-shared';
+import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
 import {
   resolveModelRowGate,
   type LockedProviderBehavior,
@@ -105,7 +121,6 @@ import { guestModelGateTitle, guestModelGateToast } from '@/lib/guest-cta-copy';
 import { useIsGuestCredential } from '@/hooks/useIsGuestCredential';
 import { useWorkModelLibraryAccess } from '@/hooks/useModelLibraryAccess';
 import { useComposerWorkIsPersonal } from '@/hooks/useComposerAiCreditsBalance';
-import { isModelBlocked } from '@canopy/desktop-shared/lib/model-policy';
 import {
   useUnlockModelsAction,
   type UnlockModelsResult,
@@ -139,7 +154,17 @@ import {
   type ModelCommitOutcome,
   type PendingModelRecovery,
 } from './ModelRecoveryModal';
-import { Button, Divider } from '@canopy/ui-shared/components';
+import {
+  AgentModelPicker,
+  Button,
+  Divider,
+} from '@canopy/ui-shared/components';
+import {
+  changeSelectedAgent,
+  changeSelectedModel,
+  selectedAgentId,
+} from '@canopy/ui-shared/lib';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 
 // Re-exported from its new home in the pure resolver so the seven existing
 // call sites keep importing it from the picker.
@@ -177,6 +202,7 @@ interface ModelPickerBillingProps {
 }
 
 interface BaseModelPickerProps {
+  triggerControlProps?: ModelPickerMenuProps['triggerControlProps'];
   ownerDocument?: Document;
   lockedProvider?: AgentProviderType;
   /** See {@link LockedProviderBehavior}. Defaults to `'disabled'`. */
@@ -220,6 +246,11 @@ interface BaseModelPickerProps {
   /** Leaves the capsule trigger's chevron off (see `ModelPickerMenu`). */
   hideTriggerChevron?: boolean;
   hideAgents?: boolean;
+  /** Local composers opt in; aliases and Agent definitions keep concrete-only menus. */
+  separateAgents?: boolean;
+  /** Raw form/Home choice, before display-only default pinning. */
+  selectionModel?: ChatModel;
+  workspaceDefaultLabel?: string;
   /**
    * The default model an Agent that inherits the default would run on in this
    * chat.
@@ -253,12 +284,13 @@ interface BaseModelPickerProps {
    * Exists solely so a pending recovery can tell whether the rows it is looking
    * at still belong to the chat that STARTED it. This component survives a
    * chat-tab switch on some surfaces (`CodeReviewModal`), and after one the
-   * gates describe the newly active chat while `recoveryModelChangeRef` still
+   * gates describe the newly active chat while the captured recovery still
    * commits to the original — so a lock read off the current rows would be a
    * verdict about the wrong chat. Omitted by the five config surfaces, which
    * never raise a recovery at all.
    */
   recoveryChatKey?: string;
+  recoveryTarget?: ModelRecoveryTarget;
   /**
    * Owner of the chat this picker belongs to (CAN-3463). The recovery modal and
    * credits CTA ask about THIS owner's organization pool only. Snapshotted when
@@ -271,6 +303,7 @@ interface BaseModelPickerProps {
    * pickers stay excluded.
    */
   allowCursor?: boolean;
+  allowAntigravity?: boolean;
   allowCopilot?: boolean;
   allowOpenCode?: boolean;
   /**
@@ -290,6 +323,8 @@ interface BaseModelPickerProps {
     model: ChatModel,
     billingFramework?: BillingFramework,
     executionHarness?: ModelHarness,
+    isStillWanted?: ModelRecoveryFreshness,
+    retainContinuation?: () => () => void,
   ) => Promise<boolean>;
   /**
    * Per-chat billing framework toggle. When provided, an "AI Credits" switch is
@@ -437,6 +472,7 @@ function orgVendorKey(organizationId: string): string {
 function toModelHarness(value: string | undefined): ModelHarness | undefined {
   return value === 'claude' ||
     value === 'codex' ||
+    value === 'antigravity' ||
     value === 'cursor' ||
     value === 'copilot' ||
     value === 'opencode'
@@ -550,6 +586,159 @@ function organizationGatewayEmptyCatalog(
 }
 
 export function ModelPicker(props: ModelPickerProps): JSX.Element {
+  return props.separateAgents ? (
+    <LocalAgentModelPicker {...props} />
+  ) : (
+    <ConcreteModelPicker {...props} />
+  );
+}
+
+interface LocalAgentSelection {
+  selection: ChatModel | undefined;
+  effectiveModel: ChatModel | undefined;
+  onRemoveAgent: (effectiveModel: ChatModel, harness?: ModelHarness) => void;
+}
+
+function LocalAgentModelPicker(props: ModelPickerProps): JSX.Element {
+  // Registry hydration also updates Agent definitions and their display names.
+  useModelCatalogStore((state) => state.snapshot);
+  const selection =
+    'selectionModel' in props ? props.selectionModel : props.currentModel;
+  const agentId = selectedAgentId(selection);
+  const definition = agentId ? resolveAgentModelDefinition(agentId) : undefined;
+  const base = selection && parseAgentRouteModelId(selection)?.baseModel;
+  const inheritedDefaultModel =
+    props.inheritedDefaultModel && !isAgentModel(props.inheritedDefaultModel)
+      ? props.inheritedDefaultModel
+      : undefined;
+  const effective =
+    base ||
+    (agentId
+      ? definition?.baseModel === 'default'
+        ? inheritedDefaultModel
+        : definition?.baseModel
+      : props.currentModel);
+  const commit = (
+    next: string | undefined,
+    billing?: BillingFramework,
+    harness?: ModelHarness,
+  ): void => {
+    if (next !== undefined) props.onModelChange(next, billing, harness);
+    else if (props.allowWorkspaceDefault)
+      props.onModelChange(undefined, billing, harness);
+  };
+  const compose = (next: string): string =>
+    isAgentModel(next)
+      ? next
+      : (changeSelectedModel(definition ? selection : undefined, next) ?? next);
+  const concreteChange = (
+    next: string | undefined,
+    billing?: BillingFramework,
+    harness?: ModelHarness,
+  ): void => {
+    commit(
+      next === undefined ? changeSelectedModel(selection, next) : compose(next),
+      billing,
+      harness,
+    );
+  };
+  const concreteProps: ModelPickerProps =
+    agentId || props.allowWorkspaceDefault
+      ? {
+          ...props,
+          currentModel: effective ?? '',
+          allowWorkspaceDefault: true,
+          onModelChange: concreteChange,
+        }
+      : {
+          ...props,
+          currentModel: effective ?? '',
+          allowWorkspaceDefault: false,
+          onModelChange: concreteChange,
+        };
+  return (
+    <ConcreteModelPicker
+      {...concreteProps}
+      hideAgents
+      agentSelection={{
+        selection,
+        effectiveModel: effective,
+        onRemoveAgent: (next, harness): void =>
+          commit(next, undefined, harness),
+      }}
+      workspaceDefaultLabel={
+        agentId ? 'Use agent default' : props.workspaceDefaultLabel
+      }
+      {...(props.auto && agentId
+        ? {
+            auto: {
+              ...props.auto,
+              unavailableReason: 'Remove the agent to use Auto',
+              unavailableAction: undefined,
+              onSelect: (): void => undefined,
+            },
+          }
+        : {})}
+      {...(props.onRecoveryCommit
+        ? {
+            onRecoveryCommit: (
+              next: ChatModel,
+              billing?: BillingFramework,
+              harness?: ModelHarness,
+              isStillWanted?: ModelRecoveryFreshness,
+              retainContinuation?: () => () => void,
+            ): Promise<boolean> =>
+              (isStillWanted
+                ? props.onRecoveryCommit?.(
+                    compose(next),
+                    billing,
+                    harness,
+                    isStillWanted,
+                    retainContinuation,
+                  )
+                : props.onRecoveryCommit?.(compose(next), billing, harness)) ??
+              Promise.resolve(false),
+          }
+        : {})}
+      {...(props.onStartNewChat
+        ? {
+            onStartNewChat: (
+              next: ChatModel,
+              billing?: BillingFramework,
+            ): void => props.onStartNewChat?.(compose(next), billing),
+          }
+        : {})}
+    />
+  );
+}
+
+interface RecoveryEpisode {
+  readonly pending: PendingModelRecovery;
+  readonly epoch: number;
+  readonly chatKey: string | undefined;
+  readonly scope: AiCreditsScopeRequest | undefined;
+  readonly lease: ModelRecoveryLease;
+  readonly isCurrent: ModelRecoveryFreshness;
+  readonly retainSelection: () => void;
+  readonly retainContinuation: () => () => void;
+  readonly complete: () => void;
+  readonly isAdmitted: () => boolean;
+  readonly dismiss: () => void;
+  readonly changeModel: (model: ChatModel) => void;
+  readonly commit: ((model: ChatModel) => Promise<boolean>) | undefined;
+  readonly changeBilling: ModelPickerBillingProps['onChange'] | undefined;
+  readonly startNewChat: ModelPickerProps['onStartNewChat'];
+  readonly selectedBilling: BillingFramework | undefined;
+  readonly fallbackBindings: Pick<
+    ModelPickerProps,
+    'onModelChange' | 'onRecoveryCommit'
+  >;
+}
+
+function ConcreteModelPicker(
+  props: ModelPickerProps & { agentSelection?: LocalAgentSelection },
+): JSX.Element {
+  const { agentSelection } = props;
   const {
     currentModel,
     lockedProvider,
@@ -585,6 +774,12 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     auto,
     aiCreditsScope,
   } = props;
+  const antigravityReleased = useFeatureFlagsStore(
+    isAntigravityHarnessReleased,
+  );
+  const antigravityHarnessEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
+  );
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const opencodeEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
@@ -683,106 +878,29 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
   const [billingLoginProvider, setBillingLoginProvider] = useState<
     'claude' | 'codex' | null
   >(null);
-  // The recoverable row the user clicked, snapshotted at click time (§4).
-  const [pendingRecovery, setPendingRecovery] =
-    useState<PendingModelRecovery | null>(null);
-  /**
-   * Identity of the current recovery attempt, used as the modal's `key`.
-   *
-   * Bumped whenever a recovery starts or is replaced (CAN-4703: a guest
-   * fallback that became recoverable hands over to its own recovery), so the
-   * modal's local state and latches start fresh even when two attempts carry
-   * the same model and recovery kind.
-   */
-  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
-  /** {@link aiCreditsScope} as it was when the pending recovery started. */
-  const [recoveryAiCreditsScope, setRecoveryAiCreditsScope] = useState<
-    AiCreditsScopeRequest | undefined
-  >(undefined);
-  /**
-   * What the pending recovery will DO when it commits.
-   *
-   * Derived, never stored. This and `pendingRecovery.intent` are the same fact,
-   * and holding both meant every entry point had to set two things in step —
-   * a drift surface where a future third caller sets one, forgets the other,
-   * and silently takes the wrong commit branch. `ModelRecoveryModal` already
-   * branches on `pending.intent`, so deriving here makes that one value the
-   * single source for both the copy and the commit.
-   */
-  const pendingRecoveryAction = pendingRecovery?.intent ?? 'select-model';
-  /**
-   * The `onChange` belonging to the chat that STARTED a credits recovery.
-   *
-   * Captured when the footer CTA escalates (where `billing` is guaranteed
-   * present), because by the time the recovery commits the prop may be gone —
-   * `ChatInput` omits `billing` while a provider availability read is in
-   * flight, and dropping the change there would let a completed purchase land
-   * with no visible effect.
-   *
-   * Holding the CALLBACK rather than a bare "apply it later" flag is what binds
-   * the intent to its originating chat. `billing.onChange` is rebuilt around
-   * the current target, and some surfaces (e.g. `CodeReviewModal`) keep this
-   * component mounted across a chat switch — so applying "whatever `billing`
-   * shows up next" could enable paid credit routing on a DIFFERENT chat than
-   * the one the user was recovering.
-   */
-  const recoveryBillingOnChangeRef = useRef<
-    ((framework: BillingFramework) => void) | null
-  >(null);
-  /**
-   * The `onModelChange` belonging to the chat that STARTED a row recovery.
-   *
-   * Same reasoning as `recoveryBillingOnChangeRef`, for the other half of the
-   * problem: recovery is asynchronous (sign-in, purchase, Try again), this
-   * component survives a chat-tab switch on some surfaces, and `onModelChange`
-   * is rebuilt around the current chat. Committing through the LIVE prop would
-   * select the recovered model on whichever chat happens to be active when the
-   * user finishes — not the one whose row they clicked.
-   */
-  const recoveryModelChangeRef = useRef<
-    | ((model: ChatModel) => void)
-    | ((model: ChatModel | undefined) => void)
-    | null
-  >(null);
-  /**
-   * {@link recoveryChatKey} as it was when the recovery started, so the commit
-   * can tell whether the currently rendered rows still describe that chat. See
-   * `findRowGate`.
-   */
-  const recoveryChatKeyRef = useRef<string | undefined>(undefined);
-  /**
-   * {@link onRecoveryCommit} as it was when the recovery started.
-   *
-   * Captured for the same reason as `recoveryModelChangeRef`: it is bound to
-   * the ORIGINATING chat, and the live prop may belong to another by the time
-   * the recovery completes.
-   */
-  const recoveryCommitRef = useRef<
-    ((model: ChatModel) => Promise<boolean>) | null
-  >(null);
-  /** Originating host callbacks before the gated row's route overrides. */
-  const recoveryFallbackBindingsRef = useRef<Pick<
-    ModelPickerProps,
-    'onModelChange' | 'onRecoveryCommit'
-  > | null>(null);
-  /** Billing a credits-route recovery was started with, for a new chat. */
-  const recoverySelectedBillingRef = useRef<BillingFramework | undefined>(
-    undefined,
-  );
-  /**
-   * Which recovery episode the in-flight commit belongs to.
-   *
-   * `ModelRecoveryModal` can auto-commit from inside its own account re-read
-   * while still rendering an ENABLED Cancel button, so the user can tear the
-   * recovery down mid-IPC. The commit itself is already on the wire and will
-   * land — that is not cancellable — but everything that happens *after* the
-   * await must not: re-running the teardown for a recovery that is already
-   * gone, and above all calling `onRestoreFocus()`, which would yank the caret
-   * into the composer seconds after the user moved on to something else.
-   *
-   * Bumped by every teardown, so a stale continuation can recognize itself.
-   */
+  const [recoveryEpisode, setRecoveryEpisode] =
+    useState<RecoveryEpisode | null>(null);
+  const episodeRef = useRef<RecoveryEpisode | null>(null);
   const recoveryEpochRef = useRef(0);
+  const ownedLeasesRef = useRef(new Set<ModelRecoveryLease>());
+  const ownedEpisodesRef = useRef(new Set<RecoveryEpisode>());
+  const creditsEpisodeRef = useRef<RecoveryEpisode | null>(null);
+  const localRecoveryKey = useId();
+  const recoveryTargetKey = props.recoveryTarget?.key ?? localRecoveryKey;
+  const pendingRecovery = recoveryEpisode?.pending ?? null;
+  const pendingRecoveryAction = pendingRecovery?.intent ?? 'select-model';
+  const recoveryAttempt = recoveryEpisode?.epoch ?? 0;
+  const recoveryAiCreditsScope = recoveryEpisode?.scope;
+  const recoveryChatKeyRef = useRef<string | undefined>(undefined);
+  const beginSelectionCommand = useCallback((): void => {
+    supersedeModelRecovery(recoveryTargetKey);
+    for (const lease of ownedLeasesRef.current) {
+      if (!lease.isCurrent()) ownedLeasesRef.current.delete(lease);
+    }
+    recoveryEpochRef.current += 1;
+    episodeRef.current = null;
+    setRecoveryEpisode(null);
+  }, [recoveryTargetKey]);
   // Hoisted from `ModelGroup` + `AgentModelGroup`: one subscription instead of
   // two, and the gate is now evaluated once per row rather than once to filter
   // and again to render.
@@ -848,6 +966,14 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     opencodeAvailable && !modelGatewayEnforced,
     cursorMenuOpen,
   );
+  const antigravityModels = catalogSnapshot?.antigravity;
+  const antigravityEnabled =
+    props.allowAntigravity === true &&
+    antigravityHarnessEnabled &&
+    window.platform === 'darwin' &&
+    !modelGatewayEnforced;
+  const antigravityAvailable =
+    antigravityEnabled && Boolean(antigravityModels?.length);
   const opencodeModels = opencodeCatalog.models;
   const copilotModels = copilotCatalog.models;
   const cursorModels = cursorCatalog.models;
@@ -985,6 +1111,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         staleAgent,
         modelGatewayEnforced,
         organizationName: activeOrganizationName,
+        personalOwner,
         isGuest,
         libraryAccess,
       });
@@ -1008,11 +1135,36 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
      */
     const agents: ModelRow[] = [];
     for (const model of AGENT_MODELS) {
+      if (agentSelection) {
+        const intended =
+          changeSelectedAgent(
+            agentSelection.selection,
+            model,
+            agentSelection.effectiveModel,
+          ) ?? model;
+        const route = pinInheritingAgentModel(intended, inheritedDefaultModel);
+        const routeBase =
+          parseAgentRouteModelId(route)?.baseModel ??
+          resolveAgentModelDefinition(model)?.baseModel;
+        const provider = getProviderForModel(routeBase ?? route) ?? 'claude';
+        if (provider === 'antigravity' && !antigravityAvailable) continue;
+        if (provider === 'cursor' && !cursorAvailable) continue;
+        if (provider === 'copilot' && !copilotAvailable) continue;
+        if (provider === 'opencode' && !opencodeAvailable) continue;
+        const row = resolveRow(
+          route,
+          provider,
+          !getAgentModelAvailability(route).available,
+        );
+        if (row) agents.push({ ...row, model, selectionModel: intended });
+        continue;
+      }
       if (isInheritingAgentModel(model) && inheritedDefaultModel) {
         // Describe and gate the row by the route the chat would store, but
         // send the Agent itself when it is picked.
         const route = pinInheritingAgentModel(model, inheritedDefaultModel);
         const routeProvider = getProviderForModel(route) ?? 'claude';
+        if (routeProvider === 'antigravity' && !antigravityAvailable) continue;
         if (routeProvider === 'cursor' && !cursorAvailable) continue;
         if (routeProvider === 'copilot' && !copilotAvailable) continue;
         if (routeProvider === 'opencode' && !opencodeAvailable) continue;
@@ -1032,6 +1184,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
           (isInheritingAgentModel(model) ? currentProvider : undefined) ??
           'claude')
         : 'claude';
+      if (baseProvider === 'antigravity' && !antigravityAvailable) continue;
       if (baseProvider === 'cursor' && !cursorAvailable) continue;
       if (baseProvider === 'copilot' && !copilotAvailable) continue;
       if (baseProvider === 'opencode' && !opencodeAvailable) continue;
@@ -1094,6 +1247,17 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     };
 
     const groups: ModelRowGroup[] = [
+      ...(antigravityAvailable
+        ? [
+            {
+              key: 'antigravity',
+              rows: buildRows(
+                antigravityModels?.map((model) => model.id) ?? [],
+                'antigravity',
+              ),
+            },
+          ]
+        : []),
       ...(opencodeAvailable
         ? [
             {
@@ -1189,8 +1353,12 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     };
   }, [
     billing?.value,
+    agentSelection?.selection,
+    agentSelection?.effectiveModel,
     separateVendorTabs,
     managedMappings,
+    antigravityAvailable,
+    antigravityModels,
     cursorAvailable,
     cursorModels,
     copilotAvailable,
@@ -1218,6 +1386,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     modelPolicy,
     modelGatewayEnforced,
     activeOrganizationName,
+    personalOwner,
     isGuest,
     libraryAccess,
     onStartNewChat,
@@ -1278,16 +1447,98 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     }
     return labels;
   }, [catalogSnapshot]);
-  const currentOrganizationId = currentModel
-    ? orgGatewayOrganizationId(currentModel)
-    : undefined;
-  const disambiguatedCurrentModelLabel = currentOrganizationId
-    ? `${vendorLabels[orgVendorKey(currentOrganizationId)] ?? 'Your organization'} · ${currentModelLabel}`
-    : currentModelLabel;
+  const hasAgentSelection = agentSelection !== undefined;
   const rowById = useMemo<ReadonlyMap<string, ModelRow>>(
-    () => new Map(visibleRows.map((row) => [row.model, row])),
+    () =>
+      new Map([
+        ...visibleRows.map((row): [string, ModelRow] => [row.model, row]),
+        ...(hasAgentSelection
+          ? agentRows.map((row): [string, ModelRow] => [row.model, row])
+          : []),
+      ]),
+    [visibleRows, agentRows, hasAgentSelection],
+  );
+  // Separate Agent controls still need catalog metadata for harness admission.
+  const catalogById = useMemo<ReadonlyMap<string, ModelCatalogOption>>(
+    () =>
+      new Map([
+        ...catalog.map((option): [string, ModelCatalogOption] => [
+          option.id,
+          option,
+        ]),
+        ...(hasAgentSelection
+          ? agentRows.map((row): [string, ModelCatalogOption] => [
+              row.model,
+              rowToCatalogOption(row),
+            ])
+          : []),
+      ]),
+    [catalog, agentRows, hasAgentSelection],
+  );
+  /**
+   * One rail tab per connected AI gateway, Personal or organization, listing
+   * the rows it serves (CAN-6444). A preset gateway shows its own icon; a
+   * custom one the generic gateway glyph.
+   */
+  const gatewayTabs = useMemo<readonly ModelPickerGatewayTab[]>(() => {
+    const byOrganization = new Map<
+      string,
+      { baseUrl: string | undefined; modelIds: string[] }
+    >();
+    for (const route of catalogSnapshot?.gatewayRoutes ?? []) {
+      if (route.origin !== 'org-gateway' || !route.organizationId) continue;
+      if (!rowById.has(route.modelId)) continue;
+      const gateway = byOrganization.get(route.organizationId) ?? {
+        baseUrl: route.baseUrl,
+        modelIds: [],
+      };
+      gateway.modelIds.push(route.modelId);
+      byOrganization.set(route.organizationId, gateway);
+    }
+    return Array.from(byOrganization, ([organizationId, gateway]) => {
+      const iconProvider = matchAiGatewayPreset(gateway.baseUrl)?.id;
+      return {
+        id: `gateway:${organizationId}` as const,
+        label: vendorLabels[orgVendorKey(organizationId)] ?? 'AI gateway',
+        ...(iconProvider ? { iconProvider } : {}),
+        modelIds: gateway.modelIds,
+      };
+    });
+  }, [catalogSnapshot, rowById, vendorLabels]);
+  // Whether any model outside the user's AI gateways can run here, judged by
+  // the same row gates the picker shows: native Claude and Codex, credits,
+  // Ollama, Cursor, Copilot and OpenCode alike. A gate still loading reads as
+  // available, so a probe in flight never moves the picker.
+  const builtInRunnable = useMemo(
+    () =>
+      visibleRows.some(
+        (row) =>
+          orgGatewayOrganizationId(row.model) === undefined &&
+          !isAgentModel(row.model) &&
+          row.gate.kind === 'available',
+      ),
     [visibleRows],
   );
+  const preferredTab = preferredGatewayTabId({
+    gatewayTabs,
+    currentModel,
+    builtInRunnable,
+  });
+  /**
+   * Why the chat's current model can't run for this account, from the same
+   * row gate the picker rows use (CAN-6444): a signed-out harness with no AI
+   * Credits, or a model the library needs an account or purchase for. The chip
+   * warns before send instead of the turn failing after it.
+   */
+  const currentModelUnavailableReason = useMemo(() => {
+    const gate = currentModel ? rowById.get(currentModel)?.gate : undefined;
+    if (gate?.kind !== 'recoverable') return undefined;
+    if (gate.recovery.kind === 'needs-billing-source')
+      return MODEL_PICKER_ROW_CUE_COPY.needsBillingSourceHint(
+        getProviderLabel(gate.recovery.provider),
+      );
+    return libraryLockCopy(gate.recovery)?.hint;
+  }, [currentModel, rowById]);
   // A native model can have two billing routes without changing its source
   // identity. Hosted picks use the canonical model, never a Cursor default.
   const creditsRows = useMemo(() => {
@@ -1325,6 +1576,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                 row.gate.cause === 'stale-agent',
               modelGatewayEnforced,
               organizationName: activeOrganizationName,
+              personalOwner,
               isGuest,
               libraryAccess,
             });
@@ -1350,6 +1602,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     modelPolicy,
     modelGatewayEnforced,
     activeOrganizationName,
+    personalOwner,
     isGuest,
     libraryAccess,
   ]);
@@ -1469,19 +1722,19 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
       }
       const selectedOpenCodeChoice =
         executionHarness === 'opencode' &&
-        catalog
-          .find((option) => option.id === row.model)
+        catalogById
+          .get(row.model)
           ?.harnessChoices?.some((choice) => choice.harness === 'opencode');
       const selectedHarness =
         harness ??
         (capturedOpenCode || selectedOpenCodeChoice ? 'opencode' : undefined);
       if (
         selectedHarness === 'opencode' &&
-        getModelSource(row.model) !== 'opencode-managed' &&
+        getModelSource(row.runtimeModel) !== 'opencode-managed' &&
         (!managedMappings.opencode[row.model] ||
           (capturedOpenCode && !isOpenCodeModel(currentModel)))
       ) {
-        const option = catalog.find((entry) => entry.id === row.model);
+        const option = catalogById.get(row.model);
         const choice = option?.harnessChoices?.find(
           (entry) => entry.harness === 'opencode',
         );
@@ -1519,6 +1772,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
           staleAgent: option?.available === false,
           modelGatewayEnforced,
           organizationName: activeOrganizationName,
+          personalOwner,
           isGuest,
           libraryAccess,
         });
@@ -1558,6 +1812,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         staleAgent: false,
         modelGatewayEnforced,
         organizationName: activeOrganizationName,
+        personalOwner,
         isGuest,
         libraryAccess,
       });
@@ -1566,10 +1821,11 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         : { ...row, runtimeModel, selectionModel: undefined, provider, gate };
     },
     [
-      catalog,
+      catalogById,
       executionHarness,
       opencodeAvailable,
       activeOrganizationName,
+      personalOwner,
       billing?.value,
       currentModel,
       managedMappings,
@@ -1664,6 +1920,21 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             label: MODEL_PICKER_ROW_CUE_COPY.needsProviderSignIn,
             onUnlock: recover(recovery),
             keepsOrder: true,
+          },
+        };
+      // CAN-6444 — a built-in model this account can't bill (its harness is
+      // signed out and AI Credits can't pay) looked runnable until it was
+      // picked. It now shows the lock, with no label repeated on every row,
+      // and sinks below the models that can run; a click still opens the same
+      // recovery.
+      if (recovery.kind === 'needs-billing-source')
+        return {
+          disabled: false,
+          locked: {
+            hint: MODEL_PICKER_ROW_CUE_COPY.needsBillingSourceHint(
+              getProviderLabel(recovery.provider),
+            ),
+            onUnlock: recover(recovery),
           },
         };
       return { disabled: false };
@@ -1765,7 +2036,10 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         : undefined);
     return {
       selected: auto.selected,
-      onSelect: auto.onSelect,
+      onSelect: (): void => {
+        beginSelectionCommand();
+        auto.onSelect();
+      },
       ...(unavailableReason ? { unavailableReason } : {}),
       // The action fixes the host's reason only; a candidate-count reason has
       // nothing to open.
@@ -1776,6 +2050,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     };
   }, [
     auto,
+    beginSelectionCommand,
     catalog,
     currentProvider,
     currentModel,
@@ -1790,43 +2065,138 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
    * recovery resolved at THIS moment. The modal never re-derives its branch
    * from live props; see §4.
    */
+  const startRecovery = (
+    pending: PendingModelRecovery,
+    billingFramework?: BillingFramework,
+    selectedHarness?: ModelHarness,
+    transferred?: RecoveryEpisode,
+    showModal = true,
+  ): RecoveryEpisode | undefined => {
+    if (!transferred) beginSelectionCommand();
+    const target = props.recoveryTarget;
+    const lease =
+      transferred?.lease ??
+      acquireModelRecoveryLease(
+        target ?? {
+          key: recoveryTargetKey,
+          capture: (): undefined => undefined,
+        },
+        (): void => {
+          ownedLeasesRef.current.delete(lease);
+          for (const owned of ownedEpisodesRef.current)
+            if (owned.lease === lease) ownedEpisodesRef.current.delete(owned);
+        },
+      );
+    if (!lease.isCurrent()) return undefined;
+    ownedLeasesRef.current.add(lease);
+    const bindings = transferred?.fallbackBindings ?? {
+      onModelChange: props.onModelChange,
+      onRecoveryCommit,
+    };
+    const epoch = ++recoveryEpochRef.current;
+    const chatKey = transferred?.chatKey ?? recoveryChatKey;
+    let checkoutStarted = false;
+    let continuationHeld = false;
+    const retainContinuation = (): (() => void) => {
+      continuationHeld = true;
+      return lease.revoke;
+    };
+    const isAdmitted = (): boolean => {
+      const live = livePickerRef.current;
+      if (!live.mounted) return false;
+      // Another chat's catalog/disabled state cannot retire the source chat.
+      if (live.chatKey !== chatKey) return true;
+      const row = live.rows.find(
+        (candidate) =>
+          candidate.model === pending.model ||
+          candidate.runtimeModel === pending.model,
+      );
+      return (
+        !live.disabled &&
+        row !== undefined &&
+        !(
+          row.gate.kind === 'hard-disabled' &&
+          (row.gate.cause === 'org-policy' || row.gate.cause === 'stale-agent')
+        )
+      );
+    };
+    const isCurrent: ModelRecoveryFreshness = (requestId): boolean => {
+      if (!isAdmitted()) lease.revoke();
+      return lease.isCurrent(requestId);
+    };
+    const episode: RecoveryEpisode = {
+      pending,
+      epoch,
+      chatKey,
+      lease,
+      isCurrent,
+      isAdmitted,
+      retainContinuation,
+      complete: (): void => {
+        checkoutStarted = false;
+        if (!continuationHeld) lease.revoke();
+      },
+      scope: transferred?.scope ?? aiCreditsScope,
+      retainSelection: (): void => {
+        checkoutStarted = true;
+      },
+      dismiss: (): void => {
+        if (!checkoutStarted && !continuationHeld) lease.revoke();
+      },
+      fallbackBindings: bindings,
+      changeBilling: transferred?.changeBilling ?? billing?.onChange,
+      startNewChat: transferred?.startNewChat ?? onStartNewChat,
+      selectedBilling: billingFramework,
+      changeModel: (model): void => {
+        if (selectedHarness !== undefined)
+          bindings.onModelChange(model, billingFramework, selectedHarness);
+        else if (billingFramework !== undefined)
+          bindings.onModelChange(model, billingFramework);
+        else bindings.onModelChange(model);
+      },
+      commit: bindings.onRecoveryCommit
+        ? (model): Promise<boolean> => {
+            if (target)
+              return (
+                bindings.onRecoveryCommit?.(
+                  model,
+                  billingFramework,
+                  selectedHarness,
+                  isCurrent,
+                  retainContinuation,
+                ) ?? Promise.resolve(false)
+              );
+            if (selectedHarness !== undefined)
+              return (
+                bindings.onRecoveryCommit?.(
+                  model,
+                  billingFramework,
+                  selectedHarness,
+                ) ?? Promise.resolve(false)
+              );
+            if (billingFramework !== undefined)
+              return (
+                bindings.onRecoveryCommit?.(model, billingFramework) ??
+                Promise.resolve(false)
+              );
+            return bindings.onRecoveryCommit?.(model) ?? Promise.resolve(false);
+          }
+        : undefined,
+    };
+    ownedEpisodesRef.current.add(episode);
+    if (showModal) {
+      recoveryChatKeyRef.current = chatKey;
+      episodeRef.current = episode;
+      setRecoveryEpisode(episode);
+    }
+    return episode;
+  };
   const handleRecover = (
     model: ChatModel,
     recovery: ModelRecovery,
     billingFramework?: BillingFramework,
     selectedHarness?: ModelHarness,
   ): void => {
-    recoveryEpochRef.current += 1;
-    recoveryFallbackBindingsRef.current = {
-      onModelChange: props.onModelChange,
-      ...(onRecoveryCommit === undefined ? {} : { onRecoveryCommit }),
-    };
-    // Bind the commit to THIS chat before anything asynchronous happens.
-    recoverySelectedBillingRef.current = billingFramework;
-    recoveryModelChangeRef.current = (selected: ChatModel): void => {
-      if (selectedHarness !== undefined)
-        props.onModelChange(selected, billingFramework, selectedHarness);
-      else if (billingFramework !== undefined)
-        props.onModelChange(selected, billingFramework);
-      else props.onModelChange(selected);
-    };
-    recoveryChatKeyRef.current = recoveryChatKey;
-    recoveryCommitRef.current = onRecoveryCommit
-      ? (selected: ChatModel): Promise<boolean> => {
-          if (selectedHarness !== undefined)
-            return onRecoveryCommit(
-              selected,
-              billingFramework,
-              selectedHarness,
-            );
-          if (billingFramework !== undefined)
-            return onRecoveryCommit(selected, billingFramework);
-          return onRecoveryCommit(selected);
-        }
-      : null;
-    setRecoveryAiCreditsScope(aiCreditsScope);
-    // CAN-4703 — snapshot the guest alternative at the click, like the rest
-    // of the recovery, so the dialog names one model for its whole life.
     const guestFallback =
       recovery.kind === 'needs-account'
         ? resolveGuestModelFallback({
@@ -1835,12 +2205,11 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             rows: recoveryRows,
           })
         : undefined;
-    setRecoveryAttempt((attempt) => attempt + 1);
-    setPendingRecovery({
-      model,
-      recovery,
-      ...(guestFallback === undefined ? {} : { guestFallback }),
-    });
+    startRecovery(
+      { model, recovery, ...(guestFallback ? { guestFallback } : {}) },
+      billingFramework,
+      selectedHarness,
+    );
   };
   handleRecoverRef.current = handleRecover;
 
@@ -1882,16 +2251,18 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
       return 'dismiss';
     }
     if (row.gate.kind === 'hard-disabled') return 'dismiss';
+    beginSelectionCommand();
     // Cursor's copy and a native model already name where they run; only a
     // hosted or local model is told its harness.
-    const source = catalog.find((option) => option.id === modelId)?.source;
+    const option = catalogById.get(modelId);
+    const source = option?.source;
     const selectedHarness = toModelHarness(selection?.harness);
     const returningFromOpenCode =
       (hostedHarness === 'opencode' || currentProvider === 'opencode') &&
       !isOpenCodeModel(currentModel);
-    const openCodeChoice = catalog
-      .find((option) => option.id === modelId)
-      ?.harnessChoices?.some((choice) => choice.harness === 'opencode');
+    const openCodeChoice = option?.harnessChoices?.some(
+      (choice) => choice.harness === 'opencode',
+    );
     let harness: ModelHarness | undefined;
     if (returningFromOpenCode) {
       if (selectedHarness) harness = pickedHarness(selection);
@@ -1907,6 +2278,14 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     ) {
       harness = pickedHarness(selection);
     }
+    // Agent changes name a new route, so the setter cannot infer the old pin.
+    if (
+      agentSelection &&
+      isAgentModel(modelId) &&
+      executionHarnessExplicitlyChosen === true &&
+      selectedHarness
+    )
+      harness = selectedHarness;
     if (harness) props.onModelChange(selected, undefined, harness);
     else props.onModelChange(selected);
     return 'close';
@@ -1930,6 +2309,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
       return 'dismiss';
     }
     if (row.gate.kind === 'hard-disabled') return 'dismiss';
+    beginSelectionCommand();
     // Credits rows are native models, which name their own harness.
     props.onModelChange(row.model, 'ai-credits');
     return 'close';
@@ -1981,6 +2361,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     | 'codex'
     | 'cursor'
     | 'copilot'
+    | 'antigravity'
     | 'opencode'
     | undefined =
     lockedHarness === 'claude' ||
@@ -2036,6 +2417,9 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     ...(lockedProviderBehavior === 'disabled' && lockedTab
       ? { initialTab: lockedTab }
       : {}),
+    ...(gatewayTabs.length > 0 ? { gatewayTabs } : {}),
+    // When the user's gateways hold the only models they can run, open there.
+    ...(preferredTab ? { preferredTab } : {}),
     // Only when the organization is the reason nothing can be picked; a
     // locked harness or a not-yet-loaded gateway list keeps its own rows.
     ...(organizationEmptiedList === 'gateway'
@@ -2070,6 +2454,9 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         : {}),
     },
     runnableHarnesses: [
+      ...(antigravityEnabled && (antigravityReleased || antigravityAvailable)
+        ? [{ id: 'antigravity' as const, connected: antigravityAvailable }]
+        : []),
       ...(props.allowOpenCode === true && opencodeEnabled
         ? [{ id: 'opencode' as const, connected: opencodeAvailable }]
         : []),
@@ -2097,6 +2484,10 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     onConnectHarness: (harness): void => {
       if (harness === 'claude' || harness === 'codex') {
         setBillingLoginProvider(harness);
+      } else if (harness === 'antigravity') {
+        useNavigationStore
+          .getState()
+          .openSettings(getAntigravitySettingsSection());
       } else if (harness === 'cursor') {
         useNavigationStore.getState().openSettings(getCursorSettingsSection());
       } else if (harness === 'copilot') {
@@ -2133,8 +2524,10 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                 handleSelectCredits(modelId);
                 return;
               }
-              if (next !== billing.value || canConfirmSubscription)
+              if (next !== billing.value || canConfirmSubscription) {
+                beginSelectionCommand();
                 billing.onChange(next);
+              }
             },
           },
         }
@@ -2156,7 +2549,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
    *
    * Still key-guarded. This component survives a chat-tab switch on some surfaces
    * (`CodeReviewModal`), and after one these gates belong to the newly active
-   * chat while `recoveryModelChangeRef` still commits to the original — so a
+   * chat while the captured recovery still commits to the original — so a
    * lock read here would be a verdict about a different chat, able to block a
    * perfectly valid commit. When the keys do not match we cannot see the
    * originating chat at all, so we decline to judge and let the commit through.
@@ -2222,25 +2615,21 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
    */
   const clearPendingRecovery = useCallback(
     (options: { readonly restoreFocus?: boolean } = {}): void => {
-      setPendingRecovery(null);
+      const episode = episodeRef.current;
+      episode?.dismiss();
+      episodeRef.current = null;
+      setRecoveryEpisode(null);
       // Retire this episode so an already-issued commit that settles after this
       // point cannot run its post-await teardown or steal focus.
       recoveryEpochRef.current += 1;
-      recoverySelectedBillingRef.current = undefined;
-      // A cancelled recovery must not leave a live callback behind for some
-      // later commit to fire.
-      recoveryBillingOnChangeRef.current = null;
-      recoveryModelChangeRef.current = null;
-      recoveryCommitRef.current = null;
-      recoveryFallbackBindingsRef.current = null;
       // Focus too, and not only on the user-driven cancel: the guards below
       // unmount the same modal, and a recovery that self-cancels while focus
       // lives inside it drops focus to `<body>`, stranding a keyboard-only
       // user with no place in the composer to return to.
       if (
         (options.restoreFocus ?? true) &&
-        liveSelectionRef.current.mounted &&
-        liveSelectionRef.current.chatKey === recoveryChatKeyRef.current
+        livePickerRef.current.mounted &&
+        livePickerRef.current.chatKey === recoveryChatKeyRef.current
       ) {
         onRestoreFocusRef.current?.();
       }
@@ -2250,6 +2639,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
 
   /** Guard teardown: same clear, but never steals focus from a child surface. */
   const clearPendingRecoveryFromGuard = useCallback((): void => {
+    episodeRef.current?.lease.revoke();
     clearPendingRecovery({
       restoreFocus: !childSurfaceOwnsFocusRef.current,
     });
@@ -2265,10 +2655,20 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
   // the bang-prefix composer mode: the moment a draft starts with `!`, every
   // render of this picker would yank the caret back into the composer.
   useEffect(() => {
-    if (disabled && pendingRecovery) {
+    if (
+      disabled &&
+      pendingRecovery &&
+      recoveryChatKey === recoveryEpisode?.chatKey
+    ) {
       clearPendingRecoveryFromGuard();
     }
-  }, [disabled, pendingRecovery, clearPendingRecoveryFromGuard]);
+  }, [
+    disabled,
+    pendingRecovery,
+    recoveryChatKey,
+    recoveryEpisode?.chatKey,
+    clearPendingRecoveryFromGuard,
+  ]);
 
   // Guard 2: the pending route left the gated catalog entirely, for example
   // when its account removed the model or a hidden gate took effect. Display
@@ -2279,7 +2679,8 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
   // never fires for it. Guard 3 below is what covers a row that is still
   // listed but has degraded to `hard-disabled`.
   useEffect(() => {
-    if (!pendingRecovery) return;
+    if (!pendingRecovery || recoveryChatKey !== recoveryEpisode?.chatKey)
+      return;
     const stillListed = recoveryRows.some(
       (row) =>
         row.model === pendingRecovery.model ||
@@ -2290,7 +2691,13 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
       // whole point of holding them is that they never outlive it.
       clearPendingRecoveryFromGuard();
     }
-  }, [pendingRecovery, recoveryRows, clearPendingRecoveryFromGuard]);
+  }, [
+    pendingRecovery,
+    recoveryRows,
+    recoveryChatKey,
+    recoveryEpisode?.chatKey,
+    clearPendingRecoveryFromGuard,
+  ]);
 
   // Guard 3: the pending row is STILL LISTED but is no longer recoverable —
   // its gate degraded to `hard-disabled` while the modal was open (an Agent's
@@ -2321,7 +2728,8 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
   //    or otherwise unrelated to the recovery; clearing on its gate would
   //    cancel every billing-mode switch the instant it opened.
   useEffect(() => {
-    if (!pendingRecovery) return;
+    if (!pendingRecovery || recoveryChatKey !== recoveryEpisode?.chatKey)
+      return;
     if (pendingRecoveryAction !== 'select-model') return;
     const row = recoveryRows.find(
       (candidate) =>
@@ -2340,32 +2748,54 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     pendingRecovery,
     pendingRecoveryAction,
     recoveryRows,
+    recoveryChatKey,
+    recoveryEpisode?.chatKey,
     clearPendingRecoveryFromGuard,
   ]);
 
-  /**
-   * This picker's live selection, for the unlock follow-up's "is this still
-   * what the user wants" check. Read through a ref because the check runs
-   * minutes later, from the app root's poll, long after this render.
-   */
-  const liveSelectionRef = useRef({
+  const livePickerRef = useRef({
     mounted: true,
     chatKey: recoveryChatKey,
-    model: currentModel,
+    disabled,
+    rows: recoveryRows,
   });
-  liveSelectionRef.current.chatKey = recoveryChatKey;
-  liveSelectionRef.current.model = currentModel;
+  livePickerRef.current.chatKey = recoveryChatKey;
+  livePickerRef.current.disabled = disabled;
+  livePickerRef.current.rows = recoveryRows;
   useEffect(() => {
-    const live = liveSelectionRef.current;
+    const live = livePickerRef.current;
     live.mounted = true;
+    const owned = ownedLeasesRef.current;
     return (): void => {
       live.mounted = false;
       recoveryEpochRef.current += 1;
-      recoveryCommitRef.current = null;
-      recoveryModelChangeRef.current = null;
-      recoveryFallbackBindingsRef.current = null;
+      for (const lease of owned) lease.revoke();
+      owned.clear();
     };
   }, []);
+
+  useEffect(() => {
+    for (const episode of ownedEpisodesRef.current)
+      if (!episode.isAdmitted()) episode.lease.revoke();
+  }, [disabled, recoveryChatKey, recoveryRows]);
+
+  const canApplyRecovery = (episode: RecoveryEpisode): boolean => {
+    if (episode.isCurrent()) return true;
+    episode.lease.revoke();
+    if (episodeRef.current === episode)
+      clearPendingRecovery({ restoreFocus: false });
+    return false;
+  };
+
+  const commitRecoveryModel = async (
+    episode: RecoveryEpisode,
+    model: ChatModel,
+  ): Promise<boolean> => {
+    if (!canApplyRecovery(episode)) return false;
+    if (episode.commit) return episode.commit(model);
+    episode.changeModel(model);
+    return true;
+  };
 
   /**
    * CAN-4703 — select the guest fallback on the chat that STARTED this
@@ -2379,123 +2809,92 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
    * refused rather than guessed.
    */
   const handleUseGuestFallback = async (
+    episode: RecoveryEpisode,
     fallback: GuestModelFallback,
   ): Promise<GuestFallbackOutcome> => {
     const unavailable: GuestFallbackOutcome = {
       kind: 'blocked',
       reason: guestFallbackUnavailableReason(fallback.label),
     };
-    if (recoveryChatKey !== recoveryChatKeyRef.current) return unavailable;
-    const check = revalidateGuestModelFallback(fallback, recoveryRows);
+    if (
+      episodeRef.current !== episode ||
+      !canApplyRecovery(episode) ||
+      livePickerRef.current.chatKey !== episode.chatKey
+    )
+      return unavailable;
+    const check = revalidateGuestModelFallback(
+      fallback,
+      livePickerRef.current.rows,
+    );
     if (check.kind === 'blocked')
-      return check.reason === undefined
-        ? unavailable
-        : { kind: 'blocked', reason: check.reason };
-    const bindings = recoveryFallbackBindingsRef.current;
-    if (bindings === null) return unavailable;
-    // The candidate row was gated on its own implicit route. Keep the chat
-    // binding, but do not carry the original model's harness or billing choice
-    // into either this selection or a redirected recovery.
-    const fallbackCommit = bindings.onRecoveryCommit;
-    const commit = fallbackCommit
-      ? (model: ChatModel): Promise<boolean> => fallbackCommit(model)
-      : null;
-    const changeModel = (model: ChatModel): void =>
-      bindings.onModelChange(model);
+      return check.reason
+        ? { kind: 'blocked', reason: check.reason }
+        : unavailable;
     if (check.kind === 'recoverable') {
-      // Only a redirect replaces the original recovery's route. A refused or
-      // rejected immediate attempt must leave that recovery intact for sign-in.
-      recoveryCommitRef.current = commit;
-      recoveryModelChangeRef.current = changeModel;
-      recoverySelectedBillingRef.current = undefined;
-      // Retire the gate's episode without tearing down its bindings.
-      recoveryEpochRef.current += 1;
-      setRecoveryAttempt((attempt) => attempt + 1);
-      setPendingRecovery({ model: check.model, recovery: check.recovery });
+      startRecovery(
+        { model: check.model, recovery: check.recovery },
+        undefined,
+        undefined,
+        episode,
+      );
       return { kind: 'redirected' };
     }
-    const epoch = recoveryEpochRef.current;
-    if (commit) {
-      const accepted = await commit(check.model);
-      // Torn down while on the wire: report, but touch nothing (no teardown,
-      // no focus), exactly like a recovered model's commit.
-      if (recoveryEpochRef.current !== epoch)
-        return accepted ? { kind: 'committed' } : unavailable;
-      if (!accepted)
-        return {
-          kind: 'blocked',
-          reason: findRowGate(check.model) ?? LOCKED_COMMIT_FALLBACK_REASON,
-        };
-    } else {
-      changeModel(check.model);
+    const commit = episode.fallbackBindings.onRecoveryCommit;
+    const accepted = commit
+      ? await commit(
+          check.model,
+          undefined,
+          undefined,
+          episode.isCurrent,
+          episode.retainContinuation,
+        )
+      : (episode.fallbackBindings.onModelChange(check.model), true);
+    if (!accepted)
+      return {
+        kind: 'blocked',
+        reason: findRowGate(check.model) ?? LOCKED_COMMIT_FALLBACK_REASON,
+      };
+    if (recoveryEpochRef.current === episode.epoch) {
+      episode.complete();
+      clearPendingRecovery();
     }
-    clearPendingRecovery();
     return { kind: 'committed' };
   };
 
   const unlockModels = useUnlockModelsAction(recoveryAiCreditsScope);
-  /**
-   * CAN-4028 — open browser checkout for the pending recovery and hand the
-   * app root what it needs to finish the job once the server confirms.
-   *
-   * Everything the follow-up uses is CAPTURED HERE, at the click, for the
-   * reason `recoveryModelChangeRef` exists: the purchase takes minutes, this
-   * component survives a chat-tab switch on some surfaces, and the live props
-   * may describe a different chat by then. The captured commit is bound to
-   * the originating chat, so it stays correct even after this modal closes.
-   */
   const handleUnlockPurchase = async (
+    episode: RecoveryEpisode,
     onResumed?: (result: UnlockModelsResult) => void,
   ): Promise<UnlockModelsResult> => {
-    const pending = pendingRecovery;
-    if (!pending) return { outcome: 'failed' };
-    const { model } = pending;
-    const action = pendingRecoveryAction;
-    const commit = recoveryCommitRef.current;
-    const changeModel = recoveryModelChangeRef.current;
-    const changeBilling = recoveryBillingOnChangeRef.current;
-    const chatKey = recoveryChatKeyRef.current;
-    const selectionAtStart = currentModel;
-    const epoch = recoveryEpochRef.current;
+    if (episodeRef.current !== episode || !canApplyRecovery(episode))
+      return { outcome: 'failed' };
+    const { pending, chatKey } = episode;
+    episode.retainSelection();
+    let applied = false;
+    const isStillWanted = (): boolean =>
+      !applied &&
+      livePickerRef.current.chatKey === chatKey &&
+      episode.isCurrent();
     return unlockModels({
       source: 'desktop',
-      modelId: model,
+      modelId: pending.model,
       ...(chatKey !== undefined ? { chatId: chatKey } : {}),
-      ...(onResumed !== undefined ? { onResumed } : {}),
+      ...(onResumed ? { onResumed } : {}),
+      isStillWanted,
       apply: async (): Promise<boolean> => {
+        if (!isStillWanted()) return false;
         let landed: boolean;
-        if (action === 'enable-ai-credits') {
-          changeBilling?.('ai-credits');
-          landed = changeBilling !== null;
-        } else if (commit) {
-          landed = await commit(model);
-        } else if (changeModel) {
-          changeModel(model);
-          landed = true;
-        } else {
-          landed = false;
-        }
-        // Close the modal only if it is still THIS recovery's. After a
-        // dismissal or a newer recovery the epoch has moved on, and tearing
-        // down (or restoring focus) would act on something else.
-        if (landed && recoveryEpochRef.current === epoch) {
-          clearPendingRecoveryFromGuard();
+        if (pending.intent === 'enable-ai-credits') {
+          episode.changeBilling?.('ai-credits');
+          landed = episode.changeBilling !== undefined;
+        } else landed = await commitRecoveryModel(episode, pending.model);
+        if (landed) {
+          applied = true;
+          episode.complete();
+          if (recoveryEpochRef.current === episode.epoch)
+            clearPendingRecovery();
         }
         return landed;
-      },
-      // Never over a newer manual selection, a different chat, or a model
-      // that can no longer be chosen. Each of these means the user (or their
-      // organization) has since decided something else, and the unlock alone
-      // is the right outcome.
-      isStillWanted: (): boolean => {
-        const live = liveSelectionRef.current;
-        return (
-          live.mounted &&
-          live.chatKey === chatKey &&
-          live.model === selectionAtStart &&
-          (isAgentModel(model) || resolveKnownModel(model) !== undefined) &&
-          !isModelBlocked(model, useModelCatalogStore.getState().policy)
-        );
       },
     });
   };
@@ -2534,6 +2933,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             staleAgent: false,
             modelGatewayEnforced,
             organizationName: activeOrganizationName,
+            personalOwner,
             isGuest,
             libraryAccess,
           });
@@ -2552,7 +2952,10 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     setHarnessMenuOpen(false);
     if (choice.gate.kind === 'recoverable')
       handleRecover(choice.model, choice.gate.recovery);
-    else props.onModelChange(choice.model);
+    else {
+      beginSelectionCommand();
+      props.onModelChange(choice.model);
+    }
     return true;
   };
   // Register before publishing the slice so snapshot filtering sees this control.
@@ -2591,7 +2994,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
       : null,
   );
 
-  return (
+  const picker = (
     <div
       ref={rootRef}
       className={`relative flex items-center gap-1${allowTriggerShrink ? ' min-w-0' : ''}`}
@@ -2638,6 +3041,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         </>
       )}
       <ModelPickerMenu
+        triggerControlProps={props.triggerControlProps}
         cursorExperimental={!cursorReleased}
         catalog={catalog}
         libraryAccess={libraryLabelAccess}
@@ -2674,8 +3078,10 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
               )
             : currentModel
         }
-        currentModelLabel={disambiguatedCurrentModelLabel}
-        preferCurrentModelLabel={currentOrganizationId !== undefined}
+        currentModelLabel={currentModelLabel}
+        {...(currentModelUnavailableReason
+          ? { currentModelUnavailableReason }
+          : {})}
         providerType={currentProvider}
         triggerProvider={currentProvider}
         onSelect={handleSelectModel}
@@ -2718,9 +3124,13 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         onRestoreFocus={onRestoreFocus}
         onOpenChange={setCursorMenuOpen}
         allowWorkspaceDefault={allowWorkspaceDefault}
+        workspaceDefaultLabel={props.workspaceDefaultLabel}
         onSelectWorkspaceDefault={
           props.allowWorkspaceDefault
-            ? (): void => props.onModelChange(undefined)
+            ? (): void => {
+                beginSelectionCommand();
+                props.onModelChange(undefined);
+              }
             : undefined
         }
         placeholderLabel={placeholderLabel}
@@ -2747,12 +3157,12 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                         ? harnessStatusLine(footerHarnessStatus)
                         : null}
                       {/* The enforced-gateway filter. No count and no remedy,
-                      deliberately: the models are not coming back while the org
-                      routes everything through its own gateway, so a count would
-                      only invite the reader to look for the control that restores
-                      them. Rendered ahead of (and independently of) the billing
-                      rows, which `resolveChatBillingFramework` hides outright
-                      under enforcement. */}
+                    deliberately: the models are not coming back while the org
+                    routes everything through its own gateway, so a count would
+                    only invite the reader to look for the control that restores
+                    them. Rendered ahead of (and independently of) the billing
+                    rows, which `resolveChatBillingFramework` hides outright
+                    under enforcement. */}
                       {hiddenRows.orgGatewayOnly > 0 ||
                       (personalOwner && modelGatewayEnforced) ? (
                         <div
@@ -2807,6 +3217,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                                   if (billing.disabled) {
                                     return;
                                   }
+                                  beginSelectionCommand();
                                   const nextBilling: BillingFramework =
                                     billing.value === 'ai-credits'
                                       ? 'subscription'
@@ -2865,13 +3276,8 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                                     currentModel !== undefined &&
                                     !isGuestAllowedSelection(currentModel)
                                   ) {
-                                    recoveryBillingOnChangeRef.current =
-                                      billing.onChange;
-                                    recoveryChatKeyRef.current =
-                                      recoveryChatKey;
                                     dismissMenu();
-                                    setRecoveryAiCreditsScope(aiCreditsScope);
-                                    setPendingRecovery({
+                                    startRecovery({
                                       model: currentModel,
                                       recovery: { kind: 'needs-purchase' },
                                       intent: 'enable-ai-credits',
@@ -2883,27 +3289,15 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                                 className={`outline-none flex h-8 w-full items-center justify-between rounded-md px-2 text-s fg-primary/80 transition-colors ${
                                   billing.disabled
                                     ? 'cursor-not-allowed opacity-50'
-                                    : 'hover:bg-subtle focus-visible:bg-subtle'
+                                    : 'group hover:bg-subtle focus-visible:bg-subtle'
                                 }`}
                               >
                                 {/* Verb-framed billing-mode label keeps the chat-wide switch
-                      distinct from the family-grouped model rows above. */}
+                    distinct from the family-grouped model rows above. */}
                                 <span>Use AI Credits</span>
-                                <span
-                                  className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 ${
-                                    billing.value === 'ai-credits'
-                                      ? 'bg-accent'
-                                      : 'bg-fg-primary/25'
-                                  }`}
-                                >
-                                  <span
-                                    className={`inline-block h-3 w-3 rounded-full bg-fg-emphasis shadow-sm transition-transform duration-200 ${
-                                      billing.value === 'ai-credits'
-                                        ? 'translate-x-3.5'
-                                        : 'translate-x-0.5'
-                                    }`}
-                                  />
-                                </span>
+                                <CompactToggleIndicator
+                                  checked={billing.value === 'ai-credits'}
+                                />
                               </button>
                             </RichHoverTooltip>
                           </div>
@@ -2916,24 +3310,24 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                             </div>
                           ) : null}
                           {/* Case E: the rows AI Credits can't pay for are hidden rather than
-                  dimmed, so this note is the only thing that says they exist and
-                  that the toggle brings them back. Sibling of the locked reason,
-                  same visual weight. */}
+                dimmed, so this note is the only thing that says they exist and
+                that the toggle brings them back. Sibling of the locked reason,
+                same visual weight. */}
                           {hiddenRows.notBillableToCredits > 0 ? (
                             <div
                               data-testid="chat-billing-hidden-count"
                               className="px-2 text-3xs leading-snug fg-secondary"
                             >
                               {/* Names the REMEDY as well as the count: a shrinking list
-                      otherwise reads as models being gone rather than filtered,
-                      which is the specific failure this note exists to prevent.
+                    otherwise reads as models being gone rather than filtered,
+                    which is the specific failure this note exists to prevent.
 
-                      ...but only when the remedy is actually available. With
-                      credits and no native login the toggle is `disabled`, and
-                      telling someone to turn off a control they cannot operate is
-                      worse than saying nothing: it reads as the user having
-                      missed something. There the note states the filter and
-                      stops. */}
+                    ...but only when the remedy is actually available. With
+                    credits and no native login the toggle is `disabled`, and
+                    telling someone to turn off a control they cannot operate is
+                    worse than saying nothing: it reads as the user having
+                    missed something. There the note states the filter and
+                    stops. */}
                               {billing.disabled
                                 ? hiddenRows.notBillableToCredits === 1
                                   ? '1 model is hidden because AI Credits can’t pay for it.'
@@ -2944,15 +3338,15 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                             </div>
                           ) : null}
                           {/* Case C: the toggle is locked purely because the account has no
-                  credits — which the user can fix. Renders the SAME
-                  `GetAiCreditsCta` as the modal, so the purchase chain, spinner,
-                  hand-off and reprobe are one implementation. `onCovered` flips
-                  the toggle instead of committing a model; that seam is the only
-                  difference from cases A/B.
+                credits — which the user can fix. Renders the SAME
+                `GetAiCreditsCta` as the modal, so the purchase chain, spinner,
+                hand-off and reprobe are one implementation. `onCovered` flips
+                the toggle instead of committing a model; that seam is the only
+                difference from cases A/B.
 
-                  Deliberately absent for `'model-not-routable'` and
-                  `'gateway-only-model'` (case D): those are properties of the
-                  MODEL, not the account, and no purchase changes them. */}
+                Deliberately absent for `'model-not-routable'` and
+                `'gateway-only-model'` (case D): those are properties of the
+                MODEL, not the account, and no purchase changes them. */}
                           {billing.disabled &&
                           billing.lockKind === 'no-credits' ? (
                             <div className="px-2">
@@ -2960,9 +3354,29 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                                 variant="inline"
                                 label={AI_CREDITS_PURCHASE_LABEL}
                                 {...(aiCreditsScope ? { aiCreditsScope } : {})}
-                                onCovered={(): void =>
-                                  billing.onChange('ai-credits')
-                                }
+                                onGetCreditsClick={(): void => {
+                                  if (!currentModel) return;
+                                  creditsEpisodeRef.current =
+                                    startRecovery(
+                                      {
+                                        model: currentModel,
+                                        recovery: { kind: 'needs-credits' },
+                                        intent: 'enable-ai-credits',
+                                      },
+                                      undefined,
+                                      undefined,
+                                      undefined,
+                                      false,
+                                    ) ?? null;
+                                }}
+                                onCovered={(): boolean => {
+                                  const episode = creditsEpisodeRef.current;
+                                  if (!episode || !canApplyRecovery(episode))
+                                    return false;
+                                  episode.changeBilling?.('ai-credits');
+                                  episode.complete();
+                                  return episode.changeBilling !== undefined;
+                                }}
                                 // The browser, like the chat banners: the purchase
                                 // stays tracked here, so Check again works and the
                                 // composer confirms the credits once they land
@@ -2977,22 +3391,18 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                                 {...(currentModel
                                   ? {
                                       onNeedsRecovery: (): void => {
-                                        // Bind the intent to THIS chat's toggle now, while we
-                                        // still have it.
-                                        recoveryBillingOnChangeRef.current =
-                                          billing.onChange;
+                                        const episode =
+                                          creditsEpisodeRef.current;
+                                        if (
+                                          !episode ||
+                                          !canApplyRecovery(episode)
+                                        )
+                                          return;
                                         dismissMenu();
-                                        setRecoveryAiCreditsScope(
-                                          aiCreditsScope,
-                                        );
-                                        setPendingRecovery({
-                                          model: currentModel,
-                                          recovery: { kind: 'needs-credits' },
-                                          // The modal must not tell the user that their
-                                          // CURRENT model needs credits — it usually
-                                          // doesn't. They are switching billing mode.
-                                          intent: 'enable-ai-credits',
-                                        });
+                                        recoveryChatKeyRef.current =
+                                          episode.chatKey;
+                                        episodeRef.current = episode;
+                                        setRecoveryEpisode(episode);
                                       },
                                     }
                                   : {})}
@@ -3082,101 +3492,107 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             ? { aiCreditsScope: recoveryAiCreditsScope }
             : {})}
           onCommit={async (model): Promise<ModelCommitOutcome> => {
-            // Case C commits a BILLING MODE on the current model, which no
-            // provider lock refuses and which no IPC can decline — apply it and
-            // report success without asking anyone.
-            if (pendingRecoveryAction === 'enable-ai-credits') {
-              setPendingRecovery(null);
-              // The originating chat's callback wins over whatever `billing`
-              // currently holds: it survives the prop being dropped mid-read,
-              // and it cannot land on a different chat than the one the user
-              // was recovering. Falling back to the live prop keeps a direct
-              // caller (one that set the action without escalating through the
-              // footer CTA) working.
-              const applyCreditsMode =
-                recoveryBillingOnChangeRef.current ?? billing?.onChange;
-              recoveryBillingOnChangeRef.current = null;
-              recoveryCommitRef.current = null;
-              applyCreditsMode?.('ai-credits');
-              onRestoreFocus?.();
-              return { ok: true };
-            }
-
-            // Row recovery. Ask the ORIGINATING chat's commit and believe its
-            // answer, rather than inferring one from the rendered rows.
-            //
-            // This is what makes the refusal correct across a chat-tab switch:
-            // `setModelAndWait` re-reads that chat's live `lockedProvider` in
-            // main, so a lock that engaged while the modal was open is caught,
-            // and a lock on some OTHER chat the picker happens to be showing is
-            // not mistaken for one on this recovery's chat. Guard 3
-            // deliberately keeps a recovery alive through a transient
-            // `locked-provider`, so arriving here mid-lock is expected.
-            const commit = recoveryCommitRef.current;
-            if (commit) {
-              const epoch = recoveryEpochRef.current;
-              const accepted = await commit(model);
-              if (recoveryEpochRef.current !== epoch) {
-                // Cancelled (or otherwise torn down) while this was on the
-                // wire. The commit landed, but this recovery is gone: its
-                // teardown already ran, and restoring focus now would pull the
-                // caret into the composer long after the user moved on.
-                // Report the outcome without touching anything.
-                return accepted
-                  ? { ok: true }
-                  : {
-                      ok: false,
-                      reason:
-                        findRowGate(model) ?? LOCKED_COMMIT_FALLBACK_REASON,
-                    };
-              }
-              if (!accepted) {
-                // Refused. Keep the recovery — it SUCCEEDED, only the commit
-                // did not land — and let the modal explain with the row's own
-                // lock copy when we can still see that row.
-                return {
-                  ok: false,
-                  reason: findRowGate(model) ?? LOCKED_COMMIT_FALLBACK_REASON,
-                };
-              }
+            const episode = recoveryEpisode;
+            if (
+              !episode ||
+              episodeRef.current !== episode ||
+              !canApplyRecovery(episode)
+            )
+              return { ok: false, reason: LOCKED_COMMIT_FALLBACK_REASON };
+            const accepted =
+              episode.pending.intent === 'enable-ai-credits'
+                ? (episode.changeBilling?.('ai-credits'),
+                  episode.changeBilling !== undefined)
+                : await commitRecoveryModel(episode, model);
+            if (!accepted)
+              return {
+                ok: false,
+                reason: findRowGate(model) ?? LOCKED_COMMIT_FALLBACK_REASON,
+              };
+            if (recoveryEpochRef.current === episode.epoch) {
+              episode.complete();
               clearPendingRecovery();
-              return { ok: true };
             }
-
-            // No reporting commit (a host that predates it). Fall back to the
-            // fire-and-forget path, which cannot tell us anything.
-            const applyModel =
-              recoveryModelChangeRef.current ?? props.onModelChange;
-            applyModel(model);
-            clearPendingRecovery();
             return { ok: true };
           }}
-          {...(onStartNewChat
+          {...(recoveryEpisode?.startNewChat
             ? {
                 onStartNewChat: (model: ChatModel): void => {
-                  setPendingRecovery(null);
-                  // Case H commits nothing to THIS chat, so the captured
-                  // callbacks have no remaining use — and the invariant is that
-                  // both die with the recovery that created them, not that the
-                  // next `handleRecover` happens to overwrite them first.
-                  recoveryBillingOnChangeRef.current = null;
-                  recoveryModelChangeRef.current = null;
-                  recoveryCommitRef.current = null;
-                  if (recoverySelectedBillingRef.current) {
-                    onStartNewChat(model, recoverySelectedBillingRef.current);
-                  } else {
-                    onStartNewChat(model);
-                  }
-                  recoverySelectedBillingRef.current = undefined;
-                  onRestoreFocus?.();
+                  const episode = recoveryEpisode;
+                  if (
+                    episodeRef.current !== episode ||
+                    !canApplyRecovery(episode)
+                  )
+                    return;
+                  episode.startNewChat?.(model, episode.selectedBilling);
+                  if (recoveryEpochRef.current === episode.epoch)
+                    clearPendingRecovery();
                 },
               }
             : {})}
-          onCancel={clearPendingRecovery}
-          onUnlockPurchase={handleUnlockPurchase}
-          onUseGuestFallback={handleUseGuestFallback}
+          onCancel={(): void => {
+            if (recoveryEpisode && episodeRef.current === recoveryEpisode)
+              clearPendingRecovery();
+          }}
+          onUnlockPurchase={(onResumed): Promise<UnlockModelsResult> =>
+            recoveryEpisode
+              ? handleUnlockPurchase(recoveryEpisode, onResumed)
+              : Promise.resolve({ outcome: 'failed' })
+          }
+          onUseGuestFallback={(fallback): Promise<GuestFallbackOutcome> =>
+            recoveryEpisode
+              ? handleUseGuestFallback(recoveryEpisode, fallback)
+              : Promise.resolve({
+                  kind: 'blocked',
+                  reason: LOCKED_COMMIT_FALLBACK_REASON,
+                })
+          }
         />
       ) : null}
     </div>
+  );
+  if (!agentSelection) return picker;
+  const agentChangeHarness = (next: ChatModel): ModelHarness | undefined =>
+    executionHarnessExplicitlyChosen === true &&
+    executionHarness &&
+    getChatHarnessOptions(
+      pinInheritingAgentModel(next, inheritedDefaultModel),
+    ).includes(executionHarness)
+      ? executionHarness
+      : undefined;
+  return (
+    <AgentModelPicker
+      agentRoutesSupported={agentSelection !== undefined}
+      selection={agentSelection?.selection}
+      effectiveModel={agentSelection?.effectiveModel}
+      agents={agentRows.map((listed) => {
+        const state = getOptionState(rowToCatalogOption(listed), {
+          harness: agentChangeHarness(
+            listed.selectionModel ?? listed.runtimeModel,
+          ),
+        });
+        return {
+          id: listed.model,
+          label: getModelDisplayName(listed.model),
+          unavailableReason: state.unavailableReason,
+          description: 'locked' in state ? state.locked?.hint : undefined,
+        };
+      })}
+      onAgentChange={(next): void => {
+        if (next === agentSelection?.selection) return;
+        const id = selectedAgentId(next);
+        if (id)
+          handleSelectModel(id, { harness: agentChangeHarness(next ?? id) });
+        // Removal is a complete selection, not a model pick under this Agent.
+        else if (next) {
+          beginSelectionCommand();
+          agentSelection.onRemoveAgent(next, agentChangeHarness(next));
+        }
+      }}
+      disabled={disabled}
+      capsule={capsule}
+    >
+      {picker}
+    </AgentModelPicker>
   );
 }

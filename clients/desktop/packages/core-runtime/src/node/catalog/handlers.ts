@@ -34,6 +34,7 @@ import {
   CatalogSelectionNotFoundError,
   CatalogSelectionUnavailableError,
   type CatalogHostRefusal,
+  type CatalogPluginTarget,
   type CatalogPublication,
   type CatalogSelectionRead,
   type CatalogSelectionScope,
@@ -294,6 +295,18 @@ export function createCoreCatalogHandlers(options: {
   return {
     queries: {
       'core.catalog.snapshot.get': async (params) => {
+        // The hosted model catalog's revision (CAN-6093); only the web core
+        // advertises it.
+        if (params.revision !== undefined)
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'This core does not serve this revision.',
+            details: { unsupported: ['revision'], reason: 'unserved' },
+            retry: {
+              kind: 'after_refresh',
+              resource: 'core.runtime.manifest.get',
+            },
+          });
         const served: readonly string[] = CORE_CATALOG_SERVED_KINDS;
         if (params.kinds.some((kind) => !served.includes(kind)))
           throw fail(
@@ -804,38 +817,55 @@ export function createCoreCatalogHandlers(options: {
               );
             const noun = params.kind === 'skill' ? 'skill' : 'plugin';
             const publishPlugin = host.publishPlugin?.bind(host);
+            const publishPluginPackage = host.publishPluginPackage?.bind(host);
             const publishSkill = host.publishSkill?.bind(host);
             const pkg = params.package;
+            const options =
+              params.expectedAccountId === undefined
+                ? {}
+                : { expectedAccountId: params.expectedAccountId };
+            // A plugin without a package publishes its public marketplace
+            // source; with one, its consented files upload (CAN-6176 D13).
+            const publishFoundPlugin =
+              (
+                publishTarget: (
+                  target: CatalogPluginTarget,
+                ) => Promise<CatalogPublication>,
+              ): (() => Promise<CatalogPublication>) =>
+              async () => {
+                const target = await host.findPlugin(params.entryId);
+                if (target === null)
+                  throw new CatalogHostRefusedError('plugin-not-found');
+                return publishTarget(target);
+              };
             const publish: (() => Promise<CatalogPublication>) | null =
-              params.kind === 'plugin' &&
-              pkg === undefined &&
-              publishPlugin !== undefined
-                ? async () => {
-                    const target = await host.findPlugin(params.entryId);
-                    if (target === null)
-                      throw new CatalogHostRefusedError('plugin-not-found');
-                    return publishPlugin(target);
-                  }
-                : params.kind === 'skill' &&
-                    pkg !== undefined &&
-                    publishSkill !== undefined
-                  ? () => publishSkill(params.entryId, pkg)
-                  : null;
+              params.kind === 'plugin' && pkg === undefined
+                ? publishPlugin === undefined
+                  ? null
+                  : publishFoundPlugin((target) =>
+                      publishPlugin(target, options),
+                    )
+                : params.kind === 'plugin' && pkg !== undefined
+                  ? publishPluginPackage === undefined
+                    ? null
+                    : publishFoundPlugin((target) =>
+                        publishPluginPackage(target, pkg, options),
+                      )
+                  : params.kind === 'skill' &&
+                      pkg !== undefined &&
+                      publishSkill !== undefined
+                    ? () => publishSkill(params.entryId, pkg, options)
+                    : null;
             if (publish === null)
               throw params.kind === 'skill' && pkg === undefined
                 ? fail(
                     'invalid_argument',
                     'A skill is published with the package the person agreed to.',
                   )
-                : params.kind === 'plugin' && pkg !== undefined
-                  ? fail(
-                      'invalid_argument',
-                      'A plugin is published without a package.',
-                    )
-                  : fail(
-                      'capability_unavailable',
-                      'This entry cannot be published to the cloud from here.',
-                    );
+                : fail(
+                    'capability_unavailable',
+                    'This entry cannot be published to the cloud from here.',
+                  );
             const notFound = (cause?: unknown): CanopyOperationError =>
               fail('not_found', `This ${noun} is not in the catalog.`, {
                 code: 'core.catalog.entryNotFound',
@@ -874,14 +904,52 @@ export function createCoreCatalogHandlers(options: {
                       'failed_precondition',
                       params.kind === 'skill'
                         ? 'Only a custom skill can be added to the cloud from here.'
-                        : "This plugin's marketplace has no public source the cloud can fetch.",
+                        : pkg === undefined
+                          ? "This plugin's marketplace has no public source the cloud can fetch."
+                          : "This plugin's files can't be added to the cloud.",
                       { code: 'core.catalog.entryReadOnly', cause },
                     ),
                   'publish-revision-moved': moved,
+                  // The cloud names the other local marketplace; its message
+                  // carries no secret, only the plugin's and that one's names.
+                  'publish-account-mismatch': (cause) =>
+                    fail(
+                      'failed_precondition',
+                      'This computer is signed in to a different cloud account than the one you chose. Check the account and try again.',
+                      {
+                        code: 'core.catalog.accountMismatch',
+                        retry: {
+                          kind: 'after_refresh',
+                          resource: CORE_CATALOG_ENTRY_RESOURCE,
+                        },
+                        cause,
+                      },
+                    ),
+                  'publish-name-taken': (cause) =>
+                    fail(
+                      'already_exists',
+                      cause instanceof Error && cause.message.trim() !== ''
+                        ? cause.message
+                        : 'A plugin of this name from another marketplace is already in your cloud marketplace. Remove it first or rename this one.',
+                      { code: 'core.catalog.entryNameTaken', cause },
+                    ),
+                  'publish-package-blocked': (cause) =>
+                    fail(
+                      'failed_precondition',
+                      `This ${noun} has a file or dependency that can't be added to the cloud. Check its files again.`,
+                      {
+                        code: 'core.catalog.packageBlocked',
+                        retry: {
+                          kind: 'after_refresh',
+                          resource: CORE_CATALOG_ENTRY_RESOURCE,
+                        },
+                        cause,
+                      },
+                    ),
                   'publish-package-stale': (cause) =>
                     fail(
                       'conflict',
-                      'This skill changed after its files were checked. Check them again.',
+                      `This ${noun} changed after its files were checked. Check them again.`,
                       {
                         code: 'core.catalog.packageStale',
                         retry: {

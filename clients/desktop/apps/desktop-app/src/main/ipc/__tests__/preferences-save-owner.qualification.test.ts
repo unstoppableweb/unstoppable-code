@@ -6,6 +6,13 @@ jest.mock('electron', () => ({
   shell: { openPath: jest.fn() },
 }));
 
+jest.mock('../../lib/native-crash-policy', () => ({
+  nativeCrashAnnotation: {
+    suspendForOptOut: jest.fn(),
+    resumeAfterOptIn: jest.fn(),
+  },
+}));
+
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
 const mockHandlers = new Map<string, Handler>();
 jest.mock('../register', () => ({
@@ -56,6 +63,7 @@ import {
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import type * as PreferencesStoreModule from '../../lib/preferences-store';
+import { nativeCrashAnnotation } from '../../lib/native-crash-policy';
 import {
   registerPreferenceHandlers,
   savePreferencesPatch,
@@ -81,6 +89,29 @@ describe("the window's preferences save as a shared owner (CAN-6004)", () => {
       { navigationMode: 'code' },
     ]);
     expect(fromMain).toMatchObject({ navigationMode: 'code' });
+  });
+
+  it('clears native crash eligibility before saving opt-out and resumes only after opt-in commits', async () => {
+    const suspend = jest.mocked(nativeCrashAnnotation.suspendForOptOut);
+    const resume = jest.mocked(nativeCrashAnnotation.resumeAfterOptIn);
+    suspend.mockImplementationOnce((): void => {
+      expect(mockStore.preferences.usageData.errorReports).toBe(true);
+      expect(mockStore.commits).toHaveLength(0);
+    });
+    await savePreferencesPatch({
+      usageData: { ...mockStore.preferences.usageData, errorReports: false },
+    });
+    expect(suspend).toHaveBeenCalledTimes(1);
+    expect(resume).not.toHaveBeenCalled();
+
+    resume.mockImplementationOnce((): void => {
+      expect(mockStore.preferences.usageData.errorReports).toBe(true);
+      expect(mockStore.commits).toHaveLength(2);
+    });
+    await savePreferencesPatch({
+      usageData: { ...mockStore.preferences.usageData, errorReports: true },
+    });
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it('a precondition runs inside the commit with the stored preferences, and its refusal writes nothing', async () => {

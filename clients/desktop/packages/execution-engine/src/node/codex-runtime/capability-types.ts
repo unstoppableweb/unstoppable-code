@@ -19,6 +19,11 @@ export interface CodexCapabilityLeaseFile {
   version: 1;
   threadId: string;
   snapshotId: string;
+  /**
+   * The fingerprint version `snapshotId` is from: 2 is host-neutral
+   * (CAN-6168); absent is a lease written before it, by fingerprint v1.
+   */
+  fingerprint?: 2;
   rootContentIds: string[];
   kind: 'persisted-chat' | 'persisted-helper' | 'ephemeral';
   reasoningRouteFamily?: string;

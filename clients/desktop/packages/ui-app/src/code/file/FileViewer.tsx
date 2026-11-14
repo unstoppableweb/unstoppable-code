@@ -40,6 +40,7 @@ import {
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
 import type { FileLinkLineLocation } from '@canopy/ui-shared/lib/file-link-line-suffix';
+import { isShortcutEvent } from '../../find/shortcut-target';
 import { FileReadOnlyCode } from './FileReadOnlyCode';
 import { FileOverlapNotice, firstUnresolvedPassage } from './FileOverlapNotice';
 import {
@@ -676,6 +677,12 @@ function FileSaveConflictNotice({
     <Surface variant="section" boundary="bottom">
       <div ref={noticeRef} className="px-3 py-2">
         <Notice
+          errorSource="file-save-conflict-notice"
+          displayErrorCode={
+            conflict.error === null && conflict.reason !== 'read-unavailable'
+              ? 'external.state_changed'
+              : undefined
+          }
           intent="destructive"
           title="Not saved"
           data-testid="file-save-conflict-notice"
@@ -2342,6 +2349,14 @@ function FileViewerBody({
       presentation={previewSearchPresentation}
       controlled={previewSearchControlled}
       onSearchRequest={onPreviewSearchRequest}
+      onViewerKeyDown={(event): void => {
+        // Cmd/Ctrl+S anywhere in an editable viewer saves as Save does, and
+        // never opens the browser's own Save Page dialog (CAN-6506).
+        if (!editable || event.defaultPrevented) return;
+        if (!isShortcutEvent(event.nativeEvent, 's')) return;
+        event.preventDefault();
+        if (session.dirty && session.status !== 'saving') void saveFile(key);
+      }}
       header={
         <>
           {showHeaderRow && (

@@ -1,4 +1,4 @@
-import { Stack } from '@canopy/ui-shared/components';
+import { Stack, CodeBlock } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { Notice } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -84,12 +84,14 @@ export function SplitFailureModal({
                   </span>
                 )}
                 {failure.verifyTail !== undefined && (
-                  <pre
+                  <CodeBlock
                     data-testid="split-failure-verify-tail"
-                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-base/40 p-2 text-2xs`}
+                    variant="snippet"
+                    tone="inherit"
+                    className="max-h-40"
                   >
                     {failure.verifyTail}
-                  </pre>
+                  </CodeBlock>
                 )}
               </Stack>
             ) : undefined

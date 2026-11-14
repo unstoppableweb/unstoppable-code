@@ -16,6 +16,7 @@ import type {
   SaveTrackedPlanCommentsRequest,
   ShareTrackedPlanRequest,
   TrackedPlanData,
+  TrackedPlanListWithSkippedResult,
   TrackedPlanGetRequest,
   TrackedPlanListRequest,
   UnshareTrackedPlanRequest,
@@ -432,6 +433,10 @@ export interface ActivityPanelApi {
   getTurnFileDiff(request: TurnFileDiffRequest): Promise<TurnFileDiffResponse>;
   plans: {
     list(request: TrackedPlanListRequest): Promise<TrackedPlanData[]>;
+    /** `list`, with the stored records it left out (CAN-6666). */
+    listWithSkipped(
+      request: TrackedPlanListRequest,
+    ): Promise<TrackedPlanListWithSkippedResult>;
     get(request: TrackedPlanGetRequest): Promise<TrackedPlanData | null>;
     create(request: CreateTrackedPlanRequest): Promise<TrackedPlanData>;
     update(request: UpdateTrackedPlanRequest): Promise<TrackedPlanData | null>;

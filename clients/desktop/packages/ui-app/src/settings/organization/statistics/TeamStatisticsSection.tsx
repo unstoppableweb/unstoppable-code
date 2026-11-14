@@ -67,8 +67,8 @@ import type {
   CategoryBarChart as CategoryBarChartComponent,
   CategoryDatum,
   StackedTimeSeriesChart as StackedTimeSeriesChartComponent,
-} from './charts';
-import { categoryBarChartHeight } from './chart-layout';
+} from '../../../charts/charts';
+import { categoryBarChartHeight } from '../../../charts/chart-layout';
 import { memberProfileHref } from '../profile-links';
 import { formatProviderLabel } from './run-display';
 import { HeadlineCards } from './HeadlineCards';
@@ -91,12 +91,12 @@ import { Surface } from '@canopy/ui-shared/components';
 
 // recharts loads with the chart chunk, after the statistics shell renders.
 const LazyStackedTimeSeriesChart = lazy(() =>
-  import('./charts').then((module) => ({
+  import('../../../charts/charts').then((module) => ({
     default: module.StackedTimeSeriesChart,
   })),
 );
 const LazyCategoryBarChart = lazy(() =>
-  import('./charts').then((module) => ({
+  import('../../../charts/charts').then((module) => ({
     default: module.CategoryBarChart,
   })),
 );
@@ -544,6 +544,7 @@ export function TeamStatisticsSection({
       </div>
 
       <ErrorBanner
+        errorSource="team-statistics-section"
         error={error?.copy}
         details={error?.details}
         onRetry={() => setReloadToken((token) => token + 1)}

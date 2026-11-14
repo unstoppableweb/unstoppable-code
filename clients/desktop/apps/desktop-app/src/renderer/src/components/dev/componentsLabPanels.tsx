@@ -9,6 +9,7 @@ import {
 import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
 import {
   Button,
+  CodeBlock,
   ComposerDrawer,
   ComposerSuggestionMenu,
   MarkdownCodeBlock,
@@ -27,6 +28,10 @@ import {
   pickListOptionId,
   resolvePickListActiveKey,
   usePickListKeys,
+  type CodeBlockSize,
+  type CodeBlockTone,
+  type CodeBlockVariant,
+  type CodeBlockWrap,
   type PageColumnWidth,
 } from '@canopy/ui-shared/components';
 import { CloseIcon, SkillIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -39,37 +44,233 @@ import {
 
 const noop = (): void => undefined;
 
-/** MarkdownCodeBlock: short, long-line and focused (copy shown) blocks. */
-export function MarkdownCodeBlockSpecimen(): JSX.Element {
+const CODE_SAMPLE = 'pnpm run checks:dirty\npnpm test path/to/file.test.ts';
+const LONG_CODE_LINE =
+  'const message = "a line that is far wider than its column and must scroll sideways instead of wrapping or overflowing";';
+const TALL_CODE = Array.from(
+  { length: 30 },
+  (_, index) => `line ${String(index + 1)}`,
+).join('\n');
+const ANSI_LINES = [
+  '\u001b[32m✓\u001b[0m compiled in 2.1s',
+  '\u001b[33mwarn\u001b[0m a deprecated option is set',
+  '\u001b[31merror\u001b[0m the build failed',
+];
+const LONG_ANSI_LINE =
+  'INSERT INTO very_long_table_name (first_column, second_column, third_column) VALUES (1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12)';
+
+const CODE_BLOCK_VARIANTS: readonly {
+  readonly variant: CodeBlockVariant;
+  readonly label: string;
+}[] = [
+  { variant: 'tint', label: 'Tint: on a card or dialog' },
+  { variant: 'well', label: 'Well: on the code-block fill' },
+  { variant: 'snippet', label: 'Snippet: a command in a row' },
+  { variant: 'row', label: 'Row: a padded section of a card' },
+  { variant: 'bare', label: 'Bare: the host draws the box' },
+  { variant: 'card', label: 'Card: a document on a page' },
+  { variant: 'pane', label: 'Pane: a full-height file view' },
+  { variant: 'warning', label: 'Warning: standard error' },
+];
+const CODE_BLOCK_TONES: readonly CodeBlockTone[] = [
+  'inherit',
+  'primary',
+  'soft',
+  'secondary',
+  'tertiary',
+  'destructive',
+  'warning',
+];
+const CODE_BLOCK_SIZES: readonly CodeBlockSize[] = [
+  'inherit',
+  '2xs',
+  'xs',
+  's',
+];
+const CODE_BLOCK_WRAPS: readonly CodeBlockWrap[] = [
+  'none',
+  'words',
+  'all',
+  'anywhere',
+];
+
+/** The page fill the `panel` surfaces sit on; the sheet itself is that fill. */
+function OnPageFill({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <Surface variant="inset" padding="compact" className="w-full">
+      {children}
+    </Surface>
+  );
+}
+
+/** CodeBlock: every format, and every variant, size, wrap and tone of plain. */
+export function CodeBlockSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Code block chrome (the copy button reveals on hover or focus)">
+      <SpecimenPanel title="Plain: variants">
+        <SpecimenCell label="Panel (default): on the page fill">
+          <OnPageFill>
+            <CodeBlock>{CODE_SAMPLE}</CodeBlock>
+          </OnPageFill>
+        </SpecimenCell>
+        {CODE_BLOCK_VARIANTS.map(({ variant, label }) => (
+          <SpecimenCell key={variant} label={label}>
+            <div className="w-full">
+              <CodeBlock variant={variant}>{CODE_SAMPLE}</CodeBlock>
+            </div>
+          </SpecimenCell>
+        ))}
+      </SpecimenPanel>
+      <SpecimenPanel title="Plain: long lines">
+        {CODE_BLOCK_WRAPS.map((wrap) => (
+          <SpecimenCell key={wrap} label={`Wrap ${wrap}`}>
+            <div className="w-72">
+              <CodeBlock variant="tint" wrap={wrap}>
+                {LONG_CODE_LINE}
+              </CodeBlock>
+            </div>
+          </SpecimenCell>
+        ))}
+      </SpecimenPanel>
+      <SpecimenPanel title="Plain: type and ink">
+        {CODE_BLOCK_SIZES.map((size) => (
+          <SpecimenCell key={size} label={`Size ${size}`}>
+            <div className="w-full text-xs">
+              <CodeBlock variant="tint" size={size}>
+                {CODE_SAMPLE}
+              </CodeBlock>
+            </div>
+          </SpecimenCell>
+        ))}
+        {CODE_BLOCK_TONES.map((tone) => (
+          <SpecimenCell key={tone} label={`Tone ${tone}`}>
+            <div className="w-full">
+              <CodeBlock variant="tint" tone={tone}>
+                {CODE_SAMPLE}
+              </CodeBlock>
+            </div>
+          </SpecimenCell>
+        ))}
+        <SpecimenCell label="Relaxed: 20px lines">
+          <div className="w-full">
+            <CodeBlock variant="tint" relaxed>
+              {CODE_SAMPLE}
+            </CodeBlock>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Sans: verbatim prose">
+          <div className="w-full">
+            <CodeBlock variant="tint" font="sans" size="s" tone="primary">
+              {'Review the plan.\nAsk before changing it.'}
+            </CodeBlock>
+          </div>
+        </SpecimenCell>
+      </SpecimenPanel>
+      <SpecimenPanel title="Plain: height and content">
+        <SpecimenCell label="Capped by the host: scrolls inside">
+          <div className="w-full">
+            <CodeBlock variant="tint" className="max-h-32">
+              {TALL_CODE}
+            </CodeBlock>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Collapsed: clipped, no scrollbar">
+          <div className="w-full">
+            <CodeBlock variant="tint" overflow="hidden" className="max-h-16">
+              {TALL_CODE}
+            </CodeBlock>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Empty">
+          <div className="w-full">
+            <CodeBlock variant="tint" />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Public text: replay not blocked">
+          <div className="w-full">
+            <CodeBlock variant="tint" replay="inherit" selectable>
+              {CODE_SAMPLE}
+            </CodeBlock>
+          </div>
+        </SpecimenCell>
+      </SpecimenPanel>
+      <SpecimenPanel title="ANSI: terminal output, colors kept">
+        <SpecimenCell label="Panel">
+          <OnPageFill>
+            <CodeBlock format="ansi" lines={ANSI_LINES} />
+          </OnPageFill>
+        </SpecimenCell>
+        <SpecimenCell label="Tail: the last lines, one row each">
+          <OnPageFill>
+            <CodeBlock
+              format="ansi"
+              lines={[...ANSI_LINES, LONG_ANSI_LINE]}
+              variant="tail"
+              maxRenderLines={3}
+              truncateLines
+            />
+          </OnPageFill>
+        </SpecimenCell>
+        <SpecimenCell label="Reader: the whole log, in a dialog">
+          <OnPageFill>
+            <CodeBlock format="ansi" lines={ANSI_LINES} variant="reader" />
+          </OnPageFill>
+        </SpecimenCell>
+        <SpecimenCell label="Long line: wraps">
+          <OnPageFill>
+            <CodeBlock format="ansi" lines={[LONG_ANSI_LINE]} />
+          </OnPageFill>
+        </SpecimenCell>
+        <SpecimenCell label="Search: matches are highlighted">
+          <OnPageFill>
+            <CodeBlock format="ansi" lines={ANSI_LINES} searchQuery="the" />
+          </OnPageFill>
+        </SpecimenCell>
+        <SpecimenCell label="Empty: placeholder">
+          <OnPageFill>
+            <CodeBlock
+              format="ansi"
+              lines={[]}
+              placeholder="Waiting for output"
+            />
+          </OnPageFill>
+        </SpecimenCell>
+      </SpecimenPanel>
+      <SpecimenPanel title="Markdown: the copy button reveals on hover or focus">
         <SpecimenCell label="Default" wide>
           <div className="w-full">
-            <MarkdownCodeBlock>
-              <code>
-                {'pnpm run checks:dirty\npnpm test path/to/file.test.ts'}
-              </code>
-            </MarkdownCodeBlock>
+            <CodeBlock format="markdown">
+              <code>{CODE_SAMPLE}</code>
+            </CodeBlock>
           </div>
         </SpecimenCell>
         <SpecimenCell label="Focused: the copy button is visible" wide>
           <div className="w-full">
             <FocusOnMount>
-              <MarkdownCodeBlock aria-label="Install command">
+              <CodeBlock format="markdown" aria-label="Install command">
                 <code>pnpm add @canopy/ui-shared</code>
-              </MarkdownCodeBlock>
+              </CodeBlock>
             </FocusOnMount>
           </div>
         </SpecimenCell>
         <SpecimenCell label="Long line: scrolls inside the block" wide>
           <div className="w-72">
+            <CodeBlock format="markdown">
+              <code>{LONG_CODE_LINE}</code>
+            </CodeBlock>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell
+          label="MarkdownCodeBlock: the renderer Markdown mounts directly"
+          wide
+        >
+          <div className="w-full">
             <MarkdownCodeBlock>
-              <code>
-                {
-                  'const message = "a line that is far wider than its column and must scroll sideways instead of wrapping or overflowing";'
-                }
-              </code>
+              <code>{CODE_SAMPLE}</code>
             </MarkdownCodeBlock>
           </div>
         </SpecimenCell>

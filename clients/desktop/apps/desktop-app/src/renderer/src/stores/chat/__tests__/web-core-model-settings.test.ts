@@ -9,7 +9,10 @@
  * newer one.
  */
 import type { CoreCoworkInvoker } from '@canopy/app-state/core-cowork';
-import type { CatalogEntry } from '@canopy/protocol/canopy-core';
+import type {
+  CanopyErrorPayload,
+  CatalogEntry,
+} from '@canopy/protocol/canopy-core';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import { useChatStore } from '@/stores/chatStore';
 import { createEmptyTab } from '../tab-utils';
@@ -18,6 +21,7 @@ import { closeWebCoreChatBackend } from '../web-core';
 import {
   clearWebCoreModelCatalog,
   loadWebCoreModelCatalog,
+  retryWebCoreModelCatalog,
   useWebCoreModelCatalogStore,
   webCoreModelLabel,
 } from '../web-core/model-catalog';
@@ -349,6 +353,109 @@ describe('the web core model catalog (CAN-6175 R5)', () => {
       ...(useWebCoreModelCatalogStore.getState().byProject[PROJECT]?.keys() ??
         []),
     ]).toEqual(['new-model']);
+  });
+});
+
+describe('a web core model catalog read that fails (CAN-6615)', () => {
+  const unavailable = {
+    ok: false,
+    error: {
+      kind: 'unavailable',
+      message: 'The web core answered HTTP 503.',
+      retry: { kind: 'same_request' },
+    },
+  } as const;
+  /** A web core answering the catalog read from `replies`, then a catalog. */
+  function scriptedCatalog(
+    replies: readonly {
+      readonly ok: false;
+      readonly error: CanopyErrorPayload;
+    }[],
+  ): {
+    invoker: CoreCoworkInvoker;
+    reads: () => number;
+  } {
+    let reads = 0;
+    return {
+      reads: () => reads,
+      invoker: {
+        request: () => {
+          reads += 1;
+          return Promise.resolve(
+            replies[reads - 1] ?? {
+              ok: true,
+              value: {
+                revision: 1,
+                entries: [modelEntry('cloud-model')],
+                generatedAt: AT,
+              },
+            },
+          );
+        },
+        openStream: () => Promise.reject(new Error('unused')),
+      },
+    };
+  }
+  const waits: number[] = [];
+  const wait = (ms: number): Promise<void> => {
+    waits.push(ms);
+    return Promise.resolve();
+  };
+  const models = (): string[] => [
+    ...(useWebCoreModelCatalogStore.getState().byProject[PROJECT]?.keys() ??
+      []),
+  ];
+
+  beforeEach(() => {
+    clearWebCoreModelCatalog();
+    waits.length = 0;
+  });
+
+  it('reads it again after a 503, with a longer wait each time', async () => {
+    const web = scriptedCatalog([unavailable, unavailable]);
+    await loadWebCoreModelCatalog(PROJECT, () => web.invoker, { wait });
+    expect(web.reads()).toBe(3);
+    expect(waits).toHaveLength(2);
+    expect(waits[1]).toBeGreaterThan(waits[0] ?? Infinity);
+    expect(models()).toEqual(['cloud-model']);
+    expect(useWebCoreModelCatalogStore.getState().failed[PROJECT]).toBe(
+      undefined,
+    );
+  });
+
+  it("waits as long as the web core's Retry-After asks, within a bound", async () => {
+    const later = (delayMs: number) =>
+      ({
+        ok: false,
+        error: {
+          ...unavailable.error,
+          retry: { kind: 'same_request', delayMs },
+        },
+      }) as const;
+    const web = scriptedCatalog([later(10_000), later(600_000)]);
+    await loadWebCoreModelCatalog(PROJECT, () => web.invoker, { wait });
+    expect(web.reads()).toBe(3);
+    expect(waits[0]).toBe(10_000);
+    // A far longer ask is capped, so the retry stays bounded.
+    expect(waits[1]).toBe(30_000);
+    expect(models()).toEqual(['cloud-model']);
+  });
+
+  it('gives up after three reads and says so, until Try again reads it', async () => {
+    const web = scriptedCatalog([unavailable, unavailable, unavailable]);
+    await loadWebCoreModelCatalog(PROJECT, () => web.invoker, { wait });
+    expect(web.reads()).toBe(3);
+    expect(models()).toEqual([]);
+    expect(useWebCoreModelCatalogStore.getState().failed[PROJECT]).toBe(true);
+    // Showing the composer again doesn't read it in a loop.
+    await loadWebCoreModelCatalog(PROJECT, () => web.invoker, { wait });
+    expect(web.reads()).toBe(3);
+    await retryWebCoreModelCatalog(PROJECT, () => web.invoker, { wait });
+    expect(web.reads()).toBe(4);
+    expect(models()).toEqual(['cloud-model']);
+    expect(useWebCoreModelCatalogStore.getState().failed[PROJECT]).toBe(
+      undefined,
+    );
   });
 });
 

@@ -358,14 +358,10 @@ export function DataTableHeaderCell({
       : { width, minWidth };
   if (sort === undefined) {
     return (
-      <th
-        scope="col"
-        title={tooltip}
-        data-testid={testId}
-        style={style}
-        className={className}
-      >
-        {labelHidden ? <span className="sr-only">{children}</span> : children}
+      <th scope="col" data-testid={testId} style={style} className={className}>
+        <Tooltip label={tooltip} disabled={!tooltip}>
+          {labelHidden ? <span className="sr-only">{children}</span> : children}
+        </Tooltip>
       </th>
     );
   }
@@ -381,29 +377,30 @@ export function DataTableHeaderCell({
     <th
       scope="col"
       aria-sort={direction === null ? 'none' : ARIA_SORT[direction]}
-      title={tooltip}
       data-testid={testId}
       style={style}
       className={className}
     >
-      <button
-        type="button"
-        data-testid={sort.testId}
-        data-sort-direction={direction ?? 'none'}
-        onClick={sort.onToggle}
-        className={joinClasses(
-          'focus-ring group inline-flex items-center gap-1 rounded-sm font-medium hover:fg-primary',
-          align === 'right' && 'flex-row-reverse',
-          direction !== null && 'fg-primary',
-        )}
-      >
-        {children}
-        <ArrowUpIcon
-          size="xs"
-          aria-hidden="true"
-          className={`shrink-0 ${arrowClassName}`}
-        />
-      </button>
+      <Tooltip label={tooltip} disabled={!tooltip}>
+        <button
+          type="button"
+          data-testid={sort.testId}
+          data-sort-direction={direction ?? 'none'}
+          onClick={sort.onToggle}
+          className={joinClasses(
+            'focus-ring group inline-flex items-center gap-1 rounded-sm font-medium hover:fg-primary',
+            align === 'right' && 'flex-row-reverse',
+            direction !== null && 'fg-primary',
+          )}
+        >
+          {children}
+          <ArrowUpIcon
+            size="xs"
+            aria-hidden="true"
+            className={`shrink-0 ${arrowClassName}`}
+          />
+        </button>
+      </Tooltip>
     </th>
   );
 }

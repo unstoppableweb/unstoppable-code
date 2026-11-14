@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-4070 rule: captured on the unchanged `worktree:diff-stats` and
 // `worktree:diff-stats-batch` IPC handlers before CAN-4103 moved diff-stats
 // computation behind `worker.git.diff.get`. The legacy totals follow the
@@ -170,7 +171,9 @@ function createWorkspace(
   });
 }
 
-beforeAll(() => {
+let closeW5Store: (() => Promise<void>) | undefined;
+
+beforeAll(async () => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'diff-stats-config-')));
   const dataDir = join(dir, 'data');
   for (const id of IDS) createWorkspace(dataDir, id, WORKSPACES[id]);
@@ -195,9 +198,11 @@ beforeAll(() => {
     dispatcher: runtime,
     resolveCaller: (): CanopyCallerDescriptor => desktopCaller,
   });
+  closeW5Store = await installRoutedW5GoldenStore();
 });
 
 afterAll(async () => {
+  await closeW5Store?.();
   await runtime?.shutdown();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;

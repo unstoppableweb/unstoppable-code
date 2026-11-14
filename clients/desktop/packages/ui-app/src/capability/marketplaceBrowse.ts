@@ -92,6 +92,80 @@ export function marketplaceEntryIsInstalled(
   );
 }
 
+/** Keep the selected listing's identity for details and provider actions. */
+export function groupMarketplaceListings(
+  entries: readonly UnifiedPluginEntry[],
+  listings: readonly UnifiedPluginEntry[] = entries,
+): UnifiedPluginEntry[] {
+  const membersByGroup = new Map<string, Map<string, UnifiedPluginEntry>>();
+  for (const entry of listings) {
+    const group = entry.marketplaceGroup;
+    if (!group) continue;
+    const members =
+      membersByGroup.get(group) ?? new Map<string, UnifiedPluginEntry>();
+    members.set(entry.id, entry);
+    membersByGroup.set(group, members);
+  }
+  const visibleIds = new Set(entries.map((entry) => entry.id));
+  const shown = new Set<string>();
+  return entries.flatMap((entry) => {
+    const group = entry.marketplaceGroup;
+    if (!group || !entry.marketplaceProvider) return [entry];
+    const groupListings = [...(membersByGroup.get(group)?.values() ?? [])];
+    const providers = new Set(
+      groupListings.flatMap((listing) => listing.marketplaceProvider ?? []),
+    );
+    if (providers.size < 2) {
+      // After one provider is installed, Browse still offers the other
+      // listing directly and identifies which provider it will install for.
+      const hasOtherProvider = entry.alsoAvailableFrom?.some(
+        (alternative) => alternative.marketplaceVariant !== undefined,
+      );
+      return [
+        entry.state === 'available' && hasOtherProvider
+          ? { ...entry, marketplaceProviders: [entry.marketplaceProvider] }
+          : entry,
+      ];
+    }
+    if (shown.has(group)) return [];
+    shown.add(group);
+    const members = groupListings.filter((member) => visibleIds.has(member.id));
+    const installedHarnesses = members.flatMap(
+      (member) => member.installedHarnesses ?? [],
+    );
+    const pendingSignIns = members.reduce(
+      (count, member) => count + (member.pendingSignIns ?? 0),
+      0,
+    );
+    const bundledServerRows = new Map(
+      members.flatMap((member) =>
+        (member.bundledServerRows ?? []).map(
+          (row) => [row.entryId, row] as const,
+        ),
+      ),
+    );
+    return [
+      {
+        ...entry,
+        marketplaceProviders: [...providers].sort(),
+        marketplaceListings: groupListings,
+        ...(installedHarnesses.length > 0
+          ? {
+              installedHarnesses: {
+                claude: installedHarnesses.some((status) => status.claude),
+                codex: installedHarnesses.some((status) => status.codex),
+              },
+            }
+          : {}),
+        ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
+        ...(bundledServerRows.size > 0
+          ? { bundledServerRows: [...bundledServerRows.values()] }
+          : {}),
+      },
+    ];
+  });
+}
+
 /** One exclusion policy for section previews and standalone Browse pages. */
 export function marketplaceBrowseEntries(
   entries: readonly UnifiedPluginEntry[],
@@ -123,26 +197,27 @@ export function buildMarketplaceBrowseGroups(
     readonly installedStatusStates?: InstalledEntryStatusStates;
   } = {},
 ): MarketplaceBrowseGroup[] {
+  const available = marketplaceBrowseEntries(
+    [
+      ...results.installed.filter(
+        (entry) =>
+          (entry.kind === 'plugin' || entry.kind === 'app') &&
+          !listedAsItsPlugin(entry),
+      ),
+      ...results.curatedPlugins,
+      ...results.curatedApps,
+      ...results.marketplace,
+    ],
+    new Set(),
+    options.installedStatusStates,
+  );
   const browse = curateMarketplaceBrowse(
-    marketplaceBrowseEntries(
-      [
-        ...results.installed.filter(
-          (entry) =>
-            (entry.kind === 'plugin' || entry.kind === 'app') &&
-            !listedAsItsPlugin(entry),
-        ),
-        ...results.curatedPlugins,
-        ...results.curatedApps,
-        ...results.marketplace,
-      ],
-      new Set(),
-      options.installedStatusStates,
-    ),
+    available,
     options.suggestedNames === undefined
       ? undefined
       : { suggestedNames: [...options.suggestedNames] },
   );
-  return [
+  const sections: MarketplaceBrowseGroup[] = [
     { id: 'suggested', title: 'Suggested', entries: browse.featured },
     ...browse.categories.map(
       ({ slug, title, entries }): MarketplaceBrowseGroup => ({
@@ -152,6 +227,24 @@ export function buildMarketplaceBrowseGroups(
       }),
     ),
   ];
+  // Curation chooses the listing eligible for Suggested before we collapse
+  // its provider copies. Suggested claims that group before categories do.
+  const groupedById = new Map(
+    groupMarketplaceListings(
+      sections.flatMap(({ entries }) => entries),
+      available,
+    ).map((entry) => [entry.id, entry]),
+  );
+  return sections
+    .map((section) => ({
+      ...section,
+      entries: section.entries.flatMap(
+        (entry) => groupedById.get(entry.id) ?? [],
+      ),
+    }))
+    .filter(
+      (section) => section.id === 'suggested' || section.entries.length > 0,
+    );
 }
 
 /** Every ranked band, in the order search results list them. */

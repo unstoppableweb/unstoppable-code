@@ -127,7 +127,11 @@ export function InvoicesSection({
           renderLink={(props) => <SettingsLink {...props} />}
         />
       </div>
-      <ErrorBanner className="mt-2" error={error} />
+      <ErrorBanner
+        errorSource="invoices-section"
+        className="mt-2"
+        error={error}
+      />
       {nextCursor !== null && (
         <Button
           size="compact"

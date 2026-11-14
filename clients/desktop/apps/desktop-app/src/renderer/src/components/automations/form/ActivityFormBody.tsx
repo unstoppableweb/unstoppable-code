@@ -1210,6 +1210,7 @@ export function ActivityFormBody({
                   )}
                   {cronGenerationWarning && !cronGenerating && (
                     <Notice
+                      errorSource="automations-form-cron-generation-warning"
                       className=""
                       intent="destructive"
                       data-testid="automations-form-cron-generation-warning"
@@ -1383,6 +1384,7 @@ export function ActivityFormBody({
                 )}
                 {ifCommandWarning && !ifCommandGenerating && (
                   <Notice
+                    errorSource="automations-form-if-command-warning"
                     intent="destructive"
                     data-testid="automations-form-if-command-warning"
                   >
@@ -1563,6 +1565,7 @@ export function ActivityFormBody({
                   }
                 >
                   <ConfigurationChatComposer
+                    allowAgents
                     editorId={`automation-${state.id ?? 'new'}`}
                     dataTestId="automations-form-prompt"
                     draftGeneration={0}
@@ -1735,6 +1738,7 @@ export function ActivityFormBody({
                           : 'Select workflow'}
                       </Button>
                       <ErrorBanner
+                        errorSource="automations-form-model-alias-error"
                         className=""
                         error={modelAliasBlockingError}
                         testId="automations-form-model-alias-error"
@@ -1780,6 +1784,8 @@ export function ActivityFormBody({
       {chatTargetBlockingMessage && (
         <div className="shrink-0 border-t px-4 pt-3">
           <Notice
+            errorSource="automations-form-chat-target-error"
+            displayErrorCode="external.state_changed"
             intent={
               chatTargetStatus === 'unavailable' ? 'destructive' : 'neutral'
             }
@@ -1792,6 +1798,7 @@ export function ActivityFormBody({
       {error && (
         <div className="shrink-0 px-4 pb-3">
           <Notice
+            errorSource="automations-form-error-activity-body"
             className=""
             intent="destructive"
             data-testid="automations-form-error"

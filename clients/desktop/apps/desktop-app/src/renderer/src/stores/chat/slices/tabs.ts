@@ -35,6 +35,8 @@ import { getProviderLabel } from '@/lib/providerLabels';
 import type { ForkedPanelTabBinding } from '@canopy/desktop-shared/panels/fork-layout';
 import { withWorktreeRelocationInstruction } from '@canopy/desktop-shared/lib/pending-system-instructions';
 import { isWebCoreScope } from '@/lib/chat-authority';
+import { isCloudTaskDeleted } from '../web-core/task-deletions';
+import { flushPendingChatDraftWrites } from '@/lib/chatDraftStorage';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useNavigationStore } from '../../navigationStore';
 import { useStartupResumeStore } from '../../startupResumeStore';
@@ -266,6 +268,28 @@ import {
   localChatBackend,
   type ChatBackendScope,
 } from '../backend';
+import { chatScopeKey } from '../revisioned-sync';
+import { CHAT_STATE_COMMAND_FAILED_NOTICE } from '../revisioned-copy';
+
+/**
+ * A refused archive keeps its tab open, and the chat says the change wasn't
+ * saved, as a refused close command does, not only the console (CAN-6511).
+ */
+function chatArchiveRefusedNotice(
+  state: Pick<ChatState, 'chatStateNotices'>,
+  projectId: string,
+  worktreeId: string,
+): Pick<ChatState, 'chatStateNotices'> {
+  return {
+    chatStateNotices: {
+      ...state.chatStateNotices,
+      [chatScopeKey(projectId, worktreeId)]: {
+        kind: 'command_failed',
+        message: CHAT_STATE_COMMAND_FAILED_NOTICE,
+      },
+    },
+  };
+}
 
 /**
  * Display-side enrichment after a revisioned canonical snapshot installed a
@@ -708,7 +732,7 @@ async function finishRevisionedHydration(
 
 function resolveTabExecutionHarness(
   tab: ChatTab,
-): 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' {
+): 'claude' | 'codex' | 'cursor' | 'copilot' | 'antigravity' | 'opencode' {
   return (
     tab.executionHarness ??
     (tab.model ? getExecutionHarnessForModel(tab.model) : undefined) ??
@@ -876,6 +900,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
   },
 
   selectWorktree: (projectId, worktreeId, options): void => {
+    flushPendingChatDraftWrites();
     if (
       !canNavigateToWorktreeFromSidebarItems(
         useProjectsStore.getState().projects,
@@ -2411,6 +2436,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
   },
 
   ensureWorktreeHasChatTab: async (target, options): Promise<void> => {
+    // A cloud task deleted on another device keeps the chat it had and is
+    // never given a starter, which the web core would refuse (CAN-6614).
+    if (isCloudTaskDeleted(target)) return;
     // The shared-container recipient scope is read-only: its chats are
     // projected from the published revision by main, and a share with no
     // chats must stay empty rather than gain a local starter chat.
@@ -2684,9 +2712,11 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
             }
           : {}),
       } as const;
+      let notFound = false;
       const dispatchCreation = (): Promise<ChatCommandDisposition> =>
         get().dispatchChatCommand(target, command, {
           onResult: (result): void => {
+            notFound = result.outcome === 'not_found';
             creationRevision = result.revision;
             existingChatId =
               result.entityId !== undefined && result.entityId !== latestTab.id
@@ -2695,8 +2725,10 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           },
         });
       let disposition = await dispatchCreation();
+      // What the web core no longer holds is never asked for again.
       if (
-        (disposition === 'transport_failed' || disposition === 'conflict') &&
+        (disposition === 'transport_failed' ||
+          (disposition === 'conflict' && !notFound)) &&
         (await waitForChatScopeLive(target.projectId, target.worktreeId))
       ) {
         disposition = await dispatchCreation();
@@ -3132,7 +3164,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     targetModel: ChatModel,
     target?: ChatActionTarget,
     billingFramework?: 'subscription' | 'ai-credits',
+    isStillWanted?: () => boolean,
   ): Promise<ContinueTabOnProviderResult> => {
+    const stale = (): ContinueTabOnProviderResult => ({
+      status: 'failed',
+      message: 'This model choice is no longer current.',
+    });
+    if (isStillWanted?.() === false) return stale();
     const sel = target ?? get().selectedWorktree;
     if (!sel) {
       return { status: 'failed', message: 'No chat target is selected.' };
@@ -3534,6 +3572,7 @@ This chat was continued from a ${getProviderLabel(sourceProviderType)} session t
 ${summary}
 ---`;
 
+    if (isStillWanted?.() === false) return stale();
     const continued: ChatTab = {
       id: nextTabId(),
       title: createContinuedTabTitle(
@@ -5120,6 +5159,9 @@ ${summary}
           clearClosePending();
           // eslint-disable-next-line no-console
           console.error('Failed to archive chat tab on close', error);
+          set((state) =>
+            chatArchiveRefusedNotice(state, projectId, worktreeId),
+          );
         });
       return;
     }
@@ -5612,6 +5654,9 @@ ${summary}
         } catch (error: unknown) {
           // eslint-disable-next-line no-console
           console.error('Failed to archive chat tab on bulk close', error);
+          set((state) =>
+            chatArchiveRefusedNotice(state, sel.projectId, sel.worktreeId),
+          );
           const closeIds = await closeQueuedHookPlaceholders([
             ...nonArchiveIdsToClose,
             ...archivedIdsToClose,

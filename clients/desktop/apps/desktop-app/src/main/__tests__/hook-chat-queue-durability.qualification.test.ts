@@ -308,12 +308,22 @@ async function queueOperation(queueId: string): Promise<OperationRecord> {
   if (!found) throw new Error('Queue operation missing');
   return found;
 }
-async function until(check: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt++) {
-    if (await check()) return;
+/**
+ * Waits for `check`, up to a deadline rather than a count of polls: each poll
+ * reads the ledger, which takes far longer on a loaded CI shard. A stall
+ * names what it waited for.
+ */
+async function until(
+  check: () => boolean | Promise<boolean>,
+  label = 'the hook queue',
+  timeoutMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline)
+      throw new Error(`Hook queue did not settle: waiting for ${label}`);
     await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error('Hook queue did not settle');
 }
 async function saved(
   queueId: string,
@@ -337,6 +347,7 @@ function clearActivity(): void {
 async function finished(queueId: string): Promise<void> {
   await until(
     async () => (await queueOperation(queueId)).status === 'completed',
+    `${queueId} to complete`,
   );
   await until(async () => {
     try {
@@ -345,7 +356,7 @@ async function finished(queueId: string): Promise<void> {
     } catch {
       return true;
     }
-  });
+  }, `${queueId} to leave the queue folder`);
 }
 function queueId(identity: HookChatModule.HookChatLaunchIdentity): string {
   return `queued-hook-${identity.operationId}-${identity.actionIndex}`;
@@ -745,7 +756,7 @@ it.each([true, false])(
           scope: { workspaceId: 'p', worktreeId: 'w' },
         })) !== null
       );
-    });
+    }, 'the start to run and record its claim');
     mockActiveTargets.add('p/w');
     mockBeforePersist = undefined;
     mockBeforeAdmission = undefined;
@@ -763,6 +774,10 @@ it.each([true, false])(
       ).items,
     ).toHaveLength(1);
   },
+  // A launch, a restart that loads the hook chat module afresh, and three
+  // ledger polls: about half a second on a quiet machine, and past Jest's
+  // 5 s default on a loaded CI shard.
+  20_000,
 );
 it('does not confirm a starting cancellation until its ledger write succeeds', async () => {
   const identity = await runIdentity();

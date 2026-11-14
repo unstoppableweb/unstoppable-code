@@ -285,19 +285,44 @@ export function describeCanopyClientConformance(
     });
 
     it('correlates concurrent replies out of order with typed results', async () => {
-      const { client } = await open();
+      const replies = new Map<string, () => void>();
+      let receivedAll = (): void => {};
+      const allReceived = new Promise<void>(
+        (resolve) => (receivedAll = resolve),
+      );
+      const { client } = await open({
+        'core.test.echo': async (params) => {
+          const text = typeof params.text === 'string' ? params.text : '';
+          if (['slow', 'fast!', 'mid'].includes(text))
+            await new Promise<void>((resolve) => {
+              holds.push(resolve);
+              replies.set(text, resolve);
+              if (replies.size === 3) receivedAll();
+            });
+          return { text, length: text.length };
+        },
+      });
       const order: string[] = [];
-      const call = (text: string, delayMs: number): Promise<number> =>
-        client.query('core.test.echo', { text, delayMs }).then((result) => {
+      const call = (text: string): Promise<number> =>
+        client.query('core.test.echo', { text }).then((result) => {
           order.push(result.text);
           return result.length;
         });
-      const lengths = await Promise.all([
-        call('slow', 60),
-        call('fast!', 0),
-        call('mid', 30),
-      ]);
-      expect(lengths).toEqual([4, 5, 3]);
+      const slow = call('slow');
+      const fast = call('fast!');
+      const mid = call('mid');
+      const lengths = Promise.allSettled([slow, fast, mid]);
+      expect(await within(allReceived)).toBeUndefined();
+      // Ordered server sends alone cannot order independent HTTP responses.
+      replies.get('fast!')?.();
+      expect(await within(fast)).toBe(5);
+      replies.get('mid')?.();
+      expect(await within(mid)).toBe(3);
+      replies.get('slow')?.();
+      expect(await within(slow)).toBe(4);
+      expect(await lengths).toEqual(
+        [4, 5, 3].map((value) => ({ status: 'fulfilled', value })),
+      );
       expect(order).toEqual(['fast!', 'mid', 'slow']);
       const large = 'x'.repeat(1024 * 1024);
       await expect(

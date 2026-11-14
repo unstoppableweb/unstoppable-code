@@ -69,6 +69,8 @@ export function matchesHistoryRequest(
       entry.label,
       ...renamedLabelsForEventType(entry.eventType),
       entry.model,
+      entry.agentId,
+      entry.requestedModel,
       entry.projectId,
       entry.worktreeId,
       entry.chatId,

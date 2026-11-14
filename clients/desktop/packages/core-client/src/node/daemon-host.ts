@@ -103,6 +103,7 @@ export const CANOPY_DAEMON_CLAIM_HANDOFF_ENV = 'CANOPY_DAEMON_CLAIM_HANDOFF';
 export const CANOPY_DAEMON_OWNER_HANDOFF = 'stdin-owner-v1';
 const MAX_HANDOFF_BYTES = 4096;
 const MAX_FILE_BYTES = 64 * 1024;
+const MAX_FILE_OBSERVATIONS = 3;
 const FORCED_STOP_MS = 2_000;
 const TOKEN_NAME =
   /^core-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.token$/;
@@ -165,27 +166,55 @@ export function createCanopyDaemonHostLaunch(
     file: string,
     signal: AbortSignal,
   ): Promise<string | null> {
-    try {
-      if ((await lstat(file)).isSymbolicLink())
-        throw failure('Core runtime file is a symbolic link.');
-      await options.verifyPrivateFile(file, signal).catch((error) => {
-        signal.throwIfAborted();
-        throw absent(error) ? error : failure('Core runtime file is exposed.');
+    for (let attempt = 0; attempt < MAX_FILE_OBSERVATIONS; attempt++) {
+      signal.throwIfAborted();
+      const before = await lstat(file, { bigint: true }).catch((error) => {
+        if (absent(error)) return null;
+        throw error;
       });
-      const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
-      const handle = await open(file, flags);
+      if (before === null) return null;
+      if (before.isSymbolicLink())
+        throw failure('Core runtime file is a symbolic link.');
       try {
-        const stat = await handle.stat();
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
-          throw failure('Core runtime file is not a bounded regular file.');
-        return await handle.readFile({ encoding: 'utf8', signal });
-      } finally {
-        await handle.close();
+        try {
+          await options.verifyPrivateFile(file, signal);
+        } catch {
+          signal.throwIfAborted();
+          const current = await lstat(file, { bigint: true }).catch((error) => {
+            if (absent(error)) return null;
+            throw error;
+          });
+          // Publication can unlink the verifier's open inode. Revalidate the new path.
+          if (
+            current === null ||
+            current.dev !== before.dev ||
+            current.ino !== before.ino
+          )
+            continue;
+          throw failure('Core runtime file is exposed.');
+        }
+        signal.throwIfAborted();
+        const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+        const handle = await open(file, flags);
+        try {
+          const stat = await handle.stat({ bigint: true });
+          // Never read a replacement that the permission check did not validate.
+          if (stat.dev !== before.dev || stat.ino !== before.ino) continue;
+          if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
+            throw failure('Core runtime file is not a bounded regular file.');
+          return await handle.readFile({ encoding: 'utf8', signal });
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        if (absent(error)) continue;
+        throw error;
       }
-    } catch (error) {
-      if (absent(error)) return null;
-      throw error;
     }
+    // Churn is not absence: neither spawn from it nor call a live token missing.
+    signal.throwIfAborted();
+    throw failure('Core runtime file changed during read.');
   }
 
   const isOwnToken = (ref: unknown): ref is string =>

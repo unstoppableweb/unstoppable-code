@@ -224,6 +224,33 @@ describe('changed-files paging contract compatibility', () => {
   });
 });
 
+describe('Portal branch picker contract', () => {
+  it('negotiates the branch catalogue independently of the existing create payload', () => {
+    const command = 'portal.worktree.branches.list';
+    expect(PORTAL_COMMAND_TYPES).toContain(command);
+    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
+    expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
+    const query: PortalCommandPayloadMap[typeof command] = {
+      workspaceId: 'ws',
+    };
+    expect(JSON.parse(JSON.stringify(query))).toEqual({ workspaceId: 'ws' });
+    for (const baseBranch of [
+      'refs/heads/develop',
+      'refs/heads/origin/develop',
+      'refs/remotes/origin/develop',
+    ]) {
+      const create: PortalCommandPayloadMap['portal.worktree.create'] = {
+        workspaceId: 'ws',
+        baseBranch,
+      };
+      expect(JSON.parse(JSON.stringify(create))).toEqual({
+        workspaceId: 'ws',
+        baseBranch,
+      });
+    }
+  });
+});
+
 describe('repository owner Portal command', () => {
   it('is a read-only small RPC with a URL payload', () => {
     const command = 'portal.org_projects.find_repository_owner';
@@ -239,6 +266,94 @@ describe('repository owner Portal command', () => {
 });
 
 describe('portal protocol contract', () => {
+  it('preserves explicit local and remote identities through saved JSON payloads', () => {
+    for (const branchName of [
+      'topic',
+      'origin/topic',
+      'heads/topic',
+      'remotes/origin/topic',
+      'refs/heads/topic',
+    ]) {
+      for (const isRemote of [false, true]) {
+        const target = { branchName, isRemote };
+        const baseBranch = portalContract.encodeWorktreeBaseBranch(target);
+        expect(baseBranch).toBe(
+          `${isRemote ? 'remote' : 'local'}:${branchName}`,
+        );
+        const wire: PortalCommandPayloadMap['portal.worktree.create'] = {
+          workspaceId: 'ws',
+          baseBranch,
+          baseBranchEncoding:
+            portalContract.PORTAL_WORKTREE_BASE_BRANCH_ENCODING,
+        };
+        const payload: unknown = JSON.parse(JSON.stringify(wire));
+        expect(payload).toMatchObject({ baseBranchEncoding: 'explicit-v2' });
+        if (
+          typeof payload !== 'object' ||
+          payload === null ||
+          !('baseBranch' in payload) ||
+          typeof payload.baseBranch !== 'string'
+        )
+          throw new Error('Saved branch identity was lost');
+        expect(
+          portalContract.decodeWorktreeBaseBranch(payload.baseBranch),
+        ).toEqual(target);
+      }
+    }
+  });
+
+  it('keeps legacy saved branch meanings without stripping literal prefixes', () => {
+    for (const branchName of [
+      'topic',
+      'heads/topic',
+      'remotes/origin/topic',
+      'refs/heads/topic',
+    ]) {
+      expect(portalContract.decodeWorktreeBaseBranch(branchName)).toEqual({
+        branchName,
+        isRemote: false,
+      });
+    }
+    expect(portalContract.decodeWorktreeBaseBranch('origin/topic')).toEqual({
+      branchName: 'topic',
+      isRemote: true,
+    });
+  });
+
+  it('requires the v2 capability rather than guessing v1 encoding support', () => {
+    expect(portalContract.supportsPortalWorktreeBaseBranch(undefined)).toBe(
+      false,
+    );
+    expect(
+      portalContract.supportsPortalWorktreeBaseBranch({
+        worktree_base_branch_catalog_v1: true,
+      }),
+    ).toBe(false);
+    expect(
+      portalContract.supportsPortalWorktreeBaseBranch({
+        worktree_base_branch_v2: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('refuses malformed or revision branch encodings', () => {
+    for (const value of [
+      '',
+      'local:',
+      'remote:',
+      'other:topic',
+      'local:HEAD',
+      'remote:topic~1',
+      'local:topic^',
+      'local:-topic',
+      'local:topic\u0000',
+      'local:topic\u007f',
+      'local:topic foo',
+    ]) {
+      expect(portalContract.decodeWorktreeBaseBranch(value)).toBeNull();
+    }
+  });
+
   it('keeps project-agent access optional for older Portal clients and pins its full shape', () => {
     const legacySettings = {
       model: 'sonnet',
@@ -2691,6 +2806,33 @@ describe('workspace clone handoff contracts', () => {
     ['/.git///', 'repository'],
   ])('derives %s as %s while preserving supported bare inputs', (url, name) => {
     expect(repositoryNameFromCloneUrl(url)).toBe(name);
+  });
+});
+
+it('registers the additive worktree branch catalog as a small RPC', () => {
+  expect(PORTAL_COMMAND_TYPES).toContain('portal.worktree.branches.list');
+  expect(
+    PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.worktree.branches.list'),
+  ).toBe(true);
+});
+
+describe('standalone Work Entry archive contract', () => {
+  it('returns the archived Work Entry list through the read-only small RPC tier', () => {
+    const command = 'portal.workspace.archived_work_entries.list';
+    expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
+    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
+    expect(PORTAL_LONG_RPC_COMMAND_TYPES.has(command)).toBe(false);
+    expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
+  });
+
+  it('registers archive as a gated command whose ID returns at acceptance', () => {
+    const command = 'portal.standalone_chat.archive';
+    expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
+    expect([...PORTAL_DESTRUCTIVE_COMMAND_TYPES]).toContain(command);
+    // Neither wait tier holds the submit open: the browser follows the
+    // command's delivery and completion events instead.
+    expect([...PORTAL_LONG_RPC_COMMAND_TYPES]).not.toContain(command);
+    expect([...PORTAL_SMALL_RPC_COMMAND_TYPES]).not.toContain(command);
   });
 });
 

@@ -36,6 +36,7 @@ import type {
 } from '@canopy/protocol/foreign-activity';
 import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 import { isCloudProjectSetupProgress } from '@canopy/desktop-shared/lib/cloud-project-setup';
+import { isWebCoreTarget } from '../shared/web-core-scope';
 import {
   isOrgProjectSetupProgress,
   type OrgProjectDeepLinkOpenEvent,
@@ -322,7 +323,9 @@ import { isResourceMonitorSnapshot } from './resource-monitor-validation';
 import { createClaudeTerminalBridge } from './claude-terminal-bridge';
 import { isChatSessionImportedEvent } from './session-transfer-validation';
 import {
+  isDismissSharedContainerOwnerDepartureResult,
   isListDismissedSharedContainersResult,
+  isListSharedContainerOwnerDeparturesResult,
   isRestoreSharedContainerResult,
   isSharedContainerInboxChangedEvent,
   isSharedContainerPublicationState,
@@ -662,6 +665,7 @@ function isApprovalRequestEvent(value: unknown): value is ApprovalRequestEvent {
       value.provider === 'ollama' ||
       value.provider === 'cursor' ||
       value.provider === 'copilot' ||
+      value.provider === 'antigravity' ||
       value.provider === 'opencode') &&
     typeof value.title === 'string' &&
     isOptionalString(value.description) &&
@@ -1448,12 +1452,19 @@ function describeModelRegistrySnapshotRejection(value: unknown): string | null {
 
 function isModelHarness(
   value: unknown,
-): value is 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' {
+): value is
+  | 'claude'
+  | 'codex'
+  | 'cursor'
+  | 'copilot'
+  | 'antigravity'
+  | 'opencode' {
   return (
     value === 'claude' ||
     value === 'codex' ||
     value === 'cursor' ||
     value === 'copilot' ||
+    value === 'antigravity' ||
     value === 'opencode'
   );
 }
@@ -1475,6 +1486,7 @@ function isModelHarnessAssignmentSnapshot(
           assignment.source === 'codex-managed' ||
           assignment.source === 'cursor-managed' ||
           assignment.source === 'copilot-managed' ||
+          assignment.source === 'antigravity-managed' ||
           assignment.source === 'opencode-managed' ||
           assignment.source === 'ai-gateway' ||
           assignment.source === 'ollama') &&
@@ -1897,6 +1909,7 @@ function isAuthTerminalExitEvent(
     value.provider === 'claude' ||
     value.provider === 'codex' ||
     value.provider === 'github' ||
+    value.provider === 'antigravity' ||
     value.provider === 'opencode';
   const exitCodeOk =
     value.exitCode === null ||
@@ -2253,6 +2266,10 @@ function organizationReply<T>(
 const canopyApi: CanopyApi = {
   reloadWindow: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowReload),
   restartApp: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowRestart),
+  waitForWorkspaceStartup: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.appWorkspaceStartupWait),
+  lookUpSelection: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.appWindowLookUpSelection),
   notifyStartupUnlocked: () =>
     ipcRenderer.invoke(IPC_CHANNELS.appStartupUnlocked),
   loadProjects: () => ipcRenderer.invoke(IPC_CHANNELS.projectsLoad),
@@ -2476,10 +2493,16 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.fileTreeDirectory, request),
   mutateFileTree: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.fileTreeMutate, request),
+  // A cloud task's files live in its sandbox, which main never watches: its
+  // explorer reads them again itself (CAN-6395).
   startFileTreeWatch: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStart, request),
+    isWebCoreTarget(request)
+      ? Promise.resolve()
+      : ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStart, request),
   stopFileTreeWatch: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStop, request),
+    isWebCoreTarget(request)
+      ? Promise.resolve()
+      : ipcRenderer.invoke(IPC_CHANNELS.fileTreeWatchStop, request),
   onFileTreeChanged: (callback) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -2549,6 +2572,12 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.worktreeArchive, request),
   checkWorktreeRemovalAdmission: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, request),
+  resolveWorktreeRecovery: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryResolve, request),
+  finishWorktreeRecovery: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryFinish, request),
+  listWorktreeRecovery: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryList, request),
   describeWorktreeDiscard: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeDiscardDescribe, request),
   discardWorktree: (request) =>
@@ -3056,8 +3085,8 @@ const canopyApi: CanopyApi = {
         input,
       ),
   },
-  getModelRegistry: () => {
-    const request = ipcRenderer.invoke(IPC_CHANNELS.modelRegistryGet);
+  getModelRegistry: (input) => {
+    const request = ipcRenderer.invoke(IPC_CHANNELS.modelRegistryGet, input);
     // Log-only here: the live update path rejects, but refusing the startup
     // read too would hide every model if the validator, not the data, is
     // wrong.
@@ -3234,6 +3263,33 @@ const canopyApi: CanopyApi = {
         handler,
       );
     };
+  },
+  localModelGateway: {
+    read: () => ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayRead),
+    update: (input) =>
+      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayUpdate, input),
+    connect: (input) =>
+      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayConnect, input),
+    onChanged: (callback) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(IPC_CHANNELS.localModelGatewayChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.localModelGatewayChanged,
+          handler,
+        );
+      };
+    },
+    onMigrationConflict: (callback) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(IPC_CHANNELS.localModelGatewayMigrationConflict, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.localModelGatewayMigrationConflict,
+          handler,
+        );
+      };
+    },
   },
   loadCanopyCloudAccount: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAccount),
@@ -3453,8 +3509,14 @@ const canopyApi: CanopyApi = {
       : files
           .map((file) => webUtils.getPathForFile(file))
           .filter((path) => path.length > 0),
+  // A cloud task has no folder on this computer: main can't resolve its ids,
+  // and every caller already treats a refused read as no path (CAN-6395).
   getWorktreePath: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
+    isWebCoreTarget(request)
+      ? Promise.reject(
+          new Error('A cloud task has no folder on this computer.'),
+        )
+      : ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
   listWorktreeRepoEntries: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeListRepoEntries, request),
   showInFinder: (request) =>
@@ -3487,6 +3549,8 @@ const canopyApi: CanopyApi = {
     plans: {
       list: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansList, request),
+      listWithSkipped: (request) =>
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansListWithSkipped, request),
       get: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansGet, request),
       create: (request) =>
@@ -3510,8 +3574,14 @@ const canopyApi: CanopyApi = {
       setFileVisibility: (request) =>
         ipcRenderer.invoke(IPC_CHANNELS.trackedPlansFileVisibility, request),
     },
+    // A cloud task is not this computer's: main can't resolve its ids
+    // (CAN-6395).
     stopBgProcess: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
+      isWebCoreTarget(request)
+        ? Promise.reject(
+            new Error('A cloud task has no Stop on this computer.'),
+          )
+        : ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
     startOutputPolling: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityStartOutputPolling, request),
     stopOutputPolling: (request) =>
@@ -4802,6 +4872,26 @@ const canopyApi: CanopyApi = {
       }
       return response;
     },
+    listOwnerDepartures: async () => {
+      const response: unknown = await ipcRenderer.invoke(
+        IPC_CHANNELS.sharedContainersListOwnerDepartures,
+        true, // This preload accepts the optional retryAfterMs in the reply.
+      );
+      if (!isListSharedContainerOwnerDeparturesResult(response)) {
+        throw new Error('Main returned an invalid owner departure listing');
+      }
+      return response;
+    },
+    dismissOwnerDeparture: async (request) => {
+      const response: unknown = await ipcRenderer.invoke(
+        IPC_CHANNELS.sharedContainersDismissOwnerDeparture,
+        request,
+      );
+      if (!isDismissSharedContainerOwnerDepartureResult(response)) {
+        throw new Error('Main returned an invalid owner departure dismissal');
+      }
+      return response;
+    },
     restore: async (request) => {
       const response: unknown = await ipcRenderer.invoke(
         IPC_CHANNELS.sharedContainersRestore,
@@ -5839,6 +5929,24 @@ const canopyApi: CanopyApi = {
     reconnect: () => ipcRenderer.invoke(IPC_CHANNELS.cloudChatsReconnect),
     uploadAttachment: (target, file) =>
       ipcRenderer.invoke(IPC_CHANNELS.cloudChatsUploadAttachment, target, file),
+    downloadFile: (target, file) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudChatsDownloadFile, target, file),
+  },
+  cloudCopy: {
+    analyze: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudCopyAnalyze, request),
+  },
+  cloudReachBack: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.cloudReachBackList),
+    activity: () => ipcRenderer.invoke(IPC_CHANNELS.cloudReachBackActivity),
+    allow: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudReachBackAllow, request),
+    disallow: (serverId, configId) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.cloudReachBackDisallow,
+        serverId,
+        configId,
+      ),
   },
   cloudProjects: {
     findLink: (workspaceId) =>
@@ -6318,6 +6426,8 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesApply, request),
     status: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesStatus, request),
+    check: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.repoRulesCheck, request),
     preview: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.repoRulesPreview, request),
   },

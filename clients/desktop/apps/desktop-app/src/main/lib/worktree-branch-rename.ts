@@ -14,10 +14,7 @@ import {
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { isBranchNameAvailable, validateBranchName } from './git';
-import {
-  getWorkspaceWorktreesFilePath,
-  getWorkspaceWorktreeRepoDir,
-} from './paths';
+import { w5RecordReadPaths, getWorkspaceWorktreeRepoDir } from './paths';
 import { isWritableScope, READ_ONLY_SCOPE_ERROR } from './read-only-scope';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { validateId } from './validation';
@@ -200,7 +197,7 @@ export async function renameWorktreeBranch(
               locks: [
                 {
                   kind: 'list',
-                  path: getWorkspaceWorktreesFilePath(workspaceId),
+                  path: w5RecordReadPaths.worktrees(workspaceId),
                 },
               ],
               expectedRevisions: w5ExpectedRevision(

@@ -214,6 +214,7 @@ export function PipelineRunDetail({
 
       {errorMessage !== undefined && (
         <Notice
+          errorSource="pipeline-run-detail-error"
           intent="destructive"
           role="status"
           data-testid="pipeline-run-detail-error"
@@ -294,6 +295,7 @@ export function PipelineRunDetail({
             )}
             {log.error !== undefined && (
               <Notice
+                errorSource="pipeline-run-detail-log-error"
                 intent="destructive"
                 role="status"
                 data-testid="pipeline-run-detail-log-error"

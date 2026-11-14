@@ -116,6 +116,7 @@ const PERSISTED_PROVIDERS: Readonly<Record<AgentProviderType, true>> = {
   cursor: true,
   opencode: true,
   copilot: true,
+  antigravity: true,
 };
 
 function isPersistedProvider(value: unknown): value is AgentProviderType {
@@ -233,6 +234,7 @@ function isCostTurnRecord(value: unknown): value is CostTurnRecord {
     isPipeline &&
     isProvider &&
     isOptionalString(value.model) &&
+    isOptionalString(value.agentId) &&
     isOptionalString(value.harness) &&
     COST_BILLING_BASES.some((basis) => basis === value.billingBasis) &&
     isTokenTotals(value.tokens) &&

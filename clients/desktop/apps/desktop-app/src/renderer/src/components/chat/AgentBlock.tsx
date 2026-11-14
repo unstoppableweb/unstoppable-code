@@ -5,7 +5,6 @@ import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { isClaudeAgentRunning } from './agent-block-state';
 import { AgentBlockCard } from '@canopy/ui-shared/components';
 import { TaskStopAction } from '@canopy/ui-app';
-import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import type { ToolResult, DisplayBlock } from './types';
 import type { AgentUsage } from '@canopy/desktop-shared/types';
 import {
@@ -13,6 +12,7 @@ import {
   useLiveBackgroundTaskStore,
 } from '@/stores/liveBackgroundTaskStore';
 import { NativeTaskStopContext } from './native-task-stop';
+import { TranscriptSearchRevealContext } from './transcript-search-reveal';
 import { useSubagentOpenChatCallback } from '@/components/subagents/subagent-entry-actions';
 
 interface AgentBlockSubagentIdentity {
@@ -77,9 +77,9 @@ export function AgentBlock({
   subagentIdentity,
   renderSubBlock,
 }: AgentBlockProps): JSX.Element {
-  const displayResult = taskOutputResult ?? result;
   const target = useContext(ChatMarkdownFileTargetContext);
   const nativeStop = useContext(NativeTaskStopContext);
+  const searchReveal = useContext(TranscriptSearchRevealContext);
   const nativeStopTarget = nativeStop?.target;
   const liveTaskId = useLiveBackgroundTaskStore((state) => {
     if (!nativeStopTarget || !toolUseId) return undefined;
@@ -97,14 +97,27 @@ export function AgentBlock({
     subagentIdentity?.id,
     subagentIdentity?.title ?? description,
   );
-  const backgroundStatus = useActivityStore((state) =>
+  const backgroundProcess = useActivityStore((state) =>
     target && chatId && toolUseId
       ? state.bgProcesses[`${target.projectId}/${target.worktreeId}`]?.find(
           (process) =>
             process.chatId === chatId && process.toolUseId === toolUseId,
-        )?.status
+        )
       : undefined,
   );
+  const backgroundStatus = backgroundProcess?.status;
+  // A background agent whose transcript carries no output of its own (a
+  // cloud subagent, whose task row reports how it ended) shows its process's
+  // summary, as an error when it failed.
+  const processResult: ToolResult | undefined =
+    backgroundProcess?.summary !== undefined &&
+    (backgroundStatus === 'completed' || backgroundStatus === 'failed')
+      ? {
+          output: backgroundProcess.summary,
+          isError: backgroundStatus === 'failed',
+        }
+      : undefined;
+  const displayResult = taskOutputResult ?? processResult ?? result;
   const isRunning =
     isRunningOverride ??
     isClaudeAgentRunning(
@@ -141,13 +154,13 @@ export function AgentBlock({
         isRunning={isRunning}
         isError={isError}
         headerAction={headerAction}
-        pendingSpinner={<ThinkingSpinner />}
         usage={usage}
         result={displayResult ? displayResult.output : undefined}
         prompt={prompt}
         model={model}
         reasoningEffort={reasoningEffort}
         onOpenChat={onOpenChat}
+        forceExpanded={searchReveal}
         subBlocks={
           hasSubBlocks
             ? subBlocks.map((block, i) => renderSubBlock(block, i))

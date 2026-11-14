@@ -60,6 +60,7 @@ export function CreditsNoticesSpecimen(): JSX.Element {
           <div className="w-full">
             <CreditsRecoveryNotice
               intent="destructive"
+              errorSource="preview-credit-recovery-send"
               title="Message not sent"
               role="none"
               detailLines={[

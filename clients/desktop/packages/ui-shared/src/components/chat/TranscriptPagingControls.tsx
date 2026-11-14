@@ -76,6 +76,7 @@ export const TranscriptPagingControls = memo(function TranscriptPagingControls({
         // The same 8px room above and below as the loading status.
         <div className="w-full py-2">
           <Notice
+            errorSource="transcript-paging-controls"
             intent="destructive"
             liveRegionScope="content"
             actions={

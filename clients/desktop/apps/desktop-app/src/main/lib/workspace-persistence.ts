@@ -1,3 +1,4 @@
+import { createW5RecordImageRepositories } from '@canopy/core-runtime/node/w5/record-image-repositories';
 import { withW5RepositoryLock } from './w5-repository-locks';
 import { withW5Commit, type W5CommitOptions } from './w5-commit-log-file-store';
 import { deferUntilW5ReadViewCloses } from './w5-read-view';
@@ -61,8 +62,8 @@ import {
 } from '@canopy/core-runtime/node/w5/workspace-metadata/manifest-keys';
 import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import {
-  getWorkspaceConfigPath,
-  getWorkspaceWorktreesFilePath,
+  w5RecordReadPaths,
+  getWorkspacesRootDir,
   getWorktreeDiscoveryFilePath,
 } from './paths';
 import { normalizeLegacyScriptFields } from './script-config';
@@ -80,13 +81,12 @@ import {
   markWorktreePipelineResultsSeen,
 } from './worktree-pipeline-results-seen';
 import {
-  createWorktreeListRepository,
+  withWorktreeDiscovery,
   parseWorktreeList,
   WorktreeRegistryUnreadableError,
   type WorktreeListRead,
 } from './worktree-list-repository';
 import {
-  createWorkspaceManifestRepository,
   WorkspaceConfigUnreadableError,
   type WorkspaceManifestRead,
   type WorkspaceManifestRepository,
@@ -172,14 +172,17 @@ export function setWorktreeRegistryReconciler(
 
 type RawWorkspaceConfigFile = Partial<Record<WorkspaceManifestKey, unknown>>;
 
-const rawWorkspaceManifestRepository = createWorkspaceManifestRepository({
+const recordImages = createW5RecordImageRepositories({
+  root: getWorkspacesRootDir,
   store: desktopW5FileStore,
-  filePath: (workspaceId) => getWorkspaceConfigPath(workspaceId),
-  storage: WORKSPACE_MANIFEST_STORAGE,
-  // Every manifest field this version reads; any other field is kept.
-  knownFields: new Set(WORKSPACE_MANIFEST_KEYS),
-  knownRepoFields: new Set(WORKSPACE_MANIFEST_REPOSITORY_KEYS),
 });
+const rawWorkspaceManifestRepository =
+  recordImages.manifest<WorkspaceConfigFile>({
+    writer: WORKSPACE_MANIFEST_STORAGE.writer,
+    // Every manifest field this version reads; any other field is kept.
+    knownFields: new Set(WORKSPACE_MANIFEST_KEYS),
+    knownRepoFields: new Set(WORKSPACE_MANIFEST_REPOSITORY_KEYS),
+  });
 
 const workspaceManifestRepository: WorkspaceManifestRepository = {
   ...rawWorkspaceManifestRepository,
@@ -241,24 +244,25 @@ const WORKTREE_ROW_FIELDS: Record<keyof WorktreeData, true> = {
   adhocTransitionSource: true,
 };
 
-const worktreeListRepository = createWorktreeListRepository({
-  store: desktopW5FileStore,
-  filePath: (workspaceId) => getWorkspaceWorktreesFilePath(workspaceId),
-  discoveryFilePath: getWorktreeDiscoveryFilePath,
-  storage: WORKTREE_LIST_STORAGE,
-  knownRowFields: new Set(Object.keys(WORKTREE_ROW_FIELDS)),
-  async localReplicaContext(workspaceId) {
-    const read = await readWorkspaceConfigDetailed(workspaceId);
-    // Missing/degraded configuration cannot establish repository membership.
-    // Keep a never-recorded row unchanged until its existing writer knows it.
-    if (read.authority !== 'ok') return undefined;
-    return {
-      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-      targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
-      repoIds: read.config.repos.map((repo) => repo.id),
-    };
-  },
-});
+const worktreeListRepository = withWorktreeDiscovery(
+  recordImages.worktrees<WorktreeData>({
+    writer: WORKTREE_LIST_STORAGE.writer,
+    readRow: (row) => row,
+    knownRowFields: new Set(Object.keys(WORKTREE_ROW_FIELDS)),
+    async localReplicaContext(workspaceId) {
+      const read = await readWorkspaceConfigDetailed(workspaceId);
+      // Missing/degraded configuration cannot establish repository membership.
+      // Keep a never-recorded row unchanged until its existing writer knows it.
+      if (read.authority !== 'ok') return undefined;
+      return {
+        authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+        targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+        repoIds: read.config.repos.map((repo) => repo.id),
+      };
+    },
+  }),
+  getWorktreeDiscoveryFilePath,
+);
 
 // Failed membership writes still invalidate the registry that already committed.
 // Drain after releasing its owner lock, before another queued mutation starts.
@@ -444,13 +448,13 @@ export function removeWorkspaceRecords(
     [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE],
     () =>
       serializeWorkspaceConfig(workspaceId, () =>
-        withWorktreeFileLock(getWorkspaceWorktreesFilePath(workspaceId), () =>
+        withWorktreeFileLock(w5RecordReadPaths.worktrees(workspaceId), () =>
           withW5Commit(removalCommit, async () => {
             const manifest = await desktopW5FileStore.read(
-              getWorkspaceConfigPath(workspaceId),
+              w5RecordReadPaths.manifest(workspaceId),
             );
             const list = await desktopW5FileStore.read(
-              getWorkspaceWorktreesFilePath(workspaceId),
+              w5RecordReadPaths.worktrees(workspaceId),
             );
             if (manifest.state === 'unreadable')
               throw new WorkspaceConfigUnreadableError(manifest.error);
@@ -471,12 +475,12 @@ export function removeWorkspaceRecords(
               release();
               if (!options?.deferPluginDefaultsRefresh)
                 projectPluginDefaultsWritten({
-                  configPath: getWorkspaceConfigPath(workspaceId),
+                  configPath: w5RecordReadPaths.manifest(workspaceId),
                   workspaceId,
                   layerChanged: manifest.state === 'present',
                 });
               failedWorktreeWriteInvalidations.delete(
-                getWorkspaceWorktreesFilePath(workspaceId),
+                w5RecordReadPaths.worktrees(workspaceId),
               );
             });
           }),
@@ -531,7 +535,7 @@ async function writeAdmittedWorktreesFile(
   /** The read this write is built from, made under the same lock. */
   previousRead?: WorktreeListRead,
 ): Promise<WorktreeData[]> {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   if (options?.sidebarItemGroupId && !worktreeRegistryReconciler)
     throw new Error('Sidebar item group service is not initialized');
   // Every write is built from a read of the list under this lock; rewriting
@@ -920,7 +924,7 @@ export function readProjectPluginDefaults(
   workspaceId: string,
 ): Promise<ProjectPluginDefaults> {
   return readThroughProjectPluginDefaults(
-    getWorkspaceConfigPath(workspaceId),
+    w5RecordReadPaths.manifest(workspaceId),
     async () => {
       const { config, authority } =
         await readWorkspaceConfigDetailed(workspaceId);
@@ -1379,7 +1383,7 @@ async function writeAdmittedWorkspaceConfig(
   config: WorkspaceConfigFile,
   ownership: WorkspaceConfigOwnershipWrite,
 ): Promise<void> {
-  const filePath = getWorkspaceConfigPath(workspaceId);
+  const filePath = w5RecordReadPaths.manifest(workspaceId);
   const { detail: previous, manifest } =
     await readWorkspaceConfigState(workspaceId);
   // An atomic replace needs no read permission, so nothing else stops a
@@ -1588,7 +1592,7 @@ export async function readWorkspaceWorktreesDetailed(
   /** The named reason an unreadable list could not be read (CAN-5531, CAN-5542). */
   unserved?: W5NamedUnreadableError;
 }> {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   // A21′: read-repair is effect-free, so a conflicting routed write reruns
   // the locked read (W6g). The commit label stays `w5.worktree_list.write`.
   return runW5PreEffectUnit('internal.repository.write', () =>
@@ -1687,7 +1691,7 @@ export async function writeWorkspaceWorktrees(
   workspaceId: string,
   worktrees: WorktreeData[],
 ): Promise<void> {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   await withWorktreeFileLock(filePath, async () => {
     const filteredWorktrees = filterRecentlyRemovedWorktrees(
       workspaceId,
@@ -1860,7 +1864,7 @@ export async function restoreWorkspaceWorktrees(
   workspaceId: string,
   worktrees: WorktreeData[],
 ): Promise<void> {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   await withWorktreeFileLock(filePath, async () => {
     for (const worktree of worktrees) {
       recentlyRemovedWorktrees.delete(
@@ -1923,7 +1927,7 @@ export async function updateWorkspaceWorktrees(
   ) => WorktreeData[] | Promise<WorktreeData[]>,
   options?: WorktreeRegistryWriteOptions,
 ): Promise<WorktreeData[]> {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   let changed = false;
   const worktrees = await withWorktreeFileLock(filePath, async () => {
     const detailed = await readWorkspaceWorktreesFileDetailed(workspaceId);
@@ -2067,7 +2071,7 @@ export async function removeWorkspaceWorktrees(
     'requireAuthoritativeRead' | 'requireExistingList' | 'markRemovedAfterWrite'
   >,
 ): Promise<WorktreeData[]> {
-  const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   return withWorktreeFileLock(filePath, async () => {
     const {
       worktrees: rawWorktrees,

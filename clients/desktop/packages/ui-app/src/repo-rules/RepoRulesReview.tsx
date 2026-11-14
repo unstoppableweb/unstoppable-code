@@ -641,8 +641,18 @@ function RepoRulesReviewFlow({
           <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
             Couldn&apos;t scan Cursor rules
           </Heading>
-          <ErrorBanner className="" error={phase.message} />
-          {applyError ? <ErrorBanner className="" error={applyError} /> : null}
+          <ErrorBanner
+            errorSource="repo-rules-review-flow-phase"
+            className=""
+            error={phase.message}
+          />
+          {applyError ? (
+            <ErrorBanner
+              errorSource="repo-rules-review-flow-apply"
+              className=""
+              error={applyError}
+            />
+          ) : null}
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="ghost" onClick={onClose}>
               Cancel
@@ -686,6 +696,7 @@ function RepoRulesReviewFlow({
             <>
               {applyError ? (
                 <ErrorBanner
+                  errorSource="repo-rules-review-flow-apply"
                   className=""
                   error={applyError}
                   blockMessageFromReplay
@@ -1201,7 +1212,11 @@ function RuleRow({
               </Skeleton>
             </DelayedLoadingPlaceholder>
           ) : preview.kind === 'error' ? (
-            <ErrorBanner className="" error={preview.message} />
+            <ErrorBanner
+              errorSource="rule-row-preview"
+              className=""
+              error={preview.message}
+            />
           ) : (
             <RulePreviewText body={preview.body} />
           )}

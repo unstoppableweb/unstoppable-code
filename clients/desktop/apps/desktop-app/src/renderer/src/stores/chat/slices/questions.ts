@@ -144,12 +144,17 @@ export const createQuestionsSlice: StateCreator<
         projectId: pending.projectId,
         worktreeId: pending.worktreeId,
       };
-      const result = await get().dispatchChatCommand(target, {
-        type: 'chat.answer_question',
-        chatId: pending.chatId,
-        questionId: requestId,
-        answers,
-      });
+      const result = await get().dispatchChatCommand(
+        target,
+        {
+          type: 'chat.answer_question',
+          chatId: pending.chatId,
+          questionId: requestId,
+          answers,
+        },
+        // The question card says the answer wasn't sent and keeps it.
+        { callerReportsFailure: true },
+      );
       if (result !== 'accepted')
         throw new Error('Question answer was not accepted');
       return target;

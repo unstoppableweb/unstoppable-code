@@ -6,3 +6,5 @@ export {
   isSingleDollarMathEnabled,
   setSingleDollarMathEnabled,
 } from './markdown-math-settings';
+
+export { DocumentProse } from './DocumentProse';

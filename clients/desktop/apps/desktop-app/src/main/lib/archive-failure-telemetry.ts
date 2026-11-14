@@ -76,6 +76,10 @@ const checks = new Set([
   'expected-created-at-mismatch',
   'row-created-at-mismatch',
   'row-removal-not-journaled',
+  'turn-diff-identity-unverified',
+  'turn-diff-evidence-unavailable',
+  'turn-diff-repository-replaced',
+  'turn-diff-repositories-unknown',
 ]);
 
 const archivePhases = new Set([

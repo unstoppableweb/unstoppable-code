@@ -215,6 +215,7 @@ export function SharedContainerPastSharesList({
         <Stack gap="inline">
           {removedFailed && (
             <Notice
+              errorSource="shared-container-past-shares-list"
               intent="destructive"
               data-testid={`${TEST_ID}-removed-error`}
               actions={

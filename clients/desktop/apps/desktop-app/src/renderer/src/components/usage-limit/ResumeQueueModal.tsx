@@ -311,7 +311,11 @@ export function ResumeQueueModal(): JSX.Element | null {
               running.
             </p>
           )}
-          <ErrorBanner className="" error={visibleError} />
+          <ErrorBanner
+            errorSource="resume-queue-modal-visible"
+            className=""
+            error={visibleError}
+          />
         </div>
         <Surface variant="group" className="flex min-h-0 flex-col">
           <div className="overflow-hidden">

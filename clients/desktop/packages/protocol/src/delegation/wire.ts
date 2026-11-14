@@ -109,7 +109,7 @@ export const AgentDelegationQueueStateSchema = z.object({
   id: text,
   name: text,
   position: z.number().int().positive().optional(),
-  waitingFor: z.enum(['queue', 'app']).optional(),
+  waitingFor: z.enum(['queue', 'app', 'slot']).optional(),
   running: count.optional(),
   waiting: count.optional(),
   limit: z.number().int().positive().optional(),
@@ -342,6 +342,16 @@ export const DelegationModelChoiceSchema = z.object({
 
 export const DelegationModelDiscoverySchema = z.object({
   models: z.array(DelegationModelChoiceSchema).readonly(),
+  agents: z
+    .array(
+      z.object({
+        agentId: text,
+        label: text,
+        models: z.array(text).readonly(),
+      }),
+    )
+    .readonly()
+    .optional(),
   recommendedModelId: text.optional(),
   truncated: z.boolean(),
 });

@@ -27,10 +27,12 @@ export {
   HOSTED_CONTROLLER_LIMITS,
   PAIR_DEVICE_LABEL,
   deviceKindLabel,
+  isRemoteControllerLive,
   platformLabel,
   remoteHostDotTone,
   remoteHostStatus,
   type RemoteControlHostConnection,
+  type RemoteControllerLiveness,
   type RemoteHostStatus,
   type RemoteHostTone,
 } from './remote-control-display';

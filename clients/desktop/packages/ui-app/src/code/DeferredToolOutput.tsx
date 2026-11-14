@@ -165,7 +165,6 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
   return (
     <DeferredTextOutput
       preview={preview}
-      tone={isError ? 'error' : 'default'}
       text={
         page !== undefined && isError && offsets[position] === 0
           ? stripHookErrorPrefix(page.text)

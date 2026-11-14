@@ -66,6 +66,11 @@ export function WorktreeDiscardHost({
   const supported = client.capabilities.worktreeDiscard === true;
   const { token, offer } = useWorktreeDiscardOffer();
   const answered = useRef(token);
+  const pendingOffer = useRef<{
+    token: number;
+    client: CanopyClient;
+    active: boolean;
+  } | null>(null);
   const notifyRef = useRef(notify);
   const onDiscardedRef = useRef(onDiscarded);
   useEffect(() => {
@@ -74,21 +79,41 @@ export function WorktreeDiscardHost({
   });
   const loaded = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   useEffect(() => {
-    if (token === answered.current) return;
+    if (token === answered.current) {
+      const pending = pendingOffer.current;
+      if (!pending || pending.token !== token || pending.client !== client)
+        return;
+      pending.active = true;
+      return (): void => {
+        pending.active = false;
+      };
+    }
     answered.current = token;
     if (!offer) return;
-    if (!supported) {
+    if (
+      !supported ||
+      (offer.recovery && client.capabilities.worktreeRecovery !== true)
+    ) {
       notifyRef.current(offer);
       return;
     }
+    const pending = { token, client, active: true };
+    pendingOffer.current = pending;
     loadPanel()
-      .then((panel) => panel.openWorktreeDiscard(client, offer))
+      .then((panel) =>
+        pending.active ? panel.openWorktreeDiscard(client, offer) : true,
+      )
       .then(
         (opened) => {
-          if (!opened) notifyRef.current(offer);
+          if (pending.active && !opened) notifyRef.current(offer);
         },
-        () => notifyRef.current(offer),
+        () => {
+          if (pending.active) notifyRef.current(offer);
+        },
       );
+    return (): void => {
+      pending.active = false;
+    };
   }, [client, offer, supported, token]);
   if (!loaded || !supported) return null;
   const { WorktreeDiscardPanel } = loaded;

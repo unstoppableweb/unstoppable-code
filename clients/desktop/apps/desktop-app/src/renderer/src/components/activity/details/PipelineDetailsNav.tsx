@@ -144,10 +144,13 @@ export function PipelineDetailsNav({
   // a ring drawn outside it, so rows draw the shared focus ring inside their
   // edges (`focus-ring focus-ring-inset`).
   return (
-    <nav
+    <Surface
+      as="nav"
+      variant="panel"
+      boundary="right"
       id={id}
       aria-label="Jobs"
-      className="flex w-64 shrink-0 flex-col overflow-y-auto border-r bg-card"
+      className="flex w-64 shrink-0 flex-col overflow-y-auto"
       data-testid="pipeline-details-nav"
     >
       <button
@@ -235,7 +238,7 @@ export function PipelineDetailsNav({
           </Button>
         </div>
       </Surface>
-    </nav>
+    </Surface>
   );
 }
 

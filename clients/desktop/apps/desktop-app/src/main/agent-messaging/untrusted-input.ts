@@ -12,6 +12,11 @@ const FORBIDDEN_CHAT_INPUT_FIELDS = [
   'watcherPartSnapshots',
   'turnOverride',
   'automationDispatch',
+  'executionHarnessChoice',
+  // Main-owned provider-switch state (CAN-6445): a caller must not pick which
+  // parked session resumes or force a seed.
+  'providerSessions',
+  'providerSwitchSeedPending',
 ] as const;
 
 const AGENT_SENDER_CONTEXT_KIND = 'agent-sender-context';

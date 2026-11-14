@@ -1,3 +1,6 @@
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import { useOpenCodeChatAvailable } from './useOpenCodeChatAvailable';
 import { useCopilotChatAvailable } from './useCopilotChatAvailable';
 import { useMemo } from 'react';
@@ -61,6 +64,13 @@ export type ProviderAvailability = Record<
 export function useProviderAvailability(
   creditsScope?: AiCreditsScopeRequest,
 ): ProviderAvailability {
+  const antigravityEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
+  );
+  const antigravityDiscovered = useModelCatalogStore(
+    (state) => (state.snapshot?.antigravity?.length ?? 0) > 0,
+  );
+  const antigravity = antigravityEnabled && antigravityDiscovered;
   const opencode = useOpenCodeChatAvailable(true);
   const copilot = useCopilotChatAvailable(true);
   const claudeAuth = useClaudeAuthStatus();
@@ -98,6 +108,12 @@ export function useProviderAvailability(
     };
 
     return {
+      antigravity: {
+        nativeAuth: antigravity,
+        creditsEligible: false,
+        loading: false,
+        selectable: antigravity,
+      },
       opencode: {
         nativeAuth: opencode,
         creditsEligible: false,
@@ -142,6 +158,7 @@ export function useProviderAvailability(
       },
     };
   }, [
+    antigravity,
     opencode,
     copilot,
     claudeAuth,

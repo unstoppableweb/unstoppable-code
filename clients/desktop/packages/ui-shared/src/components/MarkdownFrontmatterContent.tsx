@@ -50,7 +50,7 @@ export function MarkdownFrontmatterContent({
           <CenteredLoadingSpinner className="my-12" />
         </DelayedLoadingPlaceholder>
       )}
-      <ErrorBanner error={error} />
+      <ErrorBanner errorSource="markdown-frontmatter" error={error} />
       {content && !loading && (
         <>
           <FrontmatterBlock

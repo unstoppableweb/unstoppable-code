@@ -12,6 +12,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { createDomSearchExecutor } from '@/lib/dom-search-highlight';
 import { useChatStore, useChatTabRenderState } from '@/stores/chatStore';
+import { chatBackendFor } from '@/stores/chat/backend';
 import { loadChatTranscriptPage } from '@/stores/chat/transcript-pages';
 
 export interface TranscriptSearchSelection extends ChatTranscriptSearchMatch {
@@ -202,8 +203,14 @@ export function useTranscriptSearch(
     const timer = setTimeout(
       () => {
         started = true;
-        void window.api.chat
-          .searchTranscript({ projectId, worktreeId, chatId, query, requestId })
+        void chatBackendFor({ projectId })
+          .chat.searchTranscript({
+            projectId,
+            worktreeId,
+            chatId,
+            query,
+            requestId,
+          })
           .then((found) => {
             if (generation.current !== request) return;
             const previous = selectionRef.current;
@@ -230,8 +237,8 @@ export function useTranscriptSearch(
       generation.current++;
       clearTimeout(timer);
       if (started)
-        void window.api.chat
-          .cancelTranscriptSearch(requestId)
+        void chatBackendFor({ projectId })
+          .chat.cancelTranscriptSearch(requestId)
           .catch(() => undefined);
     };
   }, [

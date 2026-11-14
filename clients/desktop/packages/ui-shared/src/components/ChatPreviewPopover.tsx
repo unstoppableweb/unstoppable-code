@@ -11,6 +11,7 @@ export type ChatPreviewProviderType =
   | 'ollama'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode';
 
 /**

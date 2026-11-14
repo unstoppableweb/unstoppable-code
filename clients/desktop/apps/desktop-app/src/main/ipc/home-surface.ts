@@ -1,3 +1,6 @@
+import { usesExactWorktreeBaseCatalogue } from '../remote-control/host/bridge-window';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import { assertWorkingDirectoryAvailable } from '@canopy/desktop-shared/node/lib/working-directory';
 import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
 import { subscribeWorkspaceTargetRemoval } from '../lib/workspace-target-exclusion';
@@ -23,7 +26,7 @@ import {
   type WorktreeDiscovery,
 } from '@canopy/desktop-shared/types';
 import type { FileGlobMatcher } from '../lib/file-glob-matcher';
-import { getRemoteUrlStrict, isGitRepo } from '../lib/git';
+import { getRemoteHeadBranch, getRemoteUrlStrict, isGitRepo } from '../lib/git';
 import { resolveHomeBranchRepoPath } from '../lib/home-branch-repo';
 import { buildFileGlobMatcher } from '../lib/file-glob-matcher';
 import { buildFileIndex } from '../lib/file-system-listing';
@@ -31,7 +34,10 @@ import { getCoworkWorkspaceRootDir } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { getInheritedPluginDefaultsRevision } from '../plugins/plugin-defaults-revision';
-import { ensureRepoShadow } from '../lib/repo-shadow';
+import {
+  ensureRepoShadow,
+  RepoShadowNoDefaultBranchError,
+} from '../lib/repo-shadow';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { ensureAppAdvisorHomeScaffold } from '../lib/app-advisor-workspace';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
@@ -144,8 +150,16 @@ export async function resolveHomeDiscoveryCwd(
   if (localOnlyPath) {
     return localOnlyPath;
   }
-  const shadow = await ensureRepoShadow(repoPath);
-  return shadow.shadowPath;
+  try {
+    return (await ensureRepoShadow(repoPath)).shadowPath;
+  } catch (error) {
+    if (!(error instanceof RepoShadowNoDefaultBranchError)) throw error;
+    // A cached best-effort empty result is not evidence that Git succeeded.
+    // Re-probe only this failure path; healthy shadows retain their fast path.
+    if ((await getRemoteHeadBranch(repoPath)) === null) return null;
+    return (await ensureRepoShadow(repoPath, { bypassFailureCache: true }))
+      .shadowPath;
+  }
 }
 
 const HOME_DISCOVERY_WORKTREE_ID = '__home__';
@@ -153,12 +167,26 @@ const HOME_DISCOVERY_WORKTREE_ID = '__home__';
 export async function handleHomeDiscoverEnvironment(
   request: HomeDiscoverEnvironmentRequest,
 ): Promise<HomeDiscoverEnvironmentResponse> {
-  validateId(request.workspaceId, 'workspaceId');
-  if (request.target.kind === 'worktree') {
-    validateId(request.target.worktreeId, 'worktreeId');
-  }
-  if (request.target.kind !== 'cowork') {
-    validateOptionalRepoId(request.target.repoId, 'repoId');
+  if (
+    !request?.target ||
+    (request.target.kind !== 'worktree' &&
+      request.target.kind !== 'cowork' &&
+      request.target.kind !== 'baseline')
+  )
+    throw classifyError(
+      new Error('Expected a Home discovery target.'),
+      'input.not_accepted',
+    );
+  try {
+    validateId(request.workspaceId, 'workspaceId');
+    if (request.target.kind === 'worktree')
+      validateId(request.target.worktreeId, 'worktreeId');
+    if (request.target.kind !== 'cowork')
+      validateOptionalRepoId(request.target.repoId, 'repoId');
+  } catch (error) {
+    if (error instanceof IdentifierValidationError)
+      throw classifyError(error, 'input.not_accepted');
+    throw error;
   }
   const cwd = await resolveHomeDiscoveryCwd(
     request.workspaceId,
@@ -547,6 +575,7 @@ export function registerHomeSurfaceHandlers(runtime: {
         runtime.daemonGitRoute
           ? { route: runtime.daemonGitRoute(), sender: event.sender }
           : undefined,
+        usesExactWorktreeBaseCatalogue(event.sender),
       ),
   );
   registerIpcHandler<

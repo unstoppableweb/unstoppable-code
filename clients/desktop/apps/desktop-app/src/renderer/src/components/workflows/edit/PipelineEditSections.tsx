@@ -202,7 +202,11 @@ export function PipelineRunsSection({
       data-testid="pipeline-runs-section"
     >
       {feed.error !== null && (
-        <Notice intent="destructive" data-testid="workflows-runs-error">
+        <Notice
+          errorSource="workflows-runs-error-pipeline-edit-sections"
+          intent="destructive"
+          data-testid="workflows-runs-error"
+        >
           Workflow runs could not be loaded. Automation runs are still listed.
         </Notice>
       )}

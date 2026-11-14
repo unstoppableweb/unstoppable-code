@@ -54,7 +54,7 @@ import { ActivitySection } from './ActivitySection';
 import { PlanSourceMark } from './PlanSourceMark';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import { usePanelWorktreeSelection } from '@/lib/panels/panel-worktree-context';
-import { PlansEmptyMessage } from '@canopy/ui-app/plans';
+import { PlansEmptyMessage, SkippedPlansNotice } from '@canopy/ui-app/plans';
 import {
   INLINE_PLAN_MARKDOWN_OPTIONS,
   PLAN_MARKDOWN_OPTIONS,
@@ -315,6 +315,9 @@ export function PlansSection(): JSX.Element {
     key
       ? (state.trackedPlans[key] ?? EMPTY_TRACKED_PLANS)
       : EMPTY_TRACKED_PLANS,
+  );
+  const skippedPlans = useActivityStore((state) =>
+    key ? (state.trackedPlanSkipped[key] ?? 0) : 0,
   );
   const loadTrackedPlans = useActivityStore((state) => state.loadTrackedPlans);
   const togglePlanHidden = useActivityStore((state) => state.togglePlanHidden);
@@ -616,6 +619,7 @@ export function PlansSection(): JSX.Element {
               data-testid="activity-plans-empty"
               className="flex flex-col text-xs fg-secondary gap-2"
             >
+              <SkippedPlansNotice count={skippedPlans} />
               <PlansEmptyMessage canImport={!readOnly} />
               {!readOnly && pendingSuggestionCount > 0 && (
                 <Button
@@ -660,6 +664,7 @@ export function PlansSection(): JSX.Element {
                 : 'flex flex-col gap-3'
             }
           >
+            <SkippedPlansNotice count={skippedPlans} />
             <div
               data-testid="plans-primary-list"
               className={

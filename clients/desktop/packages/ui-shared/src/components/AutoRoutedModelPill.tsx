@@ -1,6 +1,4 @@
 import type { JSX } from 'react';
-import { useCleanChatLook } from './chat-look';
-import { StatusPill } from './StatusPill';
 import { Tooltip } from './Tooltip';
 
 export interface AutoRoutedModelPillProps {
@@ -19,19 +17,12 @@ export function AutoRoutedModelPill({
 }: AutoRoutedModelPillProps): JSX.Element {
   // The clean chat look names the model in the footer's own text, after the
   // action icons, instead of a chip.
-  const clean = useCleanChatLook();
+
   return (
     <Tooltip label="Picked by model routing">
-      {clean ? (
-        <span
-          data-testid="turn-auto-model"
-          className="ml-1 text-s fg-secondary"
-        >
-          {label}
-        </span>
-      ) : (
-        <StatusPill data-testid="turn-auto-model">{label}</StatusPill>
-      )}
+      <span data-testid="turn-auto-model" className="ml-1 text-s fg-secondary">
+        {label}
+      </span>
     </Tooltip>
   );
 }

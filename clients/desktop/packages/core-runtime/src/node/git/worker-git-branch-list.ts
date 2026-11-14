@@ -153,9 +153,15 @@ export function createWorkerGitBranchListHandlers<Repository>(
           {
             readBranchRefs: reads.readBranchRefs,
             readWorktreeList: reads.readWorktreeList,
-            resolveDefaultBranch: () => selectGitDefaultBranch(facts, { now }),
+            resolveDefaultBranch: () =>
+              selectGitDefaultBranch(facts, {
+                now,
+                allowRemoteLookup: params.allowRemoteLookup,
+              }),
           },
           (selection) => selection.defaultBranch,
+          params.exactWorktreeBaseBranch === true ||
+            context.caller.interfaceKind === 'portal',
         ),
         params.includeHeadState
           ? reads.readHeadUnborn?.().catch(() => undefined)

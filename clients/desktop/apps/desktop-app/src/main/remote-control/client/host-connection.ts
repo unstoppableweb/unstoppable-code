@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
 import type {
   CheckWorktreeRemovalAdmissionResponse,
@@ -6,6 +7,7 @@ import type {
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { FileSaveConflictError } from '@canopy/protocol/file-save-conflict';
 import { restoreFileImageSaveError } from '@canopy/protocol/file-image-save';
+import { assertLegacyWorktreeBaseRequest } from '../worktree-base-capability';
 import {
   compatibleRemoteVersions,
   describeHostVersionMismatch,
@@ -99,6 +101,7 @@ export interface PinnedHostSession {
 class HostConnectionReleasedError extends Error {
   constructor() {
     super('The connection was closed.');
+    classifyError(this, 'external.state_changed');
   }
 }
 
@@ -192,7 +195,9 @@ export class RemoteHostConnection {
     if (this.rpc && !this.rpc.isClosed) return Promise.resolve(this.rpc);
     if (this.connecting) return this.connecting;
     if (this.endedMessage !== null) {
-      return Promise.reject(new Error(this.endedMessage));
+      return Promise.reject(
+        classifyError(new Error(this.endedMessage), 'external.state_changed'),
+      );
     }
     this.setStatus('connecting', null);
     const generation = this.generation;
@@ -221,13 +226,24 @@ export class RemoteHostConnection {
     surface: RemoteSurface = 'main',
   ): Promise<unknown> {
     const rpc = await this.ensure();
+    const exact = this.helloValue?.features?.exactWorktreeBaseBranch === true;
+    if (!exact) assertLegacyWorktreeBaseRequest(channel, args[0]);
     // No deadline: local IPC has none, and a dropped session rejects.
     try {
-      return await rpc.request(
+      const result = await rpc.request(
         REMOTE_METHODS.invoke,
         surface === 'main' ? { channel, args } : { channel, args, surface },
         { timeoutMs: null },
       );
+      if (
+        exact &&
+        (channel === IPC_CHANNELS.homeListBranchTargets ||
+          channel === IPC_CHANNELS.worktreeListBranches) &&
+        result &&
+        typeof result === 'object'
+      )
+        return { ...result, exactWorktreeBaseBranch: true };
+      return result;
     } catch (error) {
       // The host bridge already carries Electron's named rejection in the
       // existing RPC message. Restore that identity before this computer's
@@ -404,6 +420,7 @@ export class RemoteHostConnection {
     try {
       const params: HelloParams = {
         version: this.options.version,
+        exactWorktreeBaseBranch: true,
         transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
       };
       hello = HelloResultSchema.parse(
@@ -435,7 +452,10 @@ export class RemoteHostConnection {
           hello.version ?? null,
           this.options.version,
         );
-        throw new Error(this.endedMessage);
+        throw classifyError(
+          new Error(this.endedMessage),
+          'external.state_changed',
+        );
       }
       // Hosts released before session resume answer without it.
       session.setResumeNegotiated(
@@ -444,7 +464,10 @@ export class RemoteHostConnection {
       // It may have closed after answering, before this resumed; its close
       // was ignored because it was not published yet, so retry from here.
       if (rpc.isClosed) {
-        throw new Error('The connection to the other computer closed.');
+        throw classifyError(
+          new Error('The connection to the other computer closed.'),
+          'external.state_changed',
+        );
       }
     } catch (error) {
       // Never leave a session open that nothing will use.

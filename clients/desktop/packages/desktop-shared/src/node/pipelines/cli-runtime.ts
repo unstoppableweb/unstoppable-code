@@ -38,6 +38,7 @@ import {
 import {
   codexTranscriptEventsHaveAgentActivity,
   createCodexCapabilitySnapshotId,
+  createCodexCapabilitySnapshotIds,
   createCodexRuntimeService,
   CodexCapabilityStore,
   CodexHttpMcpProxyService,
@@ -304,6 +305,13 @@ export function createCliCodexCapabilitySnapshotId(
   return createCodexCapabilitySnapshotId(options);
 }
 
+/** The snapshot id, and fingerprint v1's for the same capabilities (CAN-6168). */
+export function createCliCodexCapabilitySnapshotIds(
+  options: Parameters<typeof createCodexCapabilitySnapshotIds>[0],
+): ReturnType<typeof createCodexCapabilitySnapshotIds> {
+  return createCodexCapabilitySnapshotIds(options);
+}
+
 function isRecordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -555,11 +563,12 @@ async function runCliCodexPrompt(
         }
       }
     }
-    const snapshotId = createCliCodexCapabilitySnapshotId({
-      roots,
-      mcpServers,
-      mcpAuthorityIds: httpMcpAuthorityIds,
-    });
+    const { snapshotId, legacySnapshotId } =
+      createCliCodexCapabilitySnapshotIds({
+        roots,
+        mcpServers,
+        mcpAuthorityIds: httpMcpAuthorityIds,
+      });
     const mock = resolveCodexMockAppServerOverride();
     const sandbox =
       request.permissionPreset === 'dangerous_all'
@@ -629,6 +638,7 @@ async function runCliCodexPrompt(
       ? await service.resumeThread({
           params: { threadId: request.resumeSessionId, ...common },
           capabilitySnapshotId: snapshotId,
+          legacyCapabilitySnapshotId: legacySnapshotId,
           capabilityLeaseKind: 'persisted-helper',
           profile,
         })
@@ -1028,6 +1038,18 @@ export function createCliExecutionRuntime(
         return runCopilotPipelinePrompt(request, args.copilotHost);
       },
     },
+    antigravityPromptRunner: {
+      async runAntigravityPrompt(request) {
+        const { runAntigravityPipelinePrompt } =
+          await import('./antigravity-prompt-runner');
+        const { createCliAntigravityHost } =
+          await import('../antigravity/cli-host');
+        return runAntigravityPipelinePrompt(
+          request,
+          createCliAntigravityHost(request),
+        );
+      },
+    },
     opencodePromptRunner: {
       runOpenCodePrompt: async (
         request,
@@ -1075,6 +1097,13 @@ export function createCliExecutionRuntime(
           aiCreditsRouted: false,
         });
       }
+      if (source === 'antigravity-managed' || harness === 'antigravity')
+        return Promise.resolve({
+          source: 'antigravity-managed',
+          harness: 'antigravity',
+          runtimeModel,
+          aiCreditsRouted: false,
+        });
       if (source === 'copilot-managed' || harness === 'copilot') {
         return Promise.resolve({
           source: 'copilot-managed',

@@ -162,7 +162,11 @@ export function PaymentMethodCapture({
       )}
       {status === 'error' && (
         <div className="px-6 pb-6 pt-4">
-          <ErrorBanner error={error} className="" />
+          <ErrorBanner
+            errorSource="payment-method-capture"
+            error={error}
+            className=""
+          />
         </div>
       )}
       {status === 'ready' && clientSecret && (
@@ -260,7 +264,7 @@ function PaymentForm({
     <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6 pt-4">
         <PaymentElement onChange={handleElementChange} />
-        <ErrorBanner error={error} className="" />
+        <ErrorBanner errorSource="payment-form" error={error} className="" />
       </div>
       <div className="flex shrink-0 items-center gap-2 border-t px-6 py-4">
         <Button

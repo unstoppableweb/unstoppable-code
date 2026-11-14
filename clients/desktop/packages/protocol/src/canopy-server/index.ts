@@ -58,6 +58,7 @@ export const CANOPY_SERVER_CAPABILITIES = [
   // hard-delete on dismiss. Optional, so an older server degrades to today's
   // irreversible remove instead of a restore the client cannot perform.
   'shared-container-dismissals-v1',
+  'shared-container-owner-departures-v1',
   // Organization projects (CAN-611): org-owned project catalog, instance
   // claims, and Personal catalog registration. Optional and minted per user
   // only while `canopy-shared-org-projects-enabled` evaluates true, so an

@@ -5,7 +5,7 @@ import {
   McpStatusSpecimen,
 } from './componentsLabMarketplace';
 import {
-  MarkdownCodeBlockSpecimen,
+  CodeBlockSpecimen,
   ModelUnlockPendingSpecimen,
   OnboardingTipSpecimen,
   OpenCodeAccountSpecimen,
@@ -52,13 +52,13 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: McpServerCardRowSpecimen,
   },
   {
-    id: 'markdown-code-block',
-    name: 'MarkdownCodeBlock',
+    id: 'code-block',
+    name: 'CodeBlock',
     group: 'Unified',
-    note: 'Fenced and indented code in markdown surfaces: a focusable group with a copy button that reveals on hover or focus.',
-    source: `${SRC}/MarkdownCodeBlock.tsx`,
+    note: 'The one code block for Markdown, ANSI and plain output. Plain blocks pick a variant by role, ANSI keeps colors and follows the tail, and Markdown adds a copy button that reveals on hover or focus.',
+    source: `${SRC}/CodeBlock.tsx`,
     prs: [],
-    View: MarkdownCodeBlockSpecimen,
+    View: CodeBlockSpecimen,
   },
   {
     id: 'model-unlock-pending-notice',

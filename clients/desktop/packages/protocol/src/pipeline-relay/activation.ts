@@ -100,6 +100,13 @@ export const CloudRunnerActivationSchema = z.strictObject({
   credentialId: z.uuid(),
   /** When the incarnation's credential ends; nothing in the body outlives it. */
   expiresAt: z.iso.datetime({ offset: true }),
+  /**
+   * CP-19: when the incarnation's delegation lease ends unless renewed,
+   * sooner than its credential. The runner's fence starts from it, and only
+   * the renewals the web core reports move it on. Absent, the credential's
+   * end stands in.
+   */
+  leaseExpiresAt: z.iso.datetime({ offset: true }).optional(),
   /** CP-19: the relay leg the runner dials. */
   relay: z.strictObject({
     url: z.url(),
@@ -112,6 +119,20 @@ export const CloudRunnerActivationSchema = z.strictObject({
     .meta({ writeOnly: true }),
   /** Hosted secrets for the incarnation's one instruction, or none. */
   secrets: CloudRunnerSecretGrantSchema.nullable(),
+  /**
+   * CP-68: the incarnation's AI Credits session, which the model routes the
+   * web core answers by `routeId` resolve to: the web origin whose LLM proxy
+   * the steps call, and the session key (`llm-proxy` and `mcp-proxy`
+   * scopes, the run's credit ceiling). Absent or null, a model step gets no
+   * route and pauses as an authentication failure.
+   */
+  aiCredits: z
+    .strictObject({
+      proxyOrigin: z.url(),
+      token: z.string().min(1).max(512).meta({ writeOnly: true }),
+    })
+    .nullable()
+    .optional(),
 });
 export type CloudRunnerActivation = z.output<
   typeof CloudRunnerActivationSchema
@@ -129,6 +150,7 @@ export interface CloudRunnerActivationRecord {
   readonly leaseEpoch: number;
   readonly credentialId: string;
   readonly expiresAt: string;
+  readonly leaseExpiresAt?: string;
   readonly relayUrl: string;
   readonly secrets: {
     readonly grantId: string;
@@ -136,6 +158,8 @@ export interface CloudRunnerActivationRecord {
     readonly redeemWithinMs: number;
     readonly bindings: readonly z.output<typeof ExecutionSecretBindingSchema>[];
   } | null;
+  /** The AI Credits session's proxy origin, when the activation carries one. */
+  readonly aiCreditsProxyOrigin?: string;
 }
 
 export function cloudRunnerActivationRecordOf(
@@ -148,6 +172,10 @@ export function cloudRunnerActivationRecordOf(
     leaseEpoch: activation.leaseEpoch,
     credentialId: activation.credentialId,
     expiresAt: activation.expiresAt,
+    // Only when present, so an activation without one keeps its digest.
+    ...(activation.leaseExpiresAt === undefined
+      ? {}
+      : { leaseExpiresAt: activation.leaseExpiresAt }),
     relayUrl: activation.relay.url,
     secrets:
       activation.secrets === null
@@ -158,5 +186,9 @@ export function cloudRunnerActivationRecordOf(
             redeemWithinMs: activation.secrets.redeemWithinMs,
             bindings: activation.secrets.entries.map(({ binding }) => binding),
           },
+    // Only when present, so an activation without one keeps its digest.
+    ...(activation.aiCredits
+      ? { aiCreditsProxyOrigin: activation.aiCredits.proxyOrigin }
+      : {}),
   };
 }

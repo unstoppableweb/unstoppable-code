@@ -21,7 +21,6 @@ import {
   getPluginsPresentationContextGeneration,
   runWithoutNavigationGuard,
   useNavigationStore,
-  type MarketplaceSourceReturnContext,
   type NavigationPage,
   type PluginsPresentationLocation,
 } from './navigationStore';
@@ -134,41 +133,23 @@ function locationsEqual(
   );
 }
 
-/**
- * Customize state with the typed search text cleared. Editing a search box
- * refines the current step rather than adding one, so Back leaves the page,
- * category or source instead of replaying each edit (CAN-4267).
- */
-function withoutSearchText(
-  presentation: PluginsPresentationLocation,
-): PluginsPresentationLocation {
-  const clearSource = (
-    source: MarketplaceSourceReturnContext | undefined,
-  ): MarketplaceSourceReturnContext | undefined =>
-    source && { ...source, filters: { ...source.filters, query: '' } };
-  return {
-    ...presentation,
-    categoryQuery: undefined,
-    browse: {
-      ...presentation.browse,
-      query: '',
-      source: clearSource(presentation.browse.source),
-    },
-    source: clearSource(presentation.source),
-  };
-}
-
-function onlySearchTextChanged(
+/** Refinements on the same Customize page replace its history snapshot. */
+function sameCustomizeDestination(
   a: NavigationHistoryLocation,
   b: NavigationHistoryLocation,
 ): boolean {
+  const from = a.pluginsPresentation;
+  const to = b.pluginsPresentation;
   return (
-    a.pluginsPresentation !== undefined &&
-    b.pluginsPresentation !== undefined &&
-    locationsEqual(
-      { ...a, pluginsPresentation: withoutSearchText(a.pluginsPresentation) },
-      { ...b, pluginsPresentation: withoutSearchText(b.pluginsPresentation) },
-    )
+    a.page === 'plugins' &&
+    b.page === 'plugins' &&
+    (!from ||
+      !to ||
+      a.pluginsContextGeneration === b.pluginsContextGeneration) &&
+    (a.pluginsBrowseSectionId ?? null) === (b.pluginsBrowseSectionId ?? null) &&
+    from?.source?.sourceId === to?.source?.sourceId &&
+    from?.entry?.id === to?.entry?.id &&
+    from?.entry?.skillFilePath === to?.entry?.skillFilePath
   );
 }
 
@@ -589,7 +570,7 @@ function commitCurrentLocation(mode: CommitMode): void {
     }
     return;
   }
-  if (current && !restoring && onlySearchTextChanged(current, location)) {
+  if (current && !restoring && sameCustomizeDestination(current, location)) {
     rewriteCurrentEntry(location);
     return;
   }

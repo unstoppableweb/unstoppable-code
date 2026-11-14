@@ -7,9 +7,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { ChevronDownIcon, ChevronRightIcon } from '../icons';
-import { ThinkingSpinner } from './ThinkingSpinner';
-import { StepTenseProvider, useCleanChatLook } from './chat-look';
+import { StepTenseProvider } from './chat-look';
 import {
   STEP_GROUP_BODY_CLASS,
   STEP_GROUP_NESTED_BODY_CLASS,
@@ -36,8 +34,6 @@ import { TurnOutcomeWords } from './chat/TurnOutcomeWords';
  */
 export const ChatToolStepGroup = memo(function ChatToolStepGroup({
   summary,
-  runningLabel,
-  runningWaiting = false,
   forceExpanded = false,
   openRequest,
   liveSteps,
@@ -54,10 +50,6 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
 }: {
   /** Plain-words summary of every step in the run. */
   summary: string;
-  /** Label of the call still running, when the turn is running. */
-  runningLabel?: ReactNode;
-  /** The running label's call waits for approval: no spinner, a note instead. */
-  runningWaiting?: boolean;
   /** Opens the group without changing its saved state (search reveal). */
   forceExpanded?: boolean;
   /**
@@ -111,154 +103,83 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
   useLayoutEffect(() => {
     if (openRequest) setOpen(true);
   }, [openRequest]);
-  const clean = useCleanChatLook();
-  if (clean) {
-    if (collapsedStepCount !== undefined && collapsedStepCount < 2) {
-      return (
-        <div
-          className={STEP_GROUP_BODY_CLASS}
-          data-testid="chat-tool-step-live"
-        >
-          {children}
-          {trailingActivity}
-          {trailingActivity == null && live?.showWhenUngrouped && (
-            <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
-              <StepRow label={live.label} icon={live.icon} running />
-            </div>
-          )}
-        </div>
-      );
-    }
-    // Clean chat look: one closed line per run, live or done; only the
-    // person opens it, so steps never pop open and fold away while they
-    // stream.
-    const isOpen = forceExpanded || open === true;
-    const expandable = children !== undefined && children !== null;
-    const waiting = live?.waiting === true;
+
+  if (collapsedStepCount !== undefined && collapsedStepCount < 2) {
     return (
-      <div
-        data-testid="chat-tool-step-group"
-        data-chat-disclosure=""
-        data-live={live === undefined ? undefined : ''}
-        data-tool-approval={waiting ? 'waiting' : undefined}
-      >
-        <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
-          <StepRow
-            prioritizeDetail
-            step={live !== undefined}
-            icon={live === undefined ? icon : live.icon}
-            label={
-              <span data-testid="chat-tool-step-summary">
-                {live === undefined ? (
-                  summary
-                ) : (
-                  <StepTenseProvider value={waiting ? 'waiting' : 'running'}>
-                    {live.label}
-                  </StepTenseProvider>
-                )}
-              </span>
-            }
-            detail={
-              waiting ? (
-                <span data-testid="chat-tool-step-waiting">
-                  {TOOL_APPROVAL_WAITING_LABEL}
-                </span>
-              ) : live === undefined &&
-                (blockedCount > 0 ||
-                  failedCount > 0 ||
-                  interruptedCount > 0) ? (
-                <TurnOutcomeWords
-                  outcomes={{
-                    blocked: blockedCount,
-                    failed: failedCount,
-                    interrupted: interruptedCount,
-                  }}
-                  entryTestIdPrefix="chat-tool-step"
-                />
-              ) : undefined
-            }
-            running={live !== undefined && !waiting}
-            expandable={expandable}
-            isOpen={isOpen}
-            onToggle={(): void => setOpen(!isOpen)}
-          />
-        </div>
-        {isOpen && expandable ? (
-          <div
-            className={STEP_GROUP_NESTED_BODY_CLASS}
-            data-chat-reveal-body=""
-          >
-            {hiddenSteps ?? children}
+      <div className={STEP_GROUP_BODY_CLASS} data-testid="chat-tool-step-live">
+        {children}
+        {trailingActivity}
+        {trailingActivity == null && live?.showWhenUngrouped && (
+          <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
+            <StepRow label={live.label} icon={live.icon} running />
           </div>
-        ) : null}
-        {liveSteps !== undefined ? (
-          // "Show only recent steps": the newest steps stay in view under
-          // the closed line while the run is live.
-          <div
-            className={STEP_GROUP_NESTED_BODY_CLASS}
-            data-testid="chat-tool-step-live"
-          >
-            {liveSteps}
-            {trailingActivity}
-          </div>
-        ) : null}
+        )}
       </div>
     );
   }
-  const isOpen = forceExpanded || (open ?? false);
-  const showLiveSteps = liveSteps !== undefined && !isOpen;
-  const running = showLiveSteps ? undefined : runningLabel;
-  const hasRunning = running !== undefined && running !== null;
-
+  const isOpen = forceExpanded || open === true;
+  const expandable = children !== undefined && children !== null;
+  const waiting = live?.waiting === true;
   return (
-    <div data-testid="chat-tool-step-group">
-      <div className="flex min-w-0 max-w-full px-3">
-        <button
-          type="button"
-          onClick={(): void => setOpen((previous) => !(previous ?? false))}
-          aria-expanded={isOpen}
-          className="flex min-w-0 max-w-full items-center gap-2 py-1 text-left text-xs fg-secondary transition-colors hover:fg-primary"
-        >
-          <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">
-            {isOpen ? <ChevronDownIcon /> : <ChevronRightIcon />}
-          </span>
-          <span
-            className={hasRunning ? 'flex-shrink-0' : 'min-w-0 truncate'}
-            data-testid="chat-tool-step-summary"
-          >
-            {summary}
-          </span>
-          {hasRunning ? (
-            <span className="flex min-w-0 items-center gap-2">
-              <span aria-hidden="true" className="fg-tertiary">
-                ·
-              </span>
-              <span
-                className="min-w-0 truncate fg-primary"
-                data-testid="chat-tool-step-running"
-              >
-                {running}
-              </span>
-              {runningWaiting ? (
-                <span
-                  className="flex-shrink-0 fg-tertiary"
-                  data-testid="chat-tool-step-waiting"
-                >
-                  {TOOL_APPROVAL_WAITING_LABEL}
-                </span>
+    <div
+      data-testid="chat-tool-step-group"
+      data-chat-disclosure=""
+      data-live={live === undefined ? undefined : ''}
+      data-tool-approval={waiting ? 'waiting' : undefined}
+    >
+      <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
+        <StepRow
+          prioritizeDetail
+          step={live !== undefined}
+          icon={live === undefined ? icon : live.icon}
+          label={
+            <span data-testid="chat-tool-step-summary">
+              {live === undefined ? (
+                summary
               ) : (
-                <span className="inline-flex flex-shrink-0 -translate-y-px fg-accent">
-                  <ThinkingSpinner />
-                </span>
+                <StepTenseProvider value={waiting ? 'waiting' : 'running'}>
+                  {live.label}
+                </StepTenseProvider>
               )}
             </span>
-          ) : null}
-        </button>
+          }
+          detail={
+            waiting ? (
+              <span data-testid="chat-tool-step-waiting">
+                {TOOL_APPROVAL_WAITING_LABEL}
+              </span>
+            ) : live === undefined &&
+              (blockedCount > 0 || failedCount > 0 || interruptedCount > 0) ? (
+              <TurnOutcomeWords
+                outcomes={{
+                  blocked: blockedCount,
+                  failed: failedCount,
+                  interrupted: interruptedCount,
+                }}
+                entryTestIdPrefix="chat-tool-step"
+              />
+            ) : undefined
+          }
+          running={live !== undefined && !waiting}
+          expandable={expandable}
+          isOpen={isOpen}
+          onToggle={(): void => setOpen(!isOpen)}
+        />
       </div>
-      {isOpen ? <div className="pl-5.5">{children}</div> : null}
-      {showLiveSteps ? (
-        <div className="pl-5.5" data-testid="chat-tool-step-live">
+      {isOpen && expandable ? (
+        <div className={STEP_GROUP_NESTED_BODY_CLASS} data-chat-reveal-body="">
+          {hiddenSteps ?? children}
+        </div>
+      ) : null}
+      {liveSteps !== undefined ? (
+        // "Show only recent steps": the newest steps stay in view under
+        // the closed line while the run is live.
+        <div
+          className={STEP_GROUP_NESTED_BODY_CLASS}
+          data-testid="chat-tool-step-live"
+        >
           {liveSteps}
+          {trailingActivity}
         </div>
       ) : null}
     </div>

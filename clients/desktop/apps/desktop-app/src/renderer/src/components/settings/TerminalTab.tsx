@@ -408,6 +408,7 @@ export function TerminalTab(): JSX.Element {
         dataTestId="terminal-settings-shells"
       >
         <DesktopErrorBanner
+          errorSource="terminal-settings-load-error"
           className=""
           // The Terminal settings golden reads this exact sentence.
           error={loadError ? 'Could not load Terminal settings.' : null}
@@ -415,6 +416,7 @@ export function TerminalTab(): JSX.Element {
         />
         {error?.section === 'shells' ? (
           <DesktopErrorBanner
+            errorSource="terminal-tab"
             className=""
             error={error.failure.error}
             {...(error.failure.details === undefined
@@ -466,6 +468,7 @@ export function TerminalTab(): JSX.Element {
       >
         {error?.section === 'presets' ? (
           <DesktopErrorBanner
+            errorSource="terminal-tab"
             className=""
             error={error.failure.error}
             {...(error.failure.details === undefined

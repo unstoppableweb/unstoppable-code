@@ -123,6 +123,7 @@ export function OrganizationLogoEditor({
       {error && (
         <div className="w-full max-w-48">
           <ErrorBanner
+            errorSource="organization-logo-editor"
             className=""
             error={error.copy}
             {...(error.details !== undefined ? { details: error.details } : {})}

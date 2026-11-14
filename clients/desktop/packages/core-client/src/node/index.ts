@@ -69,3 +69,5 @@ export {
   createRecoverableCanopyStartupClaim,
   type CanopyRetainedStartupClaimPort,
 } from './recoverable-startup-claim';
+
+export { executeW5Recovery, type W5RecoveryLaunchOptions } from './w5-recovery';

@@ -10,13 +10,16 @@ import {
   type ReactNode,
 } from 'react';
 import { CheckIcon } from '../icons/AppIcons';
+import { WORKSPACE_GLYPH_RADIUS_CLASS } from './WorkspaceKindBadge';
 
 /**
  * Canonical choice marks shared by desktop and web: `Checkbox`, `Radio`, and
  * the display-only `ChoiceMark` for rows that are buttons (design decision,
  * 2026-10-30: a radio looks like a radio, a checkbox like a checkbox).
  *
- * - Shape: 16px. A checkbox is a rounded square (4px), a radio a circle.
+ * - Shape: 16px. A checkbox is a rounded square with the project glyph's
+ *   corner (`WORKSPACE_GLYPH_RADIUS_CLASS`, 5px), so a selection mark and a
+ *   project icon line up as one shape; a radio is a circle.
  * - Unselected: a thin inset ring in the quiet `fg-quaternary` ink.
  * - Selected: the accent fill. A checkbox shows the white (`fg-emphasis`)
  *   check, a mixed checkbox a white dash, a radio a white centre dot — never
@@ -44,7 +47,7 @@ type ChoiceKind = 'checkbox' | 'radio';
 export type ChoiceForcedState = 'hover' | 'pressed';
 
 const SHAPE: Record<ChoiceKind, string> = {
-  checkbox: 'rounded',
+  checkbox: WORKSPACE_GLYPH_RADIUS_CLASS,
   radio: 'rounded-full',
 };
 
@@ -106,10 +109,13 @@ function GlyphMark({
   if (glyph === 'check') {
     return (
       <span
-        className={`flex ${disabled ? 'fg-disabled' : 'fg-emphasis'}`}
+        // The scale's smallest check (12px) drawn at 85%, about 10px, so it
+        // sits inside the 16px mark with room around it; the stroke is
+        // widened by the same factor and still draws 2px.
+        className={`flex scale-85 ${disabled ? 'fg-disabled' : 'fg-emphasis'}`}
         data-choice-glyph="check"
       >
-        <CheckIcon size={12} exactSize drawnStrokeWidth={2} />
+        <CheckIcon size="xs" exactSize drawnStrokeWidth={2 / 0.85} />
       </span>
     );
   }

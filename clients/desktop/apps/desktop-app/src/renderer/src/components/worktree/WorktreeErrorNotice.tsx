@@ -56,6 +56,9 @@ export function WorktreeErrorNotice(): JSX.Element | null {
       type: 'error',
       message: cardMessage,
       testId: 'worktree-error-notice',
+      ...(worktreeError.displayErrorCode === undefined
+        ? {}
+        : { displayErrorCode: worktreeError.displayErrorCode }),
       ...(typeof worktreeError.error === 'string'
         ? {}
         : { reference: worktreeError.error }),

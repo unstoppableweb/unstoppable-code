@@ -15,8 +15,8 @@ import {
 export interface SidebarOverviewNavLinkProps {
   /** The page the link opens, as it reads in the sidebar. */
   label: string;
-  /** Items on the page; the link is absent at zero. */
-  count: number;
+  /** Items on the page; omit when the count is unknown to keep the link visible. */
+  count?: number;
   /** Highlight while this workspace's overview or a viewer on it is open. */
   selected: boolean;
   onOpen: () => void;
@@ -24,9 +24,11 @@ export interface SidebarOverviewNavLinkProps {
   /**
    * `compact` (default) is the 28px link. `row` takes the sidebar rows' 32px
    * height and `rounded-row` corner, so it lines up with every other item in
-   * the desktop sidebar under early access.
+   * the desktop sidebar under early access. `item` is a plain sidebar item:
+   * the row's size, the rows' 14px title type and no leading glyph, so it
+   * reads like the rows above it.
    */
-  size?: 'compact' | 'row';
+  size?: 'compact' | 'row' | 'item';
 }
 
 /**
@@ -45,14 +47,16 @@ export function SidebarOverviewNavLink({
   testId,
   size = 'compact',
 }: SidebarOverviewNavLinkProps): JSX.Element | null {
-  if (count <= 0) {
+  // Nothing on the page: no link, unless the page is open.
+  if (count !== undefined && count <= 0 && !selected) {
     return null;
   }
+  const rowSized = size !== 'compact';
   return (
     // `row` keeps the rows' own 1px rhythm above it; the compact link keeps
     // its 4px.
     <div
-      className={size === 'row' ? 'mt-px' : 'mt-1'}
+      className={rowSized ? 'mt-px' : 'mt-1'}
       data-testid={`${testId}-section`}
     >
       <button
@@ -66,14 +70,14 @@ export function SidebarOverviewNavLink({
         // label under their titles. Both sizes take the rows' right inset, so
         // the count sits under their ages and the count beside the project
         // name.
-        className={`focus-ring flex pr-1.5 ${size === 'row' ? 'h-8 rounded-row' : 'h-7 rounded-md'} w-full items-center ${SIDEBAR_ROW_GRID_CLASSNAME} text-left text-xs transition-colors ${
+        className={`focus-ring flex pr-1.5 ${rowSized ? 'h-8 rounded-row' : 'h-7 rounded-md'} w-full items-center ${SIDEBAR_ROW_GRID_CLASSNAME} text-left ${size === 'item' ? 'text-s leading-snug' : 'text-xs'} transition-colors ${
           selected
             ? 'bg-fg-primary/[0.08] fg-primary'
             : 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary'
         }`}
       >
         <span className={SIDEBAR_ROW_LEADING_SLOT_CLASSNAME} aria-hidden="true">
-          <ArrowUpRight size={12} />
+          {size === 'item' ? null : <ArrowUpRight size={12} />}
         </span>
         <span className="min-w-0 truncate" data-testid={`${testId}-label`}>
           {label}
@@ -81,12 +85,14 @@ export function SidebarOverviewNavLink({
         {LABEL_COUNT_SEPARATOR}
         {/* The rows' age cell, so the count shares one right edge, ink and
             type with the ages above it. */}
-        <span
-          className={SIDEBAR_ROW_TRAILING_CELL_CLASSNAME}
-          data-testid={`${testId}-count`}
-        >
-          {count}
-        </span>
+        {count !== undefined && (
+          <span
+            className={SIDEBAR_ROW_TRAILING_CELL_CLASSNAME}
+            data-testid={`${testId}-count`}
+          >
+            {count}
+          </span>
+        )}
       </button>
     </div>
   );
@@ -96,12 +102,29 @@ export interface ArchivedContainersNavLinkProps extends Omit<
   SidebarOverviewNavLinkProps,
   'label' | 'count'
 > {
-  /** Retained items (containers plus legacy archived chats) in the workspace. */
-  count: number;
+  /** Retained items, omitted when the host has no complete archive count. */
+  count?: number;
 }
 
 export function ArchivedContainersNavLink(
   props: ArchivedContainersNavLinkProps,
 ): JSX.Element | null {
   return <SidebarOverviewNavLink label="Archived and deleted" {...props} />;
+}
+
+export interface MoreRowProps extends Omit<
+  SidebarOverviewNavLinkProps,
+  'label' | 'size'
+> {
+  /** Hidden, archived and deleted items in the project. */
+  count: number;
+}
+
+/**
+ * A project's "More" row: a plain sidebar item that opens its More page
+ * (hidden, archived and deleted worktrees). Its label lines up with the
+ * titles above and its count sits in the rows' trailing cell.
+ */
+export function MoreRow(props: MoreRowProps): JSX.Element | null {
+  return <SidebarOverviewNavLink label="More" size="item" {...props} />;
 }

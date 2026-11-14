@@ -3,6 +3,7 @@ import {
   ScriptsSectionBody,
   ScriptOutputModal as SharedScriptOutputModal,
   type ScriptsSectionHostModel,
+  type ScriptsSectionBodyProps,
   type ScriptsSectionEntry,
   type ScriptsSectionRun,
   type ScriptsSectionWorkspaceLifecycleGroup,
@@ -13,9 +14,9 @@ import {
   LoadingSpinner,
   SourceInfoButton,
   Surface,
+  CodeBlock,
 } from '@canopy/ui-shared/components';
 import { RocketLaunchIcon } from '@canopy/ui-shared/icons';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
   ScriptRunResponse,
   ScriptSourceInfoRequest,
@@ -31,6 +32,13 @@ import { SourceInfoModal } from './SourceInfoModal';
 import { buildScriptEntries, type ScriptEntry } from './script-utils';
 import { SourceInfoLayers } from './SourceInfoLayers';
 import { useProjectsStore } from '@/stores/projectsStore';
+import {
+  clearScriptRun,
+  stopOrphanedScriptRun,
+  listOrphanedScriptRunGroup,
+  forceStopOrphanedScriptRunGroup,
+  type ScriptRunTarget,
+} from '@/client/script-run-actions-client';
 import {
   getSourceLayerStatusColor,
   getSourceLayerStatusLabel,
@@ -146,11 +154,9 @@ function ScriptSourceInfoModal({
           emptyText={emptyText}
           renderBody={(layer) =>
             layer.command !== null && (
-              <pre
-                className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
-              >
+              <CodeBlock variant="snippet" className="max-h-16">
                 {layer.command}
-              </pre>
+              </CodeBlock>
             )
           }
         />
@@ -311,11 +317,9 @@ function WorkspaceLifecycleInfoModal({
                             </span>
                           </div>
                           {layer.command !== null && (
-                            <pre
-                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-14 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
-                            >
+                            <CodeBlock variant="snippet" className="max-h-14">
                               {layer.command}
-                            </pre>
+                            </CodeBlock>
                           )}
                         </div>
                       ))}
@@ -442,6 +446,9 @@ export function useScriptsSectionHostModel({
   const completeRun = useScriptsStore((state) => state.completeRun);
   const completeStaleRun = useScriptsStore((state) => state.completeStaleRun);
   const markStopping = useScriptsStore((state) => state.markStopping);
+  const settlePersistedRun = useScriptsStore(
+    (state) => state.settlePersistedRun,
+  );
   const [infoEntry, setInfoEntry] = useState<ScriptEntry | null>(null);
   const [lifecycleInfo, setLifecycleInfo] =
     useState<ScriptsSectionWorkspaceLifecycleGroup | null>(null);
@@ -493,8 +500,63 @@ export function useScriptsSectionHostModel({
       durationMs: run.durationMs,
       startedAt: run.startedAt,
       hasDevServerHits: run.devServerHits.length > 0,
+      ...(run.orphan && { orphan: run.orphan }),
+      ...(run.lostFrom && { lostFrom: run.lostFrom }),
     };
   }
+  /** The persisted run a Stop or Remove names, as the store last read it. */
+  const persistedRun = (scriptKey: string): ScriptRunTarget => {
+    const executionId = runs[scriptKey]?.executionId;
+    if (executionId === undefined)
+      throw new Error('This run changed. Refresh the list and try again.');
+    return { projectId, worktreeId, scriptKey, executionId };
+  };
+  const stopOrphan: ScriptsSectionBodyProps['onStopOrphan'] = async (
+    scriptKey,
+    request,
+  ) => {
+    const target = persistedRun(scriptKey);
+    const outcome = await stopOrphanedScriptRun(target, request);
+    if (outcome === 'stopped' || outcome === 'gone')
+      settlePersistedRun(
+        projectId,
+        worktreeId,
+        scriptKey,
+        target.executionId,
+        'lost',
+      );
+    return outcome;
+  };
+  const listOrphanGroup: ScriptsSectionBodyProps['onListOrphanGroup'] = (
+    scriptKey,
+  ) => listOrphanedScriptRunGroup(persistedRun(scriptKey));
+  const forceStopOrphanGroup: ScriptsSectionBodyProps['onForceStopOrphanGroup'] =
+    async (scriptKey, members) => {
+      const target = persistedRun(scriptKey);
+      const result = await forceStopOrphanedScriptRunGroup(target, members);
+      // The whole group is gone: the run is recorded lost.
+      if (result.outcome === 'stopped')
+        settlePersistedRun(
+          projectId,
+          worktreeId,
+          scriptKey,
+          target.executionId,
+          'lost',
+        );
+      return result;
+    };
+  const removeRun = async (scriptKey: string): Promise<void> => {
+    const target = persistedRun(scriptKey);
+    // False: the key's latest run is another one now, so this one is gone.
+    await clearScriptRun(target);
+    settlePersistedRun(
+      projectId,
+      worktreeId,
+      scriptKey,
+      target.executionId,
+      'cleared',
+    );
+  };
 
   const stopRun = (scriptKey: string): void => {
     const token = markStopping(projectId, worktreeId, scriptKey);
@@ -559,6 +621,10 @@ export function useScriptsSectionHostModel({
     runs: bodyRuns,
     onRun: runEntry,
     onStop: stopRun,
+    onStopOrphan: stopOrphan,
+    onListOrphanGroup: listOrphanGroup,
+    onForceStopOrphanGroup: forceStopOrphanGroup,
+    onRemoveRun: removeRun,
     groupWorkspaceLifecycles: true,
     renderSourceInfoButton: (entry, label): JSX.Element => (
       <SourceInfoButton

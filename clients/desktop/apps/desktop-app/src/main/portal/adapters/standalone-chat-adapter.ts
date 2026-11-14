@@ -1,15 +1,24 @@
+import { resolveCoworkWorkspaceId } from '../../lib/cowork-migration-map';
+import { IdentifierValidationError } from '../../lib/validation';
 import {
   isSidebarItemGroupColor,
   isSidebarItemGroupId,
   normalizeSidebarItemGroupName,
 } from '@canopy/protocol/sidebar';
-import type {
-  PortalStandaloneChatCreatePayload,
-  PortalStandaloneChatCreateResult,
-  PortalTaskFirstChat,
-  PortalTaskFirstChatResult,
-  PortalTaskSidebarItemGroupName,
+import {
+  isPortalChatAgentProviderType,
+  type PortalArchivedWorkEntriesListResult,
+  type PortalArchivedWorkEntry,
+  type PortalStandaloneChatArchiveResult,
+  type PortalStandaloneChatCreatePayload,
+  type PortalStandaloneChatCreateResult,
+  type PortalTaskFirstChat,
+  type PortalTaskFirstChatResult,
+  type PortalTaskSidebarItemGroupName,
 } from '@canopy/protocol/portal';
+import { CHAT_UNIT_LABEL } from '@canopy/protocol';
+import { isArchivedContainerExpired } from '@canopy/desktop-shared/lib/archive-retention';
+import { chatDisplayLabel } from '@canopy/desktop-shared/lib/chat-display-label';
 import {
   getProviderForModel,
   isThinkingLevel,
@@ -57,7 +66,288 @@ import { readPortalChatCloudAttachmentRefs } from '../portal-chat-attachments';
 import { validateId } from '../../lib/validation';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { PortalServiceError } from '../../services/portal-service-error';
+import { LiveDelegationsError } from '../../agents/delegation/activity';
+import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import { noDispatchableModelSendMessage } from '../../lib/send-billing-refusal';
+
+class StandaloneArchivePermissionError extends Error {
+  public readonly code = 'forbidden';
+}
+
+const STANDALONE_ARCHIVE_PORTAL_FAILURE = "Couldn't archive the chat.";
+
+export async function handlePortalArchivedWorkEntriesList(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  const { payload, target } = command;
+  if (
+    !isRecord(payload) ||
+    typeof payload.projectLocalId !== 'string' ||
+    target?.workspaceLocalId !== payload.projectLocalId ||
+    target.worktreeLocalId !== undefined ||
+    target.standaloneChatLocalId !== undefined ||
+    (payload.offset !== undefined && payload.offset !== 0)
+  ) {
+    context.fail(command, 'invalid_payload', 'A matching project is required.');
+    return;
+  }
+  const canRead = (): boolean =>
+    context.origin === undefined &&
+    context.canArchiveStandaloneChats?.() === true;
+  if (!canRead()) {
+    context.fail(
+      command,
+      'forbidden',
+      'The paired session cannot list archives.',
+    );
+    return;
+  }
+  try {
+    validateId(payload.projectLocalId, 'projectLocalId');
+    const { listCoworkWorkspacesAsChatProjects } =
+      await import('../../lib/cowork-workspace-crud');
+    const projectId = resolveCoworkWorkspaceId(payload.projectLocalId);
+    const { readAllSidebarItemsSnapshot } =
+      await import('../../lib/sidebar-items');
+    const sidebar = await readAllSidebarItemsSnapshot({
+      persistRemovalCleanup: false,
+    });
+    const projects = await listCoworkWorkspacesAsChatProjects(sidebar, {
+      provisionDefaults: false,
+    });
+    if (!projects.some((project) => project.id === projectId)) {
+      context.fail(command, 'not_found', 'The cowork project is unavailable.');
+      return;
+    }
+    const { listArchivedContainerManifests } =
+      await import('../../lib/archived-containers');
+    const { listChats } = await import('../../ipc/standalone-chat');
+    const [manifests, legacy] = await Promise.all([
+      listArchivedContainerManifests(projectId),
+      listChats(projectId, { readOnly: true }),
+    ]);
+    if (!canRead()) {
+      context.fail(
+        command,
+        'forbidden',
+        'The paired session cannot list archives.',
+      );
+      return;
+    }
+    const now = Date.now();
+    const items: PortalArchivedWorkEntry[] = [];
+    for (const manifest of manifests) {
+      if (
+        manifest.kind !== 'work-entry' ||
+        isArchivedContainerExpired(manifest, now)
+      )
+        continue;
+      items.push({
+        id: manifest.id,
+        title: manifest.name.slice(0, 512),
+        state: manifest.lockedAt === undefined ? 'deleted' : 'archived',
+        archivedAt: manifest.lockedAt ?? manifest.archivedAt,
+        expiresAt: manifest.expiresAt,
+      });
+    }
+    for (const chat of legacy.chats) {
+      if (chat.archived !== true) continue;
+      items.push({
+        id: chat.id,
+        title: chatDisplayLabel({
+          customTitle: chat.customTitle,
+          title: chat.title,
+          description: chat.description,
+          fallback: `New ${CHAT_UNIT_LABEL}`,
+        }).slice(0, 512),
+        state: 'archived',
+        archivedAt: chat.archivedAt ?? chat.lastMessageAt ?? chat.createdAt,
+        legacyChat: true,
+      });
+    }
+    const result: PortalArchivedWorkEntriesListResult = {
+      items,
+      nextOffset: null,
+    };
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 256 * 1024) {
+      throw new Error(
+        'Archive overview result exceeded the Portal size budget',
+      );
+    }
+    context.complete(command, { ...result });
+  } catch (error) {
+    logMainProcessWarn('Portal archived Work Entry list failed', { error });
+    context.fail(
+      command,
+      'execution_failed',
+      "Couldn't load archived and deleted items.",
+    );
+  }
+}
+
+/**
+ * Archive failures reach the hosted Portal and the browser. Typed refusals
+ * carry fixed, path-free copy; any other error (filesystem errors include
+ * absolute desktop paths) stays in desktop logs and maps to fixed text.
+ */
+function portalSafeArchiveError(error: unknown): unknown {
+  if (error instanceof IdentifierValidationError)
+    return new PortalServiceError('invalid_payload', error.message);
+  if (
+    error instanceof PortalServiceError ||
+    error instanceof StandaloneArchivePermissionError ||
+    error instanceof LiveDelegationsError ||
+    readCoworkFolderMissing(error) !== undefined
+  )
+    return error;
+  logMainProcessWarn('Portal standalone chat archive failed', { error });
+  return new PortalServiceError(
+    'execution_failed',
+    STANDALONE_ARCHIVE_PORTAL_FAILURE,
+  );
+}
+
+/** Archive authority remains shared with desktop Work Entry deletion. */
+export async function handlePortalStandaloneChatArchive(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  try {
+    const payload = command.payload;
+    if (
+      !isRecord(payload) ||
+      typeof payload.chatId !== 'string' ||
+      typeof payload.workEntryId !== 'string' ||
+      typeof payload.projectLocalId !== 'string'
+    ) {
+      throw new PortalServiceError(
+        'invalid_payload',
+        'Invalid standalone chat archive payload.',
+      );
+    }
+    validateId(payload.chatId, 'chatId');
+    validateId(payload.workEntryId, 'workEntryId');
+    const expectedEntryId = payload.workEntryId;
+    validateId(payload.projectLocalId, 'projectLocalId');
+    if (
+      command.target?.standaloneChatLocalId !== payload.chatId ||
+      command.target.workspaceLocalId !== undefined ||
+      command.target.worktreeLocalId !== undefined
+    ) {
+      throw new PortalServiceError(
+        'invalid_target',
+        'Archive requires the matching standalone chat target.',
+      );
+    }
+    const assertAuthorized = (): void => {
+      if (context.canArchiveStandaloneChats?.() !== true) {
+        throw new StandaloneArchivePermissionError(
+          'The paired session cannot archive Work Entries.',
+        );
+      }
+    };
+    assertAuthorized();
+    const request = {
+      chatId: payload.chatId,
+      workEntryId: expectedEntryId,
+      projectLocalId: payload.projectLocalId,
+    };
+    const resolved = await resolveStandaloneChatTarget(request, {
+      forArchive: true,
+    });
+    assertAuthorized();
+    if (
+      resolveCoworkWorkspaceId(request.projectLocalId) !== resolved.workspaceId
+    ) {
+      throw new PortalServiceError(
+        'invalid_target',
+        'The chat does not belong to the supplied project.',
+      );
+    }
+    if (
+      !(resolved.isArchived ? resolved.archivedInEntryId : resolved.entryId)
+    ) {
+      throw new PortalServiceError(
+        'not_found',
+        'The chat has no verifiable Work Entry.',
+      );
+    }
+    // Bind the displayed Work Entry before acquiring any lifecycle resources.
+    if ((resolved.entryId ?? resolved.archivedInEntryId) !== expectedEntryId) {
+      throw new PortalServiceError(
+        'invalid_target',
+        'The Work Entry changed before archive.',
+      );
+    }
+    const { withArchivedWorkspaceOperationLock } =
+      await import('../../lib/archived-containers');
+    const { deleteWorkEntry, withWorkEntryDeletionRetirement } =
+      await import('../../lib/work-entry-delete');
+    const revalidate = async (): Promise<true> => {
+      assertAuthorized();
+      const current = await resolveStandaloneChatTarget(
+        { ...request, projectLocalId: resolved.workspaceId },
+        { forArchive: true },
+      );
+      assertAuthorized();
+      if (
+        current.workspaceId !== resolved.workspaceId ||
+        (current.entryId ?? current.archivedInEntryId) !== expectedEntryId ||
+        (resolved.isArchived && !current.isArchived)
+      )
+        throw new PortalServiceError(
+          'invalid_target',
+          'The Work Entry changed before archive.',
+        );
+      return true;
+    };
+    const result = await withWorkEntryDeletionRetirement(
+      { workspaceId: resolved.workspaceId, entryId: expectedEntryId },
+      async (retirement): Promise<PortalStandaloneChatArchiveResult> => {
+        if (!retirement)
+          throw new PortalServiceError(
+            'invalid_target',
+            'The Work Entry changed before archive.',
+          );
+        return withArchivedWorkspaceOperationLock(
+          resolved.workspaceId,
+          async (): Promise<PortalStandaloneChatArchiveResult> => {
+            await revalidate();
+            await deleteWorkEntry({
+              workspaceId: resolved.workspaceId,
+              entryId: expectedEntryId,
+              lockAfterArchive: true,
+              retirement,
+              beforeTeardown: assertAuthorized,
+              // The server confirms the pairing before the first destructive write.
+              confirmBeforeCommit: async () => {
+                if ((await context.confirmArchivePairing?.()) !== true)
+                  throw new StandaloneArchivePermissionError(
+                    'The paired session cannot archive Work Entries.',
+                  );
+                assertAuthorized();
+              },
+            });
+            return {
+              ok: true,
+              chatId: request.chatId,
+              projectLocalId: resolved.workspaceId,
+              workEntryId: expectedEntryId,
+            };
+          },
+        );
+      },
+      revalidate,
+      // Retirement preparation awaits before disposing the entry's live
+      // browser views; recheck authorization right before disposal.
+      assertAuthorized,
+    );
+    context.complete(command, result);
+  } catch (error) {
+    failServiceError(command, context, portalSafeArchiveError(error));
+  }
+}
 
 export async function handlePortalStandaloneChatCreate(
   command: PortalCommandEnvelope<unknown>,
@@ -261,19 +551,6 @@ interface ParsedStandaloneCreatePayload {
   firstChat?: ParsedStandaloneFirstChat;
 }
 
-function isPortalTaskProviderType(
-  value: unknown,
-): value is NonNullable<PortalTaskFirstChat['providerType']> {
-  return (
-    value === 'claude' ||
-    value === 'codex' ||
-    value === 'ollama' ||
-    value === 'cursor' ||
-    value === 'copilot' ||
-    value === 'opencode'
-  );
-}
-
 function hasOnlyFields(
   value: Record<string, unknown>,
   allowed: readonly string[],
@@ -386,7 +663,7 @@ function readStandaloneFirstChat(
         value.model.length > 256)) ||
     (value.providerType !== undefined && value.model === undefined) ||
     (value.providerType !== undefined &&
-      !isPortalTaskProviderType(value.providerType)) ||
+      !isPortalChatAgentProviderType(value.providerType)) ||
     (value.modelConfig !== undefined &&
       (!isRecord(value.modelConfig) ||
         !hasOnlyFields(value.modelConfig, [
@@ -742,6 +1019,7 @@ export async function handlePortalStandaloneChatSend(
       payload.providerType === 'codex' ||
       payload.providerType === 'ollama' ||
       payload.providerType === 'copilot' ||
+      payload.providerType === 'antigravity' ||
       payload.providerType === 'opencode' ||
       payload.providerType === 'cursor'
         ? payload.providerType
@@ -792,6 +1070,7 @@ export async function handlePortalStandaloneChatSend(
       noDispatchableModel,
       cursorModelRequired,
       copilotModelRequired,
+      antigravityModelRequired,
       opencodeModelRequired,
     } = await resolveStandaloneChatPolicyModels({
       projectId: payload.projectId,
@@ -820,15 +1099,22 @@ export async function handlePortalStandaloneChatSend(
     // A Cursor route with no model to run is refused first, with the message
     // the service and the chat IPC use, so the Portal user is never told about
     // a Claude default this send would not run.
-    if (cursorModelRequired || copilotModelRequired || opencodeModelRequired) {
+    if (
+      cursorModelRequired ||
+      copilotModelRequired ||
+      antigravityModelRequired ||
+      opencodeModelRequired
+    ) {
       context.fail(
         command,
         'invalid_payload',
-        opencodeModelRequired
-          ? 'Choose an OpenCode model before sending.'
-          : copilotModelRequired
-            ? 'Choose a Copilot model to send with Copilot, or choose another model.'
-            : 'Choose a Cursor model to send with Cursor, or choose another model.',
+        antigravityModelRequired
+          ? 'Choose a Google subscription model before sending.'
+          : opencodeModelRequired
+            ? 'Choose an OpenCode model before sending.'
+            : copilotModelRequired
+              ? 'Choose a Copilot model to send with Copilot, or choose another model.'
+              : 'Choose a Cursor model to send with Cursor, or choose another model.',
       );
       return;
     }
@@ -1004,6 +1290,7 @@ function readStandaloneChatSendPayload(
       value.providerType !== 'ollama' &&
       value.providerType !== 'cursor' &&
       value.providerType !== 'copilot' &&
+      value.providerType !== 'antigravity' &&
       value.providerType !== 'opencode') ||
     (value.thinkingLevel !== undefined &&
       !isThinkingLevel(value.thinkingLevel)) ||

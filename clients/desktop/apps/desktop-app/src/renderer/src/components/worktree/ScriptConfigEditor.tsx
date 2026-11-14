@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
-import { SECONDARY_SURFACE_SHELL_CLASS, ToggleSwitch } from '@canopy/ui-shared';
+import { ToggleSwitch, type SegmentedControlOption } from '@canopy/ui-shared';
 import {
   MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH,
   MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH,
@@ -137,53 +137,32 @@ interface TimeoutSegmentedControlProps {
   describedById?: string;
 }
 
+const TIMEOUT_OPTIONS: readonly SegmentedControlOption<ScriptTimeoutMode>[] = [
+  { value: 'default', label: 'Default' },
+  { value: 'custom', label: 'Custom' },
+  { value: 'disabled', label: 'Disabled' },
+];
+
 function TimeoutSegmentedControl({
   mode,
   onChange,
   disabled,
   describedById,
 }: TimeoutSegmentedControlProps): JSX.Element {
-  const renderOption = (
-    value: ScriptTimeoutMode,
-    label: string,
-  ): JSX.Element => {
-    const isActive = mode === value;
-    return (
-      <button
-        key={value}
-        type="button"
-        role="radio"
-        aria-checked={isActive}
-        disabled={disabled}
-        onClick={() => {
-          if (disabled || mode === value) {
-            return;
-          }
-          onChange(value);
-        }}
-        className={`focus-ring inline-flex items-center rounded-full px-3 text-xs font-medium transition-colors ${
-          isActive
-            ? `fg-primary ${SECONDARY_SURFACE_SHELL_CLASS}`
-            : 'fg-secondary hover:fg-primary'
-        } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
-      >
-        {label}
-      </button>
-    );
-  };
-
   return (
-    <div
-      role="radiogroup"
-      aria-describedby={describedById}
-      className={`inline-flex h-7 shrink-0 items-stretch gap-0.5 rounded-full bg-depth p-0.5 ${
-        disabled ? 'opacity-80' : ''
-      }`}
-    >
-      {renderOption('default', 'Default')}
-      {renderOption('custom', 'Custom')}
-      {renderOption('disabled', 'Disabled')}
-    </div>
+    <SegmentedControl<ScriptTimeoutMode>
+      label="Timeout"
+      semantics="radio"
+      shape="capsule"
+      width="content"
+      value={mode}
+      options={TIMEOUT_OPTIONS}
+      disabled={disabled}
+      describedBy={describedById}
+      onChange={(next) => {
+        if (next !== mode) onChange(next);
+      }}
+    />
   );
 }
 

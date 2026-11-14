@@ -31,6 +31,9 @@ import {
   Notice,
   NoticeButton,
   PluginsDiscoveryList,
+  MarketplaceInstallButton,
+  marketplaceListingMenuItems,
+  marketplaceShareMenuItems,
   PluginsDiscoveryListLoading,
   SearchEmptyState,
   UninstallConfirmDialog,
@@ -1004,16 +1007,14 @@ export function CustomizeTabSections(
             },
           });
       }
-      const share = entryShareStates?.get(entry.id);
-      if (share && onShareEntry)
-        items.push({
-          id: 'share',
-          label: 'Share…',
-          disabled: share.status === 'blocked',
-          disabledReason: share.status === 'blocked' ? share.reason : undefined,
-          onSelect: () => onShareEntry(entry),
-        });
-      else if (mcpRow)
+      const shares = marketplaceShareMenuItems(
+        entry,
+        entryShareStates,
+        onShareEntry,
+      );
+      items.push(...shares);
+      if (shares.length === 0 && mcpRow) {
+        const share = entryShareStates?.get(entry.id);
         items.push({
           id: 'share',
           label: 'Share…',
@@ -1026,6 +1027,7 @@ export function CustomizeTabSections(
                 : MARKETPLACE_SHARE_BLOCKED_REASONS.unavailable,
           onSelect: () => undefined,
         });
+      }
       if (
         sectionId === 'installed' &&
         entry.kind === 'skill' &&
@@ -1052,12 +1054,12 @@ export function CustomizeTabSections(
           disabledReason: availability.delete.reason,
           onSelect: () => setDeleteTarget(entry),
         });
-      const removalItem =
+      const removals =
         !workflow && sectionId !== 'shared-by-me'
-          ? removalMenuItem(entry)
-          : null;
-      if (removalItem) items.push(removalItem);
-      else if (mcpRow) {
+          ? marketplaceListingMenuItems(entry, removalMenuItem)
+          : [];
+      items.push(...removals);
+      if (removals.length === 0 && mcpRow) {
         const state = entryStatus?.states[entry.id];
         const chooseTarget = mcpHasMultipleTargets(entry);
         items.push({
@@ -1244,6 +1246,7 @@ export function CustomizeTabSections(
           : undefined;
       const statusState =
         entryStatus?.states[entry.installedEntryId ?? entry.id];
+      const providerListings = entry.marketplaceListings;
       // Dimming follows the live status, its plugin's for a bundled skill.
       const dimmingState = entryStatus?.states[statusEntryIdOf(entry)];
       // Real installed servers only: a server behind its plugin keeps the
@@ -1320,11 +1323,13 @@ export function CustomizeTabSections(
                     : undefined,
                 node: pending?.authorizationUrl ? (
                   <McpSignInPendingStatus
+                    variant="row"
                     serviceName={entry.name}
                     dataTestId={`customize-row-health-${entry.id}`}
                   />
                 ) : (
                   <McpRowHealth
+                    name={entry.name}
                     model={
                       busy
                         ? { ...model, text: 'Checking…', tone: 'neutral' }
@@ -1372,7 +1377,43 @@ export function CustomizeTabSections(
       const showStatusControl =
         statusState !== undefined &&
         !(statusState.kind === 'read-only' && showsConnectionBadge);
-      const collection = entry.kind === 'collection';
+      const statusListings =
+        providerListings ?? (showStatusControl ? [entry] : []);
+      const installedStatusControls =
+        entryStatus &&
+        statusListings.flatMap((listing) => {
+          const state =
+            entryStatus.states[listing.installedEntryId ?? listing.id];
+          if (!state) return [];
+          const provider = providerListings
+            ? listing.marketplaceProvider
+            : undefined;
+          return (
+            <span
+              key={listing.id}
+              data-testid="customize-row-status-slot"
+              className={
+                provider
+                  ? 'flex shrink-0 items-center gap-1'
+                  : 'flex min-w-28 shrink-0 justify-start'
+              }
+            >
+              {provider && (
+                <span className="text-xs fg-secondary">{provider}</span>
+              )}
+              <InstalledItemStatusControl
+                itemName={
+                  provider ? `${listing.name} (${provider})` : listing.name
+                }
+                state={state}
+                pendingKeys={entryStatus.pendingKeys}
+                onSetStatus={entryStatus.onSetStatus}
+                onError={entryStatus.onError}
+                testId={`plugins-entry-status-${listing.id}`}
+              />
+            </span>
+          );
+        });
       const installed =
         entry.state !== 'available' ||
         entry.installedEntryId !== undefined ||
@@ -1477,34 +1518,12 @@ export function CustomizeTabSections(
               </span>
             ) : section.id === 'browse' && !installed && onAddEntry ? (
               <span className="flex w-36 shrink-0 justify-end">
-                <Button
-                  size="compact"
-                  type="button"
-                  data-testid={`plugins-entry-add-${entry.id}`}
-                  aria-label={`${collection ? 'Add' : 'Install'} ${entry.name}`}
-                  onClick={() => onAddEntry(entry)}
-                >
-                  {collection ? 'Add' : 'Install'}
-                </Button>
+                <MarketplaceInstallButton entry={entry} onAdd={onAddEntry} />
               </span>
             ) : (
               (renderStatus?.(entry) ??
               renderWorkflowControls(entry) ??
-              (entryStatus && showStatusControl ? (
-                <span
-                  data-testid="customize-row-status-slot"
-                  className="flex min-w-28 shrink-0 justify-start"
-                >
-                  <InstalledItemStatusControl
-                    itemName={entry.name}
-                    state={statusState}
-                    pendingKeys={entryStatus.pendingKeys}
-                    onSetStatus={entryStatus.onSetStatus}
-                    onError={entryStatus.onError}
-                    testId={`plugins-entry-status-${entry.id}`}
-                  />
-                </span>
-              ) : undefined))
+              installedStatusControls)
             )
           }
           McpServerLogoComponent={McpServerLogoComponent}
@@ -1522,7 +1541,8 @@ export function CustomizeTabSections(
           actions={
             section.id === 'browse' &&
             installed &&
-            (updateEntry || (collection && entry.updateAvailable)) &&
+            (updateEntry ||
+              (entry.kind === 'collection' && entry.updateAvailable)) &&
             (onUpdateEntry || updateReason)
               ? renderUpdateAction(updateEntry ?? entry)
               : (section.id === 'updates' && (onUpdateEntry || updateReason)) ||
@@ -1642,6 +1662,7 @@ export function CustomizeTabSections(
         )}
         {state === 'error' && (
           <Notice
+            errorSource="customize-installed-error"
             intent="destructive"
             className="mt-3"
             data-testid="customize-installed-error"

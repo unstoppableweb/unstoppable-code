@@ -1,11 +1,16 @@
 /** Offline operator entry; ordinary startup only prints this command, never runs it. */
 import { homedir } from 'node:os';
+import {
+  repairCompletedInternalRootFileTabs,
+  withInternalRootFileTabRepairs,
+} from '../src/main/lib/internal-root-file-tabs';
 import { lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { hostOperatingSystem } from '../../../packages/core-platform/src/host-platform';
 import { windowsPrincipalObserver } from '../../../packages/core-platform/src';
 import { internalRootFilesystemHost } from '../../../packages/desktop-shared/src/node/internal-root-migration/filesystem-host';
 import { readInternalRootAbandonmentPlan } from '../../../packages/desktop-shared/src/node/internal-root-migration/filesystem';
+import { repairCompletedInternalRootPipelineRecords } from '../../../packages/desktop-shared/src/node/internal-root-migration/pipeline-records';
 import { createFreshInternalRoot } from '../../../packages/desktop-shared/src/node/internal-root-migration/fresh-start';
 import { canonicalStoragePath } from '../../../packages/core-platform/src/build-storage-startup';
 import {
@@ -17,6 +22,8 @@ import unstoppableCode from '../../../brands/unstoppable-code/brand.json';
 import {
   migrateInternalRoot,
   InternalRootMigrationRefused,
+  type InternalRootIdentity,
+  type InternalRootMigrationWorker,
 } from '../../../packages/core-runtime/src/node/internal-root-migration';
 import {
   createInternalRootMigrationWorker,
@@ -38,6 +45,42 @@ import {
   monitorInternalRootMigrationWorker,
   runInternalRootMigrationPhase,
 } from '../../../packages/desktop-shared/src/node/internal-root-migration/progress';
+
+import {
+  copyCompletedInternalRootClaudeTranscripts,
+  type ClaudeTranscriptCopyReport,
+} from './internal-root-claude-transcripts';
+
+async function copyClaudeTranscripts(
+  worker: InternalRootMigrationWorker,
+  identity: InternalRootIdentity,
+  configDirs: readonly string[],
+): Promise<{
+  claudeTranscripts: ClaudeTranscriptCopyReport | null;
+  claudeTranscriptCopyError?: string;
+}> {
+  try {
+    const claudeTranscripts = await runInternalRootMigrationPhase(
+      'Copying Claude transcripts',
+      () =>
+        copyCompletedInternalRootClaudeTranscripts(
+          worker,
+          identity,
+          configDirs,
+        ),
+    );
+    process.stderr.write(
+      `Claude transcripts: ${claudeTranscripts.copied} copied, ${claudeTranscripts.skippedExisting} existing, ${claudeTranscripts.skippedMissingDestination} missing destination, ${claudeTranscripts.errors.length} errors.\n`,
+    );
+    if (claudeTranscripts.errors.length) process.exitCode = 1;
+    return { claudeTranscripts };
+  } catch (error) {
+    const claudeTranscriptCopyError = `Migration remains complete; Claude transcript copying failed: ${error instanceof Error ? error.message : 'Unknown copy failure'}. Retain both roots and rerun --copy-claude-transcripts after resolving the error.`;
+    process.stderr.write(`${claudeTranscriptCopyError}\n`);
+    process.exitCode = 1;
+    return { claudeTranscripts: null, claudeTranscriptCopyError };
+  }
+}
 
 function phase<Args extends unknown[], Result>(
   name: string,
@@ -106,6 +149,21 @@ async function main(): Promise<void> {
       );
     },
   });
+  if (options.repairPipelineRecords) {
+    const result = await runInternalRootMigrationPhase(
+      'Repairing pipeline execution records',
+      () =>
+        repairCompletedInternalRootPipelineRecords({
+          identity,
+          worker: baseWorker,
+          host: filesystemHost,
+        }),
+    );
+    process.stdout.write(
+      `${JSON.stringify({ kind: 'pipeline-records-repaired', ...result })}\n`,
+    );
+    return;
+  }
   if (options.skipMigration) {
     await createFreshInternalRoot({
       identity,
@@ -119,6 +177,21 @@ async function main(): Promise<void> {
     return;
   }
   const worker = monitorInternalRootMigrationWorker(baseWorker);
+  if (options.repairFileTabs) {
+    const result = await runInternalRootMigrationPhase(
+      'Repairing file-tab paths',
+      () =>
+        repairCompletedInternalRootFileTabs({
+          identity,
+          worker,
+          host: filesystemHost,
+        }),
+    );
+    process.stdout.write(
+      `${JSON.stringify({ kind: 'file-tabs-repaired', ...result })}\n`,
+    );
+    return;
+  }
   const disposition = join(
     identity.destination,
     '..',
@@ -139,6 +212,22 @@ async function main(): Promise<void> {
       throw error;
   }
   const prior = await worker.readJournal(identity);
+  if (options.copyClaudeTranscripts) {
+    if (prior?.phase !== 'complete')
+      throw new Error(
+        'Transcript recovery requires a completed migration journal for this brand and source. Retain both roots.',
+      );
+    const transcriptResult = await copyClaudeTranscripts(
+      worker,
+      identity,
+      options.claudeConfigDirs,
+    );
+    process.stdout.write(
+      `${JSON.stringify({ kind: 'complete', journal: prior, ...transcriptResult }, null, 2)}\n`,
+    );
+    return;
+  }
+
   const abandonmentPlan = await readInternalRootAbandonmentPlan(
     identity,
     prior,
@@ -184,14 +273,17 @@ async function main(): Promise<void> {
     abandonmentPlan ? (abandonmentPlan.abandonedCheckouts ?? []) : undefined,
     'Checkout',
   );
-  const repairs = createInternalRootRelocationRepairs({
-    abandonCheckouts,
-    abandonArchives,
-    durability: desktopW5Durability,
-    windowsPrincipal,
-    ownedChildPath,
+  const repairs = withInternalRootFileTabRepairs(
+    createInternalRootRelocationRepairs({
+      abandonCheckouts,
+      abandonArchives,
+      durability: desktopW5Durability,
+      windowsPrincipal,
+      ownedChildPath,
+      filesystemHost,
+    }),
     filesystemHost,
-  });
+  );
   const result = await migrateInternalRoot(
     worker,
     identity,
@@ -215,6 +307,10 @@ async function main(): Promise<void> {
         : {}),
     },
   );
+  const transcriptResult =
+    options.apply && result.kind === 'complete'
+      ? await copyClaudeTranscripts(worker, identity, options.claudeConfigDirs)
+      : {};
   let cleanupCandidates: InternalRootCleanupReport | null = null;
   let cleanupReportError: string | undefined;
   try {
@@ -240,7 +336,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   }
   process.stdout.write(
-    `${JSON.stringify({ ...result, cleanupCandidates, ...(cleanupReportError ? { cleanupReportError } : {}) }, null, 2)}\n`,
+    `${JSON.stringify({ ...result, ...transcriptResult, cleanupCandidates, ...(cleanupReportError ? { cleanupReportError } : {}) }, null, 2)}\n`,
   );
 }
 

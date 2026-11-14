@@ -12,8 +12,18 @@ import type { ExecutionMemoryReading, ExecutionResourceMonitor } from './types';
  *
  * One gate serves every run on a resource monitor, so runs that share a host
  * share its memory. Steps wait in arrival order. A step's estimate counts
- * against the reading until a reading taken after the step had time to grow
- * includes it, so a burst of starts can't all fit into the same free memory.
+ * against the reading from its admission until a reading taken after its
+ * process started and had time to grow includes it, so a burst of starts
+ * can't all fit into the same free memory. The settle time runs from the
+ * process start, not the admission: under load a step can take longer than
+ * the settle time to reach its spawn, and a reading taken before then
+ * doesn't include it. A step that starts several processes, such as a
+ * composite action, restarts its settle time with each start while its
+ * estimate still counts, so a heavy later process isn't missed. A step that
+ * never reports a start keeps its estimate until it ends: every bundled
+ * shell, node and composite action spawns first, so that is only a
+ * user-authored composite made of host actions or child runs, and the
+ * estimate errs on the side of fewer steps at once, never more.
  * With nothing of the gate's running, a step starts as long as memory is not
  * already into the chat reserve, so one step larger than its estimate never
  * waits forever.
@@ -25,7 +35,7 @@ const MIB = 1024 * 1024;
 export const PIPELINE_STEP_MEMORY_ESTIMATE_BYTES = 256 * MIB;
 /** What a step that starts an agent harness is expected to take. */
 export const PIPELINE_AGENT_STEP_MEMORY_ESTIMATE_BYTES = 1024 * MIB;
-/** How long a started step has to grow before a reading counts it. */
+/** How long a started step process has to grow before a reading counts it. */
 export const PIPELINE_CAPACITY_SETTLE_MS = 2_000;
 /** How often a held step reads memory again. */
 export const PIPELINE_CAPACITY_POLL_MS = 1_000;
@@ -80,17 +90,29 @@ export interface PipelineCapacityRequest {
   readonly keepChatReserve: boolean;
 }
 
+/** An admitted step's share of the gate. */
+export interface PipelineCapacityAdmission {
+  /**
+   * The step is about to start a process. Its settle time runs from the
+   * latest call while its estimate still counts; until the first call the
+   * estimate counts regardless. Does nothing after `release`.
+   */
+  readonly started: () => void;
+  /** The step is done; its share frees. Later calls do nothing. */
+  readonly release: () => void;
+}
+
 export interface PipelineCapacityGate {
   /**
-   * Resolves once the step may start, with the function that marks it done,
-   * or with `null` when `signal` aborts first. `onHold` is called once, when
-   * the step first has to wait.
+   * Resolves once the step may start, with its admission, or with `null`
+   * when `signal` aborts first. `onHold` is called once, when the step first
+   * has to wait.
    */
   admit(
     signal: AbortSignal,
     request: PipelineCapacityRequest,
     onHold: () => void,
-  ): Promise<(() => void) | null>;
+  ): Promise<PipelineCapacityAdmission | null>;
 }
 
 export interface PipelineCapacityGateOptions {
@@ -101,14 +123,15 @@ export interface PipelineCapacityGateOptions {
 
 interface Waiter {
   readonly request: PipelineCapacityRequest;
-  readonly admit: (release: () => void) => void;
+  readonly admit: (admission: PipelineCapacityAdmission) => void;
   readonly onHold: () => void;
   held: boolean;
 }
 
 interface Reservation {
   readonly bytes: number;
-  readonly admittedAt: number;
+  /** When the step last reported a process start; unset until then. */
+  startedAt?: number;
 }
 
 export function createPipelineCapacityGate(
@@ -153,17 +176,20 @@ export function createPipelineCapacityGate(
     const token = Symbol('pipeline-step');
     running += 1;
     if (waiter.request.estimateBytes > 0)
-      unmeasured.set(token, {
-        bytes: waiter.request.estimateBytes,
-        admittedAt: now(),
-      });
+      unmeasured.set(token, { bytes: waiter.request.estimateBytes });
     let released = false;
-    waiter.admit(() => {
-      if (released) return;
-      released = true;
-      running -= 1;
-      unmeasured.delete(token);
-      schedulePump();
+    waiter.admit({
+      started: () => {
+        const reservation = unmeasured.get(token);
+        if (reservation) reservation.startedAt = now();
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        running -= 1;
+        unmeasured.delete(token);
+        schedulePump();
+      },
     });
   };
 
@@ -180,7 +206,10 @@ export function createPipelineCapacityGate(
         const reading = await read();
         if (reading !== undefined)
           for (const [token, reservation] of unmeasured)
-            if (reading.sampledAt >= reservation.admittedAt + settleMs)
+            if (
+              reservation.startedAt !== undefined &&
+              reading.sampledAt >= reservation.startedAt + settleMs
+            )
               unmeasured.delete(token);
         let pending = 0;
         for (const reservation of unmeasured.values())
@@ -226,9 +255,9 @@ export function createPipelineCapacityGate(
           request,
           held: false,
           onHold,
-          admit: (release) => {
+          admit: (admission) => {
             signal.removeEventListener('abort', onAbort);
-            resolve(release);
+            resolve(admission);
           },
         };
         const onAbort = (): void => {

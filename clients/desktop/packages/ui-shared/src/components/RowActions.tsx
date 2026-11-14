@@ -74,6 +74,8 @@ export interface RowActionButtonProps {
   readonly onClick: () => void;
   readonly children: ReactNode;
   readonly testId?: string;
+  /** Id of the element naming what the action applies to. */
+  readonly describedBy?: string;
 }
 
 /**
@@ -87,6 +89,7 @@ export function RowActionButton({
   onClick,
   children,
   testId,
+  describedBy,
 }: RowActionButtonProps): JSX.Element {
   return (
     <Tooltip label={label}>
@@ -100,6 +103,7 @@ export function RowActionButton({
           onClick();
         }}
         aria-label={label}
+        aria-describedby={describedBy}
         data-testid={testId}
       >
         {children}

@@ -87,7 +87,9 @@ import {
 import {
   checkModelGatewayRoute,
   getModelGatewayRequirementForOwner,
+  readLocalModelGatewayProjection,
 } from '../lib/model-gateway-state';
+import { effectivePersonalModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { sendToAllWindows } from '../lib/window-send';
 import { logMainProcessError } from '../lib/main-process-logging';
@@ -1143,9 +1145,14 @@ export async function resolveOrgGatewayCredential(
     throw new Error('The AI gateway route is incomplete.');
   }
   const account = await loadCanopyCloudAccount();
+  // Personal work routes to the account's Personal gateway, or to the device
+  // gateway while the account names no Personal organization.
   const ownerOrganizationId =
     owner?.kind === 'personal'
-      ? account?.personalOrganizationId
+      ? effectivePersonalModelGateway(
+          account,
+          await readLocalModelGatewayProjection(),
+        ).personalOrganizationId
       : owner?.kind === 'organization'
         ? owner.organizationId
         : undefined;

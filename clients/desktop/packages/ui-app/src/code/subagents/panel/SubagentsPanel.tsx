@@ -33,7 +33,7 @@ import type {
   DiagramCanvasProps,
   DiagramCanvasViewportSize,
 } from '@canopy/ui-rich/diagram';
-import { ErrorState } from '@canopy/ui-shared/components';
+import { ErrorState, Surface } from '@canopy/ui-shared/components';
 import { ChatIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
@@ -1146,10 +1146,13 @@ export function SubagentsPanel({
       : null;
 
   return (
-    <section
+    <Surface
+      as="section"
+      variant="pane"
+      extent="parent"
       ref={panelRef}
       data-testid="subagents-panel"
-      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-base"
+      className="relative flex min-h-0 w-full flex-col overflow-hidden"
     >
       {lifetimeNotice}
       {orderedRootChats.length > 0 ? (
@@ -1192,6 +1195,6 @@ export function SubagentsPanel({
       ) : (
         <SubagentsEmptyState kind="no-roots" />
       )}
-    </section>
+    </Surface>
   );
 }

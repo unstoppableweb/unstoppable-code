@@ -6,7 +6,9 @@ export {
 } from './invoker';
 export {
   createCoreCoworkStore,
+  RECONNECT_DELAYS_MS,
   type CoreCoworkProject,
+  type CoreCoworkStoreOptions,
   type CoreCoworkState,
   type CoreCoworkStatus,
   type CoreCoworkTask,
@@ -32,12 +34,20 @@ export {
   CloudChatStopUnavailableError,
   type BindCloudChatThreadOptions,
   type CloudChatSendInput,
+  type CloudChatQueue,
+  type CloudChatCompactionRead,
+  type CloudChatMeter,
+  type CloudChatSession,
+  type CloudChatSettledTurn,
   type CloudChatThread,
   type CloudChatThreadTarget,
   type ProjectCloudChatMessages,
 } from './cloud-chat-thread';
 export {
   cloudCapabilityRows,
+  needsCloudUpload,
+  type CloudCapabilityNeedsUpload,
+  type CloudCapabilityUploadRow,
   type CloudCapabilityRow,
   type CloudCapabilityRowsInput,
   type CloudCapabilityState,
@@ -53,3 +63,9 @@ export {
   type DurablePtyResume,
   type DurableTerminalConnection,
 } from './durable-pty-client';
+export {
+  createDurableTerminalClient,
+  type DurableTerminalClient,
+  type DurableTerminalClientOptions,
+} from './durable-terminal-client';
+export { createScopedTerminalClient } from './scoped-terminal-client';

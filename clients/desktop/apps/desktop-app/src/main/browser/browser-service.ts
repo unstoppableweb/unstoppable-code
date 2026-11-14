@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   browserHandoffs,
   type BrowserHandoffAdmission,
@@ -3740,7 +3741,7 @@ export class BrowserService {
   }
 
   setVisible(browserId: string, visible: boolean): void {
-    const state = this.requireSession(browserId);
+    const state = this.requireSession(browserId, 'external.state_changed');
     this.noteInputPresentation(state);
     if (visible) state.hasBeenShown = true;
     state.visible = visible;
@@ -10088,6 +10089,10 @@ export class BrowserService {
   async disposeWorktreeViews(
     projectId: string,
     worktreeId: string,
+    /** Runs after in-flight opens settle, right before downloads are
+     * cancelled, and again before each view closes; a throw stops the
+     * remaining teardown. */
+    beforeTeardown?: () => void,
   ): Promise<void> {
     const taskKey = worktreeKey(projectId, worktreeId);
     // Admission precedes metadata/session acquisition. Retirement must also
@@ -10137,8 +10142,15 @@ export class BrowserService {
           state.snapshot.worktreeId === worktreeId,
       )
       .map((state) => state.snapshot.id);
+    beforeTeardown?.();
     this.downloads.cancelTask(projectId, worktreeId);
-    for (const id of ids) await this.disposeLiveView(id);
+    for (const id of ids) {
+      // Each close awaits; recheck before the next one. A close that already
+      // started finishes, so no view is left half torn down; closing a view
+      // destroys no data, and the deletion rechecks before its data steps.
+      beforeTeardown?.();
+      await this.disposeLiveView(id);
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -13401,14 +13413,20 @@ export class BrowserService {
     );
   }
 
-  private requireSession(browserId: string): LiveBrowserSession {
+  private requireSession(
+    browserId: string,
+    unavailableCode?: 'external.state_changed',
+  ): LiveBrowserSession {
     this.assertCommandTarget(browserId);
-    if (this.destroying.has(browserId)) {
-      throw new Error(`Browser ${browserId} is being destroyed.`);
-    }
-    const state = this.sessions.get(browserId);
+    const destroying = this.destroying.has(browserId);
+    const state = destroying ? undefined : this.sessions.get(browserId);
     if (!state) {
-      throw new Error(`Browser ${browserId} not found.`);
+      const error = new Error(
+        destroying
+          ? `Browser ${browserId} is being destroyed.`
+          : `Browser ${browserId} not found.`,
+      );
+      throw unavailableCode ? classifyError(error, unavailableCode) : error;
     }
     return state;
   }

@@ -13,7 +13,11 @@ import type {
   PluginMcpServerInfo,
   PluginProvider,
 } from '@canopy/protocol/plugins';
-import { DetailFact, ProviderSupportIcons } from '@canopy/ui-shared/components';
+import {
+  DetailFact,
+  ProviderSupportIcons,
+  TextLink,
+} from '@canopy/ui-shared/components';
 import {
   Button,
   ErrorBanner,
@@ -55,7 +59,10 @@ import {
   McpConnectActionButton,
   type McpConnectActionPhase,
 } from './McpConnectActionButton';
-import { PluginAlternatives } from './PluginAlternatives';
+import {
+  PluginAlternatives,
+  PluginVariantDifferences,
+} from './PluginAlternatives';
 import {
   McpServerHealthSection,
   type McpServerHealthSectionProps,
@@ -225,6 +232,26 @@ export interface PluginDetailHostProps {
   formatDate?: (value: string) => string;
 }
 
+/** The plugin's source link; nothing when the source names no URL. */
+function ExternalSourceLink({
+  source,
+}: {
+  source: NonNullable<PluginDetailHostPlugin['externalSource']>;
+}): JSX.Element | null {
+  const url = typeof source === 'string' ? source : source.url;
+  if (url === undefined) return null;
+  return (
+    <TextLink
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      variant="quiet"
+    >
+      {url}
+    </TextLink>
+  );
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -390,7 +417,11 @@ function BuiltInInstallMessage({
       {message.text}
     </p>
   ) : (
-    <ErrorBanner error={message.text} testId="built-in-install-message" />
+    <ErrorBanner
+      errorSource="built-in-install-message"
+      error={message.text}
+      testId="built-in-install-message"
+    />
   );
 }
 
@@ -473,7 +504,7 @@ export function PluginDetailHost({
         <Title id="plugin-detail-title" className="sr-only">
           {pluginDisplayName(plugin)}
         </Title>
-        <ErrorBanner error={error} />
+        <ErrorBanner errorSource="plugin-detail-host" error={error} />
         <Button
           type="button"
           onClick={() => void loadDetail()}
@@ -510,7 +541,9 @@ export function PluginDetailHost({
   const linkedHarnessRows = harnessRows?.map((row) => {
     if (row.installation !== 'Not supported' || !onOpenEntryId) return row;
     const copy = alternatives?.find((alternative) =>
-      alternative.label.toLowerCase().startsWith(row.name.toLowerCase()),
+      (alternative.marketplaceVariant?.provider ?? alternative.label)
+        .toLowerCase()
+        .startsWith(row.name.toLowerCase()),
     );
     if (!copy) return row;
     usedAlternatives.add(copy.entryId);
@@ -523,10 +556,12 @@ export function PluginDetailHost({
     };
   });
   const otherAlternatives = alternatives?.filter(
-    (alternative) => !usedAlternatives.has(alternative.entryId),
+    (alternative) =>
+      !alternative.marketplaceVariant &&
+      !usedAlternatives.has(alternative.entryId),
   );
   const metadataFacts =
-    nativeProviders.length > 0 || (otherAlternatives?.length ?? 0) > 0 ? (
+    nativeProviders.length > 0 || (alternatives?.length ?? 0) > 0 ? (
       <>
         {nativeProviders.length > 0 && (
           <DetailFact label="Marketplace" testId="plugin-detail-provider">
@@ -564,11 +599,19 @@ export function PluginDetailHost({
             />
           </DetailFact>
         )}
+        <PluginVariantDifferences
+          alternatives={alternatives}
+          onOpenEntryId={onOpenEntryId}
+        />
       </>
     ) : undefined;
   const metadataFooter = (
     <>
-      <ErrorBanner className="mt-2" error={compatError || compatibilityError} />
+      <ErrorBanner
+        errorSource="plugin-detail-host-compat"
+        className="mt-2"
+        error={compatError || compatibilityError}
+      />
       {plugin.providerSupport.codex === 'compat' && onToggleCodexCompat && (
         <Surface variant="group" className="mt-4">
           <div className="flex items-center justify-between gap-4 px-4 py-3">
@@ -710,20 +753,7 @@ export function PluginDetailHost({
                   valueTone="secondary"
                 >
                   <Fact label="Source" fit="truncate">
-                    <a
-                      href={
-                        typeof plugin.externalSource === 'string'
-                          ? plugin.externalSource
-                          : plugin.externalSource.url
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="focus-ring rounded fg-secondary hover:fg-primary hover:underline"
-                    >
-                      {typeof plugin.externalSource === 'string'
-                        ? plugin.externalSource
-                        : plugin.externalSource.url}
-                    </a>
+                    <ExternalSourceLink source={plugin.externalSource} />
                   </Fact>
                   {plugin.cachedAt && (
                     <Fact label="Last fetched">
@@ -740,6 +770,7 @@ export function PluginDetailHost({
         // Update runs from the ⋯ menu, which closes on select, so its failure
         // shows here.
         <ErrorBanner
+          errorSource="plugin-detail-update-error"
           className=""
           error={installError}
           testId="plugin-detail-update-error"
@@ -751,7 +782,11 @@ export function PluginDetailHost({
             This plugin&rsquo;s content is hosted externally and needs to be
             installed.
           </p>
-          <ErrorBanner className="" error={installError} />
+          <ErrorBanner
+            errorSource="plugin-detail-host-install"
+            className=""
+            error={installError}
+          />
         </div>
       )}
       {installing && (
@@ -1000,6 +1035,7 @@ function renderMcpServerHealth(
         <div className="flex flex-col gap-1.5">
           {resolved.connected ? (
             <McpRowHealth
+              name={server.name}
               model={{
                 text: resolved.reason,
                 tone: 'positive',

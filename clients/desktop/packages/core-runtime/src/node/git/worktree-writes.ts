@@ -25,7 +25,7 @@ export async function addGitWorktree(
   const resolved = await port.availableBranchName(branch);
   await port.add(
     resolved,
-    defaultBranch ? `origin/${defaultBranch}` : null,
+    defaultBranch ? `refs/remotes/origin/${defaultBranch}` : null,
     true,
   );
   return resolved;

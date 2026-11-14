@@ -1,3 +1,4 @@
+import { resolveReplayLocation } from '@canopy/execution-engine/node/pipelines/executor/replay-location';
 import type { PipelineReadPort } from '@canopy/desktop-shared/lib/automation-share/port';
 import type { PipelineRunLocationRequest } from '@canopy/desktop-shared/types/pipeline-cloud-runs';
 import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
@@ -2174,7 +2175,13 @@ async function loadExecutionForReplay(
   runtime: ExecutionOptions['runtime'];
   state: ExecutionState;
 }> {
-  const state = await loadExecutionState(executionId, runtime.executionsDir);
+  const storedState = await loadExecutionState(
+    executionId,
+    runtime.executionsDir,
+  );
+  const state = storedState
+    ? await resolveReplayLocation(storedState, runtime)
+    : null;
   if (!state) {
     throw new Error(`Execution "${executionId}" not found`);
   }

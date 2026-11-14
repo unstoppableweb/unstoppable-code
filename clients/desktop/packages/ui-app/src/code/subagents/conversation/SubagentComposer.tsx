@@ -461,6 +461,7 @@ export function SubagentComposer({
                 />
                 {queued.error ? (
                   <Notice
+                    errorSource="subagent-composer-queued"
                     intent="destructive"
                     liveRegionScope="content"
                     actions={
@@ -554,7 +555,11 @@ export function SubagentComposer({
               }
             />
           </ChatComposerShell>
-          <ErrorBanner className="mt-2" error={draft.error} />
+          <ErrorBanner
+            errorSource="subagent-composer-draft"
+            className="mt-2"
+            error={draft.error}
+          />
           <SubagentRecipientMenu
             open={menuOpen}
             onOpenChange={setMenuOpen}

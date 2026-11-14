@@ -57,7 +57,11 @@ export function RemoteControlOptInSection({
       title={REMOTE_CONTROL_LABEL}
       dataTestId="settings-experiments-remote-control"
     >
-      <ErrorBanner className="" error={saveError} />
+      <ErrorBanner
+        errorSource="remote-control-opt-in-section-save"
+        className=""
+        error={saveError}
+      />
       <SettingsGroup>
         <SettingsRow
           label={TOGGLE_LABEL}

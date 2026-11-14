@@ -292,7 +292,7 @@ export interface AgentObservabilityIngest<
   observeClaudeEvent(
     key: string,
     data: Record<string, unknown>,
-    provider: 'claude' | 'ollama' | 'copilot' | 'opencode',
+    provider: 'claude' | 'ollama' | 'copilot' | 'opencode' | 'antigravity',
   ): void;
   appendFinalizedChatTranscriptRecord(
     projectId: string,

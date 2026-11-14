@@ -124,7 +124,13 @@ export class DelegationParent {
   constructor(
     readonly options: {
       owner: Omit<DelegationParentContext, 'turnId' | 'toolCallId'>;
-      harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+      harness:
+        | 'claude'
+        | 'codex'
+        | 'cursor'
+        | 'copilot'
+        | 'antigravity'
+        | 'opencode';
       namespace: string;
       names: DelegationProjectionNames;
       broker: DelegationParentBroker;
@@ -318,6 +324,7 @@ export class DelegationParent {
     if (
       (this.options.harness !== 'cursor' &&
         this.options.harness !== 'copilot' &&
+        this.options.harness !== 'antigravity' &&
         this.options.harness !== 'opencode') ||
       !native.callId ||
       native.turnId !== this.options.currentTurn() ||

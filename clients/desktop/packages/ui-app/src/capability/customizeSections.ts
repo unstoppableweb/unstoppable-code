@@ -17,6 +17,7 @@ import {
 } from '@canopy/ui-shared/lib';
 import {
   buildMarketplaceBrowseGroups,
+  groupMarketplaceListings,
   listedAsItsPlugin,
   MARKETPLACE_BROWSE_SECTION_LIMIT,
   marketplaceResultEntries,
@@ -520,7 +521,7 @@ function allBrowseGroups(
       {
         id: 'plugins-and-mcp',
         title: 'Plugins and MCP servers',
-        entries: plugins,
+        entries: groupMarketplaceListings(plugins),
       },
       ...otherGroups.slice(1),
     ].filter((group) => group.entries.length > 0);
@@ -572,8 +573,21 @@ export function buildCustomizeTabModel(
         )
       : null;
   const matches = matchIds(tabEntries);
+  const matchedGroups = new Set(
+    matches === null
+      ? []
+      : tabEntries.flatMap((entry) =>
+          entry.marketplaceGroup && matches.has(entry.id)
+            ? [entry.marketplaceGroup]
+            : [],
+        ),
+  );
   const entries = tabEntries.filter(
-    (entry) => matches === null || matches.has(entry.id),
+    (entry) =>
+      matches === null ||
+      matches.has(entry.id) ||
+      (entry.marketplaceGroup !== undefined &&
+        matchedGroups.has(entry.marketplaceGroup)),
   );
   const sections: CustomizeSectionModel[] = [];
   function section(
@@ -629,7 +643,10 @@ export function buildCustomizeTabModel(
       input.installedStatusSnapshot,
       input.supportedUpdateKinds,
     );
-  const installed = allInstalled.filter(matchesStatus);
+  const installed = groupMarketplaceListings(
+    allInstalled.filter(matchesStatus),
+    entries,
+  );
   const updates = installed.filter((entry) =>
     surfacedUpdate(entry, input.supportedUpdateKinds),
   );
@@ -755,7 +772,7 @@ export function buildCustomizeTabModel(
         : undefined;
     const browseEntries = groups
       ? unique(groups.flatMap((group) => group.entries))
-      : browse;
+      : groupMarketplaceListings(browse);
     if (
       browseEntries.length ||
       (input.tab === 'workflow' &&

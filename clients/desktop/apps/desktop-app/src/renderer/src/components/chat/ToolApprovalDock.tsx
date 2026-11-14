@@ -7,6 +7,7 @@ import {
   ToolApprovalDock as SharedToolApprovalDock,
   type ToolApprovalDockDisplayed,
 } from '@canopy/ui-shared/components';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 
 const EMPTY_PENDING_APPROVALS: ApprovalRequestEvent[] = [];
 
@@ -52,6 +53,10 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
     }),
   );
   const respondToApproval = useChatStore((s) => s.respondToApproval);
+  // Approval rules live where approval modes do: a cloud chat keeps neither,
+  // so its card offers Allow once and Deny only, as the web's does.
+  const ruleScopes =
+    useScopeCapabilities({ projectId }).chatApprovalMode === true;
   const respondToSecretApproval = useChatStore(
     (s) => s.respondToSecretApproval,
   );
@@ -84,6 +89,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
       canTakeFocus={canTakeFocus}
       focusComposer={focusComposer}
       onDisplayedChange={setDisplayed}
+      ruleScopes={ruleScopes}
     />
   );
 });

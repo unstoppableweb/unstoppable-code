@@ -1,7 +1,9 @@
+import { hasExactWorktreeBaseCatalogue } from '@/lib/remote-control/worktree-base-availability';
 import { type InlineFailure } from '@/lib/inline-app-error';
 import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { isOpenCodeModel } from '@canopy/execution-engine/lib/opencode-models';
+import { encodeWorktreeBaseBranch } from '@canopy/protocol/portal';
 import { isCopilotModel } from '@canopy/execution-engine/lib/copilot-models';
 import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import { create } from 'zustand';
@@ -32,6 +34,7 @@ import {
   getProviderForChatModel,
   pinInheritingAgentModel,
   getChatHarnessOptions,
+  isAgentModel,
   modelConfigForProviderSupportsFastMode,
 } from '@canopy/desktop-shared/types';
 import { advanceThinkingControlLevel } from '@canopy/ui-shared/lib';
@@ -58,7 +61,7 @@ import {
   resolveTabDefaults,
   useChatStore,
 } from './chatStore';
-import { resolveBillingSeed } from './chat/defaults';
+import { resolveBillingSeed, resolveProviderDefaults } from './chat/defaults';
 import { billingSeedFields, isTabAiCreditsRouted } from './chat/tab-utils';
 import {
   IDLE_HOME_LINK_TARGET,
@@ -83,10 +86,83 @@ export type HomeBranchTarget =
       branchName: string;
     };
 
-export type HomeNewWorktreeBaseTarget = Extract<
-  HomeBranchTarget,
-  { kind: 'worktree' | 'branch' | 'pr' }
->;
+type HomeBaseBranch = Extract<HomeBranchTarget, { kind: 'branch' }>;
+
+export type HomeNewWorktreeBaseTarget =
+  | Extract<HomeBranchTarget, { kind: 'worktree' | 'pr' }>
+  | (HomeBaseBranch & { ref?: string });
+
+const LOCAL_BRANCH_REF_PREFIX = 'refs/heads/';
+const ORIGIN_BRANCH_REF_PREFIX = 'refs/remotes/origin/';
+
+function worktreeBaseRef(target: HomeBaseBranch): string {
+  const prefix = target.isRemote
+    ? ORIGIN_BRANCH_REF_PREFIX
+    : LOCAL_BRANCH_REF_PREFIX;
+  return `${prefix}${target.branchName}`;
+}
+
+function encodeExactWorktreeBase(ref: string): string {
+  const isRemote = ref.startsWith(ORIGIN_BRANCH_REF_PREFIX);
+  const prefix = isRemote ? ORIGIN_BRANCH_REF_PREFIX : LOCAL_BRANCH_REF_PREFIX;
+  return encodeWorktreeBaseBranch({
+    branchName: ref.slice(prefix.length),
+    isRemote,
+  });
+}
+
+function captureWorktreeBaseTarget(
+  target: HomeNewWorktreeBaseTarget,
+  response: HomeBranchTargetsResponse | null,
+): HomeNewWorktreeBaseTarget {
+  if (
+    target.kind !== 'branch' ||
+    target.ref ||
+    !hasExactWorktreeBaseCatalogue(response)
+  )
+    return target;
+  return { ...target, ref: worktreeBaseRef(target) };
+}
+
+export function homeNewWorktreeBaseTargetsEqual(
+  first: HomeNewWorktreeBaseTarget,
+  second: HomeNewWorktreeBaseTarget,
+): boolean {
+  if (
+    first.kind === 'branch' &&
+    second.kind === 'branch' &&
+    (first.ref || second.ref)
+  )
+    return first.ref === second.ref;
+  return homeBranchTargetsEqual(first, second);
+}
+
+type HomeBranchTargetsStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+export function homeWorktreeBaseMissing(
+  target: HomeNewWorktreeBaseTarget | null,
+  response: HomeBranchTargetsResponse | null,
+  status: HomeBranchTargetsStatus,
+): boolean {
+  if (
+    status === 'idle' ||
+    target?.kind !== 'branch' ||
+    !target.ref ||
+    !response?.supported ||
+    !hasExactWorktreeBaseCatalogue(response)
+  )
+    return false;
+  const isRemote = target.ref.startsWith(ORIGIN_BRANCH_REF_PREFIX);
+  const prefix = isRemote ? ORIGIN_BRANCH_REF_PREFIX : LOCAL_BRANCH_REF_PREFIX;
+  return !response.branches.some(
+    (branch) =>
+      (isRemote ? branch.hasRemoteRef : branch.hasLocalRef) &&
+      `${prefix}${branch.name}` === target.ref,
+  );
+}
+
+export const MISSING_HOME_WORKTREE_BASE_MESSAGE =
+  'The selected base branch is no longer available. Choose another base.';
 
 export type HomeComposerMode = 'chat' | 'pipeline';
 
@@ -101,6 +177,7 @@ export type HomeDiscoveryProviderType =
   | 'codex'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | undefined;
 
@@ -569,16 +646,18 @@ export function createOptionsForNewWorktreeBaseTarget(
     baseBranch:
       target.kind === 'pr'
         ? target.headRefName
-        : target.isRemote
-          ? `origin/${target.branchName}`
-          : target.branchName,
+        : target.ref
+          ? encodeExactWorktreeBase(target.ref)
+          : target.isRemote
+            ? `origin/${target.branchName}`
+            : target.branchName,
   };
 }
 
 export function defaultNewWorktreeBaseTarget(
   response: HomeBranchTargetsResponse,
 ): HomeNewWorktreeBaseTarget | null {
-  const defaultBranch = response.defaultBranch?.trim();
+  const defaultBranch = response.defaultBranch;
   const branchName =
     defaultBranch ||
     response.branches.find((branch) => branch.isCurrent && branch.hasLocalRef)
@@ -590,11 +669,17 @@ export function defaultNewWorktreeBaseTarget(
     response.branches.find(
       (branch) => branch.name === branchName && branch.hasRemoteRef,
     ) ?? response.branches.find((branch) => branch.name === branchName);
-  return {
+  const target: HomeBaseBranch = {
     kind: 'branch',
     branchName,
     isRemote: Boolean(defaultBranch && matchingBranch?.hasRemoteRef),
   };
+  // The remote default can be discovered before its ref has been fetched.
+  // Keep the fetch-capable base until the picker can name a real ref.
+  const observed = target.isRemote
+    ? matchingBranch?.hasRemoteRef
+    : matchingBranch?.hasLocalRef;
+  return observed ? captureWorktreeBaseTarget(target, response) : target;
 }
 
 /**
@@ -622,8 +707,7 @@ export function homeSendUsesSourceHead({
   if (projectType !== 'single-repo') return false;
   if (branchTarget.kind === 'new-worktree')
     return newWorktreeBaseTarget === null;
-  if (branchTarget.kind !== 'linear-issue' || defaultBranch?.trim())
-    return false;
+  if (branchTarget.kind !== 'linear-issue' || defaultBranch) return false;
   return (
     createOptionsForBranchTarget(branchTarget, branches)?.branchName !==
     undefined
@@ -828,7 +912,7 @@ interface HomeComposerData {
    */
   sendErrorMissingFolder: HomeMissingFolderRecovery | null;
   branchTargets: HomeBranchTargetsResponse | null;
-  branchTargetsLoading: boolean;
+  branchTargetsStatus: HomeBranchTargetsStatus;
   discovery: WorktreeDiscovery | null;
   discoveryLoading: boolean;
   /**
@@ -999,7 +1083,7 @@ function createInitialData(): HomeComposerData {
     sendErrorChooseModel: null,
     sendErrorMissingFolder: null,
     branchTargets: null,
-    branchTargetsLoading: false,
+    branchTargetsStatus: 'idle',
     discovery: null,
     discoveryLoading: false,
     fileIndex: null,
@@ -1153,6 +1237,7 @@ export interface HomeComposerState extends HomeComposerData {
   setModel: (
     model: ChatModel | undefined,
     billingFramework?: 'subscription' | 'ai-credits',
+    executionHarness?: ModelHarness,
   ) => void;
   /**
    * Enter or leave Auto for this draft. Entering clears the explicit harness
@@ -1265,6 +1350,7 @@ export interface HomeComposerState extends HomeComposerData {
    * instead of overwriting the newly selected workspace's state.
    */
   loadBranchTargets: () => Promise<void>;
+  retryBranchTargets: () => void;
   /**
    * Loads discovery (slash commands, MCP servers) for the currently
    * selected workspace/branch-target/model-provider combination via
@@ -1330,7 +1416,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       // a newly selected workspace.
       attachments: [],
       branchTargets: null,
-      branchTargetsLoading: false,
+      branchTargetsStatus: 'idle',
       discovery: null,
       discoveryLoading: false,
       fileIndex: null,
@@ -1410,7 +1496,9 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       branchTarget: target,
       pendingAttachmentImportIds: [],
       draftGeneration: state.draftGeneration + 1,
-      ...(state.sendError && sourceNoCommitsFailures.has(state.sendError)
+      ...(state.sendError &&
+      (sourceNoCommitsFailures.has(state.sendError) ||
+        state.sendError.error === MISSING_HOME_WORKTREE_BASE_MESSAGE)
         ? { sendError: null }
         : {}),
     }));
@@ -1418,9 +1506,14 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
 
   setNewWorktreeBaseTarget: (target): void => {
     set((state) => ({
-      newWorktreeBaseTarget: target,
+      newWorktreeBaseTarget: captureWorktreeBaseTarget(
+        target,
+        state.branchTargets,
+      ),
       draftGeneration: state.draftGeneration + 1,
-      ...(state.sendError && sourceNoCommitsFailures.has(state.sendError)
+      ...(state.sendError &&
+      (sourceNoCommitsFailures.has(state.sendError) ||
+        state.sendError.error === MISSING_HOME_WORKTREE_BASE_MESSAGE)
         ? { sendError: null }
         : {}),
     }));
@@ -1458,6 +1551,14 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   },
 
   setModelSelectionMode: (mode): void => {
+    const state = get();
+    if (
+      mode === 'auto' &&
+      isAgentModel(
+        state.model ?? resolveHomeEffectiveDefaults(state.workspaceId).model,
+      )
+    )
+      return;
     set(
       mode === 'auto'
         ? { modelSelectionMode: 'auto', executionHarness: undefined }
@@ -1465,30 +1566,72 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     );
   },
 
-  setModel: (model, billingFramework): void => {
+  setModel: (model, billingFramework, executionHarness): void => {
     if (billingFramework)
       useChatStore.getState().rememberBillingFramework(billingFramework);
-    const { model: previousModel, sendErrorChooseModel } = get();
-    if (model !== previousModel) set({ executionHarness: undefined });
-    // An accepted replacement resolves a model refusal and its action.
-    if (sendErrorChooseModel && model !== previousModel)
-      set({
-        sendError: null,
-        sendErrorChooseModel: null,
-        sendErrorMissingFolder: null,
-      });
+    const previous = get();
+    const { model: previousModel, sendErrorChooseModel } = previous;
+    const defaults = resolveHomeEffectiveDefaults(previous.workspaceId);
+    const previousEffective = pinInheritingAgentModel(
+      previousModel ?? defaults.model,
+      defaults.model,
+    );
+    const nextEffective = pinInheritingAgentModel(
+      model ?? defaults.model,
+      defaults.model,
+    );
+    const previousProvider = getProviderForChatModel(
+      previousEffective,
+      previous.executionHarness,
+    );
+    const candidateHarness =
+      executionHarness ??
+      (model === previousModel ? previous.executionHarness : undefined);
+    const nextHarness =
+      candidateHarness &&
+      getChatHarnessOptions(nextEffective).includes(candidateHarness)
+        ? candidateHarness
+        : undefined;
+    const nextProvider = getProviderForChatModel(nextEffective, nextHarness);
+    const agentProviderChanged =
+      (isAgentModel(previousEffective) || isAgentModel(nextEffective)) &&
+      previousProvider !== nextProvider &&
+      nextProvider !== undefined;
     // Picking a concrete model IS the exit from Auto, on Home exactly as in an
     // ongoing chat.
-    set({ modelSelectionMode: undefined });
     // The plugin selection is the same working set on every model — a Cursor
     // draft loads skills, plugins, MCP servers, and Collections like any
     // other — so switching models never rebuilds it; only Claude/Codex
     // extension discovery, which Cursor has no counterpart for, is dropped.
-    if (isCursorModel(model)) {
-      set({ model, discovery: null, discoveryLoading: false });
-      return;
-    }
-    set({ model });
+    set({
+      model,
+      executionHarness: nextHarness,
+      modelSelectionMode: undefined,
+      ...(agentProviderChanged && nextProvider
+        ? {
+            thinkingLevel: previous.workspaceId
+              ? resolveProviderDefaults(
+                  previous.workspaceId,
+                  useChatStore.getState().modelDefaults,
+                  nextProvider,
+                ).thinkingLevel
+              : undefined,
+            speed: undefined,
+            fastMode: undefined,
+          }
+        : {}),
+      // An accepted replacement resolves a model refusal and its action.
+      ...(sendErrorChooseModel && model !== previousModel
+        ? {
+            sendError: null,
+            sendErrorChooseModel: null,
+            sendErrorMissingFolder: null,
+          }
+        : {}),
+      ...(isCursorModel(model)
+        ? { discovery: null, discoveryLoading: false }
+        : {}),
+    });
   },
 
   setExecutionHarness: (executionHarness): void => {
@@ -1714,25 +1857,31 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     });
   },
 
+  retryBranchTargets: (): void => {
+    const state = get();
+    if (state.branchTargetsStatus === 'error') void state.loadBranchTargets();
+  },
+
   loadBranchTargets: async (): Promise<void> => {
     const request = ++branchTargetsRequest;
     const requestedWorkspaceId = get().workspaceId;
     if (!requestedWorkspaceId) {
-      set({ branchTargets: null, branchTargetsLoading: false });
+      set({ branchTargets: null, branchTargetsStatus: 'idle' });
       return;
     }
 
-    set({ branchTargetsLoading: true });
+    // Keep the last authoritative catalogue and its missing-ref warning
+    // until a completed read confirms that the exact ref is present.
+    set({ branchTargetsStatus: 'loading' });
 
-    let response: HomeBranchTargetsResponse;
+    let response: HomeBranchTargetsResponse | undefined;
     try {
       response = await window.api.homeListBranchTargets({
         workspaceId: requestedWorkspaceId,
       });
     } catch (error) {
-      // Home still offers the fallback targets; record the failed read.
+      // A failed read cannot replace a selection or invalidate its last catalogue.
       reportClientAppError(error);
-      response = FALLBACK_BRANCH_TARGETS;
     }
 
     if (
@@ -1747,20 +1896,27 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     const project = useProjectsStore
       .getState()
       .projects.find((candidate) => candidate.id === requestedWorkspaceId);
-    const { sendError } = get();
+    const { sendError, branchTargets, newWorktreeBaseTarget } = get();
+    const catalogue =
+      response ??
+      (branchTargets?.supported && hasExactWorktreeBaseCatalogue(branchTargets)
+        ? { ...branchTargets, headUnborn: undefined }
+        : FALLBACK_BRANCH_TARGETS);
+    const status = response ? 'ready' : 'error';
     set({
-      branchTargets: response,
-      branchTargetsLoading: false,
+      branchTargets: catalogue,
+      branchTargetsStatus: status,
       newWorktreeBaseTarget:
         project?.type === 'single-repo'
-          ? (get().newWorktreeBaseTarget ??
-            defaultNewWorktreeBaseTarget(response))
+          ? (newWorktreeBaseTarget ?? defaultNewWorktreeBaseTarget(catalogue))
           : null,
       // A first commit made outside the app clears the preflight block. An
       // unknown result (absent) clears it too; the backend still classifies.
       ...(sendError &&
-      response.headUnborn !== true &&
-      sourceNoCommitsFailures.has(sendError)
+      ((catalogue.headUnborn !== true &&
+        sourceNoCommitsFailures.has(sendError)) ||
+        (sendError.error === MISSING_HOME_WORKTREE_BASE_MESSAGE &&
+          !homeWorktreeBaseMissing(newWorktreeBaseTarget, catalogue, status)))
         ? { sendError: null }
         : {}),
     });
@@ -1783,6 +1939,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     );
     if (
       requestedProviderType === undefined ||
+      requestedProviderType === 'antigravity' ||
       requestedProviderType === 'cursor' ||
       requestedProviderType === 'copilot' ||
       requestedProviderType === 'opencode'

@@ -1,7 +1,7 @@
 import { assertSharedMultiRepoWorkReady } from './org-shared-multi-repo-readiness';
 import { z } from 'zod';
 import { withW5Commit } from './w5-commit-log-file-store';
-import { getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import { runKeyedW5Operation } from './w5-keyed-operation';
 import type {
   CreateWorkspaceWorktreeResponse,
@@ -262,6 +262,7 @@ export async function createWorktreeFromSelection(
       existingBranchRepoPaths: options.existingBranchRepoPaths,
       suggestedBranch: options.suggestedBranch,
       baseBranch: options.baseBranch,
+      baseBranchIsQualified: options.baseBranchIsQualified,
       baseWorktreeId: options.baseWorktreeId,
       baseBranchesByRepo: options.baseBranchesByRepo,
       includedRepoIds: options.includedRepoIds,
@@ -304,7 +305,7 @@ export async function createWorktreeFromSelection(
                   locks: [
                     {
                       kind: 'list',
-                      path: getWorkspaceWorktreesFilePath(options.workspaceId),
+                      path: w5RecordReadPaths.worktrees(options.workspaceId),
                     },
                   ],
                   outcome: worktreeReceiptSchema.parse(

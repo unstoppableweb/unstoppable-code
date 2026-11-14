@@ -3,6 +3,7 @@
 // the POST body, and server pushes as SSE from `<connection>/events`, reopened
 // after the last event id it received. No Node imports.
 import {
+  encodeCanopyError,
   parseCanopyJsonRpcMessage,
   type CanopyErrorPayload,
   type CanopyJsonRpcMessage,
@@ -43,15 +44,70 @@ function statusError(status: number): CanopyErrorPayload {
   };
 }
 
+/**
+ * Whether a status fails only the request it answers: a gateway's 429, or
+ * any 5xx, from a gateway in front of the web core or from the web core
+ * itself (CAN-6558). The web core answers a lost connection 404 and an
+ * expired session 401, which end the connection.
+ */
+function failsOnlyTheRequest(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/**
+ * Requests in a row that may fail alone before the connection ends: past
+ * them the web core is not answering, so the owner goes offline and
+ * reconnects instead of looking healthy.
+ */
+const MAX_FAILED_IN_ROW = 5;
+
+/** The protocol's largest retry delay. */
+const MAX_RETRY_DELAY_MS = 86_400_000;
+
+/**
+ * A gateway's `Retry-After`, in seconds or as an HTTP date, as a delay in
+ * milliseconds; undefined when absent or unreadable.
+ */
+function retryAfterMs(response: Response): number | undefined {
+  const header = response.headers.get('retry-after')?.trim();
+  if (!header) return undefined;
+  const ms = /^\d+$/.test(header)
+    ? Number(header) * 1000
+    : Date.parse(header) - Date.now();
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.min(Math.max(0, Math.round(ms)), MAX_RETRY_DELAY_MS);
+}
+
+/** One request a gateway could not carry: retryable, after its Retry-After. */
+function gatewayError(response: Response): CanopyErrorPayload {
+  const delayMs = retryAfterMs(response);
+  return {
+    ...statusError(response.status),
+    retry:
+      delayMs === undefined
+        ? { kind: 'same_request' }
+        : { kind: 'same_request', delayMs },
+  };
+}
+
 const UNREACHABLE: CanopyErrorPayload = {
   kind: 'unavailable',
   message: 'The web core is unreachable.',
   retry: { kind: 'same_request' },
 };
 
+/** One request that got no response at all; the connection may still stand. */
+const NO_RESPONSE: CanopyErrorPayload = {
+  kind: 'unavailable',
+  message: 'The web core did not answer this request.',
+  retry: { kind: 'same_request' },
+};
+
 const JSON_HEADERS = { 'content-type': 'application/json' };
 const PUSH_RETRY_MS = 1_000;
 const PUSH_MAX_RETRY_MS = 8_000;
+/** Over twice the web core's 25 s keepalive. */
+const PUSH_IDLE_MS = 60_000;
 
 /** Resolves after `ms`, or as soon as `signal` aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -151,6 +207,12 @@ class HttpConnection implements CanopyFramedConnection {
     reject: (error: CanopyTransportError) => void;
   }[] = [];
   private reason: CanopyErrorPayload = CLOSED;
+  /** The push leg's last open got no response at all. */
+  private pushUnreachable = false;
+  /** The last POST got no response at all. */
+  private lastPostLost = false;
+  /** Requests answered with a failing status since the last that succeeded. */
+  private failedInRow = 0;
 
   constructor(
     readonly connectionId: string,
@@ -183,6 +245,7 @@ class HttpConnection implements CanopyFramedConnection {
         })
         .catch(() => null);
       if (this.signal.aborted) return;
+      this.pushUnreachable = response === null;
       const streaming =
         response?.ok === true &&
         response.headers.get('content-type')?.includes('text/event-stream') ===
@@ -208,8 +271,16 @@ class HttpConnection implements CanopyFramedConnection {
     const decoder = new TextDecoder();
     let buffer = '';
     let seen = lastEventId;
+    // The web core writes a keepalive every 25 s. A stream silent for longer
+    // lost its server on the way (a pod gone mid-stream, its end held by a
+    // proxy), so it is cancelled and reopened.
+    let idle: ReturnType<typeof setTimeout> | undefined;
     try {
       for (;;) {
+        clearTimeout(idle);
+        idle = setTimeout(() => {
+          reader.cancel().catch(() => undefined);
+        }, PUSH_IDLE_MS);
         const chunk = await reader.read();
         if (chunk.done || this.signal.aborted) return seen;
         // A trailing CR waits for the next chunk: it may begin a CRLF.
@@ -234,6 +305,7 @@ class HttpConnection implements CanopyFramedConnection {
       // A dropped stream reopens after the last event id it delivered.
       return seen;
     } finally {
+      clearTimeout(idle);
       reader.releaseLock();
     }
   }
@@ -244,26 +316,70 @@ class HttpConnection implements CanopyFramedConnection {
     else this.inbox.push(message);
   }
 
-  /** Resolves once the POST is issued; its response arrives through `receive`. */
-  send(message: CanopyJsonRpcMessage): Promise<void> {
+  /**
+   * Resolves once the POST is issued; its response arrives through
+   * `receive`. Each message is its own POST, so `headers` reach only it.
+   */
+  send(
+    message: CanopyJsonRpcMessage,
+    options?: { readonly headers?: Readonly<Record<string, string>> },
+  ): Promise<void> {
     if (this.signal.aborted)
       return Promise.reject(new CanopyTransportError(this.reason));
-    void this.post(message);
+    void this.post(message, options?.headers);
     return Promise.resolve();
   }
 
-  private async post(message: CanopyJsonRpcMessage): Promise<void> {
+  private async post(
+    message: CanopyJsonRpcMessage,
+    headers?: Readonly<Record<string, string>>,
+  ): Promise<void> {
     const response = await this.options
       .fetch(this.path, {
         method: 'POST',
-        headers: JSON_HEADERS,
+        headers: { ...headers, ...JSON_HEADERS },
         body: JSON.stringify(message),
         signal: this.signal,
       })
       .catch(() => null);
     if (this.signal.aborted) return;
-    if (!response) return this.finish(UNREACHABLE);
+    if (!response) {
+      // No response at all. Once is a blip (CAN-6442): only this request
+      // failed, retryably, as for a gateway error. Twice in a row, or with
+      // the push leg unable to reach the server either, the network is down
+      // and the connection ends, so its owner goes offline and reconnects.
+      if (this.pushUnreachable || this.lastPostLost)
+        return this.finish(UNREACHABLE);
+      this.lastPostLost = true;
+      if ('id' in message && 'method' in message)
+        this.deliver({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: encodeCanopyError(NO_RESPONSE),
+        });
+      return;
+    }
+    this.lastPostLost = false;
+    if (!response.ok && failsOnlyTheRequest(response.status)) {
+      // This POST alone failed: on staging the load balancer answers 503
+      // when a deploy closes the pod's connection mid-request (CAN-6394),
+      // and the web core answered one read 500 (CAN-6558). The connection
+      // still stands; only this request failed, retryably, and a
+      // notification is dropped as a lost one would be.
+      void response.body?.cancel().catch(() => undefined);
+      this.failedInRow += 1;
+      if (this.failedInRow >= MAX_FAILED_IN_ROW)
+        return this.finish(gatewayError(response));
+      if ('id' in message && 'method' in message)
+        this.deliver({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: encodeCanopyError(gatewayError(response)),
+        });
+      return;
+    }
     if (!response.ok) return this.finish(statusError(response.status));
+    this.failedInRow = 0;
     // 202: a notification or response the server accepted with no reply.
     if (response.status === 202) return;
     const read = await readJson(response, this.signal);

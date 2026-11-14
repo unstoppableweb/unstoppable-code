@@ -661,7 +661,11 @@ export function ResourceDiagnosticsPopover({
         {loading && <p className="text-xs fg-tertiary">Measuring resources…</p>}
 
         {!loading && !snapshot && error && (
-          <ErrorBanner className="" error="Resource metrics unavailable" />
+          <ErrorBanner
+            errorSource="resource-diagnostics-popover"
+            className=""
+            error="Resource metrics unavailable"
+          />
         )}
 
         {!loading && !snapshot && !error && (
@@ -672,6 +676,7 @@ export function ResourceDiagnosticsPopover({
           <Stack gap="inline">
             {error && (
               <ErrorBanner
+                errorSource="resource-diagnostics-popover-error"
                 className=""
                 error="Resource metrics unavailable"
                 testId="resource-diagnostics-popover-error"
@@ -798,7 +803,11 @@ function MemoryReportFooter({
       data-testid="resource-diagnostics-popover-memory-report"
     >
       {revealFailed && (
-        <ErrorBanner className="" error="Couldn't open the folder" />
+        <ErrorBanner
+          errorSource="memory-report-footer"
+          className=""
+          error="Couldn't open the folder"
+        />
       )}
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate fg-secondary">

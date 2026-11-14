@@ -274,6 +274,7 @@ export function LinkCloudProjectDialog({
         ) : null}
         {error !== null ? (
           <ErrorBanner
+            errorSource="link-cloud-project-error"
             className=""
             // The sentence names the user-authored project.
             blockMessageFromReplay

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   CanopyQueryRequestMetadataSchema,
   CanopyRequestMetadataSchema,
+  CanopyWorkspaceScopeSchema,
 } from '../../common';
 import {
   defineCanopyInstruction,
@@ -56,6 +57,12 @@ export const ArchiveContainerSummarySchema = z.strictObject({
   partiallyRestored: z.boolean(),
   /** A worktree whose setup was cancelled, so nothing was saved. */
   checkpointUnavailable: z.boolean().optional(),
+  /**
+   * The container's own ids (its project, and its worktree or chat), as a
+   * restore's `restoredScope` names them, so a client never parses the
+   * opaque `archiveId`. The web core sets it; the desktop omits it.
+   */
+  scope: CanopyWorkspaceScopeSchema.optional(),
 });
 export type ArchiveContainerSummary = z.output<
   typeof ArchiveContainerSummarySchema

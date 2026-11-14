@@ -245,8 +245,12 @@ export function usePlanModeSuggestion({
       return undefined;
     }
     // Arbitration pauses presentation without retiring this draft session.
+    // A hidden hint is left alone: this runs on every keystroke, and even a
+    // same-value write schedules one more render after each key's own. Keys
+    // that arrive faster than those renders run stack them up until React
+    // stops the composer with #185 (CAN-6649).
     if (!tipAllowed) {
-      setVisible(false);
+      if (visible) setVisible(false);
       return undefined;
     }
     if (session.current.done || !gate || composing) return undefined;

@@ -633,6 +633,11 @@ const chatSearchIndexWorkerEntry = resolve(
   'apps/desktop-app/src/main/chat-search/index-worker.ts',
 );
 
+const externalProjectsStoreReadWorkerEntry = resolve(
+  repoRoot,
+  'apps/desktop-app/src/main/external-projects/store-read-worker.ts',
+);
+
 const ledgerStorageWorkerEntry = resolve(
   repoRoot,
   'apps/desktop-app/src/main/ledger/storage-worker.ts',
@@ -640,7 +645,7 @@ const ledgerStorageWorkerEntry = resolve(
 
 const w5CommitLogWorkerEntry = resolve(
   repoRoot,
-  'apps/desktop-app/src/main/w5-commit-log/commit-log-worker.ts',
+  'apps/core-daemon/src/w5-commit-log-worker.ts',
 );
 
 const localMemoryParseWorkerEntry = resolve(
@@ -745,6 +750,7 @@ function utilityWorkerPlugin(define: Record<string, string>): Plugin {
       this.addWatchFile(codexPluginMaterializationWorkerEntry);
       this.addWatchFile(chatSearchQueryWorkerEntry);
       this.addWatchFile(chatSearchIndexWorkerEntry);
+      this.addWatchFile(externalProjectsStoreReadWorkerEntry);
       this.addWatchFile(ledgerStorageWorkerEntry);
       this.addWatchFile(w5CommitLogWorkerEntry);
       this.addWatchFile(interruptedWorkScanWorkerEntry);
@@ -801,6 +807,10 @@ function utilityWorkerPlugin(define: Record<string, string>): Plugin {
           {
             entry: chatSearchIndexWorkerEntry,
             outfile: 'chat-search-index-worker.js',
+          },
+          {
+            entry: externalProjectsStoreReadWorkerEntry,
+            outfile: 'external-projects-store-read-worker.js',
           },
           {
             entry: ledgerStorageWorkerEntry,
@@ -1057,6 +1067,7 @@ export default defineConfig(({ mode }) => {
         ),
       },
       resolve: { alias: aliases },
+      esbuild: { keepNames: true },
       build: {
         commonjsOptions: workspaceCommonjsOptions,
         bytecode: {

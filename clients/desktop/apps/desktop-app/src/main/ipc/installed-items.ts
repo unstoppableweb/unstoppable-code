@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   SetInstalledItemStatusRequestSchema,
   UninstallInstalledItemRequestSchema,
@@ -10,7 +10,11 @@ export function registerInstalledItemHandlers(): void {
   registerIpcHandler(
     INSTALLED_ITEM_CHANNELS.LIST_STATUS,
     async (_event, request: unknown) => {
-      z.undefined().parse(request);
+      if (request !== undefined)
+        throw classifyError(
+          new Error('Installed item status does not take a request body.'),
+          'input.not_accepted',
+        );
       const { installedItemService } =
         await import('../installed-items/installed-item-service');
       return installedItemService.listStatus();

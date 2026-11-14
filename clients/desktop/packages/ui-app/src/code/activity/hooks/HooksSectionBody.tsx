@@ -548,7 +548,11 @@ export function HooksSectionBody({
       </div>
       {error !== null && (
         <div>
-          <Notice intent="destructive" role="none">
+          <Notice
+            errorSource="hooks-section-body"
+            intent="destructive"
+            role="none"
+          >
             {error}
           </Notice>
         </div>

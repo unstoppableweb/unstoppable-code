@@ -8,6 +8,7 @@ import {
 import {
   isAgentDelegationCardData,
   type AgentDelegationCardData,
+  type AgentDelegationSnapshot,
 } from '@canopy/protocol/delegation';
 
 import {
@@ -34,15 +35,14 @@ import {
   CodexAccountModelNotice,
   TRANSCRIPT_MARKDOWN_OPTIONS,
   AgentBlockCard,
-  AutoRoutedModelPill,
   AnsweredQuestionsBlock,
   AskUserQuestionCard,
+  AskUserQuestionPreparingRow,
   CollapsibleBlock,
   CompactionInfoBlock,
   DeferredAccountProxySwitchPart,
   compactionHeadline,
   FileDeliverableCard,
-  ThinkingSpinner,
   ToolCallCard,
   TurnTimer,
   askUserQuestionCount,
@@ -66,7 +66,6 @@ import {
   type ToolCallResult,
   type TurnTerminalStatus,
   resolveTurnCompletionStatus,
-  useCleanChatLook,
   useSmoothStreaming,
   type PlanCopyState,
   TRANSCRIPT_PROSE_CLASS,
@@ -76,6 +75,7 @@ import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { DotIcon, WrenchIcon } from '@canopy/ui-shared/icons';
 import { ChatAssetImage } from './ChatMessageAttachments';
 import { ManagedDelegationCard } from './ManagedDelegationCard';
+import { overlayManagedDelegationSnapshot } from './managed-delegation-progress';
 import { useSubagentChatActions } from './subagents/SubagentChatActionsContext';
 import {
   DeferredToolOutput,
@@ -93,7 +93,6 @@ import {
 } from './ChatToolResultPart';
 import { useClaudeModsSkippedHost } from '../capability/claude-mods/ClaudeModsSkippedHost';
 import { DeferredClaudeModsSkippedPart } from '../capability/claude-mods/DeferredClaudeModsSkippedPart';
-import { Notice } from '@canopy/ui-shared/components/Notice';
 
 /**
  * Renders one neutral {@link PortalChatPart} by dispatching on its typed `kind`
@@ -146,12 +145,6 @@ export interface ChatPartViewProps {
   readonly terminalStatus?: TurnTerminalStatus;
   /** Optional branded app icon for app-action tool calls / agent cards. */
   readonly appIcon?: ReactNode;
-  /**
-   * Keeps a completed `turn_timer` row visible at rest. Set by hosts that
-   * render parts outside a per-turn `group/turn` scope, where the row's
-   * hover reveal could never fire (CAN-4278).
-   */
-  readonly turnTimerAlwaysVisible?: boolean;
   /** Always-visible control beside the owning turn's completion stamp. */
   readonly turnTimerStampAccessory?: ReactNode;
   /** The host column adds the gap between turns; see `TurnTimer`. */
@@ -230,6 +223,28 @@ const EMPTY_WAITING_DELEGATION_IDS: ReadonlySet<string> = new Set();
 export const ChatWaitingDelegationsContext = createContext<ReadonlySet<string>>(
   EMPTY_WAITING_DELEGATION_IDS,
 );
+
+/**
+ * A host's live view of the delegates its transcript's cards name, for a
+ * host whose transcript keeps each delegation's first card (cloud chats).
+ * `stop` is present only while the host can stop a delegate
+ * (`delegationStop`); it resolves false when the stop wasn't accepted.
+ */
+export interface ManagedDelegationLiveState {
+  readonly snapshot: (
+    delegationId: string,
+  ) => AgentDelegationSnapshot | undefined;
+  readonly stop?: (delegationId: string) => Promise<boolean>;
+  /**
+   * Bumps when this delegate changes, for a host with no child stream
+   * revision: its open child pages read their newest rows again.
+   */
+  readonly epoch?: (delegationId: string) => number;
+}
+
+/** Absent (`null`): every card renders what its transcript part says. */
+export const ManagedDelegationLiveContext =
+  createContext<ManagedDelegationLiveState | null>(null);
 
 /**
  * Provide interactive AskUserQuestion behavior to the shared transcript. The
@@ -684,7 +699,7 @@ function isToolFamily(value: string): value is PortalChatToolFamily {
 }
 
 function ManagedAgentPart({
-  delegation,
+  delegation: committed,
   children,
 }: {
   readonly delegation: AgentDelegationCardData;
@@ -693,6 +708,22 @@ function ManagedAgentPart({
   const { onOpenSubagentChat } = useSubagentChatActions();
   const transcriptHost = useContext(TranscriptReadHostContext);
   const waitingDelegations = useContext(ChatWaitingDelegationsContext);
+  const live = useContext(ManagedDelegationLiveContext);
+  // A host that keeps only the first card supplies the current snapshot.
+  const delegation = live
+    ? overlayManagedDelegationSnapshot(
+        committed,
+        live.snapshot(committed.delegationId),
+      )
+    : committed;
+  const stopDelegation = live?.stop;
+  const onStop = useCallback(
+    (): Promise<boolean> =>
+      stopDelegation === undefined
+        ? Promise.resolve(false)
+        : stopDelegation(delegation.delegationId),
+    [delegation.delegationId, stopDelegation],
+  );
   const onOpenChat = useCallback((): void => {
     onOpenSubagentChat?.({
       kind: 'managed',
@@ -706,13 +737,16 @@ function ManagedAgentPart({
       delegation={delegation}
       runGeneration={delegation.runGeneration ?? 1}
       waitingOnParent={waitingDelegations.has(delegation.delegationId)}
+      {...(stopDelegation !== undefined ? { onStop } : {})}
       {...(onOpenSubagentChat ? { onOpenChat } : {})}
       source={transcriptHost?.source}
       renderRows={transcriptHost?.renderRows}
       hint={
         transcriptHost
           ? {
-              epoch: transcriptHost.epoch,
+              epoch:
+                transcriptHost.epoch +
+                (live?.epoch?.(delegation.delegationId) ?? 0),
               streamRevision: delegation.streamRevision,
             }
           : undefined
@@ -784,7 +818,6 @@ function ChatPartContent({
   live,
   settled = false,
   terminalStatus,
-  turnTimerAlwaysVisible = false,
   turnTimerStampAccessory,
   turnTimerHostTurnGap = false,
   turnTimerTrailing,
@@ -804,7 +837,6 @@ function ChatPartContent({
   const toolScope =
     trustedMcpNamespace === undefined ? undefined : { trustedMcpNamespace };
   const modsSkippedHost = useClaudeModsSkippedHost();
-  const clean = useCleanChatLook();
   // Smooth streaming (Labs) paces live text; without it, text parts render
   // as before (Mermaid diagrams draw as soon as they arrive).
   const smoothStreaming = useSmoothStreaming();
@@ -817,9 +849,8 @@ function ChatPartContent({
         <CollapsibleBlock
           label="Thinking"
           doneLabel="Thought"
-          // Clean chat look: only the message's last part can still be
-          // thinking; the classic row never shows it running.
-          running={clean && live === true && !settled}
+          // Only the message's last part can still be thinking.
+          running={live === true && !settled}
           content={readPartText(data)}
         />
       );
@@ -941,16 +972,7 @@ function ChatPartContent({
             );
           }
           case 'preparing':
-            return (
-              <Notice
-                intent="neutral"
-                icon={null}
-                role="none"
-                data-testid="ask-user-question-preparing"
-              >
-                Preparing question…
-              </Notice>
-            );
+            return <AskUserQuestionPreparingRow />;
           case 'answered':
             return (
               <>
@@ -968,7 +990,6 @@ function ChatPartContent({
                   // Set when `result` is null; without it the card would infer
                   // `pending` and spin next to an already-answered question.
                   status={presentation.status}
-                  pendingSpinner={<ThinkingSpinner />}
                   dataTestId="chat-tool-call"
                 />
                 <AnsweredQuestionsBlock answers={presentation.answers} />
@@ -985,7 +1006,6 @@ function ChatPartContent({
                 result={result}
                 expandedSlot={outputSlot}
                 status={presentation.status}
-                pendingSpinner={<ThinkingSpinner />}
                 dataTestId="chat-tool-call"
               />
             );
@@ -1004,7 +1024,6 @@ function ChatPartContent({
           input={getToolRowInput(toolName, input, toolScope)}
           result={result ?? (turnSettled ? interruptedToolCallResult() : null)}
           expandedSlot={outputSlot}
-          pendingSpinner={<ThinkingSpinner />}
           dataTestId="chat-tool-call"
           toolUseId={
             readString(data, 'toolUseId') ?? readString(data, 'tool_use_id')
@@ -1047,6 +1066,7 @@ function ChatPartContent({
         return (
           <div data-chat-notice>
             <ErrorBanner
+              errorSource="chat-provider-error-part"
               error={readPartText(data)}
               details={data.providerErrorDetails}
               testId="chat-provider-error"
@@ -1110,7 +1130,6 @@ function ChatPartContent({
                   key={`${sub.kind}-${i}`}
                   part={sub}
                   appIcon={appIcon}
-                  turnTimerAlwaysVisible={turnTimerAlwaysVisible}
                 />
               ))
           : undefined;
@@ -1167,7 +1186,6 @@ function ChatPartContent({
             isError={data['isError'] === true}
             model={readString(data, 'model')}
             reasoningEffort={readString(data, 'reasoningEffort')}
-            pendingSpinner={<ThinkingSpinner />}
             dataTestId="chat-agent-block"
             callId={toolUseId}
           />
@@ -1197,19 +1215,9 @@ function ChatPartContent({
                 ? 'interrupted'
                 : undefined,
       });
-      // The clean look names the model in the time's tooltip instead.
-      const autoRoutedModelPill =
-        autoRoutedModelLabel === undefined || clean ? undefined : (
-          <AutoRoutedModelPill label={autoRoutedModelLabel} />
-        );
+      // The model is named in the time's tooltip.
       const timerTrailing =
-        autoRoutedModelPill === undefined &&
-        turnTimerTrailing == null ? undefined : (
-          <>
-            {autoRoutedModelPill}
-            {turnTimerTrailing}
-          </>
-        );
+        turnTimerTrailing == null ? undefined : <>{turnTimerTrailing}</>;
       if (completedAt == null && live === false) {
         // A settled message with an uncompleted timer is an interrupted turn,
         // not "working" (web renderer parity): render nothing. This keeps the
@@ -1223,7 +1231,6 @@ function ChatPartContent({
           pausedAt={pausedAt}
           resumedAt={resumedAt}
           accumulatedPausedDurationMs={accumulatedPausedDurationMs}
-          spinner={<ThinkingSpinner tone="accent" />}
           isStreaming={true}
           hostTurnGap={turnTimerHostTurnGap}
           trailing={timerTrailing}
@@ -1244,16 +1251,12 @@ function ChatPartContent({
           {...(turnTimerPlanCopy !== undefined
             ? { planCopy: turnTimerPlanCopy }
             : {})}
-          {...(clean && autoRoutedModelLabel !== undefined
+          {...(autoRoutedModelLabel !== undefined
             ? { modelLabel: autoRoutedModelLabel }
             : {})}
           hostTurnGap={turnTimerHostTurnGap}
           completionStatus={timerStatus}
           isStreaming={false}
-          alwaysVisible={
-            turnTimerAlwaysVisible ||
-            (timerStatus !== undefined && timerStatus !== 'complete')
-          }
           trailing={timerTrailing}
         />
       );

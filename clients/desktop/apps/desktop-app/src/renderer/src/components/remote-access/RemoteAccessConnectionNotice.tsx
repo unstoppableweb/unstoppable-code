@@ -101,7 +101,7 @@ export function RemoteAccessConnectionNotice(): JSX.Element | null {
   // Below the title bar, above App's startup screens (`z-modal`).
   return (
     <div className="pointer-events-none fixed inset-x-0 top-12 z-toast flex justify-center px-4">
-      <div className="w-full max-w-xl">{notice}</div>
+      <div className="electron-no-drag w-full max-w-xl">{notice}</div>
     </div>
   );
 }

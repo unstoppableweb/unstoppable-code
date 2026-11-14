@@ -25,6 +25,24 @@ export const HOSTED_CONTROLLER_LIMITS =
 /** The settings action that pairs a device to control this computer. */
 export const PAIR_DEVICE_LABEL = 'Pair a device';
 
+/** What a paired controller needs to count as controlling this computer. */
+export interface RemoteControllerLiveness {
+  readonly connected: boolean;
+  readonly hostedSessions: readonly unknown[];
+}
+
+/**
+ * A controller is controlling this computer while it is connected, or, for a
+ * hosted agents root, while any of its delegated sessions is open (CAN-5985).
+ * The device list's Connected badge and the desktop's status pill both read
+ * it, so they never disagree.
+ */
+export function isRemoteControllerLive(
+  controller: RemoteControllerLiveness,
+): boolean {
+  return controller.connected || controller.hostedSessions.length > 0;
+}
+
 /**
  * A paired controller's kind, as a person names the device. The relay
  * authenticates the kind; a display name never decides it.

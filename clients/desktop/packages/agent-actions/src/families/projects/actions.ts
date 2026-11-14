@@ -69,12 +69,14 @@ const PROJECT_CHAT_PROVIDER_TYPES: Record<ProjectChatProviderType, true> = {
   cursor: true,
   opencode: true,
   copilot: true,
+  antigravity: true,
 };
 const PROJECT_CHAT_EXECUTION_HARNESSES: Record<AgentExecutionHarness, true> = {
   claude: true,
   codex: true,
   cursor: true,
   copilot: true,
+  antigravity: true,
   opencode: true,
 };
 

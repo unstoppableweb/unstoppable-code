@@ -50,7 +50,10 @@ export interface HelperInvocation {
   waitForQuotaRecovery?: AccountProxyQuotaWait;
   providerType: 'claude' | 'ollama' | 'codex';
   source: ModelHarnessSource;
-  harness: Exclude<ModelHarness, 'cursor' | 'copilot' | 'opencode'>;
+  harness: Exclude<
+    ModelHarness,
+    'cursor' | 'copilot' | 'opencode' | 'antigravity'
+  >;
   /** Selected catalog model after policy routing, before SDK slug translation. */
   resolvedModel?: string;
   /** SDK model id to run (gateway slug when routed, else the native model). */
@@ -195,6 +198,10 @@ export async function resolveHelperInvocation(
   const harness = model ? getExecutionHarnessForModel(model) : 'claude';
   if (harness === 'cursor')
     throw new Error('Cursor is not available for background helpers.');
+  if (harness === 'antigravity')
+    throw new Error(
+      'Google subscription models are available in chats, not background helpers.',
+    );
   if (harness === 'opencode')
     throw new Error('OpenCode is not available for background helpers.');
   if (harness === 'copilot')

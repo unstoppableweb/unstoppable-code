@@ -269,7 +269,11 @@ export function DigestRequestForm({
         billed to your AI credits based on usage.
       </p>
 
-      <ErrorBanner error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="digest-request-form"
+        error={error?.copy}
+        details={error?.details}
+      />
 
       <form
         className="mt-4 flex flex-wrap items-end gap-3"

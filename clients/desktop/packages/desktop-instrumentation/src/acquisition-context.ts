@@ -14,6 +14,8 @@ const OPERATIONS = new Set([
   'canopy.remote_control_session_start',
   'canopy.remote_control_session_end',
   'canopy.remote_control_device_remove',
+  // Every key is a `_count`: a non-negative safe integer or nothing.
+  'canopy.chat_automation_migration',
 ]);
 const ENUMS: Readonly<Record<string, readonly string[]>> = {
   claude_connection: ['connected', 'not_connected', 'unknown'],

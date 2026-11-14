@@ -1,21 +1,20 @@
-import { useEffect, useMemo, type JSX, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type { AppError } from '@canopy/protocol/app-errors';
 import {
   OFFLINE_STANDING_CONDITION,
-  StandingConditionsBanner,
+  standingConditionToast,
   useOnlineStatus,
+  visibleStandingConditions,
   useStandingConditions,
   type StandingConditionInput,
 } from '@canopy/ui-app/standing-conditions';
 import { startHostedSettingsSignIn } from '@/components/settings/hosted/hosted-settings-sign-in';
-import { DesktopReportThisAction } from '@/components/shared/DesktopReportThisAction';
 import { useCanopyCloudConnected } from '@/hooks/useCanopyCloudConnected';
 import { useCanopyCloudSessionExpired } from '@/hooks/useCanopyCloudSessionExpired';
 import { invalidateClaudeAuthStatusCache } from '@/hooks/useClaudeAuthStatus';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
 import { useTelemetrySyncPausedReason } from '@/hooks/useTelemetrySyncPausedReason';
-import { brandText } from '@/lib/brand';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 import { startOllamaUnavailableRecovery } from '@/lib/ollama-unavailable-recovery';
 import {
@@ -26,17 +25,15 @@ import {
   type RuntimeProbeView,
 } from '@/lib/runtime-probe-outcomes';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { pinToast, unpinToast } from '@/stores/toastStore';
 import { useAnyOllamaConnectionUnavailable } from '@/stores/ollamaConnectionBannerStore';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 
 const NO_LOCAL_CONDITIONS: readonly StandingConditionInput[] = [];
 
-function reportBannerError(error: AppError): AppError {
-  return reportClientAppError(error, { surface: 'banner' })?.error ?? error;
-}
-
-function renderReportAction(error: AppError): ReactNode {
-  return <DesktopReportThisAction error={error} appName={brandText.appName} />;
+/** Each episode is recorded once, when it starts, as the card it shows on. */
+function reportStandingConditionError(error: AppError): AppError {
+  return reportClientAppError(error, { surface: 'toast' })?.error ?? error;
 }
 
 function probedRuntimeInput(
@@ -52,8 +49,10 @@ function probedRuntimeInput(
     networkDependent: true,
     suppressed: view.revalidating,
     action: {
-      label: 'Try again',
-      busyLabel: 'Trying again…',
+      // The app retests every 30 seconds on its own; this retests now.
+      // A deliberate exception to the `Try again` retry label (CAN-6361).
+      label: 'Retry now',
+      busyLabel: 'Retrying now…',
       busy: view.retrying,
       onAction: (): void => {
         retryRuntime(runtime);
@@ -120,7 +119,7 @@ function useLocalStandingConditions(): readonly StandingConditionInput[] {
         // Ollama is only ever reached on the loopback address.
         networkDependent: false,
         action: {
-          label: 'Open Ollama settings',
+          label: 'Open settings',
           onAction: (): void => {
             openSettings('ollama');
           },
@@ -146,24 +145,93 @@ function useLocalStandingConditions(): readonly StandingConditionInput[] {
   ]);
 }
 
+const TOAST_TEST_ID = 'standing-conditions-toast';
+
+/**
+ * The top standing condition as a pinned card in the toast stack (CAN-6361),
+ * with its action and, for a defect, `Report this`, which carries the
+ * reference (the card leaves the reference row off). The
+ * episode was recorded when it started, so the card doesn't record it again.
+ * Closing the card hides that episode while it stays on top; once a
+ * different condition takes over or none is left, it shows again on return. Renders nothing itself.
+ */
 function StandingConditionsView({
   localInputs,
 }: {
   readonly localInputs: readonly StandingConditionInput[];
-}): JSX.Element {
+}): null {
   const online = useOnlineStatus();
   const inputs = useMemo(
     () => (online ? localInputs : [OFFLINE_STANDING_CONDITION, ...localInputs]),
     [localInputs, online],
   );
-  const conditions = useStandingConditions(inputs, reportBannerError);
-  return (
-    <StandingConditionsBanner
-      conditions={conditions}
-      reportAction={renderReportAction}
-      className="pointer-events-auto"
-    />
+  const conditions = useStandingConditions(
+    inputs,
+    reportStandingConditionError,
   );
+  const [closedReference, setClosedReference] = useState<string | null>(null);
+  // A close lasts while its condition stays on top: once another condition
+  // takes over (or none is left), the closed one shows again when it returns.
+  const topReference =
+    visibleStandingConditions(conditions)[0]?.error.referenceId;
+  if (closedReference !== null && topReference !== closedReference) {
+    setClosedReference(null);
+  }
+  const toast = useMemo(
+    () => standingConditionToast(conditions, closedReference),
+    [conditions, closedReference],
+  );
+  const pinnedIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const previousId = pinnedIdRef.current;
+    if (previousId !== null && previousId !== toast?.id) unpinToast(previousId);
+    pinnedIdRef.current = toast?.id ?? null;
+    if (toast === null) return;
+    const { action, error } = toast;
+    pinToast({
+      id: toast.id,
+      type: toast.type,
+      message: toast.message,
+      testId: TOAST_TEST_ID,
+      meta: {
+        title: toast.title,
+        ...(toast.messageContext === undefined
+          ? {}
+          : { messageContext: toast.messageContext }),
+        ...(action === undefined
+          ? {}
+          : {
+              action: {
+                label: action.label,
+                ...(action.busyLabel === undefined
+                  ? {}
+                  : { busyLabel: action.busyLabel }),
+                // The probe reports its own progress; the button follows it.
+                ...(action.busy === true ? { busy: true } : {}),
+                testId: `${TOAST_TEST_ID}-action`,
+                // The card leaves when the condition clears.
+                keepOpen: true,
+                onClick: action.onAction,
+              },
+            }),
+      },
+      ...(error.kind === 'defect'
+        ? // Report this carries the reference; the card stays short.
+          { reference: error, referenceRecorded: true, hideReference: true }
+        : {}),
+      onDismiss: () => setClosedReference(error.referenceId),
+    });
+  }, [toast]);
+
+  useEffect(
+    () => (): void => {
+      if (pinnedIdRef.current !== null) unpinToast(pinnedIdRef.current);
+    },
+    [],
+  );
+
+  return null;
 }
 
 function LocalStandingConditions(): JSX.Element {

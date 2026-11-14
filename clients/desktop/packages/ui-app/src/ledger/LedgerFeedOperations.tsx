@@ -355,6 +355,7 @@ function MessageField({
         </p>
       )}
       <ErrorBanner
+        errorSource="feed-operations-message-error"
         className=""
         error={error}
         testId="feed-operations-message-error"
@@ -606,6 +607,7 @@ function WorkTreeProblem({
       : problemCopy(problem, 'entry');
   return (
     <ErrorBanner
+      errorSource="feed-operations-tree-problem"
       className=""
       error={copy.message}
       testId="feed-operations-tree-problem"
@@ -912,7 +914,11 @@ function PanelWorkRowActions({
         >
           Mark completed
         </Button>
-        <ErrorBanner className="" error={error} />
+        <ErrorBanner
+          errorSource="ledger-feed-operations"
+          className=""
+          error={error}
+        />
       </div>
     );
   }
@@ -933,7 +939,11 @@ function PanelWorkRowActions({
       >
         Move them out
       </Button>
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner
+        errorSource="ledger-feed-operations"
+        className=""
+        error={error}
+      />
     </div>
   );
 }
@@ -1260,6 +1270,7 @@ export function LedgerFeedOperations({
       ) : null}
       {workProblemCopy === null ? null : (
         <ErrorBanner
+          errorSource="feed-operations-problem"
           className=""
           error={workProblemCopy.message}
           testId="feed-operations-problem"

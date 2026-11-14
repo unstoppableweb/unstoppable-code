@@ -64,6 +64,9 @@ import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import {
+  SidebarDragPreview,
+  SidebarDropLine,
+  SidebarNestingRail,
   HiddenItemsRow,
   SidebarFadePresence,
   WorktreeRow,
@@ -737,11 +740,9 @@ export function ProjectSection({
         }
       >
         {dropPosition && (
-          <span
-            className={`pointer-events-none absolute inset-x-1.5 z-10 h-0.5 rounded-full bg-accent ${
-              dropPosition === 'before' ? '-top-px' : '-bottom-px'
-            }`}
-            aria-hidden="true"
+          <SidebarDropLine
+            variant="worktree"
+            position={dropPosition}
             data-testid="worktree-drop-indicator"
             data-drop-position={dropPosition}
           />
@@ -821,15 +822,9 @@ export function ProjectSection({
                 {/* Per-row rail segments join into one continuous line; the
                     stack's first and last segments inset so the line does not
                     touch the group's edges. */}
-                <span
-                  aria-hidden="true"
-                  className={`pointer-events-none absolute left-8 w-px rounded-full bg-line-base/80 ${
-                    childIndex === 0 ? 'top-1.5' : 'top-0'
-                  } ${
-                    childIndex === entry.children.length - 1
-                      ? 'bottom-1.5'
-                      : 'bottom-0'
-                  }`}
+                <SidebarNestingRail
+                  first={childIndex === 0}
+                  last={childIndex === entry.children.length - 1}
                   data-testid="worktree-nesting-rail"
                 />
                 {renderWorktreeRow(
@@ -972,13 +967,9 @@ export function ProjectSection({
       }}
     >
       {workspaceDropIndicatorPosition && (
-        <span
-          aria-hidden="true"
-          className={`pointer-events-none absolute inset-x-1.5 z-20 h-0.5 rounded-full bg-accent ${
-            workspaceDropIndicatorPosition === 'before'
-              ? '-top-px'
-              : '-bottom-px'
-          }`}
+        <SidebarDropLine
+          variant="workspace"
+          position={workspaceDropIndicatorPosition}
           data-drop-position={workspaceDropIndicatorPosition}
           data-testid="workspace-drop-indicator"
         />
@@ -1052,8 +1043,8 @@ export function ProjectSection({
                 {createPortal(
                   <DragOverlay dropAnimation={null}>
                     {activeWorktree ? (
-                      <div
-                        className="pointer-events-none translate-x-1 cursor-default rounded-row bg-popover shadow-lg"
+                      <SidebarDragPreview
+                        className="translate-x-1"
                         data-testid="worktree-drag-overlay"
                       >
                         <WorktreeRow
@@ -1135,7 +1126,7 @@ export function ProjectSection({
                           }
                           textScale="sidebar"
                         />
-                      </div>
+                      </SidebarDragPreview>
                     ) : null}
                   </DragOverlay>,
                   document.body,
@@ -1144,7 +1135,7 @@ export function ProjectSection({
               {hiddenWorktrees.length > 0 && (
                 <div className="mt-1" data-testid="hidden-worktrees-section">
                   <HiddenItemsRow
-                    label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL}`}
+                    label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL.toLowerCase()}`}
                     count={hiddenWorktrees.length}
                     expanded={hiddenExpanded}
                     onToggle={(): void =>

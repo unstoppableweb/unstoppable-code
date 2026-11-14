@@ -1,6 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { comparePluginPaths } from '@canopy/plugin-interop';
+import {
+  comparePluginPaths,
+  CURSOR_PLUGIN_SKILL_ROOT_MODE,
+  selectPluginSkillDirectories,
+} from '@canopy/plugin-interop';
 import type { PluginManifest } from '@canopy/execution-engine/types/plugins';
 import { safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter } from '../lib/frontmatter';
@@ -122,19 +126,23 @@ export function discoverPluginSkills(
   for (const root of roots) {
     const resolved = memberRoot(pluginPath, root, warnings);
     if (!resolved?.stats.isDirectory()) continue;
-    for (const entry of fs.readdirSync(resolved.path, {
-      withFileTypes: true,
-    })) {
-      // Links are skipped, so `sourceDir` is canonical like its root.
-      if (!entry.isDirectory()) continue;
-      const sourceDir = path.join(resolved.path, entry.name);
+    const children = fs
+      .readdirSync(resolved.path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(resolved.path, entry.name));
+    for (const sourceDir of selectPluginSkillDirectories(
+      resolved.path,
+      children,
+      false,
+      CURSOR_PLUGIN_SKILL_ROOT_MODE,
+    )) {
       const skillMdPath = path.join(sourceDir, 'SKILL.md');
       const content = safeReadText(skillMdPath);
       if (!content) continue;
       const metadata = parseFrontmatter<ParsedFrontmatter>(content) ?? {};
       results.push({
-        name: metadata.name?.trim() || entry.name,
-        dirName: entry.name,
+        name: metadata.name?.trim() || path.basename(sourceDir),
+        dirName: path.basename(sourceDir),
         sourceDir,
         skillMdPath,
         description: metadata.description?.trim() ?? '',

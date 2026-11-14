@@ -1,3 +1,36 @@
+import { lstat } from 'node:fs/promises';
+import { getWorkspaceWorktreeDir } from './paths';
+import { isErrnoException } from './type-guards';
+import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
+import { AutoDeleteInspectionError } from './auto-delete-inspection-error';
+import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
+import { logMainProcessWarn } from './main-process-logging';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import {
+  describeWorktreeDiscard,
+  withTypedArchiveRefusal,
+} from './worktree-discard';
+import { recoveryFromRefusal } from './worktree-recovery-description';
+import { destructiveFailureRecord } from './destructive-failure-context';
+import {
+  canAdmitInterruptedArchive,
+  destructiveArchiveOutcomeSchema,
+  findCompletedDestructiveArchive,
+  filterBlockingDestructiveRecoveries,
+  readDestructiveRecovery,
+  readWorkspaceDestructiveRecoveries,
+} from './w5-destructive-recovery';
+import {
+  captureAutoDeleteAttention,
+  type AutoDeleteAttentionGeneration,
+  listAutoDeleteRecoveryCandidates,
+  recordAutoDeleteAttention,
+  resolveAutoDeleteAttention,
+  resolveAutoDeleteJournalAttention,
+  retireReplacedAutoDeleteAttention,
+} from './auto-delete-attention';
+import { withArchivedWorkspaceOperationLock } from './archived-containers';
+import { readWorkspaceWorktreesDetailed } from './workspace-persistence';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -57,6 +90,7 @@ import {
 import {
   archiveMultiRepoWorktree,
   archiveSingleRepoWorktree,
+  findWorktreeArchiveSourceRefusal,
 } from './worktree-service';
 import { workflowScheduleDestination } from '@canopy/desktop-shared/lib/workflow-schedule-destination';
 import { readAllSidebarItems } from './sidebar-items';
@@ -97,11 +131,14 @@ export interface AutoArchiveCandidate {
   inactivityDays: number;
   deleteBranch?: boolean;
   worktree?: WorktreeData;
+  /** A failed cleanup can outlive canonical row removal; finish admission is mandatory. */
+  recoveryOnly?: true;
 }
 
 export interface AutoArchiveResult {
   candidate: AutoArchiveCandidate;
-  status: 'success' | 'failure';
+  status: 'success' | 'failure' | 'attention';
+  recovery?: WorktreeRecoveryDescription;
   error?: string;
   warnings?: string[];
 }
@@ -122,6 +159,10 @@ export function setAutoArchiveResultListener(
 
 export interface AutoArchiveDependencies {
   listSidebarItems: () => Promise<SidebarItem[]>;
+  reconcileAttention?: (workspaceIds: readonly string[]) => Promise<void>;
+  readAttention?: (
+    workspaceIds: readonly string[],
+  ) => Promise<AutoDeleteAttention[]>;
   readWorkEntries: (
     workspaceId: string,
   ) => ReturnType<typeof readWorkEntriesFile>;
@@ -137,7 +178,7 @@ export interface AutoArchiveDependencies {
   >;
   archive: (
     candidate: AutoArchiveCandidate,
-  ) => Promise<void | { warnings?: string[] }>;
+  ) => Promise<void | WorkspaceTargetRemovalOutcome>;
   isRuntimeBusy: (candidate: AutoArchiveCandidate) => Promise<boolean>;
   touch: (workspaceId: string, targetId: string, now: number) => Promise<void>;
   onResult: (result: AutoArchiveResult) => void;
@@ -162,7 +203,10 @@ function workEntryDisplayName(entry: {
 export async function collectAutoArchiveCandidates(
   deps: Pick<
     AutoArchiveDependencies,
-    'listSidebarItems' | 'readWorkEntries' | 'readAppAdvisorSettings'
+    | 'listSidebarItems'
+    | 'readWorkEntries'
+    | 'readAppAdvisorSettings'
+    | 'readAttention'
   >,
 ): Promise<AutoArchiveCandidate[]> {
   const candidates: AutoArchiveCandidate[] = [];
@@ -238,6 +282,37 @@ export async function collectAutoArchiveCandidates(
         inactivityDays: appAdvisorDays,
       });
     }
+  }
+  // A committed cleanup can fail after its row has already left the list.
+  // The incident names the incarnation, but only current finish admission can run it.
+  for (const attention of (await deps.readAttention?.(
+    items.map((item) => item.id),
+  )) ?? []) {
+    if (attention.kind !== 'worktree' || attention.reason.intent !== 'delete')
+      continue;
+    const item = items.find((item) => item.id === attention.workspaceId);
+    if (
+      !item ||
+      item.type === 'cowork' ||
+      item.worktrees.some((row) => row.id === attention.worktreeId)
+    )
+      continue;
+    const inactivityDays = resolveAutoArchiveDays(
+      item.type,
+      item.archiveRetentionDays,
+      item.autoArchiveDays,
+    );
+    if (inactivityDays === null) continue;
+    candidates.push({
+      surface: item.type,
+      workspaceId: item.id,
+      workspaceName: item.name,
+      targetId: attention.worktreeId,
+      targetName: attention.worktreeName,
+      createdAt: attention.createdAt,
+      inactivityDays,
+      recoveryOnly: true,
+    });
   }
   return candidates;
 }
@@ -437,12 +512,377 @@ export interface WorkspaceTargetRemovalPolicy {
   branch: { kind: 'preference' } | { kind: 'force' } | { kind: 'keep' };
 }
 
+export type WorkspaceTargetRemovalOutcome =
+  | { status: 'success'; warnings?: string[] }
+  | { status: 'obsolete' }
+  | {
+      status: 'attention';
+      recovery: WorktreeRecoveryDescription;
+      fresh: boolean;
+    };
+
+interface AutoDeleteTransition {
+  obsolete: boolean;
+  recovery: WorktreeRecoveryDescription | null;
+  generations: readonly AutoDeleteAttentionGeneration[];
+  completedBefore?: readonly string[];
+}
+
+interface AutoDeleteTeardownFailure {
+  error: unknown;
+  completedBefore?: readonly string[];
+}
+
+async function captureAttention(
+  workspaceId: string,
+): Promise<AutoDeleteAttentionGeneration[]> {
+  return captureAutoDeleteAttention(workspaceId).catch((error: unknown) => {
+    logMainProcessWarn('Could not read Auto Delete attention', error);
+    return [];
+  });
+}
+
+async function checkoutPresence(
+  candidate: AutoArchiveCandidate,
+): Promise<'live' | 'absent' | 'unknown'> {
+  try {
+    const stat = await lstat(
+      getWorkspaceWorktreeDir(candidate.workspaceId, candidate.targetId),
+    );
+    return stat.isDirectory() && !stat.isSymbolicLink() ? 'live' : 'unknown';
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return 'absent';
+    throw error;
+  }
+}
+
+/** Called under the executor's archive owner; never calls the deletion lifecycle. */
+async function inspectAutoDeleteTransition(
+  candidate: AutoArchiveCandidate,
+  intent: 'archive' | 'delete',
+  teardownFailure?: AutoDeleteTeardownFailure,
+): Promise<AutoDeleteTransition> {
+  const request = {
+    workspaceId: candidate.workspaceId,
+    worktreeId: candidate.targetId,
+    intent,
+    expectedCreatedAt: candidate.createdAt,
+  };
+  const generations = await captureAttention(candidate.workspaceId);
+  let completedBefore: string[] | undefined;
+  const result = (
+    recovery: WorktreeRecoveryDescription | null,
+    obsolete = false,
+  ): AutoDeleteTransition => ({
+    recovery,
+    obsolete,
+    generations,
+    completedBefore,
+  });
+  try {
+    const inventory = await readWorkspaceWorktreesDetailed(
+      candidate.workspaceId,
+      {
+        persistRemovalCleanup: false,
+        includeRecentlyRemoved: true,
+      },
+    );
+    if (inventory.authority !== 'ok')
+      throw (
+        inventory.unserved ?? new Error('Worktree identity could not be read.')
+      );
+    const current = inventory.worktrees.find(
+      (row) => row.id === candidate.targetId,
+    );
+    if (current) {
+      if (
+        generations.some(
+          ({ attention }) =>
+            attention.kind === 'worktree' &&
+            attention.worktreeId === candidate.targetId &&
+            attention.createdAt !== current.createdAt,
+        )
+      )
+        await retireReplacedAutoDeleteAttention([
+          {
+            workspaceId: candidate.workspaceId,
+            worktreeId: candidate.targetId,
+            createdAt: current.createdAt,
+          },
+        ]).catch((error: unknown) =>
+          logMainProcessWarn('Could not retire Auto Delete attention', error),
+        );
+      if (current.createdAt !== candidate.createdAt) return result(null, true);
+    }
+    // The journal directory is global. Retire only the generation observed before
+    // scanning it: another workspace's unreadable entry can produce newer review.
+    const records = await readWorkspaceDestructiveRecoveries(
+      candidate.workspaceId,
+    );
+    completedBefore = records
+      .filter((record) => {
+        const outcome = destructiveArchiveOutcomeSchema.safeParse(
+          record.outcome,
+        );
+        return (
+          record.worktreeId === candidate.targetId &&
+          record.createdAt === candidate.createdAt &&
+          record.state === 'completed' &&
+          !record.cleanupRequired &&
+          record.steps.every((step) => step.state === 'done') &&
+          outcome.success &&
+          outcome.data.success
+        );
+      })
+      .map((record) => record.operationId);
+    await resolveAutoDeleteJournalAttention(
+      candidate.workspaceId,
+      generations,
+    ).catch((error: unknown) =>
+      logMainProcessWarn(
+        'Could not resolve Auto Delete journal attention',
+        error,
+      ),
+    );
+    const blocking = await filterBlockingDestructiveRecoveries(
+      records,
+      candidate.targetId,
+      true,
+    );
+    let standing = generations.filter(
+      ({ attention }) =>
+        attention.kind === 'worktree' &&
+        attention.worktreeId === candidate.targetId &&
+        attention.createdAt === candidate.createdAt,
+    );
+    if (
+      !current &&
+      blocking.length === 0 &&
+      (await checkoutPresence(candidate)) === 'absent'
+    ) {
+      const completed = await findCompletedDestructiveArchive(
+        candidate.workspaceId,
+        candidate.targetId,
+        candidate.createdAt,
+      );
+      const outcome = destructiveArchiveOutcomeSchema.safeParse(
+        completed?.outcome,
+      );
+      const failedOperation = destructiveFailureRecord(
+        teardownFailure?.error,
+      )?.operationId;
+      // Recovery can commit under a new operation ID while a failed call unwinds.
+      if (
+        completed &&
+        (!failedOperation ||
+          failedOperation === completed.operationId ||
+          (teardownFailure?.completedBefore !== undefined &&
+            !teardownFailure.completedBefore.includes(
+              completed.operationId,
+            ))) &&
+        !completed.cleanupRequired &&
+        outcome.success &&
+        outcome.data.success &&
+        (completed.operation === 'worktree-archive' ||
+          completed.operation === 'worktree-delete') &&
+        completed.steps.every((step) => step.state === 'done') &&
+        standing.every(
+          (row) => !row.completedBefore?.includes(completed.operationId),
+        )
+      ) {
+        await resolveAutoDeleteAttention(
+          candidate.workspaceId,
+          candidate.targetId,
+          candidate.createdAt,
+          false,
+          generations,
+        ).catch((error: unknown) =>
+          logMainProcessWarn('Could not resolve Auto Delete attention', error),
+        );
+        return result(null, true);
+      }
+    }
+    if (
+      blocking.length === 1 &&
+      !candidate.recoveryOnly &&
+      (candidate.surface === 'single-repo' ||
+        candidate.surface === 'multi-repo')
+    ) {
+      const journal = await readDestructiveRecovery(
+        candidate.workspaceId,
+        candidate.targetId,
+      );
+      if (
+        journal !== null &&
+        journal.operationId === blocking[0].operationId &&
+        (await canAdmitInterruptedArchive(journal, {
+          operation: 'worktree-archive',
+          worktreeId: candidate.targetId,
+          createdAt: candidate.createdAt,
+        })) &&
+        (await findWorktreeArchiveSourceRefusal(
+          candidate.workspaceId,
+          [candidate.targetId],
+          candidate.surface,
+        )) === undefined
+      )
+        return result(null);
+    }
+    // Fresh executor evidence supersedes the standing explanation even when its
+    // journal was withdrawn; otherwise its completion baseline stays stale.
+    if (blocking.length === 0 && teardownFailure)
+      return result(recoveryFromRefusal(request, teardownFailure.error));
+    if (current && blocking.length === 0) {
+      // Older inspections could persist transient read failures as incidents.
+      // Never retire a withdrawn lifecycle's operation or stopping point here.
+      const unsupported = standing.filter(
+        (row) =>
+          row.operationIds.length === 0 &&
+          row.attention.reason.code === 'external.worktree_recovery_required' &&
+          row.attention.reason.stoppingPoint.phase === 'unknown' &&
+          row.attention.reason.stoppingPoint.state === 'unknown',
+      );
+      if (
+        unsupported.length > 0 &&
+        (await checkoutPresence(candidate)) === 'live'
+      ) {
+        await resolveAutoDeleteAttention(
+          candidate.workspaceId,
+          candidate.targetId,
+          candidate.createdAt,
+          false,
+          unsupported,
+        ).catch((error: unknown) =>
+          logMainProcessWarn('Could not resolve Auto Delete attention', error),
+        );
+        standing = standing.filter((row) => !unsupported.includes(row));
+      }
+    }
+    if (blocking.length === 0 && standing.length === 0) {
+      return result(null, candidate.recoveryOnly === true);
+    }
+    const description = await describeWorktreeDiscard(
+      candidate.workspaceId,
+      candidate.targetId,
+      { recovery: request },
+    );
+    const recovery = description.recovery ?? recoveryFromRefusal(request);
+    // Completed history is not the evidence of a newer withdrawn failure.
+    const withdrawn =
+      blocking.length === 0 ? standing[0]?.attention : undefined;
+    return result(
+      withdrawn
+        ? {
+            ...recovery,
+            ...withdrawn.reason,
+            evidence: { kind: 'unknown' },
+          }
+        : recovery,
+    );
+  } catch (error) {
+    if (
+      (error instanceof W5CommitRefusedError &&
+        error.reason === 'recovery-required') ||
+      destructiveFailureRecord(error)
+    )
+      return result(recoveryFromRefusal(request, error));
+    throw new AutoDeleteInspectionError(error);
+  }
+}
+
+/** Admission comes from current evidence; attention never grants a retry. */
+export async function inspectAutoDeleteRecovery(
+  candidate: AutoArchiveCandidate,
+  intent: 'archive' | 'delete',
+): Promise<WorktreeRecoveryDescription | null> {
+  return withArchivedWorkspaceOperationLock(
+    candidate.workspaceId,
+    async () => (await inspectAutoDeleteTransition(candidate, intent)).recovery,
+  );
+}
+
+/** Re-observe under the executor owner, not from a captured refusal or sidebar. */
+export async function recordCurrentAutoDeleteAttention(
+  candidate: AutoArchiveCandidate,
+  intent: 'archive' | 'delete',
+  teardownFailure?: AutoDeleteTeardownFailure,
+): Promise<WorkspaceTargetRemovalOutcome> {
+  return withArchivedWorkspaceOperationLock(candidate.workspaceId, async () => {
+    const transition = await inspectAutoDeleteTransition(
+      candidate,
+      intent,
+      teardownFailure,
+    );
+    if (transition.obsolete || !transition.recovery)
+      return { status: 'obsolete' };
+    const recovery = transition.recovery;
+    const fresh = await recordAutoDeleteAttention(
+      {
+        workspaceId: candidate.workspaceId,
+        worktreeId: candidate.targetId,
+        createdAt: candidate.createdAt,
+        worktreeName: candidate.targetName,
+      },
+      recovery,
+      transition.completedBefore,
+    ).catch((error: unknown) => {
+      logMainProcessWarn('Could not persist Auto Delete attention', error);
+      return false;
+    });
+    return { status: 'attention', recovery, fresh };
+  });
+}
+
+/** Sweep lifecycle phase, independent of Auto Delete policy and UI projections. */
+async function reconcileAutoDeleteIncidents(
+  workspaceIds: readonly string[],
+): Promise<void> {
+  for (const workspaceId of workspaceIds) {
+    const generations = await captureAttention(workspaceId);
+    for (const { attention } of generations) {
+      if (attention.kind !== 'worktree') continue;
+      await withArchivedWorkspaceOperationLock(workspaceId, () =>
+        inspectAutoDeleteTransition(
+          {
+            surface: 'single-repo',
+            workspaceId,
+            workspaceName: '',
+            targetId: attention.worktreeId,
+            targetName: attention.worktreeName,
+            createdAt: attention.createdAt,
+            inactivityDays: 0,
+            recoveryOnly: true,
+          },
+          attention.reason.intent,
+        ),
+      ).catch((error: unknown) =>
+        logMainProcessWarn('Could not reconcile Auto Delete attention', error),
+      );
+    }
+    if (
+      generations.some(({ attention }) => attention.kind === 'journal-review')
+    ) {
+      await withArchivedWorkspaceOperationLock(workspaceId, async () => {
+        try {
+          await readWorkspaceDestructiveRecoveries(workspaceId);
+          await resolveAutoDeleteJournalAttention(workspaceId, generations);
+        } catch (error) {
+          logMainProcessWarn(
+            'Could not reconcile Auto Delete journal attention',
+            error,
+          );
+        }
+      });
+    }
+  }
+}
+
 export async function removeWorkspaceTarget(
   candidate: AutoArchiveCandidate,
   policy: WorkspaceTargetRemovalPolicy,
   archiveTrigger: 'auto-delete' | 'agent',
   revalidateAutoArchivePolicy?: () => Promise<CurrentAutoArchivePolicy>,
-): Promise<{ warnings?: string[] }> {
+): Promise<WorkspaceTargetRemovalOutcome> {
   // Only an inactivity removal depends on the last-touched watermark. Deletion
   // start drains pending activity touches, so pinning it on an agent-armed
   // removal aborts the first attempt after nearly every turn.
@@ -450,7 +890,7 @@ export async function removeWorkspaceTarget(
     ? { expectedLastTouchedAt: candidate.lastTouchedAt }
     : {};
   if (candidate.surface === 'cowork' || candidate.surface === 'app-advisor') {
-    return archiveWorkEntry({
+    const result = await archiveWorkEntry({
       workspaceId: candidate.workspaceId,
       entryId: candidate.targetId,
       requireArchivedContainer: true,
@@ -459,6 +899,7 @@ export async function removeWorkspaceTarget(
       ...touchedPin,
       revalidateAutoArchivePolicy,
     });
+    return { status: 'success', warnings: result.warnings };
   }
   assertNotSplitLocked(
     candidate.workspaceId,
@@ -474,59 +915,127 @@ export async function removeWorkspaceTarget(
     candidate.surface === 'single-repo'
       ? archiveSingleRepoWorktree
       : archiveMultiRepoWorktree;
-  const warnings: string[] = [];
-  const result = await archive({
-    archiveTrigger,
-    sourceAdmission: 'required',
+  const recoveryRequest = {
     workspaceId: candidate.workspaceId,
     worktreeId: candidate.targetId,
+    intent: policy.mode,
     expectedCreatedAt: candidate.createdAt,
-    ...touchedPin,
-    ...(candidate.worktree?.branchName
-      ? { expectedBranchName: candidate.worktree.branchName }
-      : {}),
-    deleteBranch:
-      policy.branch.kind === 'force'
-        ? true
-        : policy.branch.kind === 'keep'
-          ? false
-          : candidate.deleteBranch,
-    revalidateAutoArchivePolicy,
-    runAutoArchiveTeardown: () =>
-      withWorkspaceTargetAutoArchiveTeardown(
-        candidate.workspaceId,
-        candidate.targetId,
-        async () => {
-          const { runAutoArchiveTeardown } =
-            await import('./auto-archive-teardown');
-          try {
-            await runAutoArchiveTeardown(
+  };
+  // Never acquire the deletion/chat lifecycle while holding the archive owner.
+  // Execution re-enters its own admission after this short observation phase.
+  const transition = await withArchivedWorkspaceOperationLock(
+    candidate.workspaceId,
+    () => inspectAutoDeleteTransition(candidate, policy.mode),
+  );
+  if (transition.obsolete) return { status: 'obsolete' };
+  const prior = transition.recovery;
+  if (
+    (candidate.recoveryOnly && !prior?.actions.finishArchive.eligible) ||
+    (prior &&
+      !prior.actions.retry.eligible &&
+      !prior.actions.finishArchive.eligible)
+  )
+    return recordCurrentAutoDeleteAttention(candidate, policy.mode);
+  const warnings: string[] = [];
+  let result: Awaited<ReturnType<typeof archive>>;
+  try {
+    result = await withTypedArchiveRefusal(
+      { ...recoveryRequest, typedRefusal: true, archiveTrigger },
+      () =>
+        archive({
+          archiveTrigger,
+          sourceAdmission: 'required',
+          workspaceId: candidate.workspaceId,
+          worktreeId: candidate.targetId,
+          expectedCreatedAt: candidate.createdAt,
+          ...touchedPin,
+          ...(candidate.worktree?.branchName
+            ? { expectedBranchName: candidate.worktree.branchName }
+            : {}),
+          deleteBranch:
+            policy.branch.kind === 'force'
+              ? true
+              : policy.branch.kind === 'keep'
+                ? false
+                : candidate.deleteBranch,
+          revalidateAutoArchivePolicy,
+          runAutoArchiveTeardown: () =>
+            withWorkspaceTargetAutoArchiveTeardown(
               candidate.workspaceId,
               candidate.targetId,
-              candidate.surface === 'multi-repo',
-            );
-          } catch (error) {
-            const { AutoArchiveTeardownFailedError } =
-              await import('./auto-archive-teardown');
-            if (
-              policy.teardown !== 'force' ||
-              !(error instanceof AutoArchiveTeardownFailedError)
-            )
-              throw error;
-            // Continue the admitted removal without repeating a failed script.
-            warnings.push(error.message.slice(-4000));
-          }
-        },
-      ),
-    requireArchivedContainer: true,
-    lockAfterArchive: policy.mode === 'archive',
-    observabilityMode: 'live-service',
-    liveServices: {
-      cleanupLiveState: cleanupLiveWorktreeState,
-      purgeObservabilityData: purgeLiveWorktreeObservabilityData,
-    },
-  });
-  return { warnings: [...warnings, ...(result.warnings ?? [])] };
+              async () => {
+                const { runAutoArchiveTeardown } =
+                  await import('./auto-archive-teardown');
+                try {
+                  await runAutoArchiveTeardown(
+                    candidate.workspaceId,
+                    candidate.targetId,
+                    candidate.surface === 'multi-repo',
+                  );
+                } catch (error) {
+                  const { AutoArchiveTeardownFailedError } =
+                    await import('./auto-archive-teardown');
+                  if (
+                    policy.teardown !== 'force' ||
+                    !(error instanceof AutoArchiveTeardownFailedError)
+                  )
+                    throw error;
+                  // Continue the admitted removal without repeating a failed script.
+                  warnings.push(error.message.slice(-4000));
+                }
+              },
+            ),
+          requireArchivedContainer: true,
+          lockAfterArchive: policy.mode === 'archive',
+          observabilityMode: 'live-service',
+          liveServices: {
+            cleanupLiveState: cleanupLiveWorktreeState,
+            purgeObservabilityData: purgeLiveWorktreeObservabilityData,
+          },
+        }),
+    );
+  } catch (error) {
+    const record = destructiveFailureRecord(error);
+    if (
+      record?.workspaceId !== candidate.workspaceId ||
+      record.worktreeId !== candidate.targetId ||
+      record.createdAt !== candidate.createdAt ||
+      (record.operation !== 'worktree-archive' &&
+        record.operation !== 'worktree-delete') ||
+      !record.steps.some(
+        (step) => step.phase === 'teardown-script' && step.state !== 'done',
+      )
+    )
+      throw error;
+    const { AutoArchiveTeardownFailedError } =
+      await import('./auto-archive-teardown');
+    if (!(error instanceof AutoArchiveTeardownFailedError)) throw error;
+    // The script may have withdrawn its journal. Its attached failure record
+    // still explains the stopping point and belongs to the same incident.
+    return recordCurrentAutoDeleteAttention(candidate, policy.mode, {
+      error,
+      completedBefore: transition.completedBefore,
+    });
+  }
+  if (result.refusal) {
+    if (result.refusal.recovery)
+      return recordCurrentAutoDeleteAttention(candidate, policy.mode);
+    throw new Error(result.refusal.message);
+  }
+  if (!result.success) throw new Error('Worktree removal did not complete.');
+  await resolveAutoDeleteAttention(
+    candidate.workspaceId,
+    candidate.targetId,
+    candidate.createdAt,
+    false,
+    transition.generations,
+  ).catch((error: unknown) =>
+    logMainProcessWarn('Could not resolve Auto Delete attention', error),
+  );
+  return {
+    status: 'success',
+    warnings: [...warnings, ...(result.warnings ?? [])],
+  };
 }
 
 export function emitAutoArchiveNotification(
@@ -536,7 +1045,16 @@ export function emitAutoArchiveNotification(
 }
 
 const defaultDependencies: AutoArchiveDependencies = {
-  listSidebarItems: async () => (await readAllSidebarItems()).items,
+  listSidebarItems: async () => {
+    const { items } = await readAllSidebarItems();
+    return items;
+  },
+  reconcileAttention: reconcileAutoDeleteIncidents,
+  readAttention: (workspaceIds) =>
+    listAutoDeleteRecoveryCandidates(workspaceIds).catch((error: unknown) => {
+      logMainProcessWarn('Could not read Auto Delete attention', error);
+      return [];
+    }),
   readWorkEntries: readWorkEntriesFile,
   listWorkEntryChatSummaries,
   readAppAdvisorSettings: readAppAdvisorWorkspaceSettings,
@@ -562,6 +1080,8 @@ const defaultDependencies: AutoArchiveDependencies = {
   touch: (workspaceId, targetId, now) =>
     touchWorkspaceTarget(workspaceId, targetId, now),
   onResult: (result) => {
+    // Attention is replayable state, not a renderer-session event or raw toast.
+    if (result.status === 'attention') return;
     autoArchiveResultListener?.({
       trigger: 'inactivity',
       workspaceId: result.candidate.workspaceId,
@@ -608,7 +1128,10 @@ export async function workspaceTargetBusyReasons(
   knownChatOwners?: ReadonlyMap<string, string>,
 ): Promise<WorkspaceTargetBusyReason[]> {
   const chatOwners = new Map(knownChatOwners);
-  if (!knownChatOwners && !candidate.worktree) {
+  if (
+    !knownChatOwners &&
+    (candidate.surface === 'cowork' || candidate.surface === 'app-advisor')
+  ) {
     for (const summary of await deps.listWorkEntryChatSummaries(
       candidate.workspaceId,
     )) {
@@ -654,7 +1177,12 @@ export async function applyAutoArchive(
   now = Date.now(),
   deps: AutoArchiveDependencies = defaultDependencies,
 ): Promise<AutoArchiveResult[]> {
-  const candidates = await collectAutoArchiveCandidates(deps);
+  const items = await deps.listSidebarItems();
+  await deps.reconcileAttention?.(items.map((item) => item.id));
+  const candidates = await collectAutoArchiveCandidates({
+    ...deps,
+    listSidebarItems: () => Promise.resolve(items),
+  });
   const due = candidates.filter((candidate) => {
     const activityAt = candidate.lastTouchedAt ?? candidate.createdAt;
     return (
@@ -671,7 +1199,11 @@ export async function applyAutoArchive(
   for (const workspaceId of Array.from(
     new Set(
       due
-        .filter((candidate) => candidate.worktree === undefined)
+        .filter(
+          (candidate) =>
+            candidate.surface === 'cowork' ||
+            candidate.surface === 'app-advisor',
+        )
         .map((candidate) => candidate.workspaceId),
     ),
   )) {
@@ -702,31 +1234,37 @@ export async function applyAutoArchive(
     };
     try {
       if (
-        candidate.worktree === undefined &&
+        (candidate.surface === 'cowork' ||
+          candidate.surface === 'app-advisor') &&
         ownerErrors.has(candidate.workspaceId)
       ) {
         throw ownerErrors.get(candidate.workspaceId);
       }
       let busy = false;
-      let warnings: string[] | undefined;
-      await withWorkspaceTargetAutoArchiveLease(
+      const outcome = await withWorkspaceTargetAutoArchiveLease(
         candidate.workspaceId,
         candidate.targetId,
         async () => {
           busy =
             (await workspaceTargetBusyReasons(candidate, deps, chatOwners))
               .length > 0;
-          if (!busy) warnings = (await deps.archive(candidate))?.warnings;
+          if (!busy) return deps.archive(candidate);
         },
       );
       if (busy) {
         await refreshBusyTarget();
         continue;
       }
+      if (outcome?.status === 'obsolete') continue;
       const result: AutoArchiveResult = {
         candidate,
-        status: 'success',
-        ...(warnings?.length ? { warnings } : {}),
+        status: outcome?.status ?? 'success',
+        ...(outcome?.status === 'attention'
+          ? { recovery: outcome.recovery }
+          : {}),
+        ...(outcome?.status === 'success' && outcome.warnings?.length
+          ? { warnings: outcome.warnings }
+          : {}),
       };
       results.push(result);
       deps.onResult(result);

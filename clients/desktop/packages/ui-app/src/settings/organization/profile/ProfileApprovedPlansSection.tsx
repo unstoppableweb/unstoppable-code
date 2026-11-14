@@ -128,6 +128,7 @@ export function ProfileApprovedPlansSection({
       <div className="flex flex-col gap-3">
         {error ? (
           <ErrorBanner
+            errorSource="profile-approved-plans-section"
             error={error?.copy}
             details={error?.details}
             onRetry={retry}
@@ -155,6 +156,7 @@ export function ProfileApprovedPlansSection({
 
       {error && (
         <ErrorBanner
+          errorSource="profile-approved-plans-section"
           error={error?.copy}
           details={error?.details}
           onRetry={retry}

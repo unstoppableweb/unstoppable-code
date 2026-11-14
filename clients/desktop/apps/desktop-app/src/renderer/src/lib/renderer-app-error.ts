@@ -9,6 +9,7 @@ import {
   type AppErrorDisplayPolicy,
   type AppErrorPresentation,
   type AppErrorSurface,
+  type AppErrorThrownType,
 } from '@canopy/protocol/app-errors';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
 import {
@@ -26,10 +27,11 @@ function normalize(
   error: unknown,
   surface: AppErrorSurface,
   boundary?: RendererErrorBoundaryId,
+  thrownType?: AppErrorThrownType,
 ): AppError | null {
   const reported = boundary
-    ? recordBoundaryError(boundary, surface, error)
-    : reportClientAppError(error, { surface });
+    ? recordBoundaryError(boundary, surface, error, thrownType)
+    : reportClientAppError(error, { surface, thrownType });
   if (reported) return reported.error;
   try {
     return toAppError(error) ?? null;
@@ -48,8 +50,9 @@ export function captureRendererAppError(
   error: unknown,
   surface: AppErrorSurface,
   boundary?: RendererErrorBoundaryId,
+  thrownType?: AppErrorThrownType,
 ): CapturedRendererAppError {
-  const appError = normalize(error, surface, boundary);
+  const appError = normalize(error, surface, boundary, thrownType);
   if (!appError) return { appError: null, telemetry: null };
   try {
     return { appError, telemetry: readClientErrorTelemetry() };
@@ -89,6 +92,22 @@ export function captureToastFailure(
   } catch (failure) {
     reportClientAppError(failure, { surface: 'toast' });
     return { error: recorded };
+  }
+}
+
+/**
+ * What a report of an already-recorded failure needs, without recording it
+ * again: the session links for a defect's `Report this`.
+ */
+export function readRecordedToastFailure(
+  error: AppError,
+): CapturedToastFailure {
+  if (error.kind !== 'defect') return { error };
+  try {
+    return { error, telemetry: readClientErrorTelemetry() };
+  } catch (failure) {
+    reportClientAppError(failure, { surface: 'toast' });
+    return { error };
   }
 }
 

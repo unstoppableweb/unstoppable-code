@@ -547,6 +547,7 @@ function resolveProviderType(
     if (source === 'claude-managed') return 'claude';
     if (source === 'codex-managed') return 'codex';
     if (source === 'cursor-managed') return 'cursor';
+    if (source === 'antigravity-managed') return 'antigravity';
     if (source === 'copilot-managed') return 'copilot';
     if (source === 'opencode-managed') return 'opencode';
     if (source === 'ai-gateway') {
@@ -566,6 +567,22 @@ function resolveExecutionHarness(
   opts: AgentSessionOptions,
   existing?: ActiveSession,
 ): NonNullable<AgentSessionOptions['executionHarness']> {
+  const googleModel =
+    opts.model && getModelSource(opts.model) === 'antigravity-managed';
+  if (
+    googleModel ||
+    opts.providerType === 'antigravity' ||
+    opts.executionHarness === 'antigravity'
+  ) {
+    if (
+      !googleModel ||
+      (opts.executionHarness && opts.executionHarness !== 'antigravity')
+    )
+      throw new Error(
+        'Google requires a Google subscription model and its native runtime.',
+      );
+    return 'antigravity';
+  }
   const wantsOpenCode =
     opts.providerType === 'opencode' || opts.executionHarness === 'opencode';
   if (wantsOpenCode) {
@@ -5950,12 +5967,16 @@ export function isProviderChangeAllowed(
   newModel: ChatModel,
   lockedHarness?: AgentSessionOptions['executionHarness'],
   requestedHarness?: AgentSessionOptions['executionHarness'],
+  options: { recyclesActiveSession?: boolean } = {},
 ): boolean {
   const newHarness = requestedHarness ?? getExecutionHarnessForModel(newModel);
   if (!newHarness) return false;
 
   // Reject if explicitly locked to a different execution harness.
   if (lockedHarness && lockedHarness !== newHarness) return false;
+  // An in-place provider switch (CAN-6445) recycles the live session after
+  // parking it, so the active harness does not block it.
+  if (options.recyclesActiveSession === true) return true;
 
   // Active sessions can be recreated when the model source changes, but an
   // execution-harness change would invalidate provider conversation state.

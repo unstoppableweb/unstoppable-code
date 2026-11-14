@@ -190,6 +190,8 @@ import {
 // index → ipc barrel → snapshot handler cannot leave this binding
 // undefined when the before-quit cleanup path runs.
 import {
+  capturePreviousMainCrashes,
+  createMainCrashDeliveryReceipts,
   createForeignCrashDumpFilter,
   flushDesktopInstrumentation,
   initializePostHogMain,
@@ -469,6 +471,10 @@ import { updatePerformanceLimitsFromPreferences } from './lib/performance-limits
 import { installPostHogOperationCaptureGate } from './lib/posthog-operation-capture-gate';
 import { getUsageDataPolicy } from './lib/usage-data-policy';
 import {
+  nativeCrashAnnotation,
+  observeNativeCrashPolicy,
+} from './lib/native-crash-policy';
+import {
   attachUsageDataPolicyToWorkspaceContext,
   initializeStartupUsageDataPolicy,
   installPostHogMainLifecycle,
@@ -553,6 +559,7 @@ import {
 } from './lib/workspace-activity';
 import { stopWorkspaceApprovalsManifestWatchers } from './lib/workspace-approvals-manifest';
 import { getWorkspaceContextService } from './lib/workspace-context-service';
+import { workspaceStartup } from './lib/workspace-startup';
 import { isWorkspaceTargetRuntimeStartReserved } from './lib/workspace-target-exclusion';
 import {
   startWorktreeBranchEnrollment,
@@ -612,7 +619,7 @@ import {
   initializeObservabilityService,
 } from './observability';
 import { createCrashDumpClassificationRecorder } from './observability/crash-dump-filter-diagnostics';
-import { sweepCrashDumps } from './observability/crash-dump-sweep';
+import { sweepStartupCrashDumps } from './observability/crash-dump-sweep';
 import { getExecutionObservabilityIngest } from './observability/ingest';
 import {
   formatUnknownError,
@@ -638,6 +645,7 @@ import { getExecutionHostPort } from './execution-host/utility-process-host';
 import { registerPluginHandlers } from './plugins';
 import { shutdownCodexPluginMaterializationWorker } from './plugins/codex-plugin-materialization-runner';
 import { startProviderPluginBackfill } from './plugins/provider-plugin-backfill';
+import { startCloudReachBack } from './mcp/cloud-reach-back/start';
 import {
   getCanopyPortalState,
   resumeCanopyPortalIfPossible,
@@ -662,6 +670,10 @@ import { getBackgroundExecutionContextRebinder } from './services/background-exe
 import { getChatStateService } from './services/chat-state-service';
 import { getDesktopInventorySyncService } from './services/desktop-inventory-sync-service';
 import { startOnboardingProfileSync } from './services/onboarding-profile-sync-service';
+import {
+  startLocalModelGatewayMigration,
+  startLocalModelGatewayPolicySync,
+} from './services/local-model-gateway-migration';
 import {
   startOrgEnforcedSettingsSync,
   stopOrgEnforcedSettingsSync,
@@ -716,6 +728,10 @@ import { shutdownW5CommitLogHost } from './w5-commit-log/commit-log-host';
 import { recordDesktopInstanceEvent } from './lifecycle/desktop-instance-diagnostics';
 import type { W5StoreArmHandle } from './e2e-fixtures/w5-daemon-record-store-arm';
 
+// Electron's Linux singleton implementation forwards the launcher activation
+// token natively and installs it before `second-instance`. Electron has already
+// removed XDG_ACTIVATION_TOKEN from the environment before this JS runs; an
+// additionalData relay of process.env would lose the token (CAN-5820).
 const hasSingleInstanceLock = __CANOPY_E2E__ || app.requestSingleInstanceLock();
 recordDesktopInstanceEvent({
   event: hasSingleInstanceLock ? 'owner-acquired' : 'contender-rejected',
@@ -917,9 +933,12 @@ let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
 let disposeOnboardingProfileSync: (() => void) | null = null;
+let disposeLocalModelGatewayPolicySync: (() => void) | null = null;
+let disposeLocalModelGatewayMigration: (() => void) | null = null;
 let childToolsSettlement: ReturnType<typeof startChildToolsSettlement> | null =
   null;
 let disposeProviderPluginBackfill: (() => void) | null = null;
+let disposeCloudReachBack: (() => void) | null = null;
 let disposeNativeAccountChangeTracking: (() => void) | null = null;
 let disposeProviderAccountConnectTelemetry: (() => void) | null = null;
 let aiGatewayModelCatalogService: AiGatewayModelCatalogService | null = null;
@@ -1812,6 +1831,9 @@ function startDesktopInstrumentation(): void {
   );
 }
 
+const crashDeliveryReceipts = createMainCrashDeliveryReceipts(() =>
+  join(app.getPath('crashDumps'), 'canopy-crash-delivered'),
+);
 /**
  * Startup retention for the local Crashpad database (`uploadToServer: false`,
  * so nothing else prunes it). Foreign dumps are deleted where the filter
@@ -1819,8 +1841,17 @@ function startDesktopInstrumentation(): void {
  */
 async function runStartupCrashDumpSweep(): Promise<void> {
   const hostOs = hostOperatingSystem();
-  const counts = await sweepCrashDumps({
-    crashDumpsDir: app.getPath('crashDumps'),
+  const crashDumpsDir = app.getPath('crashDumps');
+  const counts = await sweepStartupCrashDumps({
+    crashDumpsDir,
+    policy: nativeCrashAnnotation.readPolicy,
+    receipts: crashDeliveryReceipts,
+    report: (dumpPaths, onDelivered): Promise<boolean> =>
+      capturePreviousMainCrashes(
+        dumpPaths,
+        nativeCrashAnnotation.readPolicy,
+        onDelivered,
+      ),
     ...(hostOs && {
       classify: createForeignCrashDumpFilter({
         getCrashDumpsDir: () => app.getPath('crashDumps'),
@@ -2025,6 +2056,9 @@ function unlockStartupWork(): void {
     },
   );
   disposeOnboardingProfileSync ??= startOnboardingProfileSync();
+  // A device AI gateway set up while signed out moves to the account that
+  // signs in, when that account has none.
+  disposeLocalModelGatewayMigration ??= startLocalModelGatewayMigration();
   // Flush turn ratings queued while signed out (CAN-1521). Sign-in is the
   // trigger that makes rate-as-guest → sign in work.
   disposeTurnFeedbackFlush ??= subscribeTurnFeedbackFlush();
@@ -2038,6 +2072,9 @@ function unlockStartupWork(): void {
   disposeProviderPluginBackfill ??= startProviderPluginBackfill({
     subscribe: subscribeConfirmedProviderAuth,
   });
+  // Cloud chats reach this computer's allowed MCP servers (CAN-6176); it
+  // holds nothing until a server is allowed.
+  disposeCloudReachBack ??= startCloudReachBack();
   // A sign-in to a different Claude or Codex account ends session-scoped AI
   // Credits routing (CAN-4200). Startup replay covers a switch made while the
   // app was closed.
@@ -2147,6 +2184,7 @@ async function cleanupRuntimeResources(
   }
 
   appIsQuitting = true;
+  workspaceStartup.cancel();
   stopPreferencesGenerationStamp();
   stopSettingsWriteRefreshRetries();
   stopMainEventLoopMonitor?.();
@@ -2222,10 +2260,16 @@ async function cleanupRuntimeResources(
     stopOrgEnforcedSettingsSync();
     disposeOnboardingProfileSync?.();
     disposeOnboardingProfileSync = null;
+    disposeLocalModelGatewayMigration?.();
+    disposeLocalModelGatewayMigration = null;
+    disposeLocalModelGatewayPolicySync?.();
+    disposeLocalModelGatewayPolicySync = null;
     disposeCuratedMcpRefresh?.();
     disposeCuratedMcpRefresh = null;
     disposeProviderPluginBackfill?.();
     disposeProviderPluginBackfill = null;
+    disposeCloudReachBack?.();
+    disposeCloudReachBack = null;
     disposeNativeAccountChangeTracking?.();
     disposeNativeAccountChangeTracking = null;
     disposeProviderAccountConnectTelemetry?.();
@@ -2558,6 +2602,7 @@ async function cleanupRuntimeResources(
     await stages.bestEffort('memory-diagnostics', () =>
       getMemoryDiagnosticsService().dispose(),
     );
+    crashDeliveryReceipts.retryPending();
     await stages.bestEffort(
       'instrumentation-upload',
       flushDesktopInstrumentation,
@@ -4400,10 +4445,14 @@ function createWindowWithState(preferences: PreferencesData): void {
   });
   // Branch enrollment's fallback when no projects:load follows first paint.
   mainWindow.webContents.once('did-finish-load', (): void => {
-    setTimeout(
-      startWorktreeBranchEnrollment,
-      WORKTREE_BRANCH_ENROLLMENT_FALLBACK_MS,
-    ).unref();
+    setTimeout((): void => {
+      void workspaceStartup.wait().then(
+        () => {
+          if (!appIsQuitting) startWorktreeBranchEnrollment();
+        },
+        () => undefined,
+      );
+    }, WORKTREE_BRANCH_ENROLLMENT_FALLBACK_MS).unref();
   });
 
   mainWindow.webContents.on('will-navigate', (event, url): void => {
@@ -5064,6 +5113,7 @@ if (hasSingleInstanceLock) {
   // any renderer or utility process. Dumps stay local; feedback bundles can
   // include them. The system crash handler stays on (the retired Datadog SDK
   // turned it off) so macOS DiagnosticReports keeps its `.ips` files.
+  // Add the version marker only after this launch has read an allow policy.
   crashReporter.start({
     submitURL: '',
     uploadToServer: false,
@@ -5099,9 +5149,7 @@ void app.whenReady().then(async (): Promise<void> => {
           : 'Deletion recovery evidence is unavailable.',
     };
   }
-  // TRANSITIONAL (CAN-3797): joins the W5 host cohort before any W5 I/O.
-  // Remove when the W5 rows move to `daemon` and the legacy Electron writers
-  // are deleted (CAN-3795 / CAN-3802).
+  // Permanent desktop/delete and root presence precede ordinary daemon-backed W5 I/O.
   const w5Host =
     recoveryRefusal ??
     (await admitDesktopW5Host(getCanopyDataDir()).catch(
@@ -5120,7 +5168,7 @@ void app.whenReady().then(async (): Promise<void> => {
   // TRANSITIONAL (CAN-5543): a flip build hands W5 to the daemon on every
   // launch; W5 calls wait for it, the rest of startup does not. A no-op with
   // legacy rows. Remove at W15.
-  void startW5FlipHandoff({ admission: w5Host });
+  const w5Handoff = startW5FlipHandoff({ admission: w5Host });
   installExecutionAccountingHost({
     wakeLock: getWakeLockService(),
     recordDiagnostic: (record): void => {
@@ -5188,6 +5236,7 @@ void app.whenReady().then(async (): Promise<void> => {
     preferenceMigrationSnapshots?.localMemoryModel;
   // Before any gated flow starts: an unreadable stored account fails closed.
   await initializeStartupUsageDataPolicy();
+  observeNativeCrashPolicy();
   startDesktopInstrumentation();
   childToolsSettlement ??= startChildToolsSettlement();
   setCodexGatewayProxyDiagnosticSink((record) => {
@@ -5343,8 +5392,6 @@ void app.whenReady().then(async (): Promise<void> => {
   await initializeFeatureFlagService();
   installClaudeModAdmissionHost();
   void initializeLabsExperimentsService();
-  // Background operations reach PostHog only while LaunchDarkly allows capture
-  // and the member's effective usage-data policy allows the category.
   installPostHogOperationCaptureGate(getFeatureFlagService());
   installUsageDataPolicyFeatureFlagRefresh(
     () => getFeatureFlagService().refreshContext(),
@@ -5373,36 +5420,8 @@ void app.whenReady().then(async (): Promise<void> => {
   // Usage-data prohibitions apply by the selected context from here on.
   attachUsageDataPolicyToWorkspaceContext(getWorkspaceContextService());
   await getWorkspaceContextService().initialize();
-  installOrgDefaultCoworkProvisioning();
-  await getForeignActivityCarryoverService().initialize();
-  // The catalog follows the context service: it refreshes on every switch.
-  await getOrgProjectCatalogService().initialize();
-  startPersonalCatalogSync();
-  startCloudProjectBinding();
-  startCloudProjectSetupSweep();
-  // The shared session snapshot projects catalog placeholder rows, so catalog,
-  // context, and flag changes must mark it stale like local mutations do.
-  installOrgProjectSnapshotInvalidation();
-  // Subscribes and schedules only: the first run is debounced well past first
-  // paint, runs in the background, and nothing is scheduled with the flag off.
-  startOrgProjectAutoConversion();
-  void getOrgProjectMaterialization()
-    .sweepInterruptedSetups()
-    .then(async (): Promise<void> => {
-      startPersonalOrganizationUpgradeRecovery();
-      const { resumeDesktopSharedMultiRepoCreations } =
-        await import('./canopy-runtime/core-shared-multi-repo-host');
-      await resumeDesktopSharedMultiRepoCreations();
-    })
-    .catch((error: unknown): void => {
-      getObservabilityService().recordAppDiagnostic({
-        version: 1,
-        timestamp: new Date().toISOString(),
-        kind: 'startup_background_task_failed',
-        reason: 'org_project_setup_recovery',
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+  // Context resolution may leave the effective booleans unchanged.
+  nativeCrashAnnotation.refresh();
   const initialFeatureFlags = getFeatureFlagService().getSnapshot().values;
   loadModelsFromPackageJson(initialFeatureFlags);
   try {
@@ -5461,172 +5480,6 @@ void app.whenReady().then(async (): Promise<void> => {
   await initializeModelHarnessRegistry();
   setModelHarnessAssignmentController(modelHarnessAssignmentController);
   await refreshAgentModelsFromStore();
-  // Every preference update normalizes the complete merged object, including
-  // persisted model ids. Run preference-writing migrations only after the
-  // package, gateway, Ollama, harness, and Agent model registries are ready so
-  // an upgrade cannot mistake valid saved selections for unknown models and
-  // replace them with provider defaults.
-  try {
-    await migrateApprovalDefaultsToFullAccess(
-      chatSummaryModelSelectionSnapshot?.hasPersistedPreferences,
-    );
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate approval defaults:', error);
-  }
-  if (chatSummaryModelSelectionSnapshot) {
-    try {
-      await migrateChatSummaryModelSelection(chatSummaryModelSelectionSnapshot);
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to migrate chat summary model selection:', error);
-    }
-  }
-  if (localMemoryModelSnapshot) {
-    try {
-      await migrateLocalMemoryModelFromSummary(localMemoryModelSnapshot);
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to migrate the local memory model:', error);
-    }
-  }
-  // Preference normalization validates persisted model ids against the model
-  // registries above. The org-enforced sync can perform a partial preference
-  // write during its immediate startup pass, so it must not start while those
-  // registries are still empty or a valid saved model will be replaced by the
-  // hard-coded provider fallback.
-  // The background sync only needs the side effect; its boolean return (did the
-  // per-org billing state actually refresh?) is for callers that delete data on
-  // a lapse verdict.
-  startOrgEnforcedSettingsSync(async (): Promise<void> => {
-    await reprobeAndApplyCanopyCloudEnforcedSettings();
-  });
-  installOrgProjectsCapabilityRefresh({
-    flags: {
-      isEnabled: (): boolean =>
-        getFeatureFlagService().isEnabled(
-          CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key,
-        ),
-      onSnapshotChanged: (listener): (() => void) =>
-        getFeatureFlagService().onSnapshotChanged(listener),
-    },
-    refresh: async (): Promise<void> => {
-      await reprobeAndApplyCanopyCloudEnforcedSettings();
-    },
-  });
-  try {
-    await migrateAppManagedChatWorkspaces();
-    // App-managed path migration must land first so the legacy global chat
-    // file is split from its final app-workspaces location.
-    await migrateAppAdvisorChatsToWorkEntries();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error(
-      'Failed to migrate app-managed chat projects or App Advisor Work Entries:',
-      error,
-    );
-  }
-  try {
-    await migrateStandaloneChatToCowork();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error(
-      'Failed to migrate standalone-chat to cowork projects:',
-      error,
-    );
-  }
-  try {
-    await loadCoworkMigrationMapCache();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to load cowork migration map cache:', error);
-  }
-  try {
-    // After the cowork migration + map cache: splits each cowork workspace's
-    // flat chats/home.json into per-entry tab files.
-    await migrateCoworkChatsToWorkEntries();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate cowork chats to work entries:', error);
-  }
-  try {
-    // After the cowork migrations, so the default workspace exists in the
-    // index before its name is reconciled with the sidebar's Chats section.
-    await migrateDefaultCoworkWorkspaceName();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error(
-      'Failed to migrate the default cowork workspace name:',
-      error,
-    );
-  }
-  try {
-    await migrateAutomationRunArchive();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate automation run history:', error);
-  }
-  try {
-    await migrateClaudeWorkerModesToCanopy();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate Claude worker modes:', error);
-  }
-  try {
-    await migrateSidebarRemoteControlVisible();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate sidebar Remote Control:', error);
-  }
-  // Must follow the Remote Control migration: it upgrades a legacy default
-  // layout to the current default, whose More pages this one then moves.
-  try {
-    await migrateSidebarMorePagesToMain();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate sidebar More pages:', error);
-  }
-  try {
-    await migrateLocalMemoryDefaultOn();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate local memory default:', error);
-  }
-  try {
-    await migrateSidebarManualSortDefault();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate sidebar sort default:', error);
-  }
-  try {
-    await migrateOpenAppLinksInBuiltInBrowserDefault();
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to migrate built-in browser link default:', error);
-  }
-  if (appIsQuitting) return;
-  // CAN-5154: a profile without a generation record gets one in the background.
-  void startPreferencesGenerationStamp();
-  try {
-    await (await import('./copilot/connection')).recoverCopilotAtStartup();
-  } catch (error) {
-    logMainProcessWarn(
-      '[copilot] Startup process recovery did not finish',
-      error,
-    );
-  }
-  // Re-check after the reaper: quit may already be past its startup-recovery stage.
-  if (appIsQuitting) return;
-  startupRecoveryPromise = (async (): Promise<void> => {
-    await staleCodexCleanup;
-    await recoverInterruptedWorkAtStartup();
-  })().catch((error: unknown): void => {
-    // Keep unreadable items intact so opening them or a later startup can retry.
-    // eslint-disable-next-line no-console
-    console.error('Failed to recover interrupted work at startup:', error);
-  });
-  await startupRecoveryPromise;
-  if (appIsQuitting) return;
   const preferences = await readPreferencesFile();
   // Decide this launch's renderer origin now, moving origin-keyed storage
   // first when the experiment changed since the last launch (off and never
@@ -5796,19 +5649,6 @@ void app.whenReady().then(async (): Promise<void> => {
     daemonFilesRoute: getDesktopDaemonFilesRoute,
   });
   setDesktopCanopyRuntime(desktopCanopyRuntime);
-  // The orphan sweep goes through core, so it waits for the runtime; nothing
-  // can start a pipeline before the handlers below are registered.
-  startupRecoveryPromise = sweepInterruptedPipelinesAtStartup();
-  if (startupRecoveryPromise) {
-    startupRecoveryPromise = startupRecoveryPromise.catch(
-      (error: unknown): void => {
-        // eslint-disable-next-line no-console
-        console.error('Failed to recover interrupted workflow runs:', error);
-      },
-    );
-    await startupRecoveryPromise;
-    if (appIsQuitting) return;
-  }
   if (__CANOPY_E2E__) {
     // Selected Windows acceptance fixtures only. Activation shares startup's
     // existing service registration; no diagnostic transport request is added.
@@ -6850,6 +6690,9 @@ void app.whenReady().then(async (): Promise<void> => {
       }
     }
   }
+  const { getChatQueueService: getStartupChatQueue } =
+    await import('./services/chat-queue-service');
+  getStartupChatQueue().holdDrainsForStartup();
   const activeDesktopCanopyRuntime = desktopCanopyRuntime;
   bindConfiguredPromptFilesystemDispatcher(activeDesktopCanopyRuntime);
   bindLedgerToolsDispatcher(activeDesktopCanopyRuntime);
@@ -6976,19 +6819,6 @@ void app.whenReady().then(async (): Promise<void> => {
         }),
     },
   );
-  // Queued chats recovered at startup drain once core accepts turns and the
-  // chat dispatch hooks (Auto model routing among them) are installed
-  // (CAN-4112); no window is needed.
-  const { getChatQueueService: getStartupChatQueue } =
-    await import('./services/chat-queue-service');
-  getStartupChatQueue().releaseStartupDrainHold();
-  // Git HEAD observation runs in main, independent of the renderer. Every
-  // build, E2E included, enrolls at the first projects:load or the
-  // first-paint fallback, so perf measures the production trigger (CAN-4899).
-  startWorktreeBranchObserver({
-    dispatcher: activeDesktopCanopyRuntime,
-    getWindow: getMainWindow,
-  });
   // A paired computer mirrors the main window, so its bridge answers the
   // approval prompts that window shows. App Advisor prompts stay local.
   setApprovalOwnerResolver((sender) => {
@@ -7001,38 +6831,6 @@ void app.whenReady().then(async (): Promise<void> => {
       : sender;
   });
   registerPipelineHandlers();
-  // Device-to-device remote control: idle until the user allows incoming
-  // control or pairs a computer to control. A failure here must not block
-  // startup.
-  try {
-    initializeRemoteControl({
-      getMainWindow,
-      showMainWindow: showMainWindowFromRemoteWindow,
-      iconPath: getIconPath(),
-      isAppQuitting: (): boolean => appIsQuitting,
-      // A controller's App Advisor window opens on the same data as this
-      // computer's: the commands resolve here and run in its window.
-      appAdvisorRequestCommands: sendAppAdvisorWindowRequestCommands,
-      // The single Remote Control opt-in also starts and ends Portal; its
-      // own flag still decides whether it may start.
-      portal: {
-        isEnabled: (): boolean =>
-          getFeatureFlagService().isEnabled(
-            CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
-          ),
-        start: async (): Promise<void> => {
-          if (getCanopyPortalState().status !== 'disabled') return;
-          await startCanopyPortal();
-        },
-        stop: async (): Promise<void> => {
-          if (getCanopyPortalState().status === 'disabled') return;
-          await stopCanopyPortal('local_disconnect');
-        },
-      },
-    });
-  } catch (error) {
-    logMainProcessError('Remote control failed to start', error);
-  }
   registerExecutionHandlers(() => mainWindow, getAppAdvisorRendererSurface);
   registerPluginHandlers();
   registerSkillHandlers();
@@ -7108,7 +6906,302 @@ void app.whenReady().then(async (): Promise<void> => {
     preferences.claudeSessionIdleTimeoutMinutes,
   );
   await rendererOriginDecided;
+  if (appIsQuitting) return;
   createWindowWithState(preferences);
+  app.on('activate', () => {
+    bringAppWindowForward(resolveAppActivationTarget(appActivationWindows()));
+  });
+  // Keep workspace reads, migrations and recovered execution behind the handoff,
+  // not the first window. Renderers wait for this entire sequence before mounting.
+  async function finishWorkspaceStartup(): Promise<void> {
+    await w5Handoff;
+    if (appIsQuitting) return;
+    installOrgDefaultCoworkProvisioning();
+    await getForeignActivityCarryoverService().initialize();
+    if (appIsQuitting) return;
+    // The catalog follows the context service: it refreshes on every switch.
+    await getOrgProjectCatalogService().initialize();
+    if (appIsQuitting) return;
+    startPersonalCatalogSync();
+    startCloudProjectBinding();
+    startCloudProjectSetupSweep();
+    // The shared session snapshot projects catalog placeholder rows, so catalog,
+    // context, and flag changes must mark it stale like local mutations do.
+    installOrgProjectSnapshotInvalidation();
+    // Subscribes and schedules only: the first run is debounced well past first
+    // paint, runs in the background, and nothing is scheduled with the flag off.
+    startOrgProjectAutoConversion();
+    void getOrgProjectMaterialization()
+      .sweepInterruptedSetups()
+      .then(async (): Promise<void> => {
+        if (appIsQuitting) return;
+        startPersonalOrganizationUpgradeRecovery();
+        const { resumeDesktopSharedMultiRepoCreations } =
+          await import('./canopy-runtime/core-shared-multi-repo-host');
+        if (!appIsQuitting) await resumeDesktopSharedMultiRepoCreations();
+      })
+      .catch((error: unknown): void => {
+        getObservabilityService().recordAppDiagnostic({
+          version: 1,
+          timestamp: new Date().toISOString(),
+          kind: 'startup_background_task_failed',
+          reason: 'org_project_setup_recovery',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    // Every preference update normalizes the complete merged object, including
+    // persisted model ids. Run preference-writing migrations only after the
+    // package, gateway, Ollama, harness, and Agent model registries are ready so
+    // an upgrade cannot mistake valid saved selections for unknown models and
+    // replace them with provider defaults.
+    if (appIsQuitting) return;
+    try {
+      await migrateApprovalDefaultsToFullAccess(
+        chatSummaryModelSelectionSnapshot?.hasPersistedPreferences,
+      );
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate approval defaults:', error);
+    }
+    if (appIsQuitting) return;
+    if (chatSummaryModelSelectionSnapshot) {
+      try {
+        await migrateChatSummaryModelSelection(
+          chatSummaryModelSelectionSnapshot,
+        );
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to migrate chat summary model selection:', error);
+      }
+    }
+    if (appIsQuitting) return;
+    if (localMemoryModelSnapshot) {
+      try {
+        await migrateLocalMemoryModelFromSummary(localMemoryModelSnapshot);
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to migrate the local memory model:', error);
+      }
+    }
+    if (appIsQuitting) return;
+    // Preference normalization validates persisted model ids against the model
+    // registries above. The org-enforced sync can perform a partial preference
+    // write during its immediate startup pass, so it must not start while those
+    // registries are still empty or a valid saved model will be replaced by the
+    // hard-coded provider fallback.
+    // The background sync only needs the side effect; its boolean return (did the
+    // per-org billing state actually refresh?) is for callers that delete data on
+    // a lapse verdict.
+    startOrgEnforcedSettingsSync(async (): Promise<void> => {
+      await reprobeAndApplyCanopyCloudEnforcedSettings();
+    });
+    // Signed out the re-probe never applies, so the device AI gateway reaches
+    // the catalog through its own pass, after the model registries above.
+    disposeLocalModelGatewayPolicySync ??= startLocalModelGatewayPolicySync();
+    installOrgProjectsCapabilityRefresh({
+      flags: {
+        isEnabled: (): boolean =>
+          getFeatureFlagService().isEnabled(
+            CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key,
+          ),
+        onSnapshotChanged: (listener): (() => void) =>
+          getFeatureFlagService().onSnapshotChanged(listener),
+      },
+      refresh: async (): Promise<void> => {
+        await reprobeAndApplyCanopyCloudEnforcedSettings();
+      },
+    });
+    if (appIsQuitting) return;
+    try {
+      await migrateAppManagedChatWorkspaces();
+      if (appIsQuitting) return;
+      // App-managed path migration must land first so the legacy global chat
+      // file is split from its final app-workspaces location.
+      await migrateAppAdvisorChatsToWorkEntries();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(
+        'Failed to migrate app-managed chat projects or App Advisor Work Entries:',
+        error,
+      );
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateStandaloneChatToCowork();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(
+        'Failed to migrate standalone-chat to cowork projects:',
+        error,
+      );
+    }
+    if (appIsQuitting) return;
+    try {
+      await loadCoworkMigrationMapCache();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to load cowork migration map cache:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      // After the cowork migration + map cache: splits each cowork workspace's
+      // flat chats/home.json into per-entry tab files.
+      await migrateCoworkChatsToWorkEntries();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate cowork chats to work entries:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      // After the cowork migrations, so the default workspace exists in the
+      // index before its name is reconciled with the sidebar's Chats section.
+      await migrateDefaultCoworkWorkspaceName();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(
+        'Failed to migrate the default cowork workspace name:',
+        error,
+      );
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateAutomationRunArchive();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate automation run history:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateClaudeWorkerModesToCanopy();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate Claude worker modes:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateSidebarRemoteControlVisible();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate sidebar Remote Control:', error);
+    }
+    // Must follow the Remote Control migration: it upgrades a legacy default
+    // layout to the current default, whose More pages this one then moves.
+    if (appIsQuitting) return;
+    try {
+      await migrateSidebarMorePagesToMain();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate sidebar More pages:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateLocalMemoryDefaultOn();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate local memory default:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateSidebarManualSortDefault();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate sidebar sort default:', error);
+    }
+    if (appIsQuitting) return;
+    try {
+      await migrateOpenAppLinksInBuiltInBrowserDefault();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate built-in browser link default:', error);
+    }
+    if (appIsQuitting) return;
+    // CAN-5154: a profile without a generation record gets one in the background.
+    void startPreferencesGenerationStamp();
+    if (appIsQuitting) return;
+    try {
+      await (await import('./copilot/connection')).recoverCopilotAtStartup();
+    } catch (error) {
+      logMainProcessWarn(
+        '[copilot] Startup process recovery did not finish',
+        error,
+      );
+    }
+    // Re-check after the reaper: quit may already be past its startup-recovery stage.
+    if (appIsQuitting) return;
+    await (async (): Promise<void> => {
+      await staleCodexCleanup;
+      if (appIsQuitting) return;
+      await recoverInterruptedWorkAtStartup();
+    })().catch((error: unknown): void => {
+      // Keep unreadable items intact so opening them or a later startup can retry.
+      // eslint-disable-next-line no-console
+      console.error('Failed to recover interrupted work at startup:', error);
+    });
+    if (appIsQuitting) return;
+    await sweepInterruptedPipelinesAtStartup()?.catch(
+      (error: unknown): void => {
+        // eslint-disable-next-line no-console
+        console.error('Failed to recover interrupted workflow runs:', error);
+      },
+    );
+    if (appIsQuitting) return;
+    // Queued chats recovered at startup drain once core accepts turns and the
+    // chat dispatch hooks (Auto model routing among them) are installed
+    // (CAN-4112); no window is needed.
+    if (appIsQuitting) return;
+    getStartupChatQueue().releaseStartupDrainHold();
+    // Git HEAD observation runs in main, independent of the renderer. Every
+    // build, E2E included, enrolls at the first projects:load or the
+    // first-paint fallback, so perf measures the production trigger (CAN-4899).
+    startWorktreeBranchObserver({
+      dispatcher: activeDesktopCanopyRuntime,
+      getWindow: getMainWindow,
+    });
+    // Device-to-device remote control: idle until the user allows incoming
+    // control or pairs a computer to control. A failure here must not block
+    // startup.
+    if (appIsQuitting) return;
+    try {
+      initializeRemoteControl({
+        getMainWindow,
+        showMainWindow: showMainWindowFromRemoteWindow,
+        iconPath: getIconPath(),
+        isAppQuitting: (): boolean => appIsQuitting,
+        // A controller's App Advisor window opens on the same data as this
+        // computer's: the commands resolve here and run in its window.
+        appAdvisorRequestCommands: sendAppAdvisorWindowRequestCommands,
+        // The single Remote Control opt-in also starts and ends Portal; its
+        // own flag still decides whether it may start.
+        portal: {
+          isEnabled: (): boolean =>
+            getFeatureFlagService().isEnabled(
+              CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
+            ),
+          start: async (): Promise<void> => {
+            if (getCanopyPortalState().status !== 'disabled') return;
+            await startCanopyPortal();
+          },
+          stop: async (): Promise<void> => {
+            if (getCanopyPortalState().status === 'disabled') return;
+            await stopCanopyPortal('local_disconnect');
+          },
+        },
+      });
+    } catch (error) {
+      logMainProcessError('Remote control failed to start', error);
+    }
+    if (!appIsQuitting) workspaceStartup.complete();
+  }
+  startupRecoveryPromise = finishWorkspaceStartup();
+  try {
+    await startupRecoveryPromise;
+  } catch (error) {
+    workspaceStartup.refuse(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    throw error;
+  }
+  if (appIsQuitting) return;
   // The scheduler runs its first sweep immediately. Start it only after the
   // initial renderer exists so completion and failure notifications cannot be
   // discarded during startup.
@@ -7167,10 +7260,6 @@ void app.whenReady().then(async (): Promise<void> => {
       getFeatureFlagService().isEnabled(
         CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key,
       ),
-  });
-
-  app.on('activate', () => {
-    bringAppWindowForward(resolveAppActivationTarget(appActivationWindows()));
   });
 
   app.on('child-process-gone', (_event, details): void => {

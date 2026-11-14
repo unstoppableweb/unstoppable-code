@@ -109,7 +109,7 @@ export interface ChatComposerProps {
 // min-h-26 + px-4 would otherwise dominate the height and double the pad.
 const CONTAINER_CLASS = 'cursor-text';
 const EDITABLE_CLASS =
-  'min-h-11 max-h-64 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-s pointer-coarse:text-m leading-5 fg-primary outline-none placeholder:fg-secondary';
+  'min-h-11 max-h-64 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-s pointer-coarse:text-m leading-5 fg-primary outline-none placeholder:fg-secondary';
 
 // Active chip treatments mirror the semantic warning tokens used by the
 // portal composer, with the rainbow gradient reserved for `max`. The portal's

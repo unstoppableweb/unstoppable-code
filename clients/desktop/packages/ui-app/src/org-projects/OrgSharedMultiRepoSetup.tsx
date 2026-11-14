@@ -410,7 +410,11 @@ function ConnectedSetup({
           loading={state.busy || preparing || catalogLoading}
         />
       </div>
-      {errorMessage && <Notice intent="destructive">{errorMessage}</Notice>}
+      {errorMessage && (
+        <Notice errorSource="connected-setup" intent="destructive">
+          {errorMessage}
+        </Notice>
+      )}
       {options.length > 0 && (
         <div className="flex flex-col gap-1 text-s fg-secondary">
           <p>

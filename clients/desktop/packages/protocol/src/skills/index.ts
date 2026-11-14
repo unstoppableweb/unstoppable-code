@@ -206,6 +206,12 @@ export interface UpdateSharedSkillRequest {
   /** Keep the current package pin when this client cannot analyze packages. */
   preservePackage?: boolean;
   revokePublicShare?: PublicShareVersion;
+  /**
+   * Who the caller was told sees the copy. The cloud checks it under the
+   * skill's row lock and answers 409 `audience_changed` when it differs;
+   * omitted, the update keeps its old behaviour.
+   */
+  expectedAudience?: 'private' | 'public_link' | 'team' | 'organization';
 }
 
 export interface DeleteSharedSkillRequest {

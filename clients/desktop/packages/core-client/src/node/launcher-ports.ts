@@ -6,7 +6,12 @@ import type { CanopyDaemonProcessInspector } from './daemon-ports';
 export type CanopyStartupClaimHandle = object;
 
 export type CanopyStartupClaimAcquisition =
-  | { readonly kind: 'acquired'; readonly handle: CanopyStartupClaimHandle }
+  | {
+      readonly kind: 'acquired';
+      readonly handle: CanopyStartupClaimHandle;
+      /** Bind proof retained when this acquisition replaced a departed lineage. */
+      readonly recovered?: { readonly endpointBound: boolean };
+    }
   | { readonly kind: 'held' | 'ambiguous' };
 
 export interface CanopyStartupClaimPort {

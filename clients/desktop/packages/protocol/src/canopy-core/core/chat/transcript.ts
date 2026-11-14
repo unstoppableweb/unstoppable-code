@@ -566,6 +566,64 @@ export type TranscriptStreamCatalog = z.infer<
   typeof TranscriptStreamCatalogSchema
 >;
 
+/**
+ * Revision 2 of `core.chat.transcript.page` and `core.chat.events` (protocol
+ * rule 5, CAN-6509): an assistant message carries its `meter`, and a page its
+ * chat's `latestCompaction`. A runtime advertises it in its manifest; a client
+ * asks for it with `revision` only when it is advertised, and a client that
+ * does not ask gets revision 1 output.
+ */
+export const CORE_CHAT_TRANSCRIPT_PAGE_SCHEMA_REVISION = 2;
+export const CORE_CHAT_EVENTS_SCHEMA_REVISION = 2;
+
+const tokenCount = z.number().min(0);
+/** A decimal USD amount as Core writes it, never converted to a number. */
+const usdAmount = z
+  .string()
+  .regex(/^-?\d+(\.\d+)?$/)
+  .max(64);
+
+/**
+ * What an assistant message ran on and cost, from the fields REST's
+ * conversation wire already carries for it (CAN-6509): Core's model
+ * reference, its token usage, its cost and its execution source key.
+ */
+export const CoreChatMessageMeterSchema = z.strictObject({
+  model: z
+    .strictObject({
+      id: z.string().min(1).max(512),
+      name: z.string().max(512).optional(),
+      contextWindow: tokenCount.optional(),
+    })
+    .optional(),
+  usage: z
+    .strictObject({
+      inputTokens: tokenCount.optional(),
+      outputTokens: tokenCount.optional(),
+      totalTokens: tokenCount.optional(),
+      cacheReadTokens: tokenCount.optional(),
+      cacheWriteTokens: tokenCount.optional(),
+      reasoningTokens: tokenCount.optional(),
+      contextTokens: tokenCount.optional(),
+      contextWindow: tokenCount.optional(),
+    })
+    .optional(),
+  costUsd: usdAmount.optional(),
+  incurredCostUsd: usdAmount.optional(),
+  costBilledViaLlmProxy: z.literal(true).optional(),
+  sourceKey: z.string().min(1).max(512).optional(),
+});
+export type CoreChatMessageMeter = z.output<typeof CoreChatMessageMeterSchema>;
+
+/** The chat's latest context compaction, from Core's durable event log (CAN-6509). */
+export const CoreChatLatestCompactionSchema = z.strictObject({
+  tokensBefore: tokenCount.optional(),
+  tokensAfter: tokenCount,
+});
+export type CoreChatLatestCompaction = z.output<
+  typeof CoreChatLatestCompactionSchema
+>;
+
 export const CoreChatTranscriptMessageSchema = z
   .object({
     id: z.string(),
@@ -577,6 +635,19 @@ export const CoreChatTranscriptMessageSchema = z
      * so `blocks` is empty; read its logical blocks by block page.
      */
     blocksOmitted: z.strictObject({ blockCount: ordinal }).optional(),
+    /**
+     * A shared cloud chat's user turn: the member who sent it (CAN-6106).
+     * Absent for an unattributed turn and on hosts that keep no attribution.
+     */
+    author: z
+      .strictObject({
+        userId: z.string().min(1),
+        name: z.string(),
+        image: z.string().nullable(),
+      })
+      .optional(),
+    /** Revision 2: an assistant message's meter, when Core recorded one. */
+    meter: CoreChatMessageMeterSchema.optional(),
   })
   .catchall(z.unknown())
   .refine(
@@ -648,6 +719,8 @@ export const CoreChatTranscriptPageParamsSchema = z
     view: z.literal('turns').optional(),
     turnId: anchorId.optional(),
     transcriptRevision: ordinal.optional(),
+    /** Revision 2 output, sent only when the runtime advertises it. */
+    revision: z.literal(CORE_CHAT_TRANSCRIPT_PAGE_SCHEMA_REVISION).optional(),
   })
   .refine(
     (params) => params.turnId === undefined || params.view === 'turns',
@@ -695,6 +768,8 @@ export const CoreChatTranscriptPageResultSchema = z
     /** A child stream's cursor for the next older page; absent at its start. */
     cursor: z.string().min(1).max(2048).optional(),
     latestHumanMessage: CoreChatTranscriptMessageSchema.optional(),
+    /** Revision 2: the chat's latest compaction, when it had one. */
+    latestCompaction: CoreChatLatestCompactionSchema.optional(),
   })
   .refine(
     (result) =>

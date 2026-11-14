@@ -54,6 +54,7 @@ export function OrgProjectCreateErrorNotice({
 }): JSX.Element {
   return (
     <Notice
+      errorSource="add-workspace-org-error"
       data-testid="add-workspace-org-error"
       data-error-kind={error.kind}
       intent={error.kind === 'limit-reached' ? 'attention' : 'destructive'}

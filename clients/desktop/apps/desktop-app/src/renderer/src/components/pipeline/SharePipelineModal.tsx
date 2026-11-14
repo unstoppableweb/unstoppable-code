@@ -440,7 +440,11 @@ export function SharePipelineModal({
             {SNAPSHOT_NOTE_LABEL}
           </p>
           {projectSourceUnavailable && (
-            <Notice intent="destructive">
+            <Notice
+              errorSource="workflow-share-missing-location"
+              displayErrorCode="external.state_changed"
+              intent="destructive"
+            >
               Reopen this workflow from its project to share it. Its worktree or
               file location is unavailable.
             </Notice>

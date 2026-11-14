@@ -1,24 +1,28 @@
 import type { JSX } from 'react';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { CodeBlock } from '@canopy/ui-shared/components';
 
 interface InlinePipelineYamlPreviewProps {
   rawPipeline: string;
   testId: string;
-  maxHeightClassName?: 'max-h-56' | 'max-h-80';
+  /** The taller cap, for a modal whose main content is the YAML. */
+  tall?: boolean;
 }
 
 /** Shared read-only YAML treatment for automation install and review flows. */
 export function InlinePipelineYamlPreview({
   rawPipeline,
   testId,
-  maxHeightClassName = 'max-h-56',
+  tall = false,
 }: InlinePipelineYamlPreviewProps): JSX.Element {
   return (
-    <pre
-      className={`${POSTHOG_REPLAY_BLOCK_CLASS} ${maxHeightClassName} overflow-auto rounded-md bg-fg-primary/[0.03] px-3 py-2 text-xs fg-primary`}
+    <CodeBlock
       data-testid={testId}
+      variant="tint"
+      wrap="none"
+      tone="primary"
+      className={tall ? 'max-h-80' : 'max-h-56'}
     >
       {rawPipeline}
-    </pre>
+    </CodeBlock>
   );
 }

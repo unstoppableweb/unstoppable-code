@@ -9,6 +9,10 @@ export interface SearchHit {
   scope: 'user' | 'workspace';
   snippet: string;
   heading?: string;
+  /** Rebuild source retained after consolidation; ranked after live memory. */
+  archived?: boolean;
+  /** Original creation time, or preserved file mtime for legacy notes/imports. */
+  savedAt?: string;
 }
 
 export type LocalMemoryScopeRequest =

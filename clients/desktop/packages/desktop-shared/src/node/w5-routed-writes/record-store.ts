@@ -9,9 +9,11 @@ import {
 import {
   admitStorageWrite,
   createStorageAuthorityAdmission,
-  routeStorageAdmissionToAuthority,
+  withStorageAuthorityAdmission,
+  type StorageAuthorityAdmission,
   withStorageAdmission,
 } from '@canopy/execution-engine/node/lib/storage-admission';
+import type { W5StorageAdmission } from '@canopy/core-runtime/node/w5/storage-binding';
 import { W5_RECORD_NAMESPACES } from './selector';
 
 export type { W5CommitLogFileStore, W5RecordPortTransport };
@@ -45,14 +47,19 @@ export interface W5RoutedRecordStore {
  */
 export function openW5RoutedRecordStore(
   options: W5RoutedRecordStoreOptions,
-): W5RoutedRecordStore {
-  const store = createRoutedStore(options);
-  const unroute = routeStorageAdmissionToAuthority(W5_RECORD_NAMESPACES);
-  return { store, close: unroute };
+): ScopedW5RoutedRecordStore {
+  return createScopedW5RoutedRecordStore(options);
 }
+
+/** Callback-scoped staging only; canonical ownership is still checked by the daemon and raw sinks. */
+export const admitRoutedW5Storage: W5StorageAdmission = (targets, operation) =>
+  withStorageAuthorityAdmission(W5_RECORD_NAMESPACES, () =>
+    withStorageAdmission(targets, operation),
+  );
 
 function createRoutedStore(
   options: W5RoutedRecordStoreOptions,
+  admission: StorageAuthorityAdmission,
 ): W5CommitLogFileStore {
   const { root, warn } = options;
   const port = createW5RecordHostPort({
@@ -68,7 +75,8 @@ function createRoutedStore(
     warn,
     readFile: (path) => port.readFile(path),
     readFileForCommit: (path) => port.readFile(path, true),
-    admit: (targets, operation) => withStorageAdmission(targets, operation),
+    admit: (targets, operation) =>
+      admission.run(() => withStorageAdmission(targets, operation)),
     admitWrite: (target, write) => admitStorageWrite(target, write),
     // The authority checks ownership as `daemon`.
     assertWrite: () => undefined,
@@ -85,10 +93,32 @@ export function createScopedW5RoutedRecordStore(
   options: W5RoutedRecordStoreOptions,
 ): ScopedW5RoutedRecordStore {
   const admission = createStorageAuthorityAdmission(W5_RECORD_NAMESPACES);
-  const store = createRoutedStore(options);
+  let active = true;
+  const live = <T>(run: () => Promise<T>): Promise<T> =>
+    active ? run() : Promise.reject(new Error('Authority admission retired'));
+  const source = options.transport;
+  const transport: W5RecordPortTransport = {
+    ...source,
+    capture: (request) => live(() => source.capture(request)),
+    recovery: () => live(() => source.recovery()),
+    lookupReceipt: (receipt) => live(() => source.lookupReceipt(receipt)),
+    listReservations: () => live(() => source.listReservations()),
+    commit: (request) => live(() => source.commit(request)),
+    reserve: (request) => live(() => source.reserve(request)),
+    // Cleanup facts may settle after stop, until the owner retires its transport.
+    updateReservationDiagnostics: (request) =>
+      source.updateReservationDiagnostics(request),
+    releaseReservation: (id) => source.releaseReservation(id),
+    markReservationRecoveryRequired: (request) =>
+      source.markReservationRecoveryRequired(request),
+  };
+  const store = createRoutedStore({ ...options, transport }, admission);
   return {
     store,
     run: (operation) => admission.run(() => operation(store)),
-    close: () => admission.close(),
+    close: () => {
+      active = false;
+      admission.close();
+    },
   };
 }

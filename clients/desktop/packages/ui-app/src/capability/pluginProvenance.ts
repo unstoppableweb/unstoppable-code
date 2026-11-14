@@ -3,7 +3,10 @@
  * publishes a marketplace plugin, which package it is, and which MCP endpoint
  * a bundled server or installed row points at. Pure and deterministic.
  */
-import { marketplaceDisplayName } from '@canopy/ui-shared/lib/official-marketplace-products';
+import {
+  marketplaceDisplayName,
+  marketplacePublisherDisplayName,
+} from '@canopy/ui-shared/lib/official-marketplace-products';
 import {
   isValidGitHubRepoRef,
   normalizeGitHubRepoRef,
@@ -160,7 +163,8 @@ export function pluginSourceLabel(
   const owner =
     githubOwner(pluginExternalSourceUrl(plugin)) ??
     githubOwner(marketplace.sourceUrl);
-  if (owner !== undefined) return `${provider} · ${owner}`;
+  if (owner !== undefined)
+    return `${provider} · ${marketplacePublisherDisplayName(owner)}`;
   // A catalog already named for its provider (`Codex official`) reads fine
   // alone; repeating the provider would say it twice.
   if (name.toLowerCase().startsWith(provider.toLowerCase())) {

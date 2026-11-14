@@ -227,7 +227,10 @@ function OwnerRow({
             )}
           </DataTableBody>
         </DataTableFrame>
-        <ErrorBanner error={removing ? null : error} />
+        <ErrorBanner
+          errorSource="owner-row-removing"
+          error={removing ? null : error}
+        />
         {row.mode === 'delete' && unshare.dialog}
         {removing && (
           <RemovePublicLinkConfirmDialog

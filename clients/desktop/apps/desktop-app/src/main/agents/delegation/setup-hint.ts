@@ -101,7 +101,13 @@ function describeScript(script: SetupScript): string {
 
 export function isolatedDelegationSetupHint(
   setupScripts: readonly SetupScript[],
-  harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+  harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode',
 ): string | undefined {
   if (!setupScripts.length) return undefined;
   // Both harnesses keep long commands in a managed task the model can check:
@@ -132,7 +138,13 @@ export async function resolveIsolatedDelegationSetupHint(options: {
   readonly projectId: string;
   readonly selectedRepoId?: string;
   readonly delegateCwd: string;
-  readonly harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  readonly harness:
+    | 'claude'
+    | 'codex'
+    | 'cursor'
+    | 'copilot'
+    | 'antigravity'
+    | 'opencode';
 }): Promise<string | undefined> {
   try {
     return isolatedDelegationSetupHint(

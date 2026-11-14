@@ -3,13 +3,13 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import {
   Button,
-  buttonClassName,
   ErrorBanner,
   FormField,
   ModelProviderIcon,
   ProviderStatusDot,
   StatusLabel,
   TextInput,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { ArrowUpRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -24,8 +24,10 @@ import {
   type DiscoveredGatewayModel,
 } from '@canopy/protocol/model-gateway/discovery';
 import {
+  AI_GATEWAY_PRESETS,
   matchAiGatewayPreset,
   type AiGatewayPreset,
+  type AiGatewayPresetId,
 } from '@canopy/protocol/model-gateway/presets';
 import {
   useSettingsAiGatewayConnectionKey,
@@ -70,6 +72,11 @@ export interface AiGatewaySetupProps {
    * narrow dialog.
    */
   readonly layout?: 'page' | 'dialog';
+  /**
+   * Start at this preset's key step instead of the chooser, as a shortcut
+   * picked outside the setup. Ignored when reconnecting a stored gateway.
+   */
+  readonly initialPresetId?: AiGatewayPresetId;
 }
 
 /** Shown once the gateway holds as many enabled models as it can. */
@@ -108,9 +115,23 @@ function seededBaseUrl(
   return stored && storedPreset === null ? stored : '';
 }
 
-function initialStep(current: AiGatewayEditorConfig | null): SetupStep {
-  if (!current?.baseUrl) return { kind: 'choose' };
-  return { kind: 'connect', preset: matchAiGatewayPreset(current.baseUrl) };
+function initialPreset(
+  current: AiGatewayEditorConfig | null,
+  initialPresetId: AiGatewayPresetId | undefined,
+): AiGatewayPreset | null {
+  if (current?.baseUrl) return matchAiGatewayPreset(current.baseUrl);
+  return (
+    AI_GATEWAY_PRESETS.find((preset) => preset.id === initialPresetId) ?? null
+  );
+}
+
+function initialStep(
+  current: AiGatewayEditorConfig | null,
+  initialPresetId: AiGatewayPresetId | undefined,
+): SetupStep {
+  if (!current?.baseUrl && initialPresetId === undefined)
+    return { kind: 'choose' };
+  return { kind: 'connect', preset: initialPreset(current, initialPresetId) };
 }
 
 /**
@@ -126,6 +147,7 @@ export function AiGatewaySetup({
   onSaved,
   enableOnSave,
   layout = 'page',
+  initialPresetId,
 }: AiGatewaySetupProps): JSX.Element {
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
   const { maskClassName } = useSettingsPrivacy();
@@ -134,9 +156,11 @@ export function AiGatewaySetup({
   const keepsKeys = KeyRow !== undefined;
   const statusId = useId();
 
-  const [step, setStep] = useState<SetupStep>(() => initialStep(current));
+  const [step, setStep] = useState<SetupStep>(() =>
+    initialStep(current, initialPresetId),
+  );
   const [baseUrl, setBaseUrl] = useState(() =>
-    seededBaseUrl(matchAiGatewayPreset(current?.baseUrl), current),
+    seededBaseUrl(initialPreset(current, initialPresetId), current),
   );
   const [apiKey, setApiKey] = useState('');
   const [connecting, setConnecting] = useState(false);
@@ -384,7 +408,11 @@ export function AiGatewaySetup({
     if (preset === null) {
       return (
         <div className="flex flex-col gap-3" data-testid="ai-gateway-setup">
-          <ErrorBanner error={error?.copy} details={error?.details} />
+          <ErrorBanner
+            errorSource="ai-gateway-setup"
+            error={error?.copy}
+            details={error?.details}
+          />
           <div
             className={
               layout === 'dialog' ? 'grid gap-3' : 'grid gap-3 sm:grid-cols-2'
@@ -400,7 +428,11 @@ export function AiGatewaySetup({
 
     return (
       <div className="flex flex-col gap-3" data-testid="ai-gateway-setup">
-        <ErrorBanner error={error?.copy} details={error?.details} />
+        <ErrorBanner
+          errorSource="ai-gateway-setup"
+          error={error?.copy}
+          details={error?.details}
+        />
         <div
           className="flex items-center gap-3"
           data-testid="ai-gateway-preset-header"
@@ -417,14 +449,10 @@ export function AiGatewaySetup({
               mounts this with a standalone host whose link needs the hosted
               settings provider. Desktop opens new-window https links in the
               browser. */}
-          <a
+          <TextLink
             href={preset.keyUrl}
             target="_blank"
             rel="noreferrer"
-            className={buttonClassName({
-              variant: 'link',
-              className: 'text-xs',
-            })}
             data-testid="ai-gateway-preset-key-link"
           >
             <span className="inline-flex items-center gap-1 whitespace-nowrap">
@@ -433,7 +461,7 @@ export function AiGatewaySetup({
                 : `${preset.name} virtual keys`}
               <ArrowUpRightIcon size="xs" aria-hidden="true" />
             </span>
-          </a>
+          </TextLink>
         </div>
         {connectFooter}
       </div>
@@ -495,7 +523,11 @@ export function AiGatewaySetup({
 
   return (
     <div className="flex flex-col gap-4" data-testid="ai-gateway-setup">
-      <ErrorBanner error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="ai-gateway-setup"
+        error={error?.copy}
+        details={error?.details}
+      />
       <div className="flex items-center justify-between gap-3">
         <p
           id={statusId}

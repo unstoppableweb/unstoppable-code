@@ -1,3 +1,4 @@
+import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
 // Automation form state: the `FormState` the automation editor works on, the
 // helpers that move it between selections, and the pure conversions to and
 // from the wire (`activityToFormState`, `buildTrigger`, `buildAction`,
@@ -1147,6 +1148,19 @@ export function getPipelineModelAliasBlockingError(
     const agentId = modelAliasPreferenceField(preference, 'agent_id');
     if (mode === 'agent' && (!agentId || agentId.trim().length === 0)) {
       return `Choose an agent for the ${label} model alias before saving this automation.`;
+    }
+    if (
+      mode === 'agent' &&
+      agentId &&
+      typeof preference === 'object' &&
+      preference !== null
+    ) {
+      const parsed = parsePipelineAgentAliasRoute({
+        agent_id: agentId,
+        base: Reflect.get(preference, 'base'),
+      });
+      if (!parsed.ok)
+        return `Choose a concrete model for the ${label} model alias.`;
     }
   }
 

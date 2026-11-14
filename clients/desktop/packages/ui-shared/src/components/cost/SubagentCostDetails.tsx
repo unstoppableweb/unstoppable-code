@@ -6,10 +6,11 @@ import { CostObservedTotal } from './CostObservedTotal';
 import { ProxyAccountNames } from './ProxyAccounts';
 import {
   COST_BILLING_LABELS,
-  formatCostAmount,
+  formatCostAmountIn,
   isCostItemPending,
   unpricedCostItemLabel,
 } from './cost-format';
+import { useCostCurrency } from './CostCurrencyContext';
 import { Fact, FactList } from '../FactList';
 
 export interface SubagentCostDetailsProps {
@@ -41,11 +42,16 @@ export function SubagentCostDetails({
   onOpenSessionBreakdown,
   testId = 'subagent-cost-details',
 }: SubagentCostDetailsProps): JSX.Element {
+  const currency = useCostCurrency();
   const totalTokens = item.totalTokens;
   const amountLabel =
     item.usd === undefined
       ? unpricedCostItemLabel(item)
-      : formatCostAmount(item.usd);
+      : formatCostAmountIn(
+          item.usd,
+          currency,
+          item.billingBasis === 'ai_credits',
+        );
 
   return (
     <div data-testid={testId} className="flex min-w-0 flex-col gap-2">

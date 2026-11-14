@@ -60,6 +60,7 @@ import {
   normalizeManagedDelegationLifetimeLimit,
   managedDelegationEffectiveLifetimeLimit,
   DELEGATION_STORAGE_RECORD_LIMIT,
+  managedDelegationPolicyGuidance,
 } from '@canopy/protocol/delegation/discovery';
 import {
   readDelegationLifetimeBaseline,
@@ -301,6 +302,7 @@ const DELEGATION_HARNESSES = [
   'codex',
   'cursor',
   'copilot',
+  'antigravity',
   'opencode',
 ] as const;
 type DelegationHarness = (typeof DELEGATION_HARNESSES)[number];
@@ -920,7 +922,10 @@ function names(harness: DelegationHarness): {
 } {
   const tools =
     buildInjectedToolNamesForBrand(BRAND)[
-      harness === 'cursor' || harness === 'copilot' || harness === 'opencode'
+      harness === 'cursor' ||
+      harness === 'copilot' ||
+      harness === 'antigravity' ||
+      harness === 'opencode'
         ? 'claude'
         : harness
     ];
@@ -1398,6 +1403,7 @@ async function actorFor(
         createOpenCodeDelegationRunner({
           available: runtime.available,
           delegation: childDelegation,
+          ledger: childLedger,
           transcriptPort,
           prepare: (context) => runtime.prepareOpenCode(context),
           reportError,
@@ -2703,10 +2709,11 @@ export class ManagedDelegationSession {
     inputSchema: object;
   }[] {
     const spawnName = names(this.harness).spawn;
-    const policyGuidance =
+    const policyGuidance = managedDelegationPolicyGuidance(
       this.managedDelegationMode === 'proactive'
-        ? 'You may proactively consult another model for a concrete, independent task when useful; avoid redundant fan-out.'
-        : 'Only delegate when the user explicitly asks for delegation, another model, a subagent or a second opinion. Do not delegate proactively.';
+        ? 'proactive'
+        : 'explicit-only',
+    );
     const feedGuidance =
       this.ledgerTools?.delegationFeed === undefined
         ? undefined
@@ -2800,6 +2807,7 @@ export class ManagedDelegationSession {
     } else if (
       (this.harness === 'cursor' ||
         this.harness === 'copilot' ||
+        this.harness === 'antigravity' ||
         this.harness === 'opencode') &&
       event.type === 'system' &&
       event.subtype === 'init' &&
@@ -2830,6 +2838,7 @@ export class ManagedDelegationSession {
     if (
       (this.harness === 'cursor' ||
         this.harness === 'copilot' ||
+        this.harness === 'antigravity' ||
         this.harness === 'opencode') &&
       event.type === 'canopy_assistant_patch' &&
       Array.isArray(event.patches) &&
@@ -2892,10 +2901,11 @@ export class ManagedDelegationSession {
 
   applyPolicyGuidance(text: string): string {
     if (!this.policyGuidanceOverrideActive) return text;
-    const guidance =
+    const guidance = managedDelegationPolicyGuidance(
       this.managedDelegationMode === 'proactive'
-        ? 'You may proactively consult another model for a concrete, independent task when useful; avoid redundant fan-out.'
-        : 'Only delegate when the user explicitly asks for delegation, another model, a subagent, or a second opinion. Do not delegate proactively.';
+        ? 'proactive'
+        : 'explicit-only',
+    );
     return `<managed_delegation_policy>\n${guidance} This current-turn policy overrides any earlier delegation tool description.\n</managed_delegation_policy>\n\n${text}`;
   }
 

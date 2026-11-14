@@ -49,6 +49,7 @@ export interface FloatingMenuPositionInput {
   readonly viewportHeight: number;
   readonly placement: FloatingMenuPlacement;
   readonly allowFlip?: boolean;
+  readonly preserveHeightOnCollision?: boolean;
   readonly gap?: number;
   readonly viewportPadding?: number;
 }
@@ -94,6 +95,8 @@ export interface FloatingMenuProps extends Omit<
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
   readonly placement?: FloatingMenuPlacement;
   readonly allowFlip?: boolean;
+  /** Keep an unscrollable row visible when neither side fits, overlapping the anchor if needed. */
+  readonly preserveHeightOnCollision?: boolean;
   readonly gap?: number;
   readonly viewportPadding?: number;
   /** Optional intrinsic height cap applied before collision placement. */
@@ -114,8 +117,14 @@ export interface FloatingMenuProps extends Omit<
    * action-menu default, `listbox` applies the same roving behavior to
    * `role="option"` rows, and `manual` leaves focus/navigation to a composite
    * picker such as a searchable dialog while retaining dismissal/positioning.
+   * `passive` keeps only placement: for a surface that tracks a control which
+   * keeps focus and every key (a composer's `@` and `/` lists, where Tab
+   * accepts the active row, and a text selection's actions). It takes no
+   * focus, reads no key or outside press, and leaves the app's hover feedback
+   * on, so the owner dismisses it by not rendering it. Its rows are the
+   * owner's too, so it has no scroll viewport.
    */
-  readonly interaction?: 'menu' | 'listbox' | 'manual';
+  readonly interaction?: 'menu' | 'listbox' | 'manual' | 'passive';
   /**
    * Keep keyboard focus inside the surface while it is open, as a modeless
    * `role="dialog"` requires.
@@ -190,6 +199,15 @@ export interface FloatingMenuProps extends Omit<
    * with a `FloatingMenuPointAnchor` at the same point.
    */
   readonly anchorPoint?: FloatingMenuPoint;
+  /**
+   * The current viewport rectangle for a virtual anchor such as a text
+   * selection. A supplied point takes precedence. The anchor ref still
+   * provides the menu's document and interaction boundary.
+   */
+  readonly anchorRect?: Pick<
+    DOMRectReadOnly,
+    'top' | 'left' | 'width' | 'height'
+  >;
   /**
    * The document to open in (default: the anchor's), so a menu anchored
    * inside a popped-out window never mounts in the main one, even before
@@ -304,6 +322,7 @@ export function computeFloatingMenuPosition({
   viewportHeight,
   placement,
   allowFlip = true,
+  preserveHeightOnCollision = false,
   gap = FLOATING_MENU_GAP,
   viewportPadding = FLOATING_MENU_VIEWPORT_PADDING,
 }: FloatingMenuPositionInput): FloatingMenuPosition {
@@ -325,7 +344,11 @@ export function computeFloatingMenuPosition({
         ? 'bottom'
         : 'top'
       : preferred.side;
-  const maxHeight = side === 'top' ? availableTop : availableBottom;
+  const sideAvailable = side === 'top' ? availableTop : availableBottom;
+  const viewportRoom = Math.max(0, viewportHeight - viewportPadding * 2);
+  const maxHeight = preserveHeightOnCollision
+    ? Math.min(viewportRoom, Math.max(sideAvailable, menuHeight))
+    : sideAvailable;
   const effectiveHeight = Math.min(menuHeight, maxHeight);
   const maxMenuWidth = Math.max(0, viewportWidth - viewportPadding * 2);
   const effectiveWidth = Math.min(menuWidth, maxMenuWidth);
@@ -373,16 +396,13 @@ export function computeFloatingMenuPosition({
   };
 }
 
-function pointRect(
-  point: FloatingMenuPoint,
+function viewportAnchorRect(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
 ): FloatingMenuPositionInput['anchorRect'] {
-  return {
-    top: point.y,
-    bottom: point.y,
-    left: point.x,
-    right: point.x,
-    width: 0,
-  };
+  return { top, bottom: top + height, left, right: left + width, width };
 }
 
 function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
@@ -444,6 +464,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       returnFocusRef,
       placement = 'bottom-left',
       allowFlip = true,
+      preserveHeightOnCollision = false,
       gap = FLOATING_MENU_GAP,
       viewportPadding = FLOATING_MENU_VIEWPORT_PADDING,
       heightLimit,
@@ -460,6 +481,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       outsidePressSwallowsClick = true,
       motion = 'enter',
       anchorPoint,
+      anchorRect: suppliedAnchorRect,
       ownerDocument,
       closeOnWindowChange = false,
       closeOnOutsidePress = true,
@@ -481,9 +503,14 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     const initialItemFocusRef = useRef<'first' | 'last'>('first');
     const focusedForOpenRef = useRef(false);
     const typeaheadRef = useRef({ value: '', at: 0 });
-    const managesScrollViewport = interaction !== 'manual';
-    const anchorX = anchorPoint?.x;
-    const anchorY = anchorPoint?.y;
+    const passive = interaction === 'passive';
+    const ownerRunsRows = passive || interaction === 'manual';
+    const managesScrollViewport = !ownerRunsRows;
+    const atPoint = anchorPoint !== undefined;
+    const anchorX = anchorPoint?.x ?? suppliedAnchorRect?.left;
+    const anchorY = anchorPoint?.y ?? suppliedAnchorRect?.top;
+    const anchorBoxWidth = atPoint ? 0 : (suppliedAnchorRect?.width ?? 0);
+    const anchorBoxHeight = atPoint ? 0 : (suppliedAnchorRect?.height ?? 0);
 
     const setMenuRef = useCallback(
       (node: HTMLDivElement | null): void => {
@@ -498,14 +525,16 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       const menu = menuRef.current;
       if (!anchor || !menu) return;
       const view = getWindow(anchor);
-      const point =
+      const triggerRect =
         anchorX === undefined || anchorY === undefined
-          ? null
-          : { x: anchorX, y: anchorY };
-      const triggerRect = point
-        ? pointRect(point)
-        : anchor.getBoundingClientRect();
-      const alignRect = point
+          ? anchor.getBoundingClientRect()
+          : viewportAnchorRect(
+              anchorX,
+              anchorY,
+              anchorBoxWidth,
+              anchorBoxHeight,
+            );
+      const alignRect = atPoint
         ? undefined
         : alignRef?.current?.getBoundingClientRect();
       const edges = alignRect ?? triggerRect;
@@ -559,6 +588,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         viewportHeight: view.innerHeight,
         placement,
         allowFlip,
+        preserveHeightOnCollision,
         gap,
         viewportPadding,
       });
@@ -587,12 +617,16 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       anchorRef,
       anchorX,
       anchorY,
+      anchorBoxWidth,
+      anchorBoxHeight,
+      atPoint,
       alignRef,
       alignOffset,
       allowFlip,
       gap,
       heightLimit,
       placement,
+      preserveHeightOnCollision,
       viewportPadding,
     ]);
 
@@ -656,8 +690,19 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       if (scrollViewportRef.current) {
         observer?.observe(scrollViewportRef.current);
       }
+      // Only a scroller around the anchor can move it. Rows scrolling inside
+      // the surface, or a transcript beside it, must not cost a layout read
+      // every frame.
+      const schedulePositionOnScroll = (event: Event): void => {
+        const { target } = event;
+        const scrollerMovesAnchor =
+          !(target instanceof view.Node) ||
+          target.contains(anchor) ||
+          (alignRef?.current != null && target.contains(alignRef.current));
+        if (scrollerMovesAnchor) schedulePosition();
+      };
       view.addEventListener('resize', schedulePosition);
-      view.addEventListener('scroll', schedulePosition, {
+      view.addEventListener('scroll', schedulePositionOnScroll, {
         capture: true,
         passive: true,
       });
@@ -665,11 +710,11 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         if (frame !== null) view.cancelAnimationFrame(frame);
         observer?.disconnect();
         view.removeEventListener('resize', schedulePosition);
-        view.removeEventListener('scroll', schedulePosition, {
+        view.removeEventListener('scroll', schedulePositionOnScroll, {
           capture: true,
         });
       };
-    }, [anchorRef, open, updatePosition]);
+    }, [alignRef, anchorRef, open, updatePosition]);
 
     useEffect((): (() => void) | void => {
       if (!open || !closeOnWindowChange) return;
@@ -684,7 +729,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     }, [anchorRef, closeOnWindowChange, onOpenChange, open, ownerDocument]);
 
     useEffect((): (() => void) | void => {
-      if (!openOnArrowKeys) return;
+      if (!openOnArrowKeys || passive) return;
       const trigger = anchorRef.current;
       if (!trigger) return;
       const handleTriggerKeyDown = (event: globalThis.KeyboardEvent): void => {
@@ -699,10 +744,10 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       trigger.addEventListener('keydown', handleTriggerKeyDown);
       return (): void =>
         trigger.removeEventListener('keydown', handleTriggerKeyDown);
-    }, [anchorRef, onOpenChange, open, openOnArrowKeys]);
+    }, [anchorRef, onOpenChange, open, openOnArrowKeys, passive]);
 
     useEffect((): (() => void) | void => {
-      if (!open) return;
+      if (!open || passive) return;
       const trigger = anchorRef.current;
       const doc = getDocument(trigger);
       const NodeConstructor = doc.defaultView?.Node;
@@ -825,12 +870,19 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       outsidePressBoundaryRef,
       outsidePressClickThroughRef,
       outsidePressSwallowsClick,
+      passive,
       returnFocusRef,
       trapFocus,
     ]);
 
     useLayoutEffect((): void => {
-      if (!open || !position || !menuRef.current || focusedForOpenRef.current) {
+      if (
+        !open ||
+        !position ||
+        !menuRef.current ||
+        focusedForOpenRef.current ||
+        passive
+      ) {
         return;
       }
       if (initialFocusRef?.current) {
@@ -870,15 +922,19 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       if (target) focusMenuRow(target);
       else menuRef.current.focus();
       focusedForOpenRef.current = true;
-    }, [focusOnOpen, initialFocusRef, interaction, open, position, trapFocus]);
+    }, [
+      focusOnOpen,
+      initialFocusRef,
+      interaction,
+      open,
+      passive,
+      position,
+      trapFocus,
+    ]);
 
     const handleMenuClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
       onClick?.(event);
-      if (
-        event.defaultPrevented ||
-        interaction === 'manual' ||
-        !closeOnSelect
-      ) {
+      if (event.defaultPrevented || ownerRunsRows || !closeOnSelect) {
         return;
       }
       const menu = menuRef.current;
@@ -931,11 +987,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         onOpenChange(false);
         return;
       }
-      if (
-        event.defaultPrevented ||
-        interaction === 'manual' ||
-        !menuRef.current
-      ) {
+      if (event.defaultPrevented || ownerRunsRows || !menuRef.current) {
         return;
       }
 
@@ -1034,10 +1086,11 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         // Only the menu-family roles take an orientation. `role="dialog"`
         // surfaces (the CTA popover) do not, and an unsupported ARIA
         // attribute there is a validity error, not a harmless extra.
-        {...(props.role === 'dialog'
+        {...(props.role === 'dialog' || passive
           ? {}
           : { 'aria-orientation': 'vertical' as const })}
-        tabIndex={-1}
+        // A passive surface never holds focus: its owner keeps it.
+        {...(passive ? {} : { tabIndex: -1 })}
         className={`canopy-floating-menu ${motion === 'none' ? 'canopy-floating-menu-no-motion' : ''} ${className}`}
         data-positioned={position ? 'true' : 'false'}
         data-placement={position?.placement ?? placement}

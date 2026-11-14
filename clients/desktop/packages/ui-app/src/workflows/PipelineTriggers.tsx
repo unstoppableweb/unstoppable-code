@@ -224,6 +224,7 @@ function ScheduleRow({
           switch or an action was refused here, where it was pressed. */}
       {row.error && !expanded ? (
         <Notice
+          errorSource="pipeline-trigger-schedule-error"
           intent="destructive"
           data-testid="pipeline-trigger-schedule-error"
         >

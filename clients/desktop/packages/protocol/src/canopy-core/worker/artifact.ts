@@ -6,6 +6,8 @@ import {
 import {
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
+  defineCanopyQuery,
+  defineCanopyQueryRegistry,
 } from '../definitions';
 import {
   CanopyErrorPayloadSchema,
@@ -14,7 +16,8 @@ import {
 } from '../errors';
 
 /*
- * Artifact uploads and deletes (CAN-6108). The web core serves them over a
+ * Artifact uploads, deletes, download opens (CAN-6108) and download reads
+ * (CAN-6175 R8d). The web core serves them over a
  * cloud chat's attachments (`attachment:<id>`) and a workspace's files
  * (`workspace-file:<id>`). Like the other web-only registries they stay out
  * of the composed worker registry, so the desktop dispatcher needs no
@@ -108,6 +111,52 @@ export const WorkerArtifactDeleteResultSchema = z.strictObject({
   storageState: z.literal('deleted'),
 });
 
+export const WorkerArtifactDownloadOpenParamsSchema = z.strictObject({
+  artifactId: id,
+  scope: CanopyWorkspaceScopeSchema,
+});
+export type WorkerArtifactDownloadOpenParams = z.output<
+  typeof WorkerArtifactDownloadOpenParamsSchema
+>;
+
+export const WorkerArtifactDownloadOpenResultSchema = z.strictObject({
+  /** The artifact's same-origin content route, after `/api`. */
+  contentPath: z.string().min(1).max(1024),
+});
+
+/** The most one `worker.artifact.download.read` answers, as one upload write takes. */
+export const WORKER_ARTIFACT_DOWNLOAD_CHUNK_MAX_BYTES =
+  WORKER_ARTIFACT_UPLOAD_CHUNK_MAX_BYTES;
+
+/**
+ * One range of an artifact's bytes, for a caller that holds no web session to
+ * fetch the content route `worker.artifact.download.open` answers (desktop
+ * main over its own web core connection, CAN-6175 R8d).
+ */
+export const WorkerArtifactDownloadReadParamsSchema = z.strictObject({
+  artifactId: id,
+  scope: CanopyWorkspaceScopeSchema,
+  offset: z.number().int().min(0),
+  /** At most `WORKER_ARTIFACT_DOWNLOAD_CHUNK_MAX_BYTES`. */
+  length: z.number().int().min(1).max(WORKER_ARTIFACT_DOWNLOAD_CHUNK_MAX_BYTES),
+});
+export type WorkerArtifactDownloadReadParams = z.output<
+  typeof WorkerArtifactDownloadReadParamsSchema
+>;
+
+export const WorkerArtifactDownloadReadResultSchema = z.strictObject({
+  /** The whole artifact's size. */
+  sizeBytes: z.number().int().min(0),
+  offset: z.number().int().min(0),
+  /** Base64 of the bytes from `offset`, at most `length` of them. */
+  data: z.string().max(WORKER_ARTIFACT_UPLOAD_WRITE_MAX_BASE64),
+  /** Where the next range starts, or null once this one reached the end. */
+  nextOffset: z.number().int().min(0).nullable(),
+});
+export type WorkerArtifactDownloadReadResult = z.output<
+  typeof WorkerArtifactDownloadReadResultSchema
+>;
+
 const UPLOAD_CODE = z
   .enum([
     'worker.artifact.upload.notFound',
@@ -135,6 +184,40 @@ export const WorkerArtifactDeleteErrorSchema = CanopyErrorPayloadSchema.extend({
   code: z.enum(['worker.artifact.notFound']).optional(),
   retry: CanopyQueryRetryDirectiveSchema,
 });
+
+export const WorkerArtifactDownloadOpenErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z.enum(['worker.artifact.notFound']).optional(),
+    retry: CanopyQueryRetryDirectiveSchema,
+  });
+
+export const WORKER_ARTIFACT_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
+  'worker',
+  {
+    'worker.artifact.download.open': defineCanopyQuery({
+      plane: 'worker',
+      domain: 'artifact',
+      version: 1,
+      placement: 'target-selectable',
+      requiredGrants: ['worker.artifact.read'],
+      idempotency: 'inherent',
+      params: WorkerArtifactDownloadOpenParamsSchema,
+      result: WorkerArtifactDownloadOpenResultSchema,
+      error: WorkerArtifactDownloadOpenErrorSchema,
+    }),
+    'worker.artifact.download.read': defineCanopyQuery({
+      plane: 'worker',
+      domain: 'artifact',
+      version: 1,
+      placement: 'target-selectable',
+      requiredGrants: ['worker.artifact.read'],
+      idempotency: 'inherent',
+      params: WorkerArtifactDownloadReadParamsSchema,
+      result: WorkerArtifactDownloadReadResultSchema,
+      error: WorkerArtifactDownloadOpenErrorSchema,
+    }),
+  },
+);
 
 export const WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('worker', {

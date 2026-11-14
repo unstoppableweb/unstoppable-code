@@ -8,6 +8,7 @@
 // "Pick & Polish" flow) can stage attachments without duplicating the import
 // + index-refresh dance.
 
+import { useSyncExternalStore } from 'react';
 import {
   type AttachmentMeta,
   type ClipboardAttachmentData,
@@ -19,6 +20,7 @@ import {
   CLOUD_ATTACHMENT_LIMIT_MESSAGE,
   cloudAttachmentMediaType,
   cloudAttachmentRefusal,
+  rememberCloudAttachmentSource,
 } from '@/cloud-chats/cloud-chat-attachments';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useChatStore } from '@/stores/chatStore';
@@ -161,7 +163,8 @@ export async function importChatAttachments(
   return result.attachments;
 }
 
-const UPLOAD_FAILURE: Readonly<Record<string, string>> = {
+/** Why an upload to a cloud chat failed, in the composer's words. */
+export const CLOUD_UPLOAD_FAILURE: Readonly<Record<string, string>> = {
   too_large: 'Attachment is too large',
   offline: "Couldn't upload it. Check your connection and try again",
   unauthenticated: 'Sign in again to attach files to cloud chats',
@@ -189,11 +192,53 @@ function pickCloudAttachmentFiles(): Promise<File[]> {
   });
 }
 
+/** Whether a file is one on this computer's disk, rather than pasted. */
+function isDiskFile(file: File): boolean {
+  try {
+    return window.api.getPathForFile(file) !== '';
+  } catch (error) {
+    reportClientAppError(error);
+    return false;
+  }
+}
+
 /**
  * Uploads in flight per cloud chat: they count toward the message's limit
- * before they join its pending attachments.
+ * before they join its pending attachments, and keep the chat's Send off,
+ * whoever started them: the composer, or a new chat taking a deleted one's
+ * files again (CAN-6614).
  */
 const uploadingByChat = new Map<string, number>();
+const uploadListeners = new Set<() => void>();
+let uploadsVersion = 0;
+
+function setUploading(chatKey: string, count: number): void {
+  if (count > 0) uploadingByChat.set(chatKey, count);
+  else uploadingByChat.delete(chatKey);
+  uploadsVersion += 1;
+  for (const listener of [...uploadListeners]) listener();
+}
+
+/** Whether a cloud chat has uploads in flight, from any caller. */
+export function useCloudChatUploading(
+  target: { projectId: string; worktreeId: string; chatId: string } | null,
+): boolean {
+  useSyncExternalStore(
+    (listener) => {
+      uploadListeners.add(listener);
+      return (): void => {
+        uploadListeners.delete(listener);
+      };
+    },
+    () => uploadsVersion,
+  );
+  return (
+    target !== null &&
+    (uploadingByChat.get(
+      `${target.projectId}/${target.worktreeId}/${target.chatId}`,
+    ) ?? 0) > 0
+  );
+}
 
 /** What attaching files to a cloud chat attached, and why the rest were not. */
 export interface WebCoreChatFilesResult {
@@ -243,10 +288,7 @@ export async function importWebCoreChatFiles(
   if (accepted.length > room) problems.push(CLOUD_ATTACHMENT_LIMIT_MESSAGE);
   const taken = accepted.slice(0, room);
   if (taken.length === 0) return { attachments: [], problems };
-  uploadingByChat.set(
-    chatKey,
-    (uploadingByChat.get(chatKey) ?? 0) + taken.length,
-  );
+  setUploading(chatKey, (uploadingByChat.get(chatKey) ?? 0) + taken.length);
   // Each file settles on its own: one that can't be read or sent leaves the
   // rest attached.
   const uploads = taken.map(async ({ file, mediaType }) => {
@@ -256,9 +298,15 @@ export async function importWebCoreChatFiles(
         mediaType,
         bytes: new Uint8Array(await file.arrayBuffer()),
       });
-      if (result.ok) return result.attachment;
+      if (result.ok) {
+        // Kept so a new chat can take it again if this one is deleted
+        // elsewhere (CAN-6614).
+        if (isDiskFile(file))
+          rememberCloudAttachmentSource(result.attachment.absolutePath, file);
+        return result.attachment;
+      }
       problems.push(
-        `${file.name}: ${UPLOAD_FAILURE[result.reason] ?? UPLOAD_FAILURE.rejected}`,
+        `${file.name}: ${result.message ?? CLOUD_UPLOAD_FAILURE[result.reason] ?? CLOUD_UPLOAD_FAILURE.rejected}`,
       );
       return null;
     } catch (error) {
@@ -273,9 +321,7 @@ export async function importWebCoreChatFiles(
   } finally {
     // Released together, as the composer then adds the batch to the chat's
     // pending attachments before any other attach can run.
-    const left = (uploadingByChat.get(chatKey) ?? 0) - taken.length;
-    if (left > 0) uploadingByChat.set(chatKey, left);
-    else uploadingByChat.delete(chatKey);
+    setUploading(chatKey, (uploadingByChat.get(chatKey) ?? 0) - taken.length);
   }
   const attachments = settled.filter(
     (attachment): attachment is AttachmentMeta => attachment !== null,

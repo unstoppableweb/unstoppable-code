@@ -134,7 +134,11 @@ function LedgerAgentRecordingRow(): JSX.Element {
         />
       }
     >
-      <ErrorBanner className="" error={saveError} />
+      <ErrorBanner
+        errorSource="ledger-agent-recording-row-save"
+        className=""
+        error={saveError}
+      />
     </SettingsRow>
   );
 }

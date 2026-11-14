@@ -1,3 +1,10 @@
+import './fixtures/w5-boundary-daemon-cleanup';
+import type * as LegacyStorage from './fixtures/w5-legacy-storage';
+jest.mock('@canopy/core-runtime/storage', () =>
+  jest
+    .requireActual<typeof LegacyStorage>('./fixtures/w5-legacy-storage')
+    .createLegacyW5StorageMock(),
+);
 /**
  * Keyed plugin user changes (CAN-4409) against a workspace deletion, through
  * the real `deleteWorkspace` (non-Cowork and Cowork branches), the real keyed
@@ -260,7 +267,7 @@ function update(
 }
 
 function startHost(
-  workerEntry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
+  workerEntry = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts'),
 ): void {
   host = new W5CommitLogHost({
     dbPath: join(dir, 'data', 'w5', 'commit-log.sqlite'),

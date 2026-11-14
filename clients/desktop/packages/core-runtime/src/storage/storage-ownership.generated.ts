@@ -157,9 +157,9 @@ export const STORAGE_OWNERSHIP = [
   },
   {
     "id": "workspace_index",
-    "transitionOwner": "legacy",
+    "transitionOwner": "daemon",
     "currentWriters": [
-      "desktop_cli",
+      "daemon",
       "electron_main"
     ],
     "schemaVersion": 1,
@@ -169,9 +169,9 @@ export const STORAGE_OWNERSHIP = [
   },
   {
     "id": "workspace_manifest",
-    "transitionOwner": "legacy",
+    "transitionOwner": "daemon",
     "currentWriters": [
-      "desktop_cli",
+      "daemon",
       "electron_main"
     ],
     "schemaVersion": 1,
@@ -181,9 +181,9 @@ export const STORAGE_OWNERSHIP = [
   },
   {
     "id": "worktree_list",
-    "transitionOwner": "legacy",
+    "transitionOwner": "daemon",
     "currentWriters": [
-      "desktop_cli",
+      "daemon",
       "electron_main"
     ],
     "schemaVersion": 1,

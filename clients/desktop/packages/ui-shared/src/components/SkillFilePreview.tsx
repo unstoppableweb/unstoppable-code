@@ -32,7 +32,8 @@ export function SkillFilePreview({
         <CenteredLoadingSpinner className="my-12" />
       </DelayedLoadingPlaceholder>
     );
-  if (state.error) return <ErrorBanner error={state.error} />;
+  if (state.error)
+    return <ErrorBanner errorSource="skill-file-preview" error={state.error} />;
   if (!state.data) return <></>;
   if (state.data.binary) {
     return (

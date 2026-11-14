@@ -65,7 +65,7 @@ import {
   renameArchiveQuarantine,
   workspaceRootPayloadDigest,
   writeJsonDurably,
-  buildArchivedContainerSnapshotRef,
+  isArchivedContainerSnapshotRef,
   assertArchivedGitQuarantineOwned,
 } from './archived-container-git';
 import {
@@ -371,18 +371,30 @@ export async function readArchivedContainerRecoveryJournal(
   worktreeId: string,
 ): Promise<{
   createdAt: string;
+  phase: RecoveryJournal['phase'];
+  identity: string | null;
+  recovery: Recovery;
   repositories: {
     referenceRepoPath: string;
     repositoryIdentity: string | null;
+    repositoryStatIdentity: string | null;
   }[];
 } | null> {
   const journal = await readJournal(paths(projectId, worktreeId).journal);
   if (!journal) return null;
   return {
     createdAt: journal.createdAt,
+    phase: journal.phase,
+    identity: journal.identity
+      ? `${journal.identity.dev}:${journal.identity.ino}:${journal.identity.birthtimeMs}`
+      : null,
+    recovery: journal.recovery,
     repositories: (journal.repositories ?? []).map((repository) => ({
       referenceRepoPath: repository.referenceRepoPath,
       repositoryIdentity: repository.repositoryIdentity?.path ?? null,
+      repositoryStatIdentity: repository.repositoryIdentity
+        ? `${repository.repositoryIdentity.dev}:${repository.repositoryIdentity.ino}:${repository.repositoryIdentity.birthtimeMs}`
+        : null,
     })),
   };
 }
@@ -1273,11 +1285,11 @@ export async function prepareArchivedContainerRecovery(args: {
     const bundles: Array<{ repoId: string; file: string }> = [];
     for (const repository of staged.repositories) {
       if (
-        repository.snapshotRef !==
-        buildArchivedContainerSnapshotRef(
+        !isArchivedContainerSnapshotRef(
           args.projectId,
           args.worktreeId,
           repository.repoId,
+          repository.snapshotRef,
         )
       ) {
         throw new Error(

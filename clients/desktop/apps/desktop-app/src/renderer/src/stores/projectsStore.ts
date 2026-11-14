@@ -3,7 +3,11 @@ import {
   reportClientAppError,
 } from '@canopy/desktop-instrumentation/client';
 import { createWorktreeCreationActions } from './projectsStore.worktreeCreation';
-import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  createAppError,
+  toAppError,
+  type AppErrorCode,
+} from '@canopy/protocol/app-errors';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
@@ -425,6 +429,10 @@ export interface PendingWorktreeScroll {
   reason: PendingWorktreeScrollReason;
 }
 
+interface WorktreeFailure extends InlineFailure {
+  displayErrorCode?: AppErrorCode;
+}
+
 export interface ProjectsState {
   projects: SidebarItem[];
   isLoading: boolean;
@@ -582,7 +590,7 @@ export interface ProjectsState {
   dismissPendingRecommendedPluginPrompt: (options?: {
     remember?: boolean;
   }) => void;
-  worktreeError: InlineFailure | null;
+  worktreeError: WorktreeFailure | null;
   clearWorktreeError: () => void;
   branchRenameRequest: { projectId: string; worktreeId: string } | null;
   requestBranchRename: (projectId: string, worktreeId: string) => void;
@@ -2490,22 +2498,33 @@ function setSharedProjects(
 function worktreeGitFailedNotice(
   event: WorktreeGitFailedEvent,
   projects: SidebarItem[],
-): InlineFailure {
+): WorktreeFailure {
   const details = event.error.trim();
   const project = projects.find((item) => item.id === event.projectId);
   const sourceName =
     project?.type === 'multi-repo' && event.sourceRepoId
       ? project.repos.find((repo) => repo.id === event.sourceRepoId)?.name
       : project?.name;
-  const error = formatWorktreePrepareFailure({
-    // Storage keeps its own handling; only the source reason changes the copy.
+  const error =
+    event.failureReason === 'storage-unavailable' &&
+    event.storageFailure === 'overloaded'
+      ? createAppError('external.service_unavailable')
+      : formatWorktreePrepareFailure({
+          // Only explicit overload evidence changes classification. Unreachable or
+          // damaged storage remains unexpected; raw event details are never classified.
+          ...(event.failureReason === 'source-no-commits'
+            ? { reason: event.failureReason }
+            : {}),
+          ...(sourceName ? { sourceName } : {}),
+          hasDetails: details !== '',
+        });
+  return {
+    error,
+    ...(details === '' ? {} : { details: event.error }),
     ...(event.failureReason === 'source-no-commits'
-      ? { reason: event.failureReason }
+      ? { displayErrorCode: 'external.state_changed' }
       : {}),
-    ...(sourceName ? { sourceName } : {}),
-    hasDetails: details !== '',
-  });
-  return details === '' ? { error } : { error, details: event.error };
+  };
 }
 
 function applyWorktreeGitFailedEvent(
@@ -3485,6 +3504,35 @@ function cleanupArchivedWorktreeRendererState(
   useHooksStore.getState().cleanupWorktree(projectId, worktreeId);
 }
 
+/** Recovery cleanup needs confirmed absence, not an optimistically hidden row. */
+export function cleanupUnlistedWorktreeRendererState(
+  projectId: string,
+  worktreeId: string,
+): boolean {
+  const get = useProjectsStore.getState;
+  const state = get();
+  if (
+    state.projectInventoryStatus !== 'ready' ||
+    !state.projectInventorySnapshot ||
+    state.failedWorkspaceIds.has(projectId)
+  )
+    return false;
+  const hasOwner = (projects: readonly SidebarItem[]): boolean =>
+    projects.some(
+      (project) =>
+        project.id === projectId &&
+        (project.type === 'cowork' ||
+          project.worktrees.some((row) => row.id === worktreeId)),
+    );
+  if (
+    hasOwner(state.projects) ||
+    hasOwner(state.projectInventorySnapshot.projects)
+  )
+    return false;
+  cleanupArchivedWorktreeRendererState(projectId, worktreeId, get);
+  return true;
+}
+
 function finalizeArchiveUiRemoval(
   snapshot: ArchiveUiSnapshot,
   get: () => ProjectsState,
@@ -3806,7 +3854,20 @@ async function performArchive(
           typedRefusal: true,
         });
   // Before warnings and finalization: the callers' catches roll the row back.
-  throwIfArchiveRefused(archiveResponse);
+  throwIfArchiveRefused(archiveResponse, {
+    ...(options?.expectedBranchName !== undefined
+      ? { expectedBranchName: options.expectedBranchName }
+      : {}),
+    ...(options?.deleteBranch !== undefined
+      ? { deleteBranch: options.deleteBranch }
+      : {}),
+    ...(options?.deleteWithoutRetentionIfMissing !== undefined
+      ? {
+          deleteWithoutRetentionIfMissing:
+            options.deleteWithoutRetentionIfMissing,
+        }
+      : {}),
+  });
 
   for (const warning of archiveResponse.warnings) {
     useGitHubStore.getState().addToast(warning, 'warning', undefined, {

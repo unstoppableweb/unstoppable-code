@@ -25,6 +25,7 @@ import {
   IconAgent,
   IconAgents,
   IconApple,
+  IconLinux,
   IconAllModels,
   IconAllModelsFilled,
   IconApps,
@@ -141,6 +142,7 @@ import {
   IconGitBranchLine,
   IconForkSplit,
   IconGithub,
+  IconGoogle,
   IconGlobe,
   IconGlobe2,
   IconHammer2,
@@ -257,6 +259,7 @@ import {
   IconZap,
   IconZapFilled,
 } from './AppGlyphs.generated';
+import { AntigravityLogo } from './AntigravityLogo';
 import { ClaudeLogo } from './ClaudeLogo';
 import { CodexLogo } from './CodexLogo';
 import { CursorLogo } from './CursorLogo';
@@ -481,6 +484,11 @@ export const CursorIcon = /* @__PURE__ */ adaptLogo(CursorLogo, 'CursorLogo');
 // manifest glyphs but deliberately not bound here: this module ships with every
 // route, and binding them added ~10.7 KB gzip of first-load JS to each one. The
 // External agents page imports them directly from `@canopy/ui-shared/icons`.
+export const GoogleIcon = /* @__PURE__ */ createAppIcon(IconGoogle);
+export const AntigravityIcon = /* @__PURE__ */ adaptLogo(
+  AntigravityLogo,
+  'AntigravityLogo',
+);
 export const DeepSeekIcon = /* @__PURE__ */ createAppIcon(IconDeepseek);
 export const OpenRouterIcon = /* @__PURE__ */ createAppIcon(IconOpenrouter);
 export const VercelIcon = /* @__PURE__ */ createAppIcon(IconVercel);
@@ -568,6 +576,7 @@ export const LayoutDashboardIcon =
 export const WindowsPlatformIcon = /* @__PURE__ */ createAppIcon(
   IconLayoutGrid2FilledSquare,
 );
+export const LinuxPlatformIcon = /* @__PURE__ */ createAppIcon(IconLinux);
 export const LayoutWindowIcon = /* @__PURE__ */ createAppIcon(IconLayoutWindow);
 export const LinkIcon = /* @__PURE__ */ createAppIcon(IconLink);
 export const BoardIcon = /* @__PURE__ */ createAppIcon(IconBoard);

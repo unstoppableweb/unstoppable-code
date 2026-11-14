@@ -5,6 +5,8 @@ import { closeCanopy } from '../launchCanopy.mjs';
 
 // Real children wait on filesystem barriers; there are no timing sleeps or
 // reruns. The descendant acknowledges readiness over IPC before cancellation.
+// A barrier polls as well as watching, since `fs.watch` can miss a write on
+// macOS (CAN-6409).
 export const FIXTURE_DIR = '.runner-contract';
 export const WORKTREE_ID = 'demo-main';
 
@@ -22,8 +24,12 @@ const file = (name) => path.join(__dirname, name);
 function barrier(name) {
   return new Promise((resolve) => {
     const watcher = fs.watch(__dirname, check);
+    const poll = setInterval(check, 25);
     function check() {
-      if (fs.existsSync(file(name))) { watcher.close(); resolve(); }
+      if (!fs.existsSync(file(name))) return;
+      watcher.close();
+      clearInterval(poll);
+      resolve();
     }
     check();
   });

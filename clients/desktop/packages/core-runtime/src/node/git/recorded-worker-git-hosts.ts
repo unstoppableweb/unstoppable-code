@@ -467,14 +467,15 @@ export function createRecordedWorkerGitHosts(
       readHint: () => Promise.resolve(null),
       readRemoteHead: async () =>
         (await read('remote-head', path, invocation)).match(
-          /^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/m,
+          /^ref: refs\/heads\/([^\t\r\n]+)\tHEAD\r?$/m,
         )?.[1] ?? null,
       readLocalOriginHead: async (): Promise<string | null> => {
         try {
-          const ref = firstLine(
-            await git.read({ kind: 'origin-head' }, path, invocation),
+          const ref = await git.read({ kind: 'origin-head' }, path, invocation);
+          return (
+            ref.replace(/\r?\n$/, '').replace('refs/remotes/origin/', '') ||
+            null
           );
-          return ref.replace('refs/remotes/origin/', '') || null;
         } catch {
           signal.throwIfAborted();
           return null;
@@ -526,9 +527,7 @@ export function createRecordedWorkerGitHosts(
     const root = await recordedRoot(path, recorded, invocation);
     if (root === null) throw new GitRepositoryReadError('invalid_request');
     return {
-      output: firstLine(
-        await git.read({ kind: 'worktree-list' }, root, invocation),
-      ),
+      output: await git.read({ kind: 'worktree-list' }, root, invocation),
       checkoutPath: path,
     };
   }
@@ -557,10 +556,8 @@ export function createRecordedWorkerGitHosts(
     reads: (checkout, context) => {
       const invocation = invocationOf(context);
       return {
-        readBranchRefs: async () =>
-          firstLine(
-            await git.read({ kind: 'branch-refs' }, checkout.path, invocation),
-          ),
+        readBranchRefs: () =>
+          git.read({ kind: 'branch-refs' }, checkout.path, invocation),
         readWorktreeList: () => readRecordedWorktreeList(checkout, invocation),
         defaultBranchFacts: defaultBranchFacts(checkout.path, invocation),
         readHeadUnborn: async () =>
@@ -588,6 +585,9 @@ export function createRecordedWorkerGitHosts(
     cwd: string,
     { signal, environment }: GitRepositoryReadInvocation,
   ): {
+    readonly run: (
+      write: GitRepositoryWrite,
+    ) => Promise<GitRepositoryWriteOutput>;
     readonly succeeded: (write: GitRepositoryWrite) => Promise<string>;
     readonly unlessCancelled: (write: GitRepositoryWrite) => Promise<void>;
     readonly probe: (write: GitRepositoryWrite) => Promise<boolean>;
@@ -616,6 +616,7 @@ export function createRecordedWorkerGitHosts(
       return stdout;
     };
     return {
+      run,
       succeeded,
       // The caller was already answered `cancelled`: a fetch or effect that
       // has not started does not start. A started one still runs to its end.
@@ -681,11 +682,18 @@ export function createRecordedWorkerGitHosts(
     checkout: RecordedGitRepository,
     invocation: GitRepositoryReadInvocation,
   ): GitBranchWritePort {
-    const { succeeded, unlessCancelled, probe } = writeCommands(
+    const { run, succeeded, unlessCancelled, probe } = writeCommands(
       checkout.path,
       invocation,
     );
+    const readHeadRef = async (): Promise<string | null> => {
+      const { exitCode, stdout } = await run({ kind: 'symbolic-head' });
+      if (exitCode === 1) return null;
+      if (exitCode !== 0) throw new GitRepositoryWriteError('exit_status');
+      return stdout.replace(/\r?\n$/, '');
+    };
     return {
+      signal: invocation.signal,
       hasUncommittedChanges: async () =>
         firstLine(await succeeded({ kind: 'status' })).length > 0,
       readWorktreeList: () =>
@@ -699,11 +707,41 @@ export function createRecordedWorkerGitHosts(
       isValidBranchName: (name) => probe({ kind: 'check-branch-name', name }),
       listLocalBranchesUnder: async (name) =>
         firstLine(await succeeded({ kind: 'local-branches-under', name })),
-      currentBranch: async () =>
-        firstLine(await succeeded({ kind: 'current-branch' })),
-      checkout: (branch) => unlessCancelled({ kind: 'checkout', branch }),
+      currentBranch: async () => {
+        const ref = await readHeadRef();
+        return ref?.startsWith('refs/heads/')
+          ? ref.slice('refs/heads/'.length)
+          : 'HEAD';
+      },
+      readHeadRef,
+      checkout: async (branch, continuingCreation) => {
+        const write = { kind: 'checkout', branch } as const;
+        if (continuingCreation) await succeeded(write);
+        else await unlessCancelled(write);
+      },
+      resolveCatalogBranch: async (branch, remote) => {
+        const { exitCode, stdout } = await run({
+          kind: 'catalog-branch-tip',
+          branch,
+          remote,
+        });
+        if (exitCode === 0) return firstLine(stdout);
+        if (exitCode !== 128) throw new GitRepositoryWriteError('exit_status');
+        return undefined;
+      },
+      readTrackingConfig: async () => {
+        const { exitCode, stdout } = await run({
+          kind: 'branch-tracking-config',
+        });
+        if (exitCode === 1) return '';
+        if (exitCode !== 0) throw new GitRepositoryWriteError('exit_status');
+        return stdout;
+      },
       checkoutNewBranch: (name, startPoint) =>
         unlessCancelled({ kind: 'checkout-new-branch', name, startPoint }),
+      createBranch: async (name, startPoint) => {
+        await succeeded({ kind: 'prepare-new-branch', name, startPoint });
+      },
       renameCurrentBranch: (name) =>
         unlessCancelled({ kind: 'rename-current-branch', name }),
     };
@@ -723,9 +761,7 @@ export function createRecordedWorkerGitHosts(
       listCheckedOutBranches: () =>
         interruptibleListing(invocation.signal, async () =>
           parseGitCheckedOutBranches(
-            firstLine(
-              await git.read({ kind: 'worktree-list' }, repository, invocation),
-            ),
+            await git.read({ kind: 'worktree-list' }, repository, invocation),
           ),
         ),
       deleteBranch: (branch, force) =>

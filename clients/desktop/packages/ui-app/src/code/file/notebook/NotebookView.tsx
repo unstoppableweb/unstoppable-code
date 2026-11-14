@@ -5,6 +5,7 @@ import {
   Stack,
   Markdown,
   type MarkdownOptions,
+  CodeBlock,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
@@ -122,12 +123,14 @@ function renderOutputContent(
     const stderr = output.name === 'stderr';
     return (
       <>
-        <pre
-          className={`whitespace-pre-wrap break-words font-mono text-xs ${stderr ? 'bg-warning-subtle px-2 py-1 fg-warning' : 'fg-primary/80'}`}
+        <CodeBlock
           data-stream={output.name}
+          variant={stderr ? 'warning' : 'bare'}
+          tone={stderr ? 'warning' : 'soft'}
+          replay="inherit"
         >
           {truncated.text}
-        </pre>
+        </CodeBlock>
         {truncated.truncated ? (
           <p
             className="text-xs fg-secondary"
@@ -149,9 +152,9 @@ function renderOutputContent(
     const truncated = truncateNotebookText(errorText);
     return (
       <>
-        <pre className="whitespace-pre-wrap break-words font-mono text-xs fg-destructive">
+        <CodeBlock variant="bare" tone="destructive" replay="inherit">
           {truncated.text}
-        </pre>
+        </CodeBlock>
         {truncated.truncated ? (
           <p
             className="text-xs fg-secondary"
@@ -182,9 +185,9 @@ function renderOutputContent(
     const truncated = truncateNotebookText(rendering.text);
     return (
       <>
-        <pre className="whitespace-pre-wrap break-words font-mono text-xs fg-primary/80">
+        <CodeBlock variant="bare" tone="soft" replay="inherit">
           {truncated.text}
-        </pre>
+        </CodeBlock>
         {truncated.truncated ? (
           <p
             className="text-xs fg-secondary"
@@ -368,9 +371,9 @@ function RawCell({ source }: { readonly source: string }): JSX.Element {
   const truncated = truncateNotebookText(source);
   return (
     <>
-      <pre className="whitespace-pre-wrap break-words font-mono text-xs fg-primary/80">
+      <CodeBlock variant="bare" tone="soft" replay="inherit">
         {truncated.text}
-      </pre>
+      </CodeBlock>
       {truncated.truncated ? (
         <p
           className="text-xs fg-secondary"

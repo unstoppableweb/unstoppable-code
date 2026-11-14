@@ -1,12 +1,11 @@
-import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import type { ExternalProjectProvider } from '@canopy/desktop-shared/types';
 import { BRAND } from '@canopy/brand/current';
-import {
-  getBrandOwnedDataDirRoots,
-  getCanopySecureDataDir,
-} from '@canopy/execution-engine/canopy-paths';
 import { isPathInside } from '../lib/path-safety';
-import { getDataDir } from '../lib/paths';
 import { isRecord } from '../lib/type-guards';
 import {
   claudeProjectDirSlug,
@@ -24,23 +23,32 @@ import {
   readFileHead,
   type ReadPool,
 } from './file-head';
+import { collectExcludedRoots, safeRealpath } from './excluded-roots';
+import { collectOwnOpenCodeSessionIds } from './own-opencode-sessions';
 import {
   resolveClaudeGlobalConfigPath,
   resolveClaudeProjectsDir,
   resolveCodexGlobalStatePath,
   resolveCodexSessionsDir,
+  resolveOpenCodeDatabasePath,
+  resolveT3CodeDatabasePath,
 } from './provider-paths';
 import { DEFAULT_DISCOVERY_LIMITS } from './types';
 
 /**
- * Cheap "does this machine hold any Claude or Codex project evidence that
- * did not come from Canopy itself?" probe (CAN-2439). It gates the onboarding
+ * Cheap "does this machine hold any Claude, Codex, T3 Code or OpenCode
+ * project evidence that did not come from Canopy itself?" probe (CAN-2439). It gates the onboarding
  * step, the Getting started entry, and the one-time invite, so it must stay
  * far cheaper than a scan and must not fire for Canopy's own footprint:
  * every Canopy chat writes a Claude transcript under `~/.claude/projects`
  * and a Codex rollout under `~/.codex/sessions`, so mere existence of those
  * directories proves nothing. Evidence counts only when it points outside the
  * brand data directories (Claude) or carries a foreign originator (Codex).
+ * The T3 Code and OpenCode stores are SQLite files, probed with one bounded
+ * read-only query each on the live file (no copy, no waiting on a lock, and
+ * no file created beside it; see `liveStoreLocation`); see
+ * `t3CodeStoreHasThread` and `openCodeStoreHasForeignSession` for how each
+ * reads a failure.
  */
 
 const MAX_ROLLOUTS_INSPECTED = 25;
@@ -65,28 +73,14 @@ export interface ProviderPresenceOptions {
    */
   extraExcludedRoots?: string[];
   ownOriginators?: readonly string[];
+  t3DbPath?: string;
+  openCodeDbPath?: string;
+  /** Native OpenCode session ids Canopy's own runs created; collected when omitted. */
+  ownOpenCodeSessionIds?: ReadonlySet<string>;
 }
 
-async function safeRealpath(candidate: string): Promise<string> {
-  try {
-    return await realpath(candidate);
-  } catch {
-    return path.resolve(candidate);
-  }
-}
-
-async function defaultExcludedRoots(): Promise<string[]> {
-  const roots = new Set<string>();
-  for (const candidate of [
-    getDataDir(),
-    getCanopySecureDataDir(),
-    ...getBrandOwnedDataDirRoots(),
-  ]) {
-    roots.add(await safeRealpath(candidate));
-    roots.add(path.resolve(candidate));
-  }
-  return Array.from(roots);
-}
+/** Newest top-level OpenCode sessions inspected for one that is not Canopy's. */
+const MAX_OPENCODE_SESSIONS_INSPECTED = 200;
 
 function isOutsideRoots(candidate: string, roots: string[]): boolean {
   return !roots.some((root) => isPathInside(root, candidate));
@@ -227,10 +221,117 @@ async function codexSessionsHaveForeignThread(
   return false;
 }
 
-export async function detectProviderStorePresence(
-  options: ProviderPresenceOptions = {},
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How the probe opens a live store without creating anything beside it. A
+ * plain read-only open of a WAL database creates `-shm` and `-wal` files when
+ * they are missing and leaves them after closing, which would write into the
+ * tool's data folder. When both already exist (the tool is running), that open
+ * adds nothing and sees its newest writes. Otherwise the file is opened as
+ * immutable: SQLite then takes no locks and creates no files, and no running
+ * writer's newest state is missed (a `-wal` left by an unclean exit is
+ * ignored, so its last writes can be).
+ */
+function liveStoreLocation(dbPath: string): string | URL {
+  if (existsSync(`${dbPath}-wal`) && existsSync(`${dbPath}-shm`)) {
+    return dbPath;
+  }
+  const location = pathToFileURL(dbPath);
+  location.search = 'mode=ro&immutable=1';
+  return location;
+}
+
+/**
+ * Opens a store read-only on the live file and fails fast on a lock: the
+ * owning app is usually running, and the probe must never queue behind it.
+ */
+function withLiveStore<T>(dbPath: string, fn: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(liveStoreLocation(dbPath), { readOnly: true });
+  try {
+    db.exec('PRAGMA busy_timeout = 0');
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * A T3 Code store counts when it holds one live thread of a real project (the
+ * scratch "No project" bucket is what a fresh install accumulates). A file
+ * that exists but cannot be queried (locked, corrupt, a newer schema) still
+ * counts: it is strong evidence of T3 Code use, and the cost of a false
+ * positive is only an invite the scan then resolves to nothing.
+ */
+async function t3CodeStoreHasThread(dbPath: string): Promise<boolean> {
+  if (!(await fileExists(dbPath))) return false;
+  try {
+    return withLiveStore(
+      dbPath,
+      (db) =>
+        db
+          .prepare(
+            `SELECT 1 FROM orchestration_v2_projection_threads t
+             JOIN projection_projects p USING (project_id)
+             WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL
+               AND p.title <> 'No project' LIMIT 1`,
+          )
+          .get() !== undefined,
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * OpenCode keeps no origin on a session, so Canopy's own runs show up in its
+ * database. A store counts only when one of the newest top-level sessions is
+ * neither a session Canopy bound nor in a Canopy directory (the same test the
+ * discovery adapter applies). A failure counts as absent: the common false
+ * positive here is Canopy's own OpenCode use, which must never raise an invite.
+ */
+async function openCodeStoreHasForeignSession(
+  dbPath: string,
+  roots: string[],
+  ownSessionIds: ReadonlySet<string> | undefined,
 ): Promise<boolean> {
-  const roots = [...(options.excludedRoots ?? (await defaultExcludedRoots()))];
+  if (!(await fileExists(dbPath))) return false;
+  try {
+    // Scans every data root the brand owns, up to the binding-file cap. A
+    // truncated set is safe here: it can only leave one of Canopy's own
+    // sessions looking foreign, so it can raise an invite the scan then
+    // resolves to nothing, and can never hide a user's session.
+    const own = ownSessionIds ?? (await collectOwnOpenCodeSessionIds());
+    const rows = withLiveStore(dbPath, (db) =>
+      db
+        .prepare(
+          `SELECT id, directory FROM session_v2 WHERE parent_id IS NULL
+           ORDER BY time_updated DESC LIMIT ?`,
+        )
+        .all(MAX_OPENCODE_SESSIONS_INSPECTED),
+    );
+    return rows.some(
+      (row) =>
+        typeof row.id === 'string' &&
+        typeof row.directory === 'string' &&
+        !own.has(row.id) &&
+        isOutsideRoots(row.directory, roots),
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function detectProviderStorePresenceByProvider(
+  options: ProviderPresenceOptions = {},
+): Promise<Record<ExternalProjectProvider, boolean>> {
+  const roots = [...(options.excludedRoots ?? (await collectExcludedRoots()))];
   for (const extra of options.extraExcludedRoots ?? []) {
     roots.push(await safeRealpath(extra), path.resolve(extra));
   }
@@ -240,39 +341,49 @@ export async function detectProviderStorePresence(
   // One read pool for the whole probe, the same bound a scan uses, so the
   // directory listings below can never fan out past it.
   const pool = createReadPool(DEFAULT_DISCOVERY_LIMITS.maxConcurrentReads);
-  // Cheapest signals first, stopping at the first hit: the small Codex
-  // desktop registry, then the Claude projects directory (a listing plus a
-  // bounded number of 16 KiB transcript heads), then rollout heads, and the
-  // potentially large `~/.claude.json` parse last.
-  if (
-    await codexGlobalStateHasProject(
-      options.codexGlobalStatePath ?? resolveCodexGlobalStatePath(),
-      roots,
-    )
-  ) {
-    return true;
-  }
-  if (
-    await claudeProjectsDirHasExternalEntry(
+  // The four providers are probed concurrently. Within a provider the signals
+  // run cheapest first and stop at the first hit. Claude: the projects
+  // directory listing with a bounded number of 16 KiB transcript heads, then
+  // the potentially large `~/.claude.json` parse. Codex: the small desktop
+  // registry, then rollout heads.
+  const claudePresent = async (): Promise<boolean> =>
+    (await claudeProjectsDirHasExternalEntry(
       options.claudeProjectsDir ?? resolveClaudeProjectsDir(),
       roots,
       pool,
-    )
-  ) {
-    return true;
-  }
-  if (
-    await codexSessionsHaveForeignThread(
+    )) ||
+    (await claudeGlobalConfigHasExternalProject(
+      options.claudeGlobalConfigPath ?? resolveClaudeGlobalConfigPath(),
+      roots,
+    ));
+  const codexPresent = async (): Promise<boolean> =>
+    (await codexGlobalStateHasProject(
+      options.codexGlobalStatePath ?? resolveCodexGlobalStatePath(),
+      roots,
+    )) ||
+    (await codexSessionsHaveForeignThread(
       options.codexSessionsDir ?? resolveCodexSessionsDir(),
       roots,
       ownOriginators,
       pool,
-    )
-  ) {
-    return true;
-  }
-  return claudeGlobalConfigHasExternalProject(
-    options.claudeGlobalConfigPath ?? resolveClaudeGlobalConfigPath(),
-    roots,
-  );
+    ));
+  const [claude, codex, t3code, opencode] = await Promise.all([
+    claudePresent(),
+    codexPresent(),
+    t3CodeStoreHasThread(options.t3DbPath ?? resolveT3CodeDatabasePath()),
+    openCodeStoreHasForeignSession(
+      options.openCodeDbPath ?? resolveOpenCodeDatabasePath(),
+      roots,
+      options.ownOpenCodeSessionIds,
+    ),
+  ]);
+  return { claude, codex, t3code, opencode };
+}
+
+export async function detectProviderStorePresence(
+  options: ProviderPresenceOptions = {},
+): Promise<boolean> {
+  return Object.values(
+    await detectProviderStorePresenceByProvider(options),
+  ).some(Boolean);
 }

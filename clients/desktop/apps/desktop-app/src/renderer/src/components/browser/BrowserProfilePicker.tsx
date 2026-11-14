@@ -417,7 +417,11 @@ export function BrowserProfilePicker({
               Respond to any page dialog to continue.
             </Notice>
           )}
-          {error && <Notice intent="destructive">{error}</Notice>}
+          {error && (
+            <Notice errorSource="browser-profile-picker" intent="destructive">
+              {error}
+            </Notice>
+          )}
           {notice && <Notice intent="neutral">{notice}</Notice>}
         </Stack>
       </Popover>

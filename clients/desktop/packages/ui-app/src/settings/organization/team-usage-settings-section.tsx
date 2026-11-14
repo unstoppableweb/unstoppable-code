@@ -13,6 +13,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   Skeleton,
+  Stack,
   Tooltip,
   SettingsSelect,
   FormField,
@@ -194,13 +195,13 @@ function UsageStatsCard({
         </p>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner
-          className="mt-3"
-          error={error?.copy}
-          details={error?.details}
-        />
-
-        <div className="mt-3">
+        <Stack gap="item">
+          <ErrorBanner
+            errorSource="usage-stats-card"
+            className=""
+            error={error?.copy}
+            details={error?.details}
+          />
           <FormField
             label="Who can view usage stats"
             dataTestId="usage-min-role-field"
@@ -226,7 +227,7 @@ function UsageStatsCard({
               </div>
             )}
           </FormField>
-        </div>
+        </Stack>
       </div>
     </section>
   );
@@ -518,23 +519,25 @@ function EnforcedSettingsCard({
         </p>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner
-          className="mt-3"
-          error={error?.copy}
-          details={error?.details}
-        />
-        {/*
-         * Its own banner, not the save-error slot: a save clears `error` and
-         * must not take an unresolved plan-read failure with it.
-         */}
-        <ErrorBanner
-          className="mt-3"
-          error={coverageError?.copy}
-          details={coverageError?.details}
-          onRetry={retryCoverage}
-        />
-
-        <div className="mt-4">
+        <Stack gap="group">
+          {(error || coverageError) && (
+            <Stack gap="item">
+              <ErrorBanner
+                errorSource="enforced-settings-card"
+                className=""
+                error={error?.copy}
+                details={error?.details}
+              />
+              {/* Keep plan-read failures visible when a save clears its own error. */}
+              <ErrorBanner
+                errorSource="enforced-settings-card-coverage"
+                className=""
+                error={coverageError?.copy}
+                details={coverageError?.details}
+                onRetry={retryCoverage}
+              />
+            </Stack>
+          )}
           <SettingsRowsRow
             label="Enforce member data sharing policy"
             description="Members use this organization's settings instead of their own."
@@ -553,36 +556,34 @@ function EnforcedSettingsCard({
               />
             }
           />
-        </div>
 
-        {enforcing && !coverageResolved ? (
-          <div className="mt-4" data-testid="enforced-sync-coverage-pending">
-            <DelayedLoadingPlaceholder>
-              <DataSharingScopesSkeleton orgId={orgId} />
-            </DelayedLoadingPlaceholder>
-          </div>
-        ) : null}
+          {enforcing && !coverageResolved ? (
+            <div data-testid="enforced-sync-coverage-pending">
+              <DelayedLoadingPlaceholder>
+                <DataSharingScopesSkeleton orgId={orgId} />
+              </DelayedLoadingPlaceholder>
+            </div>
+          ) : null}
 
-        {enforcing && coverageResolved ? (
-          <Surface variant="outline" className="mt-4 overflow-hidden">
-            <ul className="flex flex-col gap-4 p-4">
-              {DATA_SHARING_SCOPE_ORDER.map((key) => (
-                <DataSharingScopeRow
-                  key={key}
-                  scope={key}
-                  value={enforcedSync[key]}
-                  coverage={effectiveCoverage}
-                  busy={saving}
-                  orgId={orgId}
-                  metadataProhibited={metadataProhibited}
-                  onChange={handleScopeChange}
-                />
-              ))}
-            </ul>
-          </Surface>
-        ) : null}
+          {enforcing && coverageResolved ? (
+            <Surface variant="outline" className="overflow-hidden">
+              <ul className="flex flex-col gap-4 p-4">
+                {DATA_SHARING_SCOPE_ORDER.map((key) => (
+                  <DataSharingScopeRow
+                    key={key}
+                    scope={key}
+                    value={enforcedSync[key]}
+                    coverage={effectiveCoverage}
+                    busy={saving}
+                    orgId={orgId}
+                    metadataProhibited={metadataProhibited}
+                    onChange={handleScopeChange}
+                  />
+                ))}
+              </ul>
+            </Surface>
+          ) : null}
 
-        <div className="mt-4">
           <SettingsRowsRow
             label="Allow sharing outside the organization"
             description="Members can share worktrees and Cowork work by email with people outside this organization."
@@ -598,7 +599,7 @@ function EnforcedSettingsCard({
               />
             }
           />
-        </div>
+        </Stack>
       </div>
 
       {pendingConfirm === 'enable-enforcement' ? (
@@ -780,80 +781,6 @@ function lockedScopeCopy(
   };
 }
 
-interface ScopeSwitchProps {
-  sharing: boolean;
-  ariaLabel: string;
-  dataTestId: string;
-  /**
-   * Renders the switch inert: `aria-disabled` instead of native `disabled`, no
-   * `onToggle`, and permanently dimmed rather than dimmed-while-busy.
-   */
-  locked?: boolean;
-  busy?: boolean;
-  onToggle?: () => void;
-  /**
-   * Forwarded onto the switch's button element, not the component boundary.
-   *
-   * `Tooltip.attachTooltipDescription` recurses through layout `<span>`s and
-   * then clones `aria-describedby` onto the first non-span element it reaches.
-   * When this switch is a tooltip trigger that element is `ScopeSwitch` itself,
-   * so without an explicit passthrough the id would be dropped silently: no
-   * type error, no React warning, just a tooltip whose description never
-   * reaches the control it describes.
-   */
-  'aria-describedby'?: string;
-}
-
-/**
- * The switch geometry shared by the interactive (covered) and locked
- * (uncovered) rows.
- *
- * Extracted deliberately: the entire point of rendering a locked scope as a
- * switch is that it sits on the same control axis and reads identically to the
- * rows above it. Two hand-maintained copies of the same `h-4.5 w-8` /
- * `translate-x-4` geometry is exactly how that stops being true.
- */
-function ScopeSwitch({
-  sharing,
-  ariaLabel,
-  dataTestId,
-  locked = false,
-  busy = false,
-  onToggle,
-  'aria-describedby': ariaDescribedBy,
-}: ScopeSwitchProps): JSX.Element {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={sharing}
-      aria-disabled={locked ? true : undefined}
-      aria-label={ariaLabel}
-      aria-describedby={ariaDescribedBy}
-      disabled={locked ? undefined : busy}
-      data-testid={dataTestId}
-      onClick={locked ? undefined : onToggle}
-      className={`relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full transition-colors ${
-        locked
-          ? `cursor-not-allowed opacity-60 ${
-              sharing ? 'bg-accent' : 'bg-fg-quaternary'
-            }`
-          : `disabled:cursor-not-allowed disabled:opacity-60 ${
-              sharing
-                ? 'bg-accent hover:bg-accent/90'
-                : 'bg-fg-quaternary hover:bg-fg-tertiary'
-            }`
-      }`}
-    >
-      <span
-        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-fg-emphasis transition-transform ${
-          sharing ? 'translate-x-4' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
-  );
-}
-
 /**
  * One scope row: its label and disclosure, the required/blocked switch, the
  * feature pills stating what the current position costs, and the dependency
@@ -901,12 +828,12 @@ function DataSharingScopeRow({
           </p>
         </div>
         {covered ? (
-          <ScopeSwitch
-            sharing={sharing}
-            ariaLabel={`Share ${label}`}
+          <ToggleSwitch
+            checked={sharing}
+            label={`Share ${label}`}
             dataTestId={`enforced-sync-toggle-${scope}`}
-            busy={busy}
-            onToggle={() => onChange(scope, !sharing)}
+            disabled={busy}
+            onChange={(next) => onChange(scope, next)}
           />
         ) : (
           <Tooltip
@@ -934,16 +861,16 @@ function DataSharingScopeRow({
              * `Tooltip` portals its content to `document.body` and tabbing off
              * this switch blurs the wrapper and unmounts the tooltip first. The
              * always-visible `Upgrade` link beneath the row is the accessible
-             * path; this tooltip is supplementary. Non-interactive by omitting
-             * `onClick`, not by guarding it.
+             * path; this tooltip is supplementary.
              */}
             <span className="flex shrink-0 items-center gap-2">
               <Lock size={12} aria-hidden="true" className="fg-secondary/70" />
-              <ScopeSwitch
-                sharing={sharing}
-                ariaLabel={`Share ${label} (${lockedCopy.switchState})`}
+              <ToggleSwitch
+                checked={sharing}
+                label={`Share ${label} (${lockedCopy.switchState})`}
                 dataTestId={`enforced-sync-toggle-${scope}`}
-                locked
+                unavailable
+                onChange={() => undefined}
               />
             </span>
           </Tooltip>

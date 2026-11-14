@@ -16,12 +16,15 @@ import {
 } from '@canopy/ui-app';
 import {
   Dot,
+  ListRow,
   RailIconButton,
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
   SIDEBAR_ROW_GRID_CLASSNAME,
   SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
   SharedContainerInvitationDialog,
+  SharedContainerOwnerDepartureFeedback,
+  SharedContainerOwnerDepartureNotices,
   SidebarOverviewNavLink,
   Badge,
 } from '@canopy/ui-shared/components';
@@ -34,8 +37,10 @@ import { SharedContainerRecipientActionsMenu } from './SharedContainerRecipientA
 import { useScopedSharedContainerEntries } from './useScopedSharedContainerEntries';
 import { useSharedContainerRecipientActions } from './useSharedContainerRecipientActions';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { useCanopyDesktopSharedContainersEnabled } from '@/hooks/useCanopyDesktopSharedContainersEnabled';
 import { useSharedContainerEntryPointVisible } from '@/hooks/useSharedContainerEntryPointVisible';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useSharedContainerOwnerDeparturesStore } from '@/stores/sharedContainerOwnerDeparturesStore';
 import {
   useSharedContainerReplicasStore,
   type SharedContainerListEntry,
@@ -64,6 +69,7 @@ export function SharedContainerSidebarSection({
     (state) => state.viewer?.containerId ?? null,
   );
   const featureVisible = useSharedContainerEntryPointVisible();
+  const sharedContainersEnabled = useCanopyDesktopSharedContainersEnabled();
   const loadSharedWithMe = useSharedContainerReplicasStore(
     (state) => state.loadSharedWithMe,
   );
@@ -95,6 +101,15 @@ export function SharedContainerSidebarSection({
   const pastSharesCount = pastSharesAvailable
     ? acceptedEntries.length + removedEntries.length
     : 0;
+  const ownerDepartureNotices = useSharedContainerOwnerDeparturesStore(
+    (state) => state.notices,
+  );
+  const dismissOwnerDeparture = useSharedContainerOwnerDeparturesStore(
+    (state) => state.dismiss,
+  );
+  const failedDismissalId = useSharedContainerOwnerDeparturesStore(
+    (state) => state.failedDismissalId,
+  );
 
   // The invitation whose dialog is open. A snapshot rather than an id: the
   // store drops a removed row optimistically, and the dialog has to stay up
@@ -152,7 +167,14 @@ export function SharedContainerSidebarSection({
       : [],
   });
 
-  if (!featureVisible) return null;
+  // The entry point asks whether this account can share. A notice needs only
+  // the rollout: the server keeps listing them for a recipient who left their
+  // last organization, and for that recipient they are all this section holds.
+  const noticesOnly =
+    !featureVisible &&
+    sharedContainersEnabled &&
+    ownerDepartureNotices.length > 0;
+  if (!featureVisible && !noticesOnly) return null;
   // Personal lists only the shares homed there (direct invitations and shares
   // accepted as direct), so it shows none of the section's failure states: a
   // listing failure or a reconnecting row would be about organization shares
@@ -165,6 +187,7 @@ export function SharedContainerSidebarSection({
     scopingContext?.kind === 'personal' &&
     viewableEntries.length === 0 &&
     pastSharesCount === 0 &&
+    ownerDepartureNotices.length === 0 &&
     dialogEntry === null
   ) {
     return null;
@@ -202,6 +225,7 @@ export function SharedContainerSidebarSection({
   if (
     viewableEntries.length === 0 &&
     pastSharesCount === 0 &&
+    ownerDepartureNotices.length === 0 &&
     dialogEntry === null &&
     !listFailed &&
     (!retrying || listStatus !== 'loading')
@@ -237,7 +261,7 @@ export function SharedContainerSidebarSection({
               expanded ? 'opacity-0' : '-rotate-90 opacity-100'
             }`}
           />
-          {invitations.length > 0 ? (
+          {!noticesOnly && invitations.length > 0 ? (
             // The header is the only place a newly arrived invitation can
             // announce itself. `sharedWithMeExpanded` is session-local state,
             // so a recipient who collapsed this section would otherwise see
@@ -260,104 +284,127 @@ export function SharedContainerSidebarSection({
         </div>
       }
     >
-      <SidebarList>
-        {/* `listFailed || retrying`: the section can now be mounted with no
+      {/* Listed in every context: a recipient may no longer belong to the
+          organization a notice came from, so no context would ever show it. */}
+      {ownerDepartureNotices.length > 0 && (
+        <SharedContainerOwnerDepartureNotices
+          presentation="row"
+          notices={ownerDepartureNotices}
+          onDismiss={(noticeId): void => {
+            void dismissOwnerDeparture(noticeId);
+          }}
+        />
+      )}
+      {failedDismissalId !== null && (
+        <SharedContainerOwnerDepartureFeedback
+          kind="dismiss"
+          retrying={false}
+          onRetry={(): void => {
+            void dismissOwnerDeparture(failedDismissalId);
+          }}
+        />
+      )}
+      {!noticesOnly && (
+        <SidebarList rowGap="hairline">
+          {/* `listFailed || retrying`: the section can now be mounted with no
             listed share (it holds only the Past shares row), where a merely
             loading listing is not a failure to report. */}
-        {listStatus !== 'success' &&
-        (listFailed || retrying) &&
-        (viewableEntries.length === 0 || unavailable) ? (
-          <li
-            data-testid={
-              unavailable
-                ? 'shared-container-list-unavailable'
-                : 'shared-container-list-error'
-            }
-            className={`grid h-8 grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-1.5 py-0 ${SIDEBAR_ROW_TEXT_INSET_CLASSNAME} pr-1 text-s fg-quaternary`}
-          >
-            <span
-              data-testid="shared-container-list-message"
-              className="min-w-0 truncate"
+          {listStatus !== 'success' &&
+          (listFailed || retrying) &&
+          (viewableEntries.length === 0 || unavailable) ? (
+            <li
+              data-testid={
+                unavailable
+                  ? 'shared-container-list-unavailable'
+                  : 'shared-container-list-error'
+              }
+              className={`grid h-8 grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-1.5 py-0 ${SIDEBAR_ROW_TEXT_INSET_CLASSNAME} pr-1 text-s fg-quaternary`}
             >
-              {retrying
-                ? 'Loading shared containers\u2026'
-                : unavailable
-                  ? 'Reconnecting to shared containers\u2026'
-                  : 'Could not load shared containers.'}
-            </span>
-            {unavailable ? (
-              // No Retry button: the store is already retrying on a backoff
-              // ladder, and a button next to copy that says it is reconnecting
-              // reads as the reconnect not working.
               <span
-                data-testid="shared-container-list-trailing"
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
+                data-testid="shared-container-list-message"
+                className="min-w-0 truncate"
               >
-                <LoadingSpinner sizePx={12} />
+                {retrying
+                  ? 'Loading shared containers\u2026'
+                  : unavailable
+                    ? 'Reconnecting to shared containers\u2026'
+                    : 'Could not load shared containers.'}
               </span>
-            ) : (
-              <RailIconButton
-                icon={RetryIcon}
-                data-testid="shared-container-list-retry"
-                aria-label="Try again"
-                tooltipLabel="Try again"
-                tone="secondary"
-                hoverSurface
-                disabled={retrying}
-                onClick={(): void => {
-                  setRetrying(true);
-                  // `.catch` BEFORE `.finally`: `.finally` re-throws, so a bare
-                  // `void load().finally(...)` turns any rejection into an
-                  // unhandled renderer rejection AND leaves `retrying` latched
-                  // true, permanently disabling this button. `loadSharedWithMe`
-                  // handles its own per-org failures, so a rejection here means
-                  // something structural (a missing bridge method) — the section
-                  // still shows its error row, which stays retryable.
-                  void loadSharedWithMe()
-                    .catch(() => undefined)
-                    .finally(() => setRetrying(false));
+              {unavailable ? (
+                // No Retry button: the store is already retrying on a backoff
+                // ladder, and a button next to copy that says it is reconnecting
+                // reads as the reconnect not working.
+                <span
+                  data-testid="shared-container-list-trailing"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
+                >
+                  <LoadingSpinner sizePx={12} />
+                </span>
+              ) : (
+                <RailIconButton
+                  icon={RetryIcon}
+                  data-testid="shared-container-list-retry"
+                  aria-label="Try again"
+                  tooltipLabel="Try again"
+                  tone="secondary"
+                  hoverSurface
+                  disabled={retrying}
+                  onClick={(): void => {
+                    setRetrying(true);
+                    // `.catch` BEFORE `.finally`: `.finally` re-throws, so a bare
+                    // `void load().finally(...)` turns any rejection into an
+                    // unhandled renderer rejection AND leaves `retrying` latched
+                    // true, permanently disabling this button. `loadSharedWithMe`
+                    // handles its own per-org failures, so a rejection here means
+                    // something structural (a missing bridge method) — the section
+                    // still shows its error row, which stays retryable.
+                    void loadSharedWithMe()
+                      .catch(() => undefined)
+                      .finally(() => setRetrying(false));
+                  }}
+                />
+              )}
+            </li>
+          ) : null}
+          {invitations.map((entry) => (
+            <li key={entry.container.id}>
+              <SharedContainerInvitationRow
+                entry={entry}
+                onOpen={(): void => {
+                  sectionToggleRef.current =
+                    document.querySelector<HTMLElement>(
+                      `[data-testid="${SECTION_TOGGLE_TEST_ID}"]`,
+                    );
+                  setDialogEntry(entry);
                 }}
               />
-            )}
-          </li>
-        ) : null}
-        {invitations.map((entry) => (
-          <li key={entry.container.id}>
-            <SharedContainerInvitationRow
-              entry={entry}
-              onOpen={(): void => {
-                sectionToggleRef.current = document.querySelector<HTMLElement>(
-                  `[data-testid="${SECTION_TOGGLE_TEST_ID}"]`,
-                );
-                setDialogEntry(entry);
-              }}
-            />
-          </li>
-        ))}
-        {acceptedEntries.map((entry) => (
-          <li key={entry.container.id}>
-            <SharedContainerAcceptedRow
-              entry={entry}
-              home={homeOf(entry)}
-              active={activeContainerId === entry.container.id}
-              onOpen={(): void => openAcceptedSharedContainer(entry)}
-            />
-          </li>
-        ))}
-        {pastSharesCount > 0 ? (
-          <li>
-            <SidebarOverviewNavLink
-              label="Past shares"
-              count={pastSharesCount}
-              selected={pastSharesOpen}
-              onOpen={openPastSharesSurface}
-              testId="sidebar-shared-with-me-past-shares"
-              size="row"
-            />
-          </li>
-        ) : null}
-      </SidebarList>
-      {dialogEntry !== null && (
+            </li>
+          ))}
+          {acceptedEntries.map((entry) => (
+            <li key={entry.container.id}>
+              <SharedContainerAcceptedRow
+                entry={entry}
+                home={homeOf(entry)}
+                active={activeContainerId === entry.container.id}
+                onOpen={(): void => openAcceptedSharedContainer(entry)}
+              />
+            </li>
+          ))}
+          {pastSharesCount > 0 ? (
+            <li>
+              <SidebarOverviewNavLink
+                label="Past shares"
+                count={pastSharesCount}
+                selected={pastSharesOpen}
+                onOpen={openPastSharesSurface}
+                testId="sidebar-shared-with-me-past-shares"
+                size="row"
+              />
+            </li>
+          ) : null}
+        </SidebarList>
+      )}
+      {!noticesOnly && dialogEntry !== null && (
         <SharedContainerInvitationDialogHost
           entry={dialogEntry}
           // Still a pending invitation: not accepted, not removed, and not
@@ -584,48 +631,41 @@ function SharedContainerAcceptedRow({
       // treats shared rows as unselectable, unlike every worktree row.
       data-sidebar-selected-item={active ? '' : undefined}
     >
-      <button
-        type="button"
+      <ListRow
         data-testid={`shared-container-row-${entry.container.id}`}
         aria-current={active}
+        selected={active}
         onClick={onOpen}
-        // The standard row grid and the selected/hover treatment `WorktreeRow`
-        // uses, so a shared container reads as one more selectable row. The
-        // leading slot stays reserved, which puts the title on the worktree
-        // title column; `pr-8` keeps room for the actions menu.
-        className={`flex w-full min-w-0 items-center ${SIDEBAR_ROW_GRID_CLASSNAME} rounded-row py-1 pr-8 text-left text-s ${
-          active ? 'bg-muted fg-primary' : 'fg-secondary hover:bg-subtle'
-        }`}
-      >
-        <span
-          aria-hidden="true"
-          // Two-line row: the slot belongs to the title line.
-          className={`${SIDEBAR_ROW_LEADING_SLOT_CLASSNAME} self-start`}
-          data-testid={`shared-container-row-${entry.container.id}-leading-slot`}
-        />
-        <span className="flex min-w-0 flex-1 flex-col">
+        icon={
           <span
-            className="truncate"
-            title={entry.container.title}
-            data-testid={`shared-container-row-${entry.container.id}-title`}
-          >
-            {entry.container.title}
-          </span>
-          {ownerLabel !== null && (
+            aria-hidden="true"
+            data-testid={`shared-container-row-${entry.container.id}-leading-slot`}
+          />
+        }
+        description={
+          ownerLabel !== null ? (
             <span
-              className="truncate text-xs fg-quaternary"
+              className="fg-quaternary"
               data-testid={`shared-container-owner-${entry.container.id}`}
             >
               {ownerLabel}
             </span>
-          )}
+          ) : undefined
+        }
+        trailing={
+          <Badge data-testid="shared-container-read-only-badge">
+            View only
+          </Badge>
+        }
+        actions={<SharedContainerRecipientActionsMenu entry={entry} />}
+      >
+        <span
+          title={entry.container.title}
+          data-testid={`shared-container-row-${entry.container.id}-title`}
+        >
+          {entry.container.title}
         </span>
-        {/* Read-only state the recipient reads, not a control: a quiet Badge. */}
-        <Badge data-testid="shared-container-read-only-badge">View only</Badge>
-      </button>
-      <div className="absolute right-1 top-1/2 -translate-y-1/2">
-        <SharedContainerRecipientActionsMenu entry={entry} />
-      </div>
+      </ListRow>
     </div>
   );
 }

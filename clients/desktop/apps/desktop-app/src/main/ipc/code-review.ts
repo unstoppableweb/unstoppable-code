@@ -18,6 +18,7 @@ import { validateId } from '../lib/validation';
 import {
   readCodeReviewState,
   saveCodeReviewComments,
+  skippedCommentThreadsField,
 } from '../lib/code-review-persistence';
 import {
   computeReviewFingerprint,
@@ -46,7 +47,11 @@ export function registerCodeReviewHandlers(
         listReviewRepos(request.projectId, request.worktreeId),
       ]);
       const fingerprint = await computeReviewFingerprint(repos);
-      return { review, fingerprint };
+      return {
+        review,
+        fingerprint,
+        ...skippedCommentThreadsField(request.projectId, request.worktreeId),
+      };
     },
   );
 
@@ -85,6 +90,7 @@ export function registerCodeReviewHandlers(
           worktreeId: request.worktreeId,
           fingerprint,
           review: updated,
+          ...skippedCommentThreadsField(request.projectId, request.worktreeId),
         };
         sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
       }

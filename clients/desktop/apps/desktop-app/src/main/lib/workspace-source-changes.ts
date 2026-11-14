@@ -95,10 +95,11 @@ const workspaceOutcomeSchema = projectOutcomeSchema.extend({
  * to the list read under the list lock, so rows written while it was checked
  * out keep their state; a failed apply removes the checkout and the row, as
  * before. Repository bindings that follow the applied `canopy.json` are
- * written in the background to the manifest read inside its write queue.
+ * written to the queued manifest before the invocation completes.
  * Refusals are {@link WorkspaceSourceChangesRefusedError}s with the existing
  * messages. Optional standalone revisions and retry keys record foreground
- * acceptance, not completion of background binding or repository setup.
+ * acceptance including binding publication, not completion of background
+ * repository setup.
  * The operation stays unregistered.
  */
 export function applySourceChanges(

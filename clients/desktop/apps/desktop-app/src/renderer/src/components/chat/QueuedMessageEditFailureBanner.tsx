@@ -29,6 +29,7 @@ export function QueuedMessageEditFailureBanner({
     return null;
   return (
     <DesktopErrorBanner
+      errorSource="queued-message-edit-error"
       className={className}
       testId="queued-message-edit-error"
       error={failure.error}

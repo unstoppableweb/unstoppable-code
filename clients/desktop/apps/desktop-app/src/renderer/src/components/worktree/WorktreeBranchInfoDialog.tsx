@@ -632,8 +632,7 @@ interface RepoBranchRowProps {
   onSwitchBranchClick: () => void;
   onRenameClick: () => void;
   onCopyClick: (e: MouseEvent<HTMLButtonElement>) => void;
-  onBranchSwitched: (newBranch: string) => void;
-  onBranchCreated: (newBranch: string, baseBranch: string) => void;
+  onBranchSwitched: () => void;
   onBaseBranchChange: (
     branchName: string,
     presence?: { existsLocally: boolean; existsInRemote: boolean },
@@ -662,7 +661,6 @@ function RepoBranchRow({
   onRenameClick,
   onCopyClick,
   onBranchSwitched,
-  onBranchCreated,
   onBaseBranchChange,
   onClosePicker,
 }: RepoBranchRowProps): JSX.Element {
@@ -731,10 +729,8 @@ function RepoBranchRow({
                 projectId={projectId}
                 worktreeId={worktreeId}
                 repoId={rb.repoId}
-                currentBranch={rb.branch}
                 baseBranch={rb.baseBranch}
                 onBranchSwitched={onBranchSwitched}
-                onBranchCreated={onBranchCreated}
                 onClose={onClosePicker}
               />
             </div>
@@ -1134,44 +1130,10 @@ export function WorktreeBranchInfoDialog({
     }
   }, [projectId, worktree.id]);
 
-  const handleBranchSwitched = useCallback(
-    async (newBranch: string, pickerRepoId?: string): Promise<void> => {
-      useProjectsStore
-        .getState()
-        .updateBranchName(projectId, worktree.id, newBranch, pickerRepoId);
-      // Do NOT clear tracked base on simple switch — preserve tracked base metadata.
-      await Promise.all([
-        useProjectsStore.getState().refreshDiffStats(),
-        refreshWorktreeActivity(projectId, worktree.id),
-      ]);
-      setBranchPickerOpen(null);
-    },
-    [projectId, worktree.id],
-  );
-
-  const handleBranchCreated = useCallback(
-    async (
-      newBranch: string,
-      newBaseBranch: string,
-      pickerRepoId?: string,
-    ): Promise<void> => {
-      useProjectsStore
-        .getState()
-        .updateBranchName(projectId, worktree.id, newBranch, pickerRepoId);
-      // Persist the selected base branch so diff stats use it.
-      await useProjectsStore
-        .getState()
-        .setTrackedBaseBranch(
-          projectId,
-          worktree.id,
-          newBaseBranch,
-          pickerRepoId,
-        );
-      await refreshWorktreeActivity(projectId, worktree.id);
-      setBranchPickerOpen(null);
-    },
-    [projectId, worktree.id],
-  );
+  const handleBranchSwitched = useCallback(async (): Promise<void> => {
+    await refreshWorktreeActivity(projectId, worktree.id);
+    setBranchPickerOpen(null);
+  }, [projectId, worktree.id]);
 
   const handleCopyBranch = useCallback(
     (
@@ -1557,18 +1519,8 @@ export function WorktreeBranchInfoDialog({
                     <BranchPicker
                       projectId={projectId}
                       worktreeId={worktree.id}
-                      currentBranch={worktree.branchName}
                       baseBranch={displayBaseBranch}
-                      onBranchSwitched={(newBranch) =>
-                        void handleBranchSwitched(newBranch, undefined)
-                      }
-                      onBranchCreated={(newBranch, newBaseBranch) =>
-                        void handleBranchCreated(
-                          newBranch,
-                          newBaseBranch,
-                          undefined,
-                        )
-                      }
+                      onBranchSwitched={() => void handleBranchSwitched()}
                       onClose={() => setBranchPickerOpen(null)}
                     />
                   </div>
@@ -1801,16 +1753,7 @@ export function WorktreeBranchInfoDialog({
                         onCopyClick={(e) =>
                           handleCopyBranch(rb.repoId, rb.branch, e)
                         }
-                        onBranchSwitched={(newBranch) =>
-                          void handleBranchSwitched(newBranch, rb.repoId)
-                        }
-                        onBranchCreated={(newBranch, newBaseBranch) =>
-                          void handleBranchCreated(
-                            newBranch,
-                            newBaseBranch,
-                            rb.repoId,
-                          )
-                        }
+                        onBranchSwitched={() => void handleBranchSwitched()}
                         onBaseBranchChange={(branchName, presence) => {
                           void (async (): Promise<void> => {
                             await useProjectsStore

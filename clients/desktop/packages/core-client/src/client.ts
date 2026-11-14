@@ -82,6 +82,7 @@ interface CallOptions {
   readonly metadata?: object;
   readonly signal?: AbortSignal;
   readonly execution?: object;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 interface PendingCall {
   respond(response: Response): void;
@@ -89,6 +90,7 @@ interface PendingCall {
 }
 interface RequestSpec<T> {
   readonly signal?: AbortSignal;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly deadlineAt?: number;
   readonly definition?: Definition;
   accept(response: Response): T;
@@ -544,12 +546,15 @@ class ClientSession {
           abandon(local(deadlineExceeded())),
         );
       this.connection
-        .send({
-          jsonrpc: CANOPY_JSON_RPC_VERSION,
-          id,
-          method: name.data,
-          params,
-        })
+        .send(
+          {
+            jsonrpc: CANOPY_JSON_RPC_VERSION,
+            id,
+            method: name.data,
+            params,
+          },
+          spec.headers === undefined ? undefined : { headers: spec.headers },
+        )
         .catch((error: unknown) => {
           const failure = toCanopyClientError(error);
           // A cancelled send may have delivered the request before failing.
@@ -576,6 +581,7 @@ class ClientSession {
     const prepared = this.prepare(kind, definition, name, params, options);
     return this.request(name, prepared.params, {
       ...prepared,
+      ...(options.headers === undefined ? {} : { headers: options.headers }),
       accept: (response) => {
         if ('error' in response)
           throw this.operationError(prepared.definition, response.error);

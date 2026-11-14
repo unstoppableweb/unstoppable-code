@@ -281,6 +281,13 @@ export function createElectronExecutionRuntime(
         ).runDesktopCopilotPipelinePrompt(request);
       },
     },
+    antigravityPromptRunner: {
+      async runAntigravityPrompt(request) {
+        return (
+          await import('./antigravity-prompt-runner')
+        ).runDesktopAntigravityPipelinePrompt(request);
+      },
+    },
     opencodePromptRunner: {
       async runOpenCodePrompt(request) {
         return (

@@ -169,6 +169,8 @@ function stripForkLifecycleState(
   delete tab.unreadMarkedManually;
   delete tab.codexReconstructionSeedId;
   delete tab.claudeTerminal;
+  // The source chat's parked provider sessions stay its own (CAN-6445).
+  delete tab.providerSessions;
   if (options.stripApprovalState) {
     delete tab.approvalMode;
     delete tab.sessionApprovalRules;

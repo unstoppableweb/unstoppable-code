@@ -4,6 +4,16 @@ import type {
   QueuedMessageWaitingReason,
 } from '@canopy/protocol/portal';
 
+/** The desktop queue marks every row behind its credit hold as retryable. */
+export function isCreditHeldQueuedMessage(row: {
+  readonly retryable?: boolean;
+  readonly retryBlockedReason?: QueuedMessageRetryBlockedReason;
+}): boolean {
+  return (
+    row.retryable === true || row.retryBlockedReason === 'insufficient_credits'
+  );
+}
+
 /** What a queued row's force action means; each maps to one strip callback. */
 export type QueuedMessageForceKind = 'interrupt' | 'retry' | 'run-now';
 

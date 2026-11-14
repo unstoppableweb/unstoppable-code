@@ -147,7 +147,14 @@ export function AccountMcpCredentialDialog({
             )}
           </FormField>
         )}
-        {error && <Notice intent="destructive">{error}</Notice>}
+        {error && (
+          <Notice
+            errorSource="account-mcp-credential-dialog"
+            intent="destructive"
+          >
+            {error}
+          </Notice>
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
             Cancel

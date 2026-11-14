@@ -87,7 +87,7 @@ const W5_NAMESPACES = [
   'workspace_manifest',
   'worktree_list',
 ];
-const WORKER = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+const WORKER = join(__dirname, 'fixtures/w5-commit-log-source-worker.ts');
 
 let dir: string;
 let root: string;

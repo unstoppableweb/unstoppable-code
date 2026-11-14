@@ -59,6 +59,7 @@ type WorkerQueryHandlers = Pick<
   | 'worker.git.diff.get'
   | 'worker.script.execution.get'
   | 'worker.script.execution.list'
+  | 'worker.script.execution.groupMembers'
   | 'worker.pipeline.execution.get'
   | 'worker.pipeline.execution.list'
   | 'worker.codeGraph.buildQueue.get'
@@ -108,6 +109,9 @@ function handlers(
       throw new Error('Not exercised.');
     },
     'worker.script.execution.list': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.script.execution.groupMembers': (): never => {
       throw new Error('Not exercised.');
     },
     'worker.pipeline.execution.get': (): never => {

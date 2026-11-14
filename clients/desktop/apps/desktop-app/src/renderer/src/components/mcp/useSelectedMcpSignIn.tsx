@@ -870,7 +870,11 @@ export function useSelectedMcpSignIn({
                   your browser. This task uses that sign-in on this desktop; web
                   chats aren’t affected.
                 </p>
-                <ErrorBanner error={actionError} className="" />
+                <ErrorBanner
+                  errorSource="use-selected-mcp-sign-in-action"
+                  error={actionError}
+                  className=""
+                />
               </Stack>
               <div className="flex justify-end gap-2">
                 <>
@@ -901,6 +905,7 @@ export function useSelectedMcpSignIn({
     notice:
       catalogBlocksConnect || connectionsBlockConnect ? (
         <Notice
+          errorSource="mcp-sign-in-strip-load-error"
           intent="destructive"
           role="status"
           className=""
@@ -924,6 +929,7 @@ export function useSelectedMcpSignIn({
           data-testid="mcp-sign-in-strip-error"
         >
           <ErrorBanner
+            errorSource="use-selected-mcp-sign-in"
             error={error}
             className=""
             retryLabel="Try again"

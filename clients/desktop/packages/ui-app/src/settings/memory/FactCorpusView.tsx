@@ -437,6 +437,7 @@ export function FactCorpusView({
 
           {error !== null && (
             <ErrorBanner
+              errorSource="fact-corpus"
               className=""
               error={error.copy}
               details={error.details}

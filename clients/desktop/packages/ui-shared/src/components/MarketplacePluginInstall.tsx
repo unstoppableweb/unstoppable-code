@@ -113,7 +113,13 @@ export function PluginInstallStatusCell({
         <DownloadIcon />
       </Button>
     );
-    return error ? <Tooltip label={error}>{button}</Tooltip> : button;
+    return error ? (
+      <Tooltip label={error} clamp={false}>
+        {button}
+      </Tooltip>
+    ) : (
+      button
+    );
   }
 
   return (

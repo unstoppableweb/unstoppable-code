@@ -5,11 +5,13 @@ import {
   REMOTE_EVENTS,
   REMOTE_METHODS,
   REMOTE_PROTOCOL_MISMATCH_CODE,
+  REMOTE_PROTOCOL_VERSION,
   RemoteTransportDisconnectedError,
   SessionEndedParamsSchema,
   UNKNOWN_METHOD_CODE,
   UnknownRemoteMethodError,
   UploadPutResultSchema,
+  WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
   unknownMethodMessage,
   type ControllerKind,
   type HelloParams,
@@ -31,7 +33,7 @@ import type { RemoteSessionManager, SecureSession } from './session-manager';
 /** How this controller identifies itself in `session.hello`. */
 export interface ControllerProfile {
   kind: ControllerKind;
-  /** This build's version; `protocolVersion` is normally 17. */
+  /** This build's version; `protocolVersion` is its `REMOTE_PROTOCOL_VERSION`. */
   version: RemoteVersion;
   /**
    * Oldest host protocol this controller accepts. Restricted kinds (browser,
@@ -39,6 +41,24 @@ export interface ControllerProfile {
    * controller profiles; desktop controllers require an exact match.
    */
   minVersion: number;
+}
+
+/**
+ * The hello profile of a web controller: a browser tab, or the hosted agent
+ * the web server runs for MCP Remote Control. It reports this build's
+ * protocol and accepts any host from `WEB_CONTROLLER_MIN_PROTOCOL_VERSION`
+ * up, so a desktop a release behind the web stays controllable. Host
+ * features are checked separately (`assertHostSupportsController`).
+ */
+export function webControllerProfile(
+  kind: Extract<ControllerKind, 'browser' | 'hosted'>,
+  appVersion: string,
+): ControllerProfile {
+  return {
+    kind,
+    version: { protocolVersion: REMOTE_PROTOCOL_VERSION, appVersion },
+    minVersion: WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
+  };
 }
 
 /** Host security features this controller will rely on for a session. */

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import type {
   CreateTrackedPlanRequest,
   DataModelDiffDiagram,
@@ -15,6 +14,7 @@ import type {
   WirePlanComment,
   WirePlanCommentThread,
   TrackedPlanData,
+  TrackedPlanListWithSkippedResult,
   TrackedPlansFile,
   TrackedPlanReviewStatus,
   TrackedPlanRevisionData,
@@ -22,6 +22,7 @@ import type {
   TrackedPlanShareSyncStatus,
   TrackedPlanSource,
   UpdateTrackedPlanRequest,
+  UsageInitiationSource,
   UsageMetricProvider,
 } from '@canopy/desktop-shared/types';
 import {
@@ -31,35 +32,29 @@ import {
   isPlanDiagramArtifacts,
   isPlanCommentThreadArray,
 } from '@canopy/desktop-shared/types';
-import { derivePlanTitle } from '@canopy/protocol/plans';
+import {
+  createPlanEngine,
+  removePlanState,
+  withPlanStateLock,
+  writePlanStateText,
+  type PlanCommit,
+  type PlanScopeIds,
+  type StoredPlan,
+} from '@canopy/core-runtime/node/plans';
+import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import { resolveTrackedPlansFilePath } from './resolve-worktree';
 import { getPlanExplorePlanFilePath } from './paths';
 import { isRecord } from './type-guards';
+import { logMainProcessWarn } from './main-process-logging';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 
 /**
- * Per-file write queue that serializes read-modify-write operations on the same
- * tracked-plans file to prevent concurrent writes from silently dropping data.
+ * Serializes read-modify-write operations on one tracked-plans file, so
+ * concurrent writes cannot silently drop data. The lock and the atomic file
+ * replacement are the core-runtime plan state file's (CAN-4165), the one
+ * writer of this store.
  */
-const writeLocks = new Map<string, Promise<void>>();
-
-async function withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const prev = writeLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const next = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  writeLocks.set(key, next);
-  await prev;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (writeLocks.get(key) === next) {
-      writeLocks.delete(key);
-    }
-  }
-}
+const withFileLock = withPlanStateLock;
 
 /**
  * Dependency-inverted hook fired when a tracked plan's content is created or
@@ -176,6 +171,7 @@ function isTrackedPlanReviewStatus(
 
 function isTrackedPlanSource(value: unknown): value is TrackedPlanSource {
   return (
+    value === 'copilot' ||
     value === 'claude' ||
     value === 'codex' ||
     value === 'opencode' ||
@@ -369,13 +365,12 @@ async function writeTrackedPlansFile(
 ): Promise<void> {
   const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
   if (file.plans.length === 0) {
-    await rm(filePath, { force: true });
+    await removePlanState(filePath);
     emitTrackedPlansWrite(projectId, worktreeId, file);
     return;
   }
 
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(file, null, 2), 'utf8');
+  await writePlanStateText(filePath, JSON.stringify(file, null, 2));
   emitTrackedPlansWrite(projectId, worktreeId, file);
 }
 
@@ -635,21 +630,6 @@ export async function applyRemoteSharedPlanComments(
   });
 }
 
-function linkExecutionIds(
-  current: string[],
-  linkedExecutionId: string | undefined,
-): string[] {
-  if (!linkedExecutionId) {
-    return current;
-  }
-
-  if (current.includes(linkedExecutionId)) {
-    return current;
-  }
-
-  return [...current, linkedExecutionId];
-}
-
 function getPlanLineCount(content: string): number {
   return content.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
 }
@@ -703,14 +683,134 @@ function recordPlanUsageEvent(
   );
 }
 
+/** A stored plan desktop can type; any other plan is left out of reads. */
+function toTrackedPlan(plan: StoredPlan | null): TrackedPlanData | null {
+  return plan && isTrackedPlanData(plan) ? plan : null;
+}
+
+function usageRequest(
+  input: { chatId?: string; initiationSource?: string } | undefined,
+): { chatId?: string; initiationSource?: UsageInitiationSource } {
+  const initiationSource = input?.initiationSource;
+  return {
+    chatId: input?.chatId,
+    ...(isUsageInitiationSource(initiationSource) ? { initiationSource } : {}),
+  };
+}
+
+/**
+ * Usage events and listeners for a committed lifecycle write, in the order
+ * they always ran: under the file's lock, after the write is durable.
+ */
+function announceTrackedPlanCommit(
+  scope: PlanScopeIds,
+  plans: readonly StoredPlan[],
+  commit: PlanCommit,
+  input: { chatId?: string; initiationSource?: string } | undefined,
+): void {
+  emitTrackedPlansWrite(scope.projectId, scope.worktreeId, {
+    version: 1,
+    plans: plans.filter((plan) => isTrackedPlanData(plan)),
+  });
+  const request = usageRequest(input);
+  if (commit.kind === 'created') {
+    const plan = toTrackedPlan(commit.plan);
+    if (!plan) return;
+    recordPlanUsageEvent('plan_created', plan, request);
+    emitPlanContentChange(plan);
+    emitPlanShareChange(plan);
+    return;
+  }
+  if (commit.kind !== 'updated') return;
+  const existing = toTrackedPlan(commit.previous);
+  const updated = toTrackedPlan(commit.plan);
+  if (!existing || !updated) return;
+  const contentChanged =
+    updated.latestRevisionNumber > existing.latestRevisionNumber;
+  const becameApproved =
+    existing.reviewStatus !== 'approved' && updated.reviewStatus === 'approved';
+  if (
+    contentChanged &&
+    updated.reviewStatus !== 'dismissed' &&
+    (updated.reviewStatus !== 'approved' || becameApproved)
+  ) {
+    recordPlanUsageEvent('plan_updated', updated, request);
+  }
+  if (becameApproved) {
+    recordPlanUsageEvent('plan_approved', updated, request);
+  }
+  if (contentChanged) {
+    emitPlanContentChange(updated);
+  }
+  const shareRelevantChanged =
+    existing.title !== updated.title ||
+    existing.content !== updated.content ||
+    existing.source !== updated.source ||
+    existing.reviewStatus !== updated.reviewStatus ||
+    existing.latestRevisionNumber !== updated.latestRevisionNumber ||
+    // Linking an execution changes the derived "implementation started" signal
+    // (telemetry maps linkedExecutionIds.length > 0 to implementationStartedAt),
+    // so a new linked execution must propagate to the shared/synced plan.
+    existing.linkedExecutionIds.length !== updated.linkedExecutionIds.length;
+  if (shareRelevantChanged) {
+    emitPlanShareChange(updated);
+  }
+}
+
+/**
+ * The tracked-plan lifecycle (CAN-4165): the core-runtime plan engine, over
+ * the same state file, lock and atomic writes as the rest of this module.
+ * Comment threads and diagrams stay desktop's until CAN-4166 and CAN-4167
+ * move them; the engine carries them and this host updates them when the
+ * content changes.
+ */
+const trackedPlanEngine = createPlanEngine({
+  statePath: ({ projectId, worktreeId }) =>
+    resolveTrackedPlansFilePath(projectId, worktreeId),
+  onContentChange: (plan) => ({
+    ...plan,
+    ...(isPlanDiagramArtifacts(plan.diagrams)
+      ? { diagrams: markDiagramsStale(plan.diagrams) }
+      : {}),
+    ...(isPlanCommentThreadArray(plan.commentThreads)
+      ? {
+          commentThreads: reevaluateCommentAnchors(
+            plan.commentThreads,
+            plan.content,
+          ),
+        }
+      : {}),
+  }),
+  onSkippedRecords: ({ projectId, worktreeId }, skipped) =>
+    logMainProcessWarn(
+      `[tracked-plans] skipped ${skipped} unreadable plan record${skipped === 1 ? '' : 's'}`,
+      { projectId, worktreeId, skipped },
+    ),
+  afterCommit: announceTrackedPlanCommit,
+});
+
 export async function listTrackedPlans(
   projectId: string,
   worktreeId: string,
 ): Promise<TrackedPlanData[]> {
-  const file = await readTrackedPlansFile(projectId, worktreeId);
-  return [...file.plans].sort((left, right) =>
-    right.updatedAt.localeCompare(left.updatedAt),
-  );
+  return (await listTrackedPlansWithSkipped(projectId, worktreeId)).plans;
+}
+
+/**
+ * The worktree's plans, counting the stored records left out: those the
+ * engine couldn't read and those desktop can't type (CAN-6666).
+ */
+export async function listTrackedPlansWithSkipped(
+  projectId: string,
+  worktreeId: string,
+): Promise<TrackedPlanListWithSkippedResult> {
+  const read = await trackedPlanEngine.listWithSkipped({
+    projectId,
+    worktreeId,
+  });
+  const plans = read.plans.filter((plan) => isTrackedPlanData(plan));
+  const skipped = read.skipped + read.plans.length - plans.length;
+  return skipped > 0 ? { plans, skipped } : { plans };
 }
 
 export async function getTrackedPlan(
@@ -718,169 +818,37 @@ export async function getTrackedPlan(
   worktreeId: string,
   planId: string,
 ): Promise<TrackedPlanData | null> {
-  const file = await readTrackedPlansFile(projectId, worktreeId);
-  return file.plans.find((plan) => plan.id === planId) ?? null;
-}
-
-function validateProposalRequestId(value: string | undefined): void {
-  if (
-    value !== undefined &&
-    (typeof value !== 'string' || !value.trim() || value.length > 256)
-  )
-    throw new Error('The proposal request identity is invalid.');
-}
-
-function assertProposalReplay(
-  plan: TrackedPlanData,
-  requestId: string,
-  content: string | undefined,
-  source: TrackedPlanSource,
-): void {
-  const revision = plan.revisions.find(
-    (entry) => entry.proposalRequestId === requestId,
+  return toTrackedPlan(
+    await trackedPlanEngine.get({ projectId, worktreeId }, planId),
   );
-  if (!revision || revision.content !== content || revision.source !== source)
-    throw new Error(
-      'This proposal request was already used for different plan content.',
-    );
+}
+
+function storedTrackedPlan(plan: StoredPlan): TrackedPlanData {
+  const tracked = toTrackedPlan(plan);
+  if (!tracked) throw new Error('The stored plan could not be read.');
+  return tracked;
 }
 
 export async function createTrackedPlan(
   request: CreateTrackedPlanRequest,
 ): Promise<TrackedPlanData> {
-  validateProposalRequestId(request.proposalRequestId);
-  const proposalChatId =
-    request.source === 'cursor' && request.proposalRequestId && !request.id
-      ? request.chatId
-      : undefined;
-  if (
-    proposalChatId !== undefined &&
-    (typeof proposalChatId !== 'string' ||
-      proposalChatId.length === 0 ||
-      proposalChatId.length > 256)
-  ) {
-    throw new Error('Invalid proposal chat identity.');
-  }
-  const filePath = resolveTrackedPlansFilePath(
-    request.projectId,
-    request.worktreeId,
-  );
-  const result = await withFileLock<
-    TrackedPlanData | { pendingPlanId: string }
-  >(filePath, async () => {
-    const file = await readTrackedPlansFile(
-      request.projectId,
-      request.worktreeId,
-    );
-
-    if (request.proposalRequestId) {
-      const replay = file.plans.find((plan) =>
-        plan.revisions.some(
-          (revision) =>
-            revision.proposalRequestId === request.proposalRequestId,
-        ),
-      );
-      if (replay) {
-        assertProposalReplay(
-          replay,
-          request.proposalRequestId,
-          request.content,
-          request.source,
-        );
-        return replay;
-      }
-    }
-
-    // Idempotent when an explicit id is supplied: if a plan with that id
-    // already exists, return it unchanged rather than creating a duplicate.
-    if (request.id) {
-      const existing = file.plans.find((plan) => plan.id === request.id);
-      if (existing) {
-        return existing;
-      }
-    }
-
-    if (proposalChatId && (request.reviewStatus ?? 'pending') === 'pending') {
-      const pending = file.plans.filter(
-        (plan) =>
-          plan.source === 'cursor' &&
-          plan.proposalChatId === proposalChatId &&
-          plan.reviewStatus === 'pending',
-      );
-      if (pending.length > 1)
-        throw new Error('Multiple pending plans match this proposal chat.');
-      const [existing] = pending;
-      if (existing) return { pendingPlanId: existing.id };
-    }
-
-    const now = new Date().toISOString();
-    const reviewStatus = request.reviewStatus ?? 'pending';
-    const plan: TrackedPlanData = {
-      id: request.id ?? randomUUID(),
+  return storedTrackedPlan(
+    await trackedPlanEngine.create({
       projectId: request.projectId,
       worktreeId: request.worktreeId,
-      source: request.source,
-      ...(proposalChatId ? { proposalChatId } : {}),
-      title: request.title?.trim() || derivePlanTitle(request.content),
-      content: request.content,
-      reviewStatus,
-      createdAt: now,
-      updatedAt: now,
-      latestRevisionNumber: 1,
-      ...(reviewStatus === 'approved' ? { approvedAt: now } : {}),
-      ...(reviewStatus === 'dismissed' ? { dismissedAt: now } : {}),
-      revisions: [
-        {
-          ...(request.proposalRequestId
-            ? { proposalRequestId: request.proposalRequestId }
-            : {}),
-          revisionNumber: 1,
-          content: request.content,
-          source: request.source,
-          reviewStatus,
-          createdAt: now,
-          ...(reviewStatus === 'approved' ? { approvedAt: now } : {}),
-          ...(reviewStatus === 'dismissed' ? { dismissedAt: now } : {}),
-        },
-      ],
-      linkedExecutionIds: request.linkedExecutionId
-        ? [request.linkedExecutionId]
-        : [],
-      ...(request.sourceFilePath
-        ? { sourceFilePath: request.sourceFilePath }
-        : {}),
-      ...(request.sourceRepoId ? { sourceRepoId: request.sourceRepoId } : {}),
-    };
-
-    file.plans = [plan, ...file.plans];
-    await writeTrackedPlansFile(request.projectId, request.worktreeId, file);
-    recordPlanUsageEvent('plan_created', plan, request);
-    emitPlanContentChange(plan);
-    emitPlanShareChange(plan);
-    return plan;
-  });
-  if ('pendingPlanId' in result) {
-    // Release the creation lock before the existing revision writer takes it.
-    // The persisted association survives a failed update or renderer reload.
-    const updated = await updateTrackedPlan({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      planId: result.pendingPlanId,
-      proposalRequestId: request.proposalRequestId,
       source: request.source,
       content: request.content,
       title: request.title,
-      reviewStatus: 'pending',
-      approvedAt: null,
-      dismissedAt: null,
+      id: request.id,
+      proposalRequestId: request.proposalRequestId,
+      reviewStatus: request.reviewStatus,
+      linkedExecutionId: request.linkedExecutionId,
       chatId: request.chatId,
       initiationSource: request.initiationSource,
-    });
-    if (!updated)
-      throw new Error('The pending proposal plan is no longer available.');
-    return updated;
-  }
-  return result;
+      sourceFilePath: request.sourceFilePath,
+      sourceRepoId: request.sourceRepoId,
+    }),
+  );
 }
 
 /** Keep the reviewed revision stable until its implementation message commits. */
@@ -944,168 +912,27 @@ export async function updateTrackedPlan(
     source: TrackedPlanData['source'];
   },
 ): Promise<TrackedPlanData | null> {
-  validateProposalRequestId(request.proposalRequestId);
-  if (request.proposalRequestId && request.content === undefined)
-    throw new Error('A proposal revision requires plan content.');
-  const filePath = resolveTrackedPlansFilePath(
-    request.projectId,
-    request.worktreeId,
+  const plan = await trackedPlanEngine.update(
+    {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+      planId: request.planId,
+      proposalRequestId: request.proposalRequestId,
+      content: request.content,
+      title: request.title,
+      source: request.source,
+      reviewStatus: request.reviewStatus,
+      linkedExecutionId: request.linkedExecutionId,
+      approvedAt: request.approvedAt,
+      dismissedAt: request.dismissedAt,
+      hidden: request.hidden,
+      chatId: request.chatId,
+      initiationSource: request.initiationSource,
+      lastEditSource: request.lastEditSource,
+    },
+    guard,
   );
-  return withFileLock(filePath, async () => {
-    const file = await readTrackedPlansFile(
-      request.projectId,
-      request.worktreeId,
-    );
-    const existing = file.plans.find((plan) => plan.id === request.planId);
-    if (
-      !existing ||
-      (guard &&
-        (existing.latestRevisionNumber !== guard.revisionNumber ||
-          existing.source !== guard.source))
-    ) {
-      return null;
-    }
-
-    if (
-      request.proposalRequestId &&
-      existing.revisions.some(
-        (revision) => revision.proposalRequestId === request.proposalRequestId,
-      )
-    ) {
-      assertProposalReplay(
-        existing,
-        request.proposalRequestId,
-        request.content,
-        request.source ?? existing.source,
-      );
-      return existing;
-    }
-
-    const nextUpdatedAt = new Date().toISOString();
-    const contentChanged = request.content !== undefined;
-    const nextTitle =
-      request.title?.trim() ||
-      (contentChanged
-        ? derivePlanTitle(request.content ?? existing.content)
-        : existing.title);
-    const nextSource = request.source ?? existing.source;
-    const nextReviewStatus = request.reviewStatus ?? existing.reviewStatus;
-    const nextContent = request.content ?? existing.content;
-    const nextRevisionNumber = contentChanged
-      ? existing.latestRevisionNumber + 1
-      : existing.latestRevisionNumber;
-    const preserveExistingApprovedAt =
-      request.approvedAt !== null &&
-      existing.reviewStatus === 'approved' &&
-      nextReviewStatus === 'approved' &&
-      existing.approvedAt !== undefined;
-    const nextApprovedAt =
-      request.approvedAt === null
-        ? undefined
-        : preserveExistingApprovedAt
-          ? existing.approvedAt
-          : (request.approvedAt ?? existing.approvedAt);
-    const nextDismissedAt =
-      request.dismissedAt === null
-        ? undefined
-        : (request.dismissedAt ?? existing.dismissedAt);
-
-    const revisions = contentChanged
-      ? [
-          ...existing.revisions,
-          {
-            ...(request.proposalRequestId
-              ? { proposalRequestId: request.proposalRequestId }
-              : {}),
-            revisionNumber: nextRevisionNumber,
-            content: nextContent,
-            source: nextSource,
-            reviewStatus: nextReviewStatus,
-            createdAt: nextUpdatedAt,
-            ...(nextApprovedAt ? { approvedAt: nextApprovedAt } : {}),
-            ...(nextDismissedAt ? { dismissedAt: nextDismissedAt } : {}),
-          },
-        ]
-      : existing.revisions;
-
-    const nextHidden =
-      request.hidden !== undefined ? request.hidden : existing.hidden;
-
-    const nextDiagrams = contentChanged
-      ? markDiagramsStale(existing.diagrams)
-      : existing.diagrams;
-
-    // Re-evaluate each comment thread's anchor state only when the plan content
-    // changed; non-content updates must leave comment threads untouched.
-    const nextCommentThreads = contentChanged
-      ? reevaluateCommentAnchors(existing.commentThreads, nextContent)
-      : existing.commentThreads;
-
-    const updated: TrackedPlanData = {
-      ...existing,
-      source: nextSource,
-      title: nextTitle,
-      content: nextContent,
-      reviewStatus: nextReviewStatus,
-      updatedAt: nextUpdatedAt,
-      latestRevisionNumber: nextRevisionNumber,
-      revisions,
-      linkedExecutionIds: linkExecutionIds(
-        existing.linkedExecutionIds,
-        request.linkedExecutionId,
-      ),
-      ...(nextApprovedAt ? { approvedAt: nextApprovedAt } : {}),
-      ...(nextDismissedAt ? { dismissedAt: nextDismissedAt } : {}),
-      ...(nextHidden !== undefined ? { hidden: nextHidden } : {}),
-      ...(nextDiagrams ? { diagrams: nextDiagrams } : {}),
-      ...(nextCommentThreads ? { commentThreads: nextCommentThreads } : {}),
-      ...(request.lastEditSource
-        ? { lastEditSource: request.lastEditSource }
-        : {}),
-    };
-
-    if (!nextApprovedAt) {
-      delete updated.approvedAt;
-    }
-    if (!nextDismissedAt) {
-      delete updated.dismissedAt;
-    }
-
-    file.plans = file.plans.map((plan) =>
-      plan.id === request.planId ? updated : plan,
-    );
-    await writeTrackedPlansFile(request.projectId, request.worktreeId, file);
-    const becameApproved =
-      existing.reviewStatus !== 'approved' &&
-      updated.reviewStatus === 'approved';
-    if (
-      updated.latestRevisionNumber > existing.latestRevisionNumber &&
-      updated.reviewStatus !== 'dismissed' &&
-      (updated.reviewStatus !== 'approved' || becameApproved)
-    ) {
-      recordPlanUsageEvent('plan_updated', updated, request);
-    }
-    if (becameApproved) {
-      recordPlanUsageEvent('plan_approved', updated, request);
-    }
-    if (contentChanged) {
-      emitPlanContentChange(updated);
-    }
-    const shareRelevantChanged =
-      existing.title !== updated.title ||
-      existing.content !== updated.content ||
-      existing.source !== updated.source ||
-      existing.reviewStatus !== updated.reviewStatus ||
-      existing.latestRevisionNumber !== updated.latestRevisionNumber ||
-      // Linking an execution changes the derived "implementation started" signal
-      // (telemetry maps linkedExecutionIds.length > 0 to implementationStartedAt),
-      // so a new linked execution must propagate to the shared/synced plan.
-      existing.linkedExecutionIds.length !== updated.linkedExecutionIds.length;
-    if (shareRelevantChanged) {
-      emitPlanShareChange(updated);
-    }
-    return updated;
-  });
+  return plan ? storedTrackedPlan(plan) : null;
 }
 
 export async function setTrackedPlanShareState(
@@ -1676,19 +1503,7 @@ export async function deleteTrackedPlan(
   worktreeId: string,
   planId: string,
 ): Promise<void> {
-  const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
-  return withFileLock(filePath, async () => {
-    const file = await readTrackedPlansFile(projectId, worktreeId);
-    const nextPlans = file.plans.filter((plan) => plan.id !== planId);
-    if (nextPlans.length === file.plans.length) {
-      return;
-    }
-
-    await writeTrackedPlansFile(projectId, worktreeId, {
-      version: 1,
-      plans: nextPlans,
-    });
-  });
+  await trackedPlanEngine.delete({ projectId, worktreeId }, planId);
 }
 
 export async function deleteTrackedPlansForWorktree(
@@ -1696,7 +1511,8 @@ export async function deleteTrackedPlansForWorktree(
   worktreeId: string,
 ): Promise<void> {
   const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
-  await rm(filePath, { force: true });
+  // Under the lock, so a write in flight cannot recreate the file after it.
+  await withFileLock(filePath, () => removePlanState(filePath));
 }
 
 /**

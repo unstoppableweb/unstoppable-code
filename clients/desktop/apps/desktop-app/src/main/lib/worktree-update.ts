@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { decodeW5WorktreeUpdateOutcome } from '@canopy/core-runtime/node/w5/worktree-outcome';
-import { getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import { withW5Commit } from './w5-commit-log-file-store';
 import {
   checkW5ExpectedRevision,
@@ -476,7 +476,7 @@ export async function updateWorktree(
         {
           ...options,
           locks: [
-            { kind: 'list', path: getWorkspaceWorktreesFilePath(workspaceId) },
+            { kind: 'list', path: w5RecordReadPaths.worktrees(workspaceId) },
           ],
           expectedRevisions: w5ExpectedRevision(
             { kind: 'worktree', workspaceId, worktreeId },
@@ -556,7 +556,7 @@ export async function moveWorktree(
         {
           ...options,
           locks: [
-            { kind: 'list', path: getWorkspaceWorktreesFilePath(workspaceId) },
+            { kind: 'list', path: w5RecordReadPaths.worktrees(workspaceId) },
           ],
           expectedRevisions: w5ExpectedRevision(
             { kind: 'worktrees', workspaceId },

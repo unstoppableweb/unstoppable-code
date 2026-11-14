@@ -89,6 +89,13 @@
       "class": "direct",
       "note": "Lucide layout-grid, 2px stroke. The model picker's All models tab; rail glyphs render at 18px. Filled silhouette state."
     },
+    "antigravity": {
+      "source": "repo",
+      "name": "AntigravityLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Official Antigravity one-color mark from https://antigravity.google/press, retrieved 2026-11-11. Original path and viewBox, with theme-aware ink. Google model vendors keep the separate Google mark."
+    },
     "apple": {
       "source": "simple-icons",
       "name": "apple",
@@ -969,6 +976,14 @@
       "inset": 1.5,
       "note": "Official GitHub Octicon (mark-github-24), inset 1.5. Replaces the repository GitHubMarkIcon. GitHub logo used per https://github.com/logos."
     },
+    "google": {
+      "source": "simple-icons",
+      "name": "google",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Google mark (Simple Icons, CC0-1.0) for Google model vendors. Inset 2 keeps the full 24-unit artwork inside the shared 20-unit live area."
+    },
     "globe": {
       "source": "lucide",
       "name": "globe",
@@ -1109,6 +1124,14 @@
       "fill": 0,
       "class": "identity",
       "note": "Repository logo; path data from simple-icons 11.0.0 (CC0-1.0), which later releases removed. CAN-447 download confirmation cards."
+    },
+    "linux": {
+      "source": "simple-icons",
+      "name": "linux",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Linux platform mark (Simple Icons, CC0-1.0), owner-selected for CAN-5910. Inset 2 matches the Apple platform mark's live area."
     },
     "listAdd": {
       "source": "lucide",

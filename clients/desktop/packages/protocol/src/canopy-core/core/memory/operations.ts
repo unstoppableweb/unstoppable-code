@@ -30,7 +30,7 @@ export type MemoryScopeKind = z.output<typeof MemoryScopeKindSchema>;
 /** The calling chat's place; the core resolves the project's memory policy from it. */
 const CallerScopeSchema = CanopyWorkspaceScopeSchema;
 
-/** A memory file within its scope: `MEMORY.md`, `topics/<name>.md` or `inbox/<name>.md`. */
+/** A live memory file or an archived note/import key returned by search. */
 const FileKeySchema = z.string().min(1).max(512);
 
 export const MemoryEntryAppendParamsSchema = z.strictObject({
@@ -85,6 +85,55 @@ export const MemoryEntryGetResultSchema = z.strictObject({
   content: z.string(),
 });
 
+/** Agent history access always names the calling chat, never a search target. */
+const ChatHistoryCallerScopeSchema = CanopyWorkspaceScopeSchema.extend({
+  workspaceId: ID,
+  worktreeId: ID,
+  chatId: ID,
+});
+
+export const MemoryChatSearchParamsSchema = z.strictObject({
+  scope: ChatHistoryCallerScopeSchema,
+  query: z.string().trim().min(1).max(1000),
+  limit: z.number().int().min(1).max(10).default(5),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+export const MemoryChatSearchResultSchema = z.strictObject({
+  hits: z
+    .array(
+      z.strictObject({
+        matchId: z.string().uuid(),
+        title: z.string().max(512),
+        date: z.iso.datetime(),
+        snippet: z.string().max(1200),
+      }),
+    )
+    .max(10),
+});
+
+export const MemoryChatExcerptParamsSchema = z.strictObject({
+  scope: ChatHistoryCallerScopeSchema,
+  matchId: z.string().uuid(),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+export const MemoryChatExcerptResultSchema = z.strictObject({
+  title: z.string().max(512),
+  date: z.iso.datetime(),
+  excerpt: z.string().max(6000),
+});
+
+export type MemoryChatSearchParams = z.output<
+  typeof MemoryChatSearchParamsSchema
+>;
+export type MemoryChatSearchResult = z.output<
+  typeof MemoryChatSearchResultSchema
+>;
+export type MemoryChatExcerptResult = z.output<
+  typeof MemoryChatExcerptResultSchema
+>;
+
 /** Refusals every memory operation shares; their messages are the tools' text. */
 const POLICY_CODES = [
   'core.memory.disabled',
@@ -103,6 +152,25 @@ const BASE = {
 // (CAN-5993). Not composed into the shared registries: the daemon and the
 // web core do not serve them.
 export const CORE_MEMORY_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
+  'core.memory.chats.search': defineCanopyQuery({
+    ...BASE,
+    idempotency: 'inherent',
+    requiredGrants: [MEMORY_GRANTS.read],
+    params: MemoryChatSearchParamsSchema,
+    result: MemoryChatSearchResultSchema,
+    error: inherentOperationErrorSchema(POLICY_CODES),
+  }),
+  'core.memory.chats.excerpt': defineCanopyQuery({
+    ...BASE,
+    idempotency: 'inherent',
+    requiredGrants: [MEMORY_GRANTS.read],
+    params: MemoryChatExcerptParamsSchema,
+    result: MemoryChatExcerptResultSchema,
+    error: inherentOperationErrorSchema([
+      ...POLICY_CODES,
+      'core.memory.chats.matchUnavailable',
+    ]),
+  }),
   'core.memory.search': defineCanopyQuery({
     ...BASE,
     idempotency: 'inherent',

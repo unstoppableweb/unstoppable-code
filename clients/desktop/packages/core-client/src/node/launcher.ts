@@ -72,7 +72,17 @@ export interface CanopyDaemonLaunchOptions<T> {
 export interface CanopyDaemonBeforeSpawn {
   /** Integer from 1 to the timer maximum; expiry fails the launch `deadline_exceeded`. */
   readonly timeoutMs: number;
-  readonly run: (signal: AbortSignal) => PromiseLike<void>;
+  readonly run: (
+    signal: AbortSignal,
+    protection: {
+      /** Trusted host capability for pre-spawn recovery, never discovery authority. */
+      readonly claimHandle: CanopyStartupClaimHandle;
+      /** Only the departed claim's bind marker can prove an unpublished socket. */
+      readonly recoveredEndpointBind?: boolean;
+      assertHeld(): Promise<void>;
+      retainClaim(): void;
+    },
+  ) => PromiseLike<void>;
 }
 
 export interface CanopyDaemonLaunchResult<T> {
@@ -190,6 +200,7 @@ export async function attachOrStartCanopyDaemon<T>(
   let committed = false;
   let cleaned = false;
   let spawnCleanupUnconfirmed = false;
+  let recoveredEndpointBind = false;
   // An unclaimed child may have lost the bind; wait for the winner until the deadline.
   let unclaimedExitBeforeDeadline = false;
   let rollback: Promise<void> | undefined;
@@ -319,7 +330,28 @@ export async function attachOrStartCanopyDaemon<T>(
               beforeSpawn.timeoutMs,
               'Core pre-spawn step timed out.',
               (signal) =>
-                (preparing = Promise.resolve(beforeSpawn.run(signal))),
+                (preparing = (async (): Promise<void> => {
+                  let active = true;
+                  try {
+                    if (!handle)
+                      throw new Error('Pre-spawn claim is not held.');
+                    await beforeSpawn.run(signal, {
+                      claimHandle: handle,
+                      ...(recoveredEndpointBind && { recoveredEndpointBind }),
+                      assertHeld: (): Promise<void> => {
+                        signal.throwIfAborted();
+                        if (!active || !acquired || !handle || !claim)
+                          throw new Error('Pre-spawn claim is not held.');
+                        return Promise.resolve();
+                      },
+                      retainClaim: (): void => {
+                        if (active) spawnCleanupUnconfirmed = true;
+                      },
+                    });
+                  } finally {
+                    active = false;
+                  }
+                })()),
               typed('Core pre-spawn step failed.'),
             );
           child = await deadline.run(
@@ -356,6 +388,8 @@ export async function attachOrStartCanopyDaemon<T>(
           if (acquisition.kind === 'ambiguous') throw ambiguousClaim();
           if (acquisition.kind === 'acquired') {
             handle = acquisition.handle;
+            recoveredEndpointBind =
+              acquisition.recovered?.endpointBound === true;
             acquired = true;
             continue;
           }

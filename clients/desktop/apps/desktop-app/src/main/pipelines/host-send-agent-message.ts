@@ -836,20 +836,28 @@ async function resolveNewChat(
 }
 
 /**
- * A converted capability package install's package, for the chat its
- * generated send step creates (CAN-5479), resolved again for each send so no
- * package path is kept. A package that isn't intact fails the step, as it
- * failed the native prompt.
+ * The package for the chat a send step in an automation's run creates,
+ * resolved again for each send so no package path is kept: a converted
+ * capability package install's (CAN-5479), else the part of the run's own
+ * package bound to the step, as a shared workflow's packaged skills and
+ * plugins are. A package that isn't intact fails the step, as it failed the
+ * native prompt.
  */
 async function automationPackageOverlay(
   caller: PipelineHostActionCaller,
   target: SendTarget,
 ): Promise<PipelinePackageCapabilityOverlay | undefined> {
   if (target.chatId !== undefined) return undefined;
-  const { ownedPipelineSendPackageOverlay } =
-    await import('../automations/owned-pipeline-package');
+  const [{ ownedPipelineSendPackageOverlay }, { runSendPackageOverlay }] =
+    await Promise.all([
+      import('../automations/owned-pipeline-package'),
+      import('./run-send-package-overlay'),
+    ]);
   try {
-    return await ownedPipelineSendPackageOverlay(caller);
+    return (
+      (await ownedPipelineSendPackageOverlay(caller)) ??
+      (await runSendPackageOverlay(caller))
+    );
   } catch (error) {
     throw new PipelineHostRefusal('target_not_ready', messageOf(error));
   }

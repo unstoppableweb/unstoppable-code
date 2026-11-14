@@ -175,7 +175,11 @@ export function LedgerEntryForm({
         </p>
       </header>
       {problem !== null && (
-        <Notice intent="destructive" data-testid="ledger-entry-form-problem">
+        <Notice
+          errorSource="ledger-entry-form-problem"
+          intent="destructive"
+          data-testid="ledger-entry-form-problem"
+        >
           {problem}
         </Notice>
       )}

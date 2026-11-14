@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isWebCoreScope } from '../lib/chat-authority';
 import { useChatStore } from '../stores/chatStore';
 
 /**
@@ -45,7 +46,9 @@ export function usePresenceReporter(): void {
   useEffect(() => {
     const report = (): void => {
       const current = selectedRef.current;
-      if (!current) {
+      // This computer's telemetry knows only local worktrees; a cloud task's
+      // ids never go to its IPC (CAN-6395).
+      if (!current || isWebCoreScope(current.projectId)) {
         return;
       }
       const key = `${current.projectId}::${current.worktreeId}`;

@@ -33,7 +33,11 @@ export function SharedContainerAcceptSummary({
         {SHARED_CONTAINER_ACCEPT_CONSENT}
       </p>
       {error && (
-        <Notice intent="destructive" data-testid={`${testIdPrefix}-error`}>
+        <Notice
+          errorSource="shared-container-accept-summary"
+          intent="destructive"
+          data-testid={`${testIdPrefix}-error`}
+        >
           {error}
         </Notice>
       )}

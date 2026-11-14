@@ -29,8 +29,12 @@ export interface InAppNotificationContainerOptions {
 export const IN_APP_NOTIFICATION_WIDTH_PX = 344;
 
 // One literal class per token so Tailwind can see each of them.
+// `electron-no-drag`: a top corner overlaps page titlebar strips that are
+// window-drag regions, and Electron's drag mask ignores z-order, so without it
+// the upper part of every control in the stack drags the window instead of
+// clicking. Inert on the web.
 const COLUMN =
-  'pointer-events-none fixed z-toast flex w-[min(21.5rem,calc(100vw-2rem))] flex-col gap-2';
+  'electron-no-drag pointer-events-none fixed z-toast flex w-[min(21.5rem,calc(100vw-2rem))] flex-col gap-2';
 
 /** Shared notification viewport placement for independent desktop windows. */
 export function getInAppNotificationContainerClasses(

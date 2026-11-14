@@ -5,8 +5,8 @@ import {
   useRef,
   useState,
   startTransition,
-  type KeyboardEvent as ReactKeyboardEvent,
   type JSX,
+  type ReactNode,
 } from 'react';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
 import { useAutomationScope } from '@/hooks/useAutomationScope';
@@ -16,14 +16,12 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
-  DialogModal,
-  ListRow,
-  SearchPaletteLayout,
-  SearchEmptyState,
-  SearchField,
-  ErrorBanner,
-  Heading,
-} from '@canopy/ui-shared/components';
+  SearchPalette,
+  parseSearchPaletteQuery,
+  type SearchPaletteActivation,
+  type SearchPaletteScopeId,
+} from '@canopy/ui-app/search-palette';
+import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useShallow } from 'zustand/shallow';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
@@ -76,23 +74,7 @@ import {
   type SettingsSectionEntry,
   type WorktreeLabelResolver,
 } from './paletteProviders';
-import {
-  parseQuery,
-  rankPaletteItems,
-  withChatContentSection,
-  type PaletteFlatEntry,
-} from './paletteRanking';
 import type { PaletteItem } from './paletteItems';
-import {
-  PALETTE_SCOPE_PLACEHOLDER,
-  PALETTE_SCOPES,
-  filterItemsByScope,
-  nextPaletteScope,
-  rankScopeWithoutQuery,
-  scopeSearchesContent,
-  type PaletteScope,
-} from './paletteScopes';
-import { PaletteResultRow } from './PaletteResultRow';
 import { usePaletteAccountFacts } from './usePaletteAccountFacts';
 import { useContextScopedWorkspaces } from '@/hooks/useContextScopedWorkspaces';
 
@@ -111,13 +93,7 @@ export function CommandPalette({
   onClose,
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = useState(initialQuery);
-  const [scope, setScope] = useState<PaletteScope>('all');
-  const { commandsOnly, query: parsedQuery } = parseQuery(query);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    () => new Set(),
-  );
+  const [scope, setScope] = useState<SearchPaletteScopeId>('all');
   const [catalogEntries, setCatalogEntries] = useState<
     ChatSearchCatalogEntry[]
   >([]);
@@ -129,18 +105,6 @@ export function CommandPalette({
   // Bumped only when the query remains stable across the update debounce,
   // preserving settled tier-2 rows without reissuing stale query work.
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const itemRefs = useRef<Map<number, HTMLLIElement>>(new Map());
-  const selectedItemIdRef = useRef<string | null>(null);
-  const pendingExpandedSelectionRef = useRef<{
-    sectionId: string;
-    visibleItemCount: number;
-  } | null>(null);
-  // True once the user explicitly moved the selection (arrows/hover) for the
-  // current query. Until then the default selection tracks the best-scoring
-  // item, so late-arriving low-score sections (e.g. marketplace plugins
-  // rendered above the pinned-last commands) cannot steal Enter.
-  const userNavigatedRef = useRef(false);
   const queryTokenRef = useRef(0);
   const queryRef = useRef(query);
   const queryRevisionRef = useRef(0);
@@ -502,70 +466,11 @@ export function CommandPalette({
     ],
   );
 
-  // `>` always lists the commands catalog, whatever the scope.
-  const scopedItems = useMemo(
-    () => (commandsOnly ? items : filterItemsByScope(items, scope)),
-    [items, scope, commandsOnly],
-  );
-
-  const baseRanking = useMemo(
-    () =>
-      scope !== 'all' && !commandsOnly && parsedQuery.length === 0
-        ? rankScopeWithoutQuery(scopedItems, expandedSections)
-        : rankPaletteItems(scopedItems, query, undefined, expandedSections),
-    [scopedItems, scope, commandsOnly, parsedQuery, query, expandedSections],
-  );
-
-  // Ids of visible chat/plan title rows — tier-2 content hits for the same
-  // doc are dropped rather than shown twice.
-  const titleRowIds = useMemo(
-    () =>
-      new Set(
-        baseRanking.sections
-          .flatMap((section) => section.items)
-          .filter(
-            ({ item }) =>
-              item.kind === 'chat' ||
-              item.kind === 'plan' ||
-              item.kind === 'archive',
-          )
-          .map(({ item }) => item.id),
-      ),
-    [baseRanking],
-  );
-
-  const contentItems = useMemo(
-    () =>
-      scopeSearchesContent(scope)
-        ? buildChatContentItems(scopedContentResults, labelIndex, titleRowIds)
-        : [],
-    [scope, scopedContentResults, labelIndex, titleRowIds],
-  );
-
-  const ranking = useMemo(
-    () => withChatContentSection(baseRanking, contentItems),
-    [baseRanking, contentItems],
-  );
-
-  const flatItems = ranking.flat;
-
-  // Starting flat index of each section, so rows can map to a stable keyboard
-  // selection index without mutating a counter during render.
-  const sectionOffsets = useMemo(() => {
-    const offsets: number[] = [];
-    let acc = 0;
-    for (const section of ranking.sections) {
-      offsets.push(acc);
-      acc += section.items.length + (section.truncated > 0 ? 1 : 0);
-    }
-    return offsets;
-  }, [ranking]);
-
   // Tier 2 query changes clear stale rows immediately, then debounce the new
   // request. Index refreshes use a separate effect below so settled rows stay
   // mounted while the unchanged query is refreshed.
   useEffect(() => {
-    const { commandsOnly, query: parsed } = parseQuery(query);
+    const { commandsOnly, query: parsed } = parseSearchPaletteQuery(query);
     if (commandsOnly || parsed.length < TIER2_MIN_QUERY_LENGTH) {
       queryTokenRef.current += 1; // invalidate any in-flight response
       setContentResults([]);
@@ -606,7 +511,9 @@ export function CommandPalette({
 
   useEffect(() => {
     if (refreshNonce === 0) return;
-    const { commandsOnly, query: parsed } = parseQuery(queryRef.current);
+    const { commandsOnly, query: parsed } = parseSearchPaletteQuery(
+      queryRef.current,
+    );
     if (commandsOnly || parsed.length < TIER2_MIN_QUERY_LENGTH) return;
     const stableQuery = queryRef.current;
     const token = (queryTokenRef.current += 1);
@@ -638,375 +545,57 @@ export function CommandPalette({
 
   useEffect(() => {
     setQuery(initialQuery);
-    setExpandedSections(new Set());
-    setErrorMessage(null);
-    selectedItemIdRef.current = null;
-    setSelectedIndex(0);
   }, [initialQuery]);
 
-  // Also covers palette open: the [initialQuery] effect above sets `query`,
-  // which re-runs this effect on the next render.
-  useEffect(() => {
-    userNavigatedRef.current = false;
-    setExpandedSections(new Set());
-  }, [query, scope]);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, []);
-
-  useEffect(() => {
-    const pending = pendingExpandedSelectionRef.current;
-    if (pending) {
-      const sectionIndex = ranking.sections.findIndex(
-        (section) => section.id === pending.sectionId,
-      );
-      const item =
-        ranking.sections[sectionIndex]?.items[pending.visibleItemCount];
-      const expandedIndex = item
-        ? flatItems.findIndex((entry) => entry.id === item.item.id)
-        : -1;
-      pendingExpandedSelectionRef.current = null;
-      if (expandedIndex >= 0) {
-        userNavigatedRef.current = true;
-        selectedItemIdRef.current = item?.item.id ?? null;
-        setSelectedIndex(expandedIndex);
-        inputRef.current?.focus();
-        return;
-      }
-    }
-    if (flatItems.length === 0) {
-      setSelectedIndex(-1);
-      return;
-    }
-    setSelectedIndex((currentIndex) => {
-      if (!userNavigatedRef.current) {
-        let bestIndex = 0;
-        for (let index = 1; index < flatItems.length; index += 1) {
-          const entry = flatItems[index];
-          const bestEntry = flatItems[bestIndex];
-          if (
-            entry?.type === 'item' &&
-            (bestEntry?.type !== 'item' ||
-              entry.ranked.score > bestEntry.ranked.score)
-          ) {
-            bestIndex = index;
-          }
-        }
-        selectedItemIdRef.current = flatItems[bestIndex]?.id ?? null;
-        return bestIndex;
-      }
-      const selectedId = selectedItemIdRef.current;
-      if (selectedId !== null) {
-        const refreshedIndex = flatItems.findIndex(
-          (entry) => entry.id === selectedId,
-        );
-        if (refreshedIndex >= 0) {
-          return refreshedIndex;
-        }
-      }
-      if (currentIndex < 0) {
-        selectedItemIdRef.current = flatItems[0]?.id ?? null;
-        return 0;
-      }
-      if (currentIndex >= flatItems.length) {
-        const clampedIndex = flatItems.length - 1;
-        selectedItemIdRef.current = flatItems[clampedIndex]?.id ?? null;
-        return clampedIndex;
-      }
-      selectedItemIdRef.current = flatItems[currentIndex]?.id ?? null;
-      return currentIndex;
-    });
-  }, [flatItems, ranking.sections]);
-
-  const selectedEntryId =
-    selectedIndex >= 0 ? flatItems[selectedIndex]?.id : undefined;
-
-  useEffect(() => {
-    if (selectedIndex < 0) {
-      return;
-    }
-    itemRefs.current.get(selectedIndex)?.scrollIntoView({ block: 'nearest' });
-  }, [selectedIndex, selectedEntryId]);
-
-  const registerRef = useCallback(
-    (index: number, node: HTMLLIElement | null): void => {
-      if (node) {
-        itemRefs.current.set(index, node);
-      } else {
-        itemRefs.current.delete(index);
-      }
-    },
-    [],
+  // Chat and plan content hits, minus the ones whose chat, plan or archive
+  // already has a title row.
+  const buildContentItems = useCallback(
+    (titleRowIds: ReadonlySet<string>): readonly PaletteItem[] =>
+      buildChatContentItems(scopedContentResults, labelIndex, titleRowIds),
+    [scopedContentResults, labelIndex],
   );
 
   const activateItem = useCallback(
-    async (item: PaletteItem | undefined): Promise<void> => {
-      if (!item) {
-        return;
-      }
-      setErrorMessage(null);
-      try {
-        const result = await item.execute();
-        if (result.error) {
-          setErrorMessage(result.error);
-        }
-        if (result.closePalette) {
-          onClose();
-        }
-      } catch (error) {
-        setErrorMessage(
-          error instanceof Error ? error.message : 'Command failed',
-        );
-      }
-    },
-    [onClose],
+    (
+      item: PaletteItem,
+    ): Promise<SearchPaletteActivation> | SearchPaletteActivation =>
+      item.execute(),
+    [],
   );
-
-  const activateEntry = useCallback(
-    (entry: PaletteFlatEntry | undefined): void => {
-      if (!entry) {
-        return;
-      }
-      if (entry.type === 'show-more') {
-        const { sectionId, visibleItemCount } = entry;
-        pendingExpandedSelectionRef.current = {
-          sectionId,
-          visibleItemCount,
-        };
-        setExpandedSections((current) => {
-          const next = new Set(current);
-          next.add(sectionId);
-          return next;
-        });
-        inputRef.current?.focus();
-        return;
-      }
-      void activateItem(entry.ranked.item);
-    },
-    [activateItem],
-  );
-
-  const handleActivate = useCallback(
-    (item: PaletteItem): void => {
-      void activateItem(item);
-    },
-    [activateItem],
-  );
-
-  const handleHover = useCallback(
-    (index: number): void => {
-      userNavigatedRef.current = true;
-      selectedItemIdRef.current = flatItems[index]?.id ?? null;
-      setSelectedIndex(index);
-    },
-    [flatItems],
-  );
-
-  function changeScope(next: PaletteScope): void {
-    setScope(next);
-    setErrorMessage(null);
-    selectedItemIdRef.current = null;
-    setSelectedIndex(0);
-    inputRef.current?.focus();
-  }
-
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-      return;
-    }
-
-    // Tab and Shift-Tab step through the scopes, as in the tabs below.
-    if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey) {
-      event.preventDefault();
-      changeScope(nextPaletteScope(scope, event.shiftKey));
-      return;
-    }
-
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      if (flatItems.length === 0) {
-        return;
-      }
-      userNavigatedRef.current = true;
-      setSelectedIndex((currentIndex) => {
-        const nextIndex =
-          currentIndex < 0 ? 0 : (currentIndex + 1) % flatItems.length;
-        selectedItemIdRef.current = flatItems[nextIndex]?.id ?? null;
-        return nextIndex;
-      });
-      return;
-    }
-
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      if (flatItems.length === 0) {
-        return;
-      }
-      userNavigatedRef.current = true;
-      setSelectedIndex((currentIndex) => {
-        const nextIndex =
-          currentIndex <= 0 ? flatItems.length - 1 : currentIndex - 1;
-        selectedItemIdRef.current = flatItems[nextIndex]?.id ?? null;
-        return nextIndex;
-      });
-      return;
-    }
-
-    if (event.key === 'Enter') {
-      // Enter on a focused control outside the results (Clear, the empty
-      // state's action) presses that control. Anywhere else, including a
-      // focused result row, Enter opens the highlighted result.
-      if (
-        event.target instanceof HTMLButtonElement &&
-        !event.target.closest('[role="listbox"]')
-      ) {
-        return;
-      }
-      event.preventDefault();
-      activateEntry(selectedIndex >= 0 ? flatItems[selectedIndex] : undefined);
-    }
-  }
 
   return (
-    <DialogModal
+    <SearchPalette
+      query={query}
+      onQueryChange={setQuery}
+      scope={scope}
+      onScopeChange={setScope}
+      items={items}
+      buildContentItems={buildContentItems}
+      onActivate={activateItem}
       onClose={onClose}
-      header="content"
-      titleId="command-palette-title"
-      placement="top"
-      maxWidth="xl"
-      inset="flush"
-      scrollableBody={false}
-      dataTestId="command-palette"
-    >
-      {/* The field names the palette; the heading names the dialog. */}
-      <Heading
-        level={2}
-        variant="title"
-        id="command-palette-title"
-        className="sr-only"
-      >
-        Search
-      </Heading>
-      {/* The palette's own keys: Escape closes from anywhere inside, even a
-          focused result row, which the dialog's Escape leaves to the list. */}
-      <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
-        <SearchPaletteLayout
-          scopes={PALETTE_SCOPES}
-          scope={scope}
-          onScopeChange={changeScope}
-          scopeLabel="Search in"
-          scopesTestId="command-palette-scopes"
-          resultsTestId="command-palette-results"
-          field={
-            <SearchField
-              ref={inputRef}
-              size="lg"
-              value={query}
-              onValueChange={(next): void => {
-                setQuery(next);
-                setErrorMessage(null);
-                selectedItemIdRef.current = null;
-                setSelectedIndex(0);
-              }}
-              // Escape closes the palette at once (the dialog's handler); the
-              // nested button clears the query.
-              clearOnEscape={false}
-              aria-label="Search"
-              placeholder={PALETTE_SCOPE_PLACEHOLDER[scope]}
-              data-testid="command-palette-input"
-              clearTestId="command-palette-clear"
-            />
-          }
-        >
-          {errorMessage && (
-            <div className="px-3 pt-3">
-              <ErrorBanner error={errorMessage} className="" />
-            </div>
-          )}
-          {/* Session replay records the results; a transcript or plan snippet
-            row blocks its own snippet (`PaletteResultRow`). */}
-          {flatItems.length === 0 ? (
-            <SearchEmptyState
-              testId="command-palette-empty"
-              title={
-                scope === 'content' && parsedQuery.length === 0
-                  ? 'Type to search the text of your chats and plans.'
-                  : 'Nothing matches your search.'
-              }
-              actionLabel={query === '' ? undefined : 'Clear search'}
-              onAction={(): void => {
-                setQuery('');
-                setErrorMessage(null);
-                selectedItemIdRef.current = null;
-                setSelectedIndex(0);
-                inputRef.current?.focus();
-              }}
-              actionTestId="command-palette-empty-clear"
-            />
-          ) : (
-            <ul role="listbox" aria-label="Results" className="px-2 py-1">
-              {ranking.sections.map((section, sectionIdx) => (
-                <li
-                  key={section.id}
-                  data-testid="command-palette-section"
-                  data-palette-section={section.id}
-                >
-                  <div className="px-2 pb-1 pt-3">
-                    <Heading level={3} variant="label">
-                      {section.label}
-                    </Heading>
-                  </div>
-                  <ul role="group" aria-label={section.label}>
-                    {section.items.map((ranked, itemIdx) => {
-                      const index = sectionOffsets[sectionIdx] + itemIdx;
-                      return (
-                        <PaletteResultRow
-                          key={ranked.item.id}
-                          item={ranked.item}
-                          titleIndices={ranked.titleIndices}
-                          index={index}
-                          isSelected={index === selectedIndex}
-                          onHover={handleHover}
-                          onActivate={handleActivate}
-                          registerRef={registerRef}
-                        />
-                      );
-                    })}
-                    {section.truncated > 0 &&
-                      ((): JSX.Element => {
-                        const index =
-                          sectionOffsets[sectionIdx] + section.items.length;
-                        const entry = flatItems[index];
-                        return (
-                          <li
-                            ref={(node): void => registerRef(index, node)}
-                            key={`show-more:${section.id}`}
-                          >
-                            <ListRow
-                              role="option"
-                              aria-selected={index === selectedIndex}
-                              selected={index === selectedIndex}
-                              data-testid="command-palette-show-more"
-                              onMouseEnter={(): void => handleHover(index)}
-                              onClick={(): void => activateEntry(entry)}
-                            >
-                              Show {section.truncated} more
-                            </ListRow>
-                          </li>
-                        );
-                      })()}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          )}
-        </SearchPaletteLayout>
-      </div>
-    </DialogModal>
+      renderProjectBadge={renderProjectBadge}
+      rowTestId={rowTestId}
+    />
   );
+}
+
+// The desktop resolves a repository's owner avatar over IPC.
+function renderProjectBadge(item: PaletteItem): ReactNode {
+  return item.project ? (
+    <ProjectIcon
+      kind={item.project.kind}
+      color={item.project.color}
+      temporary={item.project.temporary}
+      repoPath={item.project.repoPath}
+    />
+  ) : null;
+}
+
+// Automation pins the cost commands by their own test ids.
+function rowTestId(item: PaletteItem): string | undefined {
+  return item.kind === 'command' &&
+    (item.navigation.commandKey === 'open-cost-panel' ||
+      item.navigation.commandKey === 'open-session-breakdown')
+    ? `command-palette-command-${item.navigation.commandKey}`
+    : undefined;
 }

@@ -4,7 +4,7 @@ import {
 } from './login-shell-probe';
 export type { LoginShellProbe } from './login-shell-probe';
 import { constants, existsSync, realpathSync } from 'node:fs';
-import { access, stat } from 'node:fs/promises';
+import { access, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getGitExecutableDetectionMode } from '@canopy/protocol/git-executable';
@@ -126,6 +126,30 @@ export interface BundledBinaryResolution {
   member: BundledBinaryMember;
   status: BundledBinaryStatus;
   path: string;
+}
+
+/** Resolve an unbundled CLI without substituting for an explicit invalid override. */
+export async function resolveInstalledBinaryPath(
+  names: readonly string[],
+  env: NodeJS.ProcessEnv,
+  override?: string,
+): Promise<string | undefined> {
+  if (override) {
+    if (!path.isAbsolute(override)) return undefined;
+    try {
+      const executable = await realpath(override);
+      if (!(await stat(executable)).isFile()) return undefined;
+      await access(executable, constants.X_OK);
+      return executable;
+    } catch {
+      return undefined;
+    }
+  }
+  for (const name of names) {
+    const executable = findExecutableOnPath(name, env.PATH ?? '');
+    if (executable) return executable;
+  }
+  return undefined;
 }
 
 /** A resolved path before the bundled file's existence has been checked. */

@@ -100,7 +100,7 @@ exports[`reference repository health rethrows a remote read failure inside a rep
 {
   "error": {
     "code": 128,
-    "message": "Command failed: <git> remote
+    "message": "Command failed: <git> remote get-url origin
 fatal: bad boolean config value 'notabool' for 'remote.origin.mirror'
 ",
     "name": "Error",

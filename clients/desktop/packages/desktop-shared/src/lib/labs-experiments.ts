@@ -26,6 +26,7 @@ export interface LabsExperiment {
   requiresEarlyAccess: boolean;
   fixtureAvailability?: (typeof LABS_EXPERIMENT_AVAILABILITIES)[number];
 }
+
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     id: EARLY_ACCESS_EXPERIMENT_ID,

@@ -139,9 +139,9 @@ export function PipelineReportView({
       className="overflow-hidden"
       data-testid="pipeline-report"
     >
-      <div className="border-b px-4 py-2 text-xs font-medium fg-secondary">
-        Report
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div className="px-4 py-2 text-xs font-medium fg-secondary">Report</div>
+      </Surface>
       <div className="flex flex-col p-4 gap-4">
         {entries.map((entry) => {
           const reportState = stateByKind[entry.kind] ?? { loading: true };

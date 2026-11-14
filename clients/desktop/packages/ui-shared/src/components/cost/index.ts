@@ -1,4 +1,5 @@
 export * from './cost-format';
+export * from './CostCurrencyContext';
 export * from './CostSplitBar';
 export * from './CostLegend';
 export * from './CostRow';

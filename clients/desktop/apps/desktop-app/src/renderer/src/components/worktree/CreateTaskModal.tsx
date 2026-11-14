@@ -248,6 +248,7 @@ function LinearSearch({
       )}
       {trimmedQuery.length > 0 && !searching && (
         <DesktopErrorBanner
+          errorSource="create-task-linear-search-error"
           className=""
           error={error?.error}
           details={error?.details}
@@ -346,6 +347,7 @@ function BranchResults({
   if (error) {
     return (
       <DesktopErrorBanner
+        errorSource="create-from-branch-error"
         className=""
         error={error.error}
         details={error.details}
@@ -387,6 +389,7 @@ function PrPreview({
   if (error) {
     return (
       <DesktopErrorBanner
+        errorSource="create-from-pr-error"
         className=""
         error={error.error}
         details={error.details}

@@ -450,6 +450,17 @@ export function createCoreChatMessageAdapter(
   };
   const instructions: MessageHandlers = {
     'core.chat.message.send': (params, context) => {
+      // A cloud send's accepted-turn revision (CAN-6092); desktop advertises none.
+      if (params.revision !== undefined)
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'Desktop chats do not serve this revision.',
+          details: { unsupported: ['revision'], reason: 'unserved' },
+          retry: {
+            kind: 'after_refresh',
+            resource: 'core.runtime.manifest.get',
+          },
+        });
       // Desktop attachments and composer settings stay in the trusted
       // in-process binding; refused rather than dropped (CAN-6092).
       const unsupported = (
@@ -504,13 +515,29 @@ export function createCoreChatMessageAdapter(
         },
         context,
       ),
-    'core.chat.queue.entry.update': (params, context) =>
-      invoke(
+    'core.chat.queue.entry.update': (params, context) => {
+      // A cloud hold rides an edit only on the web core (CAN-6106); the
+      // desktop's own lock is the separate `lock` mutation.
+      if (
+        params.mutation.kind === 'edit' &&
+        params.mutation.acquisitionId !== undefined
+      )
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'Held edits are not available on this core.',
+          details: {
+            reason: 'unserved',
+            unsupported: ['mutation.acquisitionId'],
+          },
+          retry: { kind: 'never' },
+        });
+      return invoke(
         'core.chat.queue.entry.update',
         params,
         queueUpdateCommand(params),
         context,
-      ),
+      );
+    },
     'core.chat.queue.entry.force': (params, context) =>
       invoke(
         'core.chat.queue.entry.force',

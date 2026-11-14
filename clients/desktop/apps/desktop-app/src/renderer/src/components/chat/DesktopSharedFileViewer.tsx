@@ -19,6 +19,7 @@ import { useReviewComments } from '../code-review/useReviewComments';
 import type { editor as MonacoEditorTypes } from 'monaco-editor';
 import { ReviewLinePopover } from '../code-review/ReviewLinePopover';
 import { useWorktreeReview } from '../code-review/useWorktreeReview';
+import { SkippedCommentThreadsNotice } from '../code-review/SkippedCommentThreadsNotice';
 import { submitWorkspaceComments } from './submitWorkspaceComments';
 import {
   lazy,
@@ -73,12 +74,19 @@ import {
   useFileDiffSnapshot,
 } from './useFileDiffSnapshot';
 import type { FileDiffContext } from '@canopy/desktop-shared/types/code-review';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
+  DownloadIcon,
   ExternalIcon,
   FolderIcon,
   GlobeIcon,
   MessageIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  ambiguousDeliverableMessage,
+  cloudDeliverableName,
+  downloadCloudDeliverable,
+} from '@/cloud-chats/cloud-file-download';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
@@ -129,7 +137,7 @@ import type {
   SelectionCaptureTarget,
 } from './MonacoFileEditor';
 import { resolveRichSelectionLines } from './resolveRichSelectionLines';
-import { isWebCoreScope } from '@/lib/chat-authority';
+import { isWebCoreScope, parseWebCoreFilePath } from '@/lib/chat-authority';
 import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 import {
   resolveFileSetupRetryPlan,
@@ -249,6 +257,8 @@ function pathInsideRoot(filePath: string, rootPath: string): string | null {
     : null;
 }
 
+/** Said when saving a cloud chat's file fails; a cancelled save says nothing. */
+const CLOUD_FILE_DOWNLOAD_FAILED = "Couldn't download the file. Try again.";
 function DesktopSharedFileViewerImpl({
   tabId,
   projectId,
@@ -267,9 +277,18 @@ function DesktopSharedFileViewerImpl({
     FileImageSaveSupport | undefined
   >(undefined);
   const [error, setError] = useState<string | null>(null);
+  // A failed roots read can be read again; a file outside the roots cannot.
+  const [rootsRetryable, setRootsRetryable] = useState(false);
+  const [rootsAttempt, setRootsAttempt] = useState(0);
   // Read-only scopes (a shared-container recipient) get the read-only viewer:
   // no editor, no comment authoring, no Show in Finder / Open in.
   const readOnly = useWorkspaceIsReadOnly();
+  // A cloud chat's sandbox files resolve through the web core, and the OS
+  // can't reveal, open or render them (CAN-6175 R9).
+  const localFiles = workspaceFileSourceFor(worktreeId).onThisComputer;
+  // Main keeps file comments, review artifacts and git diffs for local
+  // worktrees only, so a cloud file has none of them yet.
+  const commentsAvailable = !readOnly && localFiles;
   const setFileTabViewMode = useChatStore((state) => state.setFileTabViewMode);
   const openFileTab = useChatStore((state) => state.openFileTab);
   const createEmptyFileTab = useChatStore((state) => state.createEmptyFileTab);
@@ -297,7 +316,12 @@ function DesktopSharedFileViewerImpl({
   ) {
     setupRetryEligibleRef.current = true;
   }
-  const diffTarget = useOpenFileDiffTarget(projectId, worktreeId, filePath);
+  const diffTarget = useOpenFileDiffTarget(
+    projectId,
+    worktreeId,
+    filePath,
+    localFiles,
+  );
   const storedDiffContext = useChatTabRenderState(
     { projectId, worktreeId, chatId: tabId },
     ({ tab }) => tab?.fileDiffContext,
@@ -363,7 +387,7 @@ function DesktopSharedFileViewerImpl({
   const artifacts = useWorktreeReview(
     projectId,
     worktreeId,
-    true,
+    localFiles,
     active && viewMode === 'diff',
   );
   const availableAnnotations = useMemo(
@@ -389,6 +413,7 @@ function DesktopSharedFileViewerImpl({
     viewMode === 'diff' ? 'diff' : 'file',
     snapshot?.identity,
     annotations,
+    localFiles,
   );
   const legacyComments = useReviewComments(
     { projectId, worktreeId },
@@ -478,6 +503,7 @@ function DesktopSharedFileViewerImpl({
     setResolvedRoot(null);
     setImageSaveSupport(undefined);
     setError(null);
+    setRootsRetryable(false);
     // A Branch-from destination is registered and selected during two-phase
     // creation, before its checkout directories are guaranteed to exist.
     // Keep the panel neutral and let the git-ready transition perform the
@@ -487,7 +513,7 @@ function DesktopSharedFileViewerImpl({
         cancelled = true;
       };
     }
-    void window.api
+    void workspaceFileSourceFor(worktreeId)
       .getFileTreeRoots({ projectId, worktreeId })
       .then(({ roots, imageSaveSupport: support }) => {
         if (cancelled) return;
@@ -525,12 +551,20 @@ function DesktopSharedFileViewerImpl({
           setError(
             reason instanceof Error ? reason.message : 'Unable to open file.',
           );
+          setRootsRetryable(true);
         }
       });
     return (): void => {
       cancelled = true;
     };
-  }, [filePath, projectId, tabId, worktreeId, worktreeSetupPhase]);
+  }, [
+    filePath,
+    projectId,
+    rootsAttempt,
+    tabId,
+    worktreeId,
+    worktreeSetupPhase,
+  ]);
 
   const key = request ? fileViewerKey(request) : null;
   const session = useFileViewerStore((state) =>
@@ -593,12 +627,14 @@ function DesktopSharedFileViewerImpl({
   // scoped reveal also canonicalizes the path against the workspace roots.
   const localFileRequest = useMemo(
     () =>
-      resolveLocalFileActionRequest({
-        absolutePath: filePath,
-        surfaceScope: { projectId, worktreeId },
-        surfaceReadOnly: readOnly,
-      }),
-    [filePath, projectId, readOnly, worktreeId],
+      localFiles
+        ? resolveLocalFileActionRequest({
+            absolutePath: filePath,
+            surfaceScope: { projectId, worktreeId },
+            surfaceReadOnly: readOnly,
+          })
+        : undefined,
+    [filePath, localFiles, projectId, readOnly, worktreeId],
   );
   // Keyed by the file so a failure never follows the tab to another file.
   const localActionScope = `${projectId}/${worktreeId}/${filePath}`;
@@ -644,6 +680,43 @@ function DesktopSharedFileViewerImpl({
   const openFileExternally = useCallback((): void => {
     runLocalFileAction('open-external');
   }, [runLocalFileAction]);
+  // A cloud chat's deliverable saves through main's save dialog (CAN-6587).
+  const cloudFileLocation = localFiles ? null : parseWebCoreFilePath(filePath);
+  const cloudDeliverable =
+    cloudFileLocation !== null &&
+    cloudDeliverableName(cloudFileLocation.relativePath) !== null
+      ? cloudFileLocation
+      : null;
+  const downloadCloudFile = useCallback((): void => {
+    if (cloudDeliverable === null) return;
+    const generation = ++localActionGeneration.current;
+    setLocalActionError(null);
+    void downloadCloudDeliverable(
+      window.canopyCore,
+      { projectId, worktreeId },
+      cloudDeliverable,
+    )
+      .then((result): string | null =>
+        result.ok || result.reason === 'canceled'
+          ? null
+          : result.reason === 'ambiguous'
+            ? ambiguousDeliverableMessage(
+                cloudDeliverableName(cloudDeliverable.relativePath) ?? '',
+                'download',
+              )
+            : CLOUD_FILE_DOWNLOAD_FAILED,
+      )
+      .catch((error: unknown) => {
+        // A thrown download is an IPC or relay failure, not a refusal.
+        reportClientAppError(error);
+        return CLOUD_FILE_DOWNLOAD_FAILED;
+      })
+      .then((message) => {
+        if (message === null || generation !== localActionGeneration.current)
+          return;
+        setLocalActionError({ scope: localActionScope, message });
+      });
+  }, [cloudDeliverable, localActionScope, projectId, worktreeId]);
   const visibleLocalActionError =
     localActionError?.scope === localActionScope
       ? localActionError.message
@@ -1111,7 +1184,7 @@ function DesktopSharedFileViewerImpl({
 
   const openSelectionComposer = useCallback(
     (selection: FileEditorCommentSelection | null): void => {
-      if (!selection) {
+      if (!selection || !commentsAvailable) {
         setCommentPopover((current) =>
           current?.mode === 'selection' ? null : current,
         );
@@ -1130,7 +1203,7 @@ function DesktopSharedFileViewerImpl({
         },
       });
     },
-    [filePath],
+    [commentsAvailable, filePath],
   );
 
   const handleRichSelection = useCallback((): void => {
@@ -1407,22 +1480,38 @@ function DesktopSharedFileViewerImpl({
   const localActionErrorNotice = visibleLocalActionError ? (
     <div className="mx-1 min-w-0 max-w-64">
       <ErrorBanner
+        errorSource="file-viewer-local-action-error"
         error={visibleLocalActionError}
         className=""
         testId="file-viewer-local-action-error"
       />
     </div>
   ) : null;
+  const cloudDownloadHeaderAction =
+    cloudDeliverable !== null ? (
+      <HeaderActionButton
+        iconOnly
+        tone="neutral"
+        stateStyle="toolbar"
+        aria-label="Download"
+        onClick={downloadCloudFile}
+        data-testid="file-viewer-cloud-download"
+      >
+        <DownloadIcon aria-hidden="true" />
+      </HeaderActionButton>
+    ) : null;
   const headerActions = existingDiffHeaderAction;
   // After the viewer's source toggle, ahead of the host's panel chrome.
   const openElsewhereActions =
     openInBrowserHeaderAction ||
     localActionErrorNotice ||
-    localFileHeaderActions ? (
+    localFileHeaderActions ||
+    cloudDownloadHeaderAction ? (
       <>
         {localActionErrorNotice}
         {openInBrowserHeaderAction}
         {localFileHeaderActions}
+        {cloudDownloadHeaderAction}
       </>
     ) : null;
   const composedTrailingHeaderActions =
@@ -1543,7 +1632,13 @@ function DesktopSharedFileViewerImpl({
   if (error) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <ErrorState space="panel" message={error} />
+        <ErrorState
+          space="panel"
+          message={error}
+          {...(rootsRetryable
+            ? { onRetry: () => setRootsAttempt((attempt) => attempt + 1) }
+            : {})}
+        />
       </div>
     );
   }
@@ -1559,7 +1654,7 @@ function DesktopSharedFileViewerImpl({
       ref={panelRootRef}
       className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col outline-none"
       {...fileFind.surfaceProps}
-      onMouseUp={readOnly ? undefined : handleRichSelection}
+      onMouseUp={commentsAvailable ? handleRichSelection : undefined}
     >
       <div
         className="relative min-h-0 w-full min-w-0 flex-1 overflow-hidden"
@@ -1688,9 +1783,13 @@ function DesktopSharedFileViewerImpl({
                   </div>
                 )}
 
+                <SkippedCommentThreadsNotice
+                  count={artifacts.skippedCommentThreads}
+                />
                 {diffError ? (
                   <div className="shrink-0 p-4">
                     <Notice
+                      errorSource="desktop-shared-file-viewer-diff"
                       intent="destructive"
                       className=""
                       actions={
@@ -1748,7 +1847,7 @@ function DesktopSharedFileViewerImpl({
                         onSplitChange={setDiffSplit}
                         annotations={comments.document.annotations}
                         onOpenLine={(side, line, anchorRect): void => {
-                          if (readOnly) return;
+                          if (!commentsAvailable) return;
                           setCommentPopover({
                             mode: 'line',
                             side,
@@ -1758,7 +1857,7 @@ function DesktopSharedFileViewerImpl({
                         }}
                         threads={comments.document.commentThreads}
                         onComment={(anchor, anchorRect): void => {
-                          if (readOnly) return;
+                          if (!commentsAvailable) return;
                           setCommentPopover({
                             mode: 'selection',
                             anchor: { ...anchor, repoId: diffContext.repoId },
@@ -1807,7 +1906,7 @@ function DesktopSharedFileViewerImpl({
           resolveImageSrc={resolveImageSrc}
           imageRetryGeneration={imageRetryGeneration}
           documentRetryGeneration={documentRetryGeneration}
-          resolveDocumentBytes={resolveDocumentBytes}
+          resolveDocumentBytes={localFiles ? resolveDocumentBytes : undefined}
           renderRichDocument={renderRichDocument}
           supportedDocumentKinds={SUPPORTED_DOCUMENT_KINDS}
           documentRecoveryHint={pt(uiText.officePreview.parseFailedRecovery)}
@@ -1817,7 +1916,7 @@ function DesktopSharedFileViewerImpl({
         />
         {!rendersAsDocument && viewMode !== 'diff' && richAnnotationMarkers}
       </div>
-      {!readOnly && (!rendersAsDocument || viewMode === 'diff') && (
+      {commentsAvailable && (!rendersAsDocument || viewMode === 'diff') && (
         <FileCommentsDrawer
           tabId={tabId}
           active={active}

@@ -77,6 +77,9 @@ export function toUsageIndicatorUsage(
   // window hides the Context row until the harness reports a size.
   const contextWindow = usage.contextTokens === undefined ? 0 : resolvedWindow;
   return {
+    ...(usage.reportedTurnUsage !== undefined
+      ? { reportedTurnUsage: usage.reportedTurnUsage }
+      : {}),
     contextTokens: usage.contextTokens ?? 0,
     contextWindow,
     ...(usage.totalCostUsd === undefined
@@ -120,7 +123,8 @@ export function resolveModelOptionProviderType(
     provider === 'ollama' ||
     provider === 'cursor' ||
     provider === 'copilot' ||
-    provider === 'opencode'
+    provider === 'opencode' ||
+    provider === 'antigravity'
     ? provider
     : undefined;
 }

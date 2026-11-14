@@ -357,6 +357,7 @@ function unavailable(
   code:
     | 'route_unavailable'
     | 'auth_required'
+    | 'policy_blocked'
     | 'capability_unavailable' = 'route_unavailable',
   message?: string,
 ): Extract<AgentDelegationResult<never>, { ok: false }> {
@@ -401,7 +402,13 @@ export async function isDelegationRouteAuthorized(options: {
   readonly route: ResolvedAgentRouteSnapshot;
   readonly captured: DelegationRouteAuthoritySnapshot;
   readonly authGeneration: (
-    provider: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+    provider:
+      | 'claude'
+      | 'codex'
+      | 'cursor'
+      | 'copilot'
+      | 'antigravity'
+      | 'opencode',
   ) => number;
 }): Promise<boolean> {
   const { owner, route, captured } = options;
@@ -543,7 +550,13 @@ export class DelegationRouteRuntime {
       ) => AgentSessionOptions | undefined;
       getWindow: () => BrowserWindow | null;
       authGeneration: (
-        provider: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
+        provider:
+          | 'claude'
+          | 'codex'
+          | 'cursor'
+          | 'copilot'
+          | 'antigravity'
+          | 'opencode',
       ) => number;
       /** Host-only lookup of a parent delegate's grant and retained route. */
       capabilityContext?: (
@@ -775,7 +788,10 @@ export class DelegationRouteRuntime {
             await resolveSessionWorkOwner(owner),
           )
         )
-          return unavailable('capability_unavailable');
+          return unavailable(
+            'policy_blocked',
+            'This model is blocked by your organization policy.',
+          );
         const authGeneration = this.options.authGeneration(harness);
         const workspaceEnvironment = resolveCodexRuntimeEnvironmentProfile({
           runtime: 'agent',

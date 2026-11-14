@@ -297,6 +297,7 @@ export function existingShareLoadFailure(
     status: 'blocked',
     body: (
       <ErrorBanner
+        errorSource="existing-share-load-failure"
         className=""
         error={
           refusal === null
@@ -1121,6 +1122,7 @@ export function ShareResourceDialog({
           status: 'blocked',
           body: (
             <ErrorBanner
+              errorSource="share-resource-dialog"
               className=""
               error={shareFailureMessage(resourceNoun, describeError(error))}
             />
@@ -2283,6 +2285,7 @@ export function ShareResourceDialog({
     : copy.organizationSetupAction;
   const organizationSetupError = (
     <ErrorBanner
+      errorSource="share-resource-dialog-organization-setup-failed"
       className=""
       error={copy.organizationSetupFailed}
       testId={`${p}-set-up-organization-error`}
@@ -2702,6 +2705,7 @@ export function ShareResourceDialog({
         )}
       {validationError && state.status !== 'error' && (
         <ErrorBanner
+          errorSource="share-resource-dialog-validation"
           className=""
           error={validationError}
           testId={`${p}-validation-error`}

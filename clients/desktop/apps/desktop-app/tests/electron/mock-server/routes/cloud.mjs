@@ -58,6 +58,7 @@ const CLOUD_CAPABILITIES = [
   'model-routing-v1',
   'shared-containers-v1',
   'shared-container-dismissals-v1',
+  'shared-container-owner-departures-v1',
 ];
 
 /**
@@ -65,13 +66,19 @@ const CLOUD_CAPABILITIES = [
  * (CAN-4052): `cloud.withholdSharedContainerDismissalsCapability: true` drops
  * `shared-container-dismissals-v1` from every capability list the key reads,
  * so the desktop's unsupported-server fallback can be exercised end to end.
+ * `cloud.withholdSharedContainerOwnerDeparturesCapability: true` does the same
+ * for a Cloud deployed before owner departure notices (CAN-5120).
  */
 function withoutWithheldCapabilities(capabilities, cloudScenario) {
-  return cloudScenario?.withholdSharedContainerDismissalsCapability === true
-    ? capabilities.filter(
-        (capability) => capability !== 'shared-container-dismissals-v1',
-      )
-    : capabilities;
+  const withheld = new Set([
+    ...(cloudScenario?.withholdSharedContainerDismissalsCapability === true
+      ? ['shared-container-dismissals-v1']
+      : []),
+    ...(cloudScenario?.withholdSharedContainerOwnerDeparturesCapability === true
+      ? ['shared-container-owner-departures-v1']
+      : []),
+  ]);
+  return capabilities.filter((capability) => !withheld.has(capability));
 }
 
 /** The account `/api/v1/<ns>/account` reports unless a scenario renames it. */
@@ -122,6 +129,12 @@ const TELEMETRY_ALL_LOCKED_CLOUD_API_KEY = 'csk_telemetry_all_locked_e2e';
 // and `cloud-sign-in-modal.spec.mjs`.
 const TELEMETRY_ALL_LOCKED_ORG_ID = 'e2e1a0c4-7d3b-4c2a-9f10-0000000c3459';
 const NOW = '2026-06-18T00:00:00.000Z';
+
+/**
+ * Each shared skill a desktop created in this process, as sent (CAN-6176):
+ * a spec reads it to tell a cancelled cloud-copy consent from an allowed one.
+ */
+export const sharedSkillCreates = [];
 const SCOPED_LINKS_CLOUD_API_KEY = 'csk_brady_scoped_links_e2e';
 const SCOPED_LINKS_ORGANIZATION = {
   id: '22222222-2222-4222-8222-222222222222',
@@ -1684,7 +1697,9 @@ export async function handleCloudRequest(request, response, url) {
         name: body.name.trim(),
         personalOrganizationId: replacement,
         alreadyUpgraded: false,
-        warnings: [],
+        warnings: cloud.personalUpgradePolicyPending
+          ? ['policy-refresh-pending']
+          : [],
       };
       cloud.personalOrganizationId = replacement;
       cloud.organizations = [
@@ -3280,7 +3295,8 @@ export async function handleCloudRequest(request, response, url) {
     jsonResponse(
       response,
       200,
-      cloudScenario?.withholdSharedContainerDismissalsCapability === true
+      cloudScenario?.withholdSharedContainerDismissalsCapability === true ||
+        cloudScenario?.withholdSharedContainerOwnerDeparturesCapability === true
         ? {
             ...accountPayload,
             capabilities: withoutWithheldCapabilities(
@@ -4836,6 +4852,30 @@ export async function handleCloudRequest(request, response, url) {
     }
     response.writeHead(204);
     response.end();
+    return true;
+  }
+
+  // A desktop adding a skill to the cloud account (CAN-6176): recorded, so a
+  // spec can tell a cancelled consent from an allowed one.
+  if (method === 'POST' && pathname === '/api/v1/canopy/skills') {
+    if (!hasValidAuth(request)) {
+      jsonResponse(response, 401, { error: 'Invalid API key.' });
+      return true;
+    }
+    const body = await readJsonBody(request);
+    sharedSkillCreates.push(body);
+    const rawSkill = typeof body?.rawSkill === 'string' ? body.rawSkill : '';
+    const name = /^name:\s*(.+)$/m.exec(rawSkill)?.[1]?.trim() ?? 'skill';
+    jsonResponse(response, 201, {
+      ...MARKETPLACE_SHARED_SKILL,
+      id: randomUUID(),
+      name,
+      description: '',
+      contentHash: `sha256:${createHash('sha256').update(rawSkill).digest('hex')}`,
+      shareScope: 'private',
+      owner: { type: 'user', id: CLOUD_ACCOUNT.id, name: CLOUD_ACCOUNT.name },
+      rawSkill,
+    });
     return true;
   }
 

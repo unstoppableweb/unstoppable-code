@@ -746,9 +746,11 @@ export function ArchivedContainerView({
   );
 
   return (
-    <div
+    <Surface
+      variant="pane"
+      extent="parent"
       data-testid="archived-container-view"
-      className="flex h-full min-h-0 flex-col bg-base"
+      className="flex min-h-0 flex-col"
     >
       {/* Header */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
@@ -1128,9 +1130,13 @@ export function ArchivedContainerView({
         ) : (
           <div className="flex min-h-0 flex-1">
             {/* Chat left nav: persistent list for quick transcript switching. */}
-            <div
+            <Surface
+              variant="section"
+              boundary="right"
+              padding="tight"
+              gap="tight"
               data-testid="archived-chat-nav"
-              className="flex w-64 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 [&>*]:shrink-0"
+              className="w-64 shrink-0 overflow-y-auto [&>*]:shrink-0"
             >
               {activeChats.length > 0 && (
                 <div>
@@ -1196,7 +1202,7 @@ export function ArchivedContainerView({
                   </Disclosure>
                 </div>
               )}
-            </div>
+            </Surface>
 
             {/* Transcript pane owns the viewport and title insets. */}
             <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
@@ -1364,9 +1370,13 @@ export function ArchivedContainerView({
       ) : (
         <div className="flex min-h-0 flex-1">
           {/* Plan left nav: persistent list for quick plan switching. */}
-          <div
+          <Surface
+            variant="section"
+            boundary="right"
+            padding="tight"
+            gap="tight"
             data-testid="archived-plan-nav"
-            className="flex w-64 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 [&>*]:shrink-0"
+            className="w-64 shrink-0 overflow-y-auto [&>*]:shrink-0"
           >
             {plans.map((plan) => {
               const isSelected = plan.id === selectedPlanId;
@@ -1384,7 +1394,7 @@ export function ArchivedContainerView({
                 </ListRow>
               );
             })}
-          </div>
+          </Surface>
 
           {/* Document pane for the selected plan. */}
           <div
@@ -1438,6 +1448,6 @@ export function ArchivedContainerView({
           archivedSource={archivedSource}
         />
       )}
-    </div>
+    </Surface>
   );
 }

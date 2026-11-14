@@ -143,6 +143,8 @@ export async function createScriptWorkerFixture(
       return Promise.resolve({
         cwd: dir,
         env: {
+          // Keep login-shell startup inside the fixture.
+          HOME: dir,
           ...(execution?.childEnvironment ?? { PATH: '/usr/bin:/bin' }),
           ...secrets.env,
         },

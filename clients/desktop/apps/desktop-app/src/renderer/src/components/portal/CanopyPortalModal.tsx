@@ -29,6 +29,11 @@ import { RemoteControlGuestCta } from '@/components/portal/RemoteControlGuestCta
 import { RemoteControlMobileAppsCta } from '@/components/portal/RemoteControlMobileAppsCta';
 import { RemoteControlPairingQr } from '@/components/portal/RemoteControlPairingQr';
 import {
+  expiresInLabel,
+  SAMPLE_REMAINING_MS,
+  useRemainingMs,
+} from '@/components/portal/pairing-countdown';
+import {
   IncomingPairingRequestActions,
   IncomingPairingRequestBody,
 } from '@/components/remote-access/IncomingPairingRequest';
@@ -89,6 +94,10 @@ const COPY_LINK_LABEL = 'Copy link';
 const PAIRING_ALTERNATIVE = `Or open ${REMOTE_CONTROL_LABEL} in the web or mobile app and choose this computer. You'll confirm a matching code here.`;
 const EXPIRED_BODY = 'The QR code and link expired. Paired devices still work.';
 const PAIR_DEVICE_BUTTON = 'Pair a device';
+/** The expired view's renew button, in Copy link's place. */
+const RENEW_CODE_BUTTON = 'Get a new code';
+/** The expired view's line in the countdown's place. */
+const EXPIRED_LABEL = 'Expired';
 const PAIRED_BODY =
   'It can control this computer now. You can remove it anytime in Settings.';
 const DONE_BUTTON = 'Done';
@@ -173,37 +182,6 @@ interface CanopyPortalModalProps {
    * The modal stays dumb — no OAuth logic inside it.
    */
   onRequestSignIn: () => void;
-}
-
-/**
- * The pairing countdown (CAN-5985 A2). A deliberate deviation from
- * numbers-and-time's absolute expiry time: the window lasts ten minutes and
- * the user acts inside it, so a ticking `m:ss` answers "how long do I have"
- * better than a clock time. "Expires in" keeps it from reading as a time of
- * day.
- */
-function expiresInLabel(remainingMs: number): string {
-  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `Expires in ${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
-
-/** The opening state's stand-in countdown: a full window, for the skeleton. */
-const SAMPLE_REMAINING_MS = 10 * 60_000;
-
-/** Milliseconds left until `expiresAt`, ticking each second; null when none. */
-function useRemainingMs(expiresAt: string | null): number | null {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (expiresAt === null) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return (): void => window.clearInterval(timer);
-  }, [expiresAt]);
-  if (expiresAt === null) return null;
-  const end = Date.parse(expiresAt);
-  return Number.isNaN(end) ? null : end - now;
 }
 
 function devicesPairedLabel(count: number): string {
@@ -779,11 +757,13 @@ export function CanopyPortalModal({
     view.kind === 'signed-out' ||
     view.kind === 'guest' ||
     view.kind === 'upgrade' ||
-    view.kind === 'off'
-      ? OFF_BODY
-      : view.kind === 'opening' || view.kind === 'pairing'
-        ? PAIRING_SUBTITLE
-        : undefined;
+    view.kind === 'off' ? (
+      OFF_BODY
+    ) : view.kind === 'opening' || view.kind === 'pairing' ? (
+      <PairingSubtitle expired={false} />
+    ) : view.kind === 'expired' ? (
+      <PairingSubtitle expired />
+    ) : undefined;
   const pairingStates =
     view.kind === 'opening' ||
     view.kind === 'pairing' ||
@@ -820,7 +800,6 @@ export function CanopyPortalModal({
       </Button>
     ) : pairedSummary !== null ||
       view.kind === 'off' ||
-      view.kind === 'expired' ||
       view.kind === 'pairing-failed' ? (
       <>
         {/* Primary actions only: the X and an outside click dismiss. */}
@@ -836,7 +815,8 @@ export function CanopyPortalModal({
             {busy === 'enabling' ? 'Enabling…' : ENABLE_BUTTON}
           </Button>
         ) : null}
-        {view.kind === 'expired' || view.kind === 'pairing-failed' ? (
+        {/* An expired link renews from the body, in Copy link's place. */}
+        {view.kind === 'pairing-failed' ? (
           <Button
             variant="primary"
             size="compact"
@@ -947,28 +927,29 @@ export function CanopyPortalModal({
           label="Opening pairing"
           testId="remote-control-pairing-opening"
         >
-          <PairingLink qrSrc={null} link="" remainingMs={SAMPLE_REMAINING_MS} />
+          <PairingLink state="sample" />
         </Skeleton>
       ) : null}
 
       {view.kind === 'pairing' && pairingLink ? (
         <div data-testid="remote-control-pairing">
           <PairingLink
+            state="live"
             qrSrc={pairingQrSrc}
             link={pairingLink.link}
             remainingMs={view.remainingMs}
-            live
           />
         </div>
       ) : null}
 
+      {/* The expired view keeps the pairing layout, so the dialog holds its
+          height through expiry and renewal. */}
       {view.kind === 'expired' ? (
-        <p
-          className="text-s text-pretty fg-secondary"
-          data-testid="remote-control-pairing-expired"
-        >
-          {EXPIRED_BODY}
-        </p>
+        <PairingLink
+          state="expired"
+          onRenew={() => void openPairing()}
+          renewDisabled={busy !== 'idle'}
+        />
       ) : null}
 
       {view.kind !== 'request' && view.kind !== 'paired' ? (
@@ -1010,6 +991,7 @@ export function CanopyPortalModal({
       ) : null}
 
       <DesktopErrorBanner
+        errorSource="canopy-portal-action-error"
         className=""
         error={actionError?.error}
         {...(actionError?.details === undefined
@@ -1031,45 +1013,123 @@ export function CanopyPortalModal({
 }
 
 /**
- * The pairing view's body (CAN-5985 A2): the QR code first, the link and its
- * countdown under it, then the app method. The opening state renders it with
- * sample values inside a `Skeleton` (`live` false), so it carries no test ids
- * there and specs never find a stand-in control.
+ * The pairing states' subtitle. Both strings share one grid cell, so the
+ * header is as tall as the taller one: the pairing line wraps where the
+ * shorter expired line would not, and the dialog would shrink at expiry and
+ * grow back on renewal. The string not showing is invisible and hidden from
+ * assistive technology.
  */
-function PairingLink({
-  qrSrc,
-  link,
-  remainingMs,
-  live = false,
+function PairingSubtitle({
+  expired,
 }: {
-  readonly qrSrc: string | null;
-  readonly link: string;
-  readonly remainingMs: number;
-  readonly live?: boolean;
+  readonly expired: boolean;
 }): JSX.Element {
+  return (
+    <span className="grid">
+      <span
+        aria-hidden={expired ? true : undefined}
+        className={`col-start-1 row-start-1 ${expired ? 'invisible' : ''}`}
+      >
+        {PAIRING_SUBTITLE}
+      </span>
+      <span
+        aria-hidden={expired ? undefined : true}
+        className={`col-start-1 row-start-1 ${expired ? '' : 'invisible'}`}
+      >
+        {EXPIRED_BODY}
+      </span>
+    </span>
+  );
+}
+
+type PairingLinkProps =
+  | {
+      readonly state: 'live';
+      readonly qrSrc: string | null;
+      readonly link: string;
+      readonly remainingMs: number;
+    }
+  | { readonly state: 'sample' }
+  | {
+      readonly state: 'expired';
+      readonly onRenew: () => void;
+      readonly renewDisabled: boolean;
+    };
+
+/**
+ * The pairing view's body (CAN-5985 A2): the QR code first, the link and its
+ * countdown under it, then the app method. Every state draws the same rows,
+ * so the dialog keeps its height from opening through expiry and renewal.
+ *
+ * - `live`: the code, Copy link and the countdown, with their test ids.
+ * - `sample`: the opening state's stand-in inside a `Skeleton`, with sample
+ *   values and no test ids, so specs never find a stand-in control.
+ * - `expired`: a blank tile, the renew button in Copy link's place and
+ *   "Expired" in the countdown's.
+ */
+function PairingLink(props: PairingLinkProps): JSX.Element {
+  const live = props.state === 'live';
   return (
     <Stack gap="group">
       <Stack gap="item" align="center">
-        <RemoteControlPairingQr qrSrc={qrSrc} />
-        <Inline gap="item" justify="center" wrap>
-          <CopyButton
-            value={link}
-            label={COPY_LINK_LABEL}
-            ariaLabel={COPY_LINK_LABEL}
-            title={COPY_LINK_LABEL}
-            variant="secondary"
-            size="compact"
-            {...(live ? { dataTestId: 'remote-control-copy-link' } : {})}
-          />
-          <p
-            className="text-s tabular-nums fg-secondary"
-            {...(live
-              ? { 'data-testid': 'remote-control-pairing-countdown' }
-              : {})}
-          >
-            {expiresInLabel(remainingMs)}
-          </p>
-        </Inline>
+        {props.state === 'expired' ? (
+          <RemoteControlPairingQr qrSrc={null} expired />
+        ) : (
+          <RemoteControlPairingQr qrSrc={live ? props.qrSrc : null} />
+        )}
+        {/* The countdown sits on its own row: beside the button, the
+            centered pair re-centered whenever "Copy link" became "Copied"
+            or the count lost a digit, so both jumped sideways. */}
+        <Stack gap="tight" align="center">
+          {props.state === 'expired' ? (
+            <>
+              {/* Deliberate deviation from the Dialog actions rule (a
+                  dialog's own actions sit in the footer) for the Remote
+                  Control dialog's expired state: renewing acts on the code,
+                  as Copy link does, and doesn't complete the dialog, so it
+                  takes Copy link's place in the body. */}
+              <Button
+                variant="secondary"
+                size="compact"
+                onClick={props.onRenew}
+                disabled={props.renewDisabled}
+                data-testid="remote-control-pair-device"
+              >
+                {RENEW_CODE_BUTTON}
+              </Button>
+              <p
+                className="text-s tabular-nums fg-secondary"
+                data-testid="remote-control-pairing-expired"
+              >
+                {EXPIRED_LABEL}
+              </p>
+            </>
+          ) : (
+            <>
+              <CopyButton
+                value={props.state === 'live' ? props.link : ''}
+                label={COPY_LINK_LABEL}
+                ariaLabel={COPY_LINK_LABEL}
+                title={COPY_LINK_LABEL}
+                variant="secondary"
+                size="compact"
+                {...(live ? { dataTestId: 'remote-control-copy-link' } : {})}
+              />
+              <p
+                className="text-s tabular-nums fg-secondary"
+                {...(live
+                  ? { 'data-testid': 'remote-control-pairing-countdown' }
+                  : {})}
+              >
+                {expiresInLabel(
+                  props.state === 'live'
+                    ? props.remainingMs
+                    : SAMPLE_REMAINING_MS,
+                )}
+              </p>
+            </>
+          )}
+        </Stack>
       </Stack>
       <p className="text-s text-pretty fg-secondary">{PAIRING_ALTERNATIVE}</p>
     </Stack>

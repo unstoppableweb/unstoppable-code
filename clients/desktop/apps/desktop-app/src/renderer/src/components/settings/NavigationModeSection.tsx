@@ -87,6 +87,7 @@ export function NavigationModeSection(): JSX.Element {
       }
     >
       <ErrorBanner
+        errorSource="settings-navigation-mode-error"
         className=""
         error={saveError}
         testId="settings-navigation-mode-error"

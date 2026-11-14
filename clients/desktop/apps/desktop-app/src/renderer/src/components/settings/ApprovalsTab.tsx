@@ -850,6 +850,7 @@ export function ApprovalsTab(): JSX.Element {
     >
       <SettingsSection title="Default mode">
         <DesktopErrorBanner
+          errorSource="approval-defaults-error"
           className=""
           error={defaultsError?.error}
           {...(defaultsError?.details === undefined
@@ -888,6 +889,7 @@ export function ApprovalsTab(): JSX.Element {
         description="Apply in every project, whatever the default mode."
       >
         <DesktopErrorBanner
+          errorSource="approval-global-rules-error"
           className=""
           error={globalRulesError?.error}
           {...(globalRulesError?.details === undefined
@@ -919,6 +921,7 @@ export function ApprovalsTab(): JSX.Element {
         ) : (
           <>
             <DesktopErrorBanner
+              errorSource="approval-project-rules-error"
               className=""
               error={projectRulesError?.error}
               {...(projectRulesError?.details === undefined

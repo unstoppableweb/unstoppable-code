@@ -1,6 +1,7 @@
 import {
   getProviderForModel,
   pinInheritingAgentModel,
+  type AgentProviderType,
   type ChatModel,
 } from '@canopy/desktop-shared/types';
 
@@ -11,6 +12,6 @@ import {
 export function pickProvider(
   model: ChatModel,
   defaultModel: ChatModel | undefined,
-): string | undefined {
+): AgentProviderType | undefined {
   return getProviderForModel(pinInheritingAgentModel(model, defaultModel));
 }

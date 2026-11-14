@@ -133,7 +133,7 @@ export async function settleInternalRootW5(
   } = {},
 ): Promise<'settled' | 'nothing-to-settle'> {
   const abandonArchives = options.abandonArchives ?? [];
-  const abandonCommits = options.abandonCommits ?? [];
+  const abandonCommits = [...(options.abandonCommits ?? [])];
   if (abandonCommits.length && hostOperatingSystem() === 'win32')
     throw new InternalRootMigrationRefused(
       'recovery-required',
@@ -288,6 +288,12 @@ export async function settleInternalRootW5(
       {
         ...context,
         diagnosisScope: 'w5-owned',
+        internalRootSettlement: {
+          source: qualification.identity.source,
+          transactionId: qualification.transactionId,
+          assertHeld: qualification.assertHeld,
+          abandonCommits,
+        },
         adoptInternalRootMetadata: async (
           diagnosis,
           assertHeld,

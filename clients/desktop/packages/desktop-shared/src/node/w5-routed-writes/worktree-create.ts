@@ -1,4 +1,5 @@
-import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
+import { isDeepStrictEqual } from 'node:util';
+import { admitRoutedW5Storage } from './record-store';
 import type { W5CommitOptions } from '@canopy/core-runtime/node/w5/commit-scope';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { createW5KeyedOperationRunner } from '@canopy/core-runtime/node/w5/keyed-operation';
@@ -13,22 +14,43 @@ import type { WorktreeCreationPromoteDecision } from '../worktree-record-decisio
 import { getWorkspaceItem } from '../lib/workspace-cli-reads';
 import {
   getSingleRepoWorktreeDir,
+  getWorktreesFilePath,
   multiRepoGitEntries,
 } from '../lib/worktree-cli-reads';
 import { updateCliWorktreeList } from '../lib/worktree-create-records';
 import {
   createWorktreeGit,
+  proveFailedWorktreeCreationAbsent,
   makeWorktreeId,
   normalizeBranchName,
   buildTrackedRepoBaseBranches,
   seedCreatedWorktreePanelLayoutMode,
 } from '../lib/worktree-create-effects';
 import type { CreateWorktreeServiceOptions } from '../lib/worktree-service';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import type { WorktreeData } from '../../types';
 import { acquireW5DesktopDeleteGate } from '@canopy/core-platform/w5-process-file-lock';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { assertNoConflictingW5Reservation } from './worktree-delete-records';
+
+async function readReservedImage(
+  store: W5CommitLogFileStore,
+  workspaceId: string,
+  worktreeId: string,
+): Promise<Record<string, unknown>> {
+  const read = await store.read(getWorktreesFilePath(workspaceId));
+  if (read.state !== 'present')
+    throw new Error('Reserved worktree is unreadable');
+  const document: unknown = JSON.parse(read.raw);
+  if (!isRecord(document) || !Array.isArray(document.worktrees))
+    throw new Error('Reserved worktree is unreadable');
+  const row: unknown = document.worktrees.find(
+    (value: unknown) => isRecord(value) && value.id === worktreeId,
+  );
+  if (!isRecord(row)) throw new Error('Reserved worktree is no longer tracked');
+  return row;
+}
 
 export class CliWorktreeCoworkError extends Error {
   constructor(workspaceId: string) {
@@ -69,7 +91,7 @@ export function createRoutedCliWorktree(
         store.markReservationRecoveryRequired(id, diagnostics),
     }),
   });
-  return withStorageAdmission(
+  return admitRoutedW5Storage(
     [{ namespace: 'worktree_list', writer: 'desktop_cli' }],
     () =>
       keyed(
@@ -128,60 +150,81 @@ export function createRoutedCliWorktree(
             operation: 'internal.cli.worktree.reserve',
             beforeDecision: () => signal.throwIfAborted(),
           };
-          const worktree = await retry.run('cli worktree reserve', () =>
-            store.withCommit(reservationCommit, () =>
-              updateCliWorktreeList(store, workspace.id, (rows) => {
-                // H10: allocate against the authoritative image on each decision attempt.
-                const id = makeWorktreeId(
-                  rows.map((row) => row.id),
-                  explicitBranch,
-                );
-                const entries =
-                  workspace.type === 'single-repo'
-                    ? [
-                        {
-                          repoPath: workspace.repoPath,
-                          worktreePath: getSingleRepoWorktreeDir(
-                            workspace.id,
-                            id,
-                          ),
-                        },
-                      ]
-                    : multiRepoGitEntries(workspace, id);
-                const row: WorktreeData = {
-                  id,
-                  branchName: explicitBranch ?? id,
-                  createdAt,
-                  setupPhase: 'git-pending',
-                  creation: {
-                    operationId,
-                    state: 'pending',
-                    phase: 'reserved',
-                    checkouts: entries.map((entry) => ({
-                      repositoryPath: entry.repoPath,
-                      checkoutPath: entry.worktreePath,
-                    })),
+          const { worktree, reservedWorktree } = await retry.run(
+            'cli worktree reserve',
+            () =>
+              store.withCommit(reservationCommit, async () => {
+                const worktree = await updateCliWorktreeList(
+                  store,
+                  workspace.id,
+                  (rows) => {
+                    // H10: allocate against the authoritative image on each decision attempt.
+                    const id = makeWorktreeId(
+                      rows.map((row) => row.id),
+                      explicitBranch,
+                    );
+                    const entries =
+                      workspace.type === 'single-repo'
+                        ? [
+                            {
+                              repoPath: workspace.repoPath,
+                              worktreePath: getSingleRepoWorktreeDir(
+                                workspace.id,
+                                id,
+                              ),
+                            },
+                          ]
+                        : multiRepoGitEntries(workspace, id);
+                    const row: WorktreeData = {
+                      id,
+                      branchName: explicitBranch ?? id,
+                      createdAt,
+                      setupPhase: 'git-pending',
+                      creation: {
+                        operationId,
+                        state: 'pending',
+                        phase: 'reserved',
+                        checkouts: entries.map((entry) => ({
+                          repositoryPath: entry.repoPath,
+                          checkoutPath: entry.worktreePath,
+                        })),
+                      },
+                    };
+                    const decision = applyWorktreeCreationReservationTo(rows, {
+                      kind: 'worktree.create.reserve',
+                      worktree: row,
+                    });
+                    if ('refusal' in decision)
+                      throw attempt.validationError(
+                        new Error(
+                          decision.refusal.reason === 'branch-reserved'
+                            ? rows.some(
+                                (existing) =>
+                                  existing.branchName === row.branchName &&
+                                  (!existing.creation ||
+                                    existing.creation.state === 'complete'),
+                              )
+                              ? `a branch named '${row.branchName}' already exists`
+                              : `Branch ${row.branchName} is already reserved`
+                            : 'Checkout is already reserved',
+                        ),
+                      );
+                    if (decision.status !== 'reserved')
+                      throw attempt.validationError(
+                        new Error('Worktree ID collision'),
+                      );
+                    return { rows: decision.worktrees, value: row };
                   },
+                );
+                return {
+                  worktree,
+                  reservedWorktree: await readReservedImage(
+                    store,
+                    workspace.id,
+                    worktree.id,
+                  ),
                 };
-                const decision = applyWorktreeCreationReservationTo(rows, {
-                  kind: 'worktree.create.reserve',
-                  worktree: row,
-                });
-                if ('refusal' in decision)
-                  throw attempt.validationError(
-                    new Error(
-                      decision.refusal.reason === 'branch-reserved'
-                        ? `Branch ${row.branchName} is already reserved`
-                        : 'Checkout is already reserved',
-                    ),
-                  );
-                if (decision.status !== 'reserved')
-                  throw attempt.validationError(
-                    new Error('Worktree ID collision'),
-                  );
-                return { rows: decision.worktrees, value: row };
               }),
-            ),
           );
           attempt.beforeEffects();
           const diagnostics: WorkspaceCreationDiagnostics = {
@@ -195,7 +238,58 @@ export function createRoutedCliWorktree(
           };
           await store.updateReservationDiagnostics(operationId, diagnostics);
           signal.throwIfAborted();
-          await createWorktreeGit(workspace, worktree, options, signal);
+          try {
+            await createWorktreeGit(workspace, worktree, options, signal);
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              (await proveFailedWorktreeCreationAbsent(
+                error,
+                workspace,
+                worktree,
+                signal,
+              ))
+            ) {
+              try {
+                await retry.run('cli worktree no-effect refusal', () =>
+                  store.withCommit(
+                    {
+                      operation: 'internal.cli.worktree.refused',
+                      beforeDecision: () => signal.throwIfAborted(),
+                    },
+                    async () => {
+                      const image = await readReservedImage(
+                        store,
+                        workspace.id,
+                        worktree.id,
+                      );
+                      if (!isDeepStrictEqual(image, reservedWorktree))
+                        throw new Error(
+                          'Reserved worktree is no longer tracked',
+                        );
+                      return updateCliWorktreeList(
+                        store,
+                        workspace.id,
+                        (rows) => {
+                          const current = rows.find(
+                            (row) => row.id === worktree.id,
+                          );
+                          return {
+                            rows: rows.filter((row) => row !== current),
+                            value: undefined,
+                          };
+                        },
+                      );
+                    },
+                  ),
+                );
+                attempt.confirmEffectsAbsent(error);
+              } catch {
+                // Unconfirmed cleanup keeps the primary Git error and recovery evidence.
+              }
+            }
+            throw error;
+          }
           const promote: WorktreeCreationPromoteDecision =
             workspace.type === 'single-repo'
               ? {
@@ -242,7 +336,18 @@ export function createRoutedCliWorktree(
                   throw new Error('Branch is already reserved');
                 if (!decision.updated)
                   throw new Error('Reserved worktree is no longer tracked');
-                return { rows: decision.worktrees, value: undefined };
+                const promoted = decision.worktrees.find(
+                  (row) => row.id === worktree.id,
+                );
+                if (!promoted)
+                  throw new Error('Reserved worktree is no longer tracked');
+                return {
+                  rows: [
+                    promoted,
+                    ...decision.worktrees.filter((row) => row !== promoted),
+                  ],
+                  value: undefined,
+                };
               }),
             ),
           );

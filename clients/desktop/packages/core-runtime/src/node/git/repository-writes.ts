@@ -14,6 +14,12 @@ export type GitRepositoryWrite =
   | { readonly kind: 'local-branch'; readonly branch: string }
   /** `show-ref --verify --quiet refs/remotes/origin/<branch>` */
   | { readonly kind: 'remote-branch'; readonly branch: string }
+  | {
+      readonly kind: 'catalog-branch-tip';
+      readonly branch: string;
+      readonly remote: boolean;
+    }
+  | { readonly kind: 'branch-tracking-config' }
   /**
    * `fetch --no-tags origin refs/heads/<branch>:refs/remotes/origin/<branch>`,
    * non-interactive and bounded at 10 seconds, which contacts `origin`.
@@ -25,11 +31,13 @@ export type GitRepositoryWrite =
   | { readonly kind: 'local-branches-under'; readonly name: string }
   /** `rev-parse --abbrev-ref HEAD` */
   | { readonly kind: 'current-branch' }
+  /** `symbolic-ref --quiet HEAD` */
+  | { readonly kind: 'symbolic-head' }
   /** Effect: `checkout <branch>`; never killed once started. */
   | { readonly kind: 'checkout'; readonly branch: string }
   /** Effect: `checkout -b <name> <startPoint>`; never killed once started. */
   | {
-      readonly kind: 'checkout-new-branch';
+      readonly kind: 'checkout-new-branch' | 'prepare-new-branch';
       readonly name: string;
       readonly startPoint: string;
     }

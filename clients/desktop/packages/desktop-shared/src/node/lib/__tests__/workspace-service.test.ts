@@ -1,16 +1,54 @@
-import { execFileSync } from 'node:child_process';
+import type * as TestHost from '../../w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host';
+import type * as CoreStorage from '@canopy/core-runtime/storage';
+jest.mock('node:worker_threads', () =>
+  jest
+    .requireActual<
+      typeof TestHost
+    >('../../w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host')
+    .createTsxWorkerThreads(),
+);
+jest.mock('@canopy/core-runtime/storage', () => {
+  const actual = jest.requireActual<typeof CoreStorage>(
+    '@canopy/core-runtime/storage',
+  );
+  return {
+    ...actual,
+    STORAGE_OWNERSHIP: actual.STORAGE_OWNERSHIP.map((row) =>
+      ['workspace_index', 'workspace_manifest', 'worktree_list'].includes(
+        row.id,
+      )
+        ? { ...row, transitionOwner: 'daemon', currentWriters: [] }
+        : row,
+    ),
+  };
+});
+import { startW5ServiceAdapter } from '../../w5-routed-writes/__tests__/fixtures/w5-service-adapter';
+let routed: Awaited<ReturnType<typeof startW5ServiceAdapter>>;
+async function createAndPersistNewMultiRepoWorkspace(
+  name: string,
+): Promise<MultiRepoSidebarItem> {
+  const item = await routed.createWorkspace({ kind: 'multi', name });
+  if (item.type !== 'multi-repo')
+    throw new Error('Expected multi-repo workspace');
+  return item;
+}
+const createNewSingleRepoWorkspace = (name: string): Promise<SidebarItem> =>
+  routed.createWorkspace({ kind: 'single', name });
+const importWorkspaceFromRepoPath = (repoPath: string): Promise<SidebarItem> =>
+  routed.createWorkspace({ kind: 'import', repoPath });
+import type * as FsPromises from 'node:fs/promises';
+import { promisify } from 'node:util';
+import { execFile, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { registerW5Host } from '@canopy/execution-engine/node/w5-host-cohort';
-import {
-  createAndPersistNewMultiRepoWorkspace,
-  createNewSingleRepoWorkspace,
-  getWorkspaceItem,
-  importWorkspaceFromRepoPath,
-  toWorkspaceCliRecord,
-} from '../workspace-service';
-import type { CoworkSidebarItem } from '../../../types';
+import { leaveW5RootPresenceSync } from '../../w5-root-presence';
+import { getWorkspaceItem, toWorkspaceCliRecord } from '../workspace-service';
+import type {
+  CoworkSidebarItem,
+  MultiRepoSidebarItem,
+  SidebarItem,
+} from '../../../types';
 
 function runGit(repoPath: string, args: string[]): void {
   execFileSync('git', args, { cwd: repoPath, stdio: 'ignore' });
@@ -39,18 +77,16 @@ describe('desktop-shared node project service', () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'canopy-workspace-service-'),
-    );
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'w5-ws-'));
     process.env.CANOPY_DATA_DIR = path.join(tempDir, 'data');
-    // Shared W5 writers run only in registered hosts (CAN-3797).
-    await registerW5Host({
-      dataRoot: process.env.CANOPY_DATA_DIR ?? '',
-      hostKind: 'cli',
-    });
+    routed = await startW5ServiceAdapter(process.env.CANOPY_DATA_DIR ?? '');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await routed.close();
+    leaveW5RootPresenceSync();
+    await Promise.resolve();
     if (originalCanopyDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
     } else {
@@ -61,7 +97,7 @@ describe('desktop-shared node project service', () => {
 
   it.each(['tree/linked/pstack', 'blob/linked/pstack/README.md'])(
     'clones the default branch and preserves the explicit destination for %s',
-    (suffix) => {
+    async (suffix) => {
       const source = path.join(tempDir, 'source');
       createCommittedRepo(source);
       runGit(source, ['branch', '-M', 'default-main']);
@@ -87,20 +123,21 @@ describe('desktop-shared node project service', () => {
       ]);
       const destination = path.join(tempDir, 'custom explicit destination');
       // A real child receives an isolated Git environment; Jest virtualizes process.env.
-      const output = execFileSync(
+      const endpoint = path.join(tempDir, 's');
+      await routed.harness.listen(endpoint);
+      const { stdout: output } = await promisify(execFile)(
         process.execPath,
         [
           '--import',
           'tsx',
-          '-e',
-          'const { registerW5Host } = require(process.argv[4]); const { addWorkspaceFromRemote } = require(process.argv[1]); registerW5Host({ dataRoot: process.env.CANOPY_DATA_DIR, hostKind: "cli" }).then(() => addWorkspaceFromRemote(process.argv[2], process.argv[3])).then(workspace => process.stdout.write(JSON.stringify(workspace))).catch(error => { console.error(error); process.exitCode = 1; });',
-          path.resolve(__dirname, '../workspace-service.ts'),
-          `https://github.com/cursor/plugins/${suffix}`,
-          destination,
           path.resolve(
             __dirname,
-            '../../../../../execution-engine/src/node/w5-host-cohort/index.ts',
+            '../../w5-routed-writes/__tests__/fixtures/w5-workspace-remote-client.ts',
           ),
+          endpoint,
+          `https://github.com/cursor/plugins/${suffix}`,
+          destination,
+          process.env.CANOPY_DATA_DIR ?? '',
         ],
         {
           encoding: 'utf8',
@@ -132,7 +169,7 @@ describe('desktop-shared node project service', () => {
         }).trim(),
       ).toBe('default-main');
       const commands = fs.readFileSync(trace, 'utf8');
-      expect(commands).toContain('clone https://github.com/cursor/plugins ');
+      expect(commands).toContain('clone -- https://github.com/cursor/plugins ');
       expect(commands).not.toContain(
         `https://github.com/cursor/plugins/${suffix}`,
       );
@@ -350,55 +387,155 @@ describe('desktop-shared node project service', () => {
   );
 
   (process.platform === 'win32' ? it.skip : it)(
-    'removes the source repo it reserved when the index write fails (CAN-3799)',
+    'retains the source repo and durable recovery evidence when publication fails (CAN-3799)',
     async () => {
       const dataDir = process.env.CANOPY_DATA_DIR ?? '';
       const workspacesDir = path.join(dataDir, 'workspaces');
       fs.mkdirSync(workspacesDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(workspacesDir, 'index.json'),
-        JSON.stringify({ version: 1, workspaces: [] }),
-        'utf8',
-      );
-      // A read-only index directory makes the index write fail after the
-      // source repo was created.
+      const indexPath = path.join(workspacesDir, 'index.json');
+      const previous = JSON.stringify({ version: 1, workspaces: [] });
+      fs.writeFileSync(indexPath, previous, 'utf8');
+      const sourceRepoPath = path.join(dataDir, 'repos', 'new-workspace');
+      const fsPromises =
+        jest.requireActual<typeof FsPromises>('node:fs/promises');
+      const actualMkdir = fsPromises.mkdir;
+      let primary: unknown;
+      const afterFailure: string[] = [];
+      const mkdir = jest
+        .spyOn(fsPromises, 'mkdir')
+        .mockImplementation(async (target, options) => {
+          if (
+            primary !== undefined &&
+            String(target).startsWith(sourceRepoPath)
+          )
+            afterFailure.push(`mkdir:${String(target)}`);
+          try {
+            return await actualMkdir(target, options);
+          } catch (error) {
+            primary = error;
+            throw error;
+          }
+        });
+      const actualRm = fsPromises.rm;
+      const remove = jest
+        .spyOn(fsPromises, 'rm')
+        .mockImplementation(async (target, options) => {
+          if (
+            primary !== undefined &&
+            String(target).startsWith(sourceRepoPath)
+          )
+            afterFailure.push(`rm:${String(target)}`);
+          await actualRm(target, options);
+        });
       fs.chmodSync(workspacesDir, 0o500);
-
       try {
-        await expect(
-          createAndPersistNewMultiRepoWorkspace('New Workspace'),
-        ).rejects.toThrow(/EACCES/);
+        let recordedBeforeRejection = false;
+        const mark = routed.transport.markReservationRecoveryRequired.bind(
+          routed.transport,
+        );
+        jest
+          .spyOn(routed.transport, 'markReservationRecoveryRequired')
+          .mockImplementation(async (input) => {
+            await mark(input);
+            const containingSource: unknown = expect.arrayContaining([
+              sourceRepoPath,
+            ]);
+            const repository: unknown = expect.objectContaining({
+              role: 'source',
+              path: sourceRepoPath,
+              owned: true,
+              status: 'completed',
+            });
+            const containingRepository: unknown = expect.arrayContaining([
+              repository,
+            ]);
+            expect((await routed.durableState()).reservations).toMatchObject([
+              {
+                operation: 'core.workspace.create',
+                state: 'recovery-required',
+                diagnostics: {
+                  workspaceId: 'new-workspace',
+                  ownedPaths: containingSource,
+                  repositories: containingRepository,
+                },
+              },
+            ]);
+            recordedBeforeRejection = true;
+          });
+        const error: unknown = await createAndPersistNewMultiRepoWorkspace(
+          'New Workspace',
+        ).catch((failure: unknown) => failure);
+        expect(recordedBeforeRejection).toBe(true);
+        expect(primary).toBeDefined();
+        expect(error).toBe(primary);
+        expect(error).toMatchObject({ code: 'EACCES' });
+        expect(fs.existsSync(path.join(sourceRepoPath, '.git'))).toBe(true);
+        expect(fs.readFileSync(indexPath, 'utf8')).toBe(previous);
+        expect(
+          fs.existsSync(
+            path.join(workspacesDir, 'new-workspace', 'workspace.json'),
+          ),
+        ).toBe(false);
+        expect(
+          fs.existsSync(
+            path.join(workspacesDir, 'new-workspace', 'worktrees.json'),
+          ),
+        ).toBe(false);
+        await routed.host.shutdown();
+        expect(afterFailure).toEqual([]);
+        expect(fs.existsSync(path.join(sourceRepoPath, '.git'))).toBe(true);
       } finally {
         fs.chmodSync(workspacesDir, 0o700);
+        mkdir.mockRestore();
+        remove.mockRestore();
       }
-      expect(fs.existsSync(path.join(dataDir, 'repos', 'new-workspace'))).toBe(
-        false,
-      );
     },
   );
 
-  it('keeps the source repo once the project is indexed, even if a later write fails (CAN-3799)', async () => {
+  it('allocates around occupied metadata without partial or orphaned state (CAN-3799)', async () => {
     const dataDir = process.env.CANOPY_DATA_DIR ?? '';
-    // A directory where worktrees.json belongs makes the last write fail
-    // after the index entry and manifest are published.
-    fs.mkdirSync(
-      path.join(dataDir, 'workspaces', 'new-workspace', 'worktrees.json'),
-      { recursive: true },
+    const occupied = path.join(
+      dataDir,
+      'workspaces',
+      'new-workspace',
+      'worktrees.json',
     );
-
-    await expect(
-      createAndPersistNewMultiRepoWorkspace('New Workspace'),
-    ).rejects.toThrow(/EISDIR/);
-
+    fs.mkdirSync(occupied, { recursive: true });
+    fs.writeFileSync(path.join(occupied, 'evidence'), 'keep');
+    const created =
+      await createAndPersistNewMultiRepoWorkspace('New Workspace');
+    expect(created.id).toBe('new-workspace-2');
+    expect(fs.readFileSync(path.join(occupied, 'evidence'), 'utf8')).toBe(
+      'keep',
+    );
+    expect(fs.readdirSync(path.dirname(occupied))).toEqual(['worktrees.json']);
     const sourceRepoPath = path.join(dataDir, 'repos', 'new-workspace');
     expect(fs.existsSync(path.join(sourceRepoPath, '.git'))).toBe(true);
     const config: unknown = JSON.parse(
       fs.readFileSync(
-        path.join(dataDir, 'workspaces', 'new-workspace', 'workspace.json'),
+        path.join(dataDir, 'workspaces', created.id, 'workspace.json'),
         'utf8',
       ),
     );
     expect(config).toMatchObject({ sourceRepoPath });
+    const index: unknown = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'workspaces/index.json'), 'utf8'),
+    );
+    expect(index).toMatchObject({
+      workspaces: [{ id: created.id, type: 'multi-repo' }],
+    });
+    if (!isRecord(index) || !Array.isArray(index.workspaces))
+      throw new Error('Invalid index');
+    expect(index.workspaces).toHaveLength(1);
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(dataDir, 'workspaces', created.id, 'worktrees.json'),
+          'utf8',
+        ),
+      ),
+    ).toEqual({ version: 1, worktrees: [] });
+    expect((await routed.durableState()).reservations).toEqual([]);
   });
 
   (process.platform === 'win32' ? it.skip : it)(
@@ -802,7 +939,11 @@ describe('desktop-shared node project service', () => {
       );
 
       const dataDir = process.env.CANOPY_DATA_DIR ?? '';
-      expect(fs.existsSync(path.join(dataDir, 'workspaces'))).toBe(false);
+      expect(fs.readdirSync(path.join(dataDir, 'workspaces'))).toEqual([]);
+      expect(await routed.durableState()).toEqual({
+        commitId: 0,
+        reservations: [],
+      });
       expect(fs.existsSync(missingPath)).toBe(false);
     },
   );
@@ -816,7 +957,11 @@ describe('desktop-shared node project service', () => {
     );
 
     const dataDir = process.env.CANOPY_DATA_DIR ?? '';
-    expect(fs.existsSync(path.join(dataDir, 'workspaces'))).toBe(false);
+    expect(fs.readdirSync(path.join(dataDir, 'workspaces'))).toEqual([]);
+    expect(await routed.durableState()).toEqual({
+      commitId: 0,
+      reservations: [],
+    });
   });
 
   it('rejects importing a folder nested inside the app data directory', async () => {

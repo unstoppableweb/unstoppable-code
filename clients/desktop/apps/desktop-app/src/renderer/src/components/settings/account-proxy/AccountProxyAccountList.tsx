@@ -312,6 +312,7 @@ export function AccountProxyAccountList({
     <>
       {rows}
       <ErrorBanner
+        errorSource="account-proxy-account-error"
         className=""
         error={error}
         testId="account-proxy-account-error"

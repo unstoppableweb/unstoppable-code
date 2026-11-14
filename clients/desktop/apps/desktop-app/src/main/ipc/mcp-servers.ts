@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { parseMcpExtraHeaders } from '@canopy/protocol/mcp-servers';
+import {
+  isMcpServerCommandAllowed,
+  mcpServerCommandRefusal,
+  parseMcpExtraHeaders,
+} from '@canopy/protocol/mcp-servers';
 import {
   accountMcpConnectionsEnabled,
   mergeAccountMcpInventory,
@@ -141,7 +145,6 @@ import { resolveRemoteImageDataUrl } from '../mcp/remote-image-cache';
 import { refreshProjectedPortalMcpServers } from '../portal/adapters/mcp-adapter';
 import {
   MCP_ACCEPT_HEADER,
-  McpToolDiscoveryError,
   discoverHttpTools,
   getMcpToolsCacheEntry,
   mcpToolsSourceFingerprint,
@@ -150,6 +153,12 @@ import {
   writeMcpToolsCacheEntry,
   fetchWithSafeRedirects,
 } from '../mcp/tool-discovery';
+import {
+  listMcpToolNames,
+  McpToolDiscoveryError,
+  type McpToolsPage,
+} from '../mcp/tool-list';
+import { MCP_MAX_RESPONSE_BYTES as MCP_DISCOVERY_MAX_RESPONSE_BYTES } from '@canopy/mcp-oauth-core';
 import {
   listMcpServerStatuses,
   clearMcpServerAuthHealthCache,
@@ -286,6 +295,21 @@ const configRepository = new McpConfigRepository(
   { mkdir, writeFile, unlink, readFile, readdir },
 );
 
+/**
+ * A device server as stored, secret values included, read inside its
+ * mutation lease; for copying it to the cloud account in main (CAN-6176
+ * PR 4a). Never sent to a renderer.
+ */
+export async function readMcpServerForCloudCopy(
+  serverId: string,
+): Promise<McpServerData | null> {
+  if (!SAFE_ID_RE.test(serverId)) return null;
+  return configRepository.withServerMutation(serverId, async () => {
+    const current = await configRepository.readServerForMutation(serverId);
+    return current?.server ?? null;
+  });
+}
+
 /** Serialized device deletion; cloud connections retain their own credentials. */
 export async function deleteMcpServer(id: string): Promise<void> {
   if (!id || !SAFE_ID_RE.test(id)) throw new Error('Invalid MCP server id.');
@@ -373,16 +397,6 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
 // Security — command allowlist and dangerous flag detection
 // ---------------------------------------------------------------------------
 
-const SAFE_COMMANDS = new Set([
-  'npx',
-  'npm',
-  'node',
-  'python',
-  'python3',
-  'uv',
-  'uvx',
-]);
-
 const DANGEROUS_FLAGS = new Set([
   '--eval',
   '-e',
@@ -416,9 +430,12 @@ const SHELL_METACHARACTERS = [
  * Rejects commands containing path separators.
  */
 export function isCommandSafe(command: string | undefined): boolean {
-  if (!command) return false;
-  if (command.includes('/') || command.includes('\\')) return false;
-  return SAFE_COMMANDS.has(command);
+  return isMcpServerCommandAllowed(command);
+}
+
+/** The refusal for a command `isCommandSafe` rejects, for the person adding it. */
+function commandRefusal(command: string): string {
+  return mcpServerCommandRefusal(command) ?? `${command} can't start a server.`;
 }
 
 /**
@@ -695,9 +712,7 @@ function validateCommandDefinition(
     throw new Error('Command server command is required');
   }
   if (!isCommandSafe(definition.command)) {
-    throw new Error(
-      `Invalid command '${definition.command}' - not in allowlist`,
-    );
+    throw new Error(commandRefusal(definition.command));
   }
   if (!areArgsSafe(definition.args)) {
     throw new Error(
@@ -804,55 +819,46 @@ function validateOAuthDefinition(definition: McpServerDefinitionData): void {
   }
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * MCP's stdio transport is newline-delimited JSON-RPC: one message per line,
+ * with no embedded newlines (CAN-6510).
+ */
 function encodeMcpMessage(message: Record<string, unknown>): string {
-  const payload = JSON.stringify(message);
-  return `Content-Length: ${String(Buffer.byteLength(payload, 'utf8'))}\r\n\r\n${payload}`;
+  return `${JSON.stringify(message)}\n`;
 }
 
 interface ParsedMcpMessages {
-  messages: Record<string, unknown>[];
+  messages: { message: Record<string, unknown>; bytes: number }[];
   remaining: Buffer;
 }
 
+/**
+ * Reads the complete lines in `buffer`. A line that isn't a JSON object is
+ * skipped, as the official SDK's transport does, and the rest is kept.
+ */
 function parseMcpMessages(buffer: Buffer): ParsedMcpMessages {
-  const messages: Record<string, unknown>[] = [];
+  const messages: ParsedMcpMessages['messages'] = [];
   let remaining = buffer;
-  const separator = '\r\n\r\n';
-
-  while (remaining.length > 0) {
-    const headerEnd = remaining.indexOf(separator);
-    if (headerEnd === -1) break;
-
-    const header = remaining.subarray(0, headerEnd).toString('utf8');
-    const contentLengthMatch = /Content-Length:\s*(\d+)/i.exec(header);
-    const messageStart = headerEnd + separator.length;
-
-    if (!contentLengthMatch) {
-      remaining = remaining.subarray(messageStart);
-      continue;
-    }
-
-    const contentLength = Number(contentLengthMatch[1]);
-    if (!Number.isFinite(contentLength) || contentLength < 0) {
-      remaining = remaining.subarray(messageStart);
-      continue;
-    }
-
-    const messageEnd = messageStart + contentLength;
-    if (remaining.length < messageEnd) break;
-
-    const payload = remaining
-      .subarray(messageStart, messageEnd)
-      .toString('utf8');
-    remaining = remaining.subarray(messageEnd);
-
+  for (
+    let end = remaining.indexOf(0x0a);
+    end !== -1;
+    end = remaining.indexOf(0x0a)
+  ) {
+    const line = remaining.subarray(0, end).toString('utf8').trim();
+    remaining = remaining.subarray(end + 1);
+    if (line.length === 0) continue;
     try {
-      messages.push(JSON.parse(payload) as Record<string, unknown>);
+      const parsed: unknown = JSON.parse(line);
+      if (isJsonObject(parsed))
+        messages.push({ message: parsed, bytes: end + 1 });
     } catch {
-      // Ignore malformed frames and keep scanning the stream.
+      // Not a JSON-RPC message; keep reading the stream.
     }
   }
-
   return { messages, remaining };
 }
 
@@ -1027,7 +1033,7 @@ async function checkCommandHealth(
       serverId,
       configId,
       status: 'unhealthy',
-      message: `Invalid command '${def.command}' - not in allowlist`,
+      message: commandRefusal(def.command),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -1256,7 +1262,7 @@ async function testCommandConnection(
       serverId,
       configId,
       success: false,
-      message: `Invalid command '${def.command}' - not in allowlist`,
+      message: commandRefusal(def.command),
     };
   }
 
@@ -1283,6 +1289,11 @@ async function testCommandConnection(
     let stdoutBuffer: Buffer = Buffer.alloc(0);
     let stderr = '';
     let resolved = false;
+    // After a good initialize the server is reachable, so any later failure
+    // is a tool-discovery failure, not an outage (as for HTTP servers).
+    let initialized = false;
+    const afterInitialize = (): { endpointReachable?: true } =>
+      initialized ? { endpointReachable: true } : {};
 
     const timeoutId = setTimeout(() => {
       if (!resolved) {
@@ -1293,52 +1304,148 @@ async function testCommandConnection(
           serverId,
           configId,
           success: false,
-          message: 'Connection timed out',
+          message: initialized
+            ? 'MCP tools/list failed'
+            : 'Connection timed out',
+          ...(initialized ? { error: 'tools/list timed out' } : {}),
+          ...afterInitialize(),
           responseTime,
         });
       }
     }, 15_000);
 
-    // Send MCP initialize request
-    const initRequest = encodeMcpMessage({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: {
-          name: 'canopy-health-check',
-          version: '1.0.0',
-        },
-      },
-    });
+    const pending = new Map<
+      number,
+      { answer: (page: McpToolsPage) => void; fail: (error: Error) => void }
+    >();
+    const failPending = (error: Error): void => {
+      for (const { fail } of pending.values()) fail(error);
+      pending.clear();
+    };
+    const send = (message: Record<string, unknown>): void => {
+      proc.stdin.write(encodeMcpMessage(message));
+    };
+    const request = (
+      message: { id: number } & Record<string, unknown>,
+    ): Promise<McpToolsPage> =>
+      new Promise<McpToolsPage>((answer, fail) => {
+        pending.set(message.id, { answer, fail });
+        send(message);
+      });
 
     proc.stdout.on('data', (data: Buffer) => {
       stdoutBuffer = Buffer.concat([stdoutBuffer, data]);
-
       const parsed = parseMcpMessages(stdoutBuffer);
       stdoutBuffer = parsed.remaining;
+      if (stdoutBuffer.length > MCP_DISCOVERY_MAX_RESPONSE_BYTES) {
+        failConnection(
+          new Error(
+            `MCP server output exceeds ${String(MCP_DISCOVERY_MAX_RESPONSE_BYTES)} bytes without a newline`,
+          ),
+          'MCP server sent an invalid response',
+        );
+        return;
+      }
+      for (const { message, bytes } of parsed.messages) {
+        const id = message['id'];
+        if (typeof message['method'] === 'string') {
+          // The server's own request, which may reuse a pending id: answer
+          // ping, refuse anything else. Notifications need no answer.
+          if (typeof id === 'number' || typeof id === 'string')
+            send(
+              message['method'] === 'ping'
+                ? { jsonrpc: '2.0', id, result: {} }
+                : {
+                    jsonrpc: '2.0',
+                    id,
+                    error: { code: -32601, message: 'Method not found' },
+                  },
+            );
+          continue;
+        }
+        if (!('result' in message) && !('error' in message)) continue;
+        const entry = typeof id === 'number' ? pending.get(id) : undefined;
+        if (!entry || typeof id !== 'number') continue;
+        pending.delete(id);
+        entry.answer({ message, responseBytes: bytes });
+      }
+    });
 
-      for (const response of parsed.messages) {
-        if (response['id'] === 1 && response['result']) {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeoutId);
-            proc.kill();
-            const responseTime = Date.now() - startTime;
-            resolve({
-              serverId,
-              configId,
-              success: true,
-              message: 'MCP server started successfully',
-              responseTime,
-            });
-          }
+    const finish = (result: McpServerTestConnectionResult): void => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutId);
+      proc.kill();
+      resolve(result);
+    };
+
+    const exchange = async (): Promise<void> => {
+      const init = (
+        await request({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: {
+              name: 'canopy-health-check',
+              version: '1.0.0',
+            },
+          },
+        })
+      ).message;
+      const initResult = init?.['result'];
+      if (!isJsonObject(initResult)) {
+        const rpcError = init?.['error'];
+        finish({
+          serverId,
+          configId,
+          success: false,
+          message: 'MCP error',
+          error:
+            isJsonObject(rpcError) && typeof rpcError['message'] === 'string'
+              ? rpcError['message']
+              : 'The server did not complete MCP initialization',
+          responseTime: Date.now() - startTime,
+        });
+        return;
+      }
+      initialized = true;
+      send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      const capabilities = initResult['capabilities'];
+      let tools: string[] = [];
+      if (isJsonObject(capabilities) && capabilities['tools'] !== undefined) {
+        try {
+          tools = await listMcpToolNames(
+            (page) => request(page),
+            MCP_DISCOVERY_MAX_RESPONSE_BYTES,
+          );
+        } catch (error) {
+          finish({
+            serverId,
+            configId,
+            success: false,
+            message: 'MCP tools/list failed',
+            error: error instanceof Error ? error.message : String(error),
+            endpointReachable: true,
+            responseTime: Date.now() - startTime,
+          });
           return;
         }
       }
-    });
+      finish({
+        serverId,
+        configId,
+        success: true,
+        message:
+          tools.length > 0
+            ? `Connected successfully, ${String(tools.length)} tools available`
+            : 'Connected successfully',
+        tools,
+        responseTime: Date.now() - startTime,
+      });
+    };
 
     proc.stderr.on('data', (data: Buffer) => {
       stderr += data.toString('utf-8');
@@ -1355,10 +1462,12 @@ async function testCommandConnection(
           success: false,
           message,
           error: error.message,
+          ...afterInitialize(),
           responseTime,
         });
         proc.kill();
       }
+      failPending(error);
     };
     proc.on('error', (error: Error) =>
       failConnection(error, 'Failed to start server'),
@@ -1368,6 +1477,7 @@ async function testCommandConnection(
     );
 
     proc.on('close', (code) => {
+      failPending(new Error(`Server exited with code ${String(code)}`));
       if (!resolved) {
         resolved = true;
         clearTimeout(timeoutId);
@@ -1376,23 +1486,23 @@ async function testCommandConnection(
           serverId,
           configId,
           success: false,
-          message:
-            code === 0
+          message: initialized
+            ? 'MCP tools/list failed'
+            : code === 0
               ? 'Server exited before completing MCP initialization'
               : `Server exited with code ${String(code)}`,
           error: stderr || undefined,
+          ...afterInitialize(),
           responseTime,
         });
       }
     });
-    try {
-      proc.stdin.write(initRequest);
-    } catch (error) {
+    exchange().catch((error: unknown) => {
       failConnection(
         error instanceof Error ? error : new Error(String(error)),
         'MCP server input pipe failed',
       );
-    }
+    });
   });
 }
 

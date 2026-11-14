@@ -1,3 +1,4 @@
+import { normalizeStoredAgentAliasBase } from '@canopy/pipeline-interop/agent-alias-model';
 import type { PipelineModelAliasPreference } from '@canopy/execution-engine/types/pipeline';
 import { loadPipelineModelAliasPreferences } from '../plugin-collection-store';
 import type { ExecutionOptions, NormalizedPipeline } from './types';
@@ -38,7 +39,11 @@ export function normalizeExecutionModelAliasPreferences(
       const rawAgentId = rawRecord.agent_id;
       const agentId = typeof rawAgentId === 'string' ? rawAgentId.trim() : '';
       if (agentId.startsWith('agent_model_')) {
-        normalized[trimmedAliasId] = { mode: 'agent', agent_id: agentId };
+        normalized[trimmedAliasId] = {
+          mode: 'agent',
+          agent_id: agentId,
+          ...normalizeStoredAgentAliasBase(rawRecord.base),
+        };
       }
       continue;
     }

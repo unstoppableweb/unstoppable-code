@@ -29,13 +29,14 @@ export interface WorkerAgentProviderDispatcher {
 export async function getModelRegistryThroughWorker(
   dispatcher: WorkerAgentProviderDispatcher,
   caller: CanopyCallerDescriptor,
+  probe = false,
 ): Promise<ModelRegistrySnapshot> {
   let snapshot: ModelRegistrySnapshot | undefined;
   try {
     ({ snapshot } = await runWithModelRegistryCapture(() =>
       dispatcher.query(
         'worker.agent.provider.list',
-        { scope: {}, probe: false },
+        { scope: {}, probe },
         { caller: { ...caller, grants: [WORKER_AGENT_GRANTS.read] } },
       ),
     ));

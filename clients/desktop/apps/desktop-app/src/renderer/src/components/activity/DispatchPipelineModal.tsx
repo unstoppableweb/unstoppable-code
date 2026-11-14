@@ -135,6 +135,8 @@ interface WorkflowsRunPipelineModalProps {
   /** The selected task, offered as **Current task** when it can run the pipeline. */
   currentTarget?: { projectId: string; worktreeId: string };
   initialPipelineId?: string;
+  /** Opens on `initialPipelineId`'s run settings, as its editor's Run does. */
+  startOnSettings?: boolean;
   onClose: () => void;
   onRun: (
     pipeline: PipelineData,
@@ -164,6 +166,7 @@ interface WorkflowsRunPipelineModalProps {
 export function WorkflowsRunPipelineModal({
   currentTarget,
   initialPipelineId,
+  startOnSettings = false,
   onClose,
   onRun,
   isRunning = false,
@@ -234,11 +237,12 @@ export function WorkflowsRunPipelineModal({
           chosenLocation?.pipelineId === pipeline.info.id
             ? chosenLocation.location
             : undefined,
+        runOn: runOnFor(pipeline).value,
         choices,
         selection,
         rereadPipeline,
       }),
-    [choices, chosenLocation, rereadPipeline, selection, taskScope],
+    [choices, chosenLocation, rereadPipeline, runOnFor, selection, taskScope],
   );
 
   const runContextReview = useCallback(
@@ -364,6 +368,7 @@ export function WorkflowsRunPipelineModal({
       runContextReview={runContextReview}
       reloadToken={(reloadToken ?? 0) + ownerReread}
       initialPipelineId={initialPipelineId}
+      startOnSettings={startOnSettings}
       onClose={onClose}
       onRun={handleRun}
       isRunning={isRunning}

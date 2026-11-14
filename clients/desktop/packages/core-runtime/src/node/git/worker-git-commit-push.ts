@@ -114,6 +114,17 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
     'worker.git.commit': (params, context) =>
       run('worker.git.commit', params.scope, context, async (port) => {
         const { message } = params;
+        // The web core's head revision (CAN-6093); this host advertises none.
+        if (params.revision !== undefined)
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'This worker does not serve this revision.',
+            details: { unsupported: ['revision'], reason: 'unserved' },
+            retry: {
+              kind: 'after_refresh',
+              resource: 'core.runtime.manifest.get',
+            },
+          });
         if (
           params.paths !== undefined ||
           params.amend === true ||
@@ -138,7 +149,11 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
             retry: { kind: 'never' },
           });
         const branch = await port.currentBranch();
-        if ((await port.head()) !== params.expectedHeadSha)
+        if (
+          (params.expected !== undefined &&
+            branch !== params.expected.branch) ||
+          (await port.head()) !== params.expectedHeadSha
+        )
           throw refuse(
             'conflict',
             'worker.git.commit.headChanged',

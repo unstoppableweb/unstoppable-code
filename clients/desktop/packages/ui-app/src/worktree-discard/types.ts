@@ -3,6 +3,8 @@ export interface WorktreeDiscarded {
   readonly workspaceId: string;
   readonly worktreeId: string;
   readonly warnings: readonly string[];
+  /** Recovery completion belongs to this incarnation, not a newer row under the same id. */
+  readonly expectedCreatedAt?: string;
   /**
    * CAN-5338: a retained archive was discarded. The host refreshes its
    * archived items instead of dropping a worktree row.

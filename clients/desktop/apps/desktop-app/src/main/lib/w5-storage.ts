@@ -2,10 +2,17 @@ import {
   bindW5Storage,
   type W5StorageAdmission,
 } from '@canopy/core-runtime/node/w5/storage-binding';
-import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
+import {
+  withStorageAdmission as admitSharedStorage,
+  withStorageAuthorityAdmission,
+} from '@canopy/execution-engine/node/lib/storage-admission';
+import { W5_FLIP_NAMESPACES } from './w5-flip-gate';
 import type { AtomicFileStorage } from './atomic-file';
 
-export { withStorageAdmission };
+export const withStorageAdmission: W5StorageAdmission = (targets, operation) =>
+  withStorageAuthorityAdmission(W5_FLIP_NAMESPACES, () =>
+    admitSharedStorage(targets, operation),
+  );
 
 // Desktop main's W5 writer principal (CAN-3880).
 const storage = bindW5Storage('electron_main', withStorageAdmission);

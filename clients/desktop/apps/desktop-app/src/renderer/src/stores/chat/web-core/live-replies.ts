@@ -17,6 +17,21 @@ export interface LiveReply {
   readonly reasoning: string;
   readonly finished: boolean;
   readonly createdAtMs: number;
+  /**
+   * The turn's own tool calls in the order they first came, each placed at
+   * the reply text's length when it came (live revision 2). A spawn call's
+   * card nests its subagent's rows, which commit before the reply does.
+   */
+  readonly tools: readonly LiveTool[];
+}
+
+/** One tool call of a live reply, with its result once it arrives. */
+export interface LiveTool {
+  readonly toolUseId: string;
+  readonly toolName: string;
+  readonly input: string;
+  readonly textOffset: number;
+  readonly result?: { readonly output: string; readonly isError: boolean };
 }
 
 /** Replies a chat keeps at once, oldest dropped first. */
@@ -49,6 +64,28 @@ export function applyLiveItem(
       reply.finished ? reply : { ...reply, finished: true },
     );
   const held = replies.find((reply) => reply.turnId === item.turnId);
+  // A call comes again with its result; one for a turn not held is dropped.
+  if (item.kind === 'tool') {
+    if (held === undefined) return replies;
+    const tool: LiveTool = {
+      toolUseId: item.toolUseId,
+      toolName: item.toolName,
+      input: item.input,
+      textOffset: item.textOffset,
+      ...(item.result === undefined ? {} : { result: item.result }),
+    };
+    const known = held.tools.some((each) => each.toolUseId === tool.toolUseId);
+    const tools = known
+      ? held.tools.map((each) =>
+          each.toolUseId === tool.toolUseId
+            ? { ...tool, textOffset: each.textOffset }
+            : each,
+        )
+      : [...held.tools, tool];
+    return replies.map((reply) =>
+      reply === held ? { ...held, tools } : reply,
+    );
+  }
   if (item.kind === 'turn') {
     const next: LiveReply = {
       turnId: item.turnId,
@@ -58,6 +95,8 @@ export function applyLiveItem(
       reasoning: item.reasoning,
       finished: item.state === 'finished',
       createdAtMs: held?.createdAtMs ?? now,
+      // Every attach sends its streaming turn item before its tools.
+      tools: item.state === 'streaming' ? [] : (held?.tools ?? []),
     };
     const others = replies.filter((reply) => reply.turnId !== item.turnId);
     return [...others, next].slice(-LIVE_REPLY_LIMIT);
@@ -112,7 +151,9 @@ export function presentLiveReplies(
   return replies
     .filter(
       (reply) =>
-        (reply.text.length > 0 || reply.reasoning.length > 0) &&
+        (reply.text.length > 0 ||
+          reply.reasoning.length > 0 ||
+          reply.tools.length > 0) &&
         !isLiveReplyCommitted(reply, messages, turnRuns),
     )
     .map((reply) => ({
@@ -123,11 +164,41 @@ export function presentLiveReplies(
         ...(reply.reasoning.length > 0
           ? [{ type: 'thinking' as const, text: reply.reasoning }]
           : []),
-        ...(reply.text.length > 0
-          ? [{ type: 'text' as const, text: reply.text }]
-          : []),
+        ...replyBlocks(reply),
       ],
     }));
+}
+
+type ReplyBlock = PersistedChatMessage['blocks'][number];
+
+/** A reply's text with each tool call at the length it came at. */
+function replyBlocks(reply: LiveReply): ReplyBlock[] {
+  const blocks: ReplyBlock[] = [];
+  let at = 0;
+  const text = (end: number): void => {
+    const piece = reply.text.slice(at, end);
+    if (piece.length > 0) blocks.push({ type: 'text', text: piece });
+    at = Math.max(at, end);
+  };
+  for (const tool of reply.tools) {
+    text(Math.min(tool.textOffset, reply.text.length));
+    blocks.push({
+      type: 'tool_use',
+      toolUseId: tool.toolUseId,
+      toolName: tool.toolName,
+      input: tool.input,
+    });
+    if (tool.result !== undefined)
+      blocks.push({
+        type: 'tool_result',
+        toolUseId: tool.toolUseId,
+        toolName: tool.toolName,
+        output: tool.result.output,
+        isError: tool.result.isError,
+      });
+  }
+  text(reply.text.length);
+  return blocks;
 }
 
 /** The store key of one chat: its qualified project, worktree and chat ids. */

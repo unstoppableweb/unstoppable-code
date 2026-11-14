@@ -142,11 +142,16 @@ export function PushPreferencesSection(): JSX.Element {
       testId="account-push-preferences"
     >
       <ErrorBanner
+        errorSource="push-preferences-section-load"
         error={loadError?.copy}
         details={loadError?.details}
         onRetry={retryLoad}
       />
-      <ErrorBanner error={error?.copy} details={error?.details} />
+      <ErrorBanner
+        errorSource="push-preferences-section"
+        error={error?.copy}
+        details={error?.details}
+      />
 
       {loading ? (
         <DelayedLoadingPlaceholder>

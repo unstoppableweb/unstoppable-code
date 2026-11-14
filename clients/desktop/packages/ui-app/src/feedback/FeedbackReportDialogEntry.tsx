@@ -97,6 +97,7 @@ export function FeedbackReportDialog(
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
         {failed ? (
           <Notice
+            errorSource="feedback-report-dialog"
             intent="destructive"
             actions={
               <NoticeButton

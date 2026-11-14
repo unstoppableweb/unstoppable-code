@@ -56,12 +56,48 @@ export interface UseSuggestedPromptsResult {
 interface PickedSet {
   surface: SuggestedPromptSurface;
   seedKey: string;
-  /** Structural snapshot of the selections this pick was derived from. */
+  /**
+   * Structural snapshot of the latest selections whose inventory confirmed
+   * this pick's pool. Not part of the pick's identity: a selections change
+   * that leaves the eligible pool unchanged keeps the same prompts.
+   */
   selectionsKey: string;
   /** Structural snapshot of the project starter prompts behind this pick. */
   starterPromptsKey: string;
   signature: string;
   prompts: SuggestedPrompt[];
+}
+
+/**
+ * Whether `pick` is the set to show for this pool. Selections are left out
+ * on purpose: startup rebases the Home draft's selections several times
+ * (projects loading, the Cowork seed, then the MRU project) and re-rolling
+ * on each one flickered the visible suggestions (the pool rarely changes).
+ */
+function pickMatchesPool(
+  pick: PickedSet,
+  surface: SuggestedPromptSurface,
+  seedKey: string,
+  starterPromptsKey: string,
+  signature: string,
+): boolean {
+  return (
+    pick.surface === surface &&
+    pick.seedKey === seedKey &&
+    pick.starterPromptsKey === starterPromptsKey &&
+    pick.signature === signature
+  );
+}
+
+/**
+ * A pick without curated MCP prompts is valid under any selections. This
+ * relies on `curatedKey` being non-null exactly for prompts tied to an MCP:
+ * indexed and synthesized server prompts always carry their server key, while
+ * generic fallbacks and project starter prompts are null by construction (see
+ * `@canopy/ui-shared/lib/mcp-prompt-index` and `starterPromptsAsSuggestions`).
+ */
+function pickIsMcpIndependent(pick: PickedSet): boolean {
+  return pick.prompts.every((prompt) => prompt.curatedKey === null);
 }
 
 const heldPicks = new Map<string, PickedSet>();
@@ -82,12 +118,13 @@ const lastImpressions = new Map<string, string>();
  * hidden surfaces. Fires one impression telemetry event per distinct
  * displayed set.
  *
- * Every pick is keyed to the structural snapshot of the selections it was
- * derived from: a pick for the CURRENT selections is shown immediately
- * (re-showing a surface with unchanged selections neither flashes nor
- * re-rolls), while a selections change suppresses the stale pick until the
- * replacement inventory fetch completes, so users can never click a prompt
- * for an MCP the new selections do not include.
+ * A pick is keyed to its eligible pool, not to the selections snapshot: a
+ * selections change whose inventory yields the same pool keeps the same
+ * prompts, so startup selection churn neither flashes nor re-rolls. A pick
+ * holding curated MCP prompts is still suppressed after a selections change
+ * until the replacement inventory confirms its pool, so users can never
+ * click a prompt for an MCP the new selections do not include; a pick of
+ * generic or starter prompts stays visible throughout.
  */
 export function useSuggestedPrompts(
   selections: ChatTabPluginSelections | null,
@@ -168,14 +205,21 @@ export function useSuggestedPrompts(
 
   useEffect(() => {
     if (selectionsKey === null || !inventoryReady) return;
+    // The confirmed inventory yields the same pool: keep the prompts and
+    // only record which selections confirmed them.
+    const confirm = (kept: PickedSet): void => {
+      const confirmed =
+        kept.selectionsKey === selectionsKey
+          ? kept
+          : { ...kept, selectionsKey };
+      if (confirmed !== pick) setPick(confirmed);
+      if (holdKey !== null) heldPicks.set(holdKey, confirmed);
+    };
     if (
       pick !== null &&
-      pick.surface === surface &&
-      pick.seedKey === seedKey &&
-      pick.selectionsKey === selectionsKey &&
-      pick.starterPromptsKey === starterPromptsKey &&
-      pick.signature === signature
+      pickMatchesPool(pick, surface, seedKey, starterPromptsKey, signature)
     ) {
+      if (pick.selectionsKey !== selectionsKey) confirm(pick);
       return;
     }
     // Adopt a concurrent sibling's held pick before rolling a fresh one, so
@@ -184,13 +228,9 @@ export function useSuggestedPrompts(
       const held = heldPicks.get(holdKey);
       if (
         held !== undefined &&
-        held.surface === surface &&
-        held.seedKey === seedKey &&
-        held.selectionsKey === selectionsKey &&
-        held.starterPromptsKey === starterPromptsKey &&
-        held.signature === signature
+        pickMatchesPool(held, surface, seedKey, starterPromptsKey, signature)
       ) {
-        setPick(held);
+        confirm(held);
         return;
       }
     }
@@ -251,14 +291,16 @@ export function useSuggestedPrompts(
     };
   }, [holdKey]);
 
-  // A pick is only active for the surface and selections snapshot it was
-  // derived from: stale picks are suppressed the moment either changes.
+  // A pick is only active for its surface, seed key and starter prompts. One
+  // with curated MCP prompts also needs its selections confirmed, so it is
+  // suppressed the moment selections change; generic prompts stay put.
   const activePick =
     selectionsKey !== null &&
     pick !== null &&
     pick.surface === surface &&
-    pick.selectionsKey === selectionsKey &&
-    pick.starterPromptsKey === starterPromptsKey
+    pick.seedKey === seedKey &&
+    pick.starterPromptsKey === starterPromptsKey &&
+    (pick.selectionsKey === selectionsKey || pickIsMcpIndependent(pick))
       ? pick
       : null;
 

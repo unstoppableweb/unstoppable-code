@@ -16,7 +16,7 @@ import { PIPELINE_SOURCE_META, PIPELINE_SOURCES } from './pipeline-source-meta';
 import { TRIGGER_META, TRIGGER_TYPES } from './pipeline-trigger-meta';
 import type { SharedCloudListState } from '../../hooks/usePipelineList';
 import type { SharedListFilters } from '../../hooks/useSharedPipelineList';
-import { fuzzyMatch } from '@/lib/fuzzySearch';
+import { fuzzyMatch } from '@canopy/ui-shared/lib/fuzzy-match';
 import { brandText } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { PIPELINE_EXECUTION_SCOPES } from '@canopy/protocol/pipelines';
@@ -427,13 +427,22 @@ export function PipelineListView({
                   )}
 
                   {/* Error */}
-                  <ErrorBanner error={error} className="" />
+                  <ErrorBanner
+                    errorSource="pipeline-list"
+                    error={error}
+                    className=""
+                  />
                 </div>
               )}
 
               {actionError && (
                 <div data-testid="pipeline-list-action-error">
-                  <Notice intent="destructive">{actionError}</Notice>
+                  <Notice
+                    errorSource="pipeline-list-action"
+                    intent="destructive"
+                  >
+                    {actionError}
+                  </Notice>
                 </div>
               )}
 
@@ -516,6 +525,7 @@ export function PipelineListView({
                       <Stack gap="inline">
                         {cloudReady && showShared && (
                           <ErrorBanner
+                            errorSource="pipeline-list-shared"
                             error={sharedState.error}
                             className=""
                             onRetry={() => void onSharedRefresh()}

@@ -10,9 +10,11 @@
  * never draw these hints do not ship it. Platform detection and the
  * formatter live in `./shortcut-platform`.
  *
- * This is display data only. The handlers that bind these chords live with
- * their surfaces (desktop `keyboardShortcuts.ts`, the shared panel commands,
- * the find router); adding an entry here does not bind a key.
+ * The handlers that bind these chords live with their surfaces (desktop
+ * `keyboardShortcuts.ts`, the shared panel commands, the find router);
+ * adding an entry here does not bind a key. A surface that binds a chord
+ * the registry spells can match it with `matchesShortcut(event, id)`, so
+ * the hint and the binding cannot disagree.
  */
 
 import type { KeyHint } from '../components/KeyHintFooter';
@@ -181,4 +183,71 @@ export function pickerKeyHints(
     { shortcut: shortcutKeys('list-open', platform), label: actionLabel },
     { shortcut: shortcutKeys('dismiss', platform), label: 'close' },
   ];
+}
+
+/** The parts of a keyboard event `matchesShortcut` reads. */
+export interface ShortcutKeyEvent {
+  readonly key: string;
+  readonly code?: string;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly altKey: boolean;
+  readonly shiftKey: boolean;
+  readonly isComposing?: boolean;
+}
+
+type ShortcutModifier = 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey';
+
+const MODIFIER_KEYS: ReadonlyMap<string, ShortcutModifier> = new Map([
+  ['⌘', 'metaKey'],
+  ['⌃', 'ctrlKey'],
+  ['Ctrl', 'ctrlKey'],
+  ['⌥', 'altKey'],
+  ['Alt', 'altKey'],
+  ['⇧', 'shiftKey'],
+  ['Shift', 'shiftKey'],
+]);
+
+const ARROW_KEYS: ReadonlyMap<string, string> = new Map([
+  ['←', 'ArrowLeft'],
+  ['→', 'ArrowRight'],
+  ['↑', 'ArrowUp'],
+  ['↓', 'ArrowDown'],
+]);
+
+const SHORTCUT_MODIFIERS: readonly ShortcutModifier[] = [
+  'metaKey',
+  'ctrlKey',
+  'altKey',
+  'shiftKey',
+];
+
+/**
+ * Whether `event` presses the registry's chord for `id` on `platform`: its
+ * modifiers exactly, and its key. A letter also matches by its physical key,
+ * since Option composes another character on macOS. Keys pressed during an
+ * IME composition never match.
+ */
+export function matchesShortcut(
+  event: ShortcutKeyEvent,
+  id: ShortcutId,
+  platform: ShortcutHintPlatform = currentShortcutPlatform(),
+): boolean {
+  if (event.isComposing === true) return false;
+  const modifiers = new Set<ShortcutModifier>();
+  let mainKey: string | undefined;
+  for (const key of shortcutKeys(id, platform)) {
+    const modifier = MODIFIER_KEYS.get(key);
+    if (modifier === undefined) mainKey = key;
+    else modifiers.add(modifier);
+  }
+  if (mainKey === undefined) return false;
+  if (SHORTCUT_MODIFIERS.some((flag) => event[flag] !== modifiers.has(flag))) {
+    return false;
+  }
+  const expected = ARROW_KEYS.get(mainKey) ?? mainKey;
+  if (event.key.toLowerCase() === expected.toLowerCase()) return true;
+  return (
+    /^[a-z]$/i.test(expected) && event.code === `Key${expected.toUpperCase()}`
+  );
 }

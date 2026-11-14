@@ -1,3 +1,4 @@
+import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-4070 rule: captured on the unchanged `worktree:diff-stats`,
 // `worktree:diff-stats-batch` IPC handlers and the `portal.diff.read` Portal
 // command before CAN-4103 moved diff computation behind `worker.git.diff.get`.
@@ -73,7 +74,9 @@ const desktopCaller: CanopyCallerDescriptor = {
   ],
 };
 
-beforeAll(() => {
+let closeW5Store: (() => Promise<void>) | undefined;
+
+beforeAll(async () => {
   fixture = createDiffGoldenFixture('diff-stats-portal-golden-');
   originalDataDir = process.env.CANOPY_DATA_DIR;
   process.env.CANOPY_DATA_DIR = fixture.dataDir;
@@ -82,9 +85,11 @@ beforeAll(() => {
     dispatcher: runtime,
     resolveCaller: (): CanopyCallerDescriptor => desktopCaller,
   });
+  closeW5Store = await installRoutedW5GoldenStore();
 });
 
 afterAll(async () => {
+  await closeW5Store?.();
   await runtime?.shutdown();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;

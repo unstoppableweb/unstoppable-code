@@ -12,6 +12,8 @@ import {
   type SidebarItemGroupBlock,
 } from './sidebar/sidebar-item-groups-model';
 import {
+  SidebarDropLine,
+  SidebarNestingRail,
   Button,
   Dot,
   SidebarItemGroupHeader,
@@ -64,6 +66,7 @@ import {
   openWorktreeActionsMenuAt,
   PIPELINE_POPOVER_HIDE_DELAY_MS,
   WorkspaceSectionHeader,
+  type WorkspaceSectionHeaderContextAction,
   workspaceChildUnitLabel,
   SIDEBAR_ROW_GRID_CLASSNAME,
   SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
@@ -987,8 +990,31 @@ export interface WorkspacesSidebarSectionsProps {
   readonly renderCoworkWorkspace?: (
     context: CoworkWorkspaceSlotContext,
   ) => ReactNode;
-  /** Omission keeps the archived section completely absent. */
-  readonly renderArchivedSection?: (workspaceLocalId: string) => ReactNode;
+  /**
+   * Omission keeps the archived section completely absent. With hidden
+   * worktrees placed behind More, the host's row counts them too.
+   */
+  readonly renderArchivedSection?: (
+    workspaceLocalId: string,
+    context: { readonly hiddenWorktreeCount: number },
+  ) => ReactNode;
+  /**
+   * Where a workspace's hidden worktrees go. `'inline'` (the default) lists
+   * them under a Hidden row; `'more'` leaves them to the More page, which
+   * the host's archived section opens, and the list keeps only a selected
+   * hidden worktree so the open one stays visible.
+   */
+  readonly hiddenWorktreesPlacement?: (
+    workspaceLocalId: string,
+  ) => 'inline' | 'more';
+  /**
+   * Bulk actions on a workspace's Hidden worktrees row, offered from its
+   * right-click menu. Empty or omitted leaves the row without a menu.
+   */
+  readonly hiddenWorktreeActions?: (
+    workspaceLocalId: string,
+    worktreeLocalIds: readonly string[],
+  ) => readonly WorkspaceSectionHeaderContextAction[];
   readonly archivedCount?: (workspaceLocalId: string) => number | undefined;
   /**
    * `undefined` means summaries have not loaded yet; an array (including an
@@ -1227,11 +1253,9 @@ function WorkspaceDropIndicator({
   const indicator = useContext(WorkspaceDropIndicatorContext);
   if (indicator?.workspaceLocalId !== workspaceLocalId) return null;
   return (
-    <span
-      aria-hidden="true"
-      className={`pointer-events-none absolute inset-x-1.5 z-20 h-0.5 rounded-full bg-accent ${
-        indicator.position === 'before' ? '-top-px' : '-bottom-px'
-      }`}
+    <SidebarDropLine
+      variant="workspace"
+      position={indicator.position}
       data-drop-position={indicator.position}
       data-testid="workspace-drop-indicator"
     />
@@ -1277,6 +1301,8 @@ export function WorkspacesSidebarSections({
   renderCoworkWorkspace,
   archivedCount,
   renderArchivedSection,
+  hiddenWorktreesPlacement,
+  hiddenWorktreeActions,
   archivedEntries,
   onLoadArchived,
   archivedExpanded,
@@ -1303,7 +1329,8 @@ export function WorkspacesSidebarSections({
   hideWorkspaceCounts = false,
   hideWorkspaceOptionsForFinePointer = false,
   worktreeHoverPreview = false,
-  worktreeRowGap,
+  // Every sidebar list keeps 1px between rows, in both sidebar modes.
+  worktreeRowGap = 'hairline',
   retainedWorkspaceIds = [],
   context,
   linkedPersonalWorkspaceIds,
@@ -2544,20 +2571,10 @@ export function WorkspacesSidebarSections({
                           {/* Per-row rail segments join into one continuous
                             line; the stack's first and last segments inset so
                             the line does not touch the group's edges. */}
-                          <span
-                            aria-hidden="true"
-                            className={`pointer-events-none absolute left-8 w-px rounded-full bg-line-base/80 ${
-                              childIndex === 0
-                                ? 'top-1.5'
-                                : worktreeRowGap === 'hairline'
-                                  ? // Across the 1px gap to the row above.
-                                    '-top-px'
-                                  : 'top-0'
-                            } ${
-                              childIndex === group.children.length - 1
-                                ? 'bottom-1.5'
-                                : 'bottom-0'
-                            }`}
+                          <SidebarNestingRail
+                            first={childIndex === 0}
+                            last={childIndex === group.children.length - 1}
+                            bridgeGap={worktreeRowGap === 'hairline'}
                             data-testid="worktree-nesting-rail"
                           />
                           {renderRow(
@@ -2791,6 +2808,15 @@ export function WorkspacesSidebarSections({
     // The selected worktree, only when it belongs to THIS workspace and is
     // rendered in flow. The pinned bands must never show a row the list is not
     // also showing — a pin for a hidden or foreign row is a dead end.
+    const hiddenPlacement =
+      hiddenWorktreesPlacement?.(workspace.localId) ?? 'inline';
+    const selectedHiddenWorktree =
+      selected?.kind === 'worktree' &&
+      selected.workspaceLocalId === workspace.localId
+        ? rows.hidden.find(
+            (worktree) => worktree.localId === selected.worktreeLocalId,
+          )
+        : undefined;
     const selectedWorktreeInFlow =
       selected?.kind === 'worktree' &&
       selected.workspaceLocalId === workspace.localId
@@ -3205,14 +3231,27 @@ export function WorkspacesSidebarSections({
                 ) : (
                   wrappedVisibleList
                 )}
-                {rows.hidden.length > 0 && (
+                {hiddenPlacement === 'more' &&
+                  selectedHiddenWorktree !== undefined && (
+                    // The open hidden worktree, so the selection stays on
+                    // screen; the rest wait behind More.
+                    <SidebarList className="mt-px" rowGap="hairline" quiet>
+                      {renderRow(selectedHiddenWorktree, true)}
+                    </SidebarList>
+                  )}
+                {hiddenPlacement === 'inline' && rows.hidden.length > 0 && (
                   <div
                     className="mt-0.5 min-w-0"
                     data-testid={testIds?.hiddenWorktreesSection}
                   >
                     <HiddenItemsRow
-                      label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL}`}
+                      label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL.toLowerCase()}`}
                       count={rows.hidden.length}
+                      contextMenuActions={hiddenWorktreeActions?.(
+                        workspace.localId,
+                        rows.hidden.map((worktree) => worktree.localId),
+                      )}
+                      contextMenuLabel={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL.toLowerCase()} actions`}
                       expanded={
                         hiddenWorktreesExpanded[workspace.localId] === true
                       }
@@ -3228,7 +3267,7 @@ export function WorkspacesSidebarSections({
                       )}
                     />
                     {hiddenWorktreesExpanded[workspace.localId] === true && (
-                      <SidebarList className="mt-0.5" rowGap="thin" quiet>
+                      <SidebarList className="mt-0.5" rowGap="hairline" quiet>
                         {rows.hidden.map((worktree) =>
                           renderRow(worktree, true),
                         )}
@@ -3236,7 +3275,11 @@ export function WorkspacesSidebarSections({
                     )}
                   </div>
                 )}
-                {renderArchivedSection?.(workspace.localId)}
+                {renderArchivedSection?.(workspace.localId, {
+                  // Counted by the More row only when they wait behind it.
+                  hiddenWorktreeCount:
+                    hiddenPlacement === 'more' ? rows.hidden.length : 0,
+                })}
                 {!renderArchivedSection &&
                   archivedCount !== undefined &&
                   archivedItemCount > 0 && (
@@ -3325,7 +3368,7 @@ export function WorkspacesSidebarSections({
                                   )}
                                 </button>
                                 {renderArchivedActions ? (
-                                  <span className="absolute inset-y-0 right-1 flex items-center">
+                                  <span className="absolute inset-y-0 right-0.5 flex items-center">
                                     {renderArchivedActions(
                                       workspace.localId,
                                       entry,

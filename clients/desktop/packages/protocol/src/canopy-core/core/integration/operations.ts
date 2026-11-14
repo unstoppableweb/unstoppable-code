@@ -13,6 +13,7 @@ import { inherentOperationErrorSchema } from '../shared';
 export const CORE_INTEGRATION_GRANTS = {
   read: 'core.integration.read',
   star: 'core.integration.star',
+  write: 'core.integration.write',
 } as const;
 
 const OpaqueIdSchema = z

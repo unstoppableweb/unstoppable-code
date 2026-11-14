@@ -51,8 +51,12 @@ export type WorkerGitRepositorySelector = z.output<
 export const WorkerGitBranchListParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   repository: WorkerGitRepositorySelectorSchema,
+  /** Use full ref identity for an exact worktree base selection. */
+  exactWorktreeBaseBranch: z.literal(true).optional(),
   /** Opt into the additive result; legacy callers retain their closed shape. */
   includeHeadState: z.literal(true).optional(),
+  /** Deadline-sensitive catalogues may use only local default-branch facts. */
+  allowRemoteLookup: z.literal(false).optional(),
   /** Advisory remote knowledge; never authorizes repository access or writes. */
   defaultBranchHint: z
     .strictObject({

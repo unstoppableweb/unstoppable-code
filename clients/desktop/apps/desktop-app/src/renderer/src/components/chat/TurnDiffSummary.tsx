@@ -30,15 +30,9 @@ import {
   formatTurnFilesHeading,
   TurnFilesSummaryView,
   type TurnChangedFileRows,
-  useCleanChatLook,
   useToolApprovalWait,
 } from '@canopy/ui-shared/components';
-import {
-  CloseIcon as AppCatalogCloseIcon,
-  ForwardIcon as AppCatalogForwardIcon,
-  PencilIcon as AppCatalogPencilIcon,
-  RevertIcon as AppCatalogRevertIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { RevertIcon as AppCatalogRevertIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 interface TurnDiffSummaryProps {
   /** Git changes captured for the turn; absent while it runs or when none. */
@@ -52,12 +46,6 @@ interface TurnDiffSummaryProps {
   pendingFiles?: readonly TranscriptTurnFile[];
   /** Chat whose viewer opens created files. */
   fileTarget?: { projectId: string; worktreeId: string; chatId: string };
-  /**
-   * False while a turn that mounted already complete awaits its first file
-   * check, so the expand default is applied once to the final entry count
-   * instead of expanding on the diff and collapsing when the chips arrive.
-   */
-  filesSettled?: boolean;
   turnId?: string;
   isLastTurnGroup: boolean;
   originChatTabId?: string;
@@ -90,34 +78,6 @@ function LineCounts({
 const NO_FILES: readonly TurnFileLocation[] = [];
 
 const NO_PENDING: readonly TranscriptTurnFile[] = [];
-
-function renderStatusIcon(status: ChangedFileInfo['status']): JSX.Element {
-  if (status === 'added') {
-    return (
-      <span aria-hidden="true" className="h-2 w-2 rounded-full bg-success" />
-    );
-  }
-
-  if (status === 'deleted') {
-    return (
-      <AppCatalogCloseIcon
-        aria-hidden="true"
-        size="sm"
-        className="fg-destructive"
-      />
-    );
-  }
-
-  if (status === 'renamed') {
-    return (
-      <AppCatalogForwardIcon aria-hidden="true" size="sm" className="fg-info" />
-    );
-  }
-
-  return (
-    <AppCatalogPencilIcon aria-hidden="true" size="sm" className="fg-info" />
-  );
-}
 
 const SINGLE_FILE_VERBS: Partial<Record<ChangedFileInfo['status'], string>> = {
   added: 'Created',
@@ -176,33 +136,8 @@ const FileCard = memo(function FileCard({
   // the line counts at the far edge. The hover sits inside the list's 4px
   // inset, with corners nested in the card's 16px ones; 8px of padding
   // keeps the text on the header's 12px edge.
-  const clean = useCleanChatLook();
-  if (clean) {
-    const folder = file.path.slice(0, file.path.length - baseName.length);
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        onMouseEnter={onMouseEnter}
-        onMouseMove={onMouseMove}
-        onMouseLeave={onMouseLeave}
-        className={`focus-ring text-left ${TURN_FILE_ROW_CLASS_NAME}`}
-        aria-label={file.path}
-      >
-        <span className="flex min-w-0 flex-1 items-baseline">
-          {(folder !== '' || file.repoName) && (
-            <span className="min-w-0 truncate fg-tertiary">
-              {file.repoName ? `${file.repoName}: ` : ''}
-              {folder}
-            </span>
-          )}
-          <span className="shrink-0 fg-primary">{baseName}</span>
-        </span>
-        <LineCounts insertions={file.insertions} deletions={file.deletions} />
-      </button>
-    );
-  }
 
+  const folder = file.path.slice(0, file.path.length - baseName.length);
   return (
     <button
       type="button"
@@ -210,24 +145,19 @@ const FileCard = memo(function FileCard({
       onMouseEnter={onMouseEnter}
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
-      className="flex flex-col gap-1 min-w-0 cursor-default rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
-      // The hover diff popover already surfaces the full path; the native
-      // title only doubled it (CAN-2799).
+      className={`focus-ring text-left ${TURN_FILE_ROW_CLASS_NAME}`}
       aria-label={file.path}
     >
-      <div className="flex items-center gap-1.5">
-        <span className="flex h-3 w-3 shrink-0 items-center justify-center">
-          {renderStatusIcon(file.status)}
-        </span>
-        <span className="min-w-0 flex-1 truncate fg-primary">{baseName}</span>
-        <span className="inline-flex gap-1 shrink-0 font-medium tabular-nums">
-          <span className="fg-success">+{file.insertions}</span>
-          <span className="fg-destructive">-{file.deletions}</span>
-        </span>
-      </div>
-      {file.repoName && (
-        <div className="truncate text-3xs fg-secondary">{file.repoName}</div>
-      )}
+      <span className="flex min-w-0 flex-1 items-baseline">
+        {(folder !== '' || file.repoName) && (
+          <span className="min-w-0 truncate fg-tertiary">
+            {file.repoName ? `${file.repoName}: ` : ''}
+            {folder}
+          </span>
+        )}
+        <span className="shrink-0 fg-primary">{baseName}</span>
+      </span>
+      <LineCounts insertions={file.insertions} deletions={file.deletions} />
     </button>
   );
 });
@@ -245,13 +175,11 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   files = NO_FILES,
   pendingFiles = NO_PENDING,
   fileTarget,
-  filesSettled = true,
   turnId,
   isLastTurnGroup,
   originChatTabId,
   onUndo,
 }: TurnDiffSummaryProps): JSX.Element | null {
-  const clean = useCleanChatLook();
   const extraFiles = useMemo(
     () =>
       fileTarget
@@ -315,8 +243,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   // The summary can mount while the turn runs (a pending chip) and gain its
   // diff later, so the default is re-applied as the entries change until the
   // user has toggled the disclosure themselves.
-  const defaultExpanded =
-    !clean && isLastTurnGroup && filesSettled && totalCount <= 10;
+  const defaultExpanded = false;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const userToggledRef = useRef(false);
   const [hoveredFile, setHoveredFile] = useState<ChangedFileInfo | null>(null);
@@ -447,7 +374,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   }, [openDiffFile, turnDiff]);
 
   // Clean chat look: a turn that changed exactly one file is the header alone.
-  const oneFileHeader = clean && diffCount === 1 && extraCount === 0;
+  const oneFileHeader = diffCount === 1 && extraCount === 0;
   const showFiles = !oneFileHeader && isExpanded;
   // Rows render by index so the shared list mounts only those in view: a turn
   // can touch thousands of files.
@@ -480,8 +407,6 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   ]);
 
   if (totalCount === 0) return null;
-
-  const diffLabel = diffCount === 1 ? 'file changed' : 'files changed';
   const extraHeading = formatTurnFilesHeading(extraEntries);
   const otherHeading = formatTurnFilesHeading(extraEntries, { other: true });
 
@@ -511,7 +436,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
             absolutePath={file.absolutePath}
             target={file.target}
             change={file.change}
-            presentation={clean && totalCount === 1 ? 'summary' : 'row'}
+            presentation={totalCount === 1 ? 'summary' : 'row'}
             projectId={fileTarget.projectId}
             worktreeId={fileTarget.worktreeId}
             chatId={fileTarget.chatId}
@@ -525,7 +450,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
             change={file.change}
             pending
             waiting={waitingPending.has(file.path)}
-            presentation={clean && totalCount === 1 ? 'summary' : 'row'}
+            presentation={totalCount === 1 ? 'summary' : 'row'}
             projectId={fileTarget.projectId}
             worktreeId={fileTarget.worktreeId}
             chatId={fileTarget.chatId}
@@ -583,26 +508,6 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
               )}
             </span>
           ) : undefined
-        }
-        classicHeading={
-          turnDiff && diffCount > 0 ? (
-            <>
-              <span className="font-medium fg-primary">
-                {diffCount} {diffLabel}
-              </span>
-              <span className="font-medium tabular-nums fg-success">
-                +{turnDiff.totalInsertions}
-              </span>
-              <span className="font-medium tabular-nums fg-destructive">
-                -{turnDiff.totalDeletions}
-              </span>
-              {otherHeading && (
-                <span className="fg-secondary">· {otherHeading}</span>
-              )}
-            </>
-          ) : (
-            <span className="font-medium fg-primary">{extraHeading}</span>
-          )
         }
         changedFiles={changedFileRows}
       >

@@ -6,7 +6,6 @@ import {
   readdir,
   lstat,
   open,
-  realpath,
   rename,
   rm,
 } from 'node:fs/promises';
@@ -23,6 +22,11 @@ import type {
 } from '@canopy/desktop-shared/node/w5-commit-log';
 import { syncDirectory } from '@canopy/execution-engine/node/lib/atomic-file';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
+import {
+  w5RootEvidenceScope,
+  type W5RootEvidenceScope,
+} from '@canopy/core-runtime/node/w5/service-history';
+import { createReadOnlyW5BackupContext } from '@canopy/core-runtime/node/w5/readonly-backup-position';
 import type { W5CommitLogHost } from '../w5-commit-log/commit-log-host';
 import { getDataDir, getWorkspacesRootDir } from './paths';
 import { isErrnoException, isRecord } from './type-guards';
@@ -66,10 +70,16 @@ export class W5BackupRecoveryError extends Error {
   }
 }
 
-export interface W5BackupContext {
-  readonly host: W5CommitLogHost;
+export interface W5BackupReadContext {
+  readonly host: Pick<W5CommitLogHost, 'snapshot'>;
   /** Trusted host projection, not a client-supplied path. */
   readonly dataRoot: string;
+  /** Pins a freshly created, empty capture directory for read-only snapshots. */
+  readonly captureCreated?: (directory: string) => Promise<void>;
+}
+
+export interface W5BackupContext extends W5BackupReadContext {
+  readonly host: W5CommitLogHost;
 }
 
 type Position = W5BackupPosition;
@@ -112,22 +122,23 @@ export function __createW5ExclusiveMaintenanceForTests(
 }
 
 /**
- * The app's host over the data root's realpath: recovery copies refuse a
- * symlinked ancestor, so a linked data root is canonicalized first (Q6(a)).
+ * Recovery copies require a canonical root. Retain its identity so protected
+ * bootstrap can refuse replacement or alias retargeting before admission.
  */
-export async function desktopW5BackupContext(): Promise<W5BackupContext> {
-  const { getW5CommitLogHost } =
-    await import('../w5-commit-log/commit-log-host');
+export async function desktopW5BackupRootScope(): Promise<W5RootEvidenceScope> {
   const dataDir = getDataDir();
   if (resolve(getWorkspacesRootDir()) !== join(resolve(dataDir), 'workspaces'))
     throw new W5BackupRefusedError('source-unreadable', 'W5 root projection');
-  let dataRoot: string;
   try {
-    dataRoot = await realpath(dataDir);
+    return await w5RootEvidenceScope(dataDir);
   } catch {
     throw new W5BackupRefusedError('source-unreadable', 'data root');
   }
-  return { host: getW5CommitLogHost(), dataRoot };
+}
+
+export async function desktopW5BackupContext(): Promise<W5BackupReadContext> {
+  const { canonicalDataRoot } = await desktopW5BackupRootScope();
+  return createReadOnlyW5BackupContext(canonicalDataRoot);
 }
 
 function digest(bytes: Buffer | string): string {
@@ -472,7 +483,7 @@ async function trialRestore(
 
 /** Files first, C3 records last; a partial directory never passes verification. */
 export async function captureW5Backup(
-  context: W5BackupContext,
+  context: W5BackupReadContext,
 ): Promise<string> {
   const root = join(resolve(context.dataRoot), 'workspaces');
   const parent = await recoveryDirectory(context.dataRoot, 'w5/backups', true);
@@ -482,6 +493,7 @@ export async function captureW5Backup(
     const backupPath = `w5/backups/${randomUUID()}`;
     const directory = join(context.dataRoot, backupPath);
     await mkdir(directory);
+    await context.captureCreated?.(directory);
     const createdAt = new Date().toISOString();
     for (const { file } of images)
       await mkdir(dirname(join(directory, 'files', file.path)), {
@@ -606,7 +618,7 @@ function isBackupFile(value: unknown): value is BackupFile {
 
 /** Revalidates C3 and all bytes on every use; never trusts an in-memory flag. */
 export async function verifyW5Backup(
-  context: W5BackupContext,
+  context: W5BackupReadContext,
   backupPath: string,
 ): Promise<W5BackupRecord> {
   if (!/^w5\/backups\/[a-z0-9-]+$/.test(backupPath))
@@ -718,7 +730,7 @@ function refuseNewer(current: Position, record: W5BackupRecord): void {
 
 /** Rollout gate: verified at/after X and still the exact live snapshot. */
 export async function requireVerifiedW5Backup(
-  context: W5BackupContext,
+  context: W5BackupReadContext,
   backupPath: string,
   minimumCommitId: number,
 ): Promise<W5BackupRecord> {
@@ -765,15 +777,19 @@ export async function restoreW5Backup(
       if (exclusiveRoots.get(request.exclusive) === resolve(context.dataRoot))
         return;
       // Local import breaks the cycle with the sole production issuer.
-      const { isW5MaintenanceHeld } = await import('./w5-maintenance');
-      if (await isW5MaintenanceHeld(request.exclusive, context.dataRoot))
+      const { isW5MaintenanceHeld, isW5MaintenanceHostHeld } =
+        await import('./w5-maintenance');
+      if (
+        (await isW5MaintenanceHeld(request.exclusive, context.dataRoot)) &&
+        (await isW5MaintenanceHostHeld(context.host, context.dataRoot))
+      )
         return;
     }
     throw new W5BackupRefusedError('exclusive-required', 'offline maintenance');
   }
   await requireExclusive();
   const record = await verifyW5Backup(context, request.backupPath);
-  return withStorageAdmission(PROJECT_W5_STORAGE, async (): Promise<number> => {
+  const restore = async (): Promise<number> => {
     await requireExclusive();
     const current = await context.host.snapshot();
     refuseNewer(current, record);
@@ -881,5 +897,13 @@ export async function restoreW5Backup(
     if (outcome.status !== 'applied')
       throw new W5BackupRecoveryError(outcome.commitId);
     return outcome.commitId;
-  });
+  };
+  if (exclusiveRoots.get(request.exclusive) === resolve(context.dataRoot))
+    return withStorageAdmission(PROJECT_W5_STORAGE, restore);
+  const { withW5MaintenanceRestoreStorage } = await import('./w5-maintenance');
+  return withW5MaintenanceRestoreStorage(
+    request.exclusive,
+    context.dataRoot,
+    restore,
+  );
 }

@@ -4,6 +4,7 @@ import {
 } from '@/cloud-chats/cloud-chat-attachments';
 import { memo, useCallback, useEffect, useState, type JSX } from 'react';
 import {
+  Surface,
   Button,
   Markdown,
   RichHoverCard,
@@ -205,7 +206,12 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
       surfaceClassName="w-70"
     >
       {/* Header */}
-      <div className="shrink-0 border-b px-3 py-2">
+      <Surface
+        variant="section"
+        boundary="bottom"
+        padding="section-compact"
+        className="shrink-0"
+      >
         <div className="truncate text-xs font-medium fg-primary">
           {displayName}
         </div>
@@ -219,7 +225,7 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
             Created {new Date(createdAt).toLocaleString()}
           </div>
         )}
-      </div>
+      </Surface>
 
       {/* Preview body. Portaled to the body, out of the composer's and
           transcript's replay blocks, so it carries its own: the attachment's

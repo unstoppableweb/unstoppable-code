@@ -647,6 +647,11 @@ export const ACCOUNT_MCP_TOOLS_REAUTH_REQUIRED = 'mcp_reauth_required';
 export interface AccountMcpOAuthClientCredentials {
   clientId: string;
   clientSecret?: string;
+  /**
+   * The token endpoint the person was shown as the client secret's
+   * recipient. The cloud refuses the start when its catalog pins another.
+   */
+  tokenEndpoint?: string;
 }
 
 /**
@@ -815,3 +820,4 @@ export {
   type McpExtraHeadersProblem,
 } from './extra-headers';
 export * from './availability';
+export * from './command-policy';

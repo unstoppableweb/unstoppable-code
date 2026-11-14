@@ -3434,6 +3434,7 @@ function AddRepoModalDraft({
           />
         ) : (
           <DesktopErrorBanner
+            errorSource="add-workspace-error"
             className=""
             error={error?.error}
             details={error?.details}

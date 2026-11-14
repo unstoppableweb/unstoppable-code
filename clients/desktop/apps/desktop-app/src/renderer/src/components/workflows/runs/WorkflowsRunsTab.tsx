@@ -90,7 +90,11 @@ export function WorkflowsRunsTab({
       data-testid="workflows-runs"
     >
       {feed.error !== null && (
-        <Notice intent="destructive" data-testid="workflows-runs-error">
+        <Notice
+          errorSource="workflows-runs-error-tab"
+          intent="destructive"
+          data-testid="workflows-runs-error"
+        >
           On-demand workflow runs could not be loaded. Scheduled workflow runs
           and watchers are still listed.
         </Notice>

@@ -71,12 +71,12 @@ import { Surface } from '@canopy/ui-shared/components';
 // pages that mount this card (Public profile, Statistics) stay chart-free
 // until there is something to plot.
 const ComparisonLineChart = lazy(() =>
-  import('./charts').then((module) => ({
+  import('../../../charts/charts').then((module) => ({
     default: module.ComparisonLineChart,
   })),
 );
 const PairedCategoryBarChart = lazy(() =>
-  import('./charts').then((module) => ({
+  import('../../../charts/charts').then((module) => ({
     default: module.PairedCategoryBarChart,
   })),
 );
@@ -351,6 +351,7 @@ function RoutingBacktestStart({
       <p className="text-s fg-secondary">{copy.replayIntro}</p>
       {failed?.failureCode ? (
         <ErrorBanner
+          errorSource="routing-backtest-failed"
           className=""
           testId="routing-backtest-failed"
           error={failureMessage(failed.failureCode)}
@@ -541,6 +542,7 @@ function RoutingBacktestConfirmDialog({
         </p>
         {error ? (
           <Notice
+            errorSource="routing-backtest-confirm-error"
             intent="destructive"
             data-testid="routing-backtest-confirm-error"
             actions={

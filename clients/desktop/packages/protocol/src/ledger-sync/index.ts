@@ -563,6 +563,11 @@ export const LedgerMirrorSearchRequestSchema = z.strictObject({
   createdBefore: LedgerTimeFilterSchema.optional(),
   updatedAfter: LedgerTimeFilterSchema.optional(),
   updatedBefore: LedgerTimeFilterSchema.optional(),
+  /**
+   * Only entries a workflow run's agents wrote: the run's operation ID, as
+   * their author details record it (CAN-6422).
+   */
+  pipelineExecutionId: LedgerOpaqueIdSchema.optional(),
   sort: LedgerSearchSortSchema.optional(),
   limit: z.int().min(1).max(LEDGER_LIMITS.searchPageMax).optional(),
   cursor: LedgerCursorSchema.optional(),

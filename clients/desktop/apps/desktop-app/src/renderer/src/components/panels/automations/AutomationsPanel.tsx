@@ -458,6 +458,7 @@ function RunsSection({
     return (
       <div className="p-3">
         <Notice
+          errorSource="automations-panel-runs-error"
           intent="destructive"
           data-testid="automations-panel-runs-error"
           title="Could not load workflow runs."
@@ -845,6 +846,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
         {loadErrors.length > 0 ? (
           <div className="shrink-0 p-3">
             <Notice
+              errorSource="automations-panel-load-error"
               intent="destructive"
               data-testid="automations-panel-load-error"
               className=""

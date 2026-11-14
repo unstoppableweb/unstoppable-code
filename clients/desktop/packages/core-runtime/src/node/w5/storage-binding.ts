@@ -1,5 +1,19 @@
-import type { StorageWriterPrincipal } from '../../storage';
+import {
+  evaluateStorageWrite,
+  STORAGE_OWNERSHIP,
+  type StorageWriterPrincipal,
+} from '../../storage';
 import type { W5StorageTarget } from './storage-target';
+
+/** Compiled ownership, never a runtime opt-in; mixed ownership is not activation. */
+export function isW5DaemonHostingRequired(): boolean {
+  return (
+    ['workspace_index', 'workspace_manifest', 'worktree_list'] as const
+  ).every(
+    (namespace) =>
+      evaluateStorageWrite(namespace, 'daemon', STORAGE_OWNERSHIP).allowed,
+  );
+}
 
 /**
  * The host's storage admission: admits every target before the operation's

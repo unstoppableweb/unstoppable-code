@@ -6,6 +6,7 @@ import {
   ChatAppNoteSheet,
   DelegatedAgentCapabilitiesSheet,
   ForkContextNoticeSheet,
+  UserBubbleCancelledNoteSheet,
 } from './componentsLabChatMarkersSheets';
 import {
   ApprovalContentModalSheet,
@@ -54,6 +55,16 @@ export const CHAT_MARKERS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/chat/ChatAppNote.tsx',
     prs: [],
     View: ChatAppNoteSheet,
+  },
+  {
+    id: 'chat-user-bubble-cancelled-note',
+    name: 'Cancelled prompt note',
+    group: 'Unified',
+    note: 'The line under a prompt whose turn was cancelled before it ran, such as one deleted from a cloud chat’s queue. It has one state, static text.',
+    source:
+      'packages/ui-shared/src/components/chat/UserBubbleCancelledNote.tsx',
+    prs: [],
+    View: UserBubbleCancelledNoteSheet,
   },
   {
     id: 'chat-fork-context-notice',

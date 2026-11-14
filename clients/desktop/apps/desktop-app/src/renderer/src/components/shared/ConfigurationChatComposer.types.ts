@@ -39,6 +39,8 @@ export interface ConfigurationChatComposerProps {
   onChange: (next: ConfigurationChatComposerValue) => void;
   context: ConfigurationComposerContext;
   selectionMode: 'local' | 'source';
+  /** Automations support local Agent/model routes; source hooks remain concrete-only. */
+  allowAgents?: boolean;
   /** Exact test id on the Slate editable; controls use this as their prefix. */
   dataTestId: string;
   effectiveModel?: ChatModel;

@@ -1,3 +1,4 @@
+import { isCreditHeldQueuedMessage } from '@canopy/ui-shared/lib/queued-message-force';
 import type { TranscriptSearchSelection } from '@/hooks/useTranscriptSearch';
 import { omitRecoveredCreditHoldArtifacts } from '@canopy/ui-shared/lib';
 import {
@@ -39,6 +40,7 @@ import {
 } from '@canopy/ui-app';
 import {
   AgentSentReceivingContextProvider,
+  StreamingTranscript,
   type AgentSentReceivingContext,
 } from '@canopy/ui-shared';
 import {
@@ -122,6 +124,7 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import {
   Stack,
   ChatMessageLinkActionsProvider,
+  ChatMessageLookUpProvider,
   ComposerTray,
   InputDeliveryList,
   OverlayScrollArea,
@@ -154,7 +157,10 @@ import {
   type AgentArtifactProjectionCache,
 } from './agent-artifact-projection';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
-import { useChatMessageLinkActions } from './chat-message-link-actions';
+import {
+  chatMessageLookUpSelection,
+  useChatMessageLinkActions,
+} from './chat-message-link-actions';
 import {
   estimateTranscriptSectionHeight,
   progressiveTranscriptRange,
@@ -300,6 +306,7 @@ function useIncrementalTurnGroups(
   chatId: string,
   messages: ChatMessage[],
   agentUsage: Record<string, AgentUsage> | undefined,
+  trailingTurnSettled: boolean,
 ): TurnGroupOrMessage[] {
   const cacheRef = useRef(createEmptyTurnGroupCache());
   return useMemo(
@@ -309,8 +316,9 @@ function useIncrementalTurnGroups(
         messages,
         agentUsage,
         cacheRef.current,
+        trailingTurnSettled,
       ),
-    [chatId, messages, agentUsage],
+    [chatId, messages, agentUsage, trailingTurnSettled],
   );
 }
 
@@ -971,10 +979,33 @@ export function ChatMessageList({
       return frame ? [message, frame] : [message];
     });
   }, [messages, transcriptTurns]);
+  const selectedWorktree = useChatStore((s) => s.selectedWorktree);
+  const worktreeTarget = targetOverride ?? selectedWorktree;
+  // This chat's tab fields; the selector runs only when this chat's tab or
+  // runtime changes, never for another chat's commit.
+  const chatTarget = useMemo(
+    (): ChatRenderTarget | null =>
+      worktreeTarget
+        ? {
+            projectId: worktreeTarget.projectId,
+            worktreeId: worktreeTarget.worktreeId,
+            chatId,
+          }
+        : null,
+    [worktreeTarget, chatId],
+  );
+  const trailingTurnSettled = useChatTabRenderState(
+    chatTarget,
+    ({ tab, runtime }) =>
+      tab !== undefined &&
+      tab.kind !== 'file' &&
+      localTurnActivity(tab, Date.now(), runtime) === 'idle',
+  );
   const turnGroups = useIncrementalTurnGroups(
     chatId,
     framedMessages,
     agentUsage,
+    trailingTurnSettled,
   );
   const continuationDiffOwnerByPrompt = useMemo(
     () => continuationDiffOwners(turnGroups),
@@ -1000,8 +1031,6 @@ export function ChatMessageList({
     () => searchTurnGroupId(turnGroups, searchSelection),
     [turnGroups, searchSelection],
   );
-  const selectedWorktree = useChatStore((s) => s.selectedWorktree);
-  const worktreeTarget = targetOverride ?? selectedWorktree;
   const startingTurnSentAt = useMemo(
     () =>
       startingTurnUserMessageId
@@ -1024,19 +1053,6 @@ export function ChatMessageList({
           : { kind: 'project', projectId: receivingProjectId }
         : undefined,
     [receivingProjectId],
-  );
-  // This chat's tab fields; the selector runs only when this chat's tab or
-  // runtime changes, never for another chat's commit.
-  const chatTarget = useMemo(
-    (): ChatRenderTarget | null =>
-      worktreeTarget
-        ? {
-            projectId: worktreeTarget.projectId,
-            worktreeId: worktreeTarget.worktreeId,
-            chatId,
-          }
-        : null,
-    [worktreeTarget, chatId],
   );
   useReconcileNativeTaskStops(chatTarget);
   const linkActions = useChatMessageLinkActions(worktreeTarget);
@@ -3236,7 +3252,10 @@ export function ChatMessageList({
           const row = compactRowById.get(id);
           if (!row) return null;
           const { message, index } = row;
-          const forceKind = queuedRowForceAction(message, localTurn);
+          const creditHeld = isCreditHeldQueuedMessage(message);
+          const forceKind = creditHeld
+            ? undefined
+            : queuedRowForceAction(message, localTurn);
           // A submission awaiting host admission keeps its disabled control
           // behind a streaming turn. It is not a forceable local queue row.
           const waitingForHost =
@@ -3282,7 +3301,7 @@ export function ChatMessageList({
               onEdit={onEditQueuedMessage}
               steeringSupported={queueSteeringSupported}
               // Host queues support any row; local eligibility is applied above.
-              canForce
+              canForce={!creditHeld}
               anyEditing={anyQueuedEditOpen}
             />
           );
@@ -3435,19 +3454,30 @@ export function ChatMessageList({
                   );
                 }}
                 onAction={async (row, action, text) => {
+                  let refusal: string | undefined;
                   const result = await useChatStore
                     .getState()
-                    .dispatchChatCommand(worktreeTarget, {
-                      type: 'chat.input_delivery_action',
-                      chatId,
-                      rowId: row.id,
-                      rowRevision: row.revision,
-                      action,
-                      ...(text !== undefined ? { text } : {}),
-                    });
+                    .dispatchChatCommand(
+                      worktreeTarget,
+                      {
+                        type: 'chat.input_delivery_action',
+                        chatId,
+                        rowId: row.id,
+                        rowRevision: row.revision,
+                        action,
+                        ...(text !== undefined ? { text } : {}),
+                      },
+                      {
+                        onResult: (commandResult) => {
+                          if (commandResult.outcome === 'rejected')
+                            refusal = commandResult.reason;
+                        },
+                      },
+                    );
                   if (result !== 'accepted')
                     throw new Error(
-                      'The message changed or the action could not be confirmed. Review its current status.',
+                      (result === 'rejected' && refusal) ||
+                        'The message changed or the action could not be confirmed. Review its current status.',
                     );
                 }}
               />
@@ -3457,7 +3487,10 @@ export function ChatMessageList({
               // The message being edited steps out of the queue: its editor
               // takes the composer's place (CAN-3607).
               if (editingQueuedMessageIndex === i) return null;
-              const forceAction = queuedRowForceAction(message, localTurn);
+              const creditHeld = isCreditHeldQueuedMessage(message);
+              const forceAction = creditHeld
+                ? undefined
+                : queuedRowForceAction(message, localTurn);
               return (
                 <QueuedMessageBubble
                   key={`bubble-${getQueuedMessageKey(message)}`}
@@ -3501,7 +3534,7 @@ export function ChatMessageList({
                     !sourceIsClaudeTerminal &&
                     Boolean(worktreeTarget && steeringCapabilities?.steer)
                   }
-                  canForce={i === 0}
+                  canForce={i === 0 && !creditHeld}
                   anyEditing={anyQueuedEditOpen}
                 />
               );
@@ -3607,7 +3640,16 @@ export function ChatMessageList({
                       value={delegationStopControls}
                     >
                       <ChatMessageLinkActionsProvider value={linkActions}>
-                        {messageList}
+                        <ChatMessageLookUpProvider
+                          value={chatMessageLookUpSelection()}
+                        >
+                          <StreamingTranscript
+                            id={chatId}
+                            hasContent={messages.length > 0}
+                          >
+                            {messageList}
+                          </StreamingTranscript>
+                        </ChatMessageLookUpProvider>
                       </ChatMessageLinkActionsProvider>
                     </ManagedDelegationStopContext.Provider>
                   </NativeTaskStopContext.Provider>

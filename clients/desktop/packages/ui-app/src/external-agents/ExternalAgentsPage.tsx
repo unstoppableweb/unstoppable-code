@@ -7,7 +7,10 @@ import {
   createExternalAgentsOverviewStore,
   type ExternalAgentsOverviewStore,
 } from '@canopy/app-state/external-agents';
-import type { ExternalAgentsClient } from '@canopy/app-core';
+import type {
+  ExternalAgentComputersClient,
+  ExternalAgentsClient,
+} from '@canopy/app-core';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import {
   AgentRow,
@@ -19,16 +22,42 @@ import {
   WaitingRows,
 } from './external-agents-parts';
 import { ExternalAgentsOverviewSkeleton } from './external-agents-skeletons';
-import { ExternalAgentComputersSection } from './external-agents-computers';
+import {
+  ExternalAgentComputersSection,
+  type ExternalAgentsNotify,
+} from './external-agents-computers';
 import { externalAgentPath } from './paths';
 import { useMountedStore } from './use-mounted-store';
+import {
+  shouldShowConnectComputerNotice,
+  useExternalAgentComputers,
+  type ExternalAgentComputersState,
+} from './use-external-agent-computers';
 
-export interface ExternalAgentsPageProps {
+export type { ExternalAgentsNotify } from './external-agents-computers';
+
+interface ComputersHostProps {
   readonly onOpenPath: (path: string) => void;
+  /** Confirms a connected computer through the host's notification stack. */
+  readonly notify: ExternalAgentsNotify;
+  /**
+   * The host can link to the desktop app's download page and this visit
+   * isn't from the app. Only the empty Computers state uses it.
+   */
+  readonly desktopDownloadAvailable: boolean;
+}
+
+export type ExternalAgentsPageProps = ComputersHostProps;
+
+interface ComputersSlot {
+  readonly client: ExternalAgentComputersClient;
+  readonly state: ExternalAgentComputersState;
 }
 
 export function ExternalAgentsPage({
   onOpenPath,
+  notify,
+  desktopDownloadAvailable,
 }: ExternalAgentsPageProps): JSX.Element {
   const client = useCanopyClient();
   const capabilities = useCapabilities();
@@ -38,28 +67,32 @@ export function ExternalAgentsPage({
   }
 
   return (
-    <>
-      <ExternalAgentsOverviewContent
-        client={externalAgents}
-        onOpenPath={onOpenPath}
-      />
-      {externalAgents.computers ? (
-        <ExternalAgentComputersSection client={externalAgents.computers} />
-      ) : null}
-    </>
+    <ExternalAgentsOverviewContent
+      client={externalAgents}
+      computersClient={externalAgents.computers}
+      onOpenPath={onOpenPath}
+      notify={notify}
+      desktopDownloadAvailable={desktopDownloadAvailable}
+    />
   );
 }
 
+/**
+ * Owns the Computers list across the skeleton and the view, so it loads in
+ * parallel with the overview and is fetched once.
+ */
 function ExternalAgentsOverviewContent({
   client,
-  onOpenPath,
-}: {
+  computersClient,
+  ...host
+}: ComputersHostProps & {
   readonly client: ExternalAgentsClient;
-  readonly onOpenPath: (path: string) => void;
+  readonly computersClient: ExternalAgentComputersClient | undefined;
 }): JSX.Element {
   const store = useMountedStore(client, 'overview', (agents) =>
     createExternalAgentsOverviewStore(agents),
   );
+  const computersState = useExternalAgentComputers(computersClient);
   if (store === null) {
     return (
       <div
@@ -70,15 +103,28 @@ function ExternalAgentsOverviewContent({
       </div>
     );
   }
-  return <ExternalAgentsOverviewView store={store} onOpenPath={onOpenPath} />;
+  return (
+    <ExternalAgentsOverviewView
+      store={store}
+      computers={
+        computersClient === undefined
+          ? undefined
+          : { client: computersClient, state: computersState }
+      }
+      {...host}
+    />
+  );
 }
 
 function ExternalAgentsOverviewView({
   store,
+  computers,
   onOpenPath,
-}: {
+  notify,
+  desktopDownloadAvailable,
+}: ComputersHostProps & {
   readonly store: ExternalAgentsOverviewStore;
-  readonly onOpenPath: (path: string) => void;
+  readonly computers: ComputersSlot | undefined;
 }): JSX.Element {
   const state = useStore(store);
 
@@ -139,13 +185,36 @@ function ExternalAgentsOverviewView({
               />
             ))}
           </SettingsGroup>
+          {shouldShowConnectComputerNotice(
+            overview.connections,
+            computers?.state,
+          ) ? (
+            <Notice
+              intent="attention"
+              data-testid="external-agents-connect-computer-notice"
+            >
+              Your agents can’t work on a computer yet. Connect one under
+              Computers.
+            </Notice>
+          ) : null}
         </SettingsSection>
+      ) : null}
+
+      {computers && !isInitialLoading ? (
+        <ExternalAgentComputersSection
+          client={computers.client}
+          state={computers.state}
+          onOpenPath={onOpenPath}
+          notify={notify}
+          desktopDownloadAvailable={desktopDownloadAvailable}
+        />
       ) : null}
 
       {overview ? (
         <ConnectSection
           servers={overview.servers}
           cursorClientId={overview.cursorClientId}
+          showComputersHint={computers !== undefined}
         />
       ) : isInitialLoading ? (
         <ExternalAgentsOverviewSkeleton />

@@ -5,7 +5,6 @@ import {
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
   type CoreWorkspaceHooksUpdateParams,
-  type CoreWorkspacePluginsUpdateParams,
   type CoreWorkspacePluginsUpdateResult,
   type CoreWorktreeCommandResult,
   type CoreWorktreeHooksSetPausedResult,
@@ -14,6 +13,7 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import type {
   CoreWorkspaceGuardedCall,
   CoreWorkspaceGuardedHost,
+  CoreWorkspaceHostPluginsChange,
   CoreWorktreeMetadataPatch,
 } from '@canopy/core-runtime/node/workspace/guarded-commands';
 import {
@@ -36,7 +36,7 @@ import {
 } from '../canopy-runtime/workspace-metadata-dispatch';
 import { updateCoworkWorkspaceSettings } from './cowork-workspace-crud';
 import { CoworkWorkspaceRecordRefusedError } from './cowork-workspace-records';
-import { getWorkspaceWorktreesFilePath } from './paths';
+import { w5RecordReadPaths } from './paths';
 import { readAllSidebarItems } from './sidebar-items';
 import { W5FileWriteRefusedError } from './w5-commit-log-file-store';
 import { currentW5CommitScope } from './w5-commit-scope';
@@ -207,7 +207,7 @@ function pluginsResult(
 
 /** The page's change, as the desktop boundary takes it. */
 function pluginsChange(
-  change: CoreWorkspacePluginsUpdateParams['change'],
+  change: CoreWorkspaceHostPluginsChange,
 ): WorkspacePluginsUserChange {
   return change.kind === 'setDefaults'
     ? {
@@ -358,7 +358,7 @@ function admitVerifiedList(
 ): void {
   const scope = currentW5CommitScope();
   if (!scope) return;
-  const path = getWorkspaceWorktreesFilePath(workspaceId);
+  const path = w5RecordReadPaths.worktrees(workspaceId);
   const preimage = scope.files.get(path) ?? scope.observed.get(path);
   if (preimage && fingerprintW5File(preimage.previousRaw) !== fingerprint)
     throw new W5FileWriteRefusedError(path);

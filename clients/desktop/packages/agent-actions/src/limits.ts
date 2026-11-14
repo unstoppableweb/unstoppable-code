@@ -24,7 +24,11 @@ export type AgentActionLimitKind =
   /** Key chat control receipts; stopping work takes no reservation. */
   | 'chat.interrupt'
   | 'chat.cancel'
-  | 'chat.archive';
+  | 'chat.archive'
+  /** A ScheduleWakeup, which wakes the calling chat for another turn. */
+  | 'schedule_wakeup'
+  /** Keys SaveMemory receipts; a saved note takes no reservation. */
+  | 'save_memory';
 
 export type AgentActionLimitReason = 'per_turn' | 'per_hour' | 'depth';
 

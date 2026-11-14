@@ -230,6 +230,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   worktreeDiffStatsStyle: 'short',
   scrollbarBehavior: 'system',
   singleDollarMath: true,
+  promptSuggestionsEnabled: true,
   linearChatEnrichmentMode: DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE,
   githubChatEnrichmentMode: DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
   uiScale: UI_SCALE_DEFAULT,
@@ -246,6 +247,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   windowMaximized: false,
   windowFullScreen: false,
   ollamaServerPort: DEFAULT_OLLAMA_SERVER_PORT,
+  googleSubscriptionDisconnected: false,
   // Transport contract: the shared `PreferencesData.ollamaConnectionMode` /
   // `ollamaExecutablePath` fields default to `managed` / '' (not yet resolved).
   // Final default placement and the load-time normalization/migration remain

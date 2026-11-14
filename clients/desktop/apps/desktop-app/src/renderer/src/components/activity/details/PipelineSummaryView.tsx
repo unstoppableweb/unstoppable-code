@@ -93,17 +93,19 @@ function AdaptiveAdvisor({
         />
       </div>
       {expanded ? (
-        <div className="border-t px-4 pb-4 pt-3">
-          <AdvisorSection
-            snapshot={advisorSnapshot}
-            startedAt={state.started_at}
-            pipelineStatus={state.status}
-            running={advisorRunning}
-            onRun={onRunAdvisor}
-            startError={advisorStartError}
-            hideHealthBadge
-          />
-        </div>
+        <Surface variant="section" boundary="top">
+          <div className="px-4 pb-4 pt-3">
+            <AdvisorSection
+              snapshot={advisorSnapshot}
+              startedAt={state.started_at}
+              pipelineStatus={state.status}
+              running={advisorRunning}
+              onRun={onRunAdvisor}
+              startError={advisorStartError}
+              hideHealthBadge
+            />
+          </div>
+        </Surface>
       ) : null}
     </Surface>
   );
@@ -159,9 +161,9 @@ export function PipelineSummaryView({
         />
       )}
       <Surface variant="inset" className="overflow-hidden">
-        <div className="border-b px-4 py-2 text-xs font-medium fg-secondary">
-          Flow
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div className="px-4 py-2 text-xs font-medium fg-secondary">Flow</div>
+        </Surface>
         <div className="h-80">
           <PipelineFlowDiagram
             source={flowSource}

@@ -30,8 +30,10 @@ import {
  * merged with each other, so the result accepts exactly the instances the
  * input accepts. An `unevaluatedProperties` or `unevaluatedItems` keyword
  * only sees what keywords in its own schema evaluated, so it moves together
- * with them. The one exception is typing an untyped root as an object, which
- * only changes the verdict for arguments that are not objects.
+ * with them. There are two exceptions. Typing an untyped root as an object
+ * only changes the verdict for arguments that are not objects. Retyping an
+ * `enum` or `const` whose `type` rejects every value (`enumTypedByValues`)
+ * accepts those values, where the input accepted none of them.
  *
  * The rewrites model one schema resource addressed by JSON pointers. A schema
  * using anything else is forwarded unchanged, because moving or inlining its
@@ -746,9 +748,61 @@ function transformNode(
       setOwn(conjunct, key, transformed);
     }
   }
+  enumTypedByValues(result);
   noteRef(result, context);
   noteRef(conjunct, context);
   return moved.size === 0 ? result : withConjuncts(result, [conjunct]);
+}
+
+/** The one Gemini type all values share, or undefined when they are mixed. */
+function sharedPrimitiveType(
+  values: readonly JsonSchemaValue[],
+): string | undefined {
+  if (values.length === 0) return undefined;
+  if (values.every((value) => typeof value === 'string')) return 'string';
+  if (values.every((value) => typeof value === 'boolean')) return 'boolean';
+  if (
+    values.every((value) => typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return values.every((value) => Number.isInteger(value))
+      ? 'integer'
+      : 'number';
+  }
+  return undefined;
+}
+
+/**
+ * Gemini rejects an `enum` (or `const`) unless its non-null values share one
+ * primitive type that the node's `type` allows. Codex sends `{ const: true }`
+ * as `{ type: 'string', enum: [true] }`, so a node whose `type` rejects every
+ * non-null value takes its values' type, keeping `null` when the old type
+ * allowed it. A node with mixed values, or a value its type accepts, is left
+ * alone.
+ */
+function enumTypedByValues(node: JsonSchemaObject): void {
+  const type = node.type;
+  if (type === undefined) return;
+  const values = Array.isArray(node.enum)
+    ? node.enum
+    : hasOwn(node, 'const')
+      ? [node.const ?? null]
+      : undefined;
+  if (values === undefined) return;
+  const present = values.filter((value) => value !== null);
+  const types = Array.isArray(type) ? type : [type];
+  const accepted = (value: JsonSchemaValue): boolean =>
+    types.includes(typeof value) ||
+    (typeof value === 'number' &&
+      Number.isInteger(value) &&
+      types.includes('integer'));
+  if (present.some(accepted)) return;
+  const valueType = sharedPrimitiveType(present);
+  if (valueType === undefined) return;
+  setOwn(
+    node,
+    'type',
+    types.includes('null') ? [valueType, 'null'] : valueType,
+  );
 }
 
 /**

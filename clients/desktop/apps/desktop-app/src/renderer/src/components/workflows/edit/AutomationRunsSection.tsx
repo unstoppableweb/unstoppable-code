@@ -95,7 +95,11 @@ export function AutomationRunsSection({
       data-testid="automation-runs-section"
     >
       {feed.error !== null && runsPipeline && (
-        <Notice intent="destructive" data-testid="workflows-runs-error">
+        <Notice
+          errorSource="workflows-runs-error-automation-section"
+          intent="destructive"
+          data-testid="workflows-runs-error"
+        >
           Workflow runs could not be loaded, so a run&apos;s workflow status may
           be out of date.
         </Notice>

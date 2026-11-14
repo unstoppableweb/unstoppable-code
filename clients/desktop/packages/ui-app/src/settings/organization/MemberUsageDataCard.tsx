@@ -211,11 +211,16 @@ function MemberUsageDataCardBody({
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <div className="flex flex-col gap-3">
           <ErrorBanner
+            errorSource="member-usage-data-card-body-load"
             error={loadError?.copy}
             details={loadError?.details}
             onRetry={retryLoad}
           />
-          <ErrorBanner error={error?.copy} details={error?.details} />
+          <ErrorBanner
+            errorSource="member-usage-data-card-body"
+            error={error?.copy}
+            details={error?.details}
+          />
           <div>
             {policy ? (
               // The card's group is already the box, so the rows are split by

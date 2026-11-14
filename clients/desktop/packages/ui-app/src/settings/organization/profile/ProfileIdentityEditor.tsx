@@ -117,6 +117,7 @@ export function AvatarEditor({
       {error && (
         <div className="w-full max-w-48">
           <ErrorBanner
+            errorSource="avatar-editor"
             className=""
             error={error.copy}
             {...(error.details !== undefined ? { details: error.details } : {})}
@@ -201,6 +202,7 @@ export function NameEditor({
         {error && (
           <div className="w-full">
             <ErrorBanner
+              errorSource="name-editor"
               className=""
               error={error.copy}
               {...(error.details !== undefined
@@ -248,6 +250,7 @@ export function NameEditor({
       {error && (
         <div className="w-full">
           <ErrorBanner
+            errorSource="name-editor"
             className=""
             error={error.copy}
             {...(error.details !== undefined ? { details: error.details } : {})}

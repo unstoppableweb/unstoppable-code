@@ -44,18 +44,27 @@ import {
   type ProjectedTranscript,
   MAX_IMPORT_TRANSCRIPT_BYTES,
 } from './chat-projection';
-import { getCachedExternalProjectScan } from './discovery';
+import { getCachedExternalProjectScan, type CachedScan } from './discovery';
+import { projectOpenCodeSession } from './opencode-projection';
+import type { StoreReadRunner } from './store-read-runner';
+import { withStoreRunner } from './store-snapshot-read';
+import { StoreTranscripts } from './store-transcripts';
+import { projectT3Thread } from './t3code-projection';
 import {
   readExternalProjectImportLedger,
   recordExternalProjectChatDestination,
   recordExternalProjectImport,
   recordExternalProjectSessionImports,
+  findImportedSession,
   removeExternalProjectImport,
+  type ExternalProjectImportedSession,
+  type ExternalProjectSessionImport,
 } from './ledger';
 import type { DiscoveredSession } from './types';
 
 /**
- * Import transaction for the bulk Claude/Codex project import (CAN-2439).
+ * Import transaction for the bulk project import (CAN-2439) from Claude,
+ * Codex, T3 Code, and OpenCode.
  *
  * Items are processed one at a time and each reports its own result, so an
  * unreadable folder or an oversized transcript never stops the batch. Per
@@ -92,6 +101,12 @@ const MAX_CHATS_PER_PROJECT = 200;
  * the ceiling is a small multiple of this figure.
  */
 const MAX_IMPORT_SCOPE_BYTES = 128 * 1024 * 1024;
+/**
+ * Budget rounds one run makes (see {@link prepareChatImports}). Every round
+ * copies each SQLite store its chats read from, so the refills that bytes
+ * given back pay for are bounded rather than one per waiting chat.
+ */
+const MAX_IMPORT_BUDGET_ROUNDS = 4;
 /** Per-project result messages kept verbatim; the rest fold into a count. */
 const MAX_RESULT_MESSAGES = 5;
 /**
@@ -111,7 +126,52 @@ interface DestinationWorkspace {
 }
 
 function providerName(provider: ExternalProjectProvider): string {
-  return provider === 'claude' ? 'Claude' : 'Codex';
+  switch (provider) {
+    case 'claude':
+      return 'Claude';
+    case 'codex':
+      return 'Codex';
+    case 't3code':
+      return 'T3 Code';
+    case 'opencode':
+      return 'OpenCode';
+    default: {
+      const unknown: never = provider;
+      return unknown;
+    }
+  }
+}
+
+/** Providers an imported tab can name: both an `AgentProviderType` and a `ModelHarness`. */
+type ImportedTabProvider =
+  | 'claude'
+  | 'codex'
+  | 'cursor'
+  | 'copilot'
+  | 'opencode';
+
+/** T3 Code driver ids Canopy has a provider for; T3 calls its Claude driver `claudeAgent`. */
+const T3_DRIVER_PROVIDERS = new Map<string, ImportedTabProvider>([
+  ['claudeAgent', 'claude'],
+  ['claude', 'claude'],
+  ['codex', 'codex'],
+  ['cursor', 'cursor'],
+  ['copilot', 'copilot'],
+  ['opencode', 'opencode'],
+]);
+
+/**
+ * The provider an imported tab is labeled with: the agent whose record backs
+ * it, else the agent T3 ran it on when Canopy has that provider. A T3 thread
+ * run on an agent Canopy cannot name (Grok, Kiro, …) carries none rather than
+ * a wrong one; it is read-only, so nothing ever runs on it.
+ */
+function tabProviderFor(
+  session: DiscoveredSession,
+): ImportedTabProvider | undefined {
+  if (session.backing) return session.backing.provider;
+  if (session.provider !== 't3code') return session.provider;
+  return session.driver ? T3_DRIVER_PROVIDERS.get(session.driver) : undefined;
 }
 
 // The main process's default locale (Node/ICU, which can differ from the
@@ -239,8 +299,14 @@ async function registerDestination(
   return { id: workspace.id, type: 'cowork', item: workspace };
 }
 
+interface NativeTranscript {
+  kind: DiscoveredSession['kind'];
+  id: string;
+  sourcePath: string;
+}
+
 async function installClaudeTranscriptForCwd(
-  session: DiscoveredSession,
+  session: NativeTranscript,
   cwd: string,
 ): Promise<boolean> {
   if (!SAFE_SESSION_ID.test(session.id)) return false;
@@ -266,38 +332,175 @@ async function installClaudeTranscriptForCwd(
   return true;
 }
 
+/** The agent record a session continues from: its own, or a T3 thread's backing. */
+function nativeTranscriptOf(session: DiscoveredSession): NativeTranscript {
+  return session.kind === 't3-thread' && session.backing
+    ? session.backing
+    : session;
+}
+
 async function buildContinuation(
   session: DiscoveredSession,
   cwd: string,
 ): Promise<Partial<PersistedChatTab>> {
-  if (session.kind === 'claude-jsonl') {
-    const installed = await installClaudeTranscriptForCwd(session, cwd);
+  const native = nativeTranscriptOf(session);
+  if (native.kind === 'claude-jsonl') {
+    const installed = await installClaudeTranscriptForCwd(native, cwd);
     return installed
-      ? { sdkSessionId: session.id, claudeForkSessionOnNextSend: true }
+      ? { sdkSessionId: native.id, claudeForkSessionOnNextSend: true }
       : { readOnly: true };
   }
-  const items = await readCodexRolloutSeedItems(session.sourcePath);
+  // OpenCode sessions and T3's own text copies arrive as history only.
+  if (native.kind !== 'codex-rollout') return { readOnly: true };
+  const items = await readCodexRolloutSeedItems(native.sourcePath);
   if (items.length === 0) return { readOnly: true };
   const codexReconstructionSeedId = await publishCodexReconstructionSeed(items);
   return { codexReconstructionSeedId };
 }
 
-async function projectSession(
-  session: DiscoveredSession,
-  attachmentsDir: string,
+async function projectNative(
+  native: NativeTranscript,
+  context: ChatTabContext,
 ): Promise<ProjectedTranscript> {
-  return session.kind === 'claude-jsonl'
-    ? projectClaudeTranscriptFile(session.sourcePath, { attachmentsDir })
-    : projectCodexRolloutFile(session.sourcePath);
+  const { attachmentsDir, transcripts } = context;
+  switch (native.kind) {
+    case 'claude-jsonl':
+      return projectClaudeTranscriptFile(native.sourcePath, { attachmentsDir });
+    case 'codex-rollout':
+      return projectCodexRolloutFile(native.sourcePath);
+    case 'opencode-session':
+      return projectOpenCodeSession(
+        await transcripts.openCodeSession(native.sourcePath, native.id),
+        { attachmentsDir },
+      );
+    case 't3-thread':
+      throw new Error('A T3 Code thread has no native transcript of its own');
+    default: {
+      const unknown: never = native.kind;
+      return unknown;
+    }
+  }
 }
 
-interface ImportedChatRecord {
-  sessionId: string;
-  chatId: string;
-  worktreeId: string;
+interface SessionProjection {
+  projected: ProjectedTranscript;
+  /** Size of the source that was projected, for the scope budget. */
+  sourceBytes: number;
+  /** Set when a T3 thread's native record failed and its T3 text was used instead. */
+  demotedBecause?: string;
 }
 
-interface ChatImportOutcome {
+/** The native step of a projection: done, or T3's text still to read. */
+type NativeAttempt =
+  | { kind: 'projected'; projection: SessionProjection }
+  | { kind: 't3-text'; demotedBecause?: string };
+
+/**
+ * Projects a session through its own or its backing agent's record. A T3
+ * thread whose record is missing, oversized, empty, or fails to project is
+ * left for T3's text instead, with the reason it was demoted.
+ */
+async function attemptNative(
+  session: DiscoveredSession,
+  context: ChatTabContext,
+): Promise<NativeAttempt> {
+  const sourceBytes = session.sizeBytes;
+  if (session.kind === 'opencode-session') {
+    const projected = await projectNative(
+      { ...session, id: session.storeId ?? session.id },
+      context,
+    );
+    return { kind: 'projected', projection: { projected, sourceBytes } };
+  }
+  if (session.kind !== 't3-thread') {
+    const projected = await projectNative(session, context);
+    return { kind: 'projected', projection: { projected, sourceBytes } };
+  }
+  const { backing } = session;
+  if (!backing) return { kind: 't3-text' };
+  if (backing.sizeBytes > MAX_IMPORT_TRANSCRIPT_BYTES) {
+    // Never read: the per-chat cap applies to the native record too.
+    return {
+      kind: 't3-text',
+      demotedBecause: new TranscriptTooLargeError(backing.sizeBytes).message,
+    };
+  }
+  try {
+    const projected = await projectNative(backing, context);
+    if (projected.messages.length > 0) {
+      return {
+        kind: 'projected',
+        projection: { projected, sourceBytes: backing.sizeBytes },
+      };
+    }
+    return {
+      kind: 't3-text',
+      demotedBecause: `its ${providerName(backing.provider)} transcript has no messages`,
+    };
+  } catch (error) {
+    return {
+      kind: 't3-text',
+      demotedBecause: errorMessage(error).replace(/\.$/, ''),
+    };
+  }
+}
+
+/** Projects a T3 thread from T3 Code's own text copy. */
+async function projectT3Text(
+  session: DiscoveredSession,
+  context: ChatTabContext,
+  demotedBecause: string | undefined,
+): Promise<SessionProjection> {
+  const sourceBytes = session.sizeBytes;
+  // Planned by its native record, a backed thread meets the cap on its T3
+  // text only here, once it falls back to it.
+  if (sourceBytes > MAX_IMPORT_TRANSCRIPT_BYTES) {
+    throw new TranscriptTooLargeError(sourceBytes);
+  }
+  const projected = await projectT3Thread(
+    await context.transcripts.t3Thread(session),
+    {
+      attachmentsDir: context.attachmentsDir,
+      t3AttachmentsDir: join(dirname(session.sourcePath), 'attachments'),
+    },
+  );
+  return {
+    projected,
+    sourceBytes,
+    ...(demotedBecause ? { demotedBecause } : {}),
+  };
+}
+
+type ImportedChatRecord = ExternalProjectSessionImport;
+
+/** Ledger record for one imported chat. */
+export function chatImportRecord(
+  session: DiscoveredSession,
+  chatId: string,
+  worktreeId: string,
+): ImportedChatRecord {
+  // Keyed by the store's own id: a T3 thread's `id` is its native id only
+  // when the native record resolved in this scan. The native id stays an
+  // alias in either tier, so a rescan from the Codex, Claude, or OpenCode
+  // side sees it too.
+  const sessionId = session.storeId ?? session.id;
+  const aliasIds = Array.from(
+    new Set([
+      ...(session.backing ? [session.backing.id] : []),
+      ...(session.aliasIds ?? []),
+    ]),
+  ).filter((id) => id !== sessionId);
+  return {
+    sessionId,
+    chatId,
+    worktreeId,
+    ...(session.backing ? { backingProvider: session.backing.provider } : {}),
+    ...(aliasIds.length > 0 ? { aliasIds } : {}),
+    ...(session.archived !== undefined ? { archived: session.archived } : {}),
+  };
+}
+
+export interface ChatImportOutcome {
   chatsImported: number;
   chatsReadOnly: number;
   chatsSkipped: number;
@@ -427,7 +630,9 @@ async function reusableChatDestination(
   return null;
 }
 
-function sortNewestFirst(sessions: DiscoveredSession[]): DiscoveredSession[] {
+function sortNewestFirst(
+  sessions: readonly DiscoveredSession[],
+): DiscoveredSession[] {
   return [...sessions].sort((a, b) => {
     const at = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;
     const bt = b.lastActivityAt ? Date.parse(b.lastActivityAt) : 0;
@@ -435,24 +640,154 @@ function sortNewestFirst(sessions: DiscoveredSession[]): DiscoveredSession[] {
   });
 }
 
-async function prepareChatTab(
+/**
+ * Bytes the import expects to read for a session: a T3 thread's native record
+ * when it has one within the per-chat cap (an oversized one is never read; the
+ * thread falls back to its T3 text), else the session's own size.
+ */
+function plannedBytes(session: DiscoveredSession): number {
+  const native = session.kind === 't3-thread' ? session.backing : undefined;
+  return native && native.sizeBytes <= MAX_IMPORT_TRANSCRIPT_BYTES
+    ? native.sizeBytes
+    : session.sizeBytes;
+}
+
+export interface ChatImportPlan {
+  /** Native sessions not yet imported. */
+  pendingCount: number;
+  /** Pending sessions past the per-project chat cap, left for the next run. */
+  truncated: number;
+  /** The first {@link MAX_CHATS_PER_PROJECT} pending sessions, newest first. */
+  entries: Array<{
+    session: DiscoveredSession;
+    status: 'admitted' | 'too-large' | 'over-budget';
+    plannedBytes: number;
+  }>;
+}
+
+/**
+ * Decides, before anything is read, which sessions this run imports: the
+ * newest native sessions the ledger does not know yet, up to the chat cap,
+ * each within the per-chat cap, together within the scope budget.
+ */
+export function planChatImports(
+  sessions: readonly DiscoveredSession[],
+  alreadyImported: Readonly<Record<string, ExternalProjectImportedSession>>,
+): ChatImportPlan {
+  const pending = sortNewestFirst(
+    sessions.filter(
+      (session) =>
+        session.native && !findImportedSession(alreadyImported, session),
+    ),
+  );
+  let admittedBytes = 0;
+  const entries = pending
+    .slice(0, MAX_CHATS_PER_PROJECT)
+    .map((session): ChatImportPlan['entries'][number] => {
+      const bytes = plannedBytes(session);
+      if (bytes > MAX_IMPORT_TRANSCRIPT_BYTES)
+        return { session, status: 'too-large', plannedBytes: bytes };
+      if (admittedBytes + bytes > MAX_IMPORT_SCOPE_BYTES)
+        return { session, status: 'over-budget', plannedBytes: bytes };
+      admittedBytes += bytes;
+      return { session, status: 'admitted', plannedBytes: bytes };
+    });
+  return {
+    pendingCount: pending.length,
+    truncated: Math.max(0, pending.length - MAX_CHATS_PER_PROJECT),
+    entries,
+  };
+}
+
+export interface ChatTabContext {
+  cwd: string;
+  attachmentsDir: string;
+  transcripts: StoreTranscripts;
+}
+
+export interface PreparedChatTab {
+  tab: PersistedChatTab;
+  sourceBytes: number;
+}
+
+function recordProjectionFailure(
   session: DiscoveredSession,
-  destination: { cwd: string; attachmentsDir: string },
+  error: unknown,
   outcome: ChatImportOutcome,
-): Promise<PersistedChatTab | null> {
-  let projected: ProjectedTranscript;
-  try {
-    projected = await projectSession(session, destination.attachmentsDir);
-  } catch (error) {
-    outcome.chatsSkipped += 1;
-    // An oversized transcript stays oversized; a read error may not recur.
-    if (!(error instanceof TranscriptTooLargeError))
-      outcome.retryableSkips += 1;
-    outcome.messages.push(
-      `Skipped "${session.title ?? session.id}": ${errorMessage(error)}.`,
+): null {
+  outcome.chatsSkipped += 1;
+  // An oversized transcript stays oversized; a read error may not recur.
+  if (!(error instanceof TranscriptTooLargeError)) outcome.retryableSkips += 1;
+  outcome.messages.push(
+    `Skipped "${session.title ?? session.id}": ${errorMessage(error)}.`,
+  );
+  return null;
+}
+
+/**
+ * Prepares a batch of chats, results in input order. Native records are
+ * projected first, so every T3 thread that needs T3 Code's text, unbacked or
+ * demoted, is known before the T3 store is read and one copy of it serves
+ * them all.
+ */
+export async function prepareChatTabs(
+  sessions: readonly DiscoveredSession[],
+  destination: ChatTabContext,
+  outcome: ChatImportOutcome,
+  onSettled: () => void = () => undefined,
+): Promise<Array<PreparedChatTab | null>> {
+  const results: Array<PreparedChatTab | null> = sessions.map(() => null);
+  const fallbacks: Array<{ index: number; demotedBecause?: string }> = [];
+  for (const [index, session] of sessions.entries()) {
+    let attempt: NativeAttempt;
+    try {
+      attempt = await attemptNative(session, destination);
+    } catch (error) {
+      recordProjectionFailure(session, error, outcome);
+      onSettled();
+      continue;
+    }
+    if (attempt.kind === 't3-text') {
+      fallbacks.push({ index, demotedBecause: attempt.demotedBecause });
+      continue;
+    }
+    results[index] = await tabFromProjection(
+      session,
+      attempt.projection,
+      destination,
+      outcome,
     );
-    return null;
+    onSettled();
   }
+  destination.transcripts.demote(
+    fallbacks
+      .filter((entry) => entry.demotedBecause !== undefined)
+      .map((entry) => sessions[entry.index]),
+  );
+  for (const { index, demotedBecause } of fallbacks) {
+    const session = sessions[index];
+    try {
+      results[index] = await tabFromProjection(
+        session,
+        await projectT3Text(session, destination, demotedBecause),
+        destination,
+        outcome,
+      );
+    } catch (error) {
+      recordProjectionFailure(session, error, outcome);
+    }
+    onSettled();
+  }
+  return results;
+}
+
+async function tabFromProjection(
+  session: DiscoveredSession,
+  projection: SessionProjection,
+  destination: ChatTabContext,
+  outcome: ChatImportOutcome,
+): Promise<PreparedChatTab | null> {
+  const { projected, demotedBecause, sourceBytes } = projection;
   outcome.messages.push(...projected.warnings);
   if (projected.messages.length === 0) {
     outcome.chatsSkipped += 1;
@@ -462,13 +797,20 @@ async function prepareChatTab(
     return null;
   }
   let continuation: Partial<PersistedChatTab>;
-  try {
-    continuation = await buildContinuation(session, destination.cwd);
-  } catch (error) {
+  if (demotedBecause) {
     outcome.messages.push(
-      `"${session.title ?? session.id}" was imported as read-only history: ${errorMessage(error)}.`,
+      `"${session.title ?? session.id}" was imported as history only: ${demotedBecause}.`,
     );
     continuation = { readOnly: true };
+  } else {
+    try {
+      continuation = await buildContinuation(session, destination.cwd);
+    } catch (error) {
+      outcome.messages.push(
+        `"${session.title ?? session.id}" was imported as read-only history: ${errorMessage(error)}.`,
+      );
+      continuation = { readOnly: true };
+    }
   }
   const startedAtMs =
     projected.firstTimestamp ??
@@ -476,7 +818,8 @@ async function prepareChatTab(
   const createdAt = isDisplayableEpoch(startedAtMs)
     ? new Date(startedAtMs).toISOString()
     : new Date().toISOString();
-  return {
+  const tabProvider = tabProviderFor(session);
+  const tab: PersistedChatTab = {
     id: randomUUID(),
     title:
       session.title ??
@@ -484,16 +827,138 @@ async function prepareChatTab(
       fallbackChatTitle(session, startedAtMs),
     messages: projected.messages,
     createdAt,
-    providerType: session.provider,
-    executionHarness: session.provider,
+    ...(tabProvider
+      ? { providerType: tabProvider, executionHarness: tabProvider }
+      : {}),
     ...continuation,
+    // Only history names its source: a continuable chat is an ordinary chat
+    // from here on, and a later read-only state (an archived worktree, for
+    // one) must read as that state, not as an import.
+    ...(continuation.readOnly ? { importedFrom: session.provider } : {}),
   };
+  return { tab, sourceBytes };
+}
+
+/**
+ * Projects the planned chats. Admitted chats are read and projected first;
+ * a chat that fails or projects smaller than planned gives its bytes back,
+ * and the chats the plan left over the budget are admitted in order against
+ * what was actually projected, in further rounds until none fits or
+ * {@link MAX_IMPORT_BUDGET_ROUNDS} rounds have run. Each round reads only its
+ * own chats from a SQLite store. Returns the prepared tabs in plan order
+ * (newest first).
+ */
+export async function prepareChatImports(args: {
+  plan: ChatImportPlan;
+  runner: StoreReadRunner;
+  cwd: string;
+  attachmentsDir: string;
+  outcome: ChatImportOutcome;
+  onProgress: (completed: number, total: number) => void;
+}): Promise<Array<{ session: DiscoveredSession; tab: PersistedChatTab }>> {
+  const { plan, outcome } = args;
+  const entries = plan.entries;
+  const total = entries.length;
+  let completed = 0;
+  const settle = (): void => {
+    completed += 1;
+    args.onProgress(completed, total);
+  };
+  args.onProgress(completed, total);
+  let round: number[] = [];
+  let waiting: number[] = [];
+  for (const [index, { session, status, plannedBytes }] of entries.entries()) {
+    if (status === 'admitted') round.push(index);
+    else if (status === 'over-budget') waiting.push(index);
+    else {
+      // Never admissible, so never retryable; decided here so an oversized
+      // session cannot be mistaken for a budget leftover.
+      outcome.chatsSkipped += 1;
+      outcome.messages.push(
+        `Skipped "${session.title ?? session.id}": ${new TranscriptTooLargeError(plannedBytes).message}.`,
+      );
+      settle();
+    }
+  }
+  const kept: Array<{
+    index: number;
+    session: DiscoveredSession;
+    tab: PersistedChatTab;
+  }> = [];
+  let chargedBytes = 0;
+  let overBudget = 0;
+  let rounds = 0;
+  // One reader for every round: a round reads only its own chats from a
+  // SQLite store, in at most one more copy of each store, so the caps bound
+  // what crosses the worker as well as what is projected.
+  const transcripts = new StoreTranscripts(args.runner, []);
+  const context: ChatTabContext = {
+    cwd: args.cwd,
+    attachmentsDir: args.attachmentsDir,
+    transcripts,
+  };
+  while (round.length > 0) {
+    const sessions = round.map((index) => entries[index].session);
+    transcripts.admit(sessions);
+    const results = await prepareChatTabs(sessions, context, outcome, settle);
+    for (const [position, result] of results.entries()) {
+      if (!result) continue;
+      // Charged by what was actually projected: a T3 thread that fell back
+      // to its T3 text costs that text, not the native record it was
+      // planned for.
+      if (chargedBytes + result.sourceBytes > MAX_IMPORT_SCOPE_BYTES) {
+        overBudget += 1;
+        continue;
+      }
+      chargedBytes += result.sourceBytes;
+      kept.push({
+        index: round[position],
+        session: sessions[position],
+        tab: result.tab,
+      });
+    }
+    rounds += 1;
+    // Each round copies the stores its chats read from once more, so a run
+    // stops refilling the budget after MAX_IMPORT_BUDGET_ROUNDS; the chats
+    // still waiting are left for the next run like any over-budget chat.
+    if (rounds >= MAX_IMPORT_BUDGET_ROUNDS) break;
+    let reservedBytes = chargedBytes;
+    const next: number[] = [];
+    const stillWaiting: number[] = [];
+    for (const index of waiting) {
+      const bytes = entries[index].plannedBytes;
+      if (reservedBytes + bytes <= MAX_IMPORT_SCOPE_BYTES) {
+        next.push(index);
+        reservedBytes += bytes;
+      } else stillWaiting.push(index);
+    }
+    round = next;
+    waiting = stillWaiting;
+  }
+  if (waiting.length > 0) {
+    completed += waiting.length;
+    args.onProgress(completed, total);
+  }
+  overBudget += waiting.length;
+  if (overBudget > 0) {
+    // Left-out chats are not ledgered, so the next run picks them up with a
+    // fresh budget.
+    outcome.chatsSkipped += overBudget;
+    outcome.retryableSkips += overBudget;
+    outcome.messages.push(
+      `${overBudget} ${overBudget === 1 ? 'chat was' : 'chats were'} left out to keep this import under ${Math.round(MAX_IMPORT_SCOPE_BYTES / (1024 * 1024))} MB. Import again to add ${overBudget === 1 ? 'it' : 'them'}.`,
+    );
+  }
+  return kept
+    .sort((left, right) => left.index - right.index)
+    .map(({ session, tab }) => ({ session, tab }));
 }
 
 async function importChats(args: {
   candidate: ExternalProjectCandidate;
   workspace: DestinationWorkspace;
   sessions: DiscoveredSession[];
+  runner: StoreReadRunner;
   onProgress: (completed: number, total: number) => void;
 }): Promise<ChatImportOutcome> {
   const { candidate, workspace } = args;
@@ -507,21 +972,16 @@ async function importChats(args: {
   };
   const ledger = await readExternalProjectImportLedger();
   const ledgerEntry = ledger.imports[candidate.id];
-  const alreadyImported = ledgerEntry?.sessions ?? {};
-  const pending = sortNewestFirst(
-    args.sessions.filter(
-      (session) => session.native && !alreadyImported[session.id],
-    ),
-  );
-  if (pending.length === 0) return outcome;
+  const plan = planChatImports(args.sessions, ledgerEntry?.sessions ?? {});
+  if (plan.pendingCount === 0) return outcome;
   if (workspace.type === 'multi-repo') {
-    outcome.chatsSkipped = pending.length;
+    outcome.chatsSkipped = plan.pendingCount;
     outcome.messages.push(
       'Chats cannot be imported into a multi-repo project yet.',
     );
     return outcome;
   }
-  const truncated = pending.length - MAX_CHATS_PER_PROJECT;
+  const { truncated } = plan;
   if (truncated > 0) {
     // Left-out chats are not ledgered, so the next run picks them up; count
     // them like the byte-budget leftovers so Retry is offered.
@@ -531,7 +991,6 @@ async function importChats(args: {
       `Only the ${MAX_CHATS_PER_PROJECT} most recent chats were imported. Import again to add the other ${truncated}.`,
     );
   }
-  const batch = pending.slice(0, MAX_CHATS_PER_PROJECT);
 
   // A retry lands in the destination the earlier run created rather than
   // opening a second worktree or Work Entry for the same project.
@@ -555,49 +1014,14 @@ async function importChats(args: {
     workspace.id,
     destination.worktreeId,
   );
-  const prepared: Array<{ session: DiscoveredSession; tab: PersistedChatTab }> =
-    [];
-  let completed = 0;
-  let admittedBytes = 0;
-  let overBudget = 0;
-  args.onProgress(completed, batch.length);
-  for (const session of batch) {
-    completed += 1;
-    if (session.sizeBytes > MAX_IMPORT_TRANSCRIPT_BYTES) {
-      // Never admissible, so never retryable; decided here so an oversized
-      // session cannot be mistaken for a budget leftover.
-      outcome.chatsSkipped += 1;
-      outcome.messages.push(
-        `Skipped "${session.title ?? session.id}": ${new TranscriptTooLargeError(session.sizeBytes).message}.`,
-      );
-      args.onProgress(completed, batch.length);
-      continue;
-    }
-    if (admittedBytes + session.sizeBytes > MAX_IMPORT_SCOPE_BYTES) {
-      overBudget += 1;
-      args.onProgress(completed, batch.length);
-      continue;
-    }
-    const tab = await prepareChatTab(
-      session,
-      { cwd: destination.cwd, attachmentsDir },
-      outcome,
-    );
-    if (tab) {
-      prepared.push({ session, tab });
-      admittedBytes += session.sizeBytes;
-    }
-    args.onProgress(completed, batch.length);
-  }
-  if (overBudget > 0) {
-    // Left-out chats are not ledgered, so the next run picks them up with a
-    // fresh budget.
-    outcome.chatsSkipped += overBudget;
-    outcome.retryableSkips += overBudget;
-    outcome.messages.push(
-      `${overBudget} ${overBudget === 1 ? 'chat was' : 'chats were'} left out to keep this import under ${Math.round(MAX_IMPORT_SCOPE_BYTES / (1024 * 1024))} MB. Import again to add ${overBudget === 1 ? 'it' : 'them'}.`,
-    );
-  }
+  const prepared = await prepareChatImports({
+    plan,
+    runner: args.runner,
+    cwd: destination.cwd,
+    attachmentsDir,
+    outcome,
+    onProgress: args.onProgress,
+  });
   if (prepared.length === 0) {
     if (!reused)
       await rollbackChatDestination(workspace, destination.worktreeId);
@@ -625,11 +1049,9 @@ async function importChats(args: {
   for (const { session, tab } of prepared) {
     if (tab.readOnly) outcome.chatsReadOnly += 1;
     else outcome.chatsImported += 1;
-    outcome.imported.push({
-      sessionId: session.id,
-      chatId: tab.id,
-      worktreeId: destination.worktreeId,
-    });
+    outcome.imported.push(
+      chatImportRecord(session, tab.id, destination.worktreeId),
+    );
     // A destination this run created has never been opened, so the renderer
     // hydrates it from the durable copy on first open and would discard a
     // per-tab event anyway; only an already-open scope needs the live insert,
@@ -674,6 +1096,7 @@ async function importOne(args: {
   candidate: ExternalProjectCandidate;
   importChatsRequested: boolean;
   sessions: DiscoveredSession[];
+  runner: StoreReadRunner;
   onChatProgress: (completed: number, total: number) => void;
 }): Promise<ExternalProjectImportItemResult> {
   const { candidate } = args;
@@ -780,6 +1203,7 @@ async function importOne(args: {
       candidate,
       workspace,
       sessions: args.sessions,
+      runner: args.runner,
       onProgress: args.onChatProgress,
     });
   } catch (error) {
@@ -852,6 +1276,19 @@ export async function importExternalProjects(
     }
   };
 
+  // One store reader for the whole request, started only if a T3 Code or
+  // OpenCode chat needs its store.
+  return withStoreRunner(undefined, (runner) =>
+    importSelections(request, scan, emit, runner),
+  );
+}
+
+async function importSelections(
+  request: ExternalProjectImportRequest,
+  scan: CachedScan,
+  emit: ProgressEmitter,
+  runner: StoreReadRunner,
+): Promise<ExternalProjectImportResponse> {
   const results: ExternalProjectImportItemResult[] = [];
   const total = request.selections.length;
   for (let index = 0; index < request.selections.length; index += 1) {
@@ -892,6 +1329,7 @@ export async function importExternalProjects(
           candidate,
           importChatsRequested: selection.importChats,
           sessions: scan.sessionsByCandidate.get(candidate.id) ?? [],
+          runner,
           onChatProgress: (completed, chatsTotal) =>
             emit({
               candidateId: candidate.id,

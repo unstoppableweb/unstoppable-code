@@ -203,6 +203,8 @@ export function McpSignInStrip({
     <>
       {gap && notice === undefined && (
         <Notice
+          errorSource="mcp-server-sign-in-stale"
+          displayErrorCode="external.state_changed"
           intent="destructive"
           role="status"
           actions={

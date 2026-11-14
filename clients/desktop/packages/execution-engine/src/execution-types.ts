@@ -346,6 +346,7 @@ export interface PluginSelectionTombstones {
 
 export type TrackedPlanSource =
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | 'cursor'
   | 'claude'

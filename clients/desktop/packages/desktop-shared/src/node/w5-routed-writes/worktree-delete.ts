@@ -15,7 +15,7 @@ import { isJsonObject } from '@canopy/core-runtime/node/w5/file-store';
 import type { WorkspaceCreationDiagnostics } from '@canopy/core-runtime/node/w5/commit-log/reservation-diagnostics';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import type { ArchiveWorktreeResponse } from '../../types';
-import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
+import { admitRoutedW5Storage } from './record-store';
 import {
   lockCheckout,
   updateCliWorktreeList,
@@ -98,7 +98,7 @@ export function deleteRoutedCliWorktree(
         store.markReservationRecoveryRequired(id, failure),
     }),
   });
-  return withStorageAdmission(
+  return admitRoutedW5Storage(
     [{ namespace: 'worktree_list', writer: 'desktop_cli' }],
     () =>
       keyed(

@@ -279,7 +279,11 @@ export function WorkspaceReadinessRecommendations({
               </div>
             );
           })}
-        <ErrorBanner className="" error={launchError} />
+        <ErrorBanner
+          errorSource="workspace-readiness-recommendations-launch"
+          className=""
+          error={launchError}
+        />
       </Stack>
     );
   }
@@ -330,6 +334,7 @@ export function WorkspaceReadinessRecommendations({
           </Stack>
           {loadState === 'error' && (
             <ErrorBanner
+              errorSource="workspace-readiness-recommendations"
               className=""
               error="Couldn’t check repository readiness."
               onRetry={() => void load()}
@@ -401,7 +406,11 @@ export function WorkspaceReadinessRecommendations({
             </Stack>
           )}
 
-          <ErrorBanner className="" error={launchError} />
+          <ErrorBanner
+            errorSource="workspace-readiness-recommendations-launch"
+            className=""
+            error={launchError}
+          />
         </Stack>
       )}
     </Surface>

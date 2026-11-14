@@ -1,3 +1,4 @@
+import type { AntigravitySignIn } from '../antigravity/sign-in';
 import { randomUUID } from 'node:crypto';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
@@ -40,7 +41,7 @@ export interface SignInTerminalStartRequest {
 let sender: AuthTerminalEventSender = (): void => {};
 let active: {
   sessionId: string;
-  terminal: SignInTerminal;
+  terminal: SignInTerminal | AntigravitySignIn;
   generation: number;
 } | null = null;
 let latestStart = 0;
@@ -137,29 +138,40 @@ export async function startSignInTerminal(
     provider: request.provider,
     method: 'terminal',
     launch: async (signal) => {
-      let terminal: SignInTerminal;
+      let terminal: SignInTerminal | AntigravitySignIn;
       try {
-        terminal = new SignInTerminal(
-          {
-            sessionId: signInRunId,
-            provider: request.provider,
-            cols: request.cols,
-            rows: request.rows,
-            ...(request.verifiedOpenCodeExecutable !== undefined
-              ? {
-                  verifiedOpenCodeExecutable:
-                    request.verifiedOpenCodeExecutable,
-                }
-              : {}),
-            emitter: {
-              output: (event): void =>
-                sender(IPC_CHANNELS.authTerminalOutput, event),
-              exit: (event): void =>
-                sender(IPC_CHANNELS.authTerminalExit, event),
-            },
-          },
-          terminalOptions ?? undefined,
-        );
+        terminal =
+          request.provider === 'antigravity'
+            ? new (await import('../antigravity/sign-in')).AntigravitySignIn(
+                signInRunId,
+                {
+                  output: (event): void =>
+                    sender(IPC_CHANNELS.authTerminalOutput, event),
+                  exit: (event): void =>
+                    sender(IPC_CHANNELS.authTerminalExit, event),
+                },
+              )
+            : new SignInTerminal(
+                {
+                  sessionId: signInRunId,
+                  provider: request.provider,
+                  cols: request.cols,
+                  rows: request.rows,
+                  ...(request.verifiedOpenCodeExecutable !== undefined
+                    ? {
+                        verifiedOpenCodeExecutable:
+                          request.verifiedOpenCodeExecutable,
+                      }
+                    : {}),
+                  emitter: {
+                    output: (event): void =>
+                      sender(IPC_CHANNELS.authTerminalOutput, event),
+                    exit: (event): void =>
+                      sender(IPC_CHANNELS.authTerminalExit, event),
+                  },
+                },
+                terminalOptions ?? undefined,
+              );
       } catch (error) {
         rejectSpawned(error);
         throw error;
@@ -193,7 +205,9 @@ export async function startSignInTerminal(
   return { sessionId: signInRunId };
 }
 
-function liveTerminal(sessionId: string): SignInTerminal | null {
+function liveTerminal(
+  sessionId: string,
+): SignInTerminal | AntigravitySignIn | null {
   return active?.sessionId === sessionId && !active.terminal.exited
     ? active.terminal
     : null;

@@ -1,0 +1,80 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`plan diagram scheduling (CAN-4167 golden) adds the data model diagram only for a plan that mentions data models 1`] = `
+{
+  "calls": [
+    "dataModelDiff",
+    "logicDiff",
+    "sequence",
+  ],
+  "diagrams": {
+    "logicDiff": {
+      "derivedFromRevision": 2,
+      "hasData": true,
+      "status": "ready",
+    },
+    "sequence": {
+      "derivedFromRevision": 2,
+      "hasData": true,
+      "status": "ready",
+    },
+  },
+}
+`;
+
+exports[`plan diagram scheduling (CAN-4167 golden) coalesces content changes inside the debounce into one generation per kind 1`] = `
+{
+  "calls": [
+    "logicDiff",
+    "sequence",
+  ],
+  "diagrams": {
+    "logicDiff": {
+      "derivedFromRevision": 1,
+      "hasData": true,
+      "status": "ready",
+    },
+    "sequence": {
+      "derivedFromRevision": 1,
+      "hasData": true,
+      "status": "ready",
+    },
+  },
+  "helperTasks": [
+    "start helper:plan-logic-diagram:golden-diagrams/golden-wt/<plan>:1",
+    "start helper:plan-sequence-diagram:golden-diagrams/golden-wt/<plan>:1",
+    "success helper:plan-logic-diagram:golden-diagrams/golden-wt/<plan>:1",
+    "success helper:plan-sequence-diagram:golden-diagrams/golden-wt/<plan>:1",
+  ],
+  "updates": 4,
+}
+`;
+
+exports[`plan diagram scheduling (CAN-4167 golden) queues one rerun for requests made while a generation is in flight 1`] = `
+{
+  "calls": [
+    "logicDiff",
+    "logicDiff",
+    "sequence",
+    "sequence",
+  ],
+  "midFlight": {
+    "calls": [
+      "logicDiff",
+      "sequence",
+    ],
+    "diagrams": {
+      "logicDiff": {
+        "derivedFromRevision": 1,
+        "hasData": true,
+        "status": "generating",
+      },
+      "sequence": {
+        "derivedFromRevision": 1,
+        "hasData": true,
+        "status": "generating",
+      },
+    },
+  },
+}
+`;

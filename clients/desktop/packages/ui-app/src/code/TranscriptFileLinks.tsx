@@ -23,6 +23,11 @@ import {
   type FileLinkLineLocation,
 } from '@canopy/ui-shared/lib/file-link-line-suffix';
 import type { TranscriptTurnFilesInteraction } from './TurnFiles';
+import {
+  FileLinkStatus,
+  fileLinkFailureOf,
+  type FileLinkFailure,
+} from '../file-link-status/file-link-status';
 
 export type { FileLinkLineLocation };
 
@@ -41,8 +46,10 @@ export interface TranscriptFileLinkInteraction {
    * Open `href` in the host's file viewer. Resolves `false` when the target is
    * not an existing file inside the workspace (outside the working directory,
    * deleted, or not a file path at all). Rejections leave the link actionable
-   * so transient transport failures can be retried. Omit to keep path-like
-   * links inert.
+   * so transient transport failures can be retried. A rejection marked with
+   * `withFileLinkFailure` says why beside the link: a missing file leaves it
+   * inert, a sleeping project keeps it actionable (CAN-6665). Omit to keep
+   * path-like links inert.
    *
    * A link with a line suffix (`src/a.ts:12-20`, `src/a.ts#L12`) arrives with
    * the suffix stripped from `href` and parsed into `location` (CAN-4275);
@@ -96,6 +103,7 @@ function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
   const { href, children } = props;
   const interaction = useContext(TranscriptFileLinkInteractionContext);
   const [state, setState] = useState<LinkState>('idle');
+  const [failure, setFailure] = useState<FileLinkFailure | null>(null);
   const pending = useRef(false);
   const openFileLink = interaction?.openFileLink;
 
@@ -110,7 +118,9 @@ function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
     // Not an existing workspace file: fall back to the readable inert text.
     return (
       <span data-file-link-state="unavailable">
-        <TranscriptMarkdownAnchor {...props} />
+        <FileLinkStatus failure={failure}>
+          <TranscriptMarkdownAnchor {...props} />
+        </FileLinkStatus>
       </span>
     );
   }
@@ -129,6 +139,7 @@ function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
     if (pending.current) return;
     pending.current = true;
     setState('opening');
+    setFailure(null);
     const opening =
       location === null
         ? openFileLink(href)
@@ -138,9 +149,12 @@ function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
         pending.current = false;
         setState(opened ? 'idle' : 'unavailable');
       },
-      (): void => {
+      (error: unknown): void => {
         pending.current = false;
-        setState('idle');
+        const reason = fileLinkFailureOf(error);
+        // A missing file is final; anything else can be tried again.
+        setFailure(reason);
+        setState(reason?.kind === 'missing' ? 'unavailable' : 'idle');
       },
     );
   };
@@ -148,22 +162,24 @@ function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
   // A button, not an anchor: a path has no meaning as a site URL, so an
   // `href` would let middle-click or copy-link navigate to a 404.
   return (
-    <Tooltip label={href} contentClassName="max-w-96 break-all" replayBlock>
-      <button
-        type="button"
-        className={FILE_LINK_CLASSES}
-        data-testid="markdown-file-link"
-        data-file-link-state={state}
-        data-file-link-line={
-          location === null ? undefined : lineAttribute(location)
-        }
-        aria-busy={state === 'opening' || undefined}
-        disabled={state === 'opening'}
-        onClick={onClick}
-      >
-        {children}
-      </button>
-    </Tooltip>
+    <FileLinkStatus failure={failure}>
+      <Tooltip label={href} contentClassName="max-w-96 break-all" replayBlock>
+        <button
+          type="button"
+          className={FILE_LINK_CLASSES}
+          data-testid="markdown-file-link"
+          data-file-link-state={state}
+          data-file-link-line={
+            location === null ? undefined : lineAttribute(location)
+          }
+          aria-busy={state === 'opening' || undefined}
+          disabled={state === 'opening'}
+          onClick={onClick}
+        >
+          {children}
+        </button>
+      </Tooltip>
+    </FileLinkStatus>
   );
 }
 

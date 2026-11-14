@@ -5,6 +5,11 @@ import {
 } from '@canopy/desktop-shared/lib/bounded-read-evidence';
 import { useEffect } from 'react';
 import { create } from 'zustand';
+import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
+import {
+  cloudSandboxNotAwakeFromDetails,
+  type CloudSandboxNotAwakeCode,
+} from '@canopy/protocol/cloud-session';
 import type {
   FileIndexResponse,
   FileTreeEntry,
@@ -43,6 +48,22 @@ interface CachedDirectoryEntry {
   fetchedAt: number;
 }
 
+/**
+ * Why a folder's children could not load. `reason` is the web core's own for
+ * a cloud chat's sandbox: asleep, or a wake it could not fund.
+ */
+export interface FileTreeLoadError {
+  readonly message: string;
+  readonly reason?: 'sandbox_sleeping' | 'insufficient_credits';
+  readonly cloudCode?: string;
+}
+
+/** A cloud chat's sandbox that could not serve its files, as the web core said. */
+export interface FileTreeSandboxNotAwake {
+  readonly code: CloudSandboxNotAwakeCode;
+  readonly wakeAllowed: boolean;
+}
+
 interface FileListState {
   // Full-worktree indexes for mention search and explorer search. Purpose-
   // specific cache keys keep their different exclusion semantics isolated.
@@ -59,9 +80,13 @@ interface FileListState {
 
   // Explorer directory listings.
   directoryCache: Record<string, CachedDirectoryEntry>;
-  directoryErrors: Record<string, string>;
+  directoryErrors: Record<string, FileTreeLoadError>;
   directoryLoading: Set<string>;
   directoryVersions: Record<string, number>;
+
+  // A cloud scope whose sandbox refused its files because it is not awake,
+  // by worktree key. Every folder and the explorer search share it.
+  sandboxNotAwake: Record<string, FileTreeSandboxNotAwake>;
 
   // Explorer UI state. The standalone tree uses the worktree key; embedded
   // trees append their owning file-tab scope so surfaces never share state.
@@ -98,6 +123,37 @@ interface FileListState {
     scrollTop: number,
     uiStateScope?: string,
   ) => void;
+  /**
+   * Drops deleted entries from their folder's cached listing, and the
+   * listings below them, before any refresh. A listing that still shows one
+   * within {@link DELETED_ENTRY_TOMBSTONE_MS} keeps it out.
+   */
+  removeFileTreeEntries: (
+    projectId: string,
+    worktreeId: string,
+    repoId: string,
+    relativePaths: readonly string[],
+  ) => void;
+  /**
+   * Lets listings show deleted paths again on evidence newer than the delete:
+   * `entries` the explorer just created or moved something to (and the
+   * folders above them), or every delete made before `deletedBefore`, a
+   * {@link fileTreeSequenceNow} taken when a turn that has since ended began.
+   */
+  retireFileTreeTombstones: (
+    projectId: string,
+    worktreeId: string,
+    which:
+      | {
+          readonly entries: readonly {
+            readonly repoId: string;
+            readonly relativePath: string;
+          }[];
+        }
+      | { readonly deletedBefore: number },
+  ) => void;
+  /** Forgets that a cloud scope's sandbox was asleep, and its folders' sleeping errors. */
+  clearSandboxNotAwake: (projectId: string, worktreeId: string) => void;
   markFileTreeStale: (projectId: string, worktreeId: string) => void;
   invalidate: (projectId: string, worktreeId: string) => void;
   invalidateAll: () => void;
@@ -135,6 +191,178 @@ export function getDirectoryCacheKey(
   relativeDir: string,
 ): string {
   return `${getWorktreeCacheKey(projectId, worktreeId)}::${repoId}::${relativeDir}`;
+}
+
+/** How long a deleted entry stays out of listings that still show it. */
+export const DELETED_ENTRY_TOMBSTONE_MS = 60_000;
+
+/** A deleted entry kept out of listings: when it expires, and when it was made. */
+interface DeletedEntryTombstone {
+  readonly expiresAt: number;
+  /** {@link fileTreeSequenceNow} when the delete landed. */
+  readonly deletedAt: number;
+}
+
+/**
+ * Deleted entries a listing must not bring back, by their folder's cache key
+ * then path. It ends on evidence newer than the delete: a listing without the
+ * path, a listing from this computer requested after the delete, the
+ * explorer creating or moving something to the path, or a turn that started
+ * after the delete ending ({@link FileListState.retireFileTreeTombstones}).
+ * A cloud listing that still shows the path proves nothing on its own: the
+ * web core's listings lag a delete.
+ */
+const deletedEntryTombstones = new Map<
+  string,
+  Map<string, DeletedEntryTombstone>
+>();
+
+let fileTreeSequence = 0;
+
+/** A point in the explorer's own order of deletes, reads and turns. */
+export function fileTreeSequenceNow(): number {
+  fileTreeSequence += 1;
+  return fileTreeSequence;
+}
+
+function parentRelativePath(relativePath: string): string {
+  const slash = relativePath.lastIndexOf('/');
+  return slash === -1 ? '' : relativePath.slice(0, slash);
+}
+
+/**
+ * Drops tombstoned entries from a fresh listing and ends the tombstones it no
+ * longer needs. `authoritativeAfter` is set for a listing from this computer:
+ * it reads the disk, so it is the truth about every delete before it.
+ */
+function withoutDeletedEntries(
+  key: string,
+  incoming: FileTreeDirectoryResponse,
+  authoritativeAfter: number | null,
+): FileTreeDirectoryResponse {
+  const tombstones = deletedEntryTombstones.get(key);
+  if (tombstones === undefined) return incoming;
+  const now = Date.now();
+  const listed = new Set(incoming.entries.map((entry) => entry.relativePath));
+  for (const [path, tombstone] of tombstones) {
+    if (
+      tombstone.expiresAt <= now ||
+      !listed.has(path) ||
+      (authoritativeAfter !== null && tombstone.deletedAt < authoritativeAfter)
+    )
+      tombstones.delete(path);
+  }
+  if (tombstones.size === 0) {
+    deletedEntryTombstones.delete(key);
+    return incoming;
+  }
+  return {
+    ...incoming,
+    entries: incoming.entries.filter(
+      (entry) => !tombstones.has(entry.relativePath),
+    ),
+  };
+}
+
+/** The directory listing state a delete rewrites. */
+interface DirectoryListings {
+  directoryCache: Record<string, CachedDirectoryEntry>;
+  directoryErrors: Record<string, FileTreeLoadError>;
+  directoryVersions: Record<string, number>;
+  directoryLoading: Set<string>;
+}
+
+/** Removes `relativePath` from the cached listing under `parentKey`, in place. */
+function dropFromParentListing(
+  directoryCache: Record<string, CachedDirectoryEntry>,
+  parentKey: string,
+  relativePath: string,
+): void {
+  const parent = directoryCache[parentKey];
+  if (!parent) return;
+  const entries = parent.data.entries.filter(
+    (entry) => entry.relativePath !== relativePath,
+  );
+  if (entries.length === parent.data.entries.length) return;
+  directoryCache[parentKey] = { ...parent, data: { ...parent.data, entries } };
+}
+
+/**
+ * Forgets a deleted folder's own listing and every listing below it, in
+ * place; a listing of them still in flight is discarded.
+ */
+function forgetListingsUnder(
+  listings: DirectoryListings,
+  ownKey: string,
+): void {
+  const below = (key: string): boolean =>
+    key === ownKey || key.startsWith(`${ownKey}/`);
+  for (const key of Object.keys(listings.directoryCache).filter(below))
+    delete listings.directoryCache[key];
+  for (const key of Object.keys(listings.directoryErrors).filter(below))
+    delete listings.directoryErrors[key];
+  for (const key of Object.keys(listings.directoryVersions).filter(below))
+    listings.directoryVersions[key] =
+      (listings.directoryVersions[key] ?? 0) + 1;
+  for (const key of [...listings.directoryLoading].filter(below))
+    listings.directoryLoading.delete(key);
+}
+
+/**
+ * `errors` without the scope's `sandbox_sleeping` folder errors: once any read
+ * of the scope succeeds, the sandbox is awake, and a folder that failed while
+ * it slept (collapsed, say) must load again when it is shown.
+ */
+function withoutSleepingErrors(
+  errors: Record<string, FileTreeLoadError>,
+  worktreeKey: string,
+): Record<string, FileTreeLoadError> {
+  const prefix = `${worktreeKey}::`;
+  const entries = Object.entries(errors);
+  const kept = entries.filter(
+    ([key, value]) =>
+      !key.startsWith(prefix) || value.reason !== 'sandbox_sleeping',
+  );
+  return kept.length === entries.length ? errors : Object.fromEntries(kept);
+}
+
+function loadErrorOf(error: unknown, fallback: string): FileTreeLoadError {
+  if (error instanceof CoreCoworkRequestError) {
+    const details: unknown = error.payload.details;
+    const reason =
+      typeof details === 'object' && details !== null && 'reason' in details
+        ? details.reason
+        : undefined;
+    const cloudCode =
+      typeof details === 'object' && details !== null && 'cloudCode' in details
+        ? details.cloudCode
+        : undefined;
+    return {
+      message: error.message,
+      ...(reason === 'sandbox_sleeping' || reason === 'insufficient_credits'
+        ? { reason }
+        : {}),
+      ...(typeof cloudCode === 'string' ? { cloudCode } : {}),
+    };
+  }
+  return { message: error instanceof Error ? error.message : fallback };
+}
+
+/** The not-awake sandbox a failed read names, or null for any other failure. */
+function sandboxNotAwakeOf(error: unknown): FileTreeSandboxNotAwake | null {
+  return error instanceof CoreCoworkRequestError
+    ? cloudSandboxNotAwakeFromDetails(error.payload.details)
+    : null;
+}
+
+/** `record` with `key` set to the not-awake sandbox `error` names, or left out. */
+function withSandboxNotAwake(
+  record: Record<string, FileTreeSandboxNotAwake>,
+  key: string,
+  error: unknown,
+): Record<string, FileTreeSandboxNotAwake> {
+  const notAwake = sandboxNotAwakeOf(error);
+  return notAwake === null ? record : { ...record, [key]: notAwake };
 }
 
 function isStale(
@@ -400,6 +628,7 @@ export async function withRetainedFileIndex<T>(
  */
 async function loadFileIndex(
   key: string,
+  worktreeKey: string,
   request: () => Promise<FileIndexResponse>,
 ): Promise<void> {
   const { getState, setState } = useFileListStore;
@@ -424,6 +653,11 @@ async function loadFileIndex(
         },
         indexErrors: omitKey(state.indexErrors, key),
         indexLoading: removeFromSet(state.indexLoading, key),
+        directoryErrors: withoutSleepingErrors(
+          state.directoryErrors,
+          worktreeKey,
+        ),
+        sandboxNotAwake: omitKey(state.sandboxNotAwake, worktreeKey),
       };
     });
   } catch (error: unknown) {
@@ -437,6 +671,11 @@ async function loadFileIndex(
             error instanceof Error ? error.message : 'Unable to load files.',
         },
         indexLoading: removeFromSet(state.indexLoading, key),
+        sandboxNotAwake: withSandboxNotAwake(
+          state.sandboxNotAwake,
+          worktreeKey,
+          error,
+        ),
       };
     });
   }
@@ -459,24 +698,32 @@ export const useFileListStore = create<FileListState>((set, get) => ({
   directoryLoading: new Set<string>(),
   directoryVersions: {},
 
+  sandboxNotAwake: {},
+
   fileTreeExpandedPaths: {},
   fileTreeScrollPositions: {},
 
   fetchFileIndex: (projectId, worktreeId): Promise<void> =>
-    loadFileIndex(getWorktreeCacheKey(projectId, worktreeId), () =>
-      workspaceFileSourceFor(worktreeId).getFileIndex({
-        projectId,
-        worktreeId,
-      }),
+    loadFileIndex(
+      getWorktreeCacheKey(projectId, worktreeId),
+      getWorktreeCacheKey(projectId, worktreeId),
+      () =>
+        workspaceFileSourceFor(worktreeId).getFileIndex({
+          projectId,
+          worktreeId,
+        }),
     ),
 
   fetchFileTreeIndex: (projectId, worktreeId): Promise<void> =>
-    loadFileIndex(getFileTreeIndexCacheKey(projectId, worktreeId), () =>
-      workspaceFileSourceFor(worktreeId).getFileIndex({
-        projectId,
-        worktreeId,
-        purpose: 'file-explorer',
-      }),
+    loadFileIndex(
+      getFileTreeIndexCacheKey(projectId, worktreeId),
+      getWorktreeCacheKey(projectId, worktreeId),
+      () =>
+        workspaceFileSourceFor(worktreeId).getFileIndex({
+          projectId,
+          worktreeId,
+          purpose: 'file-explorer',
+        }),
     ),
 
   fetchFileTreeRoots: (projectId, worktreeId): Promise<void> => {
@@ -546,6 +793,11 @@ export const useFileListStore = create<FileListState>((set, get) => ({
                   : 'Unable to load files.',
             },
             rootsLoading: removeFromSet(state.rootsLoading, key),
+            sandboxNotAwake: withSandboxNotAwake(
+              state.sandboxNotAwake,
+              key,
+              error,
+            ),
           };
         });
       }
@@ -595,6 +847,9 @@ export const useFileListStore = create<FileListState>((set, get) => ({
       repoId,
       relativeDir,
     );
+    const worktreeKey = getWorktreeCacheKey(projectId, worktreeId);
+    const source = workspaceFileSourceFor(worktreeId);
+    const requestedAt = fileTreeSequenceNow();
     const version = (get().directoryVersions[key] ?? 0) + 1;
     const event = {
       key,
@@ -611,9 +866,7 @@ export const useFileListStore = create<FileListState>((set, get) => ({
     }));
 
     try {
-      const incoming = await workspaceFileSourceFor(
-        worktreeId,
-      ).getFileTreeDirectory({
+      const incoming = await source.getFileTreeDirectory({
         projectId,
         worktreeId,
         repoId,
@@ -627,15 +880,23 @@ export const useFileListStore = create<FileListState>((set, get) => ({
         filesEvidence.record({ ...event, phase: 'success' });
         const data = reconcileDirectoryResponse(
           state.directoryCache[key]?.data,
-          incoming,
+          withoutDeletedEntries(
+            key,
+            incoming,
+            source.onThisComputer ? requestedAt : null,
+          ),
         );
         return {
           directoryCache: {
             ...state.directoryCache,
             [key]: { data, fetchedAt: Date.now() },
           },
-          directoryErrors: omitKey(state.directoryErrors, key),
+          directoryErrors: withoutSleepingErrors(
+            omitKey(state.directoryErrors, key),
+            worktreeKey,
+          ),
           directoryLoading: removeFromSet(state.directoryLoading, key),
+          sandboxNotAwake: omitKey(state.sandboxNotAwake, worktreeKey),
         };
       });
     } catch (error: unknown) {
@@ -648,10 +909,14 @@ export const useFileListStore = create<FileListState>((set, get) => ({
         return {
           directoryErrors: {
             ...state.directoryErrors,
-            [key]:
-              error instanceof Error ? error.message : 'Unable to load folder.',
+            [key]: loadErrorOf(error, "Couldn't load this folder."),
           },
           directoryLoading: removeFromSet(state.directoryLoading, key),
+          sandboxNotAwake: withSandboxNotAwake(
+            state.sandboxNotAwake,
+            worktreeKey,
+            error,
+          ),
         };
       });
     }
@@ -707,6 +972,93 @@ export const useFileListStore = create<FileListState>((set, get) => ({
         ...state.fileTreeScrollPositions,
         [key]: scrollTop,
       },
+    }));
+  },
+
+  removeFileTreeEntries: (
+    projectId,
+    worktreeId,
+    repoId,
+    relativePaths,
+  ): void => {
+    const tombstone: DeletedEntryTombstone = {
+      expiresAt: Date.now() + DELETED_ENTRY_TOMBSTONE_MS,
+      deletedAt: fileTreeSequenceNow(),
+    };
+    for (const relativePath of relativePaths) {
+      const parentKey = getDirectoryCacheKey(
+        projectId,
+        worktreeId,
+        repoId,
+        parentRelativePath(relativePath),
+      );
+      const tombstones =
+        deletedEntryTombstones.get(parentKey) ??
+        new Map<string, DeletedEntryTombstone>();
+      tombstones.set(relativePath, tombstone);
+      deletedEntryTombstones.set(parentKey, tombstones);
+    }
+    set((state) => {
+      const next: DirectoryListings = {
+        directoryCache: { ...state.directoryCache },
+        directoryErrors: { ...state.directoryErrors },
+        directoryVersions: { ...state.directoryVersions },
+        directoryLoading: new Set(state.directoryLoading),
+      };
+      for (const relativePath of relativePaths) {
+        const key = (dir: string): string =>
+          getDirectoryCacheKey(projectId, worktreeId, repoId, dir);
+        dropFromParentListing(
+          next.directoryCache,
+          key(parentRelativePath(relativePath)),
+          relativePath,
+        );
+        forgetListingsUnder(next, key(relativePath));
+      }
+      return next;
+    });
+  },
+
+  retireFileTreeTombstones: (projectId, worktreeId, which): void => {
+    const directoryPrefix = `${getWorktreeCacheKey(projectId, worktreeId)}::`;
+    if ('deletedBefore' in which) {
+      for (const [key, tombstones] of deletedEntryTombstones) {
+        if (!key.startsWith(directoryPrefix)) continue;
+        for (const [path, tombstone] of tombstones)
+          if (tombstone.deletedAt < which.deletedBefore)
+            tombstones.delete(path);
+        if (tombstones.size === 0) deletedEntryTombstones.delete(key);
+      }
+      return;
+    }
+    // The path and every folder above it exist again.
+    for (const { repoId, relativePath } of which.entries) {
+      for (
+        let path = relativePath;
+        path !== '';
+        path = parentRelativePath(path)
+      ) {
+        const key = getDirectoryCacheKey(
+          projectId,
+          worktreeId,
+          repoId,
+          parentRelativePath(path),
+        );
+        const tombstones = deletedEntryTombstones.get(key);
+        tombstones?.delete(path);
+        if (tombstones?.size === 0) deletedEntryTombstones.delete(key);
+      }
+    }
+  },
+
+  clearSandboxNotAwake: (projectId, worktreeId): void => {
+    const worktreeKey = getWorktreeCacheKey(projectId, worktreeId);
+    set((state) => ({
+      directoryErrors: withoutSleepingErrors(
+        state.directoryErrors,
+        worktreeKey,
+      ),
+      sandboxNotAwake: omitKey(state.sandboxNotAwake, worktreeKey),
     }));
   },
 
@@ -776,7 +1128,7 @@ export const useFileListStore = create<FileListState>((set, get) => ({
           nextDirectoryCache[key] = value;
         }
       }
-      const nextDirectoryErrors: Record<string, string> = {};
+      const nextDirectoryErrors: Record<string, FileTreeLoadError> = {};
       for (const [key, value] of Object.entries(state.directoryErrors)) {
         if (!key.startsWith(directoryPrefix)) {
           nextDirectoryErrors[key] = value;
@@ -809,6 +1161,7 @@ export const useFileListStore = create<FileListState>((set, get) => ({
         directoryErrors: nextDirectoryErrors,
         directoryVersions: nextDirectoryVersions,
         directoryLoading: nextDirectoryLoading,
+        sandboxNotAwake: omitKey(state.sandboxNotAwake, worktreeKey),
       };
     });
   },
@@ -816,6 +1169,7 @@ export const useFileListStore = create<FileListState>((set, get) => ({
   invalidateAll: (): void => {
     inFlightRootsRequests.clear();
     releasedFileIndexKeys.length = 0;
+    deletedEntryTombstones.clear();
     set((state) => {
       const bumpEvery = (
         versions: Record<string, number>,
@@ -839,6 +1193,7 @@ export const useFileListStore = create<FileListState>((set, get) => ({
         directoryErrors: {},
         directoryLoading: new Set<string>(),
         directoryVersions: bumpEvery(state.directoryVersions),
+        sandboxNotAwake: {},
       };
     });
   },

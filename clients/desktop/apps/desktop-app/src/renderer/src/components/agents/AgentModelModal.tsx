@@ -65,8 +65,8 @@ const MODEL_ID_REQUIRED = 'Model ID is required.';
 const MODEL_ID_INVALID =
   'Model ID can only contain lowercase letters, numbers, and single underscores.';
 const MODEL_ID_DUPLICATE = 'An agent with this model ID already exists.';
-const BASE_MODEL_REQUIRED = 'Choose a base model.';
-const BASE_MODEL_IS_AGENT = 'Base model cannot be another agent.';
+const BASE_MODEL_REQUIRED = 'Choose a default model.';
+const BASE_MODEL_IS_AGENT = 'Default model cannot be another agent.';
 const INSTRUCTIONS_TOO_LONG = 'Instructions are too long.';
 
 function byteLength(value: string): number {
@@ -417,13 +417,13 @@ export function AgentModelModal({
           }
         </FormField>
 
-        {/* Base model */}
+        {/* Default model */}
         <Fieldset
           gap="control"
-          legend={<span className={FORM_FIELD_LABEL_CLASS}>Base model</span>}
+          legend={<span className={FORM_FIELD_LABEL_CLASS}>Default model</span>}
         >
           <div className="flex flex-col gap-2.5">
-            <ChoiceList kind="radio" aria-label="Base model">
+            <ChoiceList kind="radio" aria-label="Default model">
               <ChoiceListRow
                 kind="radio"
                 selected={inheritsDefaultModel}
@@ -436,7 +436,7 @@ export function AgentModelModal({
                 }}
                 data-testid="agent-model-base-default"
               >
-                <span className="block">Default model</span>
+                <span className="block">Use chat default</span>
                 <span className="block text-xs fg-secondary">
                   Each chat uses its default model from Settings when it starts.
                 </span>
@@ -475,15 +475,15 @@ export function AgentModelModal({
                       allowCursor
                       allowOpenCode
                       allowCopilot
-                      placeholderLabel="Select a base model…"
+                      placeholderLabel="Select a default model…"
                       onModelChange={handleBaseModelChange}
-                      triggerTooltip="Model this agent is built on"
+                      triggerTooltip="Default model for this agent"
                     />
                   </div>
                 </Surface>
                 <p className={FORM_FIELD_DESCRIPTION_CLASS}>
-                  Choose a provider model, including Cursor. Custom agents
-                  cannot be used as a base model.
+                  Choose a default model, including Cursor. Each chat can choose
+                  a different model for this agent.
                 </p>
               </div>
             )}
@@ -567,6 +567,7 @@ export function AgentModelModal({
         </Stack>
 
         <DesktopErrorBanner
+          errorSource="agent-model-modal-submit"
           error={submitError?.error}
           {...(submitError?.details === undefined
             ? {}

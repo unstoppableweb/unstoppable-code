@@ -20,6 +20,7 @@ import {
   type CanopyRetryDirective,
 } from '@canopy/protocol/canopy-core';
 import {
+  relayableErrorDetails,
   relayRetryFor,
   type CanopyCoreRelayReply,
 } from '../../../shared/canopy-core-relay';
@@ -104,11 +105,22 @@ export interface RendererRelayOptions {
     params: Readonly<Record<string, unknown>>,
   ) => string | null;
   /**
+   * The params an allowed request is sent with, after `refuseParams`: drops
+   * what main cannot honour for the renderer.
+   */
+  readonly narrowParams?: (method: string, params: RelayParams) => RelayParams;
+  /**
    * Refuses an allowed call with this payload, or lets it through with
    * `null`. Unlike `allows` it is read on every call, never cached in a
    * session's definitions, so it can follow a flag that changes.
    */
   readonly refuseCall?: (method: string) => CanopyErrorPayload | null;
+  /**
+   * The minor schema revision main asks for, by stream (protocol rule 5):
+   * a stream opens with `revision` only when the connection's manifest
+   * advertises that revision, as the web client's `withRevision` does.
+   */
+  readonly streamRevisions?: Readonly<Record<string, number>>;
   readonly host?: RendererRelayHostOptions;
   readonly clientVersion?: string;
   readonly limits?: Partial<RendererRelayLimits>;
@@ -195,16 +207,25 @@ const failure = (
 const connectionClosed = (retry: CanopyRetryDirective = NEVER): RelayFailure =>
   failure('unavailable', 'The renderer relay connection closed.', retry);
 
-/** Typed payloads keep kind, message, code, and retry; `details` and untyped errors never reach the renderer. */
+/**
+ * Typed payloads keep kind, message, code, and retry, and of `details` only
+ * what {@link relayableErrorDetails} allows; other `details` and untyped
+ * errors never reach the renderer.
+ */
 function toPayload(error: unknown): CanopyErrorPayload {
   if (error instanceof RelayFailure) return error.payload;
   if (typeof error === 'object' && error !== null && 'payload' in error) {
     const parsed = CanopyErrorPayloadSchema.safeParse(error.payload);
     if (parsed.success) {
       const { kind, message, code, retry } = parsed.data;
-      return code === undefined
-        ? { kind, message, retry }
-        : { kind, message, code, retry };
+      const details = relayableErrorDetails(parsed.data.details);
+      return {
+        kind,
+        message,
+        ...(code === undefined ? {} : { code }),
+        ...(details === undefined ? {} : { details }),
+        retry,
+      };
     }
   }
   return {
@@ -653,9 +674,11 @@ export function createRendererRelay(
     if (!kind || !allows(session.surface, kind, method))
       throw unavailable(method);
     refuseCall(method);
-    const { params, metadata } = splitMetadata(rawParams, true);
-    const refusal = options.refuseParams?.(method, params) ?? null;
+    const split = splitMetadata(rawParams, true);
+    const refusal = options.refuseParams?.(method, split.params) ?? null;
     if (refusal !== null) throw failure('invalid_argument', refusal);
+    const params = options.narrowParams?.(method, split.params) ?? split.params;
+    const { metadata } = split;
     const release = reserveCall(session);
     const callOptions = { metadata, signal: session.signal };
     // The slot is held until the client settles the call, at its deadline at the latest.
@@ -671,6 +694,23 @@ export function createRendererRelay(
       limits.deadlineMs,
       requestRecovery(method),
     );
+  }
+
+  /** The stream's params with the revision the manifest advertises, if any. */
+  function withStreamRevision(
+    client: CanopyClient,
+    method: string,
+    params: RelayParams,
+  ): RelayParams {
+    const revisions = options.streamRevisions;
+    const revision =
+      revisions !== undefined && hasOwn(revisions, method)
+        ? revisions[method]
+        : undefined;
+    const advertised = client.manifest.schemaRevisions?.get(method) ?? 1;
+    return revision !== undefined && advertised >= revision
+      ? { ...params, revision }
+      : params;
   }
 
   /**
@@ -698,7 +738,9 @@ export function createRendererRelay(
     const releaseCall = reserveCall(session);
     session.openingStreams += 1;
     const opening = clientFor(session).then((client) =>
-      client.openStream(method, params, { metadata }),
+      client.openStream(method, withStreamRevision(client, method, params), {
+        metadata,
+      }),
     );
     return new Promise((resolve, reject) => {
       let settled = false;

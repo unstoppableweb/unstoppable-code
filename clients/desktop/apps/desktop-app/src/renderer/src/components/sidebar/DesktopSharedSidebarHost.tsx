@@ -1,5 +1,10 @@
+import { useDesktopAutoDeleteAttention } from '@/components/worktree/useDesktopAutoDeleteAttention';
+import { DesktopAutoDeleteAttention } from '@/components/worktree/DesktopAutoDeleteAttention';
 import { inlineFailureText } from '@/lib/inline-app-error';
-import { SidebarChatsSectionMenuItems } from '@canopy/ui-shared/components';
+import {
+  MoreRow,
+  SidebarChatsSectionMenuItems,
+} from '@canopy/ui-shared/components';
 import {
   noteChatIntent,
   endChatIntent,
@@ -64,10 +69,7 @@ import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
 import { useSidebarPageHandoffStore } from '@/stores/sidebarPageHandoffStore';
 import { isCoworkChatTarget } from '@/lib/cowork';
-import {
-  ArchivedContainersNavLink,
-  summarizeCommandFailure,
-} from '@canopy/ui-shared';
+import { summarizeCommandFailure } from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
@@ -79,7 +81,10 @@ import {
   WorktreeArchiveRefusalError,
   WorktreeRemovalRefusedError,
 } from '@/lib/worktreeRemovalAdmission';
-import { worktreeDiscardBatchPointer } from '@canopy/ui-shared/lib/worktree-discard-copy';
+import {
+  worktreeDiscardBatchPointer,
+  worktreeRecoveryBatchPointer,
+} from '@canopy/ui-shared/lib/worktree-discard-copy';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSidebarStore } from '@/stores/sidebarStore';
@@ -187,6 +192,10 @@ import { openNewCoworkTaskFromSidebar } from '@/lib/openNewCoworkTaskFromSidebar
 import { SidebarCoworkWorkspaceRow } from './SidebarCoworkWorkspaceRow';
 import { CloudCoworkOfflineRow } from '@/cloud-chats/CloudCoworkOfflineRow';
 import {
+  archiveCloudTask,
+  CLOUD_TASK_ARCHIVE_FAILED,
+} from '@/cloud-chats/archive-cloud-task';
+import {
   CLOUD_PROJECT_DANGER_COPY,
   cloudSidebarRowCapabilities,
   type CloudSidebarRowKind,
@@ -240,18 +249,21 @@ class WorktreeCreationNoticeError extends Error {
 // Host contracts are exported alongside the component for focused unit tests.
 
 /**
- * Desktop's archived entry point for a project: the link into the Archived
- * overview page, exactly as the legacy section renders it, rather than the
- * shared surface's inline archived list. Live store data supersedes the
- * sidebar item's archived-count snapshot once a workspace has been loaded.
+ * Desktop's More row for a project: the entry to its More page (hidden,
+ * archived and deleted worktrees), rather than the shared surface's inline
+ * archived list. Live store data supersedes the sidebar item's
+ * archived-count snapshot once a workspace has been loaded.
  */
 function DesktopArchivedNavLink({
   workspaceId,
   fallbackCount,
+  hiddenCount,
 }: {
   readonly workspaceId: string;
   readonly fallbackCount: number;
-}): JSX.Element {
+  /** Hidden worktrees, which wait behind More with the archived ones. */
+  readonly hiddenCount: number;
+}): JSX.Element | null {
   const count = useArchivedContainersStore(
     (s) =>
       (s.loadedWorkspaces[workspaceId] === true
@@ -263,19 +275,14 @@ function DesktopArchivedNavLink({
       s.overview?.workspaceId === workspaceId ||
       s.viewer?.workspaceId === workspaceId,
   );
-  // Early access gives the link the sidebar rows' height and corner.
-  const rowSized = useLabsExperimentEnabled('sidebar');
+  // The project's More row: hidden, archived and deleted worktrees, one page.
   return (
-    // Row-sized, the link sits 1px under the last row (its own margin).
-    <div className={rowSized ? undefined : 'mt-0.5'}>
-      <ArchivedContainersNavLink
-        size={rowSized ? 'row' : 'compact'}
-        count={count}
-        selected={selected}
-        onOpen={() => openArchivedOverviewSurface(workspaceId)}
-        testId={`sidebar-project-${workspaceId}-archived-link`}
-      />
-    </div>
+    <MoreRow
+      count={count + hiddenCount}
+      selected={selected}
+      onOpen={() => openArchivedOverviewSurface(workspaceId)}
+      testId={`sidebar-project-${workspaceId}-archived-link`}
+    />
   );
 }
 
@@ -475,6 +482,15 @@ interface StoreWorktreeListing {
 const NON_STORE_ROW_MENU_KEYS: ReadonlySet<string> = new Set([
   'branch-info',
   'debug-info',
+]);
+
+/**
+ * A cloud row also keeps Archive, which its capabilities offer only for a
+ * task and which goes to the web core, never the store (CAN-6511).
+ */
+const CLOUD_ROW_MENU_KEYS: ReadonlySet<string> = new Set([
+  ...NON_STORE_ROW_MENU_KEYS,
+  'archive',
 ]);
 
 /**
@@ -756,6 +772,13 @@ export const removeDesktopWorktreeInBatch = async (
     onRowHidden,
   }: WorktreeBatchRemovalOptions,
 ): Promise<void> => {
+  // A cloud task only archives, through the web core (CAN-6511).
+  if (isWebCoreScope(workspaceId)) {
+    if (mode !== 'archive')
+      throw new Error('A cloud task can only be archived.');
+    await archiveCloudTask(workspaceId, worktreeId);
+    return;
+  }
   const project = useProjectsStore
     .getState()
     .projects.find((item) => item.id === workspaceId);
@@ -780,6 +803,10 @@ export const removeDesktopWorktreeInBatch = async (
   } catch (error) {
     if (error instanceof TeardownFailedError) {
       throw new Error('Teardown script failed. Try again from the row menu.');
+    }
+    if (error instanceof WorktreeArchiveRefusalError && error.recovery) {
+      if (error.recovery.destination.kind === 'journal-review') throw error;
+      throw new Error(worktreeRecoveryBatchPointer(error.recovery));
     }
     const discard = await batchDiscardDescription(error, workspaceId);
     if (discard) throw new Error(worktreeDiscardBatchPointer(discard));
@@ -824,6 +851,26 @@ export const removeDesktopWorkEntryInBatch: RemoveWorkEntryInBatch = async (
   useStandaloneChatStore.getState().deleteWorkEntry(entryId, workspaceId, {
     lockAfterArchive: mode === 'archive',
   });
+
+/**
+ * The shared rows' Archive (CAN-5461): the whole Work Entry, locked, as the
+ * batch and the single-row confirm archive it. Production rows still archive
+ * through `SidebarCoworkWorkspaceRow`'s confirmation; this serves the shared
+ * rows wherever they render. A chat without a Work Entry fails rather than
+ * archiving nothing.
+ */
+export const archiveDesktopStandaloneChat = async (chat: {
+  readonly localId: string;
+  readonly projectLocalId: string;
+  readonly workEntryId?: string;
+}): Promise<void> => {
+  if (!chat.projectLocalId || !chat.workEntryId) {
+    throw new Error('This chat has no Work Entry to archive.');
+  }
+  await removeDesktopWorkEntryInBatch(chat.projectLocalId, chat.workEntryId, {
+    mode: 'archive',
+  });
+};
 
 /**
  * A Work Entry's batch facts, read live before each removal: gone when the
@@ -891,6 +938,7 @@ export function DesktopSharedSidebarHost({
   onRefreshMeasured,
   worktreeDiffStatsStyle = 'short',
 }: DesktopSharedSidebarHostProps): JSX.Element | null {
+  const attention = useDesktopAutoDeleteAttention();
   const model = useSidebarWorkspaces();
   const activity = useDesktopSidebarActivityHost(client);
   const groupsByScope = useSidebarItemGroupsStore((state) => state.byScope);
@@ -1714,9 +1762,15 @@ export function DesktopSharedSidebarHost({
   const appAdvisorDocked = useAppAdvisorStore(
     (s) => s.open && s.layout === 'docked',
   );
+  // A project's More page (or an archived worktree opened from it) covers
+  // the worktree: its More row is the selection, so no worktree row is.
+  const morePageOpen = useArchivedContainersStore(
+    (s) => s.overview !== null || s.viewer !== null,
+  );
   const selection = useMemo<SidebarSelection>(() => {
     if (appAdvisorDocked) return null;
     if (activePage === 'main') {
+      if (morePageOpen) return null;
       return parseDesktopWorktreeSelection(model.selectedWorktreeKey);
     }
     if (activePage === 'chat' && activeWorkEntryId) {
@@ -1738,6 +1792,7 @@ export function DesktopSharedSidebarHost({
     activeWorkEntryId,
     appAdvisorDocked,
     model.selectedWorktreeKey,
+    morePageOpen,
   ]);
   const selectionActions = useMemo<DesktopSelectionActions>(
     () => ({
@@ -1887,6 +1942,11 @@ export function DesktopSharedSidebarHost({
   return (
     <>
       <SidebarSurface
+        footerCallout={
+          attention.length > 0 ? (
+            <DesktopAutoDeleteAttention attention={attention} />
+          ) : undefined
+        }
         // Drawer SHAPE — this mounts inside the rail's own scroll area and must
         // fill it rather than become a second fixed-width column. But the rail
         // is a mouse-and-keyboard surface, so it takes rail SIZING: without the
@@ -2202,11 +2262,12 @@ export function DesktopSharedSidebarHost({
           { workspace, worktree, pinnedSurface },
           incomingItems,
         ) => {
+          const kept = isWebCoreScope(workspace.localId)
+            ? CLOUD_ROW_MENU_KEYS
+            : NON_STORE_ROW_MENU_KEYS;
           const items = isStoreWorktree(workspace.localId, worktree.localId)
             ? incomingItems
-            : incomingItems.filter((item) =>
-                NON_STORE_ROW_MENU_KEYS.has(item.key),
-              );
+            : incomingItems.filter((item) => kept.has(item.key));
           const project = model.sortedProjects.find(
             (item) => item.id === workspace.localId,
           );
@@ -2383,13 +2444,21 @@ export function DesktopSharedSidebarHost({
         }}
         onCreateBranchWorktree={model.onCreateBranchWorktree}
         onArchiveWorktree={(workspaceId, worktreeId) => {
+          // A cloud task archives through the web core, never the local
+          // projects store (CAN-6511).
+          // The confirmation waits for it and says so if it's refused.
+          if (isWebCoreScope(workspaceId))
+            return archiveCloudTask(workspaceId, worktreeId);
           model.onArchiveWorktree(workspaceId, worktreeId);
+          return undefined;
         }}
+        removalFailedMessage={CLOUD_TASK_ARCHIVE_FAILED}
         onRemoveWorktreeInBatch={removeDesktopWorktreeInBatch}
         getWorktreeBatchRemovalFacts={worktreeBatchRemovalFacts}
         worktreeBatchBranchChoice
         onWorktreeBatchRemovalStateChange={setBatchRemovalState}
         onRemoveWorkEntryInBatch={removeDesktopWorkEntryInBatch}
+        onArchiveStandaloneChat={archiveDesktopStandaloneChat}
         getWorkEntryBatchRemovalFacts={desktopWorkEntryBatchRemovalFacts}
         getWorkEntryBulkState={desktopWorkEntryBulkState}
         onSetWorkEntryPinned={setDesktopWorkEntryPinned}
@@ -2773,7 +2842,7 @@ export function DesktopSharedSidebarHost({
         archivedCount={(workspaceId) =>
           desktopArchivedCount(model.sortedProjects, workspaceId)
         }
-        renderArchivedSection={(workspaceId) =>
+        renderArchivedSection={(workspaceId, { hiddenWorktreeCount }) =>
           // Archived local items only; a cloud project has none here.
           isWebCoreScope(workspaceId) ? null : (
             <DesktopArchivedNavLink
@@ -2781,8 +2850,14 @@ export function DesktopSharedSidebarHost({
               fallbackCount={
                 desktopArchivedCount(model.sortedProjects, workspaceId) ?? 0
               }
+              hiddenCount={hiddenWorktreeCount}
             />
           )
+        }
+        // Local projects keep hidden worktrees on their More page; a cloud
+        // project has no More page here, so it keeps its Hidden row.
+        hiddenWorktreesPlacement={(workspaceId) =>
+          isWebCoreScope(workspaceId) ? 'inline' : 'more'
         }
         archivedEntries={(workspaceId) =>
           loadedArchivedWorkspaces[workspaceId]

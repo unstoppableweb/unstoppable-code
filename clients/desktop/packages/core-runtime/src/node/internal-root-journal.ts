@@ -328,7 +328,12 @@ function isRepairPlan(value: unknown): value is InternalRootRepairPlan {
     hasOnlyKeys(
       value,
       ['transition', 'gitPlan', 'ownedPaths', 'workspaces'],
-      ['lifecycleJournals', 'abandonedPaths', 'abandonedCheckouts'],
+      [
+        'lifecycleJournals',
+        'archiveRecovery',
+        'abandonedPaths',
+        'abandonedCheckouts',
+      ],
     ) &&
     (value.abandonedPaths === undefined ||
       isArrayOf(
@@ -341,6 +346,7 @@ function isRepairPlan(value: unknown): value is InternalRootRepairPlan {
     isGitPlan(value.gitPlan) &&
     isArrayOf(value.ownedPaths, isString) &&
     isArrayOf(value.workspaces, isWorkspace) &&
+    (value.archiveRecovery === undefined || isString(value.archiveRecovery)) &&
     (value.lifecycleJournals === undefined ||
       (isArrayOf(value.lifecycleJournals, isLifecycleJournalEvidence) &&
         (!value.lifecycleJournals.some((entry) => entry.abandoned) ||

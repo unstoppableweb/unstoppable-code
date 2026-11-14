@@ -32,7 +32,6 @@ import {
   STEP_GROUP_BODY_CLASS,
   useChatDetail,
   useTurnCollapse,
-  useCleanChatLook,
   useGroupToolCalls,
   type TurnSummary,
 } from '@canopy/ui-shared/components';
@@ -326,17 +325,13 @@ function TurnGroupViewImpl({
   // Clean chat look: the turn opens with "Working for 28s" and, once done,
   // its folded steps' header reads "Worked for 3m 24s". Every step between
   // two replies is one line; the running turn's tail shimmers what it does.
-  const clean = useCleanChatLook();
+
   const groupToolCalls = useGroupToolCalls();
   // Chat detail `recent`: the run the turn is still adding to keeps its
   // newest steps in view under its line.
   const chatDetail = useChatDetail();
   const recentSteps = chatDetail === 'recent';
-  const [collapsed, setCollapsed] = useTurnCollapse(
-    complete,
-    clean,
-    chatDetail,
-  );
+  const [collapsed, setCollapsed] = useTurnCollapse(complete, chatDetail);
   const workingStatus = useTurnWorkingStatus();
 
   const user = messagesById[turnGroup.userMessageId];
@@ -519,7 +514,7 @@ function TurnGroupViewImpl({
   const feedback = feedbackSlot ? (
     <span
       data-testid="chat-turn-feedback"
-      className={clean ? 'flex items-center gap-0.5' : undefined}
+      className="flex items-center gap-0.5"
     >
       {feedbackSlot}
     </span>
@@ -555,19 +550,17 @@ function TurnGroupViewImpl({
   );
   // Segment every clean turn so step spacing does not depend on provider
   // message boundaries. Detail controls folding, not the step container.
-  const cleanSegments = clean
-    ? segmentCleanTurn(
-        (foldable && !isExpanded
-          ? finals
-          : foldable
-            ? expandedMessages
-            : [...intermediates, ...finals]
-        ).filter((message) => message !== trailingTimer),
-      )
-    : null;
-  const lastCleanSegment = cleanSegments?.[cleanSegments.length - 1];
+  const cleanSegments = segmentCleanTurn(
+    (foldable && !isExpanded
+      ? finals
+      : foldable
+        ? expandedMessages
+        : [...intermediates, ...finals]
+    ).filter((message) => message !== trailingTimer),
+  );
+  const lastCleanSegment = cleanSegments[cleanSegments.length - 1];
   const liveRun =
-    clean && !complete && lastCleanSegment?.kind === 'steps'
+    !complete && lastCleanSegment?.kind === 'steps'
       ? lastCleanSegment
       : undefined;
   // Without grouping, the step still running on screen shimmers itself.
@@ -586,7 +579,6 @@ function TurnGroupViewImpl({
   const liveLineInSteps =
     (!groupToolCalls || recentSteps) && lastCleanSegment?.kind === 'steps';
   const liveLine =
-    clean &&
     !complete &&
     (groupToolCalls && !recentSteps
       ? liveRun === undefined
@@ -618,7 +610,7 @@ function TurnGroupViewImpl({
       completed={complete}
       completionStatus={outcome}
       // Clean chat look: the reply row is always in view.
-      alwaysVisible={clean}
+      alwaysVisible={true}
       data-testid="chat-turn-action-slot"
     >
       {actionSlot}
@@ -636,7 +628,7 @@ function TurnGroupViewImpl({
     >
       <ToolApprovalWaitProvider value={approvalWait}>
         <div
-          className={`group/turn ${clean ? 'flex flex-col gap-2' : 'flex flex-col gap-1'}`}
+          className="group/turn flex flex-col gap-2"
           data-testid="chat-turn-group"
         >
           {turnGroup.wake ? (
@@ -668,7 +660,6 @@ function TurnGroupViewImpl({
               startingStatusSlot
             )
           ) : (
-            clean &&
             !complete && (
               <TurnWorkHeader
                 startedAt={timer.startedAt}
@@ -683,161 +674,117 @@ function TurnGroupViewImpl({
             )
           )}
 
-          {cleanSegments ? (
-            <>
-              {foldable && (
-                <CollapsedTurnSummary
-                  summary={summary}
-                  isExpanded={isExpanded}
-                  onToggle={() => setCollapsed((value) => !value)}
-                  appIcon={appIcon}
-                  hideLeadingLabel
-                  completionStatus={outcome}
-                  outcomes={outcomes}
-                  outcomeSteps={outcomeSteps}
-                  onJumpToOutcome={onJumpToOutcome}
-                  dataTestId="chat-turn-summary"
-                  {...(timer.elapsedMs === undefined
-                    ? {}
-                    : { elapsedMs: timer.elapsedMs })}
-                />
-              )}
-              {cleanSegments.map((segment) => {
-                if (segment.kind === 'message') {
-                  return (
-                    <ChatMessageView
-                      key={segment.key}
-                      message={segment.message}
-                      appIcon={appIcon}
-                    />
-                  );
-                }
-                const recent =
-                  recentSteps && segment === liveRun
-                    ? recentStepWindow(segment)
-                    : undefined;
-                const renderSteps = (
-                  messages: typeof segment.messages,
-                ): JSX.Element[] =>
-                  messages.map(({ key, message }) => (
-                    <ChatMessageView
-                      key={key}
-                      message={message}
-                      appIcon={appIcon}
-                    />
-                  ));
-                if (!groupToolCalls) {
-                  return (
-                    <div
-                      key={`clean-steps-${segment.key}`}
-                      className={STEP_GROUP_BODY_CLASS}
-                      data-testid="chat-tool-step-detailed"
-                    >
-                      {renderSteps(segment.messages)}
-                      {segment === lastCleanSegment &&
-                        liveLineInSteps &&
-                        liveLine}
-                    </div>
-                  );
-                }
-                // The line counts only the steps the window hides, so the
-                // running step is said once, in its own row.
-                const done = describeCleanTurnSteps(
-                  recent?.hidden ?? segment,
-                  outcomeEvidence,
-                );
-                // A call reveal opens the folded line that holds the call.
-                const holdsRevealedCall =
-                  revealRequest !== undefined &&
-                  segment.messages.some(({ message }) =>
-                    (message.parts ?? []).some(
-                      (part) =>
-                        (part.kind === 'tool_use' || part.kind === 'agent') &&
-                        isRecord(part.data) &&
-                        part.data.toolUseId === revealRequest.toolUseId,
-                    ),
-                  );
+          <>
+            {foldable && (
+              <CollapsedTurnSummary
+                summary={summary}
+                isExpanded={isExpanded}
+                onToggle={() => setCollapsed((value) => !value)}
+                appIcon={appIcon}
+                completionStatus={outcome}
+                outcomes={outcomes}
+                outcomeSteps={outcomeSteps}
+                onJumpToOutcome={onJumpToOutcome}
+                {...(timer.elapsedMs === undefined
+                  ? {}
+                  : { elapsedMs: timer.elapsedMs })}
+              />
+            )}
+            {cleanSegments.map((segment) => {
+              if (segment.kind === 'message') {
                 return (
-                  <ChatToolStepGroup
-                    key={`clean-steps-${segment.key}`}
-                    summary={done.label}
-                    trailingActivity={
-                      recent !== undefined ? liveLine : undefined
-                    }
-                    failedCount={done.failed}
-                    blockedCount={done.blocked}
-                    collapsedStepCount={
-                      recent !== undefined && recent.hidden === undefined
-                        ? 0
-                        : stepParts(recent?.hidden ?? segment).filter(
-                            (part) => part.kind !== 'thinking',
-                          ).length
-                    }
-                    hiddenSteps={
-                      recent?.hidden
-                        ? renderSteps(recent.hidden.messages)
-                        : undefined
-                    }
-                    interruptedCount={done.interrupted}
-                    icon={done.icon}
-                    openRequest={holdsRevealedCall ? revealRequest : undefined}
-                    {...(recent !== undefined
-                      ? { liveSteps: renderSteps(recent.shown) }
-                      : segment === liveRun
-                        ? {
-                            live: cleanLiveActivity(
-                              segment,
-                              workingStatus,
-                              approvalWait,
-                            ),
-                          }
-                        : {})}
-                  >
-                    {renderSteps(segment.messages)}
-                  </ChatToolStepGroup>
-                );
-              })}
-              {foldable && !isExpanded && visualHost && collapsedVisuals}
-            </>
-          ) : (
-            <>
-              {foldable && (
-                <CollapsedTurnSummary
-                  summary={summary}
-                  isExpanded={isExpanded}
-                  onToggle={() => setCollapsed((value) => !value)}
-                  appIcon={appIcon}
-                  hideLeadingLabel
-                  completionStatus={outcome}
-                  outcomes={outcomes}
-                  outcomeSteps={outcomeSteps}
-                  onJumpToOutcome={onJumpToOutcome}
-                  dataTestId="chat-turn-summary"
-                  {...(timer.elapsedMs === undefined
-                    ? {}
-                    : { elapsedMs: timer.elapsedMs })}
-                />
-              )}
-              {foldable && !isExpanded && visualHost && collapsedVisuals}
-              {/* One keyed list whether the turn runs, folds or opens, so a
-              message keeps its place in the tree and a tool card someone
-              opened stays open when the turn finishes. */}
-              {(foldable
-                ? isExpanded
-                  ? expandedMessages
-                  : finals
-                : [...intermediates, ...finals]
-              )
-                .filter((message) => message !== trailingTimer)
-                .map((message) => (
                   <ChatMessageView
-                    key={message.messageId}
+                    key={segment.key}
+                    message={segment.message}
+                    appIcon={appIcon}
+                  />
+                );
+              }
+              const recent =
+                recentSteps && segment === liveRun
+                  ? recentStepWindow(segment)
+                  : undefined;
+              const renderSteps = (
+                messages: typeof segment.messages,
+              ): JSX.Element[] =>
+                messages.map(({ key, message }) => (
+                  <ChatMessageView
+                    key={key}
                     message={message}
                     appIcon={appIcon}
                   />
-                ))}
-            </>
-          )}
+                ));
+              if (!groupToolCalls) {
+                return (
+                  <div
+                    key={`clean-steps-${segment.key}`}
+                    className={STEP_GROUP_BODY_CLASS}
+                    data-testid="chat-tool-step-detailed"
+                  >
+                    {renderSteps(segment.messages)}
+                    {segment === lastCleanSegment &&
+                      liveLineInSteps &&
+                      liveLine}
+                  </div>
+                );
+              }
+              // The line counts only the steps the window hides, so the
+              // running step is said once, in its own row.
+              const done = describeCleanTurnSteps(
+                recent?.hidden ?? segment,
+                outcomeEvidence,
+              );
+              // A call reveal opens the folded line that holds the call.
+              const holdsRevealedCall =
+                revealRequest !== undefined &&
+                segment.messages.some(({ message }) =>
+                  (message.parts ?? []).some(
+                    (part) =>
+                      (part.kind === 'tool_use' || part.kind === 'agent') &&
+                      isRecord(part.data) &&
+                      part.data.toolUseId === revealRequest.toolUseId,
+                  ),
+                );
+              return (
+                <ChatToolStepGroup
+                  key={`clean-steps-${segment.key}`}
+                  summary={done.label}
+                  trailingActivity={recent !== undefined ? liveLine : undefined}
+                  failedCount={done.failed}
+                  blockedCount={done.blocked}
+                  collapsedStepCount={
+                    recent !== undefined && recent.hidden === undefined
+                      ? 0
+                      : stepParts(recent?.hidden ?? segment).filter(
+                          (part) => part.kind !== 'thinking',
+                        ).length
+                  }
+                  hiddenSteps={
+                    recent?.hidden
+                      ? renderSteps(recent.hidden.messages)
+                      : undefined
+                  }
+                  interruptedCount={done.interrupted}
+                  icon={done.icon}
+                  openRequest={holdsRevealedCall ? revealRequest : undefined}
+                  {...(recent !== undefined
+                    ? { liveSteps: renderSteps(recent.shown) }
+                    : segment === liveRun
+                      ? {
+                          live: cleanLiveActivity(
+                            segment,
+                            workingStatus,
+                            approvalWait,
+                          ),
+                        }
+                      : {})}
+                >
+                  {renderSteps(segment.messages)}
+                </ChatToolStepGroup>
+              );
+            })}
+            {foldable && !isExpanded && visualHost && collapsedVisuals}
+          </>
 
           <TurnAgentArtifacts
             messages={assistantMessages}
@@ -875,7 +822,6 @@ function TurnGroupViewImpl({
                   ? { turnTimerPlanCopy: planCopy }
                   : { turnTimerCopyText: replyCopyText }
                 : {})}
-              {...(clean && latest ? { turnTimerAlwaysVisible: true } : {})}
               {...(outcome === undefined
                 ? {}
                 : { turnTimerCompletionStatus: outcome })}
@@ -888,33 +834,21 @@ function TurnGroupViewImpl({
           their own. */}
           {!inTimerRow &&
             (actions || feedback || fallbackCopy) &&
-            !(clean && !complete) && (
+            !!complete && (
               <TurnFooterRow variant="actions" data-testid="chat-turn-actions">
-                {clean ? (
-                  // Clean chat look: Copy, thumbs, then the rest, in one row
-                  // that is always in view, like the timer row's.
-                  <>
-                    {fallbackCopy}
-                    <TurnFooterReveal
-                      completed={complete}
-                      completionStatus={outcome}
-                      alwaysVisible
-                    >
-                      <span className="flex items-center gap-0.5 pointer-coarse:gap-4">
-                        {feedback}
-                        {actions}
-                      </span>
-                    </TurnFooterReveal>
-                  </>
-                ) : (
-                  <>
-                    {actions}
-                    {/* Copy and the thumbs stay visible at rest, like the
-                  completion stamp. */}
-                    {fallbackCopy}
-                    {feedback}
-                  </>
-                )}
+                <>
+                  {fallbackCopy}
+                  <TurnFooterReveal
+                    completed={complete}
+                    completionStatus={outcome}
+                    alwaysVisible
+                  >
+                    <span className="flex items-center gap-0.5 pointer-coarse:gap-4">
+                      {feedback}
+                      {actions}
+                    </span>
+                  </TurnFooterReveal>
+                </>
               </TurnFooterRow>
             )}
         </div>
@@ -960,7 +894,7 @@ function readTurnHeaderTimer(data: unknown): {
   const pausedAt = readNumber(data.pausedAt);
   const resumedAt = readNumber(data.resumedAt);
   const pausedMs = readNumber(data.accumulatedPausedDurationMs);
-  // The classic timer's math, so a saved pause without a total still counts.
+  // Keep timer pause accounting, including a saved pause without a total.
   const elapsedSecond =
     completedAt === undefined
       ? null

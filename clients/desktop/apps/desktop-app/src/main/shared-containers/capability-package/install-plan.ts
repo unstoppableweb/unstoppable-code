@@ -777,7 +777,9 @@ function automationSkipReason(
     const agentId = agentIdForModel(model);
     if (
       (agentId !== undefined || model?.startsWith(AGENT_MODEL_PREFIX)) &&
-      document.uses?.agent === undefined
+      document.uses?.agent === undefined &&
+      // The installer verifies hosted references against an already-installed snapshot.
+      action.modelConfig?.agent === undefined
     )
       return 'agent-unavailable';
   }

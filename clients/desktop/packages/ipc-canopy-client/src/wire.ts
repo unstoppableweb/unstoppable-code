@@ -102,6 +102,7 @@ export interface WireFileDiff {
 /** `TrackedPlanSource`. */
 export type WireTrackedPlanSource =
   | 'copilot'
+  | 'antigravity'
   | 'opencode'
   | 'cursor'
   | 'claude'
@@ -265,6 +266,7 @@ export interface WireModelRegistry {
   readonly ollama?: readonly WireModelRegistryEntry[];
   readonly cursor?: readonly WireModelRegistryEntry[];
   readonly copilot?: readonly WireModelRegistryEntry[];
+  readonly antigravity?: readonly WireModelRegistryEntry[];
   readonly opencode?: readonly WireModelRegistryEntry[];
   /** Custom Agents run on their base model's provider. */
   readonly agents?: readonly {

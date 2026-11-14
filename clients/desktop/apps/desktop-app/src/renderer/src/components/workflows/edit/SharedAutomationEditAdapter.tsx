@@ -114,6 +114,7 @@ export function SharedAutomationEditAdapter({
     if (error !== null) {
       return (
         <Notice
+          errorSource="automation-source-error-shared-edit-adapter"
           intent="destructive"
           title="Couldn't load this automation."
           data-testid="automation-source-error"

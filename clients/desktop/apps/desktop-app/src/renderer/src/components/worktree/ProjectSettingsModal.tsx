@@ -2242,6 +2242,7 @@ export function ProjectSettingsModal({
         </SettingsGroup>
         {manageError ? (
           <ErrorBanner
+            errorSource="project-settings-manage-error"
             error={manageError}
             details={detailsFor(manageError, manageFailure)}
             className=""
@@ -2785,6 +2786,7 @@ export function ProjectSettingsModal({
       >
         {pageError ? (
           <ErrorBanner
+            errorSource="project-settings-error"
             error={pageError}
             details={detailsFor(pageError, errorFailure)}
             className=""

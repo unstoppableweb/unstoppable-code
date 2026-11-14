@@ -372,7 +372,9 @@ export function MemorySyncSettings({
           />
         )}
       </SettingsRowsGroup>
-      {error !== null && <ErrorBanner error={error} />}
+      {error !== null && (
+        <ErrorBanner errorSource="memory-sync-settings" error={error} />
+      )}
       {reviewing && (
         <MemorySyncMergeReview
           sync={sync}

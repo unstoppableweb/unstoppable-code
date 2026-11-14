@@ -40,7 +40,7 @@ const INDEX_LINE_TOOLS = 6;
 // Titles that name no work: provider defaults and the import fallbacks the
 // chat projection uses when a session has no title of its own.
 const PLACEHOLDER_TITLE =
-  /^(?:new (?:chat|conversation|session|thread|task)|untitled(?: (?:chat|conversation|session|thread))?|imported chat|imported from (?:claude|codex)|(?:claude|codex) chat(?: from .*| [0-9a-f-]{4,})?)$/i;
+  /^(?:new (?:chat|conversation|session|thread|task)|untitled(?: (?:chat|conversation|session|thread))?|imported chat|imported from (?:claude|codex|t3 code|opencode)|(?:claude|codex|t3 code|opencode) chat(?: from .*| [0-9a-f-]{4,}| ses_[0-9a-z]+)?)$/i;
 
 export const CHAT_HISTORY_PROFILE_CATEGORIES = [
   'name',

@@ -74,6 +74,7 @@ export function ProfileOverviewSection({
           </div>
 
           <ErrorBanner
+            errorSource="profile-overview-section"
             error={error?.copy}
             details={error?.details}
             onRetry={retry}

@@ -127,4 +127,6 @@ export interface DisplayMessage {
   agentSent?: AgentSentInfo;
   userMessageSource?: PersistedUserMessageSource;
   autoResume?: AutoResumeMetadata;
+  /** A prompt whose turn was cancelled before it ran, such as one deleted from a cloud chat's queue (CAN-6689). */
+  cancelled?: true;
 }

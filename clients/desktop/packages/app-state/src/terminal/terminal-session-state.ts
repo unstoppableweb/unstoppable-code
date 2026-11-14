@@ -96,7 +96,7 @@ export function getTerminalReadOnlyMessage(
   }
 
   if (signal === TERMINAL_SANDBOX_ASLEEP_SIGNAL) {
-    return 'Project is sleeping, so this shell stopped. Wake the project to keep working.';
+    return 'Project is sleeping, so this shell stopped. Send a message to wake it, then restart the terminal.';
   }
 
   if (signal === 'pipe-error') {

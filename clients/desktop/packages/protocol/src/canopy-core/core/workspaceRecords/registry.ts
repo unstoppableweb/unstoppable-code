@@ -28,18 +28,17 @@ import {
  */
 
 /** Matches core-runtime's `isW5CaptureWorkspaceId`. */
-const WORKSPACE_ID_MAX = 128;
+// Historical desktop slugs are ASCII; 255 bytes is the filesystem segment cap.
+const WORKSPACE_ID_MAX = 255;
+const RESERVED_DEVICE_NAME =
+  '(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][0-9]|[lL][pP][tT][0-9])';
 const WORKSPACE_ID_PATTERN = new RegExp(
-  `^[A-Za-z0-9_-]{1,${WORKSPACE_ID_MAX}}$`,
+  `^(?:(?!${RESERVED_DEVICE_NAME}$)[A-Za-z0-9_-]{1,128}|[a-z0-9][a-z0-9-]{0,${WORKSPACE_ID_MAX - 1}})$`,
 );
-const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 
 export const CoreWorkspaceRecordsWorkspaceIdSchema = z
   .string()
-  .regex(WORKSPACE_ID_PATTERN)
-  .refine((id) => !RESERVED_DEVICE_NAME.test(id), {
-    message: 'Expected a workspace id that is not a reserved device name',
-  });
+  .regex(WORKSPACE_ID_PATTERN);
 
 /** One W5 file, by kind, under the authority's W5 root. */
 export const CoreWorkspaceRecordsTargetSchema = z.union([
@@ -74,7 +73,7 @@ export const CoreWorkspaceRecordsWorktreeIdSchema = z
 const RESOURCE_KEY_MAX =
   'worktree:/'.length + WORKSPACE_ID_MAX + WORKTREE_ID_MAX;
 /** Matches core-runtime's capture key cap; longer keys refuse the capture. */
-const CAPTURE_KEY_MAX = 512;
+const CAPTURE_KEY_MAX = RESOURCE_KEY_MAX;
 
 /**
  * Workspace ids take the capture grammar and worktree ids are well formed, so

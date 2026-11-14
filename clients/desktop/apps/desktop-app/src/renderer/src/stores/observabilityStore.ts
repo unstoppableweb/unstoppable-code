@@ -220,6 +220,8 @@ function entryMatchesFilter(
     const haystack = [
       entry.label,
       entry.model,
+      entry.agentId,
+      entry.requestedModel,
       entry.projectId,
       entry.worktreeId,
       entry.chatId,

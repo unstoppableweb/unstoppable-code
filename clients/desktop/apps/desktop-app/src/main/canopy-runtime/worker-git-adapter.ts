@@ -179,14 +179,14 @@ function checkedId(validate: () => void): void {
   }
 }
 
-export async function resolveRepository({
-  scope,
-  repository,
-}: WorkerGitBranchListParams): Promise<string | null> {
+export async function resolveRepository(
+  { scope, repository }: WorkerGitBranchListParams,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const workspaceId = scope.workspaceId ?? '';
   checkedId(() => validateId(workspaceId, 'workspaceId'));
   if (repository.kind === 'reference')
-    return resolveHomeBranchRepoPath(workspaceId);
+    return resolveHomeBranchRepoPath(workspaceId, signal);
   if (APP_MANAGED_CHAT_PROJECT_IDS.has(workspaceId))
     throw new WorkerGitScopeError(
       'unsupported',
@@ -210,23 +210,26 @@ export async function resolveRepository({
 export const desktopWorkerGitBranchListHost: WorkerGitBranchListHost<string> = {
   // No enrolled targets: any explicit target is refused.
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-  resolveRepository: async (params) => {
-    const repoPath = await resolveRepository(params);
+  resolveRepository: async (params, { signal }) => {
+    const repoPath = await resolveRepository(params, signal);
     const capture = branchListCapture.getStore();
     if (capture && repoPath !== null) capture.repoPath = repoPath;
     return repoPath;
   },
-  reads: (repoPath) => {
+  reads: (repoPath, { signal }) => {
     const capture = branchListCapture.getStore();
     return {
-      ...gitBranchListReads(repoPath),
+      ...gitBranchListReads(repoPath, signal),
       // The freshness short-circuit is the projection's: other dispatcher
       // callers read no Canopy store and get no hint. It runs inside the
       // listing's parallel default-branch read, as the legacy listing did.
-      defaultBranchFacts: createDesktopDefaultBranchFacts(repoPath, () =>
-        capture
-          ? readDefaultBranchHint(repoPath, capture.observation)
-          : Promise.resolve(null),
+      defaultBranchFacts: createDesktopDefaultBranchFacts(
+        repoPath,
+        () =>
+          capture
+            ? readDefaultBranchHint(repoPath, capture.observation, signal)
+            : Promise.resolve(null),
+        signal,
       ),
     };
   },
@@ -518,7 +521,8 @@ export const desktopWorkerGitBranchWriteHost: WorkerGitBranchWriteHost<string> =
         }),
       );
     },
-    port: (checkoutPath) => gitBranchWritePort(checkoutPath),
+    port: (checkoutPath, context) =>
+      gitBranchWritePort(checkoutPath, context.signal),
     resolveRepository: async ({ workspaceId, repoId }) => {
       checkedId(() => validateId(workspaceId, 'workspaceId'));
       if (APP_MANAGED_CHAT_PROJECT_IDS.has(workspaceId))
@@ -604,7 +608,10 @@ export async function queryChangeSetForLegacyIpc(
  */
 export async function queryDiffStatsForLegacyIpc(
   dispatcher: WorkerGitDispatcher,
-  params: WorkerGitDiffGetParams & { readonly head: 'WORKTREE' },
+  params: WorkerGitDiffGetParams & {
+    readonly base: string;
+    readonly head: 'WORKTREE';
+  },
   options: CanopyQueryOptions,
 ): Promise<{
   readonly repoPath: string;

@@ -71,6 +71,7 @@ export function ClaudeModsKillSwitch(): JSX.Element | null {
               ) : null}
               {error ? (
                 <Notice
+                  errorSource="claude-mods-kill-switch-error"
                   intent="destructive"
                   data-testid="claude-mods-kill-switch-error"
                 >

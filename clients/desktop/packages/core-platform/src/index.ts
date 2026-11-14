@@ -109,5 +109,6 @@ export {
   observeWindowsColdProcesses,
   parseWindowsColdObservation,
 } from './internal-root-cold/windows';
+export type { LinuxColdCensusOptions } from './internal-root-cold/linux-membership';
 export { createLinuxColdPathMapper } from './internal-root-cold/linux-mounts';
 export type { NativeColdProcess } from './internal-root-cold/types';

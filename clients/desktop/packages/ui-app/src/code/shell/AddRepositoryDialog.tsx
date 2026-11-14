@@ -280,6 +280,7 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
       >
         {savedAttempt ? (
           <Notice
+            errorSource="add-repo-to-worktree-modal-saved-attempt"
             intent={savedAttempt.intent}
             title={savedAttempt.title}
             ref={attemptNoticeRef}
@@ -355,6 +356,7 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
 
         {/* Command output can name paths and branches. */}
         <ErrorBanner
+          errorSource="add-repo-to-worktree-modal-error"
           className=""
           error={errorMessage}
           blockMessageFromReplay

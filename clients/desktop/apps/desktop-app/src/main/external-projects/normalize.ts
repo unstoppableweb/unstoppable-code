@@ -10,7 +10,11 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { isPathInside } from '../lib/path-safety';
 import { compareText, laterIso } from './file-head';
-import type { ExternalProjectImportLedger } from './ledger';
+import {
+  findImportedSession,
+  type ExternalProjectImportLedger,
+  type ExternalProjectImportedSession,
+} from './ledger';
 import type { NestedRepositoryScan } from './nested-repositories';
 import type {
   DiscoveredRoot,
@@ -183,11 +187,45 @@ function mergeSessionInto(
     target.sessions.set(session.id, session);
     return;
   }
+  // The provider of the session not kept stays on the candidate (above).
+  const kept = preferredSession(existing, session);
+  const other = kept === existing ? session : existing;
   target.sessions.set(session.id, {
-    ...existing,
-    title: existing.title ?? session.title,
-    lastActivityAt: laterIso(existing.lastActivityAt, session.lastActivityAt),
+    ...kept,
+    title: kept.title ?? other.title,
+    lastActivityAt: laterIso(kept.lastActivityAt, other.lastActivityAt),
   });
+}
+
+function isBackedT3Session(session: DiscoveredSession): boolean {
+  return session.kind === 't3-thread' && session.backing !== undefined;
+}
+
+function activityTime(session: DiscoveredSession): number {
+  return session.lastActivityAt ? Date.parse(session.lastActivityAt) : 0;
+}
+
+/**
+ * Which of two sessions sharing an id is kept. A T3 Code thread backed by a
+ * native record carries that record's id, so it and the Codex, Claude, or
+ * OpenCode session found on its own are one conversation: the T3 thread wins,
+ * since its title and project are the ones the user knows. Two T3 threads
+ * pointing at one record keep the newer. Otherwise the first seen is kept.
+ */
+export function preferredSession(
+  existing: DiscoveredSession,
+  incoming: DiscoveredSession,
+): DiscoveredSession {
+  const existingT3 = isBackedT3Session(existing);
+  const incomingT3 = isBackedT3Session(incoming);
+  if (existingT3 && incomingT3) {
+    const newer = activityTime(incoming) - activityTime(existing);
+    if (newer !== 0) return newer > 0 ? incoming : existing;
+    return compareText(incoming.storeId ?? '', existing.storeId ?? '') < 0
+      ? incoming
+      : existing;
+  }
+  return incomingT3 && !existingT3 ? incoming : existing;
 }
 
 function mergeRootInto(target: WorkingCandidate, root: DiscoveredRoot): void {
@@ -344,18 +382,33 @@ function disambiguateDisplayNames(named: NamedCandidate[]): void {
 
 function sessionSummary(
   session: DiscoveredSession,
-  importedChatIds: Record<string, { chatId: string }>,
+  importedChatIds: Record<string, ExternalProjectImportedSession>,
 ): ExternalProjectSessionSummary {
-  const imported = importedChatIds[session.id];
+  const imported = findImportedSession(importedChatIds, session);
+  const t3Thread = session.kind === 't3-thread';
+  const tier: ExternalProjectSessionSummary['tier'] = session.backing
+    ? 'native'
+    : 'history';
+  // Native means a real user session the import may bring in; only Codex and
+  // Claude records can keep the conversation going in Canopy. OpenCode
+  // sessions and T3's own text copies arrive as read-only history.
+  const backingContinues =
+    session.backing?.provider === 'codex' ||
+    session.backing?.provider === 'claude';
+  const historyOnly =
+    session.kind === 'opencode-session' || (t3Thread && !backingContinues);
   return {
     id: session.id,
     provider: session.provider,
     title: session.title,
     startedAt: session.startedAt,
     lastActivityAt: session.lastActivityAt,
-    continuable: session.native,
+    continuable: session.native && !historyOnly,
     ...(imported ? { importedChatId: imported.chatId } : {}),
     sizeBytes: session.sizeBytes,
+    ...(t3Thread ? { tier } : {}),
+    ...(session.backing ? { backingProvider: session.backing.provider } : {}),
+    ...(session.archived !== undefined ? { archived: session.archived } : {}),
   };
 }
 

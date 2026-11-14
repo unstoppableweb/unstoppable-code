@@ -1,3 +1,5 @@
+import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
+import { assertAgentModelAdmission } from '../../agents/agent-default-model';
 import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { supportsChatHarnessChoice } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { ChatPlanReviewApprovalSchema } from '@canopy/protocol/portal';
@@ -210,6 +212,7 @@ async function readDefaultWorktreeModel(
     | 'ollama'
     | 'cursor'
     | 'copilot'
+    | 'antigravity'
     | 'opencode'
     | undefined,
   projectId: string,
@@ -613,6 +616,15 @@ async function executePortalChatSend(
         typeof command.payload.model === 'string'
           ? (resolveKnownModel(command.payload.model) ?? command.payload.model)
           : undefined,
+        {
+          worktreeId: command.payload.worktreeId,
+          chatId: command.payload.chatId,
+          executionHarness:
+            typeof command.payload.model === 'string' &&
+            command.payload.model !== tabOptions.model
+              ? getExecutionHarnessForModel(command.payload.model)
+              : tabOptions.executionHarness,
+        },
       );
     } catch (error) {
       context.fail(
@@ -1937,6 +1949,7 @@ const REMOTE_CREATE_TAB_PROVIDERS: readonly AgentProviderType[] = [
   'cursor',
   'opencode',
   'copilot',
+  'antigravity',
 ];
 
 function isRemoteCreateTabProvider(value: unknown): value is AgentProviderType {
@@ -2000,6 +2013,7 @@ function remoteCreateTabBillingSeed(
   if (
     providerType === 'cursor' ||
     providerType === 'copilot' ||
+    providerType === 'antigravity' ||
     providerType === 'opencode'
   )
     return {};
@@ -2273,9 +2287,22 @@ export async function remoteCreateTabModelRefusal(
   target: { projectId: string; worktreeId: string; chatId: string },
   requested: RemoteCreateTabModel,
 ): Promise<string | null> {
-  const provider =
-    requested.providerType ?? getProviderForModel(requested.model);
-  const harness = getExecutionHarnessForModel(requested.model);
+  let model: ChatModel;
+  try {
+    model = await pinInheritingAgentToDestination(
+      requested.model,
+      target.projectId,
+    );
+    await assertAgentModelAdmission(model, {
+      ...target,
+      executionHarness: getExecutionHarnessForModel(model),
+    });
+  } catch (error) {
+    if (error instanceof AgentModelSelectionError) return error.message;
+    throw error;
+  }
+  const provider = requested.providerType ?? getProviderForModel(model);
+  const harness = getExecutionHarnessForModel(model);
   if (
     (provider === 'cursor' || harness === 'cursor') &&
     !(await isCursorRuntimeAvailable())
@@ -2300,7 +2327,7 @@ export async function remoteCreateTabModelRefusal(
     worktreeId: target.worktreeId,
     chatId: target.chatId,
   });
-  if (await isModelBlockedByStoredPolicy(requested.model, workOwner)) {
+  if (await isModelBlockedByStoredPolicy(model, workOwner)) {
     return 'This model is blocked by your organization policy.';
   }
   return null;
@@ -2695,11 +2722,16 @@ export async function handlePortalChatSetModel(
       ? resolveKnownModel(command.payload.model)
       : undefined;
   // Policy and runtime checks judge the route an inheriting Agent pins.
-  const model = knownModel
-    ? await pinInheritingAgentToDestination(knownModel, target.projectId).catch(
-        (): undefined => undefined,
-      )
-    : undefined;
+  let model: string | undefined;
+  try {
+    model = knownModel
+      ? await pinInheritingAgentToDestination(knownModel, target.projectId)
+      : undefined;
+  } catch (error) {
+    if (!(error instanceof AgentModelSelectionError)) throw error;
+    context.fail(command, 'invalid_payload', error.message);
+    return;
+  }
   if (!model) {
     context.fail(command, 'invalid_payload', 'model must be a known model id.');
     return;

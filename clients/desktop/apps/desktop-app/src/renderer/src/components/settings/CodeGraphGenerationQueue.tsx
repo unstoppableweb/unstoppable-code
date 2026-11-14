@@ -249,6 +249,7 @@ export function CodeGraphGenerationQueue(): JSX.Element {
     >
       {error && (
         <ErrorBanner
+          errorSource="code-graph-queue-error"
           className=""
           error={error}
           testId="code-graph-queue-error"

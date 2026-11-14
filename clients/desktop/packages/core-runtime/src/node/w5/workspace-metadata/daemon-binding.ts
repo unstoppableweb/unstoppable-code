@@ -19,7 +19,10 @@ import {
   projectW5HostPathFingerprint,
   type W5HostPathFlavor,
 } from '../host-path-fingerprint';
-import { createW5KeyedOperationRunner } from '../keyed-operation';
+import {
+  createW5KeyedOperationRunner,
+  type W5ReceiptStore,
+} from '../keyed-operation';
 import { w5RecordPathFor } from '../record-port/contract';
 import type { W5SingleDecisionBindings } from '../single-decision-operation';
 import { bindW5Storage, type W5StorageAdmission } from '../storage-binding';
@@ -155,6 +158,8 @@ export interface W5DaemonMetadataBindingOptions {
    * it; this module reads no platform.
    */
   readonly pathFlavor: W5HostPathFlavor;
+  /** Trusted owner-qualified lookup adapter; reservations retain the actual request. */
+  readonly getReceiptStore?: (store: W5ReceiptStore) => W5ReceiptStore;
 }
 
 /** The seven commands, bound to one authenticated principal's receipts. */
@@ -238,7 +243,7 @@ export function createW5DaemonMetadataBinding(
   });
   const manifest = createW5DaemonManifestEditor(manifestRepository);
   const runKeyed = createW5KeyedOperationRunner({
-    getReceiptStore: () => store,
+    getReceiptStore: () => options.getReceiptStore?.(store) ?? store,
   });
   const checkExpectedRevision = createW5ExpectedRevisionCheck((...args) =>
     store.readRevisions(...args),

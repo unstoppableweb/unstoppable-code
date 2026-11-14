@@ -197,6 +197,7 @@ export function RemoteAccessTab(): JSX.Element {
         </Notice>
       ) : null}
       <DesktopErrorBanner
+        errorSource="settings-remote-access-error"
         className=""
         error={error?.error}
         {...(error?.details === undefined ? {} : { details: error.details })}

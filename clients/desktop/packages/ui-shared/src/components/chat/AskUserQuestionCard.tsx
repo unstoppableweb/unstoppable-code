@@ -28,7 +28,6 @@ import { ChoiceField, ChoiceMark } from '../Choice';
 import { Kbd } from '../Kbd';
 import { Select, TextArea, TextInput, FieldError } from '../Field';
 import { Notice } from '../Notice';
-import { useCleanChatLook } from '../chat-look';
 import { QuestionOptionText } from './QuestionOptionText';
 import {
   REPLAY_BLOCK_CLASS,
@@ -131,19 +130,16 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
 }): JSX.Element {
   // Clean chat look: one 12px inset on every side, and answers 12px apart
   // across their hairline, the same as the inset.
-  const clean = useCleanChatLook();
   return (
     <div
-      className={`flex flex-col gap-2 rounded-2xl border border-line-base bg-tertiary text-s text-pretty ${
-        clean ? 'canopy-small-icon-stroke p-3' : 'px-3 py-2.5'
-      }`}
+      className={`flex flex-col gap-2 rounded-2xl border border-line-base bg-tertiary text-s text-pretty canopy-small-icon-stroke p-3`}
       data-testid="answered-questions"
     >
       <div className="flex items-center gap-2 fg-tertiary">
         <MessagesSquare width={14} height={14} aria-hidden="true" />
         <span>Answers</span>
       </div>
-      <div className={`flex flex-col ${clean ? 'gap-3' : 'gap-2.5'}`}>
+      <div className={`flex flex-col gap-3`}>
         {answers.map((answer, i) => {
           const additional =
             answer.secret && answer.additional ? '[hidden]' : answer.additional;
@@ -151,11 +147,7 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
             <div
               key={i}
               className={`flex flex-col gap-1${
-                i === 0
-                  ? ''
-                  : clean
-                    ? ' border-t border-line-base pt-3'
-                    : ' border-t border-line-base pt-2.5'
+                i === 0 ? '' : ' border-t border-line-base pt-3'
               }`}
               data-testid="answered-question"
             >
@@ -978,6 +970,7 @@ function AskUserQuestionCardImpl({
 
       {deliveryNotice && (
         <Notice
+          errorSource="ask-user-question-helper"
           intent={deliveryNotice.intent}
           title={deliveryNotice.title}
           data-testid="ask-user-question-helper"

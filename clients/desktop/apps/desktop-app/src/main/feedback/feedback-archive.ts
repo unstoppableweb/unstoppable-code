@@ -98,8 +98,20 @@ export interface FeedbackManifest {
       string,
       {
         source: string;
-        harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
-        defaultHarness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+        harness:
+          | 'claude'
+          | 'codex'
+          | 'cursor'
+          | 'copilot'
+          | 'antigravity'
+          | 'opencode';
+        defaultHarness:
+          | 'claude'
+          | 'codex'
+          | 'cursor'
+          | 'copilot'
+          | 'antigravity'
+          | 'opencode';
         configurable: boolean;
         overridden: boolean;
       }

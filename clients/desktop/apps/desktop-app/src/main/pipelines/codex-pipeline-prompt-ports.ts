@@ -32,6 +32,8 @@ export const desktopCodexPipelinePromptPorts: CodexPipelinePromptPorts = {
     ),
   mcpCapabilityAuthorityIds: (servers) =>
     getMcpHttpProxyService().getCodexCapabilityAuthorityIds(servers),
+  legacyMcpCapabilityAuthorityIds: (servers) =>
+    getMcpHttpProxyService().getLegacyCodexCapabilityAuthorityIds(servers),
   resolveRouting: (model, routeSessionId, request) =>
     resolveAiCreditsRoutingOverride(model, 'codex', undefined, routeSessionId, {
       environmentRuntime: 'pipeline',

@@ -16,7 +16,7 @@ import {
   removeWorkspaceNonW5Children,
   removeWorkspaceDirectoryAfterRecordRemoval,
 } from './w5-workspace-directory-removal';
-import { slugify, uniqueId } from './string-utils';
+import { allocateSafeWorkspaceId } from '@canopy/core-runtime/node/identifiers';
 import { workspaceCreationPathOccupied } from './w5-workspace-creation-commit';
 import {
   getWorkspaceIndexRepository,
@@ -228,11 +228,10 @@ export function applyCoworkCreationAllocation(
   return getWorkspaceIndexRepository().update(async (snapshot) => {
     admitCoworkIndex(snapshot.authority, snapshot.unserved);
     const taken = coworkCreationTaken(snapshot.entries, decision);
-    const base = slugify(decision.name) || 'workspace';
-    let id = uniqueId(base, taken);
+    let id = allocateSafeWorkspaceId(decision.name, taken);
     while (await workspaceCreationPathOccupied(getWorkspaceDir(id))) {
       taken.add(id);
-      id = uniqueId(base, taken);
+      id = allocateSafeWorkspaceId(decision.name, taken);
     }
     admit(id);
     return {

@@ -1,8 +1,32 @@
+import type { McpProxyState } from '@canopy/execution-engine/types/mcp-servers';
 import { brandText } from '@/lib/brand';
+import type { InlineFailure } from '@/lib/inline-app-error';
 
 export const MCP_PORT_VALIDATION_ERROR = 'Enter a port from 1 to 65535.';
 export const MCP_SAVE_ERROR_FALLBACK = 'Could not save MCP proxy settings.';
 export const MCP_PROXY_ERROR_COPY = "The MCP proxy couldn't start.";
+
+/**
+ * The proxy error banner. A failed apply keeps its own error and details.
+ * A proxy that couldn't start shows main's reason as the banner's text: it
+ * is written for people (the port and what to do), and a release build
+ * never shows a banner's raw details.
+ */
+export function mcpProxyErrorBanner(
+  applyError: InlineFailure | null,
+  proxyState: McpProxyState | null,
+): { error: InlineFailure['error'] | null; details?: string } {
+  if (applyError !== null)
+    return {
+      error: applyError.error,
+      ...(applyError.details === undefined
+        ? {}
+        : { details: applyError.details }),
+    };
+  if (proxyState?.status !== 'error') return { error: null };
+  const reason = proxyState.error?.trim();
+  return { error: reason ? reason : MCP_PROXY_ERROR_COPY };
+}
 export const MCP_SAVED_TEXT = 'MCP proxy settings saved.';
 
 export const MCP_HTTP_AUTH_HEADING = 'HTTP MCP server auth';

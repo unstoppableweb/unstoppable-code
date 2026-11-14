@@ -15,6 +15,7 @@ import type {
   ClaudeTerminalLaunchRequest,
   DeferredToolsReloadLifecycle,
   EmptyCompletionRecovery,
+  ExternalProjectProvider,
   FileReference,
   McpAskUserEvent,
   McpQuestionAnswer,
@@ -366,6 +367,20 @@ export interface DeferredToolsReloadTabState {
  * always assumes are present.
  */
 /** Renderer view of main's resume offer for a user-stopped turn (CAN-3137). */
+/** A cloud chat's Stop, for one turn (CAN-6592). */
+export interface CloudStopState {
+  readonly phase: 'stopping' | 'not_stopped';
+  /** The prompt of the turn Stop was pressed for; a later turn ignores it. */
+  readonly promptMessageId: string | undefined;
+  /**
+   * Stopping for a while with the turn still running: Stop, still reading
+   * Stopping…, can send the cancel again (`CLOUD_STOP_RETRY_AFTER_MS`).
+   */
+  readonly retryable?: boolean;
+  /** Which press this is for the turn: each retry is a new attempt. */
+  readonly attempt?: number;
+}
+
 export interface StoppedTurnResumeState {
   /** User-message anchor of the stopped turn. */
   userMessageId: string;
@@ -440,6 +455,15 @@ export interface ChatTab extends Omit<
    * persisted; the next send or a dismiss clears it.
    */
   sendRefusal?: string;
+  /**
+   * A cloud chat's Stop (CAN-6592), for the turn whose prompt it names:
+   * `stopping` from the press until that turn ends (re-enabled after a
+   * while), and `not_stopped` when nothing could name the turn to cancel,
+   * so Stop stays to try again.
+   * Renderer-only and never persisted; the composer reads it through
+   * `presentedCloudStop`.
+   */
+  cloudStop?: CloudStopState;
   /** Starter for a confirmed new worktree, awaiting initial canonical creation. */
   pendingInitialCreation?: boolean;
   /**
@@ -484,6 +508,8 @@ export interface ChatTab extends Omit<
    */
   pendingRevertAttachmentPath?: string;
   readOnly?: boolean;
+  /** The tool this chat was imported from by the external project import. */
+  importedFrom?: ExternalProjectProvider;
   /**
    * Main-owned recovery record for a turn the provider reported as complete
    * while producing no visible output (CAN-2307). Projected verbatim from

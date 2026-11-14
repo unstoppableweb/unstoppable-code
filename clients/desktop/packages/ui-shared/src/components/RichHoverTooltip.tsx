@@ -278,6 +278,25 @@ const mergeDescribedBy = (
     .filter((value): value is string => Boolean(value))
     .join(' ') || undefined;
 
+/**
+ * `cloneElement` overwrites a prop whenever the key is present, even when the
+ * value is `undefined`. A non-interactive tooltip therefore omits
+ * `aria-expanded` and `aria-controls` so the trigger keeps its own (a menu
+ * button wrapped in a hover tip). An interactive tooltip owns both, because
+ * its surface is the disclosure.
+ */
+const ariaStateWhenInteractive = (
+  interactive: boolean,
+  expanded: boolean,
+  controls: string | undefined,
+):
+  | {
+      readonly 'aria-expanded': boolean;
+      readonly 'aria-controls': string | undefined;
+    }
+  | Record<string, never> =>
+  interactive ? { 'aria-expanded': expanded, 'aria-controls': controls } : {};
+
 function stopAtSurface(event: SyntheticEvent): void {
   event.stopPropagation();
 }
@@ -314,10 +333,13 @@ function isFocusReturnTarget(
   );
 }
 
-interface TooltipTimer {
-  view: Window;
-  id: number;
-}
+type TooltipDelay =
+  | { readonly phase: 'idle' }
+  | {
+      readonly phase: 'opening' | 'closing';
+      readonly view: Window;
+      readonly id: number;
+    };
 
 export function RichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
   return props.deferUntilInteraction ? (
@@ -376,12 +398,15 @@ function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
   if (props.disabled) return <>{props.children}</>;
   const described = active && (props.open ?? open) && !props.suppressed;
   const trigger = cloneElement(props.children, {
-    'aria-controls': props.interactive && described ? tooltipId : undefined,
     'aria-describedby': mergeDescribedBy(
       props.children.props['aria-describedby'],
       described ? tooltipId : undefined,
     ),
-    'aria-expanded': props.interactive ? described : undefined,
+    ...ariaStateWhenInteractive(
+      props.interactive === true,
+      described,
+      described ? tooltipId : undefined,
+    ),
   });
   return (
     <span
@@ -450,7 +475,6 @@ function RichHoverTooltipController({
   const ownTriggerRef = useRef<HTMLSpanElement | null>(null);
   const triggerRef = externalTrigger?.ref ?? ownTriggerRef;
   const tooltipRef = useRef<HTMLDivElement | null>(null);
-  const closeTimerRef = useRef<TooltipTimer | null>(null);
   const returnFocusRef = useRef<FocusReturnTarget | null>(null);
   const focusTooltipOnOpenRef = useRef(false);
   const suppressNextTriggerFocusRef = useRef(false);
@@ -476,31 +500,39 @@ function RichHoverTooltipController({
   const generatedTooltipId = useId();
   const tooltipId = id ?? generatedTooltipId;
 
-  const openTimerRef = useRef<TooltipTimer | null>(null);
-  const clearOpenTimer = useCallback((): void => {
-    if (openTimerRef.current === null) return;
-    openTimerRef.current.view.clearTimeout(openTimerRef.current.id);
-    openTimerRef.current = null;
+  // Opening and closing delays supersede each other. Visibility remains
+  // separate because a controlled tooltip can be opened by its caller.
+  const delayRef = useRef<TooltipDelay>({ phase: 'idle' });
+  const clearDelay = useCallback((phase?: 'opening' | 'closing'): void => {
+    const pending = delayRef.current;
+    if (pending.phase === 'idle' || (phase && pending.phase !== phase)) return;
+    pending.view.clearTimeout(pending.id);
+    delayRef.current = { phase: 'idle' };
   }, []);
   useEffect(() => {
     if (disabled || suppressed) {
-      clearOpenTimer();
+      clearDelay('opening');
       setInternalOpen(false);
     }
-    return clearOpenTimer;
-  }, [clearOpenTimer, disabled, suppressed, openDelay]);
+    return (): void => clearDelay('opening');
+  }, [clearDelay, disabled, suppressed, openDelay]);
 
-  const clearCloseTimer = useCallback((): void => {
-    if (closeTimerRef.current === null) return;
-    closeTimerRef.current.view.clearTimeout(closeTimerRef.current.id);
-    closeTimerRef.current = null;
-  }, []);
+  const scheduleDelay = useCallback(
+    (phase: 'opening' | 'closing', delay: number): void => {
+      const view = triggerRef.current?.ownerDocument.defaultView ?? window;
+      const id = view.setTimeout(() => {
+        delayRef.current = { phase: 'idle' };
+        setOpen(phase === 'opening');
+      }, delay);
+      delayRef.current = { phase, view, id };
+    },
+    [setOpen, triggerRef],
+  );
 
   const closeTooltip = useCallback((): void => {
-    clearOpenTimer();
-    clearCloseTimer();
+    clearDelay();
     setOpen(false);
-  }, [clearOpenTimer, clearCloseTimer, setOpen]);
+  }, [clearDelay, setOpen]);
 
   const handoff = useTooltipHandoff({
     open: open && !suppressed && !disabled,
@@ -514,21 +546,16 @@ function RichHoverTooltipController({
   const showTooltipAfter = useCallback(
     (delay: number): void => {
       if (suppressed || escapeDismissedRef.current) return;
-      clearCloseTimer();
+      clearDelay('closing');
       handoff.setLeaving(false);
-      if (openTimerRef.current !== null) return;
+      if (delayRef.current.phase === 'opening') return;
       if (delay <= 0) {
         setOpen(true);
         return;
       }
-      const view = triggerRef.current?.ownerDocument.defaultView ?? window;
-      const id = view.setTimeout(() => {
-        openTimerRef.current = null;
-        setOpen(true);
-      }, delay);
-      openTimerRef.current = { view, id };
+      scheduleDelay('opening', delay);
     },
-    [clearCloseTimer, handoff, suppressed, setOpen],
+    [clearDelay, handoff, scheduleDelay, suppressed, setOpen],
   );
   const showTooltip = useCallback(
     (): void => showTooltipAfter(openDelay),
@@ -544,11 +571,10 @@ function RichHoverTooltipController({
 
   useEffect((): void => {
     if (controlledOpen === false) {
-      clearOpenTimer();
-      clearCloseTimer();
+      clearDelay();
       setInternalOpen(false);
     }
-  }, [clearCloseTimer, clearOpenTimer, controlledOpen]);
+  }, [clearDelay, controlledOpen]);
 
   useEffect((): void => {
     if (suppressPointerHover && pointerHoverRef.current) closeTooltip();
@@ -569,23 +595,10 @@ function RichHoverTooltipController({
     }
     // Leaving before the open delay elapses cancels the open, or the surface
     // would appear later with nothing under the pointer to close it.
-    clearOpenTimer();
-    clearCloseTimer();
+    clearDelay();
     handoff.setLeaving(true);
-    const view = triggerRef.current?.ownerDocument.defaultView ?? window;
-    const id = view.setTimeout((): void => {
-      closeTimerRef.current = null;
-      setOpen(false);
-    }, linger);
-    closeTimerRef.current = { view, id };
-  }, [
-    clearCloseTimer,
-    clearOpenTimer,
-    closeTooltip,
-    handoff,
-    interactive,
-    setOpen,
-  ]);
+    scheduleDelay('closing', linger);
+  }, [clearDelay, closeTooltip, handoff, interactive, scheduleDelay]);
 
   const handlePointerLeave = useCallback((): void => {
     pointerInsideRef.current = false;
@@ -677,8 +690,8 @@ function RichHoverTooltipController({
           // A pending open is cancelled without claiming the press: with no
           // surface showing, Escape still belongs to whatever is beneath.
           if (!showing) {
-            if (openTimerRef.current === null) return;
-            clearOpenTimer();
+            if (delayRef.current.phase !== 'opening') return;
+            clearDelay('opening');
             escapeDismissedRef.current = true;
             return;
           }
@@ -704,15 +717,14 @@ function RichHoverTooltipController({
         returnFocusRef.current = isFocusReturnTarget(event.target)
           ? event.target
           : null;
-        clearCloseTimer();
+        clearDelay('closing');
         setOpen(true);
         if (!focusTooltipContent()) {
           focusTooltipOnOpenRef.current = true;
         }
       },
       [
-        clearCloseTimer,
-        clearOpenTimer,
+        clearDelay,
         dismissByEscape,
         dismissOnEscape,
         focusTooltipContent,
@@ -926,9 +938,9 @@ function RichHoverTooltipController({
 
   useEffect(
     () => (): void => {
-      clearCloseTimer();
+      clearDelay('closing');
     },
-    [clearCloseTimer],
+    [clearDelay],
   );
 
   // Record input modality from mount, in the trigger's own document, so the
@@ -965,12 +977,15 @@ function RichHoverTooltipController({
   // pointer/focus events, so handlers cloned onto it would never fire and the
   // tooltip would never open exactly when it is supposed to.
   const trigger = cloneElement(children, {
-    'aria-controls': interactive && open && !suppressed ? tooltipId : undefined,
     'aria-describedby': mergeDescribedBy(
       children.props['aria-describedby'],
       open && !suppressed ? tooltipId : undefined,
     ),
-    'aria-expanded': interactive ? open && !suppressed : undefined,
+    ...ariaStateWhenInteractive(
+      interactive,
+      open && !suppressed,
+      open && !suppressed ? tooltipId : undefined,
+    ),
   });
 
   const surface =
@@ -996,7 +1011,7 @@ function RichHoverTooltipController({
         onClick={containsEvents ? stopAtSurface : undefined}
         onDoubleClick={containsEvents ? stopAtSurface : undefined}
         onContextMenu={containsEvents ? stopAtSurface : undefined}
-        className={`${interactive ? 'pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${richHoverTooltipSurfaceClassName(
+        className={`${interactive ? 'electron-no-drag pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${richHoverTooltipSurfaceClassName(
           { elevation, tone, surfacePadding, surfaceWidth },
         )} ${surfaceClassName ?? (surfaceWidth ? '' : 'min-w-45 max-w-80')}`}
         style={
@@ -1496,7 +1511,7 @@ export function RichHoverCard(props: RichHoverCardProps): JSX.Element | null {
       {...(interactive ? { 'data-canopy-browser-native-overlay': 'true' } : {})}
       onMouseEnter={interactive ? props.onMouseEnter : undefined}
       onMouseLeave={interactive ? props.onMouseLeave : undefined}
-      className={`${interactive ? 'pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${
+      className={`${interactive ? 'electron-no-drag pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${
         atControl ? 'flex flex-col overflow-hidden ' : ''
       }${richHoverTooltipSurfaceClassName({
         elevation,

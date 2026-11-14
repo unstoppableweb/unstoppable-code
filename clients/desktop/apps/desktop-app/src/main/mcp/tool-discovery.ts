@@ -48,17 +48,22 @@ import {
   readMcpJsonRpcMessage,
   type McpJsonRpcMessage,
 } from '@canopy/mcp-oauth-core';
+import { listMcpToolNames, McpToolDiscoveryError } from './tool-list';
 
 export {
   MCP_ACCEPT_HEADER,
   MCP_MAX_RESPONSE_BYTES as MCP_DISCOVERY_MAX_RESPONSE_BYTES,
 } from '@canopy/mcp-oauth-core';
 
+export {
+  MCP_DISCOVERY_MAX_TOOLS,
+  MCP_DISCOVERY_MAX_TOOL_NAME_BYTES,
+  MCP_DISCOVERY_MAX_TOOL_PAGES,
+  MCP_DISCOVERY_MAX_TOOLS_DURATION_MS,
+  McpToolDiscoveryError,
+} from './tool-list';
+
 export const MCP_TOOLS_MAX_AGE_MS = 24 * 60 * 60_000;
-export const MCP_DISCOVERY_MAX_TOOLS = 10_000;
-export const MCP_DISCOVERY_MAX_TOOL_NAME_BYTES = 1024;
-export const MCP_DISCOVERY_MAX_TOOL_PAGES = 100;
-export const MCP_DISCOVERY_MAX_TOOLS_DURATION_MS = 60_000;
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = new Set([
   MCP_PROTOCOL_VERSION,
@@ -96,25 +101,6 @@ PRIVATE_NETWORKS.addSubnet('ff00::', 8, 'ipv6');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export class McpToolDiscoveryError extends Error {
-  constructor(
-    message: string,
-    readonly kind:
-      | 'invalid'
-      | 'timeout'
-      | 'network'
-      | 'auth'
-      | 'http'
-      | 'rpc'
-      | 'tools-http',
-    readonly phase: 'initialize' | 'tools',
-    readonly statusCode?: number,
-  ) {
-    super(message);
-    this.name = 'McpToolDiscoveryError';
-  }
 }
 
 function cacheKey(serverId: string, configId: string): string {
@@ -706,40 +692,17 @@ export async function discoverHttpTools(
     'MCP-Protocol-Version': negotiatedProtocolVersion,
     ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
   };
-  await sendInitializedNotification(definition.url, sessionHeaders, safeTarget);
-  const toolNames: string[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-  let requestId = 2;
-  let totalResponseBytes = 0;
-  let pageCount = 0;
-  const toolsDeadline = Date.now() + MCP_DISCOVERY_MAX_TOOLS_DURATION_MS;
-  do {
-    if (
-      pageCount >= MCP_DISCOVERY_MAX_TOOL_PAGES ||
-      Date.now() >= toolsDeadline
-    ) {
-      throw new McpToolDiscoveryError(
-        'MCP tools pagination exceeded its request or duration limit',
-        'timeout',
-        'tools',
-      );
-    }
-    pageCount += 1;
+  const url = definition.url;
+  await sendInitializedNotification(url, sessionHeaders, safeTarget);
+  return listMcpToolNames(async (request, timeoutMs) => {
     const toolsResult = await requestJsonRpc(
-      definition.url,
+      url,
       sessionHeaders,
-      {
-        jsonrpc: '2.0',
-        id: requestId,
-        method: 'tools/list',
-        params: cursor ? { cursor } : {},
-      },
-      Math.min(10_000, Math.max(1, toolsDeadline - Date.now())),
+      request,
+      timeoutMs,
       'tools',
       safeTarget,
     );
-    requestId += 1;
     if (!toolsResult.ok) {
       throw new McpToolDiscoveryError(
         `HTTP ${String(toolsResult.status)}`,
@@ -748,83 +711,11 @@ export async function discoverHttpTools(
         toolsResult.status,
       );
     }
-    totalResponseBytes += toolsResult.responseBytes;
-    if (totalResponseBytes > MCP_DISCOVERY_MAX_RESPONSE_BYTES) {
-      throw new McpToolDiscoveryError(
-        `MCP tools responses exceed ${String(MCP_DISCOVERY_MAX_RESPONSE_BYTES)} bytes`,
-        'invalid',
-        'tools',
-      );
-    }
-    const toolsData = toolsResult.message ?? {};
-    if (toolsData.error) {
-      const rpcError = toolsData.error;
-      throw new McpToolDiscoveryError(
-        isRecord(rpcError) && typeof rpcError.message === 'string'
-          ? rpcError.message
-          : JSON.stringify(rpcError),
-        'rpc',
-        'tools',
-      );
-    }
-    if (!('result' in toolsData)) {
-      throw new McpToolDiscoveryError(
-        'Invalid MCP tools response — missing result or error field',
-        'invalid',
-        'tools',
-      );
-    }
-    const result = toolsData.result;
-    if (!isRecord(result) || !Array.isArray(result.tools)) {
-      throw new McpToolDiscoveryError(
-        'Invalid MCP tools response — missing tools array',
-        'invalid',
-        'tools',
-      );
-    }
-    const tools = result.tools;
-    if (toolNames.length + tools.length > MCP_DISCOVERY_MAX_TOOLS) {
-      throw new McpToolDiscoveryError(
-        `MCP tools response exceeds ${String(MCP_DISCOVERY_MAX_TOOLS)} tools`,
-        'invalid',
-        'tools',
-      );
-    }
-    toolNames.push(
-      ...tools.map((tool) => {
-        const name =
-          isRecord(tool) && typeof tool.name === 'string' ? tool.name : '';
-        if (Buffer.byteLength(name) > MCP_DISCOVERY_MAX_TOOL_NAME_BYTES) {
-          throw new McpToolDiscoveryError(
-            `MCP tool name exceeds ${String(MCP_DISCOVERY_MAX_TOOL_NAME_BYTES)} bytes`,
-            'invalid',
-            'tools',
-          );
-        }
-        return name;
-      }),
-    );
-    const nextCursor = result.nextCursor;
-    if (nextCursor === undefined || nextCursor === null) {
-      cursor = undefined;
-    } else if (typeof nextCursor !== 'string' || nextCursor.length === 0) {
-      throw new McpToolDiscoveryError(
-        'Invalid MCP tools response — nextCursor must be a non-empty string',
-        'invalid',
-        'tools',
-      );
-    } else if (seenCursors.has(nextCursor)) {
-      throw new McpToolDiscoveryError(
-        'Invalid MCP tools response — repeated nextCursor',
-        'invalid',
-        'tools',
-      );
-    } else {
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
-    }
-  } while (cursor);
-  return toolNames.filter((name) => name.length > 0);
+    return {
+      message: toolsResult.message,
+      responseBytes: toolsResult.responseBytes,
+    };
+  }, MCP_DISCOVERY_MAX_RESPONSE_BYTES);
 }
 
 async function readServer(serverId: string): Promise<McpServerFile> {

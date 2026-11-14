@@ -497,6 +497,10 @@ export function preserveRendererOnlyTabFields(
     ...(previous.sendRefusal !== undefined
       ? { sendRefusal: previous.sendRefusal }
       : {}),
+    // Renderer-only: a cloud chat's Stop, for the turn it names (CAN-6592).
+    ...(previous.cloudStop !== undefined
+      ? { cloudStop: previous.cloudStop }
+      : {}),
     // Renderer-only optimistic send state; canonical runtime settles it.
     ...(previous.sendingLease !== undefined
       ? { sendingLease: previous.sendingLease }

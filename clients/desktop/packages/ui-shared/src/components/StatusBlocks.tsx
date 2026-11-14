@@ -11,6 +11,7 @@ import {
 import {
   presentAppError,
   type AppError,
+  type AppErrorCode,
   type AppErrorDisplayPolicy,
 } from '@canopy/protocol/app-errors';
 
@@ -57,6 +58,10 @@ export interface ErrorBannerProps {
    * An `AppError` shows its catalog copy and the actions its recovery allows.
    */
   error: string | AppError | null | undefined;
+  /** Stable operation name supplied by the caller for error telemetry. */
+  errorSource: string;
+  /** Catalog code for a classified string failure. Structured errors keep theirs. */
+  displayErrorCode?: AppErrorCode;
   /**
    * The raw failure reason (a server's text). Never rendered: it adds a
    * `Copy details` action that copies it for support. Settings pass the
@@ -138,6 +143,7 @@ export function ErrorBanner({
 function StringErrorBanner({
   className,
   error,
+  errorSource,
   blockMessageFromReplay = false,
   onRetry,
   retryLabel = TRY_AGAIN_LABEL,
@@ -149,6 +155,7 @@ function StringErrorBanner({
   dismissLabel,
   dismissTestId,
   errorRecordingDisabled = false,
+  displayErrorCode,
 }: ErrorBannerProps & { error: string }): JSX.Element {
   const retry = onRetry ? (
     <NoticeButton
@@ -202,6 +209,8 @@ function StringErrorBanner({
         data-testid={testId}
         {...dismiss}
         edge="destructive"
+        errorSource={errorSource}
+        {...(displayErrorCode === undefined ? {} : { displayErrorCode })}
         errorRecordingChokePoint="banner"
         errorRecordingDisabled={errorRecordingDisabled}
       >
@@ -219,6 +228,8 @@ function StringErrorBanner({
       data-testid={testId}
       {...dismiss}
       edge="destructive"
+      errorSource={errorSource}
+      {...(displayErrorCode === undefined ? {} : { displayErrorCode })}
       errorRecordingChokePoint="banner"
       errorRecordingDisabled={errorRecordingDisabled}
     >
@@ -341,6 +352,7 @@ function AppErrorRecoveryAction({
 function AppErrorBanner({
   className,
   error,
+  errorSource,
   blockMessageFromReplay = false,
   onRetry,
   retryLabel = TRY_AGAIN_LABEL,
@@ -362,7 +374,7 @@ function AppErrorBanner({
     useAppErrorRecording(error, {
       enabled: !errorRecordingDisabled,
       chokePoint: 'banner',
-      identifier: testId,
+      identifier: errorSource,
     }) ?? error.referenceId;
   // Stable while `error` and its reference are: the host's report control keys
   // on the reference, which switches only when a banner for this error learns

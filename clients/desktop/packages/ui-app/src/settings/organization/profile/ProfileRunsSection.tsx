@@ -107,6 +107,7 @@ export function ProfileRunsSection({
       </div>
 
       <ErrorBanner
+        errorSource="profile-runs-section"
         error={error?.copy}
         details={error?.details}
         onRetry={retry}

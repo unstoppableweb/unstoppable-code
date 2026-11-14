@@ -2,6 +2,22 @@ import { isUuid } from '../uuid';
 
 /** Public web destinations. Activated by share helpers after route integration. */
 export const MARKETPLACE_PUBLIC_PATH = '/portal/plugins/marketplace';
+
+/**
+ * The web page for one of the account's MCP servers, where it connects and
+ * signs in. Account keys belong to the account panel, never the
+ * paired-desktop route.
+ */
+export function accountMcpSettingsPath(
+  serverKey: string,
+  configId: string,
+): string {
+  const params = new URLSearchParams({
+    mcpServer: serverKey,
+    mcpConfig: configId,
+  });
+  return `${MARKETPLACE_PUBLIC_PATH}?${params.toString()}`;
+}
 export const MARKETPLACE_PUBLIC_SHARE_PREFIXES = {
   skill: '/portal/plugins/skills/shared',
   plugin: '/portal/plugins/plugins/shared',

@@ -342,6 +342,7 @@ export function BillingSection({
           for covered users, whose personal-summary failure is deliberately
           swallowed. */}
         <ErrorBanner
+          errorSource="billing-section"
           className=""
           error={
             coverageView || status !== 'error'
@@ -951,7 +952,10 @@ function BillingTransactions({
             formatDate={formatDate}
           />
         </div>
-        <ErrorBanner error={loadMoreError} />
+        <ErrorBanner
+          errorSource="billing-transactions-load-more"
+          error={loadMoreError}
+        />
       </Stack>
       {hasMore && (
         <Button
@@ -1115,6 +1119,7 @@ function AiCreditsCard({
     // balance is unavailable.
     return shell(
       <ErrorBanner
+        errorSource="ai-credits-card"
         className=""
         error={error?.copy ?? SETTINGS_LOAD_ERROR_COPY}
         details={error?.details}

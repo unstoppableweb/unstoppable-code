@@ -190,6 +190,8 @@ function modelSources(
       return [{ entries: registry.ollama, source: 'ollama' }];
     case 'cursor':
       return [{ entries: registry.cursor ?? [], source: 'native' }];
+    case 'antigravity':
+      return [{ entries: registry.antigravity ?? [], source: 'native' }];
     case 'copilot':
       return [{ entries: registry.copilot ?? [], source: 'native' }];
     case 'opencode':

@@ -55,6 +55,10 @@ export type InviteToOrganizationTarget =
     };
 
 export interface InviteToOrganizationDialogProps {
+  /** Offer another setup from the Settings/sidebar checklist. */
+  readonly readRestartPersonalOrganizationId?: (
+    signal: AbortSignal,
+  ) => Promise<string | null>;
   readonly contextOrganizationId?: string;
   readonly target: InviteToOrganizationTarget;
   /** The host's transport for these operations. */
@@ -87,10 +91,12 @@ export interface InviteToOrganizationDialogProps {
 }
 
 const P = 'invite-to-organization';
+const RESTART_READ_TIMEOUT_MS = 10_000;
 
 function useUpgradeStore(
   props: InviteToOrganizationDialogProps,
-): PersonalOrganizationUpgradeState {
+  freshSetup: boolean,
+): ReturnType<typeof createPersonalOrganizationUpgradeStore> {
   const lifetime = useRef({ active: true });
   const personalOrganizationId =
     props.target.kind === 'personal'
@@ -121,13 +127,12 @@ function useUpgradeStore(
   const isPersonal = props.target.kind === 'personal';
   useEffect(() => {
     lifetime.current.active = true;
-    void store
-      .getState()
-      .restore()
-      .then(
-        (): Promise<void> =>
-          isPersonal ? store.getState().loadProjects() : Promise.resolve(),
-      );
+    const ready = freshSetup ? Promise.resolve() : store.getState().restore();
+    const reply = store.getState().captureChecklistReply();
+    void ready.then(() => {
+      if (isPersonal && reply.isCurrent())
+        return store.getState().loadProjects();
+    });
     return (): void => {
       lifetime.current.active = false;
       // React replays mount effects in development. Suspend mutations
@@ -136,8 +141,8 @@ function useUpgradeStore(
         if (!lifetime.current.active) store.getState().dispose();
       });
     };
-  }, [isPersonal, store]);
-  return store();
+  }, [freshSetup, isPersonal, store]);
+  return store;
 }
 
 function projectNames(
@@ -516,11 +521,15 @@ function UpgradeChecklist({
     steps.push(projectsStep(state, team, projectCount));
   if (canInvite && email !== '') steps.push(inviteStep(state, email));
   steps.push(...additionalInviteSteps(state));
+  // Retired checklists show only row summaries. Row details own the retry controls.
+  const visibleSteps = state.retired
+    ? steps.map((step) => ({ ...step, detail: null, substeps: [] }))
+    : steps;
 
   return (
     <Stack gap="block" data-testid={`${P}-outcome`}>
-      <ProgressChecklist steps={steps} size="comfortable" />
-      {created && canInvite && (
+      <ProgressChecklist steps={visibleSteps} size="comfortable" />
+      {created && canInvite && !state.retired && (
         <InviteMoreField state={state} label={COPY.inviteMoreLabel} />
       )}
     </Stack>
@@ -537,6 +546,47 @@ function UpgradeChecklist({
 export function InviteToOrganizationDialog(
   props: InviteToOrganizationDialogProps,
 ): JSX.Element {
+  const [nextPersonalId, setNextPersonalId] = useState<string | null>(null);
+  return (
+    <InviteToOrganizationRun
+      {...props}
+      key={nextPersonalId}
+      {...(nextPersonalId === null
+        ? {}
+        : {
+            target: {
+              kind: 'personal',
+              personalOrganizationId: nextPersonalId,
+            },
+            inviteRequired: false,
+          })}
+      freshSetup={nextPersonalId !== null}
+      openNextSetup={setNextPersonalId}
+    />
+  );
+}
+
+function canCreateAnotherTeam(
+  state: PersonalOrganizationUpgradeState,
+): boolean {
+  const promotion = state.promotion;
+  return (
+    state.phase === 'finished' &&
+    promotion !== null &&
+    promotion.contextSwitched &&
+    promotion.warnings.length === 0 &&
+    state.additionalInvites.every(
+      ({ status }) => status === 'done' || status === 'failed',
+    )
+  );
+}
+
+function InviteToOrganizationRun(
+  props: InviteToOrganizationDialogProps & {
+    readonly freshSetup: boolean;
+    readonly openNextSetup: (personalOrganizationId: string) => void;
+  },
+): JSX.Element {
   const {
     target,
     port,
@@ -545,7 +595,64 @@ export function InviteToOrganizationDialog(
     onManage,
     onClose,
   } = props;
-  const state = useUpgradeStore(props);
+  const store = useUpgradeStore(props, props.freshSetup);
+  const state = store();
+  const [restarting, setRestarting] = useState(false);
+  const [restartUnavailable, setRestartUnavailable] = useState(false);
+  const restartRequest = useRef<AbortController | null>(null);
+  useEffect(() => (): void => restartRequest.current?.abort(), []);
+  const createAnotherTeam = async (): Promise<void> => {
+    if (
+      restartRequest.current ||
+      !props.readRestartPersonalOrganizationId ||
+      port.isCurrent?.() === false ||
+      !canCreateAnotherTeam(store.getState())
+    )
+      return;
+    const request = new AbortController();
+    restartRequest.current = request;
+    setRestarting(true);
+    setRestartUnavailable(false);
+    store.getState().acknowledge();
+    // The fresh account read belongs to the generation after retirement.
+    const reply = store.getState().captureChecklistReply();
+    const deadline = setTimeout(() => {
+      request.abort();
+      restartRequest.current = null;
+      setRestarting(false);
+      reply.apply(() => setRestartUnavailable(true));
+    }, RESTART_READ_TIMEOUT_MS);
+    const clearDeadline = (): void => clearTimeout(deadline);
+    request.signal.addEventListener('abort', clearDeadline, { once: true });
+    try {
+      const personalId = await props.readRestartPersonalOrganizationId(
+        request.signal,
+      );
+      if (request.signal.aborted) return;
+      reply.apply(() => {
+        const current = store.getState();
+        if (
+          !personalId ||
+          personalId === current.promotion?.promotion.organizationId ||
+          !canCreateAnotherTeam(current)
+        ) {
+          setRestartUnavailable(true);
+          return;
+        }
+        props.openNextSetup(personalId);
+      });
+    } catch {
+      if (!request.signal.aborted)
+        reply.apply(() => setRestartUnavailable(true));
+    } finally {
+      clearDeadline();
+      request.signal.removeEventListener('abort', clearDeadline);
+      if (restartRequest.current === request) {
+        restartRequest.current = null;
+        if (!request.signal.aborted) setRestarting(false);
+      }
+    }
+  };
   const [criticalWaitExpired, setCriticalWaitExpired] = useState(false);
   const criticalSubmission =
     state.phase === 'promoting' || state.invite.status === 'sending';
@@ -573,9 +680,13 @@ export function InviteToOrganizationDialog(
     });
   }, [onPromoted, promotion]);
 
+  const close = (): void => {
+    restartRequest.current?.abort();
+    onClose();
+  };
   const dismiss = (): void => {
     state.acknowledge();
-    onClose();
+    close();
   };
 
   const frame: FrameContext = {
@@ -583,13 +694,16 @@ export function InviteToOrganizationDialog(
     onDismiss: dismiss,
     criticalSubmission,
     locked: criticalSubmission && !criticalWaitExpired,
-    notes:
-      criticalSubmission && criticalWaitExpired ? (
-        <Notice intent="attention" role="status">
-          This is taking longer than expected. You can close this dialog and
-          check again later.
-        </Notice>
-      ) : undefined,
+    notes: restartUnavailable ? (
+      <Notice intent="attention" role="status">
+        {COPY.restartUnavailable}
+      </Notice>
+    ) : criticalSubmission && criticalWaitExpired ? (
+      <Notice intent="attention" role="status">
+        This is taking longer than expected. You can close this dialog and check
+        again later.
+      </Notice>
+    ) : undefined,
   };
 
   if (target.kind === 'team')
@@ -600,7 +714,7 @@ export function InviteToOrganizationDialog(
         port={port}
         organizationId={target.organizationId}
         onManage={onManage}
-        onClose={onClose}
+        onClose={close}
       />
     );
   if (promotion !== null || state.phase === 'promoting')
@@ -611,8 +725,14 @@ export function InviteToOrganizationDialog(
         port={port}
         inviteRequired={inviteRequired}
         onPromoted={onPromoted}
+        onCreateAnother={
+          props.readRestartPersonalOrganizationId && state.phase === 'finished'
+            ? () => void createAnotherTeam()
+            : undefined
+        }
+        restarting={restarting}
         onManage={onManage}
-        onClose={onClose}
+        onClose={close}
       />
     );
   return (
@@ -786,6 +906,8 @@ function PersonalChecklistFrame({
   port,
   inviteRequired,
   onPromoted,
+  onCreateAnother,
+  restarting,
   onManage,
   onClose,
 }: {
@@ -794,6 +916,8 @@ function PersonalChecklistFrame({
   readonly port: PersonalOrganizationUpgradePort;
   readonly inviteRequired: boolean;
   readonly onPromoted: InviteToOrganizationDialogProps['onPromoted'];
+  readonly onCreateAnother: (() => void) | undefined;
+  readonly restarting: boolean;
   readonly onManage: InviteToOrganizationDialogProps['onManage'];
   readonly onClose: () => void;
 }): JSX.Element {
@@ -810,7 +934,7 @@ function PersonalChecklistFrame({
       : 0);
   const organizationId = promotion?.promotion.organizationId ?? null;
   const manage =
-    onManage !== undefined && organizationId !== null
+    !state.retired && onManage !== undefined && organizationId !== null
       ? (): void => {
           state.acknowledge();
           onManage(organizationId);
@@ -839,11 +963,28 @@ function PersonalChecklistFrame({
           contextNote={contextNote}
           onCheckContext={() => {
             if (promotion === null) return;
-            void state.refreshPromotion().then(() => onPromoted?.(promotion));
+            const reply = state.captureChecklistReply();
+            void state
+              .refreshPromotion()
+              .then(() => reply.apply(() => onPromoted?.(promotion)))
+              .catch(() => {
+                // The host refresh is best-effort.
+              });
           }}
         />
       }
-      showSubmit={onManage !== undefined}
+      {...(onCreateAnother
+        ? {
+            secondaryAction: {
+              label: COPY.createAnotherTeam,
+              onClick: onCreateAnother,
+              disabled:
+                restarting || frame.locked || !canCreateAnotherTeam(state),
+              testId: `${P}-create-another`,
+            },
+          }
+        : {})}
+      showSubmit={onManage !== undefined && !state.retired}
       submitLabel={COPY.manage}
       sharingLabel={COPY.manage}
       submitTestId={`${P}-manage`}

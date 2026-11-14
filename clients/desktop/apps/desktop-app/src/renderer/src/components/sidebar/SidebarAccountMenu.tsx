@@ -14,12 +14,16 @@ import { brandText } from '@/lib/brand';
 import { GUEST_SIGN_IN_CTA_LABEL } from '@/lib/guest-cta-copy';
 import { openAuthenticatedCloudPageReported } from '@/lib/openAuthenticatedCloudPage';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
-import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { NavigationPage } from '@/stores/navigationStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
+import {
+  remoteControlStatusSentence,
+  useLiveRemoteControllers,
+  useRemoteControlStatusUi,
+} from '../remote-access/remote-control-status';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   computeAiCreditsAlertLevel,
@@ -32,12 +36,11 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   SidebarAccountFooter,
   SidebarAccountMenuHeader,
-  SidebarRemoteControlSubtitle,
-  sidebarRemoteControlSubtitleLabel,
   type SidebarAccountAttention,
   type SidebarAccountIdentityTone,
 } from '@canopy/ui-app';
 import { AccountMenuExternalAgentsItem } from '@canopy/ui-app/external-agents/AccountMenuExternalAgentsItem';
+import { externalAgentsPathFromDesktop } from '@canopy/ui-app/external-agents/paths';
 import {
   ActionMenuRowStyle,
   DropdownMenuDivider,
@@ -70,7 +73,6 @@ import {
 } from 'react';
 import { FeedbackModal } from '../feedback/FeedbackModal';
 import { DeleteConfirmModal } from '../shared/DeleteConfirmModal';
-import { resolveCanopyPortalAccountStatus } from './canopy-portal-account-status';
 import { CloneProgressPrompt } from './CloneProgressPrompt';
 import { CloudAccountRecoveryPrompt } from './CloudAccountRecoveryPrompt';
 import { ResumeQueuePrompt } from './ResumeQueuePrompt';
@@ -92,11 +94,6 @@ export interface SidebarAccountMenuProps {
   onNavigate: (page: NavigationPage) => void;
   onSettingsClick: () => void;
   settingsOpen: boolean;
-  /**
-   * The `canopy-portal-enabled` flag. Gates the row's Portal status line; the
-   * Remote Control menu item follows device Remote Control instead.
-   */
-  canopyPortalEnabled: boolean;
   /** Opens the Remote Control dialog (the host's `canopy_portal.open` dispatch). */
   onCanopyPortalClick: () => void;
   /**
@@ -113,16 +110,15 @@ export interface SidebarAccountMenuProps {
  * signed-in person whatever context is selected, with their plan or AI Credits
  * wallet, Usage, Remote Control, the Computers row, and Sign out.
  * Organization actions live on the top context switcher
- * (`DesktopSidebarContextSwitcher`). The row's second line is the Remote
- * Control status while it is on (CAN-3659); otherwise the row shows only the
- * name, and the email is in the menu header.
+ * (`DesktopSidebarContextSwitcher`). The row shows only the name; the email
+ * is in the menu header. A device controlling this computer is shown by the
+ * status bar's Remote Control pill, not here, so the fact has one home.
  */
 export function SidebarAccountMenu({
   activePage,
   onNavigate,
   onSettingsClick,
   settingsOpen,
-  canopyPortalEnabled,
   onCanopyPortalClick,
   footerBanner,
 }: SidebarAccountMenuProps): JSX.Element {
@@ -232,39 +228,19 @@ export function SidebarAccountMenu({
               ? 'usage requires attention'
               : 'usage is nearing its limit',
         };
-  // The row's second line (CAN-3659). The status follows the worker state for
-  // any signed-in account, guests included, since it is the truth about the
-  // connection. Signed out, the trigger is named "Sign in", so a status there
-  // would never be announced.
-  // App.tsx hydrates the store; this only reads it. Resolving inside the
-  // selector re-renders on a status change, not on every heartbeat.
-  const portalAccountStatus = useCanopyPortalStore((state) =>
-    resolveCanopyPortalAccountStatus(state.state, canopyPortalEnabled),
-  );
-  // A direct controller (browser, phone, computer, or an agents session) that
-  // is connected to this computer right now reads as active too (CAN-5985).
-  // Reconnecting and disconnected stay Portal's: direct devices come and go
-  // on their own, so a dropped one is not a state to report here.
-  const directControlActive = useRemoteControlStore(
-    (store) =>
-      store.context.mode === 'local' &&
-      store.state.controllers.some(
-        (controller) =>
-          controller.connected || controller.hostedSessions.length > 0,
-      ),
-  );
-  const remoteControlStatus =
-    accountInfo != null
-      ? directControlActive
-        ? 'active'
-        : portalAccountStatus
-      : null;
   // The Remote Control item follows device Remote Control, not Portal
   // (CAN-5985). Signed-out and guest accounts see it too: the dialog shows
   // its sign-in, guest and upgrade states.
   const remoteControlAvailable = useRemoteControlStore(
     (store) => store.state.available,
   );
+  // While another device controls this computer, the Remote Control item
+  // carries a connected dot and opens the connected-devices dialog (with
+  // Disconnect) instead of the Remote Control dialog. The connect toast
+  // announced the session; this is where it stays findable.
+  const liveRemoteControllers = useLiveRemoteControllers();
+  const remoteControlLive = liveRemoteControllers.length > 0;
+  const openRemoteControlSessions = useRemoteControlStatusUi((s) => s.setOpen);
   const trialDaysLeft = subscription.status?.trialEndsAt
     ? Math.max(
         0,
@@ -406,16 +382,6 @@ export function SidebarAccountMenu({
           signingIn,
         }}
         identityTone={accountIdentityTone}
-        subtitle={
-          remoteControlStatus ? (
-            <SidebarRemoteControlSubtitle status={remoteControlStatus} />
-          ) : undefined
-        }
-        subtitleLabel={
-          remoteControlStatus
-            ? sidebarRemoteControlSubtitleLabel(remoteControlStatus)
-            : undefined
-        }
         attention={accountAttention}
         rowAttributes={{ 'data-onboarding-anchor': 'sidebar-account-row' }}
         menuWidth="compact"
@@ -584,22 +550,51 @@ export function SidebarAccountMenu({
                   </span>
                 )}
               </DropdownMenuItem>
-              {remoteControlAvailable && (
+              {(remoteControlAvailable || remoteControlLive) && (
                 <DropdownMenuItem
-                  onClick={() => handleItemClick(onCanopyPortalClick)}
+                  onClick={() =>
+                    handleItemClick(
+                      remoteControlLive
+                        ? () => openRemoteControlSessions(true)
+                        : onCanopyPortalClick,
+                    )
+                  }
+                  // Starts with the visible label; the state follows it.
+                  aria-label={
+                    remoteControlLive
+                      ? `${REMOTE_CONTROL_LABEL}: ${remoteControlStatusSentence(liveRemoteControllers)}`
+                      : undefined
+                  }
                   data-testid="sidebar-account-menu-item-remote-control"
+                  data-remote-control-live={remoteControlLive || undefined}
                 >
                   <DropdownMenuItemIcon>
                     <PortalIcon size="xl" aria-hidden="true" />
                   </DropdownMenuItemIcon>
                   {REMOTE_CONTROL_LABEL}
+                  {remoteControlLive && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                    >
+                      {/* A live session, like the device list's Connected badge. */}
+                      <Dot
+                        tone="success"
+                        data-testid="sidebar-account-remote-control-live-dot"
+                      />
+                    </span>
+                  )}
                 </DropdownMenuItem>
               )}
               {canSignOut && externalAgentsMenuEnabled && (
                 <AccountMenuExternalAgentsItem
                   onOpenPath={(path) =>
                     handleItemClick(() => {
-                      void openAuthenticatedCloudPageReported(path);
+                      // The marker hides the web page's download link for
+                      // someone who already has the app.
+                      void openAuthenticatedCloudPageReported(
+                        externalAgentsPathFromDesktop(path),
+                      );
                     })
                   }
                 />

@@ -288,6 +288,7 @@ function ReviewContent({
         />
         {phase.kind === 'error' && (
           <ErrorBanner
+            errorSource="data-sharing-opt-in-sheet-host"
             className=""
             error={dataSharingOptInErrorText(phase.error)}
             testId={`${SHEET_ID}-error`}

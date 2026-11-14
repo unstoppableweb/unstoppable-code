@@ -5,3 +5,4 @@ export * from './in-memory';
 export type * from './types';
 export * from './conformance/index';
 export * from './conformance/channels';
+export * from './w5-recovery-exit';

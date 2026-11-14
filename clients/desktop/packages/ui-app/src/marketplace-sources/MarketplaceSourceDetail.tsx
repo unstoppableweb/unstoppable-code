@@ -307,6 +307,7 @@ function MarketplaceSourceDetailBody({
         )}
         {state.pluginErrors[errorKey] && (
           <Notice
+            errorSource="marketplace-source-detail"
             intent="destructive"
             actions={
               <NoticeButton onClick={() => void state.reload()}>
@@ -387,6 +388,7 @@ function MarketplaceSourceDetailBody({
         <MarketplaceSourceInvalidBanner source={source} state={state} />
         {state.sourceErrors[source.id] ? (
           <ErrorBanner
+            errorSource="marketplace-source-detail-body"
             className=""
             error={state.sourceErrors[source.id]}
             blockMessageFromReplay

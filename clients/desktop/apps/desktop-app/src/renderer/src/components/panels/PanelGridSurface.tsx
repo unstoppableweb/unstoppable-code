@@ -6,8 +6,14 @@ import { ExportSessionConfirmationModal } from '@/components/shared/ExportSessio
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
 import {
   CenteredLoadingSpinner,
+  ConfirmDialog,
   DelayedLoadingPlaceholder,
 } from '@canopy/ui-shared/components';
+import {
+  archiveCloudTask,
+  CLOUD_TASK_ARCHIVE_FAILED,
+} from '@/cloud-chats/archive-cloud-task';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
 import { useExportSessionAction } from '@/hooks/useExportSessionAction';
 import { useShareRunAction } from '@/hooks/useShareRunAction';
@@ -67,6 +73,7 @@ import { initTerminalPanelSync } from '@/lib/panels/terminal-panel-sync';
 import { panelKindsUnavailableFor } from '@/lib/panels/scope-panel-kinds';
 import { webCoreLocalId } from '@/lib/chat-authority';
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 import { installPanelTestApi } from '@/lib/panels/test-api';
 import { pt } from '@/lib/platform-text';
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
@@ -154,6 +161,14 @@ export interface PanelGridSurfaceProps {
    */
   onNewChatTab?: (groupId: string) => void;
 }
+
+/**
+ * New tabs the Side Panel added on its own while it was empty, by panel id.
+ * They hold its starting point only until something real opens there: a
+ * link from the chat, a file, an activity section. A New tab the user opened
+ * with + is not listed and stays.
+ */
+const seededSidePanelNewTabIds = new Set<string>();
 
 function canDesktopPanelPopOut(kind: string): boolean {
   return isPanelKind(kind) && getPanelDefinition(kind).canPopOut;
@@ -261,8 +276,11 @@ export function PanelGridSurface({
   );
   const [startPageRoots, setStartPageRoots] = useState<FileTreeRoot[]>([]);
   const scopeCapabilities = useScopeCapabilities({ projectId });
-  // Start pages are files and URLs in a local project's own folder.
-  const scopeHasLocalFiles = scopeCapabilities.fileSystemAccess !== 'none';
+  // Start pages are files and URLs in a local project's own folder; a cloud
+  // chat's files are in its sandbox.
+  const scopeHasLocalFiles =
+    scopeCapabilities.fileSystemAccess !== 'none' &&
+    workspaceFileSourceFor(worktreeId).onThisComputer;
   // A cloud task's first chat is the task: closing it would archive the
   // whole task, so a scope that can't close it keeps its tab.
   const rootChatTabKept = scopeCapabilities.chatRootTabLifecycle !== true;
@@ -281,6 +299,29 @@ export function PanelGridSurface({
             (canClose?.(tab) ?? true)
         : canClose,
     [rootChatId, rootChatTabKept, worktreeId],
+  );
+  // That kept tab archives the whole task instead, after a confirmation, as
+  // the task's sidebar row does (CAN-6511).
+  const [archiveTaskTitle, setArchiveTaskTitle] = useState<string | null>(null);
+  const [archiveTaskStatus, setArchiveTaskStatus] = useState<
+    'idle' | 'busy' | 'failed'
+  >('idle');
+  const rootChatArchiveAction = useMemo(
+    () =>
+      rootChatTabKept && rootChatId !== null && !readOnly
+        ? (
+            tab: PanelTabModel,
+          ): { label: string; onSelect: () => void } | undefined =>
+            tab.kind === 'chat' &&
+            (tab.instance?.chatTabId === worktreeId ||
+              tab.instance?.chatTabId === rootChatId)
+              ? {
+                  label: 'Archive task',
+                  onSelect: (): void => setArchiveTaskTitle(tab.title ?? ''),
+                }
+              : undefined
+        : undefined,
+    [readOnly, rootChatId, rootChatTabKept, worktreeId],
   );
   useEffect(() => {
     if (!startPageEnabled || readOnly || !scopeHasLocalFiles) return;
@@ -397,12 +438,18 @@ export function PanelGridSurface({
       previous !== null &&
       previous.worktreeKey === worktreeKey &&
       previous.chatTabId !== sidePanelChatTabId;
+    const seedNewTab = (): void => {
+      const panelId = usePanelLayoutStore
+        .getState()
+        .addTab(worktreeKey, DEFAULT_EXTRAS_GROUP_ID, 'new-tab', {
+          instance: { newTabId: crypto.randomUUID() },
+          title: 'New tab',
+          activate: false,
+        });
+      if (panelId !== null) seededSidePanelNewTabIds.add(panelId);
+    };
     if (switchedChat) {
-      store.addTab(worktreeKey, DEFAULT_EXTRAS_GROUP_ID, 'new-tab', {
-        instance: { newTabId: crypto.randomUUID() },
-        title: 'New tab',
-        activate: false,
-      });
+      seedNewTab();
       return;
     }
     // A maximized group refuses to collapse; restore it first, as the Side
@@ -418,14 +465,30 @@ export function PanelGridSurface({
     ) {
       store.collapseGroup(worktreeKey, DEFAULT_EXTRAS_GROUP_ID);
     }
-    usePanelLayoutStore
-      .getState()
-      .addTab(worktreeKey, DEFAULT_EXTRAS_GROUP_ID, 'new-tab', {
-        instance: { newTabId: crypto.randomUUID() },
-        title: 'New tab',
-        activate: false,
-      });
+    seedNewTab();
   }, [sidePanelChatTabId, sidePanelEmpty, worktreeKey]);
+  // Something real opened in the Side Panel (a link from the chat, a file):
+  // the New tabs it added on its own close, so it shows only what was opened.
+  const seededNewTabsToClose = usePanelLayoutStore(
+    useShallow((state): string[] => {
+      const tabs = state.layouts[worktreeKey]?.viewModel.groups.find(
+        (candidate) => candidate.groupId === DEFAULT_EXTRAS_GROUP_ID,
+      )?.tabs;
+      if (!tabs?.some((tab) => tab.kind !== 'new-tab')) return [];
+      return tabs.flatMap((tab) =>
+        tab.kind === 'new-tab' && seededSidePanelNewTabIds.has(tab.panelId)
+          ? [tab.panelId]
+          : [],
+      );
+    }),
+  );
+  useEffect(() => {
+    const store = usePanelLayoutStore.getState();
+    for (const panelId of seededNewTabsToClose) {
+      seededSidePanelNewTabIds.delete(panelId);
+      store.closeTab(worktreeKey, DEFAULT_EXTRAS_GROUP_ID, panelId);
+    }
+  }, [seededNewTabsToClose, worktreeKey]);
   useEffect(() => {
     ensureEarlyAccessPanelRulesSync();
     void useWorkspaceLayoutModeStore.getState().load(worktreeKey);
@@ -757,6 +820,7 @@ export function PanelGridSurface({
           ? handleExportSession
           : undefined,
       onRenameChat: readOnly ? undefined : handleRenameChat,
+      getTabArchiveAction: rootChatArchiveAction,
       // Not gated on read-only: viewers may mark chats read and unread.
       getChatReadState: chatReadState?.getChatReadState,
       onSetChatUnread: chatReadState?.onSetChatUnread,
@@ -832,6 +896,7 @@ export function PanelGridSurface({
       resolvedStartPage,
       renderTabStripAccessory,
       resolveFileTabPath,
+      rootChatArchiveAction,
       startPageEnabled,
       startPageForTab,
       worktreeId,
@@ -889,6 +954,45 @@ export function PanelGridSurface({
         />
       )}
       {chatTabRename.dialog}
+      {archiveTaskTitle !== null && (
+        <ConfirmDialog
+          title={
+            archiveTaskTitle.trim() === '' ? (
+              'Archive task?'
+            ) : (
+              <>
+                Archive “
+                <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                  {archiveTaskTitle.trim()}
+                </span>
+                ”?
+              </>
+            )
+          }
+          message="This archives the task and all of its chats. Archived chats are kept until you delete them."
+          confirmLabel="Archive task"
+          dataTestId="cloud-task-archive-confirm"
+          confirmTestId="cloud-task-archive-confirm-button"
+          busy={archiveTaskStatus === 'busy'}
+          errorMessage={
+            archiveTaskStatus === 'failed' ? CLOUD_TASK_ARCHIVE_FAILED : null
+          }
+          onCancel={(): void => {
+            setArchiveTaskStatus('idle');
+            setArchiveTaskTitle(null);
+          }}
+          onConfirm={(): void => {
+            setArchiveTaskStatus('busy');
+            archiveCloudTask(projectId, worktreeId).then(
+              () => {
+                setArchiveTaskStatus('idle');
+                setArchiveTaskTitle(null);
+              },
+              () => setArchiveTaskStatus('failed'),
+            );
+          }}
+        />
+      )}
     </>
   );
 }

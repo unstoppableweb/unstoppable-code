@@ -441,11 +441,13 @@ function ModelPolicyCard({
       >
         <Stack gap="item" className="empty:hidden">
           <ErrorBanner
+            errorSource="team-model-policy-request"
             className=""
             error={error?.copy}
             details={error?.details}
           />
           <ErrorBanner
+            errorSource="model-policy-card-load"
             className=""
             error={loadError?.copy}
             details={loadError?.details}
@@ -454,6 +456,7 @@ function ModelPolicyCard({
           {/* Its own banner: a save clears `error` and must not take an
               unresolved plan-read failure with it. */}
           <ErrorBanner
+            errorSource="team-model-policy-entitlement"
             className=""
             // One load banner: both share the same copy and Retry.
             error={loadError === null ? entitlementError?.copy : null}
@@ -769,36 +772,16 @@ function ModelPolicyRow({
   onChange,
 }: ModelPolicyRowProps): JSX.Element {
   const toggle = (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={allowed}
-      aria-disabled={locked ? true : undefined}
-      aria-label={`Allow ${model.label}${
+    <ToggleSwitch
+      checked={allowed}
+      unavailable={locked}
+      label={`Allow ${model.label}${
         pendingReview ? ' (new; blocked until reviewed)' : ''
       }${locked ? ' (locked by your plan)' : ''}`}
       disabled={locked ? undefined : busy}
-      data-testid={`model-policy-toggle-${model.id}`}
-      /* Inert by having no handler, not by a guard inside one. */
-      onClick={locked ? undefined : (): void => onChange(!allowed)}
-      className={`relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full transition-colors ${
-        locked
-          ? `cursor-not-allowed opacity-60 ${
-              allowed ? 'bg-accent' : 'bg-fg-quaternary'
-            }`
-          : `disabled:cursor-not-allowed disabled:opacity-60 ${
-              allowed
-                ? 'bg-accent hover:bg-accent/90'
-                : 'bg-fg-quaternary hover:bg-fg-tertiary'
-            }`
-      }`}
-    >
-      <span
-        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-fg-emphasis transition-transform ${
-          allowed ? 'translate-x-4' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
+      dataTestId={`model-policy-toggle-${model.id}`}
+      onChange={onChange}
+    />
   );
 
   return (

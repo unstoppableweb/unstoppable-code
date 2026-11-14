@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type JSX,
 } from 'react';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
@@ -58,6 +59,11 @@ import {
   selectAiCreditsArrivalForChat,
   useAiCreditsArrivalStore,
 } from '@/lib/aiCreditsArrivalConfirmation';
+import {
+  consumeContinueOnAiCredits,
+  peekContinueOnAiCredits,
+  subscribeContinueOnAiCredits,
+} from '@/lib/usage-limit/continueOnAiCreditsRequest';
 
 /**
  * Every recovery action is a house `Button`: `secondary` for the alternative
@@ -435,6 +441,99 @@ export function AiCreditsUsageLimitBanner({
     // The "Using AI Credits" card offers Continue for that (CAN-4756).
     if (autoRouting) perChatActionRef.current?.();
   }, [autoRouting, confirmOnly, arrivalId]);
+
+  // The resume dialog's "On AI Credits now" (CAN-5013): the dialog opened
+  // this chat and left a request; this banner runs its own credits action and
+  // the resend, exactly as a click here would. The first visible banner for
+  // the chat claims the request, so a slow coverage read can neither expire it
+  // nor let another banner take it. A chat that turns out unable to spend
+  // drops it and keeps showing its ordinary offer.
+  const continueRequested = useSyncExternalStore(
+    subscribeContinueOnAiCredits,
+    () => (target ? peekContinueOnAiCredits(target.chatId) : false),
+    () => false,
+  );
+  const intentBlocked =
+    showPricing || showContactAdmin || pendingHandoff !== null;
+  const canConsumeIntent =
+    bannerVisible &&
+    coverageSettled &&
+    creditsRoutable &&
+    canSwitchAndResume &&
+    perChatAction !== undefined &&
+    !intentBlocked;
+  // An uncatalogued model is still loading, not a model that can't run on
+  // credits.
+  const intentSettledUnusable =
+    bannerVisible &&
+    coverageSettled &&
+    modelRoutability !== 'unknown' &&
+    !canConsumeIntent;
+  const targetRef = useRef(target);
+  targetRef.current = target;
+  const continueAfterUsingCreditsRef = useRef(onContinueAfterUsingCredits);
+  continueAfterUsingCreditsRef.current = onContinueAfterUsingCredits;
+  // The chat whose request this banner claimed; null when none is held.
+  const claimedChatRef = useRef<string | null>(null);
+  const targetChatId = target?.chatId ?? null;
+  // The scope the coverage values describe. In the commit where it changes,
+  // they are still the previous owner's until the reset effect re-renders.
+  const coverageScopeRef = useRef(creditsScope);
+  useEffect(() => {
+    const scopeChanged = coverageScopeRef.current !== creditsScope;
+    coverageScopeRef.current = creditsScope;
+    if (
+      targetChatId !== null &&
+      continueRequested &&
+      bannerVisible &&
+      claimedChatRef.current === null &&
+      consumeContinueOnAiCredits(targetChatId)
+    ) {
+      claimedChatRef.current = targetChatId;
+    }
+    const claimed = claimedChatRef.current;
+    if (claimed === null) return;
+    // Each branch drops the claim before any callback, so a throwing
+    // callback cannot run it twice.
+    if (claimed !== targetChatId) {
+      claimedChatRef.current = null;
+      return;
+    }
+    // Arriving credits route first and never resend; once billing follows,
+    // the branch below sends the turn exactly once.
+    if (autoRouting) return;
+    if (billsCredits) {
+      claimedChatRef.current = null;
+      continueAfterUsingCreditsRef.current?.();
+      return;
+    }
+    // A banner that hides before acting (the limit reset, a dismissal) drops
+    // the claim, so a later limit on this mount never spends without a click.
+    if (!bannerVisible) {
+      claimedChatRef.current = null;
+      return;
+    }
+    if (scopeChanged) return;
+    if (canConsumeIntent) {
+      claimedChatRef.current = null;
+      const current = targetRef.current;
+      if (current) clearAiCreditsArrivalForChat(current);
+      perChatActionRef.current?.();
+      continueAfterUsingCreditsRef.current?.();
+      return;
+    }
+    if (intentSettledUnusable) claimedChatRef.current = null;
+    // Otherwise coverage is still loading; keep the claim.
+  }, [
+    targetChatId,
+    creditsScope,
+    continueRequested,
+    bannerVisible,
+    autoRouting,
+    billsCredits,
+    canConsumeIntent,
+    intentSettledUnusable,
+  ]);
 
   if (!target || !banner || !bannerVisible || autoRouting) {
     return null;

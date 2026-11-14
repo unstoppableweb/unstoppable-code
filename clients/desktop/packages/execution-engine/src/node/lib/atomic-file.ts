@@ -27,7 +27,7 @@ import {
   flushDirectorySync,
 } from '@canopy/core-platform/directory-flush';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { ensureW5HostMembership } from '../w5-host-cohort';
+import { ensureW5RootPresence } from '../w5-root-presence';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -335,9 +335,9 @@ export async function writeFileAtomically(
     STORAGE_OWNERSHIP,
   );
   return admitStorageWrite(storage, async () => {
-    // TRANSITIONAL (CAN-3797): shared writers run only in registered hosts.
-    // Remove with the host cohort when these writers are deleted (CAN-3802).
-    if (storage.writer === 'desktop_cli') await ensureW5HostMembership();
+    // Non-W5 CLI sinks still keep permanent root presence; canonical W5 sinks
+    // were refused by ownership above and can never write through this path.
+    if (storage.writer === 'desktop_cli') await ensureW5RootPresence();
     return installFile(targetPath, data, options);
   });
 }

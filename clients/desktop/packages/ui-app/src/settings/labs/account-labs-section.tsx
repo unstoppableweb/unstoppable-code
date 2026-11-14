@@ -167,6 +167,7 @@ export function AccountLabsSection(): JSX.Element {
   if (loadError !== null)
     return (
       <ErrorBanner
+        errorSource="account-labs-section-load"
         error={loadError?.copy}
         details={loadError?.details}
         onRetry={retryLoad}

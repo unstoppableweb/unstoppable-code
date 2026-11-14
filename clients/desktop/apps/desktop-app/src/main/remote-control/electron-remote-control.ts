@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   recordRemoteControlTelemetry,
   startRemotePairingTelemetry,
@@ -360,9 +361,14 @@ export function initializeRemoteControl(options: {
       process.env,
       __CANOPY_E2E__,
     ),
-    createBridge: (controllerDeviceId: string): Promise<HostBridge> =>
+    createBridge: (
+      controllerDeviceId,
+      _surface,
+      exactWorktreeBaseBranch,
+    ): Promise<HostBridge> =>
       createBridgeWindow({
         controllerDeviceId,
+        exactWorktreeBaseBranch,
         preloadPath: join(__dirname, '../preload/remote-bridge.js'),
       }),
     createAppAdvisorSurface: (session): RemoteAppAdvisorSurface =>
@@ -537,13 +543,20 @@ function parseDeviceId(value: unknown): string {
 
 function parseString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
-    throw new Error(`${label} must be a non-empty string.`);
+    throw classifyError(
+      new Error(`${label} must be a non-empty string.`),
+      'input.not_accepted',
+    );
   }
   return value;
 }
 
 function parseArgs(value: unknown): unknown[] {
-  if (!Array.isArray(value)) throw new Error('Arguments must be an array.');
+  if (!Array.isArray(value))
+    throw classifyError(
+      new Error('Arguments must be an array.'),
+      'input.not_accepted',
+    );
   return value;
 }
 
@@ -635,7 +648,10 @@ function registerRemoteControlIpc(
     (event, channel: unknown, args: unknown): Promise<unknown> => {
       const target = windows.surfaceForSender(event.sender);
       if (!target) {
-        throw new Error('This window is not showing another computer.');
+        throw classifyError(
+          new Error('This window is not showing another computer.'),
+          'external.state_changed',
+        );
       }
       const { deviceId, surface } = target;
       const name = parseString(channel, 'Channel');

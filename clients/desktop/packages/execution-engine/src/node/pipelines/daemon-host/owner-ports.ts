@@ -1,12 +1,17 @@
 import type { PipelineOwnerSettlement } from '@canopy/core-runtime/node/pipeline';
 import type {
   CanopyJsonValue,
+  LedgerGlobalOwner,
   WorkerPipelineHostRequest,
   WorkerPipelineOwnerRequest,
   WorkerPipelineOwnerResult,
 } from '@canopy/protocol/canopy-core';
 import {
+  CanopyJsonValueSchema,
   canopyJsonValueSchemaWithin,
+  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
+  WORKER_PIPELINE_OWNER_PRECOMMIT_ERROR_MAX,
+  WORKER_PIPELINE_OWNER_PRECOMMIT_REPOS_MAX,
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 } from '@canopy/protocol/canopy-core';
 import { getExecutionHarnessForModel } from '@canopy/execution-engine/model-catalog';
@@ -17,9 +22,37 @@ import {
 import { isClaudeModAdmission } from '@canopy/execution-engine/types/claude-mod-admission';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { pipelinePluginSelectionsAddPlugins } from '../executor/step-runner';
+import { CodexHttpMcpProxyService } from '../../codex-runtime/http-mcp-proxy';
+import {
+  resolveCodexPluginMcpServers,
+  resolvePlugins,
+} from '../../plugins/plugin-resolver';
+import {
+  DAEMON_CODEX_PLUGINS_UNAVAILABLE,
+  daemonCodexMcpAuthorityIds,
+  daemonCodexPluginResolution,
+} from './codex-plugin-mcp';
+import { CodexCapabilityStore } from '../../codex-runtime/capability-store';
+import { createOwnerMcpCredentials } from './owner-mcp-credentials';
+import type { McpCredentialRef } from '@canopy/core-runtime/node/mcp-auth';
+import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import * as path from 'node:path';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import type { DynamicToolCallParams } from '../../codex-runtime/generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from '../../codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { DynamicToolSpec } from '../../codex-runtime/generated/v2/DynamicToolSpec';
+import { ledgerCodexToolPolicy } from '../../ledger-tools/codex';
+import { headlessLedgerToolAllowed } from '../../ledger-tools/headless-approval';
+import {
+  startLedgerToolsMcpRoute,
+  type LedgerToolsMcpRoute,
+} from '../../ledger-tools/mcp-route';
+import {
+  openRemoteLedgerTools,
+  type RemoteLedgerOperate,
+} from '../../ledger-tools/remote-session';
+import type { LedgerChatToolsSession } from '../../ledger-tools/runtime';
 import type {
   CodexPipelineEnvironmentProfile,
   CodexPipelineLedgerTools,
@@ -65,6 +98,9 @@ const UNANSWERED = 'The app could not answer this workflow step.';
 const toolCallJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 );
+const ledgerOperationJson = canopyJsonValueSchemaWithin(
+  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
+);
 
 /** A tool call as JSON, or a refusal the policy reports as a failed call. */
 function toolCall(call: DynamicToolCallParams): CanopyJsonValue {
@@ -72,7 +108,25 @@ function toolCall(call: DynamicToolCallParams): CanopyJsonValue {
   if (json === undefined) throw new Error(UNANSWERED);
   return json;
 }
+/** A step's plugin selections as JSON for the owner (CAN-6168). */
+function selectionsJson(selections: unknown): CanopyJsonValue {
+  const json = CanopyJsonValueSchema.safeParse(
+    JSON.parse(JSON.stringify(selections)),
+  ).data;
+  if (json === undefined) throw new Error(DAEMON_CODEX_PLUGINS_UNAVAILABLE);
+  return json;
+}
 const NEVER = new AbortController().signal;
+
+/** The run owner as a global Ledger's owner, or null for one that can't be parsed. */
+function ledgerGlobalOwnerOf(
+  owner: WorkerPipelineHostRequest['owner'],
+): LedgerGlobalOwner | null {
+  if (owner === 'personal') return { kind: 'personal' };
+  if (owner?.startsWith('org:') === true)
+    return { kind: 'organization', organizationId: owner.slice('org:'.length) };
+  return null;
+}
 
 type Kind = WorkerPipelineOwnerResult['kind'];
 type ResultOf<K extends Kind> = Extract<WorkerPipelineOwnerResult, { kind: K }>;
@@ -98,6 +152,29 @@ function isKind<K extends Kind>(
   return value.kind === kind;
 }
 
+/**
+ * The daemon's one loopback proxy for its Codex steps' plugin HTTP MCP
+ * servers (CAN-6168). Each step's routes go when the step releases its
+ * route session.
+ */
+let codexMcpProxy: CodexHttpMcpProxyService | undefined;
+
+/** Where daemon Codex steps build their capability folders, each its own. */
+function codexCapabilityRoot(): string {
+  return path.join(getCanopyDataDir(), 'pipeline-plugins', 'codex-daemon');
+}
+
+/** The content-addressed store every host publishes Codex capability roots to. */
+let codexCapabilityStore: CodexCapabilityStore | undefined;
+function daemonCodexCapabilityStore(): CodexCapabilityStore {
+  codexCapabilityStore ??= new CodexCapabilityStore(getCanopyDataDir());
+  return codexCapabilityStore;
+}
+function daemonCodexMcpProxy(): CodexHttpMcpProxyService {
+  codexMcpProxy ??= new CodexHttpMcpProxyService();
+  return codexMcpProxy;
+}
+
 export function createDaemonPipelineOwnerPorts(
   client: PipelineOwnerClient,
   run: {
@@ -106,6 +183,11 @@ export function createDaemonPipelineOwnerPorts(
     readonly codexEnvironment?: CodexPipelineEnvironmentProfile;
     /** Aborts when the run is paused or cancelled: its pending requests are withdrawn. */
     readonly signal?: AbortSignal;
+    /**
+     * The owner is remote (a cloud run's web core, CAN-6422): the Feed tools
+     * run here, over `owner.ledger.operation`, instead of in the owner.
+     */
+    readonly remoteLedgerTools?: boolean;
   },
 ): DaemonPipelineOwnerPorts {
   const step = (
@@ -136,6 +218,76 @@ export function createDaemonPipelineOwnerPorts(
         ? AbortSignal.any([signal, run.signal])
         : (signal ?? run.signal ?? NEVER),
     );
+
+  // A plugin MCP server's OAuth credential stays with Electron main (CAN-6168,
+  // X1 (a)): the daemon binds a route by the declaration's hash and asks for
+  // one authorization per upstream request.
+  // The owner's bindings last for the run (part 2), so the same declaration
+  // binds once per run, however many steps reach it. A route the owner calls
+  // stale (bound under an earlier owner subscription) binds once more, and
+  // every step that found that same route stale shares the replacement.
+  const mcpBinds = new Map<string, Promise<string | null>>();
+  const mcpBind = async (
+    source: {
+      readonly marketplaceId: string;
+      readonly pluginName: string;
+      readonly serverName: string;
+      readonly contentHash: string;
+    },
+    options?: { readonly staleRef?: string },
+  ): Promise<string | null> => {
+    const key = JSON.stringify([
+      source.marketplaceId,
+      source.pluginName,
+      source.serverName,
+      source.contentHash,
+    ]);
+    const known = mcpBinds.get(key);
+    if (known && options?.staleRef === undefined) return known;
+    if (known && options?.staleRef !== undefined) {
+      const current = await known.catch(() => null);
+      // Another step already replaced the stale route, or is replacing it.
+      const latest = mcpBinds.get(key);
+      if (latest !== known && latest !== undefined) return latest;
+      if (current !== null && current !== options.staleRef) return current;
+    }
+    const bound = ask(
+      { action: 'owner.mcp.bind', ...source },
+      PIPELINE_OWNER_DEADLINE_MS.short,
+      undefined,
+    ).then((settlement) => expectKind(settlement, 'mcp.bind').routeRef);
+    mcpBinds.set(key, bound);
+    // A failed bind is asked again by the next step.
+    bound.catch(() => {
+      if (mcpBinds.get(key) === bound) mcpBinds.delete(key);
+    });
+    return bound;
+  };
+  const sessionCredentials = new Map<string, McpCredentialRef[]>();
+  const mcpCredentials = createOwnerMcpCredentials({
+    authorize: async (routeRef, signal) => {
+      const settlement = await ask(
+        { action: 'owner.mcp.authorize', routeRef },
+        PIPELINE_OWNER_DEADLINE_MS.short,
+        signal,
+      );
+      const { grantId, refused } = expectKind(settlement, 'mcp.authorize');
+      const authorization = settlement.values?.mcpAuthorization?.authorization;
+      return {
+        grantId,
+        ...(authorization !== undefined && { authorization }),
+        ...(refused !== undefined && { refused }),
+      };
+    },
+    rejected: (grantId) =>
+      ask(
+        { action: 'owner.mcp.rejected', grantId },
+        PIPELINE_OWNER_DEADLINE_MS.short,
+        undefined,
+      )
+        .then(() => undefined)
+        .catch(() => undefined),
+  });
 
   // Cleanup that outlives a cancel or pause of its run, which Electron main
   // also releases at settle (D16), so no step waits for it.
@@ -200,8 +352,51 @@ export function createDaemonPipelineOwnerPorts(
       'model.policy',
     ).answer;
 
+  /** The Feed tools of this run's open attempts, when they run here. */
+  const hostedAttempts = new Map<
+    string,
+    {
+      readonly session: LedgerChatToolsSession;
+      readonly permissionPreset: string;
+    }
+  >();
+  const hostedOwner = ledgerGlobalOwnerOf(run.owner);
+
+  /** One Ledger operation as the attempt the remote owner opened. */
+  const operate =
+    (
+      attemptKey: string,
+      at: Partial<
+        Pick<PipelineOwnerStep, 'jobId' | 'stepId' | 'attempt' | 'iteration'>
+      >,
+    ): RemoteLedgerOperate =>
+    async (operation, params, signal) => {
+      const json = ledgerOperationJson.safeParse(params).data;
+      // Params no request can carry are the agent's to fix.
+      if (json === undefined)
+        return { kind: 'refused', error: { reason: 'INVALID_INPUT' } };
+      return expectKind(
+        await ask(
+          {
+            action: 'owner.ledger.operation',
+            attemptKey,
+            operation,
+            params: json,
+          },
+          PIPELINE_OWNER_DEADLINE_MS.long,
+          signal,
+          at,
+        ),
+        'ledger.operation',
+      ).outcome;
+    };
+
   const pipelineLedger: PipelineLedgerPort = {
     openAttempt: async (request) => {
+      // The background service hosts no OpenCode step (daemon eligibility
+      // keeps them in the app), and the owner request names only the
+      // harnesses it hosts; an OpenCode attempt here opens nothing.
+      if (request.harness === 'opencode') return null;
       const at = {
         jobId: request.physicalJobId,
         stepId: request.stepId,
@@ -248,6 +443,8 @@ export function createDaemonPipelineOwnerPorts(
         'ledger.open',
       ).attempt;
       if (opened === null) return null;
+      if (run.remoteLedgerTools === true)
+        return hostedAttempt(request, opened, at);
       const attempt: PipelineLedgerAttempt = {
         attemptKey: opened.attemptKey,
         agentSessionId: opened.agentSessionId,
@@ -287,11 +484,118 @@ export function createDaemonPipelineOwnerPorts(
     noteResuming: () => Promise.resolve(),
   };
 
+  /**
+   * An attempt whose Feed tools run here (CAN-6422): the shared tools runtime,
+   * dispatching through `owner.ledger.operation`, served to a Claude
+   * subprocess on a loopback MCP route and to Codex as dynamic tools.
+   */
+  function hostedAttempt(
+    request: Parameters<PipelineLedgerPort['openAttempt']>[0],
+    opened: { readonly attemptKey: string; readonly agentSessionId: string },
+    at: Partial<
+      Pick<PipelineOwnerStep, 'jobId' | 'stepId' | 'attempt' | 'iteration'>
+    >,
+  ): PipelineLedgerAttempt | null {
+    if (hostedOwner === null) return null;
+    let live = true;
+    const name = request.pipelineName?.trim()
+      ? `${request.stepName} · ${request.pipelineName.trim()}`
+      : request.stepName;
+    const session = openRemoteLedgerTools({
+      executionId: run.executionId,
+      harness: request.harness,
+      owner: hostedOwner,
+      pipelineAgent: {
+        physicalJobId: request.physicalJobId,
+        logicalJobId: request.logicalJobId,
+        stepId: request.stepId,
+        attempt: Math.max(1, request.attempt),
+        iteration: request.iteration,
+        agentSessionId: opened.agentSessionId,
+        ...(request.predecessorAgentSessionId === undefined
+          ? {}
+          : { predecessorAgentSessionId: request.predecessorAgentSessionId }),
+        ...(request.checkpointId === undefined
+          ? {}
+          : { checkpointId: request.checkpointId }),
+        displayName:
+          request.attempt > 1
+            ? `${name} (attempt ${String(request.attempt)})`
+            : name,
+        isLive: () => live,
+      },
+      settings: {
+        model: request.model ?? null,
+        thinkingEffort: request.thinkingEffort ?? null,
+        mode: request.permissionPreset,
+      },
+      operate: operate(opened.attemptKey, at),
+    });
+    hostedAttempts.set(opened.attemptKey, {
+      session,
+      permissionPreset: request.permissionPreset,
+    });
+    let route: Promise<LedgerToolsMcpRoute> | undefined;
+    return {
+      attemptKey: opened.attemptKey,
+      agentSessionId: opened.agentSessionId,
+      instructions: session.systemPrompt(),
+      openSubprocessTools: async () => {
+        if (!live) throw new Error('The pipeline agent attempt has ended.');
+        route ??= startLedgerToolsMcpRoute(session, (tool) =>
+          headlessLedgerToolAllowed(request.permissionPreset, tool),
+        );
+        const open = await route;
+        return {
+          mcpServers: open.mcpServers,
+          allowedTools: [...open.allowedTools],
+          secretValues: [open.token],
+        };
+      },
+      close: (outcome) => {
+        if (!live) return;
+        live = false;
+        hostedAttempts.delete(opened.attemptKey);
+        session.dispose();
+        void route?.then((open) => open.close()).catch(() => undefined);
+        void ask(
+          {
+            action: 'owner.ledger.close',
+            attemptKey: opened.attemptKey,
+            outcome,
+          },
+          PIPELINE_OWNER_DEADLINE_MS.short,
+          undefined,
+          at,
+        ).catch(() => undefined);
+      },
+    };
+  }
+
   const openLedgerTools: CodexPipelinePromptPorts['openLedgerTools'] = async (
     attemptKey,
     cwd,
   ) => {
     if (attemptKey === undefined) return undefined;
+    const hosted = hostedAttempts.get(attemptKey);
+    if (hosted !== undefined) {
+      // A remote owner's attempt: the tools run here, and an unattended step
+      // may call exactly the three Feed tools.
+      const { specs, policy } = ledgerCodexToolPolicy(
+        hosted.session,
+        (_call, tool) =>
+          Promise.resolve(
+            headlessLedgerToolAllowed(hosted.permissionPreset, tool),
+          ),
+      );
+      return {
+        instructions: hosted.session.systemPrompt(),
+        specs,
+        policy,
+        dispose: () => undefined,
+      };
+    }
+    if (run.remoteLedgerTools === true) return undefined;
     const { tools } = expectKind(
       await ask(
         { action: 'owner.ledger.codexTools', attemptKey, cwd },
@@ -499,19 +803,107 @@ export function createDaemonPipelineOwnerPorts(
     },
     codex: {
       // Selections that add nothing (an Agent's empty ones) resolve to no
-      // plugins; any other selection or package overlay stays in process.
-      resolvePlugins: (request) =>
-        request.packageOverlay === undefined &&
-        !pipelinePluginSelectionsAddPlugins(request.pluginSelections)
-          ? Promise.resolve({
-              warnings: [],
-              selectedCapabilityRoots: [],
-              codexMcpServers: {},
-            })
-          : Promise.reject(
-              new Error('Workflow plugins are not available here.'),
-            ),
-      mcpCapabilityAuthorityIds: () => [],
+      // plugins. Plugins resolve here with the shared resolver; their MCP
+      // servers are served only as daemonCodexPluginResolution allows
+      // (CAN-6168). A package overlay or a standalone MCP server stays in
+      // process.
+      resolvePlugins: async (request, routeSessionId) => {
+        if (
+          request.packageOverlay === undefined &&
+          !pipelinePluginSelectionsAddPlugins(request.pluginSelections)
+        )
+          return {
+            warnings: [],
+            selectedCapabilityRoots: [],
+            codexMcpServers: {},
+          };
+        if (
+          request.packageOverlay !== undefined ||
+          request.pluginSelections === undefined
+        )
+          throw new Error(DAEMON_CODEX_PLUGINS_UNAVAILABLE);
+        // The owner's own policy decides what the step may load, as in
+        // process: collections expanded, disabled items out, skill
+        // contexts checked (CAN-6168).
+        const effective = expectKind(
+          await ask(
+            {
+              action: 'owner.codex.pluginRefs',
+              selections: selectionsJson(request.pluginSelections),
+            },
+            PIPELINE_OWNER_DEADLINE_MS.short,
+            undefined,
+          ),
+          'codex.pluginRefs',
+        );
+        // Null: no policy answered (a remote owner), so nothing loads.
+        if (!isRecord(effective.selections))
+          throw new Error(DAEMON_CODEX_PLUGINS_UNAVAILABLE);
+        const selections = normalizePluginSelections(effective.selections);
+        // In process installs a missing plugin and builds a compatibility
+        // one; here either would leave the step without it.
+        const plugins = resolveCodexPluginMcpServers(selections);
+        if (
+          selections.collectionIds.length > 0 ||
+          // Built differently in process, so their root ids would differ.
+          selections.skillRefs.length > 0 ||
+          (selections.mcpServerRefs?.length ?? 0) > 0 ||
+          plugins.compatibilityPlugins ||
+          plugins.unresolvedPlugins
+        )
+          throw new Error(DAEMON_CODEX_PLUGINS_UNAVAILABLE);
+        // Each step builds in its own folder; the finished build is
+        // published by its contents, so the same capabilities keep the same
+        // root ids across steps and a resumed session.
+        const rootDir = path.join(
+          codexCapabilityRoot(),
+          'builds',
+          randomUUID(),
+        );
+        const resolved = resolvePlugins(
+          selections,
+          request.projectId ?? 'pipeline',
+          request.worktreeId ?? request.executionId,
+          routeSessionId,
+          {
+            purpose: 'codex-session',
+            runtimeDirs: {
+              rootDir,
+              claudePluginDir: path.join(rootDir, 'claude-sdk-plugin'),
+            },
+          },
+        );
+        resolved.warnings.unshift(...effective.warnings);
+        try {
+          // Published by content, as Electron main and the CLI publish
+          // theirs: the same capabilities get the same root ids on every
+          // host, step and resumed session.
+          resolved.selectedCapabilityRoots = (
+            await daemonCodexCapabilityStore().publishSelectedRoots(
+              resolved.selectedCapabilityRoots,
+            )
+          ).roots;
+        } finally {
+          await rm(rootDir, { recursive: true, force: true }).catch(
+            () => undefined,
+          );
+        }
+        const registered: McpCredentialRef[] = [];
+        sessionCredentials.set(routeSessionId, registered);
+        return daemonCodexPluginResolution(resolved, routeSessionId, {
+          bind: mcpBind,
+          proxy: daemonCodexMcpProxy(),
+          credentials: {
+            ...mcpCredentials,
+            register: (routeRef, rebind) => {
+              const ref = mcpCredentials.register(routeRef, rebind);
+              registered.push(ref);
+              return ref;
+            },
+          },
+        });
+      },
+      mcpCapabilityAuthorityIds: daemonCodexMcpAuthorityIds,
       resolveRouting: (model, routeSessionId, request) =>
         resolveAiCreditsRouting(model, 'codex', {
           routeSessionId,
@@ -526,7 +918,13 @@ export function createDaemonPipelineOwnerPorts(
               new Error('This workflow run has no Codex environment.'),
             ),
       openLedgerTools,
-      releaseSession: release,
+      releaseSession: (routeSessionId) => {
+        codexMcpProxy?.revokeOwner(routeSessionId);
+        for (const credential of sessionCredentials.get(routeSessionId) ?? [])
+          mcpCredentials.release(credential);
+        sessionCredentials.delete(routeSessionId);
+        return release(routeSessionId);
+      },
     },
   };
 }
@@ -616,5 +1014,116 @@ export function createDaemonPipelinePlanPorts(
         'plan.update',
       );
     },
+  };
+}
+
+const GIT_COMMIT_PUSH = 'builtin/git-commit-push';
+
+/** One failed repository of a `git-commit-push` step, as its outputs report it. */
+type PrecommitRepository = Extract<
+  WorkerPipelineOwnerRequest,
+  { action: 'owner.precommit.failure' }
+>['repositories'][number];
+
+function isOutputRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function boundedText(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+/**
+ * The repositories a `git-commit-push` step's `results_json` says a
+ * pre-commit hook refused (`failurePhase: 'commit'`), bounded to what the
+ * owner request carries. The action already redacted every field; the
+ * absolute `repoPath` is left out. Empty when none, or when the output is
+ * not the action's.
+ */
+export function precommitFailedRepositories(
+  outputs: Readonly<Record<string, string>>,
+): PrecommitRepository[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(outputs.results_json ?? '');
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const failed: PrecommitRepository[] = [];
+  for (const result of parsed) {
+    if (!isOutputRecord(result)) continue;
+    if (result.status !== 'failed' || result.failurePhase !== 'commit')
+      continue;
+    const text = (
+      key: 'repoId' | 'repoName' | 'relativePath' | 'branchName',
+      max: number,
+    ): Partial<PrecommitRepository> => {
+      const value = boundedText(result[key], max);
+      return value === undefined ? {} : { [key]: value };
+    };
+    failed.push({
+      ...text('repoId', 512),
+      ...text('repoName', 512),
+      ...text('relativePath', 4096),
+      ...text('branchName', 512),
+      error:
+        boundedText(result.error, WORKER_PIPELINE_OWNER_PRECOMMIT_ERROR_MAX) ??
+        '',
+      precommitFailureError:
+        boundedText(
+          result.precommitFailureError,
+          WORKER_PIPELINE_OWNER_PRECOMMIT_ERROR_MAX,
+        ) ?? '',
+    });
+    if (failed.length === WORKER_PIPELINE_OWNER_PRECOMMIT_REPOS_MAX) break;
+  }
+  return failed;
+}
+
+/**
+ * CAN-6739: a brokered host's `git-commit-push` pre-commit failures, raised
+ * to the run's owner as `owner.precommit.failure` after the step settles, as
+ * desktop's Electron main fires its hook from the stored outputs (CAN-6012
+ * D3). Only the run's own top-level steps report: the classifier refuses the
+ * action inside a composite. Best effort: a report the owner doesn't settle
+ * never changes the step.
+ */
+export function createDaemonPrecommitReporter(
+  client: PipelineOwnerClient,
+  run: {
+    readonly executionId: string;
+    readonly owner: WorkerPipelineHostRequest['owner'];
+    /** The run's own: a cancelled or checkpointed run withdraws its report. */
+    readonly signal?: AbortSignal;
+  },
+): NonNullable<ExecutionRuntime['onStepPostProcess']> {
+  return async (ctx) => {
+    if (
+      ctx.step.uses !== GIT_COMMIT_PUSH ||
+      (ctx.depth ?? 0) !== 0 ||
+      ctx.jobId === undefined ||
+      (ctx.executionId !== undefined && ctx.executionId !== run.executionId)
+    )
+      return;
+    const repositories = precommitFailedRepositories(ctx.outputs);
+    if (repositories.length === 0) return;
+    await client
+      .request(
+        { action: 'owner.precommit.failure', repositories },
+        {
+          executionId: run.executionId,
+          childExecutionId: null,
+          jobId: ctx.jobId,
+          stepId: ctx.step.id,
+          attempt: ctx.attempt ?? 0,
+          iteration: ctx.iteration ?? 0,
+          owner: run.owner,
+          deadlineMs: PIPELINE_OWNER_DEADLINE_MS.short,
+        },
+        run.signal ?? NEVER,
+      )
+      .catch(() => undefined);
   };
 }

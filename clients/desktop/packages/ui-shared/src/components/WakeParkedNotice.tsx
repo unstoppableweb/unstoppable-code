@@ -3,8 +3,16 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { Notice, NoticeButton } from './Notice';
 
-/** Why automatic replies to background work are paused. */
-export type WakeParkedReason = 'consecutive_limit' | 'daily_limit' | 'other';
+/**
+ * Why automatic replies to background work are paused. `delegation_limit`:
+ * the agent replied to its delegates' results the most times in a row the
+ * delegation tree allows without the user.
+ */
+export type WakeParkedReason =
+  | 'consecutive_limit'
+  | 'daily_limit'
+  | 'delegation_limit'
+  | 'other';
 
 export interface WakeParkedNoticeProps {
   reason: WakeParkedReason;
@@ -22,6 +30,10 @@ const WAKE_PARKED_MESSAGES: Record<WakeParkedReason, string> = {
     'The agent replied to finished background work several times in a row. Continue to let it reply again.',
   daily_limit:
     'The agent replied to finished background work many times today. Continue to let it reply again.',
+  // The delegates' results wait; a message to the chat or to a delegate
+  // lets the agent read them too.
+  delegation_limit:
+    'The agent replied to its delegates several times in a row without you. Their results wait until you continue or send a message.',
   other:
     "The agent won't reply to finished background work for now. Continue to let it reply again.",
 };

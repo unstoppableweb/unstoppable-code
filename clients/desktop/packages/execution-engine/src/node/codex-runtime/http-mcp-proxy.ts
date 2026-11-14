@@ -9,6 +9,11 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import type {
+  McpCredentialRef,
+  McpUpstreamAuthorization,
+  McpUpstreamAuthorizer,
+} from '@canopy/core-runtime/node/mcp-auth';
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -23,10 +28,20 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade',
 ]);
 
+/**
+ * A route's upstream credential (CAN-6168): authorized once per upstream
+ * request, its header written into that request's own headers only.
+ */
+export interface CodexHttpMcpRouteAuthorizer {
+  readonly credentials: McpUpstreamAuthorizer;
+  readonly credential: McpCredentialRef;
+}
+
 interface HttpMcpRoute {
   ownerId: string;
   upstreamUrl: URL;
   headers: Record<string, string>;
+  authorizer?: CodexHttpMcpRouteAuthorizer;
   activeRequests: Set<ClientRequest>;
 }
 
@@ -77,6 +92,7 @@ export class CodexHttpMcpProxyService {
     ownerId: string;
     upstreamUrl: string;
     headers?: Record<string, string>;
+    authorizer?: CodexHttpMcpRouteAuthorizer;
   }): Promise<CodexHttpMcpProxyLease> {
     await this.ensureStarted();
     const routeId = randomBytes(24).toString('hex');
@@ -84,6 +100,7 @@ export class CodexHttpMcpProxyService {
       ownerId: options.ownerId,
       upstreamUrl: new URL(options.upstreamUrl),
       headers: { ...(options.headers ?? {}) },
+      ...(options.authorizer && { authorizer: options.authorizer }),
       activeRequests: new Set<ClientRequest>(),
     });
     return {
@@ -151,15 +168,61 @@ export class CodexHttpMcpProxyService {
       response.end('{"error":"MCP proxy route unavailable"}');
       return;
     }
+    if (!route.authorizer) {
+      this.forward(request, response, route, route.headers);
+      return;
+    }
+    // Held until the upstream request opens, then piped as is.
+    request.pause();
+    void authorizeUpstream(route.upstreamUrl, route.authorizer).then(
+      (granted): void => {
+        // The client went away while the owner decided: an unused
+        // authorization goes stale on its own.
+        if (response.destroyed) return;
+        if (granted.kind !== 'authorized') {
+          request.resume();
+          writeAuthorizationFailure(response, granted.kind);
+          return;
+        }
+        // The header lives only in this request's own map: never on the
+        // route, never logged.
+        const headers: Record<string, string> = { ...route.headers };
+        if (granted.authorization.apply(headers) !== 'applied') {
+          request.resume();
+          writeAuthorizationFailure(response, 'unavailable');
+          return;
+        }
+        this.forward(request, response, route, headers, granted.authorization);
+      },
+    );
+  }
+
+  private forward(
+    request: IncomingMessage,
+    response: ServerResponse,
+    route: HttpMcpRoute,
+    fixedHeaders: Record<string, string>,
+    authorization?: McpUpstreamAuthorization,
+  ): void {
+    if (!this.isLive(route)) {
+      request.resume();
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end('{"error":"MCP proxy route unavailable"}');
+      return;
+    }
     const requestImpl =
       route.upstreamUrl.protocol === 'https:' ? httpsRequest : httpRequest;
     const upstream = requestImpl(
       route.upstreamUrl,
       {
         method: request.method,
-        headers: normalizedHeaders(request.headers, route.headers),
+        headers: normalizedHeaders(request.headers, fixedHeaders),
       },
       (upstreamResponse) => {
+        // The upstream refused the token this request carried: the owner
+        // invalidates exactly that one. As in process, no retry.
+        if (upstreamResponse.statusCode === 401 && authorization)
+          void authorization.rejected();
         response.writeHead(
           upstreamResponse.statusCode ?? 502,
           responseHeaders(upstreamResponse.headers),
@@ -186,5 +249,58 @@ export class CodexHttpMcpProxyService {
       if (!response.writableEnded) upstream.destroy();
     });
     request.pipe(upstream);
+    request.resume();
   }
+
+  /** False once the route was revoked, as while its request was authorized. */
+  private isLive(route: HttpMcpRoute): boolean {
+    for (const candidate of this.routes.values())
+      if (candidate === route) return true;
+    return false;
+  }
+}
+
+async function authorizeUpstream(
+  upstreamUrl: URL,
+  authorizer: CodexHttpMcpRouteAuthorizer,
+): Promise<
+  | { kind: 'authorized'; authorization: McpUpstreamAuthorization }
+  | { kind: 'none' }
+  | { kind: 'unavailable' }
+> {
+  try {
+    const outcome = await authorizer.credentials.authorize({
+      credential: authorizer.credential,
+      purpose: 'mcp.upstream.forward',
+      upstreamUrl: upstreamUrl.href,
+    });
+    return outcome.status === 'authorized'
+      ? { kind: 'authorized', authorization: outcome.authorization }
+      : { kind: 'none' };
+  } catch {
+    return { kind: 'unavailable' };
+  }
+}
+
+/** As in process: no credential asks the client to sign in; an owner that can't decide is unavailable. */
+function writeAuthorizationFailure(
+  response: ServerResponse,
+  kind: 'none' | 'unavailable',
+): void {
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  const status = kind === 'none' ? 401 : 503;
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: null,
+      error:
+        kind === 'none'
+          ? { code: -32001, message: 'MCP server authorization required.' }
+          : { code: -32000, message: 'MCP server authorization unavailable.' },
+    }),
+  );
 }

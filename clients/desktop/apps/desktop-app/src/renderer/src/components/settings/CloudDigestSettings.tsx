@@ -291,6 +291,7 @@ export function CloudDigestSettings(): JSX.Element | null {
       dataTestId="settings-cloud-digests"
     >
       <DesktopErrorBanner
+        errorSource="cloud-digests-error"
         className=""
         error={error?.error}
         {...(error?.details === undefined ? {} : { details: error.details })}

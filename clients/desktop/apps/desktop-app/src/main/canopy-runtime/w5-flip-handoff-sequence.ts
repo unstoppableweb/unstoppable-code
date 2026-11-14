@@ -4,17 +4,20 @@ import {
   canopyDaemonRefusal,
   canopyDaemonRefusalError,
 } from '@canopy/core-client/node';
-import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { w5RootEvidenceScope } from '@canopy/core-runtime/node/w5/service-history';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { createW5DaemonRecordStore } from '../lib/w5-daemon-record-store';
 import {
   deferW5FlipBackup,
-  prepareW5FlipSpawn,
+  noteW5DaemonServed,
   stopInProcessW5Host,
   w5FlipStepFailure,
 } from '../lib/w5-flip-backup';
 import { W5DaemonHandoffError } from '../lib/w5-handoff-store';
-import { probeElectronDaemonW5 } from './electron-daemon-access';
+import {
+  getElectronDaemonFilesContext,
+  probeElectronDaemonW5,
+} from './electron-daemon-access';
 import { leaseElectronW5RecordPort } from './electron-w5-record-port';
 import { settleRefusedW5Daemon } from './w5-refused-daemon';
 
@@ -117,17 +120,17 @@ export async function runW5FlipHandoff(
     // the handoff.
     if (path === 'attach')
       await deferW5FlipBackup(buildVersion).catch(() => undefined);
-    // Windows has no startup claim (its first-instance pipe serializes
-    // launches), so the launcher refuses the pre-spawn step; it runs here.
-    else if (hostPlatformOperatingSystem() === 'win32')
-      await prepareW5FlipSpawn(buildVersion);
+    const { canonicalDataRoot } = await getElectronDaemonFilesContext();
+    const servedScope = await w5RootEvidenceScope(canonicalDataRoot);
     // Attaches or starts, then checks the daemon's W5 capability and leases.
     await lease.transport.recovery();
-    // Also where the launch found a peer's daemon instead of spawning, and
-    // lets a later respawn in this process skip the capture it cannot run.
+    // A lease-free probe alone must not authorize stopped-host crash respawns.
+    input.signal.throwIfAborted();
+    await noteW5DaemonServed(servedScope);
     await deferW5FlipBackup(buildVersion).catch(() => undefined);
     // Fences in-process use where the launch attached instead of spawning.
     await stopInProcessW5Host();
+    input.signal.throwIfAborted();
     return createW5DaemonRecordStore({ transport: lease.transport });
   } catch (error) {
     lease.close();

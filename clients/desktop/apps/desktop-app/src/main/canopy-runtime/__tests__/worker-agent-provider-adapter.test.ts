@@ -32,6 +32,7 @@ const allSupported: Record<WorkerAgentProviderId, boolean> = {
   ollama: true,
   cursor: true,
   copilot: true,
+  antigravity: true,
   opencode: true,
 };
 
@@ -221,7 +222,7 @@ it("lists the registry's models under their providers", async () => {
   ]);
 });
 
-it('represents all six providers when supported', async () => {
+it('represents all supported providers when supported', async () => {
   const result = await list(runtimeFor(fakeSources()));
   expect(result.providers.map((entry) => entry.providerId)).toEqual([
     'claude',
@@ -229,6 +230,7 @@ it('represents all six providers when supported', async () => {
     'ollama',
     'cursor',
     'copilot',
+    'antigravity',
     'opencode',
   ]);
 });
@@ -240,6 +242,7 @@ it('omits a provider its flag or platform does not support', async () => {
       ollama: false,
       cursor: false,
       copilot: false,
+      antigravity: false,
       opencode: false,
     }),
   });

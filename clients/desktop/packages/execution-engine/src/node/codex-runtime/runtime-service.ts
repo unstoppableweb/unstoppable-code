@@ -52,7 +52,11 @@ import type {
   CodexThreadHandle,
   CodexTurnOutcome,
 } from './thread-handle';
-import { CodexCapabilityStore } from './capability-store';
+import {
+  CodexCapabilityStore,
+  forkedLeaseFingerprint,
+  readResumeLease,
+} from './capability-store';
 import type { CodexCapabilityLeaseFile } from './capability-types';
 import {
   CodexMcpSecretBroker,
@@ -187,6 +191,12 @@ export interface CodexStartThreadRequest {
 export interface CodexResumeThreadRequest {
   params: ThreadResumeParams;
   capabilitySnapshotId: string;
+  /**
+   * The id fingerprint v1 gave the same capabilities on this host
+   * (CAN-6168): a thread whose lease still names it is upgraded to
+   * `capabilitySnapshotId` and resumes.
+   */
+  legacyCapabilitySnapshotId?: string;
   capabilityLeaseKind?: CodexCapabilityLeaseFile['kind'];
   capabilityLeaseExpiresAt?: string;
   profile?: CodexSpawnProfileRequest;
@@ -1886,6 +1896,7 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
           pinId: pin?.pinId,
           threadId: responseThreadId,
           snapshotId: request.capabilitySnapshotId,
+          fingerprint: 2,
           rootContentIds: published.rootContentIds,
           kind: request.capabilityLeaseKind ?? 'persisted-chat',
           reasoningRouteFamily: request.reasoningRouteFamily,
@@ -1937,8 +1948,13 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
     const profile = resolveCodexSpawnProfile(
       profileForThreadProvider(request.profile, request.params),
     );
-    const existingLease = await this.capabilityStore.readLease(
+    const existingLease = await readResumeLease(
+      this.capabilityStore,
       request.params.threadId,
+      {
+        snapshotId: request.capabilitySnapshotId,
+        legacySnapshotId: request.legacyCapabilitySnapshotId,
+      },
     );
     if (
       existingLease &&
@@ -2077,6 +2093,7 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
         pinId: pin?.pinId,
         threadId: createdThreadId,
         snapshotId: effectiveSnapshotId,
+        fingerprint: forkedLeaseFingerprint(sourceLease),
         rootContentIds,
         kind:
           request.capabilityLeaseKind ?? sourceLease?.kind ?? 'persisted-chat',
@@ -2434,6 +2451,8 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
     pinId?: string;
     threadId: string;
     snapshotId: string;
+    /** Undefined only for a fork of a lease from before fingerprint v2. */
+    fingerprint: CodexCapabilityLeaseFile['fingerprint'];
     rootContentIds: string[];
     kind: CodexCapabilityLeaseFile['kind'];
     reasoningRouteFamily?: string;
@@ -2444,6 +2463,9 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
       version: 1,
       threadId: options.threadId,
       snapshotId: options.snapshotId,
+      ...(options.fingerprint === undefined
+        ? {}
+        : { fingerprint: options.fingerprint }),
       rootContentIds: options.rootContentIds,
       kind: options.kind,
       ...(options.reasoningRouteFamily
@@ -2467,7 +2489,7 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
     kind: CodexCapabilityLeaseFile['kind'];
     reasoningRouteFamily?: string;
   }): Promise<void> {
-    await this.persistThreadLease(options);
+    await this.persistThreadLease({ ...options, fingerprint: 2 });
   }
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { agentExecutionHarnessSchema } from '../../execution-harness';
 
 // Opaque public IDs, validated without normalization.
 const idSchema = z.string().min(1).max(512).regex(/\S/);
@@ -109,6 +110,8 @@ export const projectsCreateTaskActionSchema = z.strictObject({
   initialMessage: textSchema.optional(),
   /** Model id from models.list, including an installed custom Agent. */
   model: modelIdSchema.optional(),
+  /** With model: its own harness or one of its models.list harnessChoices. */
+  executionHarness: agentExecutionHarnessSchema.optional(),
 });
 export const projectsCreateTaskChatActionSchema = z.strictObject({
   type: z.literal('projects.create_task_chat'),
@@ -117,6 +120,8 @@ export const projectsCreateTaskChatActionSchema = z.strictObject({
   initialMessage: textSchema.optional(),
   /** Model id from models.list, including an installed custom Agent. */
   model: modelIdSchema.optional(),
+  /** With model: its own harness or one of its models.list harnessChoices. */
+  executionHarness: agentExecutionHarnessSchema.optional(),
 });
 export const botsCreateTaskActionSchema = z.strictObject({
   type: z.literal('bots.create_task'),

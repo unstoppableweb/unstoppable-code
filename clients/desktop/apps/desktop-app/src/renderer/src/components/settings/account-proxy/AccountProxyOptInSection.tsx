@@ -45,7 +45,11 @@ export function AccountProxyOptInSection(): JSX.Element {
       title="Multi-account proxy"
       dataTestId="settings-experiments-account-proxy"
     >
-      <ErrorBanner className="" error={saveError} />
+      <ErrorBanner
+        errorSource="account-proxy-opt-in-section-save"
+        className=""
+        error={saveError}
+      />
       <SettingsGroup>
         <SettingsRow
           label="Use an account proxy"

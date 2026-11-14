@@ -83,6 +83,8 @@ class FakeWebCore implements CoreCoworkInvoker {
   selectionRevision = 7;
   selectedItemIds: string[] = ['skill:curated/review'];
   updateRefusal: CanopyErrorPayload | null = null;
+  /** What a pluginSelections save answers beside its receipt (CAN-6092). */
+  updateCapabilities: unknown = undefined;
 
   request(
     method: string,
@@ -141,6 +143,9 @@ class FakeWebCore implements CoreCoworkInvoker {
             revision: 0,
             outcome: 'applied',
             entityId: SCOPE.chatId,
+            ...(this.updateCapabilities === undefined
+              ? {}
+              : { capabilities: this.updateCapabilities }),
           },
         });
       }
@@ -166,6 +171,34 @@ class FakeWebCore implements CoreCoworkInvoker {
 }
 
 describe('cloud chat catalog over the web core (CAN-5972)', () => {
+  it("accepts a save's capability state beyond the 32 KiB JSON detail bound (CAN-6092)", async () => {
+    const core = new FakeWebCore();
+    const catalog = createCloudChatCatalog(core, SCOPE);
+    await catalog.refresh();
+    const pruned = Array.from({ length: 400 }, (_, index) => ({
+      kind: 'plugin',
+      marketplaceId: `marketplace-${index}`,
+      pluginName: `a-plugin-with-a-long-name-${index}`,
+    }));
+    expect(JSON.stringify(pruned).length).toBeGreaterThan(32_768);
+    core.updateCapabilities = {
+      capabilityBundles: {},
+      capabilityBundleStateVersion: 3,
+      outcome: 'staged',
+      capabilityPruned: pruned,
+      warnings: [],
+    };
+    await expect(
+      catalog.setSelections({
+        collectionIds: [],
+        skillRefs: [{ sourceId: 'curated', skillName: 'review' }],
+        pluginRefs: [],
+        mcpServerRefs: [],
+      }),
+    ).resolves.toBeUndefined();
+    expect(catalog.store.getState().selectionConflict).toBe(false);
+  });
+
   it('a capability selection writes through core.chat.update and re-reads on conflict', async () => {
     const core = new FakeWebCore();
     const logDev = jest.fn<void, [string]>();
@@ -360,6 +393,106 @@ describe('cloud chat catalog over the web core (CAN-5972)', () => {
             pluginRefs: [{ marketplaceId: 'market', pluginName: 'blocked' }],
           },
         },
+      },
+    });
+  });
+
+  it("names each row's source as the web core labels it and lists a curated skill once, through its plugin (CAN-6397)", async () => {
+    const MARKETPLACE = 'marketplace:5f0c6c1e-6a2a-4d4f-9c55-3a8a2b7f0e11';
+    const curatedSkill = (skillName: string, name: string): CatalogEntry => ({
+      entryId: `skill:cloud-curated/${skillName}`,
+      kind: 'skill',
+      name,
+      description: '',
+      sourceLabel: 'Curated',
+      source: 'remote',
+      content: {
+        kind: 'skill',
+        entrypoint: null,
+        selectionRef: { sourceId: 'cloud-curated', skillName },
+      },
+      availability: 'available',
+      ...stamp,
+    });
+    const plugin = (
+      marketplaceId: string,
+      pluginName: string,
+      name: string,
+      sourceLabel: string,
+    ): CatalogEntry => ({
+      entryId: `plugin:${marketplaceId}/${pluginName}`,
+      kind: 'plugin',
+      name,
+      description: '',
+      sourceLabel,
+      source: 'remote',
+      content: {
+        kind: 'plugin',
+        manifest: {
+          name: pluginName,
+          version: '',
+          capabilities: [],
+          dependencies: [],
+          providerSupport: { claude: true, codex: true },
+        },
+        selectionRef: { marketplaceId, pluginName },
+      },
+      availability: 'available',
+      ...stamp,
+    });
+    const core = new FakeWebCore();
+    // As apps/web/src/lib/web-core/catalogs/entries.ts serves them: curated
+    // skills also stand alone, beside the curated plugin they belong to.
+    core.entries = [
+      curatedSkill('release-notes', 'Release notes'),
+      curatedSkill('changelog', 'Changelog'),
+      plugin('cloud-curated', 'release-notes', 'Release notes', 'Curated'),
+      plugin(MARKETPLACE, 'lint-rules', 'Lint rules', 'Acme'),
+    ];
+    // Changelog was picked on its own, so its row stays.
+    core.selectedItemIds = ['skill:cloud-curated/changelog'];
+    const catalog = createCloudChatCatalog(core, SCOPE);
+    await catalog.refresh();
+
+    const plugins = catalog.store.getState().plugins;
+    const sources = [
+      ...(plugins?.skills ?? []).map((skill) => skill.source),
+      ...(plugins?.plugins ?? []).map((row) => row.marketplaceName),
+    ];
+    expect(sources.length).toBeGreaterThan(0);
+    expect({
+      // No Source cell shows a raw marketplace or curated id.
+      rawSources: sources.filter((source) =>
+        /marketplace:|cloud-curated/.test(source),
+      ),
+      plugins: plugins?.plugins.map((row) => [row.name, row.marketplaceName]),
+      // Release notes is listed once, as its plugin; Changelog stays
+      // because it is selected individually.
+      skills: plugins?.skills.map((skill) => [skill.name, skill.source]),
+    }).toEqual({
+      rawSources: [],
+      plugins: [
+        ['Release notes', 'Curated'],
+        ['Lint rules', 'Acme'],
+      ],
+      skills: [['Changelog', 'Curated']],
+    });
+
+    // The unlisted skill keeps its ref: saving it never drops it.
+    core.calls.length = 0;
+    const releaseNotes = {
+      sourceId: 'cloud-curated',
+      skillName: 'release-notes',
+    };
+    await catalog.setSelections({
+      collectionIds: [],
+      skillRefs: [releaseNotes],
+      pluginRefs: [],
+      mcpServerRefs: [],
+    });
+    expect(core.calls[0]?.params).toMatchObject({
+      action: {
+        patch: { pluginSelections: { skillRefs: [releaseNotes] } },
       },
     });
   });

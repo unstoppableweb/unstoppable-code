@@ -292,6 +292,7 @@ export function CursorApprovalCheck({
     'A local development check that asks Cursor to create one file in a temporary folder. It can use your Cursor account credits.';
   const errorNotice = (
     <DesktopErrorBanner
+      errorSource="cursor-approval-check-error"
       className=""
       error={error?.error}
       {...(error?.details === undefined ? {} : { details: error.details })}

@@ -1,10 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import { useEffect, useRef, useState, type JSX } from 'react';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import type {
   ExternalAgentComputer,
   ExternalAgentComputerConnectOutcome,
-  ExternalAgentComputerList,
 } from '@canopy/protocol/external-agents';
 import type { ExternalAgentComputersClient } from '@canopy/app-core';
 import {
@@ -13,14 +13,27 @@ import {
   ConfirmDialog,
   DialogModal,
   EmptyStateRow,
+  LoadingSpinner,
   Notice,
   NoticeButton,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsRow,
   SettingsSection,
 } from './external-agents-parts';
+import { DESKTOP_DOWNLOAD_PATH } from './paths';
+import type { ExternalAgentComputersState } from './use-external-agent-computers';
+
+/**
+ * Raises a confirmation through the host's notification stack, like
+ * `ShareNotify`. Required, so no host mounts the page with a silent success.
+ */
+export type ExternalAgentsNotify = (toast: {
+  readonly tone: 'success';
+  readonly message: string;
+}) => void;
 
 /** UX copy E1/E2 (CAN-5985). */
 const AGENT_LIMITS =
@@ -38,7 +51,7 @@ const NEEDS_CONNECTING_ONLINE =
 const NEEDS_CONNECTING_UNSEEN =
   'Update the app on this computer and turn on Remote Control to connect it.';
 
-type PortalOnlyComputer = ExternalAgentComputerList['portalOnly'][number];
+const EMPTY_DESCRIPTION = `Open the app on your computer and turn on ${REMOTE_CONTROL_LABEL} in Settings.`;
 
 type ConnectFailure = Exclude<
   ExternalAgentComputerConnectOutcome,
@@ -84,16 +97,19 @@ function agentsLabel(computer: ExternalAgentComputer): string {
 
 export function ExternalAgentComputersSection({
   client,
+  state,
+  onOpenPath,
+  notify,
+  desktopDownloadAvailable,
 }: {
   readonly client: ExternalAgentComputersClient;
+  readonly state: ExternalAgentComputersState;
+  readonly onOpenPath: (path: string) => void;
+  readonly notify: ExternalAgentsNotify;
+  /** The host can link to the download page and the visit isn't from the app. */
+  readonly desktopDownloadAvailable: boolean;
 }): JSX.Element {
-  const [computers, setComputers] = useState<
-    readonly ExternalAgentComputer[] | null
-  >(null);
-  const [portalOnly, setPortalOnly] = useState<readonly PortalOnlyComputer[]>(
-    [],
-  );
-  const [problem, setProblem] = useState(false);
+  const { computers, portalOnly, problem, load, setPaused } = state;
   const [connecting, setConnecting] = useState<ExternalAgentComputer | null>(
     null,
   );
@@ -102,20 +118,15 @@ export function ExternalAgentComputersSection({
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [pendingNotice, setPendingNotice] = useState<string | null>(null);
 
-  const load = useCallback(async (): Promise<void> => {
-    const result = await client.list();
-    if (result.ok) {
-      setComputers(result.value.computers);
-      setPortalOnly(result.value.portalOnly);
-      setProblem(false);
-    } else {
-      setProblem(true);
-    }
-  }, [client]);
-
+  // No new background refresh starts while the person acts on a row. A
+  // response already in flight still applies; the dialogs hold their own
+  // copy of the row, so a list change can't drop what they act on.
+  const acting = connecting !== null || removing !== null || removeBusy;
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!acting) return undefined;
+    setPaused(true);
+    return (): void => setPaused(false);
+  }, [acting, setPaused]);
 
   const confirmRemove = async (): Promise<void> => {
     if (!removing?.remoteId) return;
@@ -173,9 +184,22 @@ export function ExternalAgentComputersSection({
         ) : computers !== null &&
           computers.length === 0 &&
           portalOnly.length === 0 ? (
-          <EmptyStateRow
-            title="Turn on Remote Control on a computer to see it here."
+          <SettingsRow
             testId="external-agents-computers-empty"
+            label="No computers yet"
+            description={EMPTY_DESCRIPTION}
+            control={
+              desktopDownloadAvailable ? (
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  onClick={(): void => onOpenPath(DESKTOP_DOWNLOAD_PATH)}
+                  data-testid="external-agents-computers-download"
+                >
+                  Download the app
+                </Button>
+              ) : undefined
+            }
           />
         ) : (
           <>
@@ -202,15 +226,22 @@ export function ExternalAgentComputersSection({
                 }
                 control={
                   computer.agents === 'not_connected' ? (
-                    <Button
-                      variant="secondary"
-                      size="compact"
-                      disabled={!computer.online}
-                      onClick={(): void => setConnecting(computer)}
-                      data-testid="external-agents-computer-connect"
+                    <Tooltip
+                      label={`Open the app on ${computer.name} to connect it`}
+                      disabled={computer.online}
+                      showOnTouch
+                      contentClassName="max-w-sm whitespace-normal break-words"
                     >
-                      Connect
-                    </Button>
+                      <Button
+                        variant="secondary"
+                        size="compact"
+                        aria-disabled={!computer.online || undefined}
+                        onClick={(): void => setConnecting(computer)}
+                        data-testid="external-agents-computer-connect"
+                      >
+                        Connect
+                      </Button>
+                    </Tooltip>
                   ) : (
                     <Button
                       variant="secondary"
@@ -254,8 +285,14 @@ export function ExternalAgentComputersSection({
           client={client}
           computer={connecting}
           onClose={(paired): void => {
+            const name = connecting.name;
             setConnecting(null);
-            if (paired) void load();
+            if (!paired) return;
+            notify({
+              tone: 'success',
+              message: `${name} is connected. Your agents can use it now.`,
+            });
+            void load();
           }}
         />
       ) : null}
@@ -343,9 +380,18 @@ function ConnectComputerDialog({
               {state.code}
             </output>
           ) : null}
-          <p role="status" className="text-s fg-secondary">
-            Waiting for approval…
-          </p>
+          <div className="flex items-center gap-2">
+            {state.code === null ? <LoadingSpinner decorative /> : null}
+            <p
+              role="status"
+              className="text-s fg-secondary"
+              data-testid="external-agents-computer-connect-status"
+            >
+              {state.code === null
+                ? `Contacting ${computer.name}…`
+                : 'Waiting for approval…'}
+            </p>
+          </div>
         </div>
       ) : (
         <div className="flex flex-col gap-4">

@@ -1,3 +1,4 @@
+import { createW5RecordImageReaders } from '@canopy/core-runtime/node/w5/record-image-repositories';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { StoredDelegation } from '@canopy/desktop-shared/node/delegation/broker';
@@ -12,7 +13,7 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import {
-  createWorkspaceIndexRepository,
+  normalizeActivitySectionOrder,
   type WorkspaceIndexSnapshot,
 } from '../../lib/workspace-index-repository';
 import { desktopW5FileStore } from '../../lib/w5-commit-log-file-store';
@@ -20,14 +21,13 @@ import {
   getAppManagedChatWorkspaceDir,
   getAppWorkspacesRootDir,
   getWorkspaceDir,
-  getWorkspaceIndexFilePath,
+  getWorkspacesRootDir,
 } from '../../lib/paths';
 import {
   readWorkspaceWorktreesDetailed,
   readWorkspaceConfigDetailed,
   type WorktreeListAuthority,
 } from '../../lib/workspace-persistence';
-import { WORKSPACE_INDEX_STORAGE } from '../../lib/w5-storage';
 import { validateId } from '../../lib/validation';
 import type { WorkspaceType } from '@canopy/desktop-shared/types';
 import { parseWorkEntriesFile } from '../../lib/cowork-work-entries-file';
@@ -123,13 +123,10 @@ const PERMANENT_APP_MANAGED_PROJECT_IDS: readonly string[] = [
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
 ];
 
-const workspaceIndex = createWorkspaceIndexRepository({
+const workspaceIndex = createW5RecordImageReaders({
+  root: getWorkspacesRootDir,
   store: desktopW5FileStore,
-  filePath: getWorkspaceIndexFilePath,
-  storage: WORKSPACE_INDEX_STORAGE,
-  onCommitted: () => undefined,
-  onRefused: () => undefined,
-});
+}).index(normalizeActivitySectionOrder);
 
 function errnoCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error))

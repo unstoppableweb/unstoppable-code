@@ -1,3 +1,4 @@
+import { normalizeStoredAgentAliasBase } from '@canopy/pipeline-interop/agent-alias-model';
 import * as fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import {
@@ -356,6 +357,13 @@ export async function installRestoredExecutionState(
     readonly prepare?: () => Promise<void>;
     /** Undoes `prepare` under the same lock when the install fails. */
     readonly rollback?: (error: unknown) => Promise<void>;
+    /**
+     * Whether the writer still holds its lease, for a process that writes
+     * outside the lease fence (CAN-6376): asked again just before the state
+     * is installed, and the install is refused `owner_fenced` when it
+     * answers false.
+     */
+    readonly leaseHeld?: () => boolean;
   },
 ): Promise<RestoredExecutionStateInstall> {
   validateId(executionId, 'executionId');
@@ -420,7 +428,14 @@ export async function installRestoredExecutionState(
           {
             encoding: 'utf8',
             durable: true,
-            beforeInstall: () => refuseForeignExecutionOwner(executionId, null),
+            beforeInstall: async () => {
+              await refuseForeignExecutionOwner(executionId, null);
+              if (options?.leaseHeld?.() === false)
+                throw new ExecutionStateWriteRefusedError(
+                  executionId,
+                  'owner_fenced',
+                );
+            },
             ...(installed.kind === 'absent' ? { overwrite: false } : {}),
           },
         );
@@ -504,15 +519,17 @@ const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 /**
  * A pause that stopped work at a checkpoint rather than on a provider error:
- * shutdown, sign-in, a lost remote owner (CAN-6102) or a host rollover
- * (CAN-6199). Resume picks each up the same way.
+ * shutdown, sign-in, a lost remote owner (CAN-6102), a host rollover
+ * (CAN-6199) or a lost daemon core (CAN-6481). Resume picks each up the same
+ * way.
  */
 function isCheckpointPauseReason(kind: PipelineStatusReasonKind): boolean {
   return (
     kind === 'app_shutdown' ||
     kind === 'provider_sign_in' ||
     kind === 'owner_lost' ||
-    kind === 'host_rollover'
+    kind === 'host_rollover' ||
+    kind === 'core_lost'
   );
 }
 
@@ -524,6 +541,7 @@ function isPipelineStatusReasonKind(
     case 'app_shutdown':
     case 'owner_lost':
     case 'host_rollover':
+    case 'core_lost':
     case 'input_required':
     case 'action_paused':
     case 'provider_authentication_required':
@@ -557,6 +575,7 @@ function isPipelineStatusReasonCode(
     case 'app_shutdown':
     case 'owner_lost':
     case 'host_rollover':
+    case 'core_lost':
     case 'input_requested':
     case 'action_requested_pause':
     case 'authentication_failed':
@@ -936,6 +955,7 @@ function normalizeRecoveryCheckpoint(
       value.provider !== 'codex' &&
       value.provider !== 'copilot' &&
       value.provider !== 'opencode' &&
+      value.provider !== 'antigravity' &&
       value.provider !== 'ollama') ||
     typeof value.had_agent_activity !== 'boolean' ||
     (value.strategy !== 'continue_session' &&
@@ -953,6 +973,7 @@ function normalizeRecoveryCheckpoint(
     value.harness !== 'claude' &&
     value.harness !== 'copilot' &&
     value.harness !== 'opencode' &&
+    value.harness !== 'antigravity' &&
     value.harness !== 'codex'
   ) {
     return undefined;
@@ -989,11 +1010,13 @@ function normalizeRecoveryCheckpoint(
       value.harness === 'claude' ||
       value.harness === 'codex' ||
       value.harness === 'copilot' ||
-      value.harness === 'opencode'
+      value.harness === 'opencode' ||
+      value.harness === 'antigravity'
         ? value.harness
         : value.provider === 'codex' ||
             value.provider === 'copilot' ||
-            value.provider === 'opencode'
+            value.provider === 'opencode' ||
+            value.provider === 'antigravity'
           ? value.provider
           : 'claude',
     ...(typeof value.step_id === 'string' && value.step_id
@@ -1052,7 +1075,11 @@ function normalizeExecutionModelAliasPreference(
   if (raw.mode === 'agent') {
     const agentId = typeof raw.agent_id === 'string' ? raw.agent_id.trim() : '';
     return agentId.startsWith('agent_model_')
-      ? { mode: 'agent', agent_id: agentId }
+      ? {
+          mode: 'agent',
+          agent_id: agentId,
+          ...normalizeStoredAgentAliasBase(raw.base),
+        }
       : undefined;
   }
   if (raw.mode === 'inline') {

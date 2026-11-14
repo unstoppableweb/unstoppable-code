@@ -65,6 +65,16 @@ export interface EnsureRepoShadowOptions {
   signal?: AbortSignal;
 }
 
+/** A completed best-effort lookup found no branch; not proof of remote health. */
+export class RepoShadowNoDefaultBranchError extends Error {
+  public constructor(repoRoot: string) {
+    super(
+      `Cannot maintain a default-branch shadow for "${repoRoot}": no remote default branch`,
+    );
+    // Keep legacy Error text; the internal marker is the prototype, not its name.
+  }
+}
+
 export class RepoShadowEnsureCanceledError extends Error {
   public constructor() {
     super('Repository shadow preparation was canceled.');
@@ -131,6 +141,7 @@ export function setRepoShadowRetirementHandler(
 interface RecordedEnsureFailure {
   failedAt: number;
   message: string;
+  noDefaultBranch: boolean;
 }
 
 const recentEnsureFailures = new Map<string, RecordedEnsureFailure>();
@@ -146,6 +157,7 @@ function recordEnsureFailure(repoRoot: string, error: unknown): void {
   recentEnsureFailures.set(repoRoot, {
     failedAt: Date.now(),
     message: error instanceof Error ? error.message : String(error),
+    noDefaultBranch: error instanceof RepoShadowNoDefaultBranchError,
   });
 }
 
@@ -339,7 +351,9 @@ export async function ensureRepoShadowEffect(
   if (options?.bypassFailureCache !== true) {
     const failure = getRecentEnsureFailure(repoRoot);
     if (failure) {
-      throw new Error(failure.message);
+      throw failure.noDefaultBranch
+        ? new RepoShadowNoDefaultBranchError(repoRoot)
+        : new Error(failure.message);
     }
   }
 
@@ -377,7 +391,9 @@ export async function withEnsuredRepoShadow<T>(
   if (options.bypassFailureCache !== true) {
     const failure = getRecentEnsureFailure(repoRoot);
     if (failure !== null) {
-      throw new Error(failure.message);
+      throw failure.noDefaultBranch
+        ? new RepoShadowNoDefaultBranchError(repoRoot)
+        : new Error(failure.message);
     }
   }
   return withRepoLock(repoRoot, async () => {
@@ -467,9 +483,7 @@ async function ensureRepoShadowInternal(
         );
   assertEnsureContinues(shouldContinue);
   if (!defaultBranch) {
-    throw new Error(
-      `Cannot maintain a default-branch shadow for "${repoRoot}": no remote default branch`,
-    );
+    throw new RepoShadowNoDefaultBranchError(repoRoot);
   }
 
   const shadowDir = getRepoShadowDir(repoRoot);

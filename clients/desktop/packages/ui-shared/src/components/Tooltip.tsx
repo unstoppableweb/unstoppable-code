@@ -12,6 +12,7 @@ import {
   useState,
   type FocusEvent,
   type JSX,
+  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -105,8 +106,10 @@ export interface TooltipProps {
    * its parent (e.g. full-width sidebar buttons) pass `className="w-full"`.
    */
   className?: string;
-  /** Surface classes; replaces the default `whitespace-nowrap` when supplied. */
+  /** Surface classes that override the default wrapping. */
   contentClassName?: string;
+  /** Limit description previews to five lines. Status and diagnostic text wraps in full by default. */
+  clamp?: boolean;
   /**
    * Drops the wrapper's `shrink-0` so a trigger inside a space-constrained flex
    * rail can still be squeezed (the desktop composer toolbar, which compresses
@@ -136,6 +139,10 @@ export interface TooltipProps {
    * body, outside any replay-blocked transcript or panel around the trigger.
    */
   replayBlock?: boolean;
+  /** Let a touch user read help on a focusable, unavailable control. */
+  showOnTouch?: boolean;
+  /** Open when the trigger itself is activated, including a tap or key press. */
+  showOnPress?: boolean;
   /** The trigger element. */
   children: ReactNode;
 }
@@ -209,15 +216,19 @@ export function Tooltip({
   placement = 'top',
   tone = 'default',
   className,
-  contentClassName = 'whitespace-nowrap',
+  contentClassName,
+  clamp = false,
   allowShrink = false,
   disabled = false,
   openDelay = 0,
   suppressed = false,
   replayBlock = false,
+  showOnTouch = false,
+  showOnPress = false,
   children,
 }: TooltipProps): JSX.Element {
-  const interactive = Boolean(link);
+  const defaultContent = contentClassName === undefined;
+  const labelClassName = clamp ? 'line-clamp-5' : undefined;
   const tooltipId = useId();
   const wrapperRef = useRef<HTMLSpanElement | null>(null);
   const tooltipRef = useRef<HTMLSpanElement | null>(null);
@@ -227,6 +238,8 @@ export function Tooltip({
   // moves, so the resting pointer's next movement does not reopen it.
   const escapeDismissedRef = useRef(false);
   const [tooltipMounted, setTooltipMounted] = useState(false);
+  const [scrollable, setScrollable] = useState(false);
+  const interactive = Boolean(link) || scrollable;
   const [position, setPosition] = useState<{
     top: number;
     left: number;
@@ -243,6 +256,7 @@ export function Tooltip({
     const view = wrapper.ownerDocument.defaultView ?? window;
     const tooltipWidth = tooltip.offsetWidth;
     const tooltipHeight = tooltip.offsetHeight;
+    setScrollable(!clamp && tooltip.scrollHeight > tooltip.clientHeight);
     const maxTop = Math.max(
       VIEWPORT_PADDING,
       view.innerHeight - tooltipHeight - VIEWPORT_PADDING,
@@ -290,7 +304,7 @@ export function Tooltip({
       }
       return { top, left };
     });
-  }, [placement]);
+  }, [clamp, placement]);
 
   const openTimerRef = useRef<number | null>(null);
   const clearOpenTimer = useCallback((): void => {
@@ -316,6 +330,7 @@ export function Tooltip({
     clearOpenTimer();
     clearHideTimer();
     setTooltipMounted(false);
+    setScrollable(false);
     setPosition(null);
   }, [clearOpenTimer, clearHideTimer]);
 
@@ -426,6 +441,29 @@ export function Tooltip({
     [hideTooltip],
   );
 
+  function handleScrollKey(event: KeyboardEvent<HTMLSpanElement>): void {
+    const surface = tooltipRef.current;
+    if (
+      !surface ||
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey
+    )
+      return;
+    const offsets: Readonly<Record<string, number>> = {
+      ArrowDown: 24,
+      ArrowUp: -24,
+      PageDown: surface.clientHeight,
+      PageUp: -surface.clientHeight,
+    };
+    const offset = offsets[event.key];
+    if (typeof offset !== 'number') return;
+    event.preventDefault();
+    event.stopPropagation();
+    surface.scrollTop += offset;
+  }
+
   // `label`/`link` are deliberate dependencies: a mounted tooltip can swap
   // content in place (e.g. a toggle button whose action label flips on click
   // while the pointer stays put), which changes the tooltip's size and
@@ -437,7 +475,7 @@ export function Tooltip({
     }
 
     updatePosition();
-  }, [tooltipMounted, updatePosition, label, link]);
+  }, [tooltipMounted, updatePosition, label, link, clamp]);
 
   // Inline reposition effect (mirrors the desktop
   // `useWindowPositionInvalidation` hook and ui-shared's existing
@@ -543,6 +581,22 @@ export function Tooltip({
       onMouseLeave={requestHide}
       onFocus={handleFocus}
       onBlur={handleBlur}
+      onKeyDown={scrollable ? handleScrollKey : undefined}
+      onClick={
+        showOnPress
+          ? (): void => {
+              escapeDismissedRef.current = false;
+              showTooltip();
+            }
+          : undefined
+      }
+      onPointerUp={
+        showOnTouch
+          ? (event): void => {
+              if (event.pointerType === 'touch') showTooltip();
+            }
+          : undefined
+      }
     >
       {describedChildren}
       {tooltipMounted &&
@@ -553,27 +607,37 @@ export function Tooltip({
             ref={tooltipRef}
             id={tooltipId}
             role="tooltip"
-            // A plain tip draws over an in-app browser page without freezing
-            // it; a tip with a link must take the pointer, so it does not.
+            // Links and overflowing text need pointer input. Short labels can
+            // draw over an in-app browser without freezing it.
             {...(interactive ? {} : { [ABOVE_BROWSER_ATTRIBUTE]: 'true' })}
             onMouseEnter={interactive ? showTooltip : undefined}
             onMouseLeave={interactive ? requestHide : undefined}
             onFocus={interactive ? handleFocus : undefined}
             onBlur={interactive ? handleBlur : undefined}
-            // Single-line by default, as every pre-existing caller expects.
-            // Callers can opt into a bounded, wrapping surface via contentClassName.
             // With a shortcut the key cap sits in the corner: its top, bottom
             // and right insets are all the 4px vertical padding.
-            className={`fixed z-tooltip flex flex-col gap-1 ${contentClassName} rounded-md py-1 text-xs font-normal shadow-tooltip ${
+            className={`fixed z-tooltip flex flex-col gap-1 ${contentClassName ?? 'w-max whitespace-normal wrap-anywhere'} rounded-md py-1 text-xs font-normal shadow-tooltip ${
               shortcut ? 'pl-2 pr-1' : 'px-2'
             } ${
               tone === 'inverse'
                 ? 'bg-tooltip-inverse fg-tooltip-inverse'
                 : 'bg-quaternary fg-primary'
-            } ${interactive ? 'pointer-events-auto' : 'pointer-events-none'}${
+            } ${interactive ? 'electron-no-drag pointer-events-auto' : 'pointer-events-none'}${
               replayBlock ? ` ${REPLAY_BLOCK_CLASS}` : ''
             }`}
             style={{
+              ...(!clamp
+                ? {
+                    maxHeight: '60vh',
+                    overflowY: 'auto',
+                    overscrollBehaviorY: 'contain',
+                  }
+                : {}),
+              ...(defaultContent
+                ? {
+                    maxWidth: `min(22rem, calc(100vw - ${2 * VIEWPORT_PADDING}px))`,
+                  }
+                : {}),
               ...(position
                 ? { top: position.top, left: position.left }
                 : { visibility: 'hidden', top: 0, left: 0 }),
@@ -581,13 +645,13 @@ export function Tooltip({
           >
             {shortcut ? (
               <span className="inline-flex items-center gap-2">
-                <span>{label}</span>
+                <span className={labelClassName}>{label}</span>
                 {/* One capsule per key; its 4px inset from the tooltip's
                     top, bottom and end matches the vertical padding. */}
                 <Kbd shortcut={shortcut} data-testid="tooltip-shortcut" />
               </span>
             ) : (
-              <span>{label}</span>
+              <span className={labelClassName}>{label}</span>
             )}
             {link &&
               ('href' in link ? (

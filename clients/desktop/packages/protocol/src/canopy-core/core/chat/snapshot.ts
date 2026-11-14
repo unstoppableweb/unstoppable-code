@@ -16,9 +16,16 @@ const scopedWorktree = CanopyWorkspaceScopeSchema.extend({
   worktreeId: id,
 });
 
+/**
+ * Revision 2 of core.chat.snapshot.get names the opened chat's Core session
+ * (CAN-6509); the desktop core refuses it.
+ */
+export const CORE_CHAT_SNAPSHOT_GET_SCHEMA_REVISION = 2;
+
 export const CoreChatSnapshotGetParamsSchema = z.strictObject({
   scope: scopedWorktree,
   chatId: id.optional(),
+  revision: z.literal(CORE_CHAT_SNAPSHOT_GET_SCHEMA_REVISION).optional(),
 });
 
 /** One TODO item of a chat's current turn (CAN-4110). */
@@ -126,19 +133,59 @@ export const CoreChatRuntimeSummarySchema = z.object({
   lastActivityAt: z.number().optional(),
   /** The running turn's id, as `core.chat.turn.cancel` takes it; absent when none runs or the core does not report it (CAN-4185). */
   activeTurnId: id.optional(),
+  /** Whether the core holds this chat's queued entries for editing (`lock`); absent when it does not say, which clients read as unsupported (CAN-6106). */
+  queuedEditHold: z.boolean().optional(),
 });
+
+/** A decimal integer as Core writes it (REST reads it the same way), never converted to a number. */
+const decimal = z.string().regex(/^\d+$/);
 
 export const CoreChatQueueSummarySchema = z.object({
   chatId: id,
+  /**
+   * The state version the entries were read at, as queue commands compare it;
+   * the web core sends it, the desktop core leaves it out (CAN-6509).
+   */
+  stateVersion: decimal.optional(),
+  /**
+   * The Core session the entries were read from; its state version counts
+   * apart from another session's (CAN-6509).
+   */
+  sessionId: id.optional(),
   entries: z.array(
     z.object({
       id,
       origin: z.enum(['desktop', 'portal']),
       enqueuedAtMs: z.number(),
       revision: z.number().int().min(1).optional(),
+      // The queued row as the web core reads it from Core (CAN-6509); the
+      // desktop core leaves these out.
+      /** The prompt's text. */
+      text: z.string().optional(),
+      /** The send's client request id, which retires its outbox entry. */
+      clientRequestId: id.optional(),
+      /** Core's id for the prompt message. */
+      messageId: id.optional(),
+      /** Core's position for the entry; entries come in this order. */
+      queueOrder: decimal.optional(),
+      promptSource: z.enum(['human', 'automated']).optional(),
+      /** The agent that sent it (`AgentSentInfo`), as Core stored it. */
+      agentSent: CanopyJsonValueSchema.optional(),
+      /** The watcher that delivered it (`ChatWatcherFiredInfo`). */
+      watcherFired: CanopyJsonValueSchema.optional(),
+      hasAttachments: z.boolean().optional(),
+      /** Why Core holds it: `background_work` while background work runs. */
+      waitingReason: z.string().optional(),
+      /** The settings that would make Core hold it (`SettingsHeldChange`), in display order. */
+      restartHeldChanges: z.array(z.string()).optional(),
+      /** A wake turn Core started for background work; absent for a user's prompt. */
+      wake: z.literal(true).optional(),
     }),
   ),
 });
+export type CoreChatQueueEntry = z.output<
+  typeof CoreChatQueueSummarySchema
+>['entries'][number];
 
 export const CoreChatSnapshotGetResultSchema = z.object({
   workspaceId: id,
@@ -146,6 +193,11 @@ export const CoreChatSnapshotGetResultSchema = z.object({
   revision,
   /** Resumes `core.chat.events` for this scope right after `revision` (CAN-4111). */
   eventsCursor: CanopyStreamCursorSchema.optional(),
+  /**
+   * The opened chat's Core session, at revision 2 for a chat Core runs a
+   * session for; a continued chat names its next session (CAN-6509).
+   */
+  sessionId: id.optional(),
   tabs: z.object({
     activeTabId: z.string(),
     items: z.array(CoreChatTabSummarySchema),

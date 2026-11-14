@@ -9,7 +9,12 @@ import {
   type PersistedChatTab,
 } from '@canopy/desktop-shared/types';
 import { KeyedAsyncLock } from './keyed-async-lock';
-import { resolveChatArchivesFilePath } from './resolve-worktree';
+import {
+  resolveChatArchivesFilePath,
+  resolveChatTabsFilePath,
+  resolveChatJournalFilePath,
+} from './resolve-worktree';
+import { ChatStorageV2 } from './chat-storage-v2';
 import { isPersistedChatTab } from './chat-tabs-reader';
 import { isRecord } from './type-guards';
 
@@ -56,6 +61,31 @@ export async function readChatArchivesFile(
     },
     selection,
   );
+}
+
+/** Metadata-only archive read without migration, recovery or checkpoint writes. */
+export async function readChatArchiveMetadata(
+  projectId: string,
+  worktreeId: string,
+): Promise<ArchivedChatsFile> {
+  const storage = ChatStorageV2.fromLegacyPaths({
+    tabs: resolveChatTabsFilePath(projectId, worktreeId),
+    archives: resolveChatArchivesFilePath(projectId, worktreeId),
+    journal: resolveChatJournalFilePath(projectId, worktreeId),
+  });
+  if ((await storage.authority()) === 'v1') {
+    const legacy = await readChatArchivesFileUnlocked(projectId, worktreeId);
+    // Migration can publish authority and remove the legacy file during the read.
+    if ((await storage.authority()) === 'v1') return legacy;
+  }
+  const { archive } = await storage.indexes();
+  return {
+    version: 1,
+    archived: archive.archived.map((entry) => ({
+      ...entry,
+      tab: { ...entry.tab, messages: [] },
+    })),
+  };
 }
 
 /**

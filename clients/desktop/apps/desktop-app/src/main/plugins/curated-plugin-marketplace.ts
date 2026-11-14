@@ -40,6 +40,7 @@ import {
   type PluginProviderFacet,
 } from '@canopy/execution-engine/types/plugins';
 import { safeReadJson } from '../lib/fs-utils';
+import { withCuratedPluginDisplay } from './curated-plugin-display';
 import {
   getCuratedPluginsMarketplaceDir,
   getCuratedPluginsSyncLockFilePath,
@@ -299,7 +300,7 @@ async function scanCuratedMarketplaceUncached(
     curated: true,
     removable: false,
     pluginCount: plugins.length,
-    plugins,
+    plugins: await Promise.all(plugins.map(withCuratedPluginDisplay)),
     providerStatus: {
       claude: claudeStatus,
       codex: codexStatus,

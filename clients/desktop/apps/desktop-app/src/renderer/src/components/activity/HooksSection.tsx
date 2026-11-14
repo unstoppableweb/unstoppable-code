@@ -17,7 +17,6 @@ import {
 } from '@canopy/ui-app';
 import { ActivitySection, type CollapsedIconColor } from './ActivitySection';
 import { SettingsGearButton } from './RunOutputControls';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { SourceInfoModal } from './SourceInfoModal';
 import {
   getHookTriggerDisplayName,
@@ -46,6 +45,7 @@ import {
   HeaderActionButton,
   PauseResumeIcon,
   SourceInfoButton,
+  CodeBlock,
 } from '@canopy/ui-shared/components';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { WatcherManagementButton } from '@/components/watchers/WatcherManagementButton';
@@ -226,11 +226,13 @@ function HookActionDetails({
             (item.placeholder ? (
               <span className="italic fg-secondary/60">{item.value}</span>
             ) : (
-              <pre
-                className={`${item.replayBlocked ? POSTHOG_REPLAY_BLOCK_CLASS : ''} max-h-12 flex-1 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-1.5 py-0.5 font-mono text-3xs fg-secondary`}
+              <CodeBlock
+                variant="snippet"
+                replay={item.replayBlocked ? 'block' : 'inherit'}
+                className="max-h-12 flex-1"
               >
                 {item.value}
-              </pre>
+              </CodeBlock>
             ))}
         </div>
       ))}
@@ -252,11 +254,13 @@ export function HookActionList({
     <div className="flex flex-col gap-2">
       {actions.map((action, ai) => (
         <div key={`${ai}:${action.type}`} className="flex flex-col gap-1">
-          <pre
-            className={`${action.type === 'pipeline' ? '' : POSTHOG_REPLAY_BLOCK_CLASS} max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
+          <CodeBlock
+            variant="snippet"
+            replay={action.type === 'pipeline' ? 'inherit' : 'block'}
+            className="max-h-16"
           >
             {getHookActionLabel(action)}
-          </pre>
+          </CodeBlock>
           <HookActionDetails action={action} />
         </div>
       ))}

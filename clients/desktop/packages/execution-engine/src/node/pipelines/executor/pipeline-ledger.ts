@@ -73,7 +73,8 @@ export interface PipelineLedgerStepFacts {
  * - `not_an_agent_step`: not one of the five agent actions.
  * - `helper_step`: `router`, `condenser` or `quality-gate`, helpers by purpose.
  * - `no_tool_support`: an Ollama route.
- * - `cursor_harness`: a Cursor step; there is no Ledger route for it in v1.
+ * - `cursor_harness`: a Cursor or Copilot step; there is no Ledger route for
+ *   either in v1.
  * - `plan_permission`: a Claude step under `plan`, where Claude runs no tools.
  * - `invalid_preset`: a preset the step itself will reject.
  * - `no_host_route`: the runtime has no Ledger port (CLI-run pipelines).
@@ -94,7 +95,7 @@ export type PipelineLedgerExclusionReason =
 export type PipelineLedgerAgentResolution =
   | {
       readonly kind: 'agent';
-      readonly harness: 'claude' | 'codex';
+      readonly harness: 'claude' | 'codex' | 'opencode';
       readonly permissionPreset: PermissionPreset;
     }
   | {
@@ -140,7 +141,9 @@ export function resolvePipelineLedgerAgent(
     return excluded('invalid_preset');
   }
   const harness = facts.harness ?? 'claude';
-  if (harness === 'codex') return { kind: 'agent', harness, permissionPreset };
+  // Codex and OpenCode run tools under every preset, `plan` included.
+  if (harness === 'codex' || harness === 'opencode')
+    return { kind: 'agent', harness, permissionPreset };
   if (harness !== 'claude') return excluded('cursor_harness');
   if (permissionPreset === 'plan') return excluded('plan_permission');
   return { kind: 'agent', harness, permissionPreset };

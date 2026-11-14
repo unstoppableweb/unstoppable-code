@@ -124,6 +124,7 @@ export function ProfileActivitySection({
       <div className="flex flex-col gap-3">
         {error ? (
           <ErrorBanner
+            errorSource="profile-activity-section"
             error={error?.copy}
             details={error?.details}
             onRetry={retry}
@@ -155,6 +156,7 @@ export function ProfileActivitySection({
 
       {error && (
         <ErrorBanner
+          errorSource="profile-activity-section"
           error={error?.copy}
           details={error?.details}
           onRetry={retry}

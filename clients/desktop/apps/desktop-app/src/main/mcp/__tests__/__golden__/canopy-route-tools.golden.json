@@ -27,7 +27,7 @@
       ],
       [
         "SearchActions",
-        "3b714fdbea5c2c2373d996a0a96d745a955df3284b19a2b4cb2c621a6201c1c0"
+        "cb8147eebd8d05e6c5c30ea34161715346b1cc9ed6b14c26e9d3c26b6e9f96d4"
       ],
       [
         "GetCurrentUiState",
@@ -133,7 +133,7 @@
       ],
       [
         "SearchActions",
-        "3b714fdbea5c2c2373d996a0a96d745a955df3284b19a2b4cb2c621a6201c1c0"
+        "cb8147eebd8d05e6c5c30ea34161715346b1cc9ed6b14c26e9d3c26b6e9f96d4"
       ],
       [
         "GetCurrentUiState",
@@ -195,16 +195,8 @@
       ]
     ]
   },
-  "claude-code-terminal-bare": {
+  "antigravity-acp-bare": {
     "main": [
-      [
-        "WatchCommand",
-        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
-      ],
-      [
-        "ScheduleWakeup",
-        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
-      ],
       [
         "GetScriptOutput",
         "1eb249756fcea42b3820b7c92b59898b3a8602a44c74e0d662bc785aeb3c7cc2"
@@ -219,11 +211,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "a38ee252dec295505ab1524f53b5dc87e94a6e6cd295cfd9331779af98fbf149"
       ],
       [
         "ReadPipelineYaml",
@@ -251,7 +251,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -259,7 +259,423 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "861d0a8f8c5b0bf36a5a7c01830f9a4f3ff103cdc943d4b283e22b4478b1014a"
+      ],
+      [
+        "WatchGitHubItems",
+        "a2f55a27eb694e4d622cb30f47a0a69f74bfb6c93b2c3985c4f30a9383baad8e"
+      ],
+      [
+        "GetGitHubPullRequestStatus",
+        "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
+      ],
+      [
+        "WatchCommand",
+        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
+      ],
+      [
+        "ScheduleWakeup",
+        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
+      ],
+      [
+        "DeleteWatchers",
+        "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
+      ],
+      [
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ],
+      [
+        "SetBaseBranch",
+        "6f226b8c364674c84fbb610a4e757c5b08175f6d487d873e4239fe8e34b5aa78"
+      ]
+    ],
+    "ui": [
+      [
+        "AskUserQuestion",
+        "242a37c05ed52ffc382fc930a1514526d6a7a1dfc72f8ebf253eca21896bfffe"
+      ]
+    ]
+  },
+  "antigravity-acp-full": {
+    "main": [
+      [
+        "GetScriptOutput",
+        "1eb249756fcea42b3820b7c92b59898b3a8602a44c74e0d662bc785aeb3c7cc2"
+      ],
+      [
+        "GetGitPreferences",
+        "7c3f879662f3c3b11100df907874c67279444645cbc60e4af36843e40dbff2df"
+      ],
+      [
+        "SaveMemory",
+        "1f57da049d35ee26685ef1313f6f9291196d8a834cfa2c125d28263a7784be7d"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "a38ee252dec295505ab1524f53b5dc87e94a6e6cd295cfd9331779af98fbf149"
+      ],
+      [
+        "ReadPipelineYaml",
+        "1e93a1974135902cef01c7b03ac4b1c7c55a87f1c92e6e7d0116d2f17a9f0377"
+      ],
+      [
+        "ShowFiles",
+        "02c056e03c13e16f2ca5ed327dab044c293cb07eb515b557384f4d56dffde807"
+      ],
+      [
+        "ShowCapabilities",
+        "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
+      ],
+      [
+        "GetFileComments",
+        "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
+      ],
+      [
+        "RespondToFileComment",
+        "ea2b115881087761ae11107e4ab25cce86bbd7f5e3246ac1c4a1efda311d810d"
+      ],
+      [
+        "SearchActions",
+        "53474b41b77c336dbffdfc8586c44e08239d62aed992cde7b84c37fd9761898a"
+      ],
+      [
+        "DispatchAction",
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
+      ],
+      [
+        "SearchWatchers",
+        "9def2985460f48199b643002bec574cd2a9157ac37950c5eb578f568c159f238"
+      ],
+      [
+        "SetupWatchers",
+        "861d0a8f8c5b0bf36a5a7c01830f9a4f3ff103cdc943d4b283e22b4478b1014a"
+      ],
+      [
+        "WatchGitHubItems",
+        "a2f55a27eb694e4d622cb30f47a0a69f74bfb6c93b2c3985c4f30a9383baad8e"
+      ],
+      [
+        "GetGitHubPullRequestStatus",
+        "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
+      ],
+      [
+        "WatchCommand",
+        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
+      ],
+      [
+        "ScheduleWakeup",
+        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
+      ],
+      [
+        "DeleteWatchers",
+        "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
+      ],
+      [
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ],
+      [
+        "SetBaseBranch",
+        "6f226b8c364674c84fbb610a4e757c5b08175f6d487d873e4239fe8e34b5aa78"
+      ]
+    ],
+    "ui": [
+      [
+        "AskUserQuestion",
+        "242a37c05ed52ffc382fc930a1514526d6a7a1dfc72f8ebf253eca21896bfffe"
+      ]
+    ]
+  },
+  "antigravity-acp-standalone-bare": {
+    "main": [
+      [
+        "GetScriptOutput",
+        "1eb249756fcea42b3820b7c92b59898b3a8602a44c74e0d662bc785aeb3c7cc2"
+      ],
+      [
+        "WatchCommand",
+        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
+      ],
+      [
+        "ScheduleWakeup",
+        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
+      ],
+      [
+        "DeleteWatchers",
+        "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
+      ],
+      [
+        "SaveMemory",
+        "1f57da049d35ee26685ef1313f6f9291196d8a834cfa2c125d28263a7784be7d"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "a38ee252dec295505ab1524f53b5dc87e94a6e6cd295cfd9331779af98fbf149"
+      ],
+      [
+        "ReadPipelineYaml",
+        "1e93a1974135902cef01c7b03ac4b1c7c55a87f1c92e6e7d0116d2f17a9f0377"
+      ],
+      [
+        "ShowFiles",
+        "02c056e03c13e16f2ca5ed327dab044c293cb07eb515b557384f4d56dffde807"
+      ],
+      [
+        "ShowCapabilities",
+        "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
+      ],
+      [
+        "GetFileComments",
+        "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
+      ],
+      [
+        "RespondToFileComment",
+        "ea2b115881087761ae11107e4ab25cce86bbd7f5e3246ac1c4a1efda311d810d"
+      ],
+      [
+        "SearchActions",
+        "53474b41b77c336dbffdfc8586c44e08239d62aed992cde7b84c37fd9761898a"
+      ],
+      [
+        "DispatchAction",
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
+      ],
+      [
+        "SearchWatchers",
+        "9def2985460f48199b643002bec574cd2a9157ac37950c5eb578f568c159f238"
+      ],
+      [
+        "SetupWatchers",
+        "861d0a8f8c5b0bf36a5a7c01830f9a4f3ff103cdc943d4b283e22b4478b1014a"
+      ],
+      [
+        "WatchGitHubItems",
+        "a2f55a27eb694e4d622cb30f47a0a69f74bfb6c93b2c3985c4f30a9383baad8e"
+      ],
+      [
+        "GetGitHubPullRequestStatus",
+        "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
+      ],
+      [
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ]
+    ],
+    "ui": [
+      [
+        "AskUserQuestion",
+        "242a37c05ed52ffc382fc930a1514526d6a7a1dfc72f8ebf253eca21896bfffe"
+      ]
+    ]
+  },
+  "antigravity-acp-standalone-full": {
+    "main": [
+      [
+        "GetScriptOutput",
+        "1eb249756fcea42b3820b7c92b59898b3a8602a44c74e0d662bc785aeb3c7cc2"
+      ],
+      [
+        "WatchCommand",
+        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
+      ],
+      [
+        "ScheduleWakeup",
+        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
+      ],
+      [
+        "DeleteWatchers",
+        "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
+      ],
+      [
+        "SaveMemory",
+        "1f57da049d35ee26685ef1313f6f9291196d8a834cfa2c125d28263a7784be7d"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "a38ee252dec295505ab1524f53b5dc87e94a6e6cd295cfd9331779af98fbf149"
+      ],
+      [
+        "ReadPipelineYaml",
+        "1e93a1974135902cef01c7b03ac4b1c7c55a87f1c92e6e7d0116d2f17a9f0377"
+      ],
+      [
+        "ShowFiles",
+        "02c056e03c13e16f2ca5ed327dab044c293cb07eb515b557384f4d56dffde807"
+      ],
+      [
+        "ShowCapabilities",
+        "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
+      ],
+      [
+        "GetFileComments",
+        "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
+      ],
+      [
+        "RespondToFileComment",
+        "ea2b115881087761ae11107e4ab25cce86bbd7f5e3246ac1c4a1efda311d810d"
+      ],
+      [
+        "SearchActions",
+        "53474b41b77c336dbffdfc8586c44e08239d62aed992cde7b84c37fd9761898a"
+      ],
+      [
+        "DispatchAction",
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
+      ],
+      [
+        "SearchWatchers",
+        "9def2985460f48199b643002bec574cd2a9157ac37950c5eb578f568c159f238"
+      ],
+      [
+        "SetupWatchers",
+        "861d0a8f8c5b0bf36a5a7c01830f9a4f3ff103cdc943d4b283e22b4478b1014a"
+      ],
+      [
+        "WatchGitHubItems",
+        "a2f55a27eb694e4d622cb30f47a0a69f74bfb6c93b2c3985c4f30a9383baad8e"
+      ],
+      [
+        "GetGitHubPullRequestStatus",
+        "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
+      ],
+      [
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ]
+    ],
+    "ui": [
+      [
+        "AskUserQuestion",
+        "242a37c05ed52ffc382fc930a1514526d6a7a1dfc72f8ebf253eca21896bfffe"
+      ]
+    ]
+  },
+  "claude-code-terminal-bare": {
+    "main": [
+      [
+        "WatchCommand",
+        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
+      ],
+      [
+        "ScheduleWakeup",
+        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
+      ],
+      [
+        "GetScriptOutput",
+        "1eb249756fcea42b3820b7c92b59898b3a8602a44c74e0d662bc785aeb3c7cc2"
+      ],
+      [
+        "GetGitPreferences",
+        "7c3f879662f3c3b11100df907874c67279444645cbc60e4af36843e40dbff2df"
+      ],
+      [
+        "SaveMemory",
+        "1f57da049d35ee26685ef1313f6f9291196d8a834cfa2c125d28263a7784be7d"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
+      ],
+      [
+        "ReadPipelineYaml",
+        "1e93a1974135902cef01c7b03ac4b1c7c55a87f1c92e6e7d0116d2f17a9f0377"
+      ],
+      [
+        "ShowFiles",
+        "02c056e03c13e16f2ca5ed327dab044c293cb07eb515b557384f4d56dffde807"
+      ],
+      [
+        "ShowCapabilities",
+        "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
+      ],
+      [
+        "GetFileComments",
+        "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
+      ],
+      [
+        "RespondToFileComment",
+        "ea2b115881087761ae11107e4ab25cce86bbd7f5e3246ac1c4a1efda311d810d"
+      ],
+      [
+        "SearchActions",
+        "53474b41b77c336dbffdfc8586c44e08239d62aed992cde7b84c37fd9761898a"
+      ],
+      [
+        "DispatchAction",
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
+      ],
+      [
+        "SearchWatchers",
+        "9def2985460f48199b643002bec574cd2a9157ac37950c5eb578f568c159f238"
+      ],
+      [
+        "SetupWatchers",
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -325,11 +741,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -357,7 +781,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -365,7 +789,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -521,11 +945,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -553,7 +985,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -561,7 +993,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -635,11 +1067,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -667,7 +1107,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -675,7 +1115,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -781,11 +1221,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -813,7 +1261,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -821,7 +1269,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -883,11 +1331,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -915,7 +1371,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -923,7 +1379,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -973,11 +1429,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1013,7 +1477,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1021,7 +1485,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1079,11 +1543,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1119,7 +1591,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1127,7 +1599,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1205,11 +1677,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1245,7 +1725,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -1253,7 +1733,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1303,11 +1783,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1343,7 +1831,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -1351,7 +1839,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1393,11 +1881,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1425,7 +1921,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1433,7 +1929,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1500,11 +1996,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1532,7 +2036,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1540,7 +2044,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1662,11 +2166,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1694,7 +2206,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1702,7 +2214,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1764,11 +2276,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1796,7 +2316,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1804,7 +2324,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -1906,11 +2426,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -1946,7 +2474,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -1954,7 +2482,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2028,11 +2556,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2068,7 +2604,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -2076,7 +2612,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2210,11 +2746,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2250,7 +2794,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -2258,7 +2802,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2320,11 +2864,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2360,7 +2912,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -2368,7 +2920,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2458,11 +3010,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2498,7 +3058,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -2506,7 +3066,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2580,11 +3140,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2620,7 +3188,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -2628,7 +3196,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2758,11 +3326,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2798,7 +3374,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -2806,7 +3382,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2868,11 +3444,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -2908,7 +3492,7 @@
       ],
       [
         "DispatchAction",
-        "bc53a630d345f5628d499f94e6414a886b4a473e1779aed901195d65c904514f"
+        "d63296c38171d3cb5688328bf97e1d9b389b9094253dcc81c802607e752a1f50"
       ],
       [
         "SearchWatchers",
@@ -2916,7 +3500,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -2970,11 +3554,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -3002,7 +3594,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -3010,7 +3602,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -3162,11 +3754,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "ReadPipelineYaml",
@@ -3202,7 +3802,7 @@
       ],
       [
         "DispatchAction",
-        "0e17531bcf86ce20ca2c12e98e2c7ae51ed2d17c174e9e35f2ebee0ea7a5d513"
+        "d55a9e5914c185ff3ea5b8243ab3acfed0a8df488aef4c8c0812cfb73820f80a"
       ],
       [
         "SearchWatchers",
@@ -3210,7 +3810,7 @@
       ],
       [
         "SetupWatchers",
-        "560b607de7a2ac2d86d0d79b035b6cb740f707924c48eed45987be1e96044dda"
+        "0148220e50d0538c6021d01f4c1c28dca0ae2d9730b7d8e6aa2fd878e8ece128"
       ],
       [
         "WatchGitHubItems",
@@ -3320,11 +3920,19 @@
     "main": [
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "AddFeedEntry",
@@ -3342,11 +3950,19 @@
     "ui": [
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "AddFeedEntry",
@@ -3374,11 +3990,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "AddFeedEntry",
@@ -3404,11 +4028,19 @@
       ],
       [
         "SearchMemory",
-        "eef2c5a3cd15e9c49e95b9ab68f5e3665a24122607b46bc54d36b0ae458abec6"
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
       ],
       [
         "ReadMemory",
-        "bc0b2c49d01fc1541e22b0f3ca2fb87dff16f8834e104a3d464bd3ff510cf369"
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
       ],
       [
         "AddFeedEntry",

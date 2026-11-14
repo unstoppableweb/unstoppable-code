@@ -679,6 +679,7 @@ export function TeamFeedSection({
         {error && (
           <div className="px-6 pt-6">
             <ErrorBanner
+              errorSource="team-feed-section"
               error={error?.copy}
               details={error?.details}
               onRetry={retryLoad}
@@ -746,6 +747,7 @@ export function TeamFeedSection({
 
         {error && (
           <ErrorBanner
+            errorSource="team-feed-section"
             error={error?.copy}
             details={error?.details}
             onRetry={retryLoad}

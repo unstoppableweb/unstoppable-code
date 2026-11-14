@@ -27,10 +27,40 @@
 
 /** The marketplace whose names this table is allowed to interpret. */
 export const OPENAI_PLUGIN_MARKETPLACE_ID = 'openai-curated';
+export const CLAUDE_PLUGIN_MARKETPLACE_ID = 'claude-plugins-official';
+
+// GitHub org slugs are globally unique. Only exact matches to known org slugs
+// receive a display name, so lookalikes keep their original handles.
+const PUBLISHER_NAMES = new Map([
+  ['anthropic', 'Anthropic'],
+  ['anthropics', 'Anthropic'],
+  ['asana', 'Asana'],
+  ['atlassian', 'Atlassian'],
+  ['aws', 'AWS'],
+  ['awslabs', 'AWS Labs'],
+  ['getsentry', 'Sentry'],
+  ['github', 'GitHub'],
+  ['google', 'Google'],
+  ['grafana', 'Grafana'],
+  ['microsoft', 'Microsoft'],
+  ['mongodb', 'MongoDB'],
+  ['openai', 'OpenAI'],
+  ['pendo-io', 'Pendo'],
+  ['shopify', 'Shopify'],
+  ['spotify', 'Spotify'],
+  ['unstoppabledomains', 'Unstoppable Domains'],
+  ['upstash', 'Upstash'],
+  ['vercel', 'Vercel'],
+]);
+
+export function marketplacePublisherDisplayName(name: string): string {
+  const trimmed = name.trim();
+  return PUBLISHER_NAMES.get(trimmed.toLowerCase()) ?? trimmed;
+}
 
 /** Providers report these catalogs by their repo name; people read these. */
 const OFFICIAL_MARKETPLACE_NAMES: ReadonlyMap<string, string> = new Map([
-  ['claude-plugins-official', 'Claude official'],
+  [CLAUDE_PLUGIN_MARKETPLACE_ID, 'Claude official'],
 ]);
 
 /** A marketplace's name for display: tidy when a provider reports a raw id. */
@@ -147,6 +177,13 @@ export function officialProductLogoKey(
   marketplaceId: string | undefined,
   plugin: OfficialProductLookup,
 ): string | undefined {
+  if (marketplaceId === CLAUDE_PLUGIN_MARKETPLACE_ID) {
+    const publisher = marketplacePublisherDisplayName(plugin.author ?? '');
+    if (plugin.name.toLowerCase() === 'asana' && publisher === 'Asana')
+      return 'asana';
+    if (plugin.name.toLowerCase() === 'context7' && publisher === 'Upstash')
+      return 'context7';
+  }
   return officialProduct(marketplaceId, plugin)?.logoKey;
 }
 
@@ -170,5 +207,8 @@ export function pluginDisplayAuthor(
   marketplaceId: string | undefined,
   plugin: OfficialProductLookup,
 ): string | undefined {
-  return officialProductVendor(marketplaceId, plugin) ?? plugin.author;
+  return (
+    officialProductVendor(marketplaceId, plugin) ??
+    (marketplacePublisherDisplayName(plugin.author ?? '') || undefined)
+  );
 }

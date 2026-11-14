@@ -279,7 +279,9 @@ export function SharePlanModal({
       label: STOP_LABEL,
       confirm: {
         title: STOP_TITLE,
-        body: `${audienceName} will lose access, and comments on the shared copy will be deleted. Sharing again creates a new link.`,
+        // Names only what the audience loses. The owner's comment threads stay on
+        // the local plan, and "deleted" read as losing them (CAN-6529).
+        body: `${audienceName} will lose access. Sharing again creates a new link.`,
         busyLabel: STOP_BUSY_LABEL,
       },
       onStop: async (): Promise<void> => {

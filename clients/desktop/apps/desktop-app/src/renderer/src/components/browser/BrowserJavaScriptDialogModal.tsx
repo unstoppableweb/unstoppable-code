@@ -168,7 +168,11 @@ export function BrowserJavaScriptDialogModal({
             onChange={(event): void => setPromptText(event.target.value)}
           />
         )}
-        <ErrorBanner error={error} className="" />
+        <ErrorBanner
+          errorSource="browser-java-script-dialog-modal"
+          error={error}
+          className=""
+        />
       </form>
     </DialogModal>
   );

@@ -20,7 +20,7 @@ import {
   type FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import {
-  getWorkspaceIndexFilePath,
+  w5RecordReadPaths,
   getWorktreeAttachmentsDir,
   getWorkspaceWorktreeAttachmentsDir,
   getWorkspaceWorktreeRepoDir,
@@ -146,7 +146,7 @@ export async function getFileBrowserRoots(
     if (!target) throw filesystemScopeError('roots', 'notFound');
     const entry = readFilesystemWorkspaceIndexEntry(
       target.projectId,
-      await desktopW5FileStore.read(getWorkspaceIndexFilePath()),
+      await desktopW5FileStore.read(w5RecordReadPaths.index()),
     );
     if (entry.type !== 'cowork')
       throw filesystemScopeError('roots', 'invalidState');

@@ -285,6 +285,7 @@ export function FindInSurfaceBar({
         </div>
         {error ? (
           <ErrorBanner
+            errorSource="surface-find-error"
             className="mx-1 mb-1"
             error={error.message}
             onRetry={error.onRetry}

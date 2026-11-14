@@ -99,6 +99,7 @@ function PlanPanelLoadError({
       className="flex min-h-0 flex-1 flex-col p-3"
     >
       <Notice
+        errorSource="plan-panel-load"
         intent="destructive"
         actions={
           <NoticeButton

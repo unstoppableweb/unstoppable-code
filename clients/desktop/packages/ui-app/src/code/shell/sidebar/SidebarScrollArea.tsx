@@ -416,7 +416,7 @@ export function SidebarScrollArea({
       >
         <div
           ref={thumbRef}
-          className={`absolute top-0 touch-none rounded-full bg-fg-quaternary ${
+          className={`absolute top-0 touch-none rounded-full bg-fg-quaternary/50 ${
             isVisible ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
           data-sidebar-scrollbar-thumb=""

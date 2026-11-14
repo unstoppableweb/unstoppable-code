@@ -334,6 +334,7 @@ export function BrowserProfileDataSettings({
       dataTestId="browser-profile-data"
     >
       <DesktopErrorBanner
+        errorSource="browser-profile-data-error"
         className=""
         error={error?.error}
         {...(error?.details === undefined ? {} : { details: error.details })}
@@ -353,6 +354,7 @@ export function BrowserProfileDataSettings({
       {notice && <Notice intent="neutral">{notice}</Notice>}
       {job && (
         <Notice
+          errorSource="browser-profile-data-job"
           data-testid="browser-profile-data-job"
           intent={job.status === 'failed' ? 'destructive' : 'neutral'}
           title={`${jobKindLabel(job)}: ${jobStatusLabels[job.status]}`}

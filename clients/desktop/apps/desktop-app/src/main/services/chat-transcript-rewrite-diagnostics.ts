@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { logMainProcessWarn } from '../lib/main-process-logging';
 
 /**
  * Why the transcript planner rewrote an existing chat's committed history.
@@ -101,13 +100,20 @@ const CHAT_KEY_HASH_PREFIX = createHash('sha256').update(
   'chat-transcript-rewrite\0',
 );
 
+// Cold metadata-only transactions must not load the Electron logging host.
+function logRewriteWarning(message: string, diagnostic: unknown): void {
+  void import('../lib/main-process-logging')
+    .then(({ logMainProcessWarn }) => logMainProcessWarn(message, diagnostic))
+    .catch(() => undefined);
+}
+
 const logRecord: ChatTranscriptRewriteDiagnosticSink = (diagnostic) =>
-  logMainProcessWarn(
+  logRewriteWarning(
     '[chat-storage] full committed transcript rewrite',
     diagnostic,
   );
 const logRateRecord: ChatTranscriptRewriteRateDiagnosticSink = (diagnostic) =>
-  logMainProcessWarn(
+  logRewriteWarning(
     '[chat-storage] full rewrite rate above threshold',
     diagnostic,
   );

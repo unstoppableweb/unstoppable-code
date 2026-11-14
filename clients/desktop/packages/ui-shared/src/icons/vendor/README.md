@@ -98,6 +98,13 @@ Source: [git-scm.com/downloads/logos](https://git-scm.com/downloads/logos).
 
 ## Trademarks
 
+The Antigravity mark in `../AntigravityLogo.tsx` is the official one-color
+asset from [Google's press assets](https://antigravity.google/press), retrieved
+2026-11-11. Its path and viewBox are unchanged; `currentColor` supplies the
+theme's ink. The source SVG's SHA-256 is
+`5b5d0cfd07cb79ba5d299d80b754e7c91d782dc1199811688dec67a0a11ba240`.
+Antigravity and Google are trademarks of Google LLC.
+
 Apple, DeepSeek, Git, Kimi, MiniMax, OpenRouter, Vercel, Z.ai, and Windows marks are trademarks of
 their respective owners. Canopy uses them only to refer to those products and
 platforms; their use does not imply endorsement.

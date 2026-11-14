@@ -18,6 +18,7 @@ import type {
 } from '@canopy/core-runtime';
 import { projectChatRuntime } from '../services/chat-state-projection';
 import type { ChatEventReplayLog } from './chat-event-replay-log';
+import { unservedRevision } from './core-chat-read-adapter';
 
 const LIVE_WINDOW = 128;
 const MAX_CURSOR_ALIASES = 128;
@@ -271,6 +272,9 @@ export function createCoreChatEventsAdapter(
     },
     handlers: {
       'core.chat.events': (params, context, sink): Promise<() => void> => {
+        // A cloud chat's meters (CAN-6509); desktop advertises no revision.
+        if (params.revision !== undefined)
+          return Promise.reject(unservedRevision());
         if (params.scope !== 'all')
           return openScoped(params.scope, params.cursor ?? null, sink);
         const port = getPort();

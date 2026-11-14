@@ -24,11 +24,17 @@ jest.mock('node-pty', () => {
 });
 jest.mock('../terminal/worker-terminal', () => ({}));
 
-const mockHandlers = new Map<string, (event: unknown) => Promise<unknown>>();
+const mockHandlers = new Map<
+  string,
+  (event: unknown, request?: { probe?: boolean }) => Promise<unknown>
+>();
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
     channel: string,
-    handler: (event: unknown) => Promise<unknown>,
+    handler: (
+      event: unknown,
+      request?: { probe?: boolean },
+    ) => Promise<unknown>,
   ): void => {
     mockHandlers.set(channel, handler);
   },
@@ -102,6 +108,11 @@ jest.mock('../models/model-registry', () => ({
   setModelRegistryBroadcastHandler: (): void => undefined,
   broadcastModelRegistryUpdated: (): void => undefined,
 }));
+const mockPortalCatalogChanged = jest.fn(() => Promise.resolve());
+jest.mock('../portal/portal-event-bus', () => ({
+  notifyPortalModelCatalogChanged: (): Promise<void> =>
+    mockPortalCatalogChanged(),
+}));
 const mockRefresh = jest.fn(async (): Promise<void> => {
   await Promise.resolve();
   order.push('refresh');
@@ -134,6 +145,7 @@ function fakeSources(): DesktopProviderSources {
       ollama: true,
       cursor: true,
       copilot: true,
+      antigravity: true,
       opencode: true,
     }),
     readAuthState: () => Promise.resolve('ready'),
@@ -165,7 +177,10 @@ function register(resolveCaller: () => CanopyCallerDescriptor): void {
   });
 }
 
-function asyncHandler(): (event: unknown) => Promise<unknown> {
+function asyncHandler(): (
+  event: unknown,
+  request?: { probe?: boolean },
+) => Promise<unknown> {
   const handler = mockHandlers.get(IPC_CHANNELS.modelRegistryGet);
   if (!handler) throw new Error('model-registry:get handler not registered');
   return handler;
@@ -226,4 +241,16 @@ it('the synchronous bootstrap listener still answers directly', () => {
   listener(event);
   expect(event.returnValue).toBe(syncFixture);
   expect(list).not.toHaveBeenCalled();
+});
+
+it('explicit model refresh probes through worker.agent.provider.list', async () => {
+  register(() => trustedCaller);
+  await expect(asyncHandler()({ sender: {} }, { probe: true })).resolves.toBe(
+    fixture,
+  );
+  expect(list).toHaveBeenCalledWith(
+    { scope: {}, probe: true },
+    expect.anything(),
+  );
+  expect(mockPortalCatalogChanged).toHaveBeenCalledTimes(1);
 });
