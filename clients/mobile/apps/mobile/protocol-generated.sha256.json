@@ -5,7 +5,7 @@
     "apps/mobile/lib/data/protocol/generated/api_keys.dart": "ee32ed5b587fd7f9921549578dbc515a7943dadb0c97a5ca6160ef6df8401d50",
     "apps/mobile/lib/data/protocol/generated/feed.dart": "a663fb72748aef8a31e22b2965265b53b1c59db1ccc2d8d12fec78972f3dd4cd",
     "apps/mobile/lib/data/protocol/generated/organization.dart": "21b57a23611be1e595f4cc6f13cf35575b5a66a8bc7ab2976c1ab37d0a77c65e",
-    "apps/mobile/lib/data/protocol/generated/portal_command_status.dart": "2e7b13df33c69c4401927cb97ae8d6d8d72d8a6154fedc87937d48990a791275",
+    "apps/mobile/lib/data/protocol/generated/portal_command_status.dart": "46b5909faa4f366a91b22fa490494c1ad2a9077c4c9204aa5229bce61e8cd18a",
     "apps/mobile/lib/data/protocol/generated/provider_usage.dart": "bfb16066572988fc26f4112d441eb425b36bfbfce74844d0aa18f9a01adc852e",
     "apps/mobile/lib/data/protocol/generated/usage.dart": "6086540b9dc53faa7f09ee7c09fdef93005dc6ff2afd2482c727492a2525535d"
   }

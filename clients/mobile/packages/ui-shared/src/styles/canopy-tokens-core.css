@@ -1104,13 +1104,13 @@ body {
   [data-native-scrollbar-hovered='true']::-webkit-scrollbar-thumb,
 :root[data-scrollbar-behavior='scroll']
   [data-native-scrollbar-scrolling='true']::-webkit-scrollbar-thumb {
-  background-color: var(--fg-quaternary);
+  background-color: color-mix(in srgb, var(--fg-quaternary) 50%, transparent);
 }
 
 /*
  * Overlay scrollbar motion, matching the desktop sidebar exactly: the rail
  * owns hover so the full 10px hit area grows the 6px thumb to 8px and deepens
- * it from `--fg-quaternary` to `--fg-secondary`, rather than only the visible
+ * it from half-strength `--fg-quaternary` to full, rather than only the visible
  * thumb pixels reacting. It grows by `scale` from its right edge rather than
  * by `width`, so the motion runs on the compositor; the hovered corner is
  * narrowed to 3px across first, so the scaled thumb lands on a true 4px round
@@ -1130,7 +1130,7 @@ body {
 [data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {
   scale: calc(8 / 6) 1;
   border-radius: 3px / 4px;
-  background-color: var(--fg-secondary);
+  background-color: var(--fg-quaternary);
 }
 
 /*
@@ -1182,8 +1182,8 @@ body {
 }
 
 /*
- * Native scrollbars borrow the sidebar's colours — the same 6px
- * `--fg-quaternary` pill, deepening to `--fg-secondary` on hover. System mode
+ * Native scrollbars borrow the sidebar's colours — the same 6px pill in
+ * `--fg-quaternary` at half strength, deepening to full on hover. System mode
  * leaves Chromium's OS-derived visibility intact; explicit policies above
  * control the resting thumb colour for native-scrollbar holdouts.
  */
@@ -1192,14 +1192,14 @@ body {
    below and painted the thumb across the full rail width. */
 :not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb {
   border: var(--canopy-scrollbar-thumb-inset) solid transparent;
-  background-color: var(--fg-quaternary);
+  background-color: color-mix(in srgb, var(--fg-quaternary) 50%, transparent);
   background-clip: padding-box;
   border-radius: var(--radius-full);
   transition: background-color 0.2s ease-out;
 }
 
 :not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb:hover {
-  background-color: var(--fg-secondary);
+  background-color: var(--fg-quaternary);
 }
 
 .scrollbar-hide {
@@ -1386,6 +1386,10 @@ body {
     --z-index-dropdown
   ); /* z-exception: CSS backing for the shared dropdown tier */
   max-width: calc(100vw - 16px);
+  /* Menus open over desktop titlebar strips, which are window-drag regions;
+     Electron's drag mask ignores z-order, so the menu must opt out or its
+     rows there drag the window instead of clicking. Ignored by browsers. */
+  -webkit-app-region: no-drag;
 }
 
 .canopy-floating-menu-content {
@@ -1787,10 +1791,11 @@ body {
   content: none !important;
 }
 
-/* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`
- * lays its resting and busy labels in one grid cell so the button keeps one
- * width, and draws the label that is not showing from `data-reserved-label`,
- * so it holds its width without adding text to the DOM. */
+/* A hidden label (`canopy-reserved-label`): `LoadingButton` (resting and
+ * busy labels) and a labeled `CopyButton` (resting and copied labels) lay
+ * both labels in one grid cell so the button keeps one width, and draw the
+ * label that is not showing from `data-reserved-label`, so it holds its
+ * width without adding text to the DOM. */
 .canopy-reserved-label::before {
   content: attr(data-reserved-label);
 }

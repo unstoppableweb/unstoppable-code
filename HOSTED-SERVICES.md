@@ -27,14 +27,17 @@ It covers the desktop and mobile apps. Browsing our website is covered by our
   - AI credits and hosted models
   - Auto model selection
   - Organization memory
-  - Remote Control from a browser or the mobile app
+  - The Remote Control inventory: your skills, plugins, MCP servers,
+    Collections, marketplaces, and pipelines
+  - Outside agents you connect through our MCP server
   - Cloud chats
   - Sharing runs and publishing to the marketplace
   - Feedback reports and message ratings
   - Activity sharing, which is off by default
-- **Remote access between your own devices is end-to-end encrypted.** The
-  relay that connects them can't read what they send. Remote Control through
-  the web is different: it's encrypted in transit, and our servers can read it.
+- **Remote Control and Remote access are end-to-end encrypted.** From a
+  browser, the mobile app, or another computer, the relay that connects your
+  devices can't read what they send. The one exception is an outside agent you
+  connect through our MCP server: its requests pass through our servers.
 - **Released apps send telemetry, and you can turn it off in the app.** Every
   flow the product works without has a switch: **Settings → Privacy → Usage
   data** on desktop, and **Settings → App** on mobile. All of them start on.
@@ -71,6 +74,7 @@ flowchart TB
   apps -.->|AI credits| gateway
   apps --> api
   browser -.-> api
+  browser -.-> relay
   apps -.-> relay
   api -.-> agents
   api -.-> gateway
@@ -81,24 +85,26 @@ flowchart TB
 
 ## What leaves your device, by feature
 
-| Feature                       | Goes to             | What's sent                                                        | On by default?               |
-| ----------------------------- | ------------------- | ------------------------------------------------------------------ | ---------------------------- |
-| Sign-in and account           | Web app and API     | Your name, email, and sign-in provider details                     | Only if you sign in          |
-| Chats on your own plan        | Your provider       | Prompts, code, and tool output. Not us.                            | Yes                          |
-| AI credits and hosted models  | AI gateway          | The full model request, with project and worktree names            | When you pick a hosted model |
-| Auto model selection          | Web app and API     | Your prompt and recent messages, trimmed                           | When you pick **Auto**       |
-| Organization memory           | Web app and API     | Transcripts you share with your organization                       | Set by what you share        |
-| Activity sharing              | Web app and API     | Only the kinds you choose: usage, plans, summaries, transcripts    | No                           |
-| Feed sync                     | Web app and API     | Feed entries from your work                                        | Only with summaries shared   |
-| Remote Control                | Web app and API     | The chats, commands, and results you use remotely                  | No, you start it             |
-| Remote access between devices | Device relay        | Encrypted frames the relay can't read, plus device IDs             | No, you pair devices         |
-| Cloud chats                   | Cloud agent service | Your prompts and the chat. The agent runs on our side.             | When you start one           |
-| Sharing and the marketplace   | Web app and API     | The run, pipeline, skill, or agent you share or publish            | When you share               |
-| Feedback reports              | Web app and API     | Your message, and diagnostics unless you untick them               | When you send one            |
-| Message ratings               | Web app and API     | The rating, reasons, and model, plus your comment on a thumbs-down | When you rate                |
-| Push notifications (mobile)   | Web app and API     | Your device's push token                                           | After you sign in            |
-| Update checks (desktop)       | Update feed         | A request for your platform's update file                          | Yes, in released builds      |
-| Skill safety check (desktop)  | Vercel skills audit | The GitHub repository name and the skill names                     | Yes, when you browse skills  |
+| Feature                       | Goes to             | What's sent                                                                                                                                       | On by default?                       |
+| ----------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Sign-in and account           | Web app and API     | Your name, email, and sign-in provider details                                                                                                    | Only if you sign in                  |
+| Chats on your own plan        | Your provider       | Prompts, code, and tool output. Not us.                                                                                                           | Yes                                  |
+| AI credits and hosted models  | AI gateway          | The full model request, with project and worktree names                                                                                           | When you pick a hosted model         |
+| Auto model selection          | Web app and API     | Your prompt and recent messages, trimmed                                                                                                          | When you pick **Auto**               |
+| Organization memory           | Web app and API     | Transcripts you share with your organization                                                                                                      | Set by what you share                |
+| Activity sharing              | Web app and API     | Only the kinds you choose: usage, plans, summaries, transcripts                                                                                   | No                                   |
+| Feed sync                     | Web app and API     | Feed entries from your work                                                                                                                       | Only with summaries shared           |
+| Remote Control                | Device relay        | Encrypted frames the relay can't read, plus device IDs                                                                                            | No, you start it                     |
+| Remote Control inventory      | Web app and API     | Your computer's name, and names, descriptions, and display details of your skills, plugins, MCP servers, Collections, marketplaces, and pipelines | Yes, while Remote Control is enabled |
+| External agents (MCP)         | Web app and API     | Requests from an outside agent you connect, and a record of each call. What it reads goes to that agent's provider.                               | No, you connect one                  |
+| Remote access between devices | Device relay        | Encrypted frames the relay can't read, plus device IDs                                                                                            | No, you pair devices                 |
+| Cloud chats                   | Cloud agent service | Your prompts and the chat. The agent runs on our side.                                                                                            | When you start one                   |
+| Sharing and the marketplace   | Web app and API     | The run, pipeline, skill, or agent you share or publish                                                                                           | When you share                       |
+| Feedback reports              | Web app and API     | Your message, and diagnostics unless you untick them                                                                                              | When you send one                    |
+| Message ratings               | Web app and API     | The rating, reasons, and model, plus your comment on a thumbs-down                                                                                | When you rate                        |
+| Push notifications (mobile)   | Web app and API     | Your device's push token                                                                                                                          | After you sign in                    |
+| Update checks (desktop)       | Update feed         | A request for your platform's update file                                                                                                         | Yes, in released builds              |
+| Skill safety check (desktop)  | Vercel skills audit | The GitHub repository name and the skill names                                                                                                    | Yes, when you browse skills          |
 
 How to stop each one:
 
@@ -110,7 +116,8 @@ How to stop each one:
   transcripts you share with your organization. Organization admins can also
   exclude members from it.
 - **Remote Control and Remote access:** stop the session, or turn off
-  **Remote access** on the desktop.
+  **Remote Control** in **Settings → Labs** on the desktop. That also stops
+  the Remote Control inventory.
 - **Feedback reports:** untick diagnostics before you send a report.
 - **Push notifications:** sign out of the mobile app.
 - **Update checks:** turn off **Check for updates automatically** in
@@ -231,20 +238,20 @@ sequenceDiagram
   G-->>D: Response
 ```
 
-### Remote Control compared with Remote access
+### Remote Control and Remote access
 
-A browser or the mobile app uses Remote Control through the web. The mobile app
-can also connect to your computer through the device relay.
+A browser, the mobile app, or another computer reaches your desktop through the
+device relay. The web app only checks your sign-in and issues a short-lived
+token for the relay.
 
 ```mermaid
 sequenceDiagram
-  participant M as Phone
+  participant M as Phone or browser
   participant W as Web app
   participant R as Device relay
   participant D as Desktop
-  M->>W: Command over TLS
-  Note over W: Can read it
-  W->>D: Command over TLS
+  M->>W: Sign-in check
+  W-->>M: Short-lived relay token
   M->>R: Encrypted frame
   Note over R: Can't read it
   R->>D: Encrypted frame
@@ -255,9 +262,9 @@ sequenceDiagram
 ### Web app and API
 
 **What it does:** accounts and sign-in, organizations, teams and policies,
-billing and AI credits, sharing and the marketplace, Remote Control, Feed sync,
-organization memory, notification settings, and feedback intake. It also hosts
-an MCP server that lets other agents act for you.
+billing and AI credits, sharing and the marketplace, Remote Control tokens and
+inventory, Feed sync, organization memory, notification settings, and feedback
+intake. It also hosts an MCP server that lets outside agents act for you.
 
 **Features that depend on it:** everything that needs an account.
 
@@ -265,7 +272,15 @@ an MCP server that lets other agents act for you.
 
 - Your account profile, organization membership, and settings.
 - Billing records, and usage and cost records for AI credits.
-- What you share, publish, or sync, and your Remote Control sessions.
+- What you share, publish, or sync.
+- For Remote Control, your computer's name and the names, descriptions, and
+  display details (such as an MCP server's address and which items are
+  installed) of your skills, plugins, MCP servers, Collections, marketplaces,
+  and pipelines, with no credentials or contents. It syncs while Remote
+  Control is enabled, even before you pair a device. The chats, commands, and
+  results themselves go through the device relay, encrypted end to end.
+- Requests from outside agents you connect through the MCP server, and a
+  record of each call they make.
 - Feedback reports and message ratings.
 - Some content, such as transcripts and plans, is encrypted when stored. We
   hold the keys, so this isn't end-to-end encryption.
@@ -326,17 +341,18 @@ work.
 
 ### Device relay
 
-**What it does:** connects your devices for Remote access, such as your phone
-to your computer.
+**What it does:** connects your devices for Remote Control and Remote access,
+such as your phone or a browser to your computer.
 
-**Features that depend on it:** Remote access between devices, and
-**Connect a computer** in the mobile app.
+**Features that depend on it:** Remote Control from a browser or the mobile
+app, Remote access between devices, and **Connect a computer** in the mobile
+app.
 
 **Data it handles:** it routes end-to-end encrypted frames between devices that
 you paired. It can't read them, and it stores nothing. Its logs can include
 device IDs and error reasons.
 
-**Without it:** Remote access between devices doesn't work.
+**Without it:** Remote Control and Remote access don't work.
 
 **Replacing it:** it's a WebSocket relay.
 
@@ -438,8 +454,8 @@ How to point the apps elsewhere:
   [mobile build instructions](clients/mobile/README.md).
 
 A replacement needs three kinds of service: an HTTPS REST API for accounts and
-cloud features, a WebSocket relay for Remote access, and an Anthropic- and
-OpenAI-compatible model gateway. We don't publish a spec for the web API yet.
+cloud features, a WebSocket relay for Remote Control and Remote access, and an
+Anthropic- and OpenAI-compatible model gateway. We don't publish a spec for the web API yet.
 
 ## Privacy, retention, and security
 
@@ -447,4 +463,4 @@ Our [privacy policy](https://unstoppable.ai/privacy) describes what we keep,
 how long we keep it, and how we use it. To report a security problem, see
 [SECURITY.md](SECURITY.md).
 
-Last reviewed: 2026-11-07
+Last reviewed: 2026-11-13
