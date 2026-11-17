@@ -4,7 +4,8 @@ export type AiGatewayPresetId =
   | 'openrouter'
   | 'vercel'
   | 'requesty'
-  | 'litellm';
+  | 'litellm'
+  | 'teapotrouter';
 
 /**
  * A well-known gateway offered as a one-click setup tile. Nothing stores the
@@ -100,6 +101,24 @@ export const AI_GATEWAY_PRESETS: readonly AiGatewayPreset[] = [
     path: '',
     discoveryFormat: 'any',
     suggestedModelIds: [],
+  },
+  {
+    id: 'teapotrouter',
+    name: 'TeapotRouter',
+    baseUrl: 'https://api.teapotrouter.com',
+    keyUrl: 'https://teapotrouter.com/',
+    hosts: ['api.teapotrouter.com'],
+    path: '',
+    discoveryFormat: 'any',
+    // IDs verified against the gateway's public /api/pricing endpoint on 2026-11-17.
+    suggestedModelIds: [
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'claude-haiku-4-5',
+      'gpt-6.1-sol',
+      'gpt-6.1-terra',
+      'gpt-6-astra',
+    ],
   },
 ];
 
